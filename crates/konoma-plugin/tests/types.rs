@@ -212,3 +212,33 @@ fn view_defaults() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn contexts_do_not_allow_external_programs_unless_the_host_says_so() {
+    use konoma_plugin::{ActCx, OpenCx, ViewCx};
+    assert!(!OpenCx::bare().external);
+    assert!(!ViewCx::bare().external);
+    assert!(!ActCx::bare().external);
+    assert!(OpenCx::bare().with_external(true).external);
+    assert!(ViewCx::bare().with_external(true).external);
+    assert!(ActCx::bare().with_external(true).external);
+    // The other builders keep the switch.
+    let cx = ViewCx::bare()
+        .with_external(true)
+        .with_cancel(Cancel::never());
+    assert!(cx.external);
+}
+
+#[test]
+fn image_view_carries_the_raster_size_for_vector_sources() {
+    use konoma_plugin::view::{ImageData, ImageView};
+    let v = ImageView::new(ImageData::File("a.png".into()));
+    assert!(!v.sharp_zoom);
+    assert_eq!(v.raster_max_px, None);
+    let v = ImageView {
+        sharp_zoom: true,
+        raster_max_px: Some(800),
+        ..v
+    };
+    assert_eq!(v.raster_max_px, Some(800));
+}

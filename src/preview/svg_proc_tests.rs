@@ -889,6 +889,41 @@ fn an_idle_child_that_died_is_replaced_without_the_caller_noticing() {
 
 // ---- the production entry points -------------------------------------------------------------
 
+/// An SVG file shown through the `svg` picture plugin is still drawn by the supervised child
+/// process (the plugin hands the bytes back marked untrusted and the host's job draws them with
+/// `svg::rasterize_untrusted`), and one the guard refuses never starts a process.
+#[test]
+fn the_svg_plugin_path_still_draws_in_the_supervised_child() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-plugin");
+    let path = dir.join("x.svg");
+    std::fs::write(&path, badge(1)).unwrap();
+    super::svg_proc::with_real_child(bin(), || {
+        match crate::app::svg_file_payload(&path, 100) {
+            Some(crate::app::MediaPayload::Vector { img, .. }) => {
+                assert_eq!((img.width(), img.height()), (800, 600));
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1, "the picture was drawn by a child");
+        // The refusal of a file the flat scan rejects comes back with its reason, no process.
+        let deep = dir.join("deep.svg");
+        std::fs::write(
+            &deep,
+            svg(&format!("{}{}", "<g>".repeat(1000), "</g>".repeat(1000))),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::app::svg_file_payload(&deep, 100),
+            Some(crate::app::MediaPayload::ImageFailed(
+                crate::preview::image::ImageFailure::Svg(SvgFail::TooDeep)
+            ))
+        ));
+        assert_eq!(live_children(), 1);
+    });
+}
+
 /// `svg::rasterize_untrusted` and `svg::rasterize`, as the application calls them, with the real
 /// binary as the drawing process: the flat checks come first and cost no process, the rest goes to
 /// a child.

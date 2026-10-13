@@ -1364,7 +1364,7 @@ fn app_with_image() -> (App, crate::test_support::TmpDir) {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     // Leak tx so it isn't dropped (keeps it alive until the test ends).
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1408,7 +1408,7 @@ fn media_load_is_async_then_applied() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Svg(p.clone());
+    let kind = PreviewKind::svg(p.clone());
     app.tab.preview_kind = Some(kind.clone());
 
     app.start_media_load(&kind, &p);
@@ -1436,7 +1436,7 @@ fn media_loading_renders_shared_spinner() {
     Box::leak(Box::new(rx)); // don't drain the result → stays loading
     app.attach_media_loader(tx);
     let path = PathBuf::from("/does-not-exist.svg");
-    let kind = PreviewKind::Svg(path.clone());
+    let kind = PreviewKind::svg(path.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(path.clone());
     app.tab.mode = Mode::Preview;
@@ -1472,45 +1472,45 @@ fn pdf_page_navigation_clamps_and_indicates() {
     let dir = unique_tmp("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::pdf(PathBuf::from("/x/doc.pdf")));
     app.tab.mode = Mode::Preview;
 
     // Unknown total: cannot navigate, no indicator.
-    app.tab.pdf_pages = None;
-    app.tab.pdf_page = 1;
-    assert!(!app.pdf_can_navigate());
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1, "総数不明では動かない");
-    assert_eq!(app.pdf_page_indicator(), None);
+    app.tab.page_count = None;
+    app.tab.page = 1;
+    assert!(!app.can_turn_pages());
+    app.next_page();
+    assert_eq!(app.tab.page, 1, "総数不明では動かない");
+    assert_eq!(app.page_indicator(), None);
 
     // Single page: cannot navigate.
-    app.tab.pdf_pages = Some(1);
-    assert!(!app.pdf_can_navigate(), "単ページは移動不可");
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1);
+    app.tab.page_count = Some(1);
+    assert!(!app.can_turn_pages(), "単ページは移動不可");
+    app.next_page();
+    assert_eq!(app.tab.page, 1);
 
     // Three pages: forward/backward navigation, edge clamping, and the indicator.
-    app.tab.pdf_pages = Some(3);
-    app.tab.pdf_page = 1;
-    assert!(app.pdf_can_navigate());
-    assert_eq!(app.pdf_page_indicator(), Some((1, 3)));
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3, "末尾でクランプ");
-    assert_eq!(app.pdf_page_indicator(), Some((3, 3)));
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_prev_page();
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
+    app.tab.page_count = Some(3);
+    app.tab.page = 1;
+    assert!(app.can_turn_pages());
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 3);
+    app.next_page();
+    assert_eq!(app.tab.page, 3, "末尾でクランプ");
+    assert_eq!(app.page_indicator(), Some((3, 3)));
+    app.prev_page();
+    assert_eq!(app.tab.page, 2);
+    app.prev_page();
+    app.prev_page();
+    assert_eq!(app.tab.page, 1, "先頭でクランプ");
 
     // A page move resets zoom back to fit (1.0).
     app.tab.image_zoom = 4.0;
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
     assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
 }
 
@@ -1533,12 +1533,12 @@ fn pdf_next_page_renders_off_thread() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Pdf(p.clone());
+    let kind = PreviewKind::pdf(p.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
-    app.tab.pdf_pages = Some(pages);
-    app.tab.pdf_page = 1;
+    app.tab.page_count = Some(pages);
+    app.tab.page = 1;
 
     // Load page 1 and apply it.
     app.start_media_load(&kind, &p);
@@ -1549,8 +1549,8 @@ fn pdf_next_page_renders_off_thread() {
     assert!(app.is_image_preview(), "page1 が image_src に載る");
 
     // To page 2: kicks off re-rasterization on another thread → apply it.
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
     let r2 = rx
         .recv_timeout(std::time::Duration::from_secs(15))
@@ -1563,7 +1563,7 @@ fn pdf_next_page_renders_off_thread() {
 #[test]
 fn stale_media_result_is_ignored() {
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
+    app.tab.preview_kind = Some(PreviewKind::svg(PathBuf::from("x.svg")));
     // Build a result that doesn't match the current generation (a stale generation).
     let img =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
@@ -1586,7 +1586,7 @@ fn gif_emits_kitty_image_data_per_frame() {
     use ratatui_image::Image;
 
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     // Set two different frames (solid red/green) directly, verifying only the render path
     // without going through decode.
     let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
@@ -4036,10 +4036,10 @@ fn media_preview_reloads_only_when_file_changes() {
     app.tab.selected = idx;
     app.tree_activate().unwrap(); // opens in image preview
     assert!(
-        matches!(
-            app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "画像として開く"
     );
     assert!(
@@ -11036,7 +11036,7 @@ fn ui_preview_renders_image_via_kitty_path() {
     // (the kitty transfer sequence _G) even with a workerless TestBackend. A still image is
     // asynchronous (app.image arrives later).
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
     };
@@ -11068,7 +11068,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     // A still image, but app.image (the already-encoded protocol) hasn't arrived → falls back
     // to ImageUnsupported. Exercises render_image's still-image fallback branch.
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
     app.tab.mode = Mode::Preview;
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -11115,7 +11115,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     );
 
     // A video with no thumbnail (no image_src) → falls back to the hint text.
-    app.tab.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
+    app.tab.preview_kind = Some(PreviewKind::video(dir.join("v.mp4")));
     let video = dump(&mut app);
     assert!(
         video.contains("video") || video.contains("動画"),
@@ -12038,10 +12038,11 @@ fn preview_survives_target_file_overwrite_and_delete() {
         .unwrap();
     app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Image(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("image")));
     // Overwrite with different valid bytes, force the reload path — no panic.
     RgbImage::new(8, 6).save(&pic).unwrap();
     app.preview_media_mtime = None;
@@ -15688,7 +15689,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15819,7 +15820,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15880,7 +15881,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("doc.pdf")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15920,7 +15921,7 @@ fn kitty_failed_build_clears_pending() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -16065,7 +16066,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("a.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -18040,7 +18041,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
         .unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     let decoded = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(decoded.clone());
     app.preview_media_mtime = crate::app::file_mtime(&img);
@@ -18085,7 +18086,7 @@ fn oversized_media_is_not_cached() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     // 17M pixels = looking only at the pixel count it would slip under a "32MP cap", but at
     // 16-bit (8B/px) that's 136MB. Squeeze the buffer into 1 row to keep the memory at its true
@@ -18161,7 +18162,7 @@ fn closing_a_media_tab_releases_its_cached_image() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -18190,7 +18191,7 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -19333,7 +19334,7 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
 
 /// `[external] pdf = false` means "never spawn macOS's bundled qlmanage/sips" — it does **not**
 /// disable PDF preview, because `hayro` (the primary renderer) and `page_count` (`hayro-syntax`) are
-/// both pure Rust and never touch an external process. `tab.pdf_pages` must resolve identically
+/// both pure Rust and never touch an external process. `tab.page_count` must resolve identically
 /// (`Some(3)`, the bundled sample's known page count) whether the flag is on or off — unlike before
 /// `hayro` existed, when this flag (and `arbitrary_page_renderer_available`) gated whether page
 /// navigation was exposed at all.
@@ -19348,18 +19349,22 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     let mut cfg = Config::default();
     cfg.external.pdf = false;
     let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    // The page count is the PDF plugin's to report when the picture is made, which needs a
+    // graphics backend (a terminal without one shows no picture and has no page keys to serve).
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app.enter_preview(&p);
     assert_eq!(
-        app.tab.pdf_pages,
+        app.tab.page_count,
         Some(3),
         "pdf=false: page_count (hayro-syntax) still runs — it never touched an external process"
     );
 
-    // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
+    // Same with the flag enabled (default) — external.pdf must not change what page_count resolves to.
     let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app2.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app2.enter_preview(&p);
     assert_eq!(
-        app2.tab.pdf_pages,
+        app2.tab.page_count,
         Some(3),
         "external.pdf doesn't change the resolved page count"
     );
@@ -19393,7 +19398,10 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
         app.picker = Some(test_picker());
         app.enter_preview(&p);
         assert!(
-            matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+            app.tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(|k| k.is_plugin("video")),
             "{name}: 動画プレビューとして解決されていない(でなければ以下は何も検査していない)"
         );
         assert!(
@@ -19435,7 +19443,10 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
     app.picker = Some(test_picker());
     app.enter_preview(&p);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "sanity: このファイルは動画プレビューとして解決される(でなければ以下は何も検査していない)"
     );
     assert!(
@@ -20105,7 +20116,7 @@ fn lc_open_text(app: &mut App) {
 /// `preview_win` / visual anchor the case set up beforehand survives.
 fn lc_make_image(app: &mut App) {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.tab.mode = Mode::Preview;
 }
 /// Same idea for a parsed CSV table.
@@ -25395,7 +25406,7 @@ fn a_full_screen_svg_that_was_refused_records_why() {
     );
     let p = dir.join("deep.svg");
     std::fs::write(&p, deep).unwrap();
-    let payload = MediaJob::Svg(p.clone(), 800).run().expect("a payload");
+    let payload = svg_file_payload(&p, 800).expect("a payload");
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(matches!(
         payload,
@@ -25428,7 +25439,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         .unwrap();
     let t = std::time::Instant::now();
     assert!(matches!(
-        MediaJob::Svg(big, 800).run(),
+        svg_file_payload(&big, 800),
         Some(MediaPayload::ImageFailed(
             crate::preview::image::ImageFailure::Svg(crate::preview::svg_guard::SvgFail::TooLarge)
         ))
@@ -25440,7 +25451,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         // SAFETY: a valid NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         assert!(matches!(
-            MediaJob::Svg(fifo, 800).run(),
+            svg_file_payload(&fifo, 800),
             Some(MediaPayload::ImageFailed(
                 crate::preview::image::ImageFailure::Svg(
                     crate::preview::svg_guard::SvgFail::Invalid

@@ -83,11 +83,21 @@ macro_rules! context {
             pub lang: &'a str,
             pub cancel: Cancel,
             pub term: TermCaps,
+            /// Whether the plugin may start an external program (the user's `[external]` switch
+            /// for what the plugin shows). Off by default: a plugin that has an external fallback
+            /// must stay silent unless the host says yes.
+            pub external: bool,
         }
 
         impl<'a> $name<'a> {
             pub fn new(settings: &'a Settings, lang: &'a str) -> $name<'a> {
-                $name { settings, lang, cancel: Cancel::never(), term: TermCaps::default() }
+                $name {
+                    settings,
+                    lang,
+                    cancel: Cancel::never(),
+                    term: TermCaps::default(),
+                    external: false,
+                }
             }
 
             /// English, no settings, never cancelled, no pixels: for tests.
@@ -102,6 +112,11 @@ macro_rules! context {
 
             pub fn with_term(mut self, term: TermCaps) -> $name<'a> {
                 self.term = term;
+                self
+            }
+
+            pub fn with_external(mut self, external: bool) -> $name<'a> {
+                self.external = external;
                 self
             }
         }

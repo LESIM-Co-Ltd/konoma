@@ -23,6 +23,11 @@ All notable changes to konoma are documented in this file. The format is based o
   `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
   by extension. New: `konoma --plugins` lists every assignment (yours first), and an unknown `[plugins.<id>]` is
   reported at startup.
+- **Images, SVG, PDF and video are shown by plugins** (`image`, `svg`, `pdf`, `video`, in the new `konoma-media` crate). What you see
+  does not change: the host still decodes, animates, zooms and draws the pictures, and an SVG is still drawn in a supervised
+  child process. New: `[plugins.svg] max_px` (the old `[ui] svg_max_px` is still read), and `[plugins.<id>] enabled = false`
+  switches a picture viewer off. A PDF's page count now comes with its first picture rather than before it, so `J`/`K` start
+  working when page 1 has landed.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
   under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
   (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block

@@ -1725,6 +1725,7 @@ dependencies = [
  "konoma-base",
  "konoma-markdown-core",
  "konoma-math-core",
+ "konoma-media",
  "konoma-media-core",
  "konoma-mermaid-core",
  "konoma-office-core",
@@ -1788,6 +1789,17 @@ dependencies = [
  "ratex-svg",
  "ratex-types",
  "resvg",
+]
+
+[[package]]
+name = "konoma-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-media-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-test-support",
 ]
 
 [[package]]

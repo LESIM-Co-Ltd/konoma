@@ -1449,7 +1449,7 @@ fn cfg_preview_default_svg() {
         b"<svg xmlns='http://www.w3.org/2000/svg'/>\n",
     );
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Svg(_)), "got {kind:?}");
+    assert!(kind.is_plugin("svg"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1477,7 +1477,7 @@ fn cfg_preview_default_csv_tsv_delimiters() {
 fn cfg_preview_default_pdf() {
     let p = tmp("cfgp_doc.pdf", b"%PDF-1.4\n");
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Pdf(_)), "got {kind:?}");
+    assert!(kind.is_plugin("pdf"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1485,7 +1485,7 @@ fn cfg_preview_default_pdf() {
 fn cfg_preview_default_image_png_by_content() {
     let p = tmp("cfgp_photo.png", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Image(_)), "got {kind:?}");
+    assert!(kind.is_plugin("image"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1493,7 +1493,7 @@ fn cfg_preview_default_image_png_by_content() {
 fn cfg_preview_default_video_mp4_by_content() {
     let p = tmp("cfgp_clip.mp4", MP4_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Video(_)), "got {kind:?}");
+    assert!(kind.is_plugin("video"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1523,10 +1523,7 @@ fn cfg_preview_default_txt_falls_back_to_text() {
 fn cfg_preview_glob_svg_wins_over_png_content() {
     let p = tmp("cfgp_weird.svg", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(
-        matches!(kind, PreviewKind::Svg(_)),
-        "svg glob wins: {kind:?}"
-    );
+    assert!(kind.is_plugin("svg"), "svg glob wins: {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1788,10 +1785,8 @@ fn cfg_resolve_preview_with_classifies_a_deleted_png_from_its_old_bytes() {
         "対照: 実在しないパスでは resolve_preview は判定できないはず"
     );
     assert!(
-        matches!(
-            cfg.resolve_preview_with(deleted_path, &bytes),
-            PreviewKind::Image(_)
-        ),
+        cfg.resolve_preview_with(deleted_path, &bytes)
+            .is_plugin("image"),
         "resolve_preview_with は旧バイト列から Image と判定できるはず"
     );
 }
@@ -1803,14 +1798,8 @@ fn cfg_resolve_preview_with_svg_and_pdf_match_by_glob_even_with_empty_sniff() {
     let cfg = Config::default();
     let svg = std::path::Path::new("/nonexistent/figure.svg");
     let pdf = std::path::Path::new("/nonexistent/doc.pdf");
-    assert!(matches!(
-        cfg.resolve_preview_with(svg, &[]),
-        PreviewKind::Svg(_)
-    ));
-    assert!(matches!(
-        cfg.resolve_preview_with(pdf, &[]),
-        PreviewKind::Pdf(_)
-    ));
+    assert!(cfg.resolve_preview_with(svg, &[]).is_plugin("svg"));
+    assert!(cfg.resolve_preview_with(pdf, &[]).is_plugin("pdf"));
 }
 
 /// A user rule placed ahead of the builtin defaults still wins for `resolve_preview_with`, exactly

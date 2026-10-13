@@ -37,6 +37,9 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+mod media_plugin;
+#[cfg(test)]
+pub(crate) use media_plugin::svg_file_payload;
 mod office_doc;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
@@ -769,6 +772,10 @@ pub enum MediaPayload {
     /// A Word document that could not be loaded (the reason maps to a translated message on the
     /// render side), carried like [`MediaPayload::WorkbookFailed`].
     DocumentFailed(crate::preview::office::OfficeError),
+    /// A picture plugin's result (`PreviewKind::Plugin` of `image`, `svg`, `pdf`, `video`): the
+    /// decoded picture, and the session and page layout the plugin reported
+    /// (`app/media_plugin.rs`).
+    Plugin(Box<media_plugin::PluginLanded>),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -801,20 +808,9 @@ pub struct KittyResult {
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
-    Svg(PathBuf, u32),
-    /// Decode a still image (PNG/JPEG/...). On a worker so that a very large image never stalls the UI.
-    Still(PathBuf),
-    /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
-    Gif(PathBuf),
-    /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
-    /// mp4/m4v/mov, with ffmpegthumbnailer/ffmpeg behind it for everything else and only when the
-    /// `bool` (`[external] video`) allows launching them. Thumbnail only; no playback.
-    Video(PathBuf, bool),
-    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, macOS's bundled
-    /// `qlmanage`/`sips` only as a page-1 fallback and only when the `bool` (`[external] pdf`)
-    /// allows it. Loaded one page at a time.
-    Pdf(PathBuf, u32, bool),
+    /// Run a picture plugin (`image`, `svg`, `pdf`, `video`): open it or reuse its session, ask for
+    /// the view, and decode the picture it returns, all on this worker.
+    Plugin(Box<media_plugin::MediaPluginJob>),
     /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
     /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
     /// fallback shows.
@@ -861,39 +857,7 @@ impl MediaJob {
         cancel: Option<crate::preview::office::Cancel>,
     ) -> Option<MediaPayload> {
         match self {
-            MediaJob::Svg(p, max_px) => {
-                // A file the user opened: drawn by a supervised child process (`svg_proc`).
-                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                let data = match crate::preview::svg::read_limited(&p) {
-                    Ok(d) => d,
-                    Err(why) => {
-                        return Some(MediaPayload::ImageFailed(
-                            crate::preview::image::ImageFailure::Svg(why),
-                        ))
-                    }
-                };
-                let img =
-                    match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
-                        Ok(img) => img,
-                        Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
-                    };
-                Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
-                })
-            }
-            MediaJob::Still(p) => Some(still_payload(&p)),
-            MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
-                Some(frames) => Some(MediaPayload::Gif(frames)),
-                // A single-frame / non-animated GIF → display as a still image.
-                None => Some(still_payload(&p)),
-            },
-            MediaJob::Video(p, allow_external) => {
-                crate::preview::video::thumbnail(&p, allow_external).map(MediaPayload::Static)
-            }
-            MediaJob::Pdf(p, page, allow_external) => {
-                crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
-            }
+            MediaJob::Plugin(job) => Some(job.run(cancel)),
             MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
                 let code = std::fs::read_to_string(&p).ok()?;
                 MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
@@ -1693,6 +1657,9 @@ pub struct App {
     /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
     /// externally edited file is always re-read.
     media_cache: Option<MediaCache>,
+    /// The open session of the picture plugin that shows the current preview (a PDF keeps its page
+    /// count here so a page turn does not open the file again). Dropped with the picture.
+    media_session: Option<media_plugin::MediaSession>,
 
     /// The plugin display that is open (`PreviewKind::Plugin`): the plugin's `Session`, its layout and
     /// the view it returned (`app/plugin_host.rs`). Lives on `App` (like `workbook`): the data can be
@@ -3064,7 +3031,7 @@ impl DiffView {
 /// inline-fence zoom state, and the tab-scoped selection/filter/search state.
 ///
 /// `Default` is implemented manually (not derived): a few fields have a non-zero "fresh tab" value
-/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `pdf_page` starts
+/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `page` starts
 /// at 1), matching what `App::new` used to initialize them to before this migration.
 #[derive(Clone)]
 pub(crate) struct PerTab {
@@ -3221,8 +3188,13 @@ pub(crate) struct PerTab {
     /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
     pub(crate) image_zoom: f64,
     image_center: (f64, f64),
-    pdf_page: u32,
-    pdf_pages: Option<u32>,
+    /// The page on screen, counted from 1, of a preview made of separate pages (a PDF today; the
+    /// spreadsheet's sheets and the slides keep their own numbers until they move onto this).
+    /// 1 for anything else.
+    page: u32,
+    /// How many pages the plugin reported (`Layout.pages`), or `None` when it has none or does not
+    /// know (page keys do nothing then).
+    page_count: Option<u32>,
     // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
     md_raw: bool,
     /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
@@ -3354,8 +3326,8 @@ impl Default for PerTab {
             // The image/fence center's initial value is "centered" (same as App::new used to set it to (0.5, 0.5)).
             image_center: (0.5, 0.5),
             // PDF pages are 1-based (same as App::new used to set it to 1).
-            pdf_page: 1,
-            pdf_pages: None,
+            page: 1,
+            page_count: None,
             md_raw: false,
             deck_text_view: None,
             deck_pending_slide: None,
@@ -3465,6 +3437,7 @@ impl App {
             #[cfg(test)]
             md_cache_budget_for_test: None,
             media_cache: None,
+            media_session: None,
             plugin: None,
             plugin_tx: None,
             workbook: None,
@@ -4460,19 +4433,6 @@ impl App {
         self.set_document(None);
         self.document_error = None;
         self.tab.sheet_idx = 0;
-        // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
-        // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
-        // external tool, so "can count ⟹ can draw" holds almost universally (there is no
-        // "first-page-only" constraint like qlmanage/sips has) — the navigation suppression that
-        // used to live here via `arbitrary_page_renderer_available()` (whether poppler was present)
-        // has been removed, and poppler itself is no longer in the fallback chain at all.
-        // `[external] pdf` doesn't affect getting the page count either: `page_count` is a pure
-        // Rust read that never launches an external process, so it keeps working the same whether
-        // `pdf=false` (= never launch an external rendering tool) or not (an external tool is
-        // only involved when `render_page` degrades to its fallback).
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            self.tab.pdf_pages = crate::preview::pdf::page_count(path);
-        }
         // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
         // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
@@ -4910,20 +4870,12 @@ impl App {
         if file_mtime(&path) == self.preview_media_mtime {
             return; // the target file is unchanged → avoid a wasted re-decode / external-tool run
         }
-        // Preserve the display state (zoom/center/page) and reload.
-        let (zoom, center, page) = (
-            self.tab.image_zoom,
-            self.tab.image_center,
-            self.tab.pdf_page,
-        );
+        // Preserve the display state (zoom/center/page) and reload. The page count is the
+        // plugin's to report again (the file may have gained or lost pages); until it lands the
+        // page asked for is the one the user was on.
+        let (zoom, center, page) = (self.tab.image_zoom, self.tab.image_center, self.tab.page);
         self.clear_image(); // reset zoom/center/page/media generation
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            // See the comment on the enter_preview side for the gating rationale (page_count has
-            // no external process, and hayro can draw any page, so there's no navigation
-            // suppression via arbitrary_page_renderer_available).
-            self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
-            self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
-        }
+        self.tab.page = page.max(1);
         self.start_media_load(&kind, &path); // also updates preview_media_mtime
         self.tab.image_zoom = zoom;
         self.tab.image_center = center;
@@ -5213,7 +5165,7 @@ impl App {
             path,
             mtime: self.preview_media_mtime,
             len: meta.map(|m| m.len()),
-            page: self.tab.pdf_page.max(1),
+            page: self.tab.page.max(1),
             fence_ord: self.preview_fence_ord(),
             src,
             logical: self.image_logical,
@@ -5274,15 +5226,12 @@ impl App {
     }
 
     fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
-        matches!(
-            kind,
-            PreviewKind::Image(_)
-                | PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-                // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
-                // reload must re-read it exactly like the image kinds.
-                | PreviewKind::Spreadsheet(_)
+        kind.is_media_plugin()
+            // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed reload
+            // must re-read it exactly like the picture plugins.
+            || matches!(
+                kind,
+                PreviewKind::Spreadsheet(_)
                 // A Word document is converted on the same worker; a tab switch / mtime-changed
                 // reload re-reads it exactly like a spreadsheet.
                 | PreviewKind::Document(_)
@@ -5317,8 +5266,9 @@ impl App {
         self.gif_shown_at = None;
         self.gif_protocol = None;
         self.gif_proto_key = None;
-        self.tab.pdf_page = 1;
-        self.tab.pdf_pages = None;
+        self.tab.page = 1;
+        self.tab.page_count = None;
+        self.media_session = None;
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
         self.wb_queued = None;

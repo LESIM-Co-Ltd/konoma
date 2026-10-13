@@ -29,7 +29,7 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
     }
     // PDF also shows the page position (e.g. 2/5), only when the total page count is known.
-    if let Some((cur, total)) = app.pdf_page_indicator() {
+    if let Some((cur, total)) = app.page_indicator() {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
     // A presentation shows the slide at the top of the view (hidden slides count).
@@ -132,7 +132,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("+ / -", l(crate::i18n::Msg::Zoom))
             .row("0 / =", l(crate::i18n::Msg::ResetFit))
             .row("h j k l / arrows", l(crate::i18n::Msg::PanHint));
-        if app.pdf_can_navigate() {
+        if app.can_turn_pages() {
             sec = sec.row("J / K  ·  PageDown / PageUp", l(crate::i18n::Msg::HintPage));
         }
         // While this image/PDF/SVG preview *is* the diff's own `Preview` representation
@@ -281,7 +281,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "hjkl", crate::i18n::Msg::HintPan),
         ];
         // Show page paging up front only for multi-page PDFs (not for single-page or unknown page count).
-        if app.pdf_can_navigate() {
+        if app.can_turn_pages() {
             v.push(hint(lang, "J/K", crate::i18n::Msg::HintPage));
         }
         // While this preview *is* the diff's own `Preview` representation, `R` returns to the
@@ -559,18 +559,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if app.is_media_loading()
         && !app.is_image_preview()
-        && matches!(
-            app.tab.preview_kind,
-            Some(
-                PreviewKind::Image(_)
-                    | PreviewKind::Svg(_)
-                    | PreviewKind::Video(_)
-                    | PreviewKind::Pdf(_)
-                    | PreviewKind::Mermaid(_)
-                    | PreviewKind::MermaidFence(_)
-                    | PreviewKind::Command { .. }
-            )
-        )
+        && (app.shows_media_plugin()
+            || matches!(
+                app.tab.preview_kind,
+                Some(
+                    PreviewKind::Mermaid(_)
+                        | PreviewKind::MermaidFence(_)
+                        | PreviewKind::Command { .. }
+                )
+            ))
     {
         render_media_loading(frame, app, area);
         return;
@@ -578,7 +575,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Images take a dedicated path: draw the frame, then draw StatefulImage inside it.
     // An uninitialized backend / decode failure (app.image=None) falls back to text.
-    if matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))) {
+    if app.shows_plugin(konoma_media::IMAGE_ID) {
         render_image(frame, app, area);
         return;
     }
@@ -587,17 +584,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // failure (image_src=None, including an unsupported terminal or a missing external tool), fall
     // through to the text path below and show a safe fallback (design principle #3 "unsupported is
     // safe" — graceful degradation).
-    if matches!(
-        app.tab.preview_kind,
-        Some(
-            PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-                | PreviewKind::Mermaid(_)
-                | PreviewKind::MermaidFence(_)
-                | PreviewKind::Command { .. }
-        )
-    ) && app.is_image_preview()
+    if (app.shows_media_plugin()
+        || matches!(
+            app.tab.preview_kind,
+            Some(
+                PreviewKind::Mermaid(_)
+                    | PreviewKind::MermaidFence(_)
+                    | PreviewKind::Command { .. }
+            )
+        ))
+        && app.is_image_preview()
     {
         render_image(frame, app, area);
         return;
@@ -645,34 +641,38 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             // Unreachable (already branched to the decorated path above), but kept safe for exhaustiveness.
             (load_body(p, app.lang), true)
         }
-        Some(PreviewKind::Image(p)) => (format!("[image] {}", p.display()), false),
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::IMAGE_ID => {
+            (format!("[image] {}", path.display()), false)
+        }
         // An SVG that failed to rasterize / whose terminal is unsupported. Shows the raw XML as text (a safe fallback).
         // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
-        Some(PreviewKind::Svg(p)) => match app.image_failure().and_then(|f| f.message(app.lang)) {
-            Some(why) => (format!("{why}\n\n{}", load_body(p, app.lang)), true),
-            None => (load_body(p, app.lang), true),
-        },
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::SVG_ID => {
+            match app.image_failure().and_then(|f| f.message(app.lang)) {
+                Some(why) => (format!("{why}\n\n{}", load_body(path, app.lang)), true),
+                None => (load_body(path, app.lang), true),
+            }
+        }
         // Rendering failed in the full-screen fence view (an unsupported diagram kind, etc.). Shows guidance (q returns to the md).
         Some(PreviewKind::MermaidFence(_)) => (
             tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),
             false,
         ),
         // A video whose thumbnail couldn't be extracted (no ffmpeg family/unsupported terminal/failure). Shows the target file + an install hint.
-        Some(PreviewKind::Video(p)) => (
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::VIDEO_ID => (
             format!(
                 "{}\n{}",
                 tr(app.lang, crate::i18n::Msg::VideoThumbUnavailable),
-                p.display()
+                path.display()
             ),
             false,
         ),
         // A PDF that couldn't be rasterized (neither hayro nor — on macOS, for page 1 —
         // qlmanage/sips worked, or the terminal is unsupported). Shows the target file + a hint.
-        Some(PreviewKind::Pdf(p)) => (
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::PDF_ID => (
             format!(
                 "{}\n{}",
                 tr(app.lang, crate::i18n::Msg::PdfPreviewUnavailable),
-                p.display()
+                path.display()
             ),
             false,
         ),

@@ -17233,10 +17233,11 @@ fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
         "動画は今までどおり通常プレビューへ(diff は開かない)"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Video(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "通常のビデオプレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17308,10 +17309,11 @@ fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
         "follow_view=\"file\" は画像でも常に通常プレビューのはず"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "通常の画像プレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17822,15 +17824,15 @@ fn e2e_keys_old_and_new_page_names_rebind_pdf_paging() {
         s.select("doc.pdf");
         s.enter();
         s.drain_media();
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('L');
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('H');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('J'); // the default still works
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('K');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
     }
 }
 

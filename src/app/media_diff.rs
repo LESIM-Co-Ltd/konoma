@@ -680,9 +680,12 @@ fn live_cache_keys(outcome: &MediaDiffOutcome) -> HashSet<PathBuf> {
 /// [`MediaDiffComputed::Summary`] instead of being paired up.
 fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
     match kind {
-        PreviewKind::Image(_) => Some(MediaDiffKind::Image),
-        PreviewKind::Svg(_) => Some(MediaDiffKind::Svg),
-        PreviewKind::Pdf(_) => Some(MediaDiffKind::Pdf),
+        PreviewKind::Plugin { id, .. } => match id.as_str() {
+            konoma_media::IMAGE_ID => Some(MediaDiffKind::Image),
+            konoma_media::SVG_ID => Some(MediaDiffKind::Svg),
+            konoma_media::PDF_ID => Some(MediaDiffKind::Pdf),
+            _ => None,
+        },
         _ => None,
     }
 }

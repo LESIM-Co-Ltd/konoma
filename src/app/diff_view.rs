@@ -171,8 +171,14 @@ impl App {
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
                 vec![Source, Preview]
             }
-            PreviewKind::Image(_) | PreviewKind::Pdf(_) => vec![Rendered, Preview],
-            PreviewKind::Svg(_) => vec![Source, Rendered, Preview],
+            PreviewKind::Plugin { ref id, .. }
+                if id == konoma_media::IMAGE_ID || id == konoma_media::PDF_ID =>
+            {
+                vec![Rendered, Preview]
+            }
+            PreviewKind::Plugin { ref id, .. } if id == konoma_media::SVG_ID => {
+                vec![Source, Rendered, Preview]
+            }
             _ if !path.exists() => match self.media_landed_outcome_for(path) {
                 Some(MediaDiffOutcome::Ready {
                     kind: MediaDiffKind::Image | MediaDiffKind::Pdf,

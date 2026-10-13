@@ -63,7 +63,8 @@ pub enum PageLayout {
 pub struct ViewReq {
     /// The representation (`None` = the default).
     pub repr: Option<String>,
-    /// The page (`None` = the first or the whole).
+    /// The page, counted from 0 (`None` = the first or the whole). A page past the end is clamped
+    /// to the last one.
     pub page: Option<usize>,
     /// The size of the area in cells.
     pub cols: u16,
@@ -277,6 +278,20 @@ pub struct ImageView {
     pub data: ImageData,
     /// Redraw sharply at the zoomed size (vector sources).
     pub sharp_zoom: bool,
+    /// The longest side, in pixels, the host should rasterize a vector source at (`None` = the
+    /// host's own default). The SVG plugin carries its `max_px` setting here.
+    pub raster_max_px: Option<u32>,
+}
+
+impl ImageView {
+    /// An image with no sharp zoom and the host's default raster size.
+    pub fn new(data: ImageData) -> ImageView {
+        ImageView {
+            data,
+            sharp_zoom: false,
+            raster_max_px: None,
+        }
+    }
 }
 
 /// The pixels (or the way to get them) of an image.

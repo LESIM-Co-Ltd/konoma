@@ -323,6 +323,17 @@ impl App {
             self.drop_plugin();
             return;
         };
+        // The picture plugins go through the media pipeline (`app/media_plugin.rs`), not the
+        // plugin show.
+        if self
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_media_plugin)
+        {
+            self.drop_plugin();
+            return;
+        }
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
         let plugin = if registry.is_enabled(&id) {
             registry.plugin(&id)
@@ -351,7 +362,7 @@ impl App {
     }
 
     /// The request a view is asked with: the size of the preview area as far as it is known.
-    fn plugin_view_req(&self) -> ViewReq {
+    pub(super) fn plugin_view_req(&self) -> ViewReq {
         let rows = self.tab.preview_viewport.max(1);
         ViewReq::new(80, rows)
     }
@@ -398,7 +409,7 @@ impl App {
     }
 
     /// The user's language as the plugins name it.
-    fn plugin_lang(&self) -> &'static str {
+    pub(super) fn plugin_lang(&self) -> &'static str {
         match self.lang {
             crate::i18n::Lang::Jp => "ja",
             crate::i18n::Lang::En => "en",

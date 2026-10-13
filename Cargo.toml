@@ -253,6 +253,7 @@ konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0" }
 konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
+konoma-media = { path = "crates/konoma-media", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to

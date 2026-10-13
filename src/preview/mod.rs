@@ -27,7 +27,6 @@ mod svg_proc_tests;
 mod svg_size;
 pub mod table;
 pub mod text;
-pub mod video;
 pub mod window;
 
 use std::path::{Path, PathBuf};
@@ -39,18 +38,6 @@ pub enum PreviewKind {
     Markdown(PathBuf),
     /// Built-in Mermaid renderer (standalone .mmd/.mermaid files; draws Unicode box lines via mermaid-text).
     Mermaid(PathBuf),
-    /// Built-in image renderer (ratatui-image / kitty graphics). GIFs land here and are expanded into animation on the app side.
-    Image(PathBuf),
-    /// Built-in SVG renderer (rasterizes via resvg/usvg/tiny-skia, then flows into the image path).
-    Svg(PathBuf),
-    /// Built-in video thumbnail (extracts one representative frame via ffmpegthumbnailer/ffmpeg, then flows into the image path).
-    /// Does not play inside the terminal. Missing/failed external tools fall back safely (hint display).
-    Video(PathBuf),
-    /// Built-in PDF preview: renders the current page natively in Rust (`hayro`, no external tool
-    /// needed), then flows into the image path. `J`/`K` turn any page. Falls back — on macOS, for
-    /// page 1 only — to the bundled `qlmanage`/`sips` if `hayro` can't render a given PDF
-    /// (encrypted/corrupt/unsupported), and to a hint display if nothing can render it (`preview::pdf`).
-    Pdf(PathBuf),
     /// Built-in code highlighting (syntect).
     Code(PathBuf),
     /// Built-in spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the visible
@@ -62,10 +49,12 @@ pub enum PreviewKind {
     /// converted text lives on `App`, never in the file on disk.
     Document(PathBuf),
     /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
-    /// plugin's `Session` returns a display type and the host draws it (`app/plugin_host.rs`). The
-    /// plugins wired so far are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old
-    /// `builtin` name) and `archive` (zip / tar / tar.gz listing as a grid). Transitional: it grows
-    /// as the other kinds move onto plugins, and the enum goes when the last one has.
+    /// plugin's `Session` returns a display type and the host draws it. The plugins wired so far
+    /// are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old `builtin` name) and
+    /// `archive` (zip / tar / tar.gz listing as a grid), both opened by `app/plugin_host.rs`, and
+    /// the picture plugins `image`, `svg`, `pdf` and `video`, whose `ImageView` goes through the
+    /// host's image pipeline (`app/media_plugin.rs`). Transitional: it grows as the other kinds
+    /// move onto plugins, and the enum goes when the last one has.
     Plugin {
         path: PathBuf,
         /// The plugin id.
@@ -98,9 +87,57 @@ pub enum PreviewKind {
 
 impl PreviewKind {
     /// Whether this is a file shown by the plugin `id`.
-    #[cfg(test)]
     pub fn is_plugin(&self, id: &str) -> bool {
         matches!(self, PreviewKind::Plugin { id: own, .. } if own == id)
+    }
+
+    /// A file shown by the plugin `id` (no note).
+    pub fn plugin(id: &str, path: PathBuf) -> Self {
+        PreviewKind::Plugin {
+            path,
+            id: id.to_string(),
+            hint: None,
+        }
+    }
+
+    /// A picture file shown by the `image` plugin.
+    #[cfg(test)]
+    pub fn image(path: PathBuf) -> Self {
+        Self::plugin(konoma_media::IMAGE_ID, path)
+    }
+
+    /// An SVG file shown by the `svg` plugin.
+    #[cfg(test)]
+    pub fn svg(path: PathBuf) -> Self {
+        Self::plugin(konoma_media::SVG_ID, path)
+    }
+
+    /// A video file shown by the `video` plugin.
+    #[cfg(test)]
+    pub fn video(path: PathBuf) -> Self {
+        Self::plugin(konoma_media::VIDEO_ID, path)
+    }
+
+    /// A PDF file shown by the `pdf` plugin.
+    #[cfg(test)]
+    pub fn pdf(path: PathBuf) -> Self {
+        Self::plugin(konoma_media::PDF_ID, path)
+    }
+
+    /// Whether this is a file the picture plugins show (`image`, `svg`, `pdf`, `video`): the ones
+    /// whose result is an image in the host's image pipeline.
+    pub fn is_media_plugin(&self) -> bool {
+        matches!(
+            self,
+            PreviewKind::Plugin { id, .. }
+                if matches!(
+                    id.as_str(),
+                    konoma_media::IMAGE_ID
+                        | konoma_media::SVG_ID
+                        | konoma_media::PDF_ID
+                        | konoma_media::VIDEO_ID
+                )
+        )
     }
 
     /// Unsupported fallback. Displays safely with the extension attached.
