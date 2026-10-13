@@ -17,6 +17,7 @@ fn req(path: PathBuf, root: PathBuf, baseline: DiffBaseline) -> MediaDiffRequest
         page: 1,
         raster_px: (800, 600),
         preview_rules: Config::default().preview.rules,
+        plugin_disabled: Vec::new(),
         preview_commands: true,
         cancel: Default::default(),
     }
@@ -191,6 +192,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
         page: 1,
         raster_px: (100, 50), // height (50) is the *smaller* component — must not be used alone.
         preview_rules: Config::default().preview.rules,
+        plugin_disabled: Vec::new(),
         preview_commands: true,
         cancel: Default::default(),
     };
@@ -231,6 +233,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px_when_width_is_larg
         page: 1,
         raster_px: (50, 100), // width (50) is the *smaller* component this time.
         preview_rules: Config::default().preview.rules,
+        plugin_disabled: Vec::new(),
         preview_commands: true,
         cancel: Default::default(),
     };
@@ -1407,6 +1410,7 @@ fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_f
         page: 1,
         raster_px: (400, 300),
         preview_rules: Config::default().preview.rules,
+        plugin_disabled: Vec::new(),
         preview_commands: true,
         cancel: Default::default(),
     };

@@ -19,6 +19,7 @@ mod i18n;
 mod keymap;
 #[cfg(test)]
 mod mem_tests;
+mod plugins;
 mod preview;
 mod session;
 #[cfg(test)]
@@ -58,6 +59,8 @@ enum ParsedArgs {
     Version,
     /// `--help` / `-h`.
     Help,
+    /// `--plugins`: list which plugin shows which files, then exit.
+    Plugins,
     /// The raw path argument, exactly as given (unresolved, uncanonicalized). `None` = no
     /// argument was given, which falls back to the current directory.
     Open(Option<PathBuf>),
@@ -76,6 +79,7 @@ fn parse_args(args: &[String]) -> ParsedArgs {
     match args.get(1).map(String::as_str) {
         Some("--version") | Some("-V") => ParsedArgs::Version,
         Some("--help") | Some("-h") => ParsedArgs::Help,
+        Some("--plugins") => ParsedArgs::Plugins,
         Some(arg) => ParsedArgs::Open(Some(PathBuf::from(arg))),
         None => ParsedArgs::Open(None),
     }
@@ -87,6 +91,7 @@ fn parse_args(args: &[String]) -> ParsedArgs {
 enum Startup {
     Version,
     Help,
+    Plugins,
     Open(PathBuf),
 }
 
@@ -99,6 +104,7 @@ fn resolve_startup(args: &[String]) -> Result<Startup> {
     Ok(match parse_args(args) {
         ParsedArgs::Version => Startup::Version,
         ParsedArgs::Help => Startup::Help,
+        ParsedArgs::Plugins => Startup::Plugins,
         ParsedArgs::Open(path_arg) => {
             let dir = match path_arg {
                 Some(p) => p,
@@ -157,6 +163,7 @@ fn help_text() -> String {
          Opens DIR in the tree view (defaults to the current directory).\n\
          \n\
          Options:\n\
+         \x20\x20    --plugins   List which plugin shows which files and exit\n\
          \x20\x20-h, --help      Print this help and exit\n\
          \x20\x20-V, --version   Print version and exit\n\
          \n\
@@ -277,6 +284,12 @@ fn main() -> Result<()> {
         }
         Startup::Help => {
             print!("{}", help_text());
+            return Ok(());
+        }
+        Startup::Plugins => {
+            // Reading the config is all it needs; the terminal is never touched.
+            let (cfg, _) = config::Config::load_reporting();
+            print!("{}", plugins::plugins_table(&cfg));
             return Ok(());
         }
         Startup::Open(dir) => dir,
@@ -414,11 +427,11 @@ fn main() -> Result<()> {
     // (silently falling back to the default would go unnoticed). If both are present, combine
     // them into one line.
     let km_report = app.keymap_report();
-    app.flash = match (cfg_err, km_report) {
-        (Some(a), Some(b)) => Some(format!("{a} / {b}")),
-        (Some(a), None) => Some(a),
-        (None, b) => b,
-    };
+    let plugin_report = app.cfg.plugin_report(app.lang);
+    app.flash = [cfg_err, km_report, plugin_report]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| format!("{a} / {b}"));
     // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
     // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.
     if let Some(pk) = picker.clone() {
@@ -2371,6 +2384,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_recognizes_the_plugins_listing() {
+        assert_eq!(parse_args(&argv(&["--plugins"])), ParsedArgs::Plugins);
+        // It is a flag only as the first argument, like the others; a directory of that name still opens.
+        assert_eq!(
+            parse_args(&argv(&["/some/dir", "--plugins"])),
+            ParsedArgs::Open(Some(PathBuf::from("/some/dir")))
+        );
+    }
+
+    #[test]
+    fn resolve_startup_reports_the_plugins_listing_without_touching_the_filesystem() {
+        assert!(matches!(
+            resolve_startup(&argv(&["--plugins"])).unwrap(),
+            Startup::Plugins
+        ));
+    }
+
+    #[test]
     fn parse_args_with_no_argument_falls_back_to_none() {
         assert_eq!(parse_args(&argv(&[])), ParsedArgs::Open(None));
     }
@@ -2539,6 +2570,10 @@ mod tests {
         );
         assert!(t.contains("--help"));
         assert!(t.contains("--version"));
+        assert!(
+            t.contains("--plugins"),
+            "the listing flag is in --help: {t}"
+        );
         assert!(t.contains('?'), "アプリ内ヘルプキー ? への言及: {t}");
         assert!(t.contains("https://lesim-co-ltd.github.io/konoma/"));
     }

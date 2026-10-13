@@ -388,7 +388,14 @@ code_label_bg = "auto"
 #                 "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon", etc.
 code_theme = "TwoDark"
 
-# Preview rules are evaluated top to bottom; the first match wins.
+# Preview rules are YOUR assignments: tried top to bottom, the first match wins. A file none of your
+# rules matches goes on to the standard plugins (markdown, mermaid, svg, image, csv, spreadsheet,
+# document, presentation, archive, code, video, pdf), which carry the default assignments listed
+# below. So writing a rule ADDS to the defaults; it no longer replaces them. Run `konoma --plugins`
+# to list every assignment (yours first, then the standard ones). To switch a standard plugin off,
+# use `[plugins.<id>] enabled = false` (see "Plugins" below). A file that nothing claims is shown as
+# plain text if it reads as text, otherwise as [can not preview: <ext>].
+# The rules below are the defaults, shown commented out; uncomment and edit one to take over its files.
 # builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "spreadsheet" | "document" | "code" | "text")
 #   markdown = decorated by konoma's own renderer (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
@@ -431,66 +438,79 @@ code_theme = "TwoDark"
 #            shows it as plain text through the ordinary windowed reader).
 # detached: open in a separate process without blocking the TUI (video, etc.).
 
-[[preview.rules]]
-glob = "*.md"
-builtin = "markdown"
+# [[preview.rules]]
+# glob = "*.md"
+# builtin = "markdown"
 
-[[preview.rules]]
-glob = "*.{mmd,mermaid}"
-builtin = "mermaid"        # Default = image rendering ([ui] mermaid). To delegate to an external tool, see the command example below.
+# [[preview.rules]]
+# glob = "*.{mmd,mermaid}"
+# builtin = "mermaid"        # Default = image rendering ([ui] mermaid). To delegate to an external tool, see the command example below.
 # command = "merman -i {path} -o {out}.png --scale 2"
 # render_as = "image"
 
-[[preview.rules]]
-glob = "*.svg"             # Before raster images (infer classifies svg as image/* too, so order matters).
-builtin = "svg"
+# [[preview.rules]]
+# glob = "*.svg"             # Before raster images (infer classifies svg as image/* too, so order matters).
+# builtin = "svg"
 
-[[preview.rules]]
-mime = "image/*"           # png/jpg/webp/bmp... and GIF (auto-animated).
-builtin = "image"
+# [[preview.rules]]
+# mime = "image/*"           # png/jpg/webp/bmp... and GIF (auto-animated).
+# builtin = "image"
 
-[[preview.rules]]
-glob = "*.csv"             # Aligned table (rainbow columns + cell cursor). Color via [ui] csv_rainbow.
-builtin = "csv"
+# [[preview.rules]]
+# glob = "*.csv"             # Aligned table (rainbow columns + cell cursor). Color via [ui] csv_rainbow.
+# builtin = "csv"
 
-[[preview.rules]]
-glob = "*.tsv"             # Tab-separated variant.
-builtin = "tsv"
+# [[preview.rules]]
+# glob = "*.tsv"             # Tab-separated variant.
+# builtin = "tsv"
 
-[[preview.rules]]
-glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
-builtin = "spreadsheet"
+# [[preview.rules]]
+# glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
+# builtin = "spreadsheet"
 
-[[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
-builtin = "document"
+# [[preview.rules]]
+# glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
+# builtin = "document"
 
-[[preview.rules]]
-glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.tar.gz"          # Compound extension needs its own rule (globset alternation can't express it).
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.tar.gz"          # Compound extension needs its own rule (globset alternation can't express it).
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
-builtin = "code"
+# [[preview.rules]]
+# glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
+# builtin = "code"
 
-[[preview.rules]]
-mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
+# [[preview.rules]]
+# mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
                            # H.264 and HEVC in mp4/m4v/mov and mkv/webm need no external tool; other codecs/containers use ffmpeg if installed.
-builtin = "video"
+# builtin = "video"
 # To "play" in an external player instead of in the terminal, drop the above and replace with (delegation):
 # command = "mpv {path}"
 # detached = true          # open in a separate process without blocking the TUI.
 
-[[preview.rules]]
-glob = "*.pdf"             # Default: rasterize each page to a full-screen image with hayro (pure Rust, no external tool; turn pages with J/K).
+# [[preview.rules]]
+# glob = "*.pdf"             # Default: rasterize each page to a full-screen image with hayro (pure Rust, no external tool; turn pages with J/K).
                            # On macOS only, a PDF hayro can't draw falls back to the bundled qlmanage/sips — first page only.
-builtin = "pdf"
+# builtin = "pdf"
 
-# A file matching no rule shows [can not preview: <ext>] full screen.
+# A file matching no rule and no plugin shows [can not preview: <ext>] full screen (or plain text if it reads as text).
+
+# ── Plugins ──────────────────────────────────────────────────────────────────
+# Each preview is made by a plugin; konoma ships these standard ones: markdown, mermaid, math (formulas
+# inside Markdown), svg, image, csv (csv and tsv), spreadsheet, document (Word), presentation, archive,
+# code, video, pdf. `[plugins.<id>]` is the table of one plugin:
+#   enabled = false    switch the plugin off — its files go to the next step (plain text if they read as
+#                      text, otherwise [can not preview]). Unknown ids are reported at startup.
+# The other keys of the table are that plugin's own settings (they will replace the matching `[ui]`
+# keys in a later version; nothing reads them yet).
+# [plugins.markdown]
+# enabled = false
+# [plugins.video]
+# enabled = false
 
 # ── Keybindings (FR-8) ───────────────────────────────────────────────────────
 # [Top-level sections] — write these at the outermost level of the file, NOT inside [ui].
@@ -667,9 +687,8 @@ worktree_dir = "../"   # Where `n` (in the worktree list, [keys."git.worktrees"]
 
 # ── External process switches ────────────────────────────────────────────────
 # One on/off switch per external process konoma can launch. All default to `true` (unchanged
-# behavior). Prefer these over trying to disable a mechanism through `[[preview.rules]]`: writing
-# even one user rule there *replaces the entire builtin rule table*, so it isn't a targeted way to
-# turn off just PDF/video/etc. — it also breaks Markdown, images, CSV, and everything else.
+# behavior). To turn off one kind of preview (PDF, video, ...), use `[plugins.<id>] enabled = false` rather than
+# a `[[preview.rules]]` entry: these flags gate an external process, that table gates a standard plugin.
 # `[ui] lang` already has its own explicit-vs-auto switch for OS-language lookup, so there is no
 # separate flag for that here.
 [external]

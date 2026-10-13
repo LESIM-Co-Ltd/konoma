@@ -121,9 +121,11 @@ top to bottom; the first match wins. A rule matches by `glob` (file name,
 case-insensitive) or `mime` (content sniffing, e.g. `"image/*"`), and renders via either
 a built-in renderer or an external command.
 
-> **Note:** if your config defines any `[[preview.rules]]`, your list **replaces** the
-> built-in defaults — copy the full rule list from `config.example.toml` and edit, rather
-> than adding a single rule.
+> **Note:** your `[[preview.rules]]` are tried first; a file none of them matches goes on to
+> the **standard plugins**, which carry the default assignments (markdown, mermaid, svg, image,
+> csv, spreadsheet, document, presentation, archive, code, video, pdf). Writing one rule therefore
+> adds to the defaults — it no longer replaces them. Run `konoma --plugins` to list every assignment
+> (yours first), and switch a standard plugin off with `[plugins.<id>] enabled = false` (below).
 
 Built-in renderers (`builtin = "..."`):
 
@@ -170,7 +172,7 @@ options above control it. If what you specifically want is the output of *mermai
 
 ```toml
 [[preview.rules]]
-glob = "*.{mmd,mermaid}"    # replaces the default builtin = "mermaid" rule
+glob = "*.{mmd,mermaid}"    # tried before the standard mermaid plugin
 render_as = "image"
 command = "mmdc -q -i {path} -o {out}.png -t dark -b transparent -s 3"
 ```
@@ -205,6 +207,21 @@ without touching your rule list.
 Anything that matches no rule and doesn't look like text shows a safe
 `[can not preview: <ext>]` screen — konoma never crashes on unknown input, and missing
 optional tools degrade to a hint.
+
+## `[plugins.<id>]` — switching a standard plugin off
+
+Each preview is made by a plugin. The standard ones are `markdown`, `mermaid`, `math` (formulas
+inside Markdown), `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word),
+`presentation`, `archive`, `code`, `video` and `pdf`.
+
+```toml
+[plugins.video]
+enabled = false      # its files go to the next step: plain text if they read as text, else [can not preview]
+```
+
+An unknown id is reported at startup. The other keys of a `[plugins.<id>]` table are that plugin's own
+settings; they will replace the matching `[ui]` keys in a later version and are not read yet.
+`konoma --plugins` prints which plugin shows which files, in the order a file is decided.
 
 ## `[editor]` — external editor
 
@@ -280,10 +297,9 @@ fall back to the existing "cannot render" hint, a disabled remote image shows th
 placeholder instead of the image, and a disabled `command` rule falls through to
 `[can not preview]` — nothing crashes.
 
-Prefer `[external]` over trying to disable one thing through `[[preview.rules]]`: as noted
-above, writing even a single user rule there **replaces the entire builtin rule table**, so
-it can't selectively turn off just PDF or video without also breaking Markdown, images, and
-CSV.
+To turn off one kind of preview (PDF, video, ...), use `[plugins.<id>] enabled = false`
+rather than a `[[preview.rules]]` entry: `[external]` gates an external process, `[plugins.<id>]`
+gates a standard plugin.
 
 `[ui] lang` already has its own explicit-vs-`"auto"` switch for OS-language detection (via
 the `sys-locale` crate — no external process is launched) — setting it explicitly

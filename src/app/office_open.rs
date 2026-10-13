@@ -82,7 +82,7 @@ pub(crate) struct Attempt {
 /// `com.microsoft.Powerpoint` (note: lowercase "p" in `Powerpoint`) are the apps' preference
 /// domains = bundle ids, as used in Microsoft's own `defaults write` guidance, e.g. the Microsoft Q&A
 /// answer https://learn.microsoft.com/en-us/answers/questions/5004550/how-do-i-disable-dark-mode-in-365-for-mac
-fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
+pub(crate) fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
     match kind {
         OfficeKind::Word => "com.microsoft.Word",
         OfficeKind::Excel => "com.microsoft.Excel",
@@ -91,7 +91,7 @@ fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
 }
 
 /// LibreOffice's bundle id on macOS (read from `/Applications/LibreOffice.app/Contents/Info.plist`).
-const LIBREOFFICE_BUNDLE_ID: &str = "org.libreoffice.script";
+pub(crate) const LIBREOFFICE_BUNDLE_ID: &str = "org.libreoffice.script";
 
 /// The ordered attempts for opening `path`: macOS = `open -b <Microsoft id>`, `open -b <LibreOffice
 /// id>`, `open`; elsewhere = `libreoffice`, `soffice`, `xdg-open` (Microsoft Office has no Linux

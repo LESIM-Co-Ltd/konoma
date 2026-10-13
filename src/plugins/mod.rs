@@ -1,0 +1,443 @@
+//! The standard plugins' declarations, and the way a file picks the plugin that shows it.
+//!
+//! Stage 2 of the plugin architecture (`docs/FEATURE-PLUGIN-ARCHITECTURE.md` §3-2, §4-4, §7-2).
+//! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
+//! (user rules first, then the standard plugins in registration order, then plain text, then
+//! "can not preview"), and the result is mapped onto today's `PreviewKind`, which still carries the
+//! display. The plugins' `open` is not called yet.
+
+mod listing;
+mod resolve;
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
+
+use konoma_plugin::registry::{PluginOrigin, Registry};
+use konoma_plugin::t;
+use konoma_plugin::{
+    Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, SettingDecl, Settings,
+    Verb, VerbDecl,
+};
+
+pub(crate) use listing::plugins_table;
+pub(crate) use resolve::{resolve_kind, user_rules};
+
+/// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
+/// for plain text, an external command, or an unknown renderer is aimed at one of them, so the
+/// registry's "first user rule that matches wins" covers those rules too.
+pub(crate) const TEXT_ID: &str = "text";
+pub(crate) const COMMAND_ID: &str = "command";
+pub(crate) const UNSUPPORTED_ID: &str = "can-not-preview";
+
+/// Whether `id` is a host-internal pseudo plugin (it cannot be disabled).
+pub(crate) fn is_internal(id: &str) -> bool {
+    matches!(id, TEXT_ID | COMMAND_ID | UNSUPPORTED_ID)
+}
+
+/// A standard plugin that is declared but not wired to the display yet: `open` is never called by
+/// the host in this step, so reaching it is a bug and says so.
+struct Declared(Manifest);
+
+impl Plugin for Declared {
+    fn manifest(&self) -> Manifest {
+        self.0.clone()
+    }
+
+    fn open(
+        &self,
+        _input: Input,
+        _cx: &OpenCx,
+    ) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+        Err(Failure::unsupported(t!(
+            en: "this plugin is declared but not opened through the plugin API yet",
+            ja: "このプラグインは宣言のみで、まだプラグイン API では開かれません",
+        )))
+    }
+}
+
+fn s(v: &str) -> konoma_plugin::Value {
+    konoma_plugin::Value::Str(v.to_string())
+}
+
+fn b(v: bool) -> konoma_plugin::Value {
+    konoma_plugin::Value::Bool(v)
+}
+
+/// `edit` opens the user's editor in the terminal; `open` hands the file to the OS default
+/// application as a GUI program.
+fn default_verbs(m: Manifest) -> Manifest {
+    m.verb(
+        VerbDecl::new(Verb::Edit)
+            .launcher(Launcher::Editor)
+            .mode(LaunchMode::Terminal)
+            .line_token(),
+    )
+    .verb(
+        VerbDecl::new(Verb::Open)
+            .launcher(Launcher::OsDefault)
+            .mode(LaunchMode::Gui),
+    )
+}
+
+/// The chain `e` follows today for Office documents: the Microsoft app, then LibreOffice, then the
+/// OS default. Both verbs use it (`e` keeps its behavior; `o` is the same chain).
+fn office_verbs(m: Manifest, kind: crate::app::office_open::OfficeKind) -> Manifest {
+    let chain = |verb: Verb| {
+        VerbDecl::new(verb)
+            .launcher(Launcher::MacApp {
+                bundle_id: crate::app::office_open::microsoft_bundle_id(kind).to_string(),
+            })
+            .launcher(Launcher::MacApp {
+                bundle_id: crate::app::office_open::LIBREOFFICE_BUNDLE_ID.to_string(),
+            })
+            .launcher(Launcher::Command(vec!["libreoffice".to_string()]))
+            .launcher(Launcher::Command(vec!["soffice".to_string()]))
+            .launcher(Launcher::OsDefault)
+            .mode(LaunchMode::Gui)
+    };
+    m.verb(chain(Verb::Edit)).verb(chain(Verb::Open))
+}
+
+fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
+    Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
+}
+
+/// The declarations of the standard plugins, in registration order. The order is the order of the
+/// default `[[preview.rules]]` konoma had before plugins (svg before `image/*`, the mime rules for
+/// images and videos in their old places), so a file is decided exactly as it was.
+pub(crate) fn standard_manifests() -> Vec<Manifest> {
+    use crate::app::office_open::OfficeKind;
+    let md = standard("markdown", t!(en: "Markdown", ja: "Markdown"))
+        .bind(Bind::files(["*.md"]))
+        .bind(Bind::content("markdown"))
+        .setting(SettingDecl::new(
+            "task_states",
+            konoma_plugin::Value::List(vec![s(" "), s("x")]),
+            t!(en: "Checkbox states Space cycles through", ja: "Space で巡回するチェックボックスの状態"),
+        ))
+        .setting(SettingDecl::new(
+            "autolink",
+            b(true),
+            t!(en: "Turn bare URLs into links", ja: "裸の URL をリンクにする"),
+        ))
+        .setting(SettingDecl::new(
+            "alerts",
+            b(true),
+            t!(en: "Draw GitHub alerts (> [!NOTE])", ja: "GitHub のアラート(> [!NOTE])を描く"),
+        ))
+        .setting(SettingDecl::new(
+            "emoji",
+            b(true),
+            t!(en: "Replace :shortcode: emoji", ja: ":shortcode: の絵文字を置き換える"),
+        ))
+        .setting(SettingDecl::new(
+            "frontmatter",
+            b(true),
+            t!(en: "Show front matter as a block", ja: "front matter をブロックとして表示する"),
+        ))
+        .setting(SettingDecl::new(
+            "footnotes",
+            b(true),
+            t!(en: "Draw footnotes", ja: "脚注を描く"),
+        ))
+        .setting(SettingDecl::new(
+            "inline_html",
+            b(true),
+            t!(en: "Render inline HTML", ja: "インライン HTML を描く"),
+        ))
+        .setting(SettingDecl::new(
+            "details",
+            s("auto"),
+            t!(en: "<details> folding: auto, open or closed", ja: "<details> の折りたたみ: auto・open・closed"),
+        ))
+        .setting(SettingDecl::new(
+            "table_align",
+            s("left"),
+            t!(en: "Table alignment: left, center or right", ja: "表の寄せ: left・center・right"),
+        ))
+        .setting(SettingDecl::new(
+            "image_align",
+            s("center"),
+            t!(en: "Image alignment: left, center or right", ja: "画像の寄せ: left・center・right"),
+        ));
+    let mermaid = standard("mermaid", t!(en: "Mermaid", ja: "Mermaid"))
+        .bind(Bind::files(["*.{mmd,mermaid}"]))
+        .bind(Bind::embed("fence:mermaid"))
+        .setting(SettingDecl::new(
+            "mode",
+            s("image"),
+            t!(en: "image draws a picture, text draws box characters", ja: "image は絵、text は罫線文字で描く"),
+        ))
+        .setting(SettingDecl::new(
+            "theme",
+            s("dark"),
+            t!(en: "Color theme of the diagram", ja: "図の配色"),
+        ))
+        .setting(SettingDecl::new(
+            "curve",
+            s("basis"),
+            t!(en: "Line shape of the edges", ja: "線の形"),
+        ))
+        .setting(SettingDecl::new(
+            "routing",
+            s("splines"),
+            t!(en: "Edge routing: splines or konoma-orthogonal", ja: "配線: splines か konoma-orthogonal"),
+        ))
+        .setting(SettingDecl::new(
+            "rows",
+            konoma_plugin::Value::Int(24),
+            t!(en: "Largest height of an inline diagram, in rows", ja: "インライン図の最大の高さ(行)"),
+        ));
+    let math = standard("math", t!(en: "Math", ja: "数式"))
+        .bind(Bind::embed("fence:math"))
+        .bind(Bind::embed("math"))
+        .setting(SettingDecl::new(
+            "mode",
+            s("image"),
+            t!(en: "image draws a picture, text keeps the source", ja: "image は絵、text はソースのまま"),
+        ))
+        .setting(SettingDecl::new(
+            "color",
+            s("#d0d0d0"),
+            t!(en: "Color of the formulas", ja: "数式の色"),
+        ));
+    let svg = standard("svg", t!(en: "SVG", ja: "SVG"))
+        .bind(Bind::files(["*.svg"]))
+        .setting(SettingDecl::new(
+            "max_px",
+            konoma_plugin::Value::Int(800),
+            t!(en: "Longest side of the drawing, in pixels", ja: "描画の長辺(px)"),
+        ));
+    let image = standard("image", t!(en: "Image", ja: "画像")).bind(Bind::mime("image/*"));
+    let csv = standard("csv", t!(en: "CSV / TSV", ja: "CSV / TSV"))
+        .bind(Bind::files(["*.csv", "*.tsv"]))
+        .setting(SettingDecl::new(
+            "rainbow",
+            b(true),
+            t!(en: "Color the columns", ja: "列を色分けする"),
+        ));
+    let spreadsheet = office(
+        standard("spreadsheet", t!(en: "Spreadsheet", ja: "表計算")),
+        OfficeKind::Excel,
+        "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}",
+    );
+    let document = office(
+        standard("document", t!(en: "Word document", ja: "Word 文書")),
+        OfficeKind::Word,
+        "*.{docx,docm,dotx,dotm,odt,ott}",
+    );
+    let presentation = office(
+        standard(
+            "presentation",
+            t!(en: "Presentation", ja: "プレゼンテーション"),
+        ),
+        OfficeKind::PowerPoint,
+        "*.{pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}",
+    );
+    let archive = standard("archive", t!(en: "Archive", ja: "アーカイブ"))
+        .bind(Bind::files(["*.{zip,tar,tgz}", "*.tar.gz"]));
+    let code = standard("code", t!(en: "Source code", ja: "ソースコード"))
+        .bind(Bind::files([
+            "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}",
+        ]))
+        .setting(SettingDecl::new(
+            "syntax_highlight",
+            b(true),
+            t!(en: "Color code and config files", ja: "コードと設定ファイルに色を付ける"),
+        ));
+    let video = standard("video", t!(en: "Video", ja: "動画")).bind(Bind::mime("video/*"));
+    let pdf = standard("pdf", t!(en: "PDF", ja: "PDF")).bind(Bind::files(["*.pdf"]));
+
+    let mut out: Vec<Manifest> = [
+        md,
+        mermaid,
+        svg,
+        image,
+        csv,
+        spreadsheet,
+        document,
+        presentation,
+        archive,
+        code,
+        video,
+        pdf,
+    ]
+    .into_iter()
+    .map(|m| {
+        // The Office plugins already carry their own chain.
+        if m.verbs.is_empty() {
+            default_verbs(m)
+        } else {
+            m
+        }
+    })
+    .collect();
+    // `math` only takes the formulas inside Markdown, so it has no file to edit or open.
+    out.insert(2, math);
+    out
+}
+
+fn office(m: Manifest, kind: crate::app::office_open::OfficeKind, glob: &str) -> Manifest {
+    office_verbs(m.bind(Bind::files([glob])), kind)
+}
+
+/// The host-internal pseudo plugins (see [`TEXT_ID`]).
+fn internal_manifests() -> Vec<Manifest> {
+    vec![
+        standard(TEXT_ID, t!(en: "Plain text", ja: "テキスト")),
+        standard(COMMAND_ID, t!(en: "External command", ja: "外部コマンド")),
+        standard(UNSUPPORTED_ID, t!(en: "Not supported", ja: "未対応")),
+    ]
+}
+
+/// A registry of the standard plugins, with `disabled` ids switched off.
+pub(crate) fn build_registry(disabled: &[String]) -> Registry {
+    let mut r = Registry::new();
+    for m in standard_manifests().into_iter().chain(internal_manifests()) {
+        // The declarations are static; a refusal would be a bug that `tests` catches.
+        let _ = r.register(Arc::new(Declared(m)), PluginOrigin::Standard);
+    }
+    for id in disabled {
+        if !is_internal(id) {
+            r.set_enabled(id, false);
+        }
+    }
+    r
+}
+
+fn all_enabled() -> &'static Registry {
+    static R: OnceLock<Registry> = OnceLock::new();
+    R.get_or_init(|| build_registry(&[]))
+}
+
+/// Run `f` with the registry that has `disabled` ids switched off. With nothing disabled (the
+/// normal case) the registry is built once for the process.
+pub(crate) fn with_registry<T>(disabled: &[String], f: impl FnOnce(&Registry) -> T) -> T {
+    if disabled.iter().all(|id| is_internal(id)) {
+        f(all_enabled())
+    } else {
+        f(&build_registry(disabled))
+    }
+}
+
+/// `[plugins.<id>]` as read from the config: the raw tables. `enabled` is read by the host; every
+/// other key is the plugin's own setting.
+pub(crate) type PluginTables = BTreeMap<String, toml::Table>;
+
+/// The ids whose table says `enabled = false`.
+pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
+    tables
+        .iter()
+        .filter(|(_, t)| matches!(t.get("enabled"), Some(toml::Value::Boolean(false))))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// The plugin's own settings from its table (`enabled` is not one of them).
+pub(crate) fn settings_of(table: &toml::Table) -> Settings {
+    let mut out = Settings::new();
+    for (k, v) in table {
+        if k != "enabled" {
+            out.set(k.clone(), value_of(v));
+        }
+    }
+    out
+}
+
+fn value_of(v: &toml::Value) -> konoma_plugin::Value {
+    use konoma_plugin::Value;
+    match v {
+        toml::Value::Boolean(x) => Value::Bool(*x),
+        toml::Value::Integer(x) => Value::Int(*x),
+        toml::Value::Float(x) => Value::Float(*x),
+        toml::Value::String(x) => Value::Str(x.clone()),
+        toml::Value::Datetime(x) => Value::Str(x.to_string()),
+        toml::Value::Array(xs) => Value::List(xs.iter().map(value_of).collect()),
+        toml::Value::Table(t) => Value::Table(
+            t.iter()
+                .map(|(k, v)| (k.clone(), value_of(v)))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+    }
+}
+
+/// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
+/// is not a boolean, an attempt to disable a host-internal piece.
+pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> Vec<String> {
+    use crate::i18n::Lang;
+    let registry = all_enabled();
+    let ids = registry.ids();
+    let mut out = Vec::new();
+    for (id, table) in tables {
+        if !ids.contains(&id.as_str()) {
+            out.push(match lang {
+                Lang::Jp => format!("未知のプラグイン `{id}`(無視)"),
+                Lang::En => format!("unknown plugin `{id}` (ignored)"),
+            });
+            continue;
+        }
+        match table.get("enabled") {
+            None | Some(toml::Value::Boolean(_)) => {}
+            Some(_) => out.push(match lang {
+                Lang::Jp => format!("[plugins.{id}] の enabled は true か false"),
+                Lang::En => format!("[plugins.{id}] enabled must be true or false"),
+            }),
+        }
+        if is_internal(id) && matches!(table.get("enabled"), Some(toml::Value::Boolean(false))) {
+            out.push(match lang {
+                Lang::Jp => format!("`{id}` は止められません"),
+                Lang::En => format!("`{id}` cannot be disabled"),
+            });
+        }
+    }
+    out
+}
+
+/// Test probe: does the registry's matching take `rule` for `path` when the content reads as
+/// `mime`? (A stand-in plugin with no bindings of its own receives the rule, so only the rule's
+/// own glob and mime decide.)
+#[cfg(test)]
+pub(crate) fn rule_hits(
+    rule: &crate::config::Rule,
+    path: &std::path::Path,
+    mime: Option<&str>,
+) -> bool {
+    use konoma_plugin::registry::{FileFacts, Resolution};
+    struct Probe;
+    impl Plugin for Probe {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("probe", "0")
+        }
+        fn open(
+            &self,
+            _input: Input,
+            _cx: &OpenCx,
+        ) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+            Err(Failure::unsupported(t!(en: "probe")))
+        }
+    }
+    let mut r = Registry::new();
+    let _ = r.register(Arc::new(Probe), PluginOrigin::Standard);
+    let rules: Vec<_> = [
+        rule.glob.clone().map(konoma_plugin::Target::Glob),
+        rule.mime.clone().map(konoma_plugin::Target::Mime),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|target| konoma_plugin::registry::UserRule {
+        target,
+        plugin: "probe".to_string(),
+        hint: None,
+    })
+    .collect();
+    let sniff = || mime.map(str::to_string);
+    let text = || false;
+    let facts = FileFacts {
+        path,
+        sniff_mime: &sniff,
+        is_text: &text,
+    };
+    matches!(r.resolve_file(&rules, &facts), Resolution::Plugin { id, .. } if id == "probe")
+}

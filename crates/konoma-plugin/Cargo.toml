@@ -1,0 +1,15 @@
+[package]
+name = "konoma-plugin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plugin API of konoma: the entry traits, display types, declarations, and the rules that settle which plugin shows a file"
+
+[dependencies]
+# File-name globs of the display bindings (case-insensitive, brace alternatives).
+globset.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

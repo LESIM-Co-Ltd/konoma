@@ -32,8 +32,6 @@ pub mod window;
 
 use std::path::{Path, PathBuf};
 
-use crate::config::Rule;
-
 /// A resolved preview kind. Determined from the config rule (the first one that matched).
 #[derive(Debug, Clone)]
 pub enum PreviewKind {
@@ -97,49 +95,6 @@ pub enum PreviewKind {
 }
 
 impl PreviewKind {
-    /// Determine the kind from the matched rule. Prefer builtin, falling back to command.
-    /// If neither is present, or the builtin name is unknown, fall back to the safe CanNotPreview.
-    pub fn from_rule(rule: &Rule, path: &Path) -> Self {
-        let p = path.to_path_buf();
-        if let Some(builtin) = rule.builtin.as_deref() {
-            return match builtin {
-                "markdown" => PreviewKind::Markdown(p),
-                "mermaid" => PreviewKind::Mermaid(p),
-                "image" => PreviewKind::Image(p),
-                "svg" => PreviewKind::Svg(p),
-                "video" => PreviewKind::Video(p),
-                "pdf" => PreviewKind::Pdf(p),
-                "code" => PreviewKind::Code(p),
-                // csv = comma / tsv = tab-delimited. Both go to the same table renderer (only the delimiter differs).
-                "csv" => PreviewKind::Table {
-                    path: p,
-                    delimiter: b',',
-                },
-                "tsv" => PreviewKind::Table {
-                    path: p,
-                    delimiter: b'\t',
-                },
-                "archive" => match archive::ArchiveKind::from_path(path) {
-                    Some(kind) => PreviewKind::Archive { path: p, kind },
-                    None => PreviewKind::can_not_preview(path),
-                },
-                "spreadsheet" => PreviewKind::Spreadsheet(p),
-                "document" => PreviewKind::Document(p),
-                "text" => PreviewKind::Text(p),
-                _ => PreviewKind::can_not_preview(path),
-            };
-        }
-        if let Some(template) = rule.command.as_deref() {
-            return PreviewKind::Command {
-                path: p,
-                template: template.to_string(),
-                render_as: rule.render_as.clone(),
-                detached: rule.detached,
-            };
-        }
-        PreviewKind::can_not_preview(path)
-    }
-
     /// Unsupported fallback. Displays safely with the extension attached.
     pub fn can_not_preview(path: &Path) -> Self {
         let ext = path
@@ -223,12 +178,16 @@ mod tests {
 
     #[test]
     fn spreadsheet_builtin_name_resolves_and_a_user_rule_can_override_it() {
-        let rule = Rule {
+        use crate::config::Rule;
+        // `builtin = "spreadsheet"` names the viewer for whatever the rule's glob catches.
+        let mut named = crate::config::Config::default();
+        named.preview.rules.push(Rule {
+            glob: Some("*.zzz".into()),
             builtin: Some("spreadsheet".into()),
             ..Rule::default()
-        };
+        });
         assert!(matches!(
-            PreviewKind::from_rule(&rule, Path::new("/x/a.xlsx")),
+            named.resolve_preview(Path::new("/x/a.zzz")),
             PreviewKind::Spreadsheet(_)
         ));
         // A user rule placed first wins (rules are evaluated top to bottom): delegate .xlsx instead.

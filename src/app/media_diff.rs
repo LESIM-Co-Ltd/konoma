@@ -157,6 +157,7 @@ impl App {
             page,
             raster_px,
             preview_rules: self.cfg.preview.rules.clone(),
+            plugin_disabled: self.cfg.plugin_disabled(),
             preview_commands: self.cfg.external.preview_commands,
         };
         self.spawn_or_sync_media_diff(req);
@@ -835,6 +836,7 @@ fn classify_and_decode_media_diff(
     let preview_kind = if new_exists {
         crate::config::resolve_preview_kind(
             &req.preview_rules,
+            &req.plugin_disabled,
             req.preview_commands,
             &req.path,
             None,
@@ -842,6 +844,7 @@ fn classify_and_decode_media_diff(
     } else {
         crate::config::resolve_preview_kind(
             &req.preview_rules,
+            &req.plugin_disabled,
             req.preview_commands,
             &req.path,
             old_bytes.as_deref(),

@@ -1729,6 +1729,7 @@ dependencies = [
  "konoma-media-core",
  "konoma-mermaid-core",
  "konoma-office-core",
+ "konoma-plugin",
  "konoma-svg",
  "konoma-test-support",
  "konoma-vcs-core",
@@ -1845,6 +1846,14 @@ dependencies = [
  "svgtypes",
  "sys-locale",
  "zip",
+]
+
+[[package]]
+name = "konoma-plugin"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "konoma-test-support",
 ]
 
 [[package]]

@@ -1527,7 +1527,7 @@ fn cfg_preview_glob_svg_wins_over_png_content() {
 }
 
 #[test]
-fn cfg_preview_user_rules_replace_defaults() {
+fn cfg_preview_user_rules_come_before_the_standard_plugins() {
     let toml = r#"
 [[preview.rules]]
 glob = "*.md"
@@ -1541,9 +1541,11 @@ builtin = "code"
     );
     std::fs::remove_file(&md).ok();
     let rs = tmp("cfgp_ovr.rs", b"fn main() {}\n");
+    // Writing a rule used to replace the whole default list (a `.rs` file then fell to plain
+    // text); the rules are now tried first and the standard plugins take what they do not name.
     assert!(
-        matches!(cfg.resolve_preview(&rs), PreviewKind::Text(_)),
-        "defaults must be replaced, not merged"
+        matches!(cfg.resolve_preview(&rs), PreviewKind::Code(_)),
+        "defaults must be merged (user rules first), not replaced"
     );
     std::fs::remove_file(&rs).ok();
 }

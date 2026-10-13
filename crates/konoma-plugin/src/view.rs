@@ -1,0 +1,350 @@
+//! The display types a plugin returns. The host draws them with its own widgets.
+
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::input::{LazyResource, Origin, Resources};
+use crate::style::Line;
+use crate::text::Tr;
+
+/// How a session can be shown: its representations and its pages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Layout {
+    /// Named representations (for example a picture and a text form). Empty means just one.
+    pub reprs: Vec<ReprDecl>,
+    /// The representation shown first.
+    pub default_repr: Option<String>,
+    /// The first representation on a terminal that cannot draw pixels.
+    pub default_repr_without_pixels: Option<String>,
+    /// Pages, if the content has them.
+    pub pages: Option<PageLayout>,
+}
+
+impl Layout {
+    /// One representation, no pages.
+    pub fn single() -> Layout {
+        Layout::default()
+    }
+}
+
+/// One named representation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReprDecl {
+    pub id: String,
+    pub label: Tr,
+}
+
+impl ReprDecl {
+    pub fn new(id: impl Into<String>, label: Tr) -> ReprDecl {
+        ReprDecl {
+            id: id.into(),
+            label,
+        }
+    }
+}
+
+/// How the content is split into pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageLayout {
+    /// Separate pages, fetched one at a time (PDF pages, spreadsheet sheets). `count` may be
+    /// unknown until the first page is read.
+    Separate {
+        count: Option<usize>,
+        titles: Vec<String>,
+    },
+    /// One long document whose pages start at headings of `heading_level` (slides).
+    Anchored { heading_level: u8, count: usize },
+}
+
+/// What the host asks `Session::view` for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewReq {
+    /// The representation (`None` = the default).
+    pub repr: Option<String>,
+    /// The page (`None` = the first or the whole).
+    pub page: Option<usize>,
+    /// The size of the area in cells.
+    pub cols: u16,
+    pub rows: u16,
+    /// The size of one cell in pixels, if known.
+    pub cell_px: Option<(u16, u16)>,
+}
+
+impl ViewReq {
+    pub fn new(cols: u16, rows: u16) -> ViewReq {
+        ViewReq {
+            repr: None,
+            page: None,
+            cols,
+            rows,
+            cell_px: None,
+        }
+    }
+}
+
+impl Default for ViewReq {
+    fn default() -> ViewReq {
+        ViewReq::new(80, 24)
+    }
+}
+
+/// A display type.
+#[derive(Debug)]
+pub enum View {
+    Text(TextView),
+    Document(DocumentView),
+    Table(TableView),
+    Image(ImageView),
+    List(ListView),
+    Diff(DiffView),
+    /// "Open this again as that content type" (a converted document, say).
+    Reopen(Reopen),
+    Message(MessageView),
+}
+
+impl View {
+    /// A text view of ready-made lines (strings, spans or [`Line`]s).
+    pub fn text<I>(lines: I) -> View
+    where
+        I: IntoIterator,
+        I::Item: Into<Line>,
+    {
+        View::Text(TextView {
+            source: TextSource::Lines(lines.into_iter().map(Into::into).collect()),
+            styler: None,
+            file_lines: false,
+            syntax_name: None,
+        })
+    }
+}
+
+/// Where the lines of a text view come from.
+#[derive(Debug)]
+pub enum TextSource {
+    /// A file the host reads in windows (large files stay cheap).
+    File(PathBuf),
+    /// A string.
+    Owned(String),
+    /// Lines already styled.
+    Lines(Vec<Line>),
+}
+
+/// Colors the visible lines of a text view. The host calls it synchronously for the visible block
+/// on every frame, so it must be light: do the heavy preparation in `open`.
+pub trait LineStyler: Send {
+    /// Style `text` (whole lines, newline separated) that starts at the 0-based `first_line`.
+    fn style_block(&mut self, first_line: usize, text: &str) -> Vec<Line>;
+    /// Whether the styler is ready. While false the host shows plain text and a note.
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// A text view.
+pub struct TextView {
+    pub source: TextSource,
+    pub styler: Option<Box<dyn LineStyler>>,
+    /// Whether line numbers equal the numbers in the original file (used by `e`, `Y` and paste
+    /// jumps). False for converted content.
+    pub file_lines: bool,
+    /// A syntax name for the host's highlighter when there is no styler.
+    pub syntax_name: Option<String>,
+}
+
+impl fmt::Debug for TextView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextView")
+            .field("source", &self.source)
+            .field("styler", &self.styler.as_ref().map(|_| "<styler>"))
+            .field("file_lines", &self.file_lines)
+            .field("syntax_name", &self.syntax_name)
+            .finish()
+    }
+}
+
+/// A document: Markdown (CommonMark and GFM with konoma's extensions) plus resources.
+#[derive(Debug)]
+pub struct DocumentView {
+    pub markdown: String,
+    pub origin: Origin,
+    pub resources: Resources,
+    pub options: DocOptions,
+    pub title: Option<String>,
+    /// Whether the content was cut at the display limit.
+    pub truncated: bool,
+}
+
+/// How a document is rendered. Names and values follow the `md_*` settings; the defaults are
+/// the defaults of those settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocOptions {
+    pub front_matter: bool,
+    pub footnotes: bool,
+    pub inline_html: bool,
+    pub autolink: bool,
+    pub emoji: bool,
+    pub alerts: bool,
+    /// `"auto"`, `"open"` or `"closed"`-style value of `md_details`, as is.
+    pub details: String,
+    /// The states a task checkbox cycles through.
+    pub task_states: Vec<char>,
+    /// Whether checkboxes may be written back to the file.
+    pub tasks_writable: bool,
+    /// The `md_table_align` value, as is.
+    pub table_align: String,
+    /// The `md_image_align` value, as is.
+    pub image_align: String,
+}
+
+impl Default for DocOptions {
+    fn default() -> DocOptions {
+        DocOptions {
+            front_matter: true,
+            footnotes: true,
+            inline_html: true,
+            autolink: true,
+            emoji: true,
+            alerts: true,
+            details: "auto".into(),
+            task_states: vec![' ', 'x'],
+            tasks_writable: true,
+            table_align: "left".into(),
+            image_align: "center".into(),
+        }
+    }
+}
+
+/// A table, read cell by cell so a big table stays cheap.
+pub trait Grid: Send + Sync {
+    fn nrows(&self) -> usize;
+    fn ncols(&self) -> usize;
+    fn header(&self, col: usize) -> Option<String>;
+    fn cell(&self, row: usize, col: usize) -> String;
+    /// Whether the table was cut at a limit.
+    fn truncated(&self) -> bool {
+        false
+    }
+    /// The detail lines for the cell popup (type, shown value, raw value, format).
+    fn detail(&self, row: usize, col: usize) -> Option<CellDetail> {
+        let _ = (row, col);
+        None
+    }
+}
+
+/// Labeled lines for the full-cell popup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellDetail {
+    pub lines: Vec<(Tr, String)>,
+}
+
+/// A table view.
+pub struct TableView {
+    pub grid: Arc<dyn Grid>,
+    pub title: Option<String>,
+    /// Color the columns in turn.
+    pub rainbow: bool,
+}
+
+impl fmt::Debug for TableView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableView")
+            .field("rows", &self.grid.nrows())
+            .field("cols", &self.grid.ncols())
+            .field("title", &self.title)
+            .field("rainbow", &self.rainbow)
+            .finish()
+    }
+}
+
+/// An image view.
+#[derive(Clone, Debug)]
+pub struct ImageView {
+    pub data: ImageData,
+    /// Redraw sharply at the zoomed size (vector sources).
+    pub sharp_zoom: bool,
+}
+
+/// The pixels (or the way to get them) of an image.
+#[derive(Clone, Debug)]
+pub enum ImageData {
+    File(PathBuf),
+    /// An encoded image (PNG, JPEG...).
+    Encoded(Arc<[u8]>),
+    /// SVG. `trusted: false` makes the host draw it in a child process with limits.
+    Svg {
+        data: Arc<[u8]>,
+        base_dir: Option<PathBuf>,
+        trusted: bool,
+    },
+    /// Raw RGBA pixels, row by row.
+    Rgba {
+        width: u32,
+        height: u32,
+        pixels: Arc<[u8]>,
+    },
+    /// Animation frames with their durations.
+    Frames(Vec<(ImageData, Duration)>),
+    /// Made when visible.
+    Lazy(Arc<dyn LazyResource>),
+}
+
+/// A list of rows (mostly project screens).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListView {
+    pub rows: Vec<ListRow>,
+}
+
+/// One row of a list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListRow {
+    pub cells: Vec<Line>,
+    /// The kind of row (decides which actions apply).
+    pub kind: String,
+    /// The place the row points at, for `e`, `o` and a new tab.
+    pub target: Option<PathBuf>,
+    /// A check state, for rows that can be selected as staged and so on.
+    pub checked: Option<bool>,
+}
+
+/// A diff.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffView {
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: DiffKind,
+    pub old_no: Option<usize>,
+    pub new_no: Option<usize>,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffKind {
+    Context,
+    Added,
+    Removed,
+}
+
+/// "Open this again as `content_type`."
+#[derive(Debug)]
+pub struct Reopen {
+    pub content_type: String,
+    pub text: String,
+    pub resources: Resources,
+    pub origin: Origin,
+}
+
+/// A short message shown in place of the content.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageView {
+    pub lines: Vec<Line>,
+}

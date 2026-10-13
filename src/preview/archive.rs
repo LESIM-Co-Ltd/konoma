@@ -103,7 +103,7 @@ impl ArchiveKind {
     /// checked before the bare `.tar` suffix: `Path::extension()` on `foo.tar.gz` is just `"gz"`,
     /// so the compound extension needs a whole-name suffix check rather than `Path::extension()`.
     /// `None` for anything else (an unrecognized extension degrades to `CanNotPreview` rather than
-    /// guessing a format — see `PreviewKind::from_rule`).
+    /// guessing a format — see `plugins::resolve`).
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?.to_ascii_lowercase();
         if name.ends_with(".tar.gz") || name.ends_with(".tgz") {

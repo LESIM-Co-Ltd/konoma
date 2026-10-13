@@ -39,7 +39,7 @@ mod media_diff;
 mod media_load;
 mod office_doc;
 pub(crate) use office_doc::is_presentation_path;
-mod office_open;
+pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
 mod paste_jump;
@@ -1348,6 +1348,8 @@ pub(crate) struct MediaDiffRequest {
     /// raster image, whose decode doesn't depend on the display box at all.
     raster_px: (u32, u32),
     preview_rules: Vec<crate::config::Rule>,
+    /// Plugins `[plugins.<id>] enabled = false` switches off (they take part in the decision).
+    plugin_disabled: Vec<String>,
     preview_commands: bool,
     /// Set by the UI thread when nobody wants this computation any more (the want changed or the
     /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
