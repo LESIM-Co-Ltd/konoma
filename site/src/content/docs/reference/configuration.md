@@ -234,6 +234,9 @@ rainbow = false      # monochrome CSV / TSV columns
 - Every other key of the table is that plugin's own setting. They **replace the matching `[ui]` keys**: the old
   `[ui]` name is still read and is used when the plugin table does not set the value; if both are set, the plugin
   table wins. A key the plugin does not have (`[plugins.markdown] foo = 1`) is reported at startup and ignored.
+- The keys of a plugin's own actions can be rebound in `[keys.<plugin id>]` (`W = "width"` gives the action `width` the key
+  `W`; `w = "noop"` takes a key away). The footer and the `?` help follow. A key the host keeps for itself is refused (the
+  action stays in the `Space` menu) and the startup message says so.
 - **Old names are announced once, at start.** When the config still uses one of the `[ui]` names in the table
   below and the plugin's own key is not set, the footer says `config: [ui] md_alerts is an old name — write
   [plugins.markdown] alerts instead` (and `(+n more)` for the rest). The old name keeps working; the message goes

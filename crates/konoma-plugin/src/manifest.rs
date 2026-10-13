@@ -13,6 +13,58 @@ pub struct ApiVersion {
 impl ApiVersion {
     /// The API version of this crate.
     pub const CURRENT: ApiVersion = ApiVersion { major: 0, minor: 1 };
+
+    /// Whether a host that speaks `host` can run a plugin built against `self`: the same major
+    /// version, and a minor version the host already has (a newer minor may use declarations the
+    /// host does not know). While the major version is 0 every minor step may break, so the
+    /// minor must match exactly.
+    pub fn works_with(self, host: ApiVersion) -> bool {
+        if self.major != host.major {
+            return false;
+        }
+        if self.major == 0 {
+            self.minor == host.minor
+        } else {
+            self.minor <= host.minor
+        }
+    }
+}
+
+impl std::fmt::Display for ApiVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// What kind of thing a plugin's main view shows. It decides which keys the host keeps for itself
+/// in that view (the keys of the display type: see [`crate::keys::reserved`]), so a plugin that
+/// shows only text is not refused the keys a table would need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ViewKind {
+    /// Windowed text (source, hex dumps, logs).
+    Text,
+    /// A decorated document.
+    Document,
+    Table,
+    Image,
+    Diff,
+    /// A list of rows.
+    List,
+}
+
+impl ViewKind {
+    /// The name of the key context of this kind (`text`, `document`, `table`, `image`, `diff`,
+    /// `list`).
+    pub fn context(self) -> &'static str {
+        match self {
+            ViewKind::Text => "text",
+            ViewKind::Document => "document",
+            ViewKind::Table => "table",
+            ViewKind::Image => "image",
+            ViewKind::Diff => "diff",
+            ViewKind::List => "list",
+        }
+    }
 }
 
 /// Everything a plugin declares. The host reads it once at startup; the implementation is not
@@ -27,8 +79,11 @@ pub struct Manifest {
     pub actions: Vec<Act>,
     pub verbs: Vec<VerbDecl>,
     pub settings: Vec<SettingDecl>,
-    /// Names of the plugin's own screens (the contexts of its keys: `<id>.<screen>`).
+    /// Names of the plugin's own screens (each is a key **context** of its own: `<id>.<screen>`).
     pub screens: Vec<String>,
+    /// What the plugin's main view shows. Empty means "anything": the keys of an action that
+    /// names no context are then checked against every display type.
+    pub shows: Vec<ViewKind>,
     /// The exclusive work group the plugin's jobs belong to, if any. See [`Manifest::work_group`].
     pub work_group: Option<String>,
 }
@@ -47,12 +102,22 @@ impl Manifest {
             verbs: Vec::new(),
             settings: Vec::new(),
             screens: Vec::new(),
+            shows: Vec::new(),
             work_group: None,
         }
     }
 
-    pub fn name(mut self, name: Tr) -> Manifest {
-        self.name = name;
+    pub fn name(mut self, name: impl Into<Tr>) -> Manifest {
+        self.name = name.into();
+        self
+    }
+
+    /// Declare that the main view shows this kind of thing (call it once per kind). The keys of
+    /// the plugin's actions are checked against the keys reserved for these kinds only.
+    pub fn shows(mut self, kind: ViewKind) -> Manifest {
+        if !self.shows.contains(&kind) {
+            self.shows.push(kind);
+        }
         self
     }
 
@@ -76,6 +141,7 @@ impl Manifest {
         self
     }
 
+    /// Declare a screen of the plugin's own: a key context named `<id>.<name>`.
     pub fn screen(mut self, name: impl Into<String>) -> Manifest {
         self.screens.push(name.into());
         self
@@ -192,8 +258,9 @@ pub struct Act {
     pub help: Tr,
     /// Footer priority (smaller shows first). `None` keeps it out of the footer.
     pub footer: Option<u8>,
-    /// The context of the key: a host context (`text`, `table`, ...) or one of the plugin's own
-    /// screens. `None` means the plugin's main view.
+    /// The **context** of the key: a host context (`text`, `table`, ...) or one of the plugin's own
+    /// screens. `None` means the plugin's main view (the kinds in [`Manifest::shows`]). Set it
+    /// with [`Act::context`]; [`Act::screen`] is the older name of the same thing.
     pub screen: Option<String>,
     /// Whether the action writes files.
     pub writes: bool,
@@ -222,13 +289,16 @@ impl Act {
         self
     }
 
-    pub fn label(mut self, label: Tr) -> Act {
-        self.label = label;
+    /// The short label for the footer. A `&str` is the English text only; use `t!` for several
+    /// languages.
+    pub fn label(mut self, label: impl Into<Tr>) -> Act {
+        self.label = label.into();
         self
     }
 
-    pub fn help(mut self, help: Tr) -> Act {
-        self.help = help;
+    /// The description for the help screen (same forms as [`Act::label`]).
+    pub fn help(mut self, help: impl Into<Tr>) -> Act {
+        self.help = help.into();
         self
     }
 
@@ -237,9 +307,16 @@ impl Act {
         self
     }
 
-    pub fn screen(mut self, screen: impl Into<String>) -> Act {
-        self.screen = Some(screen.into());
+    /// The context the key lives in: a host context name (`text`, `table`, `image`, `document`)
+    /// or a screen of the plugin.
+    pub fn context(mut self, context: impl Into<String>) -> Act {
+        self.screen = Some(context.into());
         self
+    }
+
+    /// The older name of [`Act::context`].
+    pub fn screen(self, screen: impl Into<String>) -> Act {
+        self.context(screen)
     }
 
     pub fn writes(mut self) -> Act {
@@ -321,8 +398,8 @@ impl VerbDecl {
         self
     }
 
-    pub fn label(mut self, label: Tr) -> VerbDecl {
-        self.label = Some(label);
+    pub fn label(mut self, label: impl Into<Tr>) -> VerbDecl {
+        self.label = Some(label.into());
         self
     }
 }
@@ -336,11 +413,11 @@ pub struct SettingDecl {
 }
 
 impl SettingDecl {
-    pub fn new(name: impl Into<String>, default: Value, help: Tr) -> SettingDecl {
+    pub fn new(name: impl Into<String>, default: Value, help: impl Into<Tr>) -> SettingDecl {
         SettingDecl {
             name: name.into(),
             default,
-            help,
+            help: help.into(),
         }
     }
 }

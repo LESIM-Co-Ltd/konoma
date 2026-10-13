@@ -719,6 +719,35 @@ fn render_row(app: &App, ctx: Context, row: &Row) -> Option<RowOut> {
     })
 }
 
+/// The section of the open plugin's keys (`None` when there is none to list).
+fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
+    let lang = app.plugin_lang();
+    let mut sec: Option<HelpSection> = None;
+    let mut plugin: Option<&str> = None;
+    for b in app.plugin_acts_in(ctx) {
+        let Some(key) = b.key else {
+            continue;
+        };
+        if !action_enabled(app, ctx, Action::Plugin(b.act)) {
+            continue;
+        }
+        plugin = Some(b.act.plugin());
+        let desc = match b.help.get(lang) {
+            "" => b.label.get(lang),
+            h => h,
+        };
+        sec.get_or_insert_with(|| HelpSection::new(String::new()))
+            .rows
+            .push((help_key(key), desc.to_string()));
+    }
+    let mut sec = sec?;
+    sec.title = plugin
+        .and_then(|id| app.plugin_keys.name_of(id))
+        .map(|n| n.get(lang).to_string())
+        .unwrap_or_default();
+    Some(sec)
+}
+
 /// Every row of `ctx`'s help (before it is grouped into sections), for tests.
 #[cfg(test)]
 pub fn rows_for(app: &App, ctx: Context) -> Vec<RowOut> {
@@ -766,6 +795,9 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     // This screen's own operations come first (that is what the help is opened for), then movement
     // and the launch verbs; what is true everywhere (layer 0) closes the list.
     push(&mut out, view_title, take(&mut by, Sec::View));
+    // The open plugin's own keys: one section under the plugin's name, from its declarations. A
+    // row is there only while the session says the action works (the gate), like every other row.
+    out.extend(plugin_section(app, ctx));
     push(&mut out, Msg::HelpMove, take(&mut by, Sec::Move));
     push(&mut out, Msg::HelpLaunch, take(&mut by, Sec::Launch));
     // The menus behind `y` and `Space`: every leader this screen opens.

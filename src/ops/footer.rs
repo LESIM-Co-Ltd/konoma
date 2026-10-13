@@ -14,6 +14,7 @@ use crate::keymap::{Backend, Screen};
 use crate::ops::decl::text;
 use crate::ops::gate::action_enabled;
 use crate::ops::keys::{columns, footer_key, short_enter};
+use crate::plugins::PluginAct;
 
 /// One entry of a footer plan.
 #[derive(Clone)]
@@ -33,6 +34,8 @@ pub enum Foot {
     Leader(LeaderId, Msg),
     /// A token worked out from the state (the search status).
     Dyn(fn(&App, Context) -> Option<String>),
+    /// The key of an action the open plugin declared, under the plugin's own short label.
+    Plugin(PluginAct),
 }
 
 const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
@@ -85,6 +88,23 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 /// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
 /// here, in one function per screen.
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
+    let mut v = base_plan(app, ctx);
+    // The open plugin's own operations come right after the screen's movement keys, in the
+    // order of the priority the plugin declared (a stable sort: declaration order within one
+    // priority). Only actions that asked for a footer entry are planned here; the others are in
+    // the `?` help and the `Space` menu.
+    let mut acts: Vec<_> = app
+        .plugin_acts_in(ctx)
+        .into_iter()
+        .filter_map(|b| b.footer.map(|p| (p, b.act)))
+        .collect();
+    acts.sort_by_key(|(p, _)| *p);
+    let at = 1.min(v.len());
+    v.splice(at..at, acts.into_iter().map(|(_, a)| Foot::Plugin(a)));
+    v
+}
+
+fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
     match ctx {
         Context::Tree => tree(app),
         Context::TreeVisual => vec![
@@ -551,6 +571,7 @@ pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
                 let label = acts.first().and_then(|a| text(app, ctx, *a).label);
                 v.extend(acts.iter().map(|a| (*a, label)));
             }
+            Foot::Plugin(p) => v.push((Action::Plugin(p), None)),
             Foot::Leader(..) | Foot::Dyn(_) => {}
         }
     }
@@ -677,6 +698,24 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                 keys: Vec::new(),
                 actions: Vec::new(),
             }),
+            Foot::Plugin(p) => {
+                let action = Action::Plugin(*p);
+                if !action_enabled(app, ctx, action) {
+                    continue;
+                }
+                match app.plugin_binding_in(ctx, *p) {
+                    Some(b) => b.key.map(|key| Token {
+                        text: format!(
+                            "{}:{}",
+                            write_keys(&[key], ctx),
+                            b.label.get(app.plugin_lang())
+                        ),
+                        keys: vec![key],
+                        actions: vec![action],
+                    }),
+                    None => None,
+                }
+            }
         };
         out.extend(t);
     }

@@ -177,7 +177,7 @@ macro_rules! failure_ctor {
     ($($(#[$doc:meta])* $fn:ident => $kind:ident,)*) => {
         $(
             $(#[$doc])*
-            pub fn $fn(message: Tr) -> Failure {
+            pub fn $fn(message: impl Into<Tr>) -> Failure {
                 Failure::new(FailureKind::$kind, message)
             }
         )*
@@ -185,10 +185,10 @@ macro_rules! failure_ctor {
 }
 
 impl Failure {
-    pub fn new(kind: FailureKind, message: Tr) -> Failure {
+    pub fn new(kind: FailureKind, message: impl Into<Tr>) -> Failure {
         Failure {
             kind,
-            message,
+            message: message.into(),
             detail: None,
         }
     }

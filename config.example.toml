@@ -526,6 +526,9 @@ code_theme = "TwoDark"
 #                                 (were [ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
 #                                  md_inline_html md_details md_table_align md_image_align)
 # The values mean what they do under the [ui] keys above. A Word document is drawn with the markdown options too.
+# The keys of a plugin's own actions are rebound in [keys.<plugin id>] (W = "width" gives the action `width` the key W;
+# w = "noop" takes a key away). A key the host keeps for itself is refused and the startup message says so; the
+# action stays in the `Space` menu.
 # [plugins.markdown]
 # enabled = false
 # alerts = false

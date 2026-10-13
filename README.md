@@ -172,8 +172,8 @@ you came from, since a worktree's directory rarely does.
 - **Features are plugins**: every viewer (Markdown, Mermaid, math, images, SVG, PDF, video, CSV, archives, spreadsheets,
   Word, presentations, code) is a standard plugin built into konoma, and the version-control screens follow the same key
   design. `konoma --plugins` lists which plugin shows which files, and `[plugins.<id>] enabled = false` switches one off.
-  Your `[[preview.rules]]` are tried first and the standard plugins decide the rest. (Swapping in a plugin of your own is
-  not available yet.)
+  Your `[[preview.rules]]` are tried first and the standard plugins decide the rest. The keys of a plugin's own actions
+  can be rebound in `[keys.<plugin id>]`. (Swapping in a plugin of your own is not available yet.)
 - **One key design**: the same key means the same thing everywhere — `/` search, `n`/`N` next match or change, `r` reload,
   `y` copy menu, `e` edit, `o` open in another app, `p` the project screen, `,` sort and display options, `Space` the menu of
   every operation on the screen you are looking at. Every default can be changed in `[keys]`; the `?` help and the

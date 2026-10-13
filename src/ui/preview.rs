@@ -357,6 +357,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             (format!("{body}\n{}", path.display()), false)
         }
+        // A plugin the host has no screen of its own for (one the user registered) that answered
+        // with a text view: its lines, drawn as plain scrolling text.
+        Some(PreviewKind::Plugin { .. }) if app.plugin_text_body().is_some() => {
+            (app.plugin_text_body().unwrap_or_default(), true)
+        }
         Some(PreviewKind::Plugin { path, .. }) => (
             format!(
                 "{}\n{}",

@@ -7,6 +7,17 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **A plugin's own actions are part of konoma's key system.** What a plugin declares (`Manifest::actions`: a key, a short label, a
+  help text, a footer priority, whether it writes) now gets its key, its `w:width`-style entry in the footer, a section of the
+  `?` help under the plugin's name and a place in the `Space` menu, with no code of the plugin's own. Whether an action works
+  now is the open session's word (`Session::enabled`), asked once when the session comes back from a job and used by the key
+  handler, the footer, the help and the menu alike, so a hint is shown only while its key acts. The action runs on the worker
+  and `Outcome::Redraw` asks for the view again. `[keys.<plugin id>]` rebinds an action's key (`W = "width"`) or takes it away
+  (`w = "noop"`). A plugin cannot take a key of the host's layers: the action is registered without the key, stays in the
+  `Space` menu, and the startup message says so. A plugin built for another plugin API version is switched off with a message.
+  `[plugins.<id>] read_only = true` stops a plugin's writing actions. The plugin API gained `Manifest::shows` (what the main
+  view shows, so a text-only plugin can use `s`), `Act::context`, function keys `F1` to `F12`, `&str` where a translated text is
+  expected, and test helpers (`view_table`, `view_document`, `view_image`, `open_bytes`, `check_hints`).
 - **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
 - **`konoma <file>`** opens the file's folder as the tree with the file selected and previewed at once (`q` goes back to the
   tree, as for any preview). With saved tabs (`restore_tabs`) the tabs come back first and the file opens in the tab that is on

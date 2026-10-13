@@ -68,6 +68,7 @@ fn plan_actions(plan: &[Foot]) -> Vec<Action> {
             Foot::Group(acts, _) | Foot::GroupOp(acts) | Foot::Union(acts, _) => {
                 v.extend(acts.iter().copied())
             }
+            Foot::Plugin(p) => v.push(Action::Plugin(*p)),
             Foot::Leader(..) | Foot::Dyn(_) => {}
         }
     }

@@ -152,6 +152,7 @@ fn app_with_worker() -> (
         layout: Layout::single(),
         view: None,
         req: ViewReq::default(),
+        enabled: Default::default(),
     });
     (app, dir, file, rx)
 }
@@ -271,6 +272,7 @@ fn a_waiting_request_of_a_preview_that_is_gone_is_not_started() {
         layout: Layout::single(),
         view: None,
         req: ViewReq::default(),
+        enabled: Default::default(),
     });
     ask(&mut app, &plugin, &file, 2);
     assert_eq!(app.plugin_group_dispatches, 2);

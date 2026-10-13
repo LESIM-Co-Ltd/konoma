@@ -489,6 +489,8 @@ code_theme = "TwoDark"
 #                                 ([ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
 #                                  md_inline_html md_details md_table_align md_image_align だったもの)
 # 値の意味は上の [ui] の各キーと同じ。Word 文書も markdown のオプションで描かれる。
+# プラグイン自身の操作のキーは [keys.<プラグイン id>] で付け替えられる(W = "width" で操作 `width` のキーを W に、
+# w = "noop" でキーを外す)。ホストが使うキーは断られて起動時のメッセージで知らせる(操作は `Space` のメニューに残る)。
 # [plugins.markdown]
 # enabled = false
 # alerts = false

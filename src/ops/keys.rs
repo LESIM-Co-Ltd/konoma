@@ -119,6 +119,10 @@ fn enter_action(ctx: Context) -> Option<Action> {
 /// Every key that runs `action` in `ctx`: the keymap's keys (config applied) followed by the fixed
 /// keys (aliases left out).
 pub fn keys_of(app: &App, ctx: Context, action: Action) -> Vec<KeyPress> {
+    // A plugin's operation has the one key of the plugin's layer.
+    if let Action::Plugin(p) = action {
+        return app.plugin_key_of(ctx, p).into_iter().collect();
+    }
     let mut v = app.keymaps.keys_of(ctx, action);
     for f in fixed_bindings(ctx) {
         if f.action == action && !f.alias && !v.contains(&f.key) {
@@ -160,6 +164,7 @@ pub fn help_key(kp: KeyPress) -> String {
         KeyCode::Tab => "Tab".to_string(),
         KeyCode::BackTab => "⇧Tab".to_string(),
         KeyCode::Esc => "Esc".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
         KeyCode::PageDown => "PageDown".to_string(),
         KeyCode::PageUp => "PageUp".to_string(),
         KeyCode::Home => "Home".to_string(),

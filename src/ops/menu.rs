@@ -27,6 +27,7 @@ use crate::i18n::{tr, Msg};
 use crate::keymap::{Action, Context, KeyPress, LeaderId};
 
 use super::{action_enabled, decl, footer, help, keys};
+use crate::plugins::PluginAct;
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +220,8 @@ fn candidates(
         ) {
             return;
         }
-        if label_of(app, ctx, a, prio).is_none() {
+        // A plugin's operation is named by the plugin, not by a message of ours.
+        if !matches!(a, Action::Plugin(_)) && label_of(app, ctx, a, prio).is_none() {
             return;
         }
         match out.iter_mut().find(|(o, _)| *o == a) {
@@ -251,6 +253,11 @@ fn candidates(
     }
     for a in unkeyed(ctx) {
         add(a, None);
+    }
+    // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
+    // its key (a collision, a rebinding) is still reachable.
+    for b in app.plugin_acts_in(ctx) {
+        add(Action::Plugin(b.act), b.key.and_then(plain));
     }
     out
 }
@@ -291,6 +298,12 @@ fn assign(cands: &[(Action, Option<KeyPress>)]) -> Vec<Option<KeyPress>> {
     chosen
 }
 
+/// The label of a plugin's operation in the language of the interface.
+fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
+    app.plugin_binding_in(ctx, p)
+        .map(|b| b.label.get(app.plugin_lang()).to_string())
+}
+
 /// Where an operation sorts in the menu: its place in the footer plan, then the operations the
 /// help lists for the screen itself (in the help's order), then the ones neither names (an
 /// overlay's own keys, a rebinding's leftovers; they keep the order of `candidates`), then the
@@ -329,11 +342,14 @@ fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
         .filter(|((a, _), _)| !gated || action_enabled(app, ctx, *a))
         .filter_map(|((a, _), key)| {
             let key = key?;
-            let label = label_of(app, ctx, *a, &prio)?;
+            let label = match a {
+                Action::Plugin(p) => plugin_label(app, ctx, *p)?,
+                _ => tr(app.lang, label_of(app, ctx, *a, &prio)?).to_string(),
+            };
             Some(MenuItem {
                 key,
                 action: *a,
-                label: tr(app.lang, label).to_string(),
+                label,
             })
         })
         .collect();

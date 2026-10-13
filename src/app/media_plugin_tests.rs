@@ -188,6 +188,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         decode_cancel: None,
         on_layout: None,
         group: None,
+        act_ids: Vec::new(),
     }
 }
 

@@ -92,6 +92,11 @@ pub(crate) struct PluginShow {
     pub view: Option<View>,
     /// The request the view answers.
     pub req: ViewReq,
+    /// Whether each declared action works, as the session said when it last came back from a
+    /// job (`Session::enabled`, asked on the worker). The key handler, the footer, the help and
+    /// the `Space` menu all read this one answer, so they cannot disagree, and the UI thread
+    /// never waits for a session that a job holds.
+    pub enabled: std::collections::HashMap<String, bool>,
 }
 
 /// What a worker is asked to do.
@@ -162,6 +167,9 @@ pub(crate) struct PluginWork {
     pub(super) on_layout: Option<LayoutAnnounce>,
     /// The plugin's exclusive work group, if it names one.
     pub(super) group: Option<String>,
+    /// The ids of the actions the plugin declares: the worker asks the session which of them work
+    /// now before it hands the session back.
+    pub(super) act_ids: Vec<String>,
 }
 
 /// What became of a picture a worker decoded.
@@ -192,6 +200,9 @@ pub struct PluginResult {
     pub(super) document: Option<Box<super::office_doc::LoadedDocument>>,
     /// The work group the job ran in: it is free again once this result has arrived.
     pub(super) group: Option<String>,
+    /// For each declared action, whether the returned session says it works now. Empty when no
+    /// session came back.
+    pub(super) enabled: Vec<(String, bool)>,
 }
 
 /// The layout a worker learned from `open`, sent ahead of the (slower) first picture when the UI
@@ -215,6 +226,7 @@ impl PluginResult {
             picture: Picture::None,
             document: None,
             group: None,
+            enabled: Vec::new(),
         }
     }
 }
@@ -242,6 +254,7 @@ impl PluginResult {
             picture: Picture::None,
             document: None,
             group: None,
+            enabled: Vec::new(),
         }
     }
 
@@ -362,7 +375,14 @@ impl PluginWork {
             decode_cancel,
             on_layout,
             group: _,
+            act_ids,
         } = self;
+        let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
+            act_ids
+                .iter()
+                .map(|id| (id.clone(), session.enabled(id)))
+                .collect()
+        };
         let term = TermCaps { pixels };
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
             let cx = ViewCx::new(&settings, &lang)
@@ -416,6 +436,7 @@ impl PluginWork {
             };
             // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
             let layout = session.layout();
+            let enabled = enabled_of(session.as_ref());
             PluginResult {
                 gen,
                 id: id.clone(),
@@ -428,6 +449,7 @@ impl PluginWork {
                 picture,
                 document,
                 group: None,
+                enabled,
             }
         };
         match job {
@@ -461,6 +483,9 @@ impl PluginWork {
                     Ok(o) => (Some(o), None),
                     Err(f) => (Some(Outcome::Flash(f.message.clone())), None),
                 };
+                // Asked **after** the action: it may have changed what works (`w` toggles, a
+                // reload makes a key valid).
+                let enabled = enabled_of(session.as_ref());
                 PluginResult {
                     gen,
                     id,
@@ -473,6 +498,7 @@ impl PluginWork {
                     picture: Picture::None,
                     document: None,
                     group: None,
+                    enabled,
                 }
             }
         }
@@ -640,6 +666,29 @@ impl App {
         )
     }
 
+    /// The lines of the text view a plugin answered with, joined (styles dropped). `None` unless
+    /// the show holds a text view made of lines or a string: a file source is the host's windowed
+    /// reader's, not this.
+    pub fn plugin_text_body(&self) -> Option<String> {
+        match self.plugin.as_ref()?.view.as_ref()? {
+            View::Text(konoma_plugin::view::TextView {
+                source: konoma_plugin::view::TextSource::Lines(lines),
+                ..
+            }) => Some(
+                lines
+                    .iter()
+                    .map(|l| l.plain())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            View::Text(konoma_plugin::view::TextView {
+                source: konoma_plugin::view::TextSource::Owned(s),
+                ..
+            }) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
     /// The message a delegated command's plugin answered with (a detached launch: "opened
     /// externally"), if it has answered.
     pub fn command_message(&self) -> Option<String> {
@@ -748,6 +797,7 @@ impl App {
                 layout: Layout::single(),
                 view: None,
                 req: ViewReq::default(),
+                enabled: Default::default(),
             });
             return;
         };
@@ -804,11 +854,15 @@ impl App {
             konoma_media::VIDEO_ID => self.cfg.external.video,
             _ => false,
         };
-        let group = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
-            .manifest(&id)
-            .and_then(|m| m.work_group.clone());
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        let manifest = registry.manifest(&id);
+        let group = manifest.and_then(|m| m.work_group.clone());
+        let act_ids = manifest
+            .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
+            .unwrap_or_default();
         PluginWork {
             group,
+            act_ids,
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
@@ -856,6 +910,7 @@ impl App {
                 layout: Layout::single(),
                 view: None,
                 req: ViewReq::default(),
+                enabled: Default::default(),
             });
         }
         // A Markdown or Word document is asked for in its rendered form first, whatever the tab
@@ -903,6 +958,7 @@ impl App {
             layout: Layout::single(),
             view: None,
             req: ViewReq::default(),
+            enabled: Default::default(),
         });
         let input = Input::File {
             path: path.to_path_buf(),
@@ -924,7 +980,7 @@ impl App {
     }
 
     /// The user's language as the plugins name it.
-    pub(super) fn plugin_lang(&self) -> &'static str {
+    pub(crate) fn plugin_lang(&self) -> &'static str {
         match self.lang {
             crate::i18n::Lang::Jp => "ja",
             crate::i18n::Lang::En => "en",
@@ -1108,7 +1164,6 @@ impl App {
 
     /// Ask the open session for another `view` (a new page, a new size...). Returns false when
     /// there is no session to ask (none open, or a job still holds it).
-    #[allow(dead_code)] // The plugins whose other representations are real reads ask this way.
     pub(super) fn plugin_request_view(&mut self, mut req: ViewReq) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
@@ -1197,7 +1252,6 @@ impl App {
     }
 
     /// Run a declared action of the open session. Returns false when there is no session to ask.
-    #[allow(dead_code)] // The keys of the plugins wired in the next steps run their actions this way.
     pub(super) fn plugin_act(&mut self, action: &str) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
@@ -1281,8 +1335,14 @@ impl App {
         };
         // The session being replaced (a read again) holds the pictures of a document: it is
         // freed off the UI thread.
+        let session_back = res.session.is_some();
         if let Some(old) = std::mem::replace(&mut show.session, res.session) {
             super::table_actions::discard_in_background(old);
+        }
+        // What works now is what the session returned from this job said. A result without a
+        // session (a failure) leaves the answer as it was.
+        if session_back {
+            show.enabled = res.enabled.into_iter().collect();
         }
         if let Some(layout) = &res.layout {
             show.layout = layout.clone();
@@ -1377,7 +1437,14 @@ impl App {
                 self.flash = Some(msg.get(self.plugin_lang()).to_string());
             }
             Some(Outcome::Reload) => self.reload_plugin(),
-            Some(Outcome::Redraw) | Some(Outcome::Unhandled) | None => {}
+            // The action changed what the session shows: ask it again with the same request.
+            // (The result of this job is applied and the show holds the session again.)
+            Some(Outcome::Redraw) => {
+                if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
+                    self.plugin_request_view(req);
+                }
+            }
+            Some(Outcome::Unhandled) | None => {}
         }
         true
     }

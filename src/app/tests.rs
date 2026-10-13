@@ -24974,6 +24974,7 @@ fn show_sheet(app: &mut App, wb: Workbook) {
         layout,
         view: Some(view),
         req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
     });
 }
 
@@ -24988,6 +24989,7 @@ fn show_sheet_loading(app: &mut App) {
         layout: konoma_plugin::view::Layout::single(),
         view: None,
         req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
     });
 }
 

@@ -28,6 +28,8 @@ pub enum KeyCode {
     End,
     PageUp,
     PageDown,
+    /// A function key, `F(1)` to `F(12)`.
+    F(u8),
 }
 
 /// A parsed key: a code and whether Ctrl is held.
@@ -80,6 +82,7 @@ impl fmt::Display for KeySpec {
             KeyCode::End => write!(f, "End"),
             KeyCode::PageUp => write!(f, "PageUp"),
             KeyCode::PageDown => write!(f, "PageDown"),
+            KeyCode::F(n) => write!(f, "F{n}"),
         }
     }
 }
@@ -163,7 +166,19 @@ pub fn parse_key(s: &str) -> Result<KeySpec, KeyError> {
         "end" => KeyCode::End,
         "pageup" | "pgup" => KeyCode::PageUp,
         "pagedown" | "pgdn" | "pagedn" => KeyCode::PageDown,
-        _ => {
+        name => {
+            // `F1` to `F12`.
+            if let Some(n) = name
+                .strip_prefix('f')
+                .filter(|d| d.len() <= 2 && d.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|d| d.parse::<u8>().ok())
+                .filter(|n| (1..=12).contains(n))
+            {
+                return Ok(KeySpec {
+                    code: KeyCode::F(n),
+                    ctrl,
+                });
+            }
             let mut it = rest.chars();
             match (it.next(), it.next()) {
                 (Some(c), None) => KeyCode::Char(c),
@@ -339,10 +354,17 @@ impl fmt::Display for KeyIssue {
     }
 }
 
-/// The reserved keys of any view context: the union used when an action names no screen.
-fn reserved_anywhere() -> Vec<(KeySpec, Layer)> {
+/// The reserved keys of the contexts an action without a context of its own lives in: the display
+/// types the manifest says it shows ([`Manifest::shows`]), or every display type when it says
+/// nothing.
+fn reserved_for_main_view(manifest: &Manifest) -> Vec<(KeySpec, Layer)> {
+    let contexts: Vec<&str> = if manifest.shows.is_empty() {
+        VIEW_CONTEXTS.iter().copied().chain(["list"]).collect()
+    } else {
+        manifest.shows.iter().map(|k| k.context()).collect()
+    };
     let mut all = Vec::new();
-    for c in VIEW_CONTEXTS.iter().chain(&["list"]) {
+    for c in contexts {
         for (k, l) in reserved(c) {
             if !all.iter().any(|(x, _)| *x == k) {
                 all.push((k, l));
@@ -352,8 +374,8 @@ fn reserved_anywhere() -> Vec<(KeySpec, Layer)> {
     all
 }
 
-/// Check the keys of a manifest. An action without a screen is checked against the keys of every
-/// display type, because the manifest does not say what the plugin shows.
+/// Check the keys of a manifest. An action without a context is checked against the keys of the
+/// display types the manifest [`shows`](Manifest::shows) (every display type when it does not say).
 pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
     let mut issues = Vec::new();
     let forbidden = forbidden_defaults();
@@ -380,7 +402,7 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
             });
             continue;
         }
-        if let Some(issue) = check_key(act, &forbidden, &taken) {
+        if let Some(issue) = check_key(manifest, act, &forbidden, &taken) {
             issues.push(issue);
         } else if let Some(key) = &act.key {
             if let Ok(spec) = parse_key(key) {
@@ -391,11 +413,43 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
     issues
 }
 
+/// The manifest as the host registers it: an action that lost its key keeps the action and loses
+/// the key (it stays in the `Space` menu), an action that is rejected is dropped. Returns the
+/// issues [`validate`] found.
+pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
+    let issues = validate(manifest);
+    let mut out = manifest.clone();
+    // `validate` reports the later of two declarations with one id, and a destructive action,
+    // as rejected: replay its order.
+    let mut seen: Vec<&str> = Vec::new();
+    let mut kept = Vec::new();
+    for act in &manifest.actions {
+        if seen.contains(&act.id.as_str()) {
+            continue;
+        }
+        seen.push(&act.id);
+        let mut act = act.clone();
+        if act.destructive {
+            continue;
+        }
+        if issues
+            .iter()
+            .any(|i| i.act == act.id && i.effect == Effect::KeyDropped)
+        {
+            act.key = None;
+        }
+        kept.push(act);
+    }
+    out.actions = kept;
+    (out, issues)
+}
+
 fn context_of(act: &Act) -> &str {
     act.screen.as_deref().unwrap_or("")
 }
 
 fn check_key(
+    manifest: &Manifest,
     act: &Act,
     forbidden: &[KeySpec],
     taken: &[(String, KeySpec, &str)],
@@ -421,7 +475,7 @@ fn check_key(
         return issue(KeyIssueKind::TreeKey);
     }
     let table = if ctx.is_empty() {
-        reserved_anywhere()
+        reserved_for_main_view(manifest)
     } else {
         reserved(ctx)
     };
