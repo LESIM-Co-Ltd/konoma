@@ -140,6 +140,11 @@ All notable changes to konoma are documented in this file. The format is based o
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
 
 ### Fixed
+- A picture that was drawn again sharper (an inline mermaid diagram or formula that grew past its first
+  drawing, a GIF frame) could keep showing the encoding made from its old pixels: an encode that was already running
+  when the new pixels landed cleared the "needs encoding again" mark when it finished. Which pixels stayed depended only
+  on which thread finished first. An encode of replaced pixels is now shown but left marked, and the next pass encodes the
+  current pixels.
 - Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
   restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
   page first and then opens the file, so the picture is the page the indicator names.

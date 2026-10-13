@@ -2561,6 +2561,12 @@ struct MdImgEntry {
     layout_px: Option<(u32, u32)>,
     /// A sharpening re-raster is in flight (at most one per diagram).
     reraster_inflight: bool,
+    /// The pixels changed (a re-raster landed, a GIF advanced) while an encode of the **previous**
+    /// pixels was still running. That encode holds the old picture, so when it lands its slot must
+    /// stay stale and be encoded again from the current pixels: clearing `stale` there froze the
+    /// picture at the old density for good (a bottom band cut from the 800 px raster instead of
+    /// the sharpened one, depending only on which thread finished first).
+    outdated_encode_in_flight: bool,
     /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
     /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
     /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
@@ -2719,6 +2725,10 @@ impl MdImgEntry {
     /// a blank), and re-encoding into the surviving slot reuses its kitty id, so the terminal
     /// replaces that picture instead of collecting one per frame.
     fn mark_stale(&mut self) {
+        // The single in-flight encode (if any) was cut from the pixels that just changed.
+        if self.enc_inflight {
+            self.outdated_encode_in_flight = true;
+        }
         for slot in self
             .full
             .iter_mut()

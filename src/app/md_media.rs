@@ -688,10 +688,14 @@ impl App {
             return false;
         }
         entry.enc_inflight = false;
+        // An encode cut from pixels that have been replaced since it was requested still shows
+        // (the old picture keeps drawing until the new one lands) but is not final: its slot stays
+        // stale, so the next pass encodes it again from the current pixels.
+        let outdated = std::mem::take(&mut entry.outdated_encode_in_flight);
         let key = res.key;
         let mut stored = false;
         if let Some(slot) = entry.slots_mut(&key).iter_mut().find(|s| s.key == key) {
-            slot.stale = false;
+            slot.stale = outdated;
             if let Some(p) = res.image {
                 slot.image = Some(p);
                 stored = true;
