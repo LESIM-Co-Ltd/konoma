@@ -7,7 +7,6 @@
 // Placement switches via the `ui.statusbar` setting (split = default / bottom). Here we just
 // assemble the "content" (spans).
 
-use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -15,9 +14,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, DisplayMode, InternalMode, KeyScheme, Mode, PathStyle};
+use crate::app::{App, DisplayMode, InternalMode, Mode, PathStyle};
 use crate::i18n::{tr, Lang, Msg};
-use crate::keymap::Surface;
+use crate::keymap::Context;
+#[cfg(feature = "git")]
+use crate::keymap::Screen;
 
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
 fn chip(lang: Lang, msg: Msg, bg: Color, dark_bg: bool) -> Span<'static> {
@@ -161,28 +162,6 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
     Some(chip(app.lang, msg, bg, dark))
 }
 
-/// Shared helper that formats one hint as `"key:label"`. Used by each view's `footer_hints`.
-pub fn hint(lang: Lang, keys: &str, msg: Msg) -> String {
-    format!("{keys}:{}", tr(lang, msg))
-}
-
-/// Page-step hint (notation changes by scheme). Shared hint used by both Tree and Preview.
-pub fn page_hint(app: &App) -> String {
-    match app.key_scheme {
-        KeyScheme::Vim => hint(app.lang, "^f/^b", crate::i18n::Msg::HintPage),
-        KeyScheme::Less => hint(app.lang, "Spc/b", crate::i18n::Msg::HintPage),
-    }
-}
-
-/// Page-step description for the `?` help (wording changes by scheme). Shared string used by Tree/Preview help.
-pub fn page_help(app: &App) -> String {
-    match app.key_scheme {
-        KeyScheme::Vim => tr(app.lang, crate::i18n::Msg::StScrollHintCtrl),
-        KeyScheme::Less => tr(app.lang, crate::i18n::Msg::StPagerSpaceHint),
-    }
-    .to_string()
-}
-
 /// Persistent context line: **each view owns its own context spans (chips, etc.)**; here we
 /// delegate to that and then append the common path display style. (Tree = chip only / Preview = chip + image zoom.)
 pub fn context_spans(app: &App) -> Vec<Span<'static>> {
@@ -263,137 +242,70 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 /// Per-internal-mode footer help (the bottom footer is the source of truth for "keys you can press now").
-/// Dialog/visual keys are shown here (the delete confirmation's y/!/n also appears in the box, but the source of truth is here).
-fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
+/// The dialogs' keys are fixed (`y`/`n`/`Enter`/`Esc`), so their lines are written out; every other
+/// mode's footer is the plan of its context (`ops::footer`), with the keys generated from the keymap.
+fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
     let mode = app.internal_mode()?;
-    let s = match mode {
-        // Help's own operation keys (j/k/g/G scroll, q/Esc close). If we kept showing hints from
-        // the surface underneath (Tree/Preview), it would advertise keys you can't press while
-        // help is showing (the centered popup doesn't cover the top/bottom edges, so the footer
-        // is always visible).
-        InternalMode::Help => tr(lang, crate::i18n::Msg::StHelpHint),
-        InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => {
-            tr(lang, crate::i18n::Msg::StDeleteForce)
-        }
-        InternalMode::DeleteConfirm => tr(lang, crate::i18n::Msg::StTrashDelete),
-        InternalMode::DropConfirm => tr(lang, crate::i18n::Msg::StCopyMoveHint),
-        InternalMode::QuitConfirm => tr(lang, crate::i18n::Msg::StQuitHint),
-        InternalMode::BookmarkConfirm => tr(lang, crate::i18n::Msg::StMarkOverwriteHint),
-        InternalMode::RenamePreview => tr(lang, crate::i18n::Msg::StApply),
-        InternalMode::Create => tr(lang, crate::i18n::Msg::StCreateHint),
-        InternalMode::BatchRename => tr(lang, crate::i18n::Msg::StRenamePreviewHint),
-        InternalMode::Rename => tr(lang, crate::i18n::Msg::StRenameHint),
-        InternalMode::Visual => tr(lang, crate::i18n::Msg::VisualOpsHint),
-        InternalMode::PreviewVisual => {
-            if app.preview_visual_linewise() {
-                tr(lang, crate::i18n::Msg::PreviewVisualLineHint)
-            } else {
-                tr(lang, crate::i18n::Msg::PreviewVisualHint)
-            }
-        }
-        InternalMode::Info => tr(lang, crate::i18n::Msg::StCloseHint),
-        InternalMode::TableCell => tr(lang, crate::i18n::Msg::TableCellActions),
-        InternalMode::ChangedFilter => tr(lang, crate::i18n::Msg::ChangedFilterHint),
-        // Staging, committing and worktrees are git's; offering them where they do not exist is
-        // worse than leaving them out.
-        InternalMode::GitChanges if !crate::vcs::caps(&app.tab.root).write => {
-            tr(lang, crate::i18n::Msg::StJjHubKeys)
-        }
-        InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
-        // Pinning a base is git's; widening the range is jj's, since only jj has a narrower one.
-        InternalMode::GitGraph if !crate::vcs::caps(&app.tab.root).write => {
-            tr(lang, crate::i18n::Msg::JjGraphNavHint)
-        }
-        InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
-        InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),
-        InternalMode::GitBranch if !crate::vcs::caps(&app.tab.root).write => {
-            tr(lang, crate::i18n::Msg::BookmarksNavHint)
-        }
-        InternalMode::GitBranch => tr(lang, crate::i18n::Msg::BranchesNavHint),
-        InternalMode::GitWorktrees => tr(lang, crate::i18n::Msg::WorktreesNavHint),
-        // `x:discard` is a write. A backend that cannot take one must not advertise it — an
-        // advertised key gets pressed. `s:unified/split/auto` is likewise dropped while the
-        // `Rendered` presentation is showing (`App::diff_rendered_active`) — it has no split view
-        // of its own, so `s` would do nothing there. `h/l:hscroll` is *also* dropped there while
-        // `[ui] wrap` is on — unlike `Source` (always horizontal-scrollable, `wrap`-independent),
-        // `Rendered` shares the ordinary decorated Markdown preview's own wrap-aware layout, where
-        // horizontal scroll is a no-op the moment lines wrap ([[hint-shown-iff-key-acts]]).
-        // The media diff's side-by-side view, and the binary-summary/computing body a non-picture
-        // binary kind's `Source` representation always shows, both use the reduced hint set (`n/N`,
-        // `x`(write), `q/Esc` — no `j/k`/`h/l`/`s:unified/split/auto`, nothing there to scroll or lay
-        // out unified/split): `App::diff_footer_is_media_or_summary` covers both in one gate.
-        InternalMode::GitDiff
-            if !crate::vcs::caps(&app.tab.root).write && app.diff_footer_is_media_or_summary() =>
-        {
-            tr(lang, crate::i18n::Msg::DiffMediaHintNoDiscard)
-        }
-        InternalMode::GitDiff if app.diff_footer_is_media_or_summary() => {
-            tr(lang, crate::i18n::Msg::DiffMediaHintDiscard)
-        }
-        InternalMode::GitDiff if !crate::vcs::caps(&app.tab.root).write => {
-            if app.diff_rendered_active() {
-                if app.cfg.ui.wrap {
-                    tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHintRenderedWrap)
-                } else {
-                    tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHintRendered)
-                }
-            } else {
-                tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHint)
-            }
-        }
-        InternalMode::GitDiff => {
-            if app.diff_rendered_active() {
-                if app.cfg.ui.wrap {
-                    tr(lang, crate::i18n::Msg::DiffScrollDiscardHintRenderedWrap)
-                } else {
-                    tr(lang, crate::i18n::Msg::DiffScrollDiscardHintRendered)
-                }
-            } else {
-                tr(lang, crate::i18n::Msg::DiffScrollDiscardHint)
-            }
-        }
-        InternalMode::Commit => tr(lang, crate::i18n::Msg::StCommitHint),
-        InternalMode::GitLog => tr(lang, crate::i18n::Msg::GitNavDetailHint),
-        InternalMode::GitDetail => tr(lang, crate::i18n::Msg::DiffScrollHint),
-        // Filter/search/sort/mark/bookmarks are handled by their dedicated prompt below.
-        _ => return None,
+    let fixed = match mode {
+        InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => Some(Msg::StDeleteForce),
+        InternalMode::DeleteConfirm => Some(Msg::StTrashDelete),
+        InternalMode::DropConfirm => Some(Msg::StCopyMoveHint),
+        InternalMode::QuitConfirm => Some(Msg::StQuitHint),
+        InternalMode::BookmarkConfirm => Some(Msg::StMarkOverwriteHint),
+        InternalMode::RenamePreview => Some(Msg::StApply),
+        InternalMode::Create => Some(Msg::StCreateHint),
+        InternalMode::BatchRename => Some(Msg::StRenamePreviewHint),
+        InternalMode::Rename => Some(Msg::StRenameHint),
+        InternalMode::Commit => Some(Msg::StCommitHint),
+        _ => None,
     };
-    // `R`'s presentation-cycle hint (`docs/FEATURE-MD-RENDERED-DIFF.md` §4) is the one part of the
-    // GitDiff footer that depends on per-file state (how many presentations the target has, and
-    // which one is showing) rather than being a fixed string keyed only on the backend's write
-    // capability — so it's appended here instead of folding into the match above.
-    // [[hint-shown-iff-key-acts]]: `diff_view_cycle_hint` is `None` (nothing appended) for a target
-    // with only one presentation, e.g. an image whose diff is shown here.
-    let mut s = s.to_string();
-    if mode == InternalMode::GitDiff {
-        // The media/binary-summary hint set produced above is only the (`x:discard  `)`q/Esc:back`
-        // suffix — `n/N` and, while the side-by-side view is active, `s`/`J`/`K` are woven in
-        // *before* it here so the key order reads `n/N  s  J/K  R  x  q/Esc` (never `n/N  x  q/Esc
-        // s  J/K  R`, which reads as if `s`/`J`/`K` came after "back").
-        if app.diff_footer_is_media_or_summary() {
-            let mut prefixed = hint(lang, "n/N", crate::i18n::Msg::HintNextPrevFile);
-            if app.media_diff_showing_pictures() {
-                prefixed.push_str(&format!(
-                    "  {}",
-                    hint(lang, "s", app.media_diff_layout_next_msg())
-                ));
-                if app.media_diff_can_page() {
-                    prefixed.push_str(&format!(
-                        "  {}",
-                        hint(lang, "J/K", crate::i18n::Msg::HintPage)
-                    ));
-                }
-            }
-            if let Some(msg) = app.diff_view_cycle_hint() {
-                prefixed.push_str(&format!("  {}", hint(lang, "R", msg)));
-            }
-            s = format!("{prefixed}  {s}");
-        } else if let Some(msg) = app.diff_view_cycle_hint() {
-            s.push_str(&format!("  R:{}", tr(lang, msg)));
-        }
+    if let Some(msg) = fixed {
+        return Some(vec![Span::from(tr(lang, msg)).bold()]);
     }
-    Some(vec![Span::from(s).bold()])
+    let tokens = match mode {
+        // Filter/search/sort/mark/bookmarks/tabs/outline have their own prompt below, or show the
+        // screen underneath.
+        InternalMode::ChangedFilter => crate::ops::footer::render(
+            app,
+            Context::Tree,
+            &crate::ops::footer::changed_filter_plan(),
+        ),
+        other => crate::ops::footer::tokens(app, mode_context(app, other)?),
+    };
+    Some(vec![Span::from(fit_tokens(&tokens, width)).bold()])
+}
+
+/// The key context whose footer an internal mode shows (`None` = the mode has no footer of its own).
+fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
+    #[cfg(feature = "git")]
+    let backend = crate::ops::backend(app);
+    #[cfg(not(feature = "git"))]
+    let _ = app;
+    Some(match mode {
+        InternalMode::Help => Context::Help,
+        InternalMode::Visual => Context::TreeVisual,
+        InternalMode::PreviewVisual => Context::TextVisual,
+        InternalMode::Info => Context::Info,
+        InternalMode::TableCell => Context::TableCell,
+        #[cfg(feature = "git")]
+        InternalMode::GitChanges => Context::Screen(backend, Screen::Changes),
+        #[cfg(feature = "git")]
+        InternalMode::GitGraph => Context::Screen(backend, Screen::Graph),
+        #[cfg(feature = "git")]
+        InternalMode::GitGraphPicker => Context::Screen(backend, Screen::GraphPicker),
+        #[cfg(feature = "git")]
+        InternalMode::GitBranch => Context::Screen(backend, Screen::Branches),
+        #[cfg(feature = "git")]
+        InternalMode::GitWorktrees => Context::Screen(backend, Screen::Worktrees),
+        #[cfg(feature = "git")]
+        InternalMode::GitLog => Context::Screen(backend, Screen::Log),
+        #[cfg(feature = "git")]
+        InternalMode::GitDetail => Context::Screen(backend, Screen::Detail),
+        #[cfg(feature = "git")]
+        InternalMode::GitDiff => Context::Diff,
+        _ => return None,
+    })
 }
 
 /// Footer: flash → which-key leader → in-progress input guide → priority-ordered key hints (as many as fit in `width`).
@@ -436,7 +348,7 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     }
     // While a dialog/visual mode is active, show that mode's keys (the bottom footer is the source
     // of truth).
-    if let Some(spans) = mode_footer(app) {
+    if let Some(spans) = mode_footer(app, width) {
         return spans;
     }
     // While filter input is active, show the query prompt in the footer ("/<query>▏").
@@ -464,9 +376,12 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     // While the sort selection menu is showing, show the choices in the footer (current value ▸
     // key list).
     if app.is_sort_menu() {
+        let prefix = format!("{} ▸ ", app.sort_label());
+        let room = width.saturating_sub(prefix.width() as u16);
+        let tokens = crate::ops::footer::tokens(app, Context::Sort);
         return vec![
-            Span::from(format!("{} ▸ ", app.sort_label())).bold(),
-            Span::from(tr(lang, crate::i18n::Msg::StSortHint)).dim(),
+            Span::from(prefix).bold(),
+            Span::from(fit_tokens(&tokens, room)).dim(),
         ];
     }
     // The bookmark-pending-registration prompt (m = register; '= list is on the
@@ -500,17 +415,15 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
     let title = tr(app.lang, menu.title);
     // The code-block copy entry only makes sense while a Markdown code block is focused; hide it
     // everywhere else so the normal path-copy menu stays uncluttered.
-    let show_code = app.surface() == Surface::PreviewText && app.md_focused_code();
+    let show_code = app
+        .key_context()
+        .is_some_and(|c| crate::ops::action_enabled(app, c, crate::keymap::Action::CopyCodeBlock));
     let items: Vec<String> = menu
         .items
         .iter()
         .filter(|it| show_code || !matches!(it.action, crate::keymap::Action::CopyCodeBlock))
         .map(|it| {
-            let k = match it.key.code {
-                KeyCode::Char(' ') => "Space".to_string(),
-                KeyCode::Char(c) => c.to_string(),
-                _ => "?".to_string(),
-            };
+            let k = crate::ui::help::leader_key_str(it.key);
             // jj names a commit by its change ID and keeps the hash underneath; the menu copies the
             // right thing already, so only the words need to follow.
             let label = tr(app.lang, relabel_for_backend(app, it.label));
@@ -526,10 +439,7 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
 /// Operation hints are **owned by each view**. Here we just delegate to the active view.
 /// (Tree = `ui::tree::footer_hints` / Preview = `ui::preview::footer_hints`. Kind differences are absorbed inside preview.)
 pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
-    match app.tab.mode {
-        Mode::Tree => crate::ui::tree::footer_hints(app),
-        Mode::Preview => crate::ui::preview::footer_hints(app),
-    }
+    crate::ops::footer::tokens(app, app.base_context())
 }
 
 /// Join tokens with the separator `  ` and return only as many as fit in display width `max`.
@@ -676,7 +586,7 @@ mod tests {
             !txt.contains("Tab:focus") && !txt.contains("↵:open"),
             "テキストに Markdown 操作が出ている: {txt}"
         );
-        assert!(txt.contains("hl:"), "テキストは横移動ヒントを出す: {txt}");
+        assert!(txt.contains("h/l:"), "テキストは横移動ヒントを出す: {txt}");
     }
 
     /// Cases (b)/(c)/(d): `↵`'s (and `C-t`'s) label follows the focused link's class exactly —
@@ -1102,10 +1012,11 @@ mod tests {
     // both backends is caught either way.
     // -----------------------------------------------------------------------------------------
 
-    /// (status.rs item 1) The jj changes-hub footer (`Msg::StJjHubKeys`): `R:sync`/`b:bookmarks`/
+    /// (status.rs item 1) The jj changes-hub footer (the hub plan of `ops::footer` minus what a
+    /// read-only backend refuses): `R:sync`/`b:bookmarks`/
     /// `!:tool`, never git's write words (`stage`/`unstage`/`commit`/`worktree`). Checked in both
     /// languages (jp coverage #1). Paired with a git repository's hub, which must show the
-    /// opposite. `mode_footer`'s `InternalMode::GitChanges` branch reads
+    /// opposite. The write tokens drop out through `ops::gate`, which reads
     /// `crate::vcs::caps(&app.tab.root).write` straight from the path, so no
     /// `refresh_git_if_needed()` call is needed to reach either branch.
     #[cfg(feature = "git")]
@@ -1124,10 +1035,22 @@ mod tests {
                 .iter()
                 .map(|s| s.content.as_ref())
                 .collect();
+            // The hub footer is generated from the operations that act on a read-only backend:
+            // the diff, the log/graph, bookmarks, `R:sync` and the tool, then `q:close`.
+            let expected = [
+                format!("Enter:{}", tr(lang, Msg::HintDiff)),
+                format!("d:{}", tr(lang, Msg::FtDiffAll)),
+                format!("l:{}", tr(lang, Msg::FtLog)),
+                format!("g:{}", tr(lang, Msg::FtGraph)),
+                format!("b:{}", tr(lang, Msg::HintBookmarks)),
+                format!("R:{}", tr(lang, Msg::FtSync)),
+                format!("!:{}", tr(lang, Msg::FtTool)),
+                format!("q:{}", tr(lang, Msg::FtClose)),
+            ]
+            .join("  ");
             assert_eq!(
-                footer,
-                tr(lang, Msg::StJjHubKeys),
-                "{lang:?}: jj の changes ハブフッターが StJjHubKeys と一致しない: {footer}"
+                footer, expected,
+                "{lang:?}: jj の changes ハブフッターが期待と一致しない: {footer}"
             );
             for word in ["stage", "unstage", "commit", "worktree"] {
                 assert!(
@@ -1153,7 +1076,11 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::StGitHubKeys));
+        assert_eq!(
+            footer,
+            "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  Enter:diff  d:diff-all  \
+             l:log  g:graph  b:branch  w:worktrees  !:tool  q:close"
+        );
         for word in ["stage", "unstage", "commit", "worktree"] {
             assert!(
                 footer.contains(word),
@@ -1168,9 +1095,9 @@ mod tests {
         }
     }
 
-    /// (status.rs item 2, graph) The jj graph footer (`Msg::JjGraphNavHint`): `a:all revisions`/
-    /// `b:bookmarks`, never git's base-pinning keys (`s:base`/`x/0:base off`/`b:branches`, i.e.
-    /// `Msg::GitNavDetailCommitHint`). Paired with a git repository's graph footer.
+    /// (status.rs item 2, graph) The jj graph footer: `a:all revisions`/`b:bookmarks`, never git's
+    /// base-pinning keys (`s:base`/`0/x:base off`/`b:branches`). Paired with a git repository's
+    /// graph footer.
     #[cfg(feature = "git")]
     #[test]
     fn jj_graph_footer_shows_jj_hint_not_git_base_pin_hint() {
@@ -1184,7 +1111,10 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::JjGraphNavHint));
+        assert_eq!(
+            footer,
+            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  q/Esc:back"
+        );
         assert!(
             !footer.contains("base"),
             "jj のグラフフッターに base 固定語が出ている: {footer}"
@@ -1205,15 +1135,18 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::GitNavDetailCommitHint));
+        assert_eq!(
+            footer,
+            "j/k:nav  l/Enter:detail  s:base  0/x:base off  b:branches  q/Esc:back"
+        );
         assert!(
             !footer.contains("all revisions"),
             "git のグラフフッターに jj 専用語が出ている: {footer}"
         );
     }
 
-    /// (status.rs item 2, bookmarks) The jj bookmark-list footer (`Msg::BookmarksNavHint`):
-    /// nav/search only, never git's checkout/new/delete ops (`Msg::BranchesNavHint`). Paired with
+    /// (status.rs item 2, bookmarks) The jj bookmark-list footer: nav/search only, never git's
+    /// checkout/new/delete ops (the writes are gated off). Paired with
     /// a git repository's branch-list footer.
     #[cfg(feature = "git")]
     #[test]
@@ -1232,7 +1165,7 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::BookmarksNavHint));
+        assert_eq!(footer, "j/k:nav  /:search  q/Esc:back");
         for word in ["checkout", "new", "delete"] {
             assert!(
                 !footer.contains(word),
@@ -1256,7 +1189,10 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::BranchesNavHint));
+        assert_eq!(
+            footer,
+            "j/k:nav  l/Enter:checkout  n:new  d:delete  /:search  q/Esc:back"
+        );
     }
 
     /// The diff's `Rendered` presentation shares the ordinary decorated Markdown preview's own
@@ -1380,7 +1316,7 @@ mod tests {
     }
 
     /// (status.rs item 2, diff) The GitDiff footer hides the discard key for a read-only backend
-    /// (`Msg::DiffScrollNoDiscardHint`) and shows it for git (`Msg::DiffScrollDiscardHint`). Uses
+    /// and shows it for git. Uses
     /// `open_git_diff` directly with a path that need not actually exist — the footer only reads
     /// `crate::vcs::caps(&app.tab.root).write`, never the diff content itself.
     #[cfg(feature = "git")]
@@ -1401,8 +1337,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "{}  R:{}",
-                tr(Lang::En, Msg::DiffScrollNoDiscardHint),
+                "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}",
                 tr(Lang::En, Msg::DiffViewPreview)
             )
         );
@@ -1437,9 +1372,8 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "n/N:{}  {}",
+                "n/N:{}  x:discard  q/Esc:back",
                 tr(Lang::En, Msg::HintNextPrevFile),
-                tr(Lang::En, Msg::DiffMediaHintDiscard),
             )
         );
         assert!(footer.contains("discard"));

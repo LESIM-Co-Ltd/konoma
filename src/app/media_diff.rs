@@ -550,6 +550,7 @@ impl App {
 
     /// Whether the media diff currently on screen has a PDF side with ≥2 pages on either side — gates
     /// the `J`/`K` key and its footer/help hint.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_can_page(&self) -> bool {
         self.media_diff_max_page_count().is_some_and(|n| n > 1)
     }
@@ -604,6 +605,7 @@ impl App {
 
     /// The `Msg` naming what `s` would switch the media diff's layout **to** — the footer's dynamic
     /// `s:<next>` fragment, mirroring `R`'s own `diff_view_cycle_hint`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_layout_next_msg(&self) -> crate::i18n::Msg {
         media_layout_msg(self.media_diff_layout.next())
     }
@@ -616,6 +618,7 @@ impl App {
     /// latter's raw line diff is *always* empty (git/jj never line-diff a binary file), so — unlike
     /// `diff_rendered_active`'s own gate — this needs no per-frame "is the diff actually empty right
     /// now" check (which would need `&mut self`, unavailable to the footer) to be correct.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn diff_footer_is_media_or_summary(&self) -> bool {
         if self.diff_media_active() {
             return true;

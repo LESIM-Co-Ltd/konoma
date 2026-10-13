@@ -15,7 +15,6 @@ use crate::app::App;
 use crate::fileops;
 use crate::i18n::{tr, Msg};
 use crate::ui::icons;
-use crate::ui::status::{hint, page_hint};
 
 /// Truncate to fit display width `max` (append `…` at the end when over). Returns (string, display width).
 fn truncate_width(s: &str, max: usize) -> (String, usize) {
@@ -122,108 +121,11 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-/// The Tree view's `?` help section (tree operations + git status markers). **Edit the Tree help here**.
-pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
-    use crate::ui::help::HelpSection;
-    let lang = app.lang;
-    let l = |m| tr(lang, m);
-    let mut tree = HelpSection::new(l(crate::i18n::Msg::TreeSection))
-        .row("j / k / ↑ ↓", l(crate::i18n::Msg::TreeMoveUpDown))
-        .row("g / G", l(crate::i18n::Msg::TopBottom))
-        .row("l", l(crate::i18n::Msg::EnterDirectory))
-        .row("Enter", l(crate::i18n::Msg::ExpandInPlace))
-        .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
-        .row("h", l(crate::i18n::Msg::ToParent))
-        .row("a", l(crate::i18n::Msg::TreeAnchorRoot))
-        .row("A", l(crate::i18n::Msg::ResetRoot))
-        .row("d", l(crate::i18n::Msg::TreeDiffFile))
-        .row("/", l(crate::i18n::Msg::TreeFilter))
-        .row(".", l(crate::i18n::Msg::ToggleHidden))
-        .row("i", l(crate::i18n::Msg::TreeFileInfo));
-    // [[hint-shown-iff-key-acts]]: on an Office document `e` opens an Office app, not an editor.
-    if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternalEnv) {
-        tree = tree.row("e", l(msg));
-    }
-    vec![
-        tree.row("o", l(crate::i18n::Msg::TreeGitChangesHub))
-            .row("C", l(crate::i18n::Msg::ChangedFilterHelp))
-            .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
-            .row("F", l(crate::i18n::Msg::FollowHelp))
-            .row("r", l(crate::i18n::Msg::Refresh))
-            .row("s", l(crate::i18n::Msg::SortHint))
-            .row("m / '", l(crate::i18n::Msg::TreeBookmarkHint))
-            .row(crate::ui::status::page_help(app), ""),
-        // File management (the Space leader) is built from the actual keymap (config already reflected).
-        // Delete is y = trash / ! = permanent delete; create uses a trailing / for a folder.
-        crate::ui::help::leader_section(app, crate::keymap::LeaderId::File, "Space")
-            .unwrap_or_else(|| HelpSection::new(l(crate::i18n::Msg::TreeFile))),
-        HelpSection::new(l(crate::i18n::Msg::TreeSelection))
-            .row("v", l(crate::i18n::Msg::VisualRangeHint))
-            .row("V", l(crate::i18n::Msg::ToggleOne))
-            .row(
-                l(crate::i18n::Msg::TreeDragDrop),
-                l(crate::i18n::Msg::TreeDropFiles),
-            ),
-        HelpSection::new(l(crate::i18n::Msg::TreeGitStatus))
-            .row("M", l(crate::i18n::Msg::TreeModified))
-            .row("A", l(crate::i18n::Msg::TreeAddedStaged))
-            .row("U", l(crate::i18n::Msg::Untracked))
-            .row("D", l(crate::i18n::Msg::TreeDeleted))
-            .row("R / T / !", l(crate::i18n::Msg::TreeStatusRenamed)),
-    ]
-}
-
-/// The Tree view's footer key hints (high → low priority). **Edit here to change the Tree footer**.
-/// It reads `&App`, so in the future it can also switch by cursor position or selection state.
+/// The Tree view's footer key hints (high → low priority): the footer plan of the tree context
+/// (`ops::footer`), with the keys generated from the keymap.
+#[cfg(test)]
 pub fn footer_hints(app: &App) -> Vec<String> {
-    let lang = app.lang;
-    // With multiple tabs, q = close the tab (+ Q = quit); with the last one, q = quit.
-    let multi = app.tab_count() > 1;
-    let mut v = vec![
-        hint(lang, "jk", crate::i18n::Msg::GitMove),
-        hint(lang, "l", crate::i18n::Msg::HintEnter),
-        hint(lang, "h", crate::i18n::Msg::HintUp),
-        hint(
-            lang,
-            "q",
-            if multi {
-                crate::i18n::Msg::HintCloseTab
-            } else {
-                crate::i18n::Msg::HintQuit
-            },
-        ),
-    ];
-    if multi {
-        v.push(hint(lang, "Q", crate::i18n::Msg::HintQuit));
-    }
-    v.extend([
-        hint(lang, "?", crate::i18n::Msg::HintHelp),
-        hint(lang, "/", crate::i18n::Msg::HintFilter),
-        hint(lang, "Space", crate::i18n::Msg::HintFileOps),
-    ]);
-    v.extend(crate::ui::preview::edit_footer_hint(app));
-    v.extend([
-        hint(lang, "o", crate::i18n::Msg::HintGit),
-        hint(lang, "d", crate::i18n::Msg::HintDiff),
-        hint(lang, "C", crate::i18n::Msg::StChangedOnly),
-        hint(lang, "F", crate::i18n::Msg::StFollow),
-        hint(lang, "y", crate::i18n::Msg::CopyHint),
-        hint(lang, "t", crate::i18n::Msg::HintTab),
-        hint(lang, "C-t", crate::i18n::Msg::HintNewTab),
-        hint(lang, "[/]", crate::i18n::Msg::HintTab),
-        hint(lang, "p", crate::i18n::Msg::HintPath),
-        hint(lang, ".", crate::i18n::Msg::HintHidden),
-        hint(lang, "i", crate::i18n::Msg::HintInfo),
-        hint(lang, "s", crate::i18n::Msg::HintSort),
-        hint(lang, "m", crate::i18n::Msg::HintMark),
-        hint(lang, "'", crate::i18n::Msg::HintBookmarks),
-        hint(lang, "P", crate::i18n::Msg::HintPasteJump),
-        hint(lang, "v", crate::i18n::Msg::HintVisual),
-        hint(lang, "V", crate::i18n::Msg::HintPick),
-        hint(lang, "a", crate::i18n::Msg::HintAnchor),
-        page_hint(app),
-    ]);
-    v
+    crate::ops::footer::tokens(app, crate::keymap::Context::Tree)
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -562,22 +464,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
-        let secs = help_sections(&app);
+        let secs = crate::ops::help::sections(&app);
         assert!(
             secs.len() >= 3,
             "ツリー/ファイル管理/選択など複数セクション"
         );
-        // The first section is tree operations. It includes representative key rows.
-        let tree = &secs[0];
-        assert_eq!(tree.title, tr(app.lang, crate::i18n::Msg::TreeSection));
+        // The sections follow the layers: movement (`j / k`) is its own section, the tree's own
+        // operations another. Both include representative key rows.
+        let all: Vec<&(String, String)> = secs.iter().flat_map(|s| s.rows.iter()).collect();
         assert!(
-            tree.rows.iter().any(|(k, _)| k.contains("j / k")),
-            "j/k 行が無い: {:?}",
-            tree.rows
+            all.iter().any(|(k, _)| k.contains("j / k")),
+            "j/k 行が無い: {all:?}"
         );
+        let tree = secs
+            .iter()
+            .find(|s| s.title == tr(app.lang, crate::i18n::Msg::TreeSection))
+            .expect("ツリー節が無い");
         assert!(
             tree.rows.iter().any(|(k, _)| k == "o"),
-            "git 変更ハブ(o)の行が無い"
+            "git 変更ハブ(o)の行が無い: {:?}",
+            tree.rows
         );
         // No section is empty (confirms the policy of never creating a title-only section).
         assert!(

@@ -2620,14 +2620,16 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(toks.iter().any(|t| t == "↵:full screen"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "+/-:zoom"), "{toks:?}");
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "1x なのに pan/fit が出ている: {toks:?}"
     );
 
     // Zoomed and on screen: hjkl:pan + 0:fit appear.
     app.image_zoom_by(2.0);
     let toks = hint_tokens(&app);
-    assert!(toks.iter().any(|t| t == "hjkl:pan"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "h/j/k/l:pan"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "0:fit"), "{toks:?}");
 
     // Scrolled off screen while still zoomed: pan/fit hints disappear again (mirrors
@@ -2637,7 +2639,9 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(app.tab.fence_zoom > 1.9, "前提: ズーム状態は保持");
     let toks = hint_tokens(&app);
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "画面外なのに pan/fit が出ている: {toks:?}"
     );
     assert!(

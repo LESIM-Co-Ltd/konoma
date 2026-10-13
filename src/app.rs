@@ -429,25 +429,6 @@ impl crate::keymap::Surface {
     }
 }
 
-/// Preview paging key style. Specified via the `ui.keys` setting (default vim).
-/// Diffs use only the page/half-page keys. j/k line movement, arrows, and PageUp/Down are common to both styles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyScheme {
-    /// vim style: Ctrl-f/Ctrl-b=page, Ctrl-d/Ctrl-u=half.
-    Vim,
-    /// less style: Space/b=page, d/u=half.
-    Less,
-}
-
-impl KeyScheme {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "less" => Self::Less,
-            _ => Self::Vim,
-        }
-    }
-}
-
 /// diff layout (config `git.diff`; cycle at runtime with `s`). Auto picks vertical/horizontal automatically from the terminal width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLayout {
@@ -1498,7 +1479,6 @@ pub struct App {
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
-    pub key_scheme: KeyScheme,
     pub lang: crate::i18n::Lang,
     pub cfg: Config,
 
@@ -3378,7 +3358,6 @@ impl Default for PerTab {
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
-        let key_scheme = KeyScheme::parse(&cfg.ui.keys);
         let lang = crate::i18n::Lang::resolve(&cfg.ui.lang);
         let sort = Sort::from_config(&cfg.ui.sort);
         // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
@@ -3399,7 +3378,6 @@ impl App {
         let mut app = Self {
             launch_dir: root.clone(),
             path_style,
-            key_scheme,
             lang,
             cfg,
             sort,
@@ -3971,7 +3949,7 @@ impl App {
     /// document, slides, a mermaid diagram) rather than source or plain text. A windowed preview
     /// (code, plain text, a document's raw source after `R`) is text; so is a preview that cannot
     /// be shown yet or at all (a Word file still converting, an unsupported type).
-    fn shows_document(&self) -> bool {
+    pub(crate) fn shows_document(&self) -> bool {
         !self.is_windowed() && self.is_decorated_kind() && !self.document_text_missing()
     }
 
@@ -3981,12 +3959,35 @@ impl App {
     /// version-control screens. The one place that decides the context; `handle_key` uses nothing
     /// else.
     pub fn key_context(&self) -> Option<crate::keymap::Context> {
-        // A build without `git` has no jj (and `VcsKind` has no `Jj`).
+        let sfc = self.surface();
+        crate::keymap::Context::of_surface(sfc, self.shows_document(), self.screen_is_jj(sfc))
+    }
+
+    /// Whether the version-control screen `sfc` is open for a jj repository: the cached `git_vcs`
+    /// (settled by the background scan) or the root itself (so the screens name the right keys from
+    /// their first frame, before the scan lands).
+    fn screen_is_jj(&self, sfc: crate::keymap::Surface) -> bool {
         #[cfg(feature = "git")]
-        let jj = self.git_vcs == crate::vcs::VcsKind::Jj;
+        {
+            sfc.is_vcs_screen() && crate::ops::backend(self) == crate::keymap::Backend::Jj
+        }
         #[cfg(not(feature = "git"))]
-        let jj = false;
-        crate::keymap::Context::of_surface(self.surface(), self.shows_document(), jj)
+        {
+            let _ = sfc;
+            false
+        }
+    }
+
+    /// The context of the screen at the bottom of the stack (the tree, or the preview underneath),
+    /// ignoring every overlay in front of it. The footer of the tree and of the previews is the
+    /// plan of this context (`ops::footer`).
+    pub fn base_context(&self) -> crate::keymap::Context {
+        crate::keymap::Context::of_surface(
+            self.base_layer().surface(),
+            self.shows_document(),
+            false,
+        )
+        .unwrap_or(crate::keymap::Context::Tree)
     }
 
     // --- Copy/cut & paste (M7 Phase B, default keys Y/X/P, changeable via keymap) ---

@@ -19,6 +19,7 @@ mod i18n;
 mod keymap;
 #[cfg(test)]
 mod mem_tests;
+mod ops;
 mod plugins;
 mod preview;
 mod session;
@@ -1660,11 +1661,31 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
 /// Central dispatch that runs a resolved `Action`. Only `Quit` requests exit, returning `Ok(true)`.
 /// Surface-dependent behavior (motion amount, the q/Esc return target) branches on `sfc` (§5).
 fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> {
-    // A backend that only reads gets asked politely and answers here, once, rather than each write
-    // discovering it separately and failing in its own way.
-    #[cfg(feature = "git")]
-    if action.writes_repository() && !crate::vcs::caps(&app.tab.root).write {
-        app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+    // The one place that says whether an operation acts now (`ops::gate`): the footer and the help
+    // ask it too, so a key that would refuse is not offered. A refusal answers here, once, with the
+    // reason the handler used to flash ("the backend only reads", "not a repository", ...), rather
+    // than each handler discovering it separately and failing in its own way.
+    let ctx = app
+        .key_context()
+        .or_else(|| keymap::Context::of_surface(sfc, false, false))
+        .unwrap_or(keymap::Context::Tree);
+    // These handlers always started by waiting for a fresh scan; the gate reads its answer.
+    if ctx == keymap::Context::Tree
+        && matches!(
+            action,
+            Action::OpenGitDiffCursor
+                | Action::JumpNextChange
+                | Action::JumpPrevChange
+                | Action::ToggleChangedFilter
+        )
+        && !app.changed_filter()
+    {
+        app.ensure_git_status_now();
+    }
+    if let ops::Gate::Off(reason) = ops::gate(app, ctx, action) {
+        if let Some(msg) = reason {
+            app.flash = Some(crate::i18n::tr(app.lang, msg).to_string());
+        }
         return Ok(false);
     }
     match action {
@@ -1816,6 +1837,22 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::BookmarkClose => app.close_bookmark_list(),
         Action::InfoClose => app.toggle_info(),
         Action::ToggleTableCell => app.toggle_table_cell_view(),
+        // The default operations of the fixed keys.
+        Action::Cancel => {
+            handle_esc(app, sfc);
+        }
+        Action::TabListActivate => app.tab_list_activate(),
+        Action::OutlineJump => app.outline_jump(),
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerApply => app.git_graph_picker_apply(),
+        // A checkbox toggles, or a `<details>` summary expands/collapses (same as Enter).
+        Action::ToggleFocusedItem => {
+            if app.md_focused_task() {
+                app.md_toggle_focused_task();
+            } else if let Some(ord) = app.md_focused_details() {
+                app.toggle_details(ord);
+            }
+        }
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => app.git_diff_start_discard(),
         #[cfg(feature = "git")]
@@ -2096,99 +2133,34 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     false
 }
 
-/// Per-surface fixed handling of Enter (tree activate / preview link / confirm in each list).
-fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
-    match sfc {
-        Surface::Tree => app.tree_activate()?,
-        Surface::PreviewText => app.md_activate_focused()?,
-        Surface::Bookmarks => app.bookmark_list_jump(),
-        Surface::Tabs => app.tab_list_activate(),
-        Surface::Outline => app.outline_jump(),
-        // `Enter` opens the full-cell popup from the table grid, and (the same toggle) closes it
-        // again from inside the popup — mirrors `MermaidCaption`'s "Enter: full screen" idiom.
-        Surface::PreviewTable | Surface::TableCell => app.toggle_table_cell_view(),
-        #[cfg(feature = "git")]
-        Surface::GitChanges => {
-            if let Some(p) = app.git_view_selected() {
-                app.open_git_diff(&p);
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitLog => app.open_git_commit_detail(),
-        #[cfg(feature = "git")]
-        Surface::GitGraph => app.open_git_graph_detail(),
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => app.git_graph_picker_apply(),
-        #[cfg(feature = "git")]
-        Surface::GitBranches => app.checkout_selected_branch()?,
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => app.worktree_goto(),
-        _ => {}
-    }
-    Ok(false)
-}
-
-/// Keys with a fixed meaning regardless of surface (arrows = Navigate alias / Esc / Enter / Tab/BackTab = link ops).
+/// The fixed keys (arrows, `Home`/`End`, `Esc`, `Enter`, `Tab`/`Shift-Tab`, and `Space` while a
+/// checkbox or `<details>` of a document is focused). They cannot be rebound, but each has a
+/// default operation per context (`ops::keys::fixed_bindings`) and runs through `dispatch_action`
+/// like every other key, so the same guards apply (`ops::gate`, `writes_repository`): `Enter` on a
+/// jj bookmark list no longer reaches the checkout.
 /// Returns `Some(quit)` when handled, or `None` if not a fixed key (falls through to keymap resolution). Requirements 3/4.
-fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option<bool>> {
-    let done = match key.code {
-        KeyCode::Up => {
-            dispatch_navigate(app, sfc, Motion::Up);
-            false
-        }
-        KeyCode::Down => {
-            dispatch_navigate(app, sfc, Motion::Down);
-            false
-        }
-        KeyCode::Left => {
-            dispatch_navigate(app, sfc, Motion::Left);
-            false
-        }
-        KeyCode::Right => {
-            dispatch_navigate(app, sfc, Motion::Right);
-            false
-        }
-        KeyCode::Home => {
-            dispatch_navigate(app, sfc, Motion::Top);
-            false
-        }
-        KeyCode::End => {
-            dispatch_navigate(app, sfc, Motion::Bottom);
-            false
-        }
-        KeyCode::Esc => handle_esc(app, sfc),
-        KeyCode::Enter => handle_enter(app, sfc)?,
-        // Markdown link/checkbox: Tab = next / ⇧Tab = previous (decorated text preview only —
-        // while showing the raw source (R), the decorated view's items are stale, so don't move;
-        // on other surfaces, swallowed with no effect).
-        KeyCode::Tab => {
-            if sfc == Surface::PreviewText && !app.is_raw_source() {
-                app.md_focus_move(1);
-            }
-            false
-        }
-        KeyCode::BackTab => {
-            if sfc == Surface::PreviewText && !app.is_raw_source() {
-                app.md_focus_move(-1);
-            }
-            false
-        }
-        // Markdown checkbox: Space toggles only while focused. With no focus, fall through to
-        // the keymap (doesn't steal less's convention of Space = PageDown).
-        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_task() => {
-            app.md_toggle_focused_task();
-            false
-        }
-        // While focused on a <details> summary, Space toggles the collapse (same as Enter).
-        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_details().is_some() => {
-            if let Some(ord) = app.md_focused_details() {
-                app.toggle_details(ord);
-            }
-            false
-        }
-        _ => return Ok(None),
+fn handle_fixed_key(
+    app: &mut App,
+    sfc: Surface,
+    ctx: Option<keymap::Context>,
+    key: KeyEvent,
+) -> Result<Option<bool>> {
+    let Some(ctx) = ctx else {
+        return Ok(None);
     };
-    Ok(Some(done))
+    let is_space = key.code == KeyCode::Char(' ');
+    if !is_space && !ops::keys::is_fixed_code(key.code) {
+        return Ok(None);
+    }
+    let Some(action) = ops::keys::fixed_action(ctx, key.code) else {
+        // `Space` with nothing to toggle belongs to the keymap (less's `Space` pages); every other
+        // fixed key simply does nothing on this screen.
+        return Ok(if is_space { None } else { Some(false) });
+    };
+    if is_space && !ops::action_enabled(app, ctx, action) {
+        return Ok(None);
+    }
+    dispatch_action(app, action, sfc).map(Some)
 }
 
 /// Key handling (Run2: keymap-driven). Returns `Ok(true)` to request exit. Kept thin, following the §5 flow:
@@ -2240,7 +2212,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
     // 3) Pre-empt surface-independent fixed keys (arrows = Navigate / Esc / Enter / Tab·BackTab) (requirements 3/4).
-    if let Some(done) = handle_fixed_key(app, sfc, key)? {
+    if let Some(done) = handle_fixed_key(app, sfc, ctx, key)? {
         return Ok(done);
     }
 

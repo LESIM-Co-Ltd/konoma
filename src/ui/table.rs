@@ -224,9 +224,11 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered()
         .title(title)
         .title_bottom(
-            Line::from(tr(app.lang, crate::i18n::Msg::TableCellActions))
-                .centered()
-                .dim(),
+            Line::from(
+                crate::ops::footer::tokens(app, crate::keymap::Context::TableCell).join("  "),
+            )
+            .centered()
+            .dim(),
         )
         .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(popup);

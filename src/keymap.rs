@@ -344,6 +344,24 @@ pub enum Action {
     /// inside the popup closes it via this same action) and round-trips through
     /// `action_from_str`/`action_name`.
     ToggleTableCell,
+
+    // --- The default operation of the fixed keys (`Enter`, `Esc`, `Space`; plugin stage 2 / B2) ---
+    // These keys cannot be rebound, but they run through `dispatch_action` like every other key so
+    // that the same guards apply (`writes_repository`, the `ops::gate` check) and so that the help
+    // and the footer can name them from the same declaration.
+    /// `Esc`: leave / cancel / clear whatever the frontmost context calls "the thing I am in"
+    /// (close an overlay, clear a search or filter, go back one screen). What it does in each
+    /// context is `handle_esc` in main.rs.
+    Cancel,
+    /// `Enter` in the tab list: switch to the selected tab.
+    TabListActivate,
+    /// `Enter` in the heading outline: jump to the selected heading.
+    OutlineJump,
+    /// `Enter` in the graph's branch panel: apply the visibility choice.
+    #[cfg(feature = "git")]
+    GitGraphPickerApply,
+    /// `Space` in a decorated document: toggle the focused checkbox or `<details>`.
+    ToggleFocusedItem,
 }
 
 #[cfg(feature = "git")]
@@ -461,6 +479,21 @@ impl Surface {
                 | Surface::DialogRenamePreview
                 | Surface::DialogConfirmQuit
                 | Surface::DialogConfirmBookmark
+        )
+    }
+
+    /// Whether this is one of the version-control screens, which are opened for git or for jj.
+    #[cfg(feature = "git")]
+    pub fn is_vcs_screen(self) -> bool {
+        matches!(
+            self,
+            Surface::GitDetail
+                | Surface::GitLog
+                | Surface::GitGraph
+                | Surface::GitGraphPicker
+                | Surface::GitBranches
+                | Surface::GitChanges
+                | Surface::GitWorktrees
         )
     }
 
@@ -1931,6 +1964,113 @@ impl KeyMap {
     }
 }
 
+impl KeyMap {
+    /// Every key that runs `action` in `ctx` right now (config applied), in a fixed display order:
+    /// plain characters first, then Ctrl-chords, then named keys. A key counts only if it
+    /// *resolves* to the action, so a key shadowed by a more specific layer is not listed. The
+    /// fixed keys (`Enter`, `Esc`, ...) are not in the keymap; `ops::keys` adds them.
+    pub fn keys_of(&self, ctx: Context, action: Action) -> Vec<KeyPress> {
+        let want = Binding::Run(action);
+        let mut out: Vec<KeyPress> = Vec::new();
+        self.each_key_of(ctx, |k, b| {
+            if *b == want
+                && !out.contains(&k)
+                && self.resolve(ctx, None, k) == Resolution::Action(action)
+            {
+                out.push(k);
+            }
+        });
+        out.sort_by_key(|k| display_order(*k));
+        out
+    }
+
+    /// The keys that open a leader menu in `ctx` (`y`, `Space`, ...), with the menu each opens.
+    pub fn leader_keys_of(&self, ctx: Context) -> Vec<(KeyPress, LeaderId)> {
+        let mut out: Vec<(KeyPress, LeaderId)> = Vec::new();
+        self.each_key_of(ctx, |k, b| {
+            if let Binding::Leader(id) = b {
+                if !out.iter().any(|(o, _)| *o == k)
+                    && self.resolve(ctx, None, k) == Resolution::EnterLeader(*id)
+                {
+                    out.push((k, *id));
+                }
+            }
+        });
+        out.sort_by_key(|(k, _)| display_order(*k));
+        out
+    }
+
+    /// Visit every `(key, binding)` of the tables `ctx` looks into: its own, its view types',
+    /// the basic one and `global`. Allocation-free; the footer asks every frame.
+    fn each_key_of(&self, ctx: Context, mut f: impl FnMut(KeyPress, &Binding)) {
+        if let Some(m) = self.contexts.get(&ctx) {
+            m.iter().for_each(|(k, b)| f(*k, b));
+        }
+        for vt in ctx.view_types() {
+            if let Some(m) = self.types.get(vt) {
+                m.iter().for_each(|(k, b)| f(*k, b));
+            }
+        }
+        if ctx.inherits_basic() {
+            self.basic.iter().for_each(|(k, b)| f(*k, b));
+        }
+        self.global.iter().for_each(|(k, b)| f(*k, b));
+    }
+}
+
+/// Which layer of the keymap a key comes from, for the `?` help's sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLayer {
+    /// Layer 0: every context inherits it (tabs, help, quit).
+    Global,
+    /// Layer 1: movement every context with a cursor shares.
+    Basic,
+    /// The context's own table and the table of its view type.
+    View,
+}
+
+impl KeyMap {
+    /// Where `kp` is defined for `ctx` (`None` = not bound there). The same lookup order as
+    /// [`KeyMap::resolve`].
+    pub fn layer_of_key(&self, ctx: Context, kp: KeyPress) -> Option<KeyLayer> {
+        if let Some(b) = self.contexts.get(&ctx).and_then(|m| m.get(&kp)) {
+            return (*b != Binding::Unbound).then_some(KeyLayer::View);
+        }
+        for vt in ctx.view_types() {
+            if self.types.get(vt).is_some_and(|m| m.contains_key(&kp)) {
+                return Some(KeyLayer::View);
+            }
+        }
+        if ctx.inherits_basic() && self.basic.contains_key(&kp) {
+            return Some(KeyLayer::Basic);
+        }
+        self.global.contains_key(&kp).then_some(KeyLayer::Global)
+    }
+}
+
+/// The order keys are listed in: plain characters (by code point, so `j` before `k`, `J` before
+/// `j`), then Ctrl-chords, then named keys.
+fn display_order(k: KeyPress) -> (u8, u32) {
+    match (k.ctrl, k.code) {
+        (false, KeyCode::Char(c)) => (0, c as u32),
+        (true, KeyCode::Char(c)) => (1, c as u32),
+        (_, other) => (
+            2,
+            match other {
+                KeyCode::Enter => 0,
+                KeyCode::Tab => 1,
+                KeyCode::BackTab => 2,
+                KeyCode::Esc => 3,
+                KeyCode::PageDown => 4,
+                KeyCode::PageUp => 5,
+                KeyCode::Home => 6,
+                KeyCode::End => 7,
+                _ => 99,
+            },
+        ),
+    }
+}
+
 fn binding_to_resolution(b: &Binding) -> Resolution {
     match b {
         Binding::Run(a) => Resolution::Action(*a),
@@ -2370,6 +2510,12 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "info_close" => Action::InfoClose,
         // Table cell popup
         "toggle_table_cell" => Action::ToggleTableCell,
+        "cancel" => Action::Cancel,
+        "tab_list_activate" => Action::TabListActivate,
+        "outline_jump" => Action::OutlineJump,
+        #[cfg(feature = "git")]
+        "git_graph_picker_apply" => Action::GitGraphPickerApply,
+        "toggle_focused_item" => Action::ToggleFocusedItem,
         // Git (feature gate)
         #[cfg(feature = "git")]
         "git_diff_discard" => Action::GitDiffDiscard,
@@ -2564,6 +2710,12 @@ pub fn action_name(a: Action) -> String {
         Action::BookmarkClose => "bookmark_close",
         Action::InfoClose => "info_close",
         Action::ToggleTableCell => "toggle_table_cell",
+        Action::Cancel => "cancel",
+        Action::TabListActivate => "tab_list_activate",
+        Action::OutlineJump => "outline_jump",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerApply => "git_graph_picker_apply",
+        Action::ToggleFocusedItem => "toggle_focused_item",
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
         #[cfg(feature = "git")]
