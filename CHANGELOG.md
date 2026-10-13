@@ -7,6 +7,15 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
+- **`[[preview.rules]]` now adds to the defaults instead of replacing them.** Which plugin shows a file is settled by
+  one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins (markdown, mermaid, svg,
+  image, csv, spreadsheet, document, presentation, archive, code, video, pdf), then plain text, then
+  `[can not preview]`. With no rules of your own every file is decided exactly as before. If your config wrote
+  `[[preview.rules]]`, the files you did not name used to fall to plain text and now keep their standard viewer; to
+  keep the old effect for one kind, switch the standard plugin off with `[plugins.<id>] enabled = false`.
+  `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
+  by extension. New: `konoma --plugins` lists every assignment (yours first), and an unknown `[plugins.<id>]` is
+  reported at startup.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
   under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
   (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block

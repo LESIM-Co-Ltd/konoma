@@ -23,13 +23,16 @@ pub struct Config {
     pub git: GitConfig,
     pub jj: JjConfig,
     pub external: ExternalConfig,
+    /// `[plugins.<id>]`: `enabled = false` switches a plugin off; the other keys are the plugin's
+    /// own settings.
+    pub plugins: crate::plugins::PluginTables,
 }
 
 /// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
-/// `true`, so an absent section changes nothing. Unlike `[[preview.rules]]` (where writing one user rule
-/// **replaces** the whole builtin list — see `PreviewConfig::default`), these flags are independent
-/// toggles layered on top of whatever preview rules are in effect: they gate the specific mechanism, not
-/// the rule table. `[ui] lang` already has its own explicit/auto switch for OS-language lookup
+/// `true`, so an absent section changes nothing. Like `[[preview.rules]]` (user rules are tried before the standard
+/// plugins' assignments, see `PreviewConfig::default`), these flags are independent toggles layered
+/// on top of whatever preview rules are in effect: they gate the specific mechanism, not the rule
+/// table. `[ui] lang` already has its own explicit/auto switch for OS-language lookup
 /// (`Lang::resolve`), so there is deliberately no separate flag for it here.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -784,7 +787,10 @@ pub fn lighten(c: Color) -> Color {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// `[[preview.rules]]`: the user's assignments, tried first. The default assignments (markdown,
+/// mermaid, svg, image, csv, ...) are not listed here; they come from the standard plugins'
+/// declarations (`crate::plugins`), so the default is no rules at all.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PreviewConfig {
     pub rules: Vec<Rule>,
@@ -859,117 +865,6 @@ impl Default for UiConfig {
     }
 }
 
-impl Default for PreviewConfig {
-    fn default() -> Self {
-        // Default delegation rules. External dependencies are always optional.
-        Self {
-            rules: vec![
-                Rule {
-                    glob: Some("*.md".into()),
-                    builtin: Some("markdown".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.{mmd,mermaid}".into()),
-                    builtin: Some("mermaid".into()), // a standalone mermaid file is rendered via mermaid-text
-                    ..Rule::empty()
-                },
-                Rule {
-                    // SVG is picked up before raster images (infer also classifies svg as image/*, so order matters).
-                    glob: Some("*.svg".into()),
-                    builtin: Some("svg".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    mime: Some("image/*".into()),
-                    builtin: Some("image".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // CSV/TSV are shown as an aligned table (column rainbow + cell cursor).
-                    glob: Some("*.csv".into()),
-                    builtin: Some("csv".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.tsv".into()),
-                    builtin: Some("tsv".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Spreadsheets (Excel / OpenDocument) are shown as a table with the cells formatted
-                    // the way the application shows them. A glob (not a mime) so a deleted file's diff
-                    // still resolves the kind by name.
-                    glob: Some("*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}".into()),
-                    builtin: Some("spreadsheet".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Word documents are converted to Markdown and drawn by the Markdown renderer.
-                    // A glob (not a mime) so a deleted file's diff still resolves the kind by name.
-                    // (`.doc` is never previewed.) Presentations (PowerPoint, OpenDocument) take the
-                    // same route: one `##` heading per slide, `J`/`K` between them.
-                    glob: Some(
-                        "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"
-                            .into(),
-                    ),
-                    builtin: Some("document".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Archive contents listing (name/size/modified date). Doesn't extract (doesn't read the contents — principle #3).
-                    glob: Some("*.{zip,tar,tgz}".into()),
-                    builtin: Some("archive".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // globset's `*.{...}` alternation can't catch a compound extension joined by
-                    // plain dots (.tar.gz), so it's a separate rule (registering 2 rules side by
-                    // side, as with csv/tsv, mirrors the existing svg/image shape).
-                    glob: Some("*.tar.gz".into()),
-                    builtin: Some("archive".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}".into()),
-                    builtin: Some("code".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Video shows a built-in thumbnail (one representative frame). It doesn't play
-                    // inside the terminal.
-                    // If playback is wanted, the user swaps in a rule like command="mpv {path}" (delegation).
-                    mime: Some("video/*".into()),
-                    builtin: Some("video".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // PDF is shown built-in by rasterizing the page in pure Rust (hayro) — no
-                    // external tool needed. Only when hayro can't render it (encrypted/corrupted,
-                    // etc.) does it degrade, on macOS and for page 1 only, to the bundled
-                    // qlmanage/sips; failing that it safely falls back to a hint display (principle #3).
-                    glob: Some("*.pdf".into()),
-                    builtin: Some("pdf".into()),
-                    ..Rule::empty()
-                },
-            ],
-        }
-    }
-}
-
-impl Rule {
-    fn empty() -> Self {
-        Self {
-            glob: None,
-            mime: None,
-            builtin: None,
-            command: None,
-            render_as: None,
-            detached: false,
-        }
-    }
-}
-
 impl Config {
     /// Loads the config and returns (config, load error). On parse failure it returns the defaults along with an error string.
     /// The TUI uses this to surface the error as a startup message (since silently falling back to defaults would go unnoticed).
@@ -996,13 +891,16 @@ impl Config {
         }
     }
 
-    /// Determines the PreviewKind for the given path from the first matching rule.
-    /// When no rule matches, it judges text vs. binary and falls back to
-    /// the built-in text display for text, or safely to CanNotPreview for binary
-    /// (design principle 3 "unsupported is handled safely"; picks up extensionless README/LICENSE/Makefile, etc.).
+    /// Determines the PreviewKind for the given path. The user's `[[preview.rules]]` are tried
+    /// first, top to bottom; when none matches, the standard plugins take it in their
+    /// registration order (`crate::plugins`, `konoma_plugin::Registry::resolve_file`). When no
+    /// plugin matches, it judges text vs. binary and falls back to the built-in text display for
+    /// text, or safely to CanNotPreview for binary (design principle 3 "unsupported is handled
+    /// safely"; picks up extensionless README/LICENSE/Makefile, etc.).
     pub fn resolve_preview(&self, path: &Path) -> PreviewKind {
         resolve_preview_kind(
             &self.preview.rules,
+            &self.plugin_disabled(),
             self.external.preview_commands,
             path,
             None,
@@ -1032,91 +930,78 @@ impl Config {
     pub fn resolve_preview_with(&self, path: &Path, sniff: &[u8]) -> PreviewKind {
         resolve_preview_kind(
             &self.preview.rules,
+            &self.plugin_disabled(),
             self.external.preview_commands,
             path,
             Some(sniff),
         )
     }
+
+    /// The ids of the plugins `[plugins.<id>] enabled = false` switches off.
+    pub fn plugin_disabled(&self) -> Vec<String> {
+        crate::plugins::disabled_ids(&self.plugins)
+    }
+
+    /// The plugin's own settings from `[plugins.<id>]` (everything but `enabled`).
+    // Read by the plugins as they are wired to the display (later steps of stage 2).
+    #[allow(dead_code)]
+    pub fn plugin_settings(&self, id: &str) -> konoma_plugin::Settings {
+        self.plugins
+            .get(id)
+            .map(crate::plugins::settings_of)
+            .unwrap_or_default()
+    }
+
+    /// A one-line startup message about `[plugins.*]` mistakes (an unknown id, ...), if any.
+    pub fn plugin_report(&self, lang: crate::i18n::Lang) -> Option<String> {
+        let problems = crate::plugins::table_problems(&self.plugins, lang);
+        if problems.is_empty() {
+            None
+        } else {
+            Some(format!("plugins: {}", problems.join(" / ")))
+        }
+    }
 }
 
 /// The one implementation `Config::resolve_preview`/`resolve_preview_with` both call — see the
 /// latter's doc comment for why a deleted file needs this to be parameterized on an optional content
-/// sniff rather than always reading `path` itself. `rules`/`preview_commands` are passed as plain
-/// data (not `&Config`) so the media-diff worker (`app/media_diff.rs`) can call this from a thread
-/// with only a cloned snapshot of the two config fields it actually needs, mirroring how
-/// `MdDiffRequest` carries plain `md_frontmatter`/`md_footnotes`/`md_inline_html` booleans instead of
-/// a whole `&Config` (`app/md_diff.rs`'s module doc comment).
+/// sniff rather than always reading `path` itself. `rules`/`disabled`/`preview_commands` are passed
+/// as plain data (not `&Config`) so the media-diff worker (`app/media_diff.rs`) can call this from
+/// a thread with only a cloned snapshot of the config fields it actually needs, mirroring how
+/// `MdDiffRequest` carries plain `md_frontmatter`/`md_footnotes`/`md_inline_html` booleans instead
+/// of a whole `&Config` (`app/md_diff.rs`'s module doc comment).
 pub(crate) fn resolve_preview_kind(
     rules: &[Rule],
+    disabled: &[String],
     preview_commands: bool,
     path: &Path,
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
     #[cfg(test)]
     crate::test_support::note_resolve_preview_call();
-    for rule in rules {
-        if rule_matches(rule, path, sniff) {
-            let kind = PreviewKind::from_rule(rule, path);
-            // `[external] preview_commands = false`: a matching `command = "..."` rule behaves as
-            // if it hadn't matched at all (falls through to the safe CanNotPreview below), rather
-            // than launching the external tool. Builtin renderers are unaffected.
-            if matches!(kind, PreviewKind::Command { .. }) && !preview_commands {
-                return PreviewKind::can_not_preview(path);
-            }
-            return kind;
-        }
-    }
-    let is_text = match sniff {
-        Some(bytes) => crate::preview::text::is_probably_text_bytes(bytes),
-        None => crate::preview::text::is_probably_text(path),
-    };
-    if is_text {
-        PreviewKind::Text(path.to_path_buf())
-    } else {
-        PreviewKind::can_not_preview(path)
-    }
+    crate::plugins::resolve_kind(rules, disabled, preview_commands, path, sniff)
 }
 
+/// Test stand-in for the matcher that used to live here: whether `rule` takes `path`, judged by the
+/// plugin registry's own matching (`plugins::rule_hits`). The content sniff is the file's own, or
+/// the given bytes.
+#[cfg(test)]
 fn rule_matches(rule: &Rule, path: &Path, sniff: Option<&[u8]>) -> bool {
-    if let Some(glob) = &rule.glob {
-        // Match case-insensitively so uppercase extensions (README.MD / *.RS etc.) aren't missed.
-        // A lowercase pattern already matches lowercase names, so existing behavior is unchanged.
-        if let Ok(set) = globset::GlobBuilder::new(glob)
-            .case_insensitive(true)
-            .build()
-            .map(|g| g.compile_matcher())
-        {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if set.is_match(name) {
-                return true;
-            }
-        }
-    }
-    if let Some(mime_pat) = &rule.mime {
-        // `sniff` in means the file may not exist on disk at all (a deleted file's old bytes,
-        // `resolve_preview_with`) — sniff the given bytes with `infer::get` instead of asking
-        // `infer::get_from_path` to open a path that could fail to exist.
-        let kind = match sniff {
-            Some(bytes) => infer::get(bytes),
-            None => infer::get_from_path(path).ok().flatten(),
-        };
-        if let Some(kind) = kind {
-            let mime = kind.mime_type();
-            if mime_glob_match(mime_pat, mime) {
-                return true;
-            }
-        }
-    }
-    false
+    let kind = match sniff {
+        Some(bytes) => infer::get(bytes),
+        None => infer::get_from_path(path).ok().flatten(),
+    };
+    crate::plugins::rule_hits(rule, path, kind.map(|k| k.mime_type()))
 }
 
-/// Simple mime glob matching like "image/*".
+/// Test stand-in: does a rule with `mime = pattern` take content that reads as `mime`?
+#[cfg(test)]
 fn mime_glob_match(pattern: &str, mime: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        mime.starts_with(prefix)
-    } else {
-        pattern == mime
-    }
+    let rule = Rule {
+        mime: Some(pattern.to_string()),
+        ..Rule::default()
+    };
+    crate::plugins::rule_hits(&rule, Path::new("/x/file"), Some(mime))
 }
 
 /// Pure core of `dirs_config_path`: given the already-resolved config-scope base (whatever

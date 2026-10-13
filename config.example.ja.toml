@@ -360,7 +360,13 @@ code_label_bg = "auto"
 #               "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon" など。
 code_theme = "TwoDark"
 
-# プレビュールールは上から評価し、最初にマッチしたものを使う。
+# プレビュールールは「あなたの割り当て」: 上から評価し、最初にマッチしたものを使う。どれにもマッチしない
+# ファイルは標準プラグイン(markdown・mermaid・svg・image・csv・spreadsheet・document・presentation・archive・
+# code・video・pdf)へ進み、下に並べた既定の割り当てで決まる。つまりルールを書くと既定に**加わる**
+# (従来のように既定を丸ごと置き換えない)。`konoma --plugins` で全割り当て(自分のルール→標準の順)を
+# 一覧できる。標準プラグインを止めるには `[plugins.<id>] enabled = false`(下の「プラグイン」)。
+# 何にも割り当たらないファイルは、テキストとして読めればテキスト、そうでなければ [can not preview: <ext>]。
+# 以下のルールは既定の割り当てをコメントアウトして載せたもの。外して書き換えるとそのファイルを自分で引き取れる。
 # builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "spreadsheet" | "document" | "code" | "text")
 #   markdown=konoma 自前のレンダラで装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
@@ -396,66 +402,78 @@ code_theme = "TwoDark"
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
 # detached: 別プロセスで開きTUIをブロックしない(動画等)
 
-[[preview.rules]]
-glob = "*.md"
-builtin = "markdown"
+# [[preview.rules]]
+# glob = "*.md"
+# builtin = "markdown"
 
-[[preview.rules]]
-glob = "*.{mmd,mermaid}"
-builtin = "mermaid"        # 既定=画像描画([ui] mermaid)。外部ツールに委譲したい場合は下の command 例参照
+# [[preview.rules]]
+# glob = "*.{mmd,mermaid}"
+# builtin = "mermaid"        # 既定=画像描画([ui] mermaid)。外部ツールに委譲したい場合は下の command 例参照
 # command = "merman -i {path} -o {out}.png --scale 2"
 # render_as = "image"
 
-[[preview.rules]]
-glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
-builtin = "svg"
+# [[preview.rules]]
+# glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
+# builtin = "svg"
 
-[[preview.rules]]
-mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
-builtin = "image"
+# [[preview.rules]]
+# mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
+# builtin = "image"
 
-[[preview.rules]]
-glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
-builtin = "csv"
+# [[preview.rules]]
+# glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
+# builtin = "csv"
 
-[[preview.rules]]
-glob = "*.tsv"             # タブ区切り版
-builtin = "tsv"
+# [[preview.rules]]
+# glob = "*.tsv"             # タブ区切り版
+# builtin = "tsv"
 
-[[preview.rules]]
-glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
-builtin = "spreadsheet"
+# [[preview.rules]]
+# glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
+# builtin = "spreadsheet"
 
-[[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストを Markdown に変換して .md と同じに表示(R=変換後の Markdown)。プレゼンはスライドの絵で表示(J/K=スライド・R=文字表示)
-builtin = "document"
+# [[preview.rules]]
+# glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストを Markdown に変換して .md と同じに表示(R=変換後の Markdown)。プレゼンはスライドの絵で表示(J/K=スライド・R=文字表示)
+# builtin = "document"
 
-[[preview.rules]]
-glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.tar.gz"          # 複合拡張子は globset の alternation で拾えないため別ルール
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.tar.gz"          # 複合拡張子は globset の alternation で拾えないため別ルール
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
-builtin = "code"
+# [[preview.rules]]
+# glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
+# builtin = "code"
 
-[[preview.rules]]
-mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
+# [[preview.rules]]
+# mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
                            # mp4/m4v/mov と mkv/webm の H.264 と HEVC は外部ツール不要。他のコーデック/コンテナは ffmpeg があれば使う
-builtin = "video"
+# builtin = "video"
 # 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
 # command = "mpv {path}"
 # detached = true          # 別プロセスで開き TUI をブロックしない
 
-[[preview.rules]]
-glob = "*.pdf"             # 既定: ページを1枚ずつ hayro(純Rust・外部ツール不要)でラスタライズして全画面画像表示(J/K でページ送り)
+# [[preview.rules]]
+# glob = "*.pdf"             # 既定: ページを1枚ずつ hayro(純Rust・外部ツール不要)でラスタライズして全画面画像表示(J/K でページ送り)
                            # macOS に限り、hayro が描けない PDF は OS 同梱の qlmanage/sips へフォールバック(1ページ目のみ)
-builtin = "pdf"
+# builtin = "pdf"
 
-# どのルールにもマッチしないファイルは [can not preview: <ext>] を全画面表示。
+# どのルールにもプラグインにもマッチしないファイルは [can not preview: <ext>] を全画面表示(テキストとして読めればテキスト)。
+
+# ── プラグイン ───────────────────────────────────────────────────────────────
+# プレビューはプラグインが作る。標準で入っているのは markdown・mermaid・math(Markdown 中の数式)・svg・image・
+# csv(csv と tsv)・spreadsheet・document(Word)・presentation・archive・code・video・pdf。
+# `[plugins.<id>]` が 1 つのプラグインの表:
+#   enabled = false    そのプラグインを止める — 担当のファイルは次の段(テキストとして読めればテキスト、
+#                      そうでなければ [can not preview])へ進む。未知の id は起動時に知らせる。
+# 表のほかのキーはそのプラグイン自身の設定(後の版で対応する `[ui]` のキーを置き換える予定。今はまだ読まれない)。
+# [plugins.markdown]
+# enabled = false
+# [plugins.video]
+# enabled = false
 
 # ── キーバインド (FR-8) ──────────────────────────────────────────────────────
 # 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
@@ -613,9 +631,8 @@ worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で
 
 # ── 外部プロセスのスイッチ ───────────────────────────────────────────────────
 # konoma が起動する外部プロセスを1個ずつ on/off できる。既定は全て `true`(挙動は変わらない)。
-# `[[preview.rules]]` で個別に止めようとしないこと — ユーザー定義ルールを1つでも書くと**既定の
-# ルール一覧が丸ごと置き換わる**ため、PDF/動画だけを狙って止めることができず、Markdown・画像・
-# CSV 等も一緒に効かなくなる。`[ui] lang` は既に明示/自動の切替を持つので、ここには専用フラグを
+# PDF や動画など 1 種類のプレビューを止めたいときは `[[preview.rules]]` でなく
+# `[plugins.<id>] enabled = false` を使う(ここのスイッチは外部プロセスを、あちらは標準プラグインを止める)。`[ui] lang` は既に明示/自動の切替を持つので、ここには専用フラグを
 # 足していない(OS 言語取得は `lang` を明示すれば呼ばれない)。
 [external]
 git              = true   # git 連携(status 色/ガター/Git ビュー/stage・commit・checkout — git CLI + 組込み git2)。

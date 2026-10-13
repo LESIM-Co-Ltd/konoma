@@ -231,6 +231,7 @@ cargo build --release
 konoma [DIR]     # opens DIR (defaults to the current directory)
 konoma --help    # -h — print usage and exit
 konoma --version # -V — print the version and exit
+konoma --plugins # list which plugin shows which files, then exit
 ```
 
 Press `?` in the app for the full, context-sensitive key reference.

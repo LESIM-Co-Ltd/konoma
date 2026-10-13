@@ -1729,6 +1729,7 @@ dependencies = [
  "konoma-media-core",
  "konoma-mermaid-core",
  "konoma-office-core",
+ "konoma-plugin",
  "konoma-svg",
  "konoma-test-support",
  "konoma-vcs-core",

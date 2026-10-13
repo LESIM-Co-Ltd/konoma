@@ -121,9 +121,11 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 評価され、最初にマッチしたものが使われます。`glob`(ファイル名・大文字小文字無視)か
 `mime`(内容判定・例 `"image/*"`)でマッチし、内蔵レンダラか外部コマンドで描画します。
 
-> **注意:** config に `[[preview.rules]]` を1つでも書くと、その一覧が既定ルールを
-> **置き換えます**。1件だけ足すのではなく、`config.example.toml` の全ルールを
-> コピーして編集してください。
+> **注意:** `[[preview.rules]]` は先に評価され、どれにもマッチしないファイルは**標準プラグイン**
+> (markdown・mermaid・svg・image・csv・spreadsheet・document・presentation・archive・code・video・pdf)
+> の既定の割り当てへ進みます。つまり1件書いても既定に**加わる**だけで、置き換えません。
+> `konoma --plugins` で全割り当て(自分のルールが先)を一覧でき、標準プラグインを止めるには
+> `[plugins.<id>] enabled = false`(下)を使います。
 
 内蔵レンダラ(`builtin = "..."`):
 
@@ -168,7 +170,7 @@ command = "dot -Tpng -o {out}.png {path}"   # シェルを経由しないので 
 
 ```toml
 [[preview.rules]]
-glob = "*.{mmd,mermaid}"    # 既定の builtin = "mermaid" ルールを置き換える
+glob = "*.{mmd,mermaid}"    # 標準の mermaid プラグインより先に評価される
 render_as = "image"
 command = "mmdc -q -i {path} -o {out}.png -t dark -b transparent -s 3"
 ```
@@ -202,6 +204,20 @@ command = "mmdc -q -i {path} -o {out}.png -t dark -b transparent -s 3"
 どのルールにも合わずテキストにも見えないファイルは、安全な
 `[can not preview: <ext>]` 画面になります — konoma は未知の入力でクラッシュせず、
 任意ツールの不在はヒント表示に降格します。
+
+## `[plugins.<id>]` — 標準プラグインを止める
+
+プレビューはプラグインが作ります。標準は `markdown`・`mermaid`・`math`(Markdown 中の数式)・`svg`・`image`・
+`csv`(CSV と TSV)・`spreadsheet`・`document`(Word)・`presentation`・`archive`・`code`・`video`・`pdf`。
+
+```toml
+[plugins.video]
+enabled = false      # 担当のファイルは次の段へ: テキストとして読めればテキスト、そうでなければ [can not preview]
+```
+
+未知の id は起動時に知らせます。`[plugins.<id>]` のほかのキーはそのプラグイン自身の設定で、後の版で対応する
+`[ui]` のキーを置き換える予定です(今はまだ読まれません)。`konoma --plugins` は、どのプラグインがどのファイルを
+表示するかを、ファイルが決まる順に一覧します。
 
 ## `[editor]` — 外部エディタ
 
@@ -275,10 +291,9 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 プレースホルダへ、無効化した `command` ルールは `[can not preview]` へ — クラッシュは
 しません。
 
-「1つだけ止めたい」場合も `[[preview.rules]]` で個別に対処しようとしないこと。上で
-触れたとおり、ユーザー定義ルールを1つでも書くと**既定のルール一覧が丸ごと置き換わる**
-ため、PDF や動画だけを狙って止めることができず、Markdown・画像・CSV 等も一緒に
-効かなくなります。
+PDF や動画など 1 種類のプレビューだけ止めたいときは、`[[preview.rules]]` でなく
+`[plugins.<id>] enabled = false` を使います(`[external]` は外部プロセスを、`[plugins.<id>]` は
+標準プラグインを止めます)。
 
 `[ui] lang` は既に「明示 / `"auto"`」の切替を持っています(OS 言語取得は
 `sys-locale` クレート経由 — 外部プロセスは起動しません)。`lang` を明示
