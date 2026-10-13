@@ -132,14 +132,15 @@ impl App {
             ListId::Graph => self.close_git_graph(),
             ListId::Branches => self.close_git_branches(),
             ListId::Worktrees => self.close_git_worktrees(),
-            ListId::Changes => {}
+            // Not stops of the cycle (`order` holds only the version-control screens).
+            ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline => {}
         }
         let mut at = cur as i32;
         for _ in 1..n {
             at = (at + dir.signum()).rem_euclid(n);
             let target = order[at as usize];
             match target {
-                ListId::Changes => return,
+                ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline => return,
                 ListId::Log => self.open_git_log(),
                 ListId::Graph => self.open_git_graph(),
                 ListId::Branches => self.open_git_branches(),
@@ -173,7 +174,8 @@ impl App {
                     self.clamp_git_worktree_sel();
                 }
             }
-            Some(ListId::Changes) | None => {}
+            // The overlay lists have nothing to read again.
+            Some(ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline) | None => {}
         }
     }
 

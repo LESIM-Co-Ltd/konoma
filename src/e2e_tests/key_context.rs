@@ -19,8 +19,9 @@ fn e2e_key_context_follows_what_is_on_screen() {
     let dir = sandbox("key_context_screens");
     seed_files(&dir);
     write_solid_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
-    let mut s = // The sort menu has no default key (it moves into the `,` menu); bind it.
-    Sim::with_config(&canon(&dir), cfg_keys("tree", "s", "open_sort_menu")).with_picker();
+    // The sort menu has no default key (it moves into the `,` menu); bind it.
+    let mut s =
+        Sim::with_config(&canon(&dir), cfg_keys("tree", "s", "open_sort_menu")).with_picker();
     assert_eq!(s.app.key_context(), Some(Context::Tree));
 
     // Tree overlays and modes.
@@ -28,9 +29,12 @@ fn e2e_key_context_follows_what_is_on_screen() {
     assert_eq!(s.app.key_context(), Some(Context::TreeVisual));
     s.esc();
     assert_eq!(s.app.key_context(), Some(Context::Tree));
+    // `open_sort_menu` opens the `,` menu: a leader, not a context of its own.
     s.key('s');
-    assert_eq!(s.app.key_context(), Some(Context::Sort));
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Options));
+    assert_eq!(s.app.key_context(), Some(Context::Tree));
     s.esc();
+    assert_eq!(s.app.pending_leader, None);
     s.key('i');
     assert_eq!(s.app.key_context(), Some(Context::Info));
     s.key('i');

@@ -556,8 +556,8 @@ mod tests {
             buf_text(&mut app).contains("sort:"),
             "context に並び表示が無い"
         );
-        // Opening the menu via the s-equivalent shows choices in the footer (en "n:name" / jp "名前").
-        app.open_sort_menu();
+        // Opening the `,` menu shows the choices in the footer (en "n:name" / jp "名前").
+        app.pending_leader = Some(crate::keymap::LeaderId::Options);
         let s = buf_text(&mut app);
         assert!(
             s.contains("n:name") || s.contains("名前"),

@@ -56,7 +56,7 @@ fn e2e_pagelist_a_pdf_lists_its_pages_and_enter_goes_to_the_chosen_one() {
     s.key('q');
     assert!(!s.app.is_outline());
     assert_eq!(s.app.page_indicator(), Some((3, 3)));
-    // `O` closes it too, and `l` is not a key of the list (Enter is).
+    // `O` closes it too.
     s.key('O');
     s.key('O');
     assert!(!s.app.is_outline());

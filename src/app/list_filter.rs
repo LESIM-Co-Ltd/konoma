@@ -1,19 +1,23 @@
-//! The `/` filter of the version-control list screens: one component for all five lists.
+//! The `/` filter of the lists: one component for the version-control list screens and for the
+//! overlay lists (layer 1 of the key design: `/` filters a list).
 //!
 //! The branch and worktree lists had a filter each, written twice (five functions apiece); the
 //! changes list, the log and the graph had none. They now share this: a list has a query and an
 //! "input is active" flag, the query narrows the rows to those whose **visible text** contains it
 //! (case-insensitive), `Enter` keeps the query and goes back to moving, `Esc` clears it. The
-//! per-list public functions (`git_branch_filter_push`, ...) remain as one-line wrappers.
+//! per-list public functions (`git_branch_filter_push`, ...) remain as one-line wrappers. The
+//! overlay lists (the outline / page list, the tab list and the bookmark list) use it the same way.
 //!
 //! How the narrowed rows are held differs by list, on purpose:
 //!
 //! - the branch and worktree lists build a filtered copy (`git_branch_view`, `git_worktree_view`)
 //!   and their cursor indexes that copy (as it always did);
-//! - the changes list, the log and the graph keep their rows whole and their cursor an index into
-//!   all of them, so every other operation (stage this file, open this commit) keeps working on
-//!   the right row, and the screen shows only the rows [`App::list_visible`] names. A cursor that
-//!   the query hides moves to the nearest row that is still shown.
+//! - the changes list, the log, the graph and the overlay lists keep their rows whole and their
+//!   cursor an index into all of them, so every other operation (stage this file, open this
+//!   commit, switch to this tab) keeps working on the right row, and the screen shows only the
+//!   rows [`App::list_visible`] names. A cursor that the query hides moves to the nearest row that
+//!   is still shown.
+//! - the overlay lists keep their query only while they are open: opening one starts it empty.
 
 use super::*;
 
@@ -25,15 +29,24 @@ pub(crate) enum ListId {
     Graph,
     Branches,
     Worktrees,
+    /// The bookmark list overlay.
+    Bookmarks,
+    /// The tab list overlay.
+    Tabs,
+    /// The heading outline / page list overlay.
+    Outline,
 }
 
 impl ListId {
-    pub(crate) const ALL: [ListId; 5] = [
+    pub(crate) const ALL: [ListId; 8] = [
         ListId::Changes,
         ListId::Log,
         ListId::Graph,
         ListId::Branches,
         ListId::Worktrees,
+        ListId::Bookmarks,
+        ListId::Tabs,
+        ListId::Outline,
     ];
 }
 
@@ -81,6 +94,12 @@ impl App {
                 &mut self.tab.git_worktree_filter,
                 &mut self.tab.git_worktree_filtering,
             ),
+            ListId::Bookmarks => (
+                &mut self.bookmark_list_filter,
+                &mut self.bookmark_list_filtering,
+            ),
+            ListId::Tabs => (&mut self.tab_list_filter, &mut self.tab_list_filtering),
+            ListId::Outline => (&mut self.outline_filter, &mut self.outline_filtering),
         }
     }
 
@@ -92,6 +111,9 @@ impl App {
             ListId::Graph => &self.tab.git_graph_filter,
             ListId::Branches => &self.tab.git_branch_filter,
             ListId::Worktrees => &self.tab.git_worktree_filter,
+            ListId::Bookmarks => &self.bookmark_list_filter,
+            ListId::Tabs => &self.tab_list_filter,
+            ListId::Outline => &self.outline_filter,
         }
     }
 
@@ -103,6 +125,11 @@ impl App {
             ListId::Graph => self.tab.git_graph_filtering,
             ListId::Branches => self.tab.git_branch_filtering,
             ListId::Worktrees => self.tab.git_worktree_filtering,
+            // An overlay that closed under the typing (follow mode opening another file) takes
+            // its typing with it.
+            ListId::Bookmarks => self.bookmark_list_filtering && self.bookmark_list,
+            ListId::Tabs => self.tab_list_filtering && self.tab_list,
+            ListId::Outline => self.outline_filtering && self.outline_open,
         }
     }
 
@@ -112,26 +139,43 @@ impl App {
         ListId::ALL.into_iter().find(|&l| self.list_filtering(l))
     }
 
-    /// The list on the front screen, if it has a filter.
-    #[cfg(feature = "git")]
+    /// The list on the front screen, if it has a filter. The version-control screens sit in
+    /// front of the overlays in the UI stack (`App::frontmost_layer`), so they are asked first.
     pub(crate) fn front_list(&self) -> Option<ListId> {
-        if self.is_git_detail() {
-            None
-        } else if self.is_git_log() {
-            Some(ListId::Log)
-        } else if self.is_git_graph_picker() {
-            None
-        } else if self.is_git_graph() {
-            Some(ListId::Graph)
-        } else if self.is_git_branches() {
-            Some(ListId::Branches)
-        } else if self.is_git_worktrees() {
-            Some(ListId::Worktrees)
-        } else if self.is_git_view() {
-            Some(ListId::Changes)
+        #[cfg(feature = "git")]
+        {
+            if self.is_git_detail() {
+                return None;
+            } else if self.is_git_log() {
+                return Some(ListId::Log);
+            } else if self.is_git_graph_picker() {
+                return None;
+            } else if self.is_git_graph() {
+                return Some(ListId::Graph);
+            } else if self.is_git_branches() {
+                return Some(ListId::Branches);
+            } else if self.is_git_worktrees() {
+                return Some(ListId::Worktrees);
+            } else if self.is_git_view() {
+                return Some(ListId::Changes);
+            }
+        }
+        if self.is_bookmark_list() {
+            Some(ListId::Bookmarks)
+        } else if self.is_tab_list() {
+            Some(ListId::Tabs)
+        } else if self.is_outline() {
+            Some(ListId::Outline)
         } else {
             None
         }
+    }
+
+    /// Forget the query of list `l` (an overlay list starts empty each time it opens).
+    pub(crate) fn list_filter_reset(&mut self, l: ListId) {
+        let (q, on) = self.list_filter_parts(l);
+        q.clear();
+        *on = false;
     }
 
     /// `/`: start typing a query (it starts empty, so every row is shown again).
@@ -172,6 +216,21 @@ impl App {
     /// Put the cursor back on a shown row after the query changed.
     pub(super) fn list_filter_changed(&mut self, l: ListId) {
         match l {
+            ListId::Bookmarks => {
+                if let Some(v) = self.list_visible(l) {
+                    self.bookmark_list_sel = step_visible(&v, self.bookmark_list_sel, 0);
+                }
+            }
+            ListId::Tabs => {
+                if let Some(v) = self.list_visible(l) {
+                    self.tab_list_sel = step_visible(&v, self.tab_list_sel, 0);
+                }
+            }
+            ListId::Outline => {
+                if let Some(v) = self.list_visible(l) {
+                    self.outline_sel = step_visible(&v, self.outline_sel, 0);
+                }
+            }
             ListId::Branches => self.clamp_git_branch_sel(),
             ListId::Worktrees => self.clamp_git_worktree_sel(),
             ListId::Changes => {
@@ -259,8 +318,68 @@ impl App {
                 .filter(|(_, r)| Self::graph_row_text(r).is_some_and(|t| hit(&t)))
                 .map(|(i, _)| i)
                 .collect(),
+            ListId::Bookmarks => self
+                .bookmark_list_items()
+                .iter()
+                .enumerate()
+                .filter(|(_, (local, key, p))| hit(&self.bookmark_row_text(*local, *key, p)))
+                .map(|(i, _)| i)
+                .collect(),
+            ListId::Tabs => (0..self.tab_count())
+                .filter(|&i| hit(&self.tab_row_text(i)))
+                .collect(),
+            ListId::Outline => self
+                .outline_rows()
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, text))| hit(text))
+                .map(|(i, _)| i)
+                .collect(),
             // These two narrow a copy of the list, not the list itself.
             ListId::Branches | ListId::Worktrees => return None,
         })
+    }
+
+    /// The text of a tab-list row as the screen shows it (number, name, root).
+    pub(crate) fn tab_row_text(&self, i: usize) -> String {
+        let root = crate::app::home_relative(&self.tab_root(i));
+        format!("{}:{}  —  {root}", i + 1, self.tab_label(i))
+    }
+
+    /// The text of a bookmark-list row as the screen shows it (key, path).
+    pub(crate) fn bookmark_row_text(&self, is_local: bool, key: char, path: &Path) -> String {
+        format!("{key}  {}", self.bookmark_display_path(is_local, path))
+    }
+
+    /// Whether row `sel` of an overlay list is shown under the query (every row is, without
+    /// one). What acts on "the selected row" asks first, so a query that hides the whole list
+    /// leaves nothing to jump to, close or delete.
+    pub(crate) fn list_row_shown(&self, l: ListId, sel: usize) -> bool {
+        self.list_visible(l).is_none_or(|v| v.contains(&sel))
+    }
+
+    /// Move the cursor of an overlay list `delta` rows among the rows that are shown, wrapping
+    /// at the ends (as these lists always did). `sel` is the cursor, `n` the number of rows.
+    pub(crate) fn overlay_step(&self, l: ListId, sel: usize, n: usize, delta: i32) -> usize {
+        if n == 0 {
+            return sel;
+        }
+        match self.list_visible(l) {
+            None => (sel as i32 + delta).rem_euclid(n as i32) as usize,
+            Some(v) if v.is_empty() => sel,
+            Some(v) => {
+                let pos = v.iter().position(|&i| i >= sel).unwrap_or(v.len() - 1);
+                v[(pos as i64 + delta as i64).rem_euclid(v.len() as i64) as usize]
+            }
+        }
+    }
+
+    /// The first (`last` = false) or last row of an overlay list that is shown.
+    pub(crate) fn overlay_edge(&self, l: ListId, n: usize, last: bool) -> usize {
+        let v = self
+            .list_visible(l)
+            .unwrap_or_else(|| (0..n).collect::<Vec<_>>());
+        let pick = if last { v.last() } else { v.first() };
+        pick.copied().unwrap_or(0)
     }
 }

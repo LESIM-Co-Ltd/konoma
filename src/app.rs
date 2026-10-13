@@ -102,7 +102,6 @@ pub enum InternalMode {
     /// Changed-files-only tree view (`C`; Agent Watch).
     ChangedFilter,
     Search,
-    Sort,
     Mark,
     Bookmarks,
     Tabs,
@@ -216,10 +215,15 @@ pub enum UiLayer {
     // --- Input surfaces / menus / lists / popups ---
     Filter,
     Search,
-    Sort,
     Mark,
+    /// The bookmark list with its `/` filter input active.
+    BookmarksFilter,
     Bookmarks,
+    /// The tab list with its `/` filter input active.
+    TabsFilter,
     Tabs,
+    /// The outline / page list with its `/` filter input active.
+    OutlineFilter,
     Outline,
     Info,
     TableCell,
@@ -319,8 +323,8 @@ impl UiLayer {
             | Self::GitDiff => return None,
             Self::Filter => S::Filter,
             Self::Search => S::Search,
-            Self::Sort => S::Sort,
             Self::Mark => S::Mark,
+            Self::BookmarksFilter | Self::TabsFilter | Self::OutlineFilter => S::ListFilter,
             Self::Bookmarks => S::Bookmarks,
             Self::Tabs => S::Tabs,
             Self::Outline => S::Outline,
@@ -368,11 +372,11 @@ impl UiLayer {
             Self::GitDiff => InternalMode::GitDiff,
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
-            Self::Sort => InternalMode::Sort,
             Self::Mark => InternalMode::Mark,
-            Self::Bookmarks => InternalMode::Bookmarks,
-            Self::Tabs => InternalMode::Tabs,
-            Self::Outline => InternalMode::Outline,
+            // The overlay lists' `/` filter keeps the overlay's own chip (as the git lists do).
+            Self::BookmarksFilter | Self::Bookmarks => InternalMode::Bookmarks,
+            Self::TabsFilter | Self::Tabs => InternalMode::Tabs,
+            Self::OutlineFilter | Self::Outline => InternalMode::Outline,
             Self::Info => InternalMode::Info,
             Self::TableCell => InternalMode::TableCell,
             Self::Visual => InternalMode::Visual,
@@ -413,13 +417,14 @@ impl crate::keymap::Surface {
             S::WorktreeFilter => UiLayer::GitWorktreeFilter,
             #[cfg(feature = "git")]
             S::ListFilter => UiLayer::GitChangesFilter,
+            #[cfg(not(feature = "git"))]
+            S::ListFilter => UiLayer::OutlineFilter,
             S::DialogConfirmDelete => UiLayer::ConfirmDelete,
             S::DialogConfirmDrop => UiLayer::ConfirmDrop,
             S::DialogRenamePreview => UiLayer::RenamePreview,
             S::DialogConfirmQuit => UiLayer::ConfirmQuit,
             S::DialogConfirmBookmark => UiLayer::ConfirmBookmark,
             S::Help => UiLayer::Help,
-            S::Sort => UiLayer::Sort,
             S::Bookmarks => UiLayer::Bookmarks,
             S::Tabs => UiLayer::Tabs,
             S::Outline => UiLayer::Outline,
@@ -1389,10 +1394,8 @@ pub struct App {
     pub lang: crate::i18n::Lang,
     pub cfg: Config,
 
-    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `s` menu.
+    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `,` menu.
     pub sort: Sort,
-    /// Whether the `s` sort-selection menu is showing (while true, main intercepts keys).
-    sort_menu: bool,
     /// Bookmarks (M7 auxiliary). Lowercase a-z=local (per launch dir) / uppercase A-Z=global.
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// Tab-session persistence (`[ui] restore_tabs`). Attached by main like the loader senders;
@@ -1409,6 +1412,14 @@ pub struct App {
     bookmark_list: bool,
     /// Selection position in the list (a flat index over local on top and global below, concatenated).
     bookmark_list_sel: usize,
+    /// The `/` filter of the overlay lists (bookmark list, tab list, outline / page list): the
+    /// query and whether it is being typed. App-global like the overlays; see `list_filter`.
+    bookmark_list_filter: String,
+    bookmark_list_filtering: bool,
+    tab_list_filter: String,
+    tab_list_filtering: bool,
+    outline_filter: String,
+    outline_filtering: bool,
     /// Confirmation/input dialog (create `a` / rename `R` / delete `D`). While showing, main intercepts keys.
     dialog: Option<Dialog>,
     /// File clipboard (M7 Phase B). Push with `Y`=copy/`X`=cut, apply with `P`=paste.
@@ -3306,13 +3317,18 @@ impl App {
             lang,
             cfg,
             sort,
-            sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
             session_store: None,
             session_restoring: false,
             mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
+            bookmark_list_filter: String::new(),
+            bookmark_list_filtering: false,
+            tab_list_filter: String::new(),
+            tab_list_filtering: false,
+            outline_filter: String::new(),
+            outline_filtering: false,
             dialog: None,
             clipboard: None,
             follow_mode: false,
@@ -3662,51 +3678,19 @@ impl App {
     }
 
     // --- Sort (FR, M7 helper) -------------------------------------------------
-    /// Whether the `s` sort-selection menu is showing.
-    pub fn is_sort_menu(&self) -> bool {
-        self.sort_menu
-    }
-    /// Open the sort menu with `s`. main routes the next key here.
-    pub fn open_sort_menu(&mut self) {
-        self.sort_menu = true;
-    }
-    /// Close the sort menu (Esc or an out-of-scope key).
-    pub fn close_sort_menu(&mut self) {
-        self.sort_menu = false;
-    }
-    /// Key handling for the sort menu. n/s/m/e=select the key (closes after selecting), r=flip asc/desc, .=directories first
-    /// (toggles keep it open). Out-of-scope keys close it. If the order changes, rebuild (while filtering, applied after clearing).
+    /// Apply one sort operation of the tree's `,` menu (`SortSet`, `SortToggleReverse`,
+    /// `SortToggleDirsFirst`; `c` is the letter the old overlay used for each). The menu closes
+    /// after the one operation. If the order changes, rebuild (while filtering, applied after clearing).
     pub fn sort_menu_key(&mut self, c: char) -> Result<()> {
-        let keep_open = match c {
-            'n' => {
-                self.sort.key = SortKey::Name;
-                false
-            }
-            's' => {
-                self.sort.key = SortKey::Size;
-                false
-            }
-            'm' => {
-                self.sort.key = SortKey::Modified;
-                false
-            }
-            'e' => {
-                self.sort.key = SortKey::Ext;
-                false
-            }
-            'r' => {
-                self.sort.reverse = !self.sort.reverse;
-                true
-            }
-            '.' => {
-                self.sort.dirs_first = !self.sort.dirs_first;
-                true
-            }
-            _ => {
-                self.sort_menu = false;
-                return Ok(());
-            }
-        };
+        match c {
+            'n' => self.sort.key = SortKey::Name,
+            's' => self.sort.key = SortKey::Size,
+            'm' => self.sort.key = SortKey::Modified,
+            'e' => self.sort.key = SortKey::Ext,
+            'r' => self.sort.reverse = !self.sort.reverse,
+            '.' => self.sort.dirs_first = !self.sort.dirs_first,
+            _ => return Ok(()),
+        }
         // While filtering, don't change the result order (it takes effect on tree rebuild after clearing).
         if self.tab.tree_filter.is_none() {
             // Anchor captured before the rebuild below — same hazard as `toggle_hidden`/
@@ -3721,9 +3705,6 @@ impl App {
             // sort order itself never applies to `C`'s list, which stays a fixed path order).
             self.refilter_after_visibility_change(anchor);
         }
-        // Only the overlay stays open for the toggles. The same sort actions also run from the
-        // `,` menu, where the menu is already closed and must not turn the overlay on.
-        self.sort_menu = self.sort_menu && keep_open;
         Ok(())
     }
     /// Current sort display for the top context bar (e.g. `sort: mod ↑`).
@@ -3856,11 +3837,25 @@ impl App {
         // --- Input surfaces / menus / lists / popups ---
         layer!(self.is_filtering(), UiLayer::Filter);
         layer!(self.is_searching(), UiLayer::Search);
-        layer!(self.is_sort_menu(), UiLayer::Sort);
         layer!(self.is_marking(), UiLayer::Mark);
-        layer!(self.is_bookmark_list(), UiLayer::Bookmarks);
-        layer!(self.is_tab_list(), UiLayer::Tabs);
-        layer!(self.is_outline(), UiLayer::Outline);
+        let bookmarks = self.is_bookmark_list();
+        layer!(
+            bookmarks && self.list_filtering(list_filter::ListId::Bookmarks),
+            UiLayer::BookmarksFilter
+        );
+        layer!(bookmarks, UiLayer::Bookmarks);
+        let tabs = self.is_tab_list();
+        layer!(
+            tabs && self.list_filtering(list_filter::ListId::Tabs),
+            UiLayer::TabsFilter
+        );
+        layer!(tabs, UiLayer::Tabs);
+        let outline = self.is_outline();
+        layer!(
+            outline && self.list_filtering(list_filter::ListId::Outline),
+            UiLayer::OutlineFilter
+        );
+        layer!(outline, UiLayer::Outline);
         layer!(self.is_info(), UiLayer::Info);
         layer!(self.is_table_cell_open(), UiLayer::TableCell);
         layer!(self.is_visual(), UiLayer::Visual);

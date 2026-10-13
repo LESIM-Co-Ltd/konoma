@@ -122,15 +122,6 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
             Foot::Union(CLOSE_HELP, Msg::FtClose),
         ],
         Context::Info => vec![Foot::Union(CLOSE_INFO, Msg::FtClose)],
-        Context::Sort => vec![
-            Foot::Op(Action::SortSet(crate::app::SortKey::Name)),
-            Foot::Op(Action::SortSet(crate::app::SortKey::Size)),
-            Foot::Op(Action::SortSet(crate::app::SortKey::Modified)),
-            Foot::Op(Action::SortSet(crate::app::SortKey::Ext)),
-            Foot::Op(Action::SortToggleReverse),
-            Foot::Op(Action::SortToggleDirsFirst),
-            Foot::As(Action::Cancel, Msg::FtCancel),
-        ],
         // The bookmark list, the tab list and the outline have no footer of their own: they show
         // the screen underneath (see `status::footer_spans`).
         Context::Bookmarks | Context::Tabs | Context::Outline => Vec::new(),
@@ -513,6 +504,59 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
             Foot::Union(BACK, Msg::GitBack),
         ],
     }
+}
+
+/// The operations of `ctx`'s footer plan in plan order (the order of importance: the footer cuts
+/// from the end), each with the label the plan gives it. The `Space` menu lists its operations in
+/// this order and calls them by these labels, so the menu and the footer say the same thing. An
+/// operation can appear more than once (`J` and `K` are one group); `Leader` and `Dyn` entries
+/// name no single operation and are left out.
+pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
+    // The overlay lists have no footer (they show the screen underneath); their order of
+    // importance is the line of keys at the bottom of their own popup.
+    match ctx {
+        Context::Bookmarks => {
+            return vec![
+                (Action::BookmarkJump, None),
+                (Action::ListFilterStart, None),
+                (Action::BookmarkEdit, None),
+                (Action::BookmarkDelete, None),
+                (Action::BookmarkClose, Some(Msg::FtClose)),
+            ]
+        }
+        Context::Tabs => {
+            return vec![
+                (Action::TabListActivate, None),
+                (Action::ListFilterStart, None),
+                (Action::TabListClose, None),
+                (Action::ToggleTabList, Some(Msg::FtClose)),
+            ]
+        }
+        Context::Outline => {
+            return vec![
+                (Action::OutlineJump, None),
+                (Action::ListFilterStart, None),
+                (Action::ToggleOutline, Some(Msg::FtClose)),
+            ]
+        }
+        _ => {}
+    }
+    let mut v: Vec<(Action, Option<Msg>)> = Vec::new();
+    for f in plan(app, ctx) {
+        match f {
+            Foot::Op(a) => v.push((a, text(app, ctx, a).label)),
+            Foot::As(a, label) => v.push((a, Some(label))),
+            Foot::Group(acts, label) | Foot::Union(acts, label) => {
+                v.extend(acts.iter().map(|a| (*a, Some(label))))
+            }
+            Foot::GroupOp(acts) => {
+                let label = acts.first().and_then(|a| text(app, ctx, *a).label);
+                v.extend(acts.iter().map(|a| (*a, label)));
+            }
+            Foot::Leader(..) | Foot::Dyn(_) => {}
+        }
+    }
+    v
 }
 
 /// One footer token: `<keys>:<label>`, with the keys and operations it was made from (for the

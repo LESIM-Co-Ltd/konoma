@@ -500,20 +500,29 @@ impl App {
         self.tab_list = !self.tab_list;
         if self.tab_list {
             self.tab_list_sel = self.active_tab;
+            self.list_filter_reset(super::list_filter::ListId::Tabs);
         }
     }
     pub fn tab_list_sel(&self) -> usize {
         self.tab_list_sel
     }
+    /// Move the selection `delta` rows among the rows the `/` query leaves shown (all of them
+    /// without one), wrapping at the ends.
     pub fn tab_list_move(&mut self, delta: i32) {
         let n = self.tabs.len();
-        if n == 0 {
-            return;
-        }
-        self.tab_list_sel = (self.tab_list_sel as i32 + delta).rem_euclid(n as i32) as usize;
+        self.tab_list_sel = self.overlay_step(
+            super::list_filter::ListId::Tabs,
+            self.tab_list_sel,
+            n,
+            delta,
+        );
     }
     /// Enter in the list: switch to the selected tab (closing the list; same tab = just close).
+    /// A query that hides the selected row (all of them) leaves nothing to switch to.
     pub fn tab_list_activate(&mut self) {
+        if !self.list_row_shown(super::list_filter::ListId::Tabs, self.tab_list_sel) {
+            return;
+        }
         let i = self.tab_list_sel;
         self.tab_list = false;
         self.tab_goto(i);
@@ -521,6 +530,9 @@ impl App {
     /// `w` in the list: close the **selected** tab (the list stays open, like the bookmark list).
     /// Closing the active tab switches to a neighbor; the last tab refuses with a flash.
     pub fn tab_list_close_selected(&mut self) {
+        if !self.list_row_shown(super::list_filter::ListId::Tabs, self.tab_list_sel) {
+            return;
+        }
         if self.tabs.len() <= 1 {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::CantCloseLastTab).into());
             return;
@@ -548,6 +560,8 @@ impl App {
             }
         }
         self.tab_list_sel = self.tab_list_sel.min(self.tabs.len() - 1);
+        // The rows moved up: put the cursor back on a row the query still shows.
+        self.list_filter_changed(super::list_filter::ListId::Tabs);
         self.save_session();
     }
     /// Root directory of tab `i` (for the tab list's path column).

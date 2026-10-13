@@ -114,7 +114,6 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         // yellow.
         InternalMode::ChangedFilter => (Msg::StChangedOnly, Color::Yellow, false),
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
-        InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
         InternalMode::Bookmarks => (Msg::StBookmarks, Color::Yellow, false),
         InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
@@ -358,17 +357,6 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
             Span::from(format!("/{q}")).bold(),
             Span::from("▏").dim(),
             Span::from(format!("  {}", tr(lang, crate::i18n::Msg::StSearchHint))).dim(),
-        ];
-    }
-    // While the sort selection menu is showing, show the choices in the footer (current value ▸
-    // key list).
-    if app.is_sort_menu() {
-        let prefix = format!("{} ▸ ", app.sort_label());
-        let room = width.saturating_sub(prefix.width() as u16);
-        let tokens = crate::ops::footer::tokens(app, Context::Sort);
-        return vec![
-            Span::from(prefix).bold(),
-            Span::from(fit_tokens(&tokens, room)).dim(),
         ];
     }
     // The bookmark-pending-registration prompt (m = register; '= list is on the

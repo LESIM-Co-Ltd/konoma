@@ -144,6 +144,7 @@ impl App {
             return;
         }
         self.outline_sel = self.current_page_index();
+        self.list_filter_reset(super::list_filter::ListId::Outline);
         self.outline_open = true;
     }
 
@@ -193,6 +194,7 @@ impl App {
             .iter()
             .rposition(|(_, _, line)| *line <= top)
             .unwrap_or(0);
+        self.list_filter_reset(super::list_filter::ListId::Outline);
         self.outline_open = true;
     }
 
@@ -200,16 +202,32 @@ impl App {
         self.outline_sel
     }
 
+    /// Move the selection `delta` rows among the rows the `/` query leaves shown (all of them
+    /// without one), wrapping at the ends.
     pub fn outline_move(&mut self, delta: i32) {
         let n = self.outline_len();
-        if n == 0 {
-            return;
+        self.outline_sel = self.overlay_step(
+            super::list_filter::ListId::Outline,
+            self.outline_sel,
+            n,
+            delta,
+        );
+    }
+
+    /// `g` / `G`: the first / last row that is shown.
+    pub fn outline_to_edge(&mut self, last: bool) {
+        let n = self.outline_len();
+        if n > 0 {
+            self.outline_sel = self.overlay_edge(super::list_filter::ListId::Outline, n, last);
         }
-        self.outline_sel = (self.outline_sel as i32 + delta).rem_euclid(n as i32) as usize;
     }
 
     /// Enter in the outline: scroll the preview to the selected heading and close the overlay.
+    /// A query that hides the selected row (all of them) leaves nothing to go to.
     pub fn outline_jump(&mut self) {
+        if !self.list_row_shown(super::list_filter::ListId::Outline, self.outline_sel) {
+            return;
+        }
         if self.is_page_list_preview() {
             self.page_list_jump();
             return;

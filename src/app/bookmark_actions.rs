@@ -227,6 +227,7 @@ impl App {
     pub fn open_bookmark_list(&mut self) {
         self.bookmark_list = true;
         self.bookmark_list_sel = 0;
+        self.list_filter_reset(super::list_filter::ListId::Bookmarks);
     }
     pub fn close_bookmark_list(&mut self) {
         self.bookmark_list = false;
@@ -246,16 +247,29 @@ impl App {
         }
         v
     }
+    /// Move the selection `delta` rows among the rows the `/` query leaves shown (all of them
+    /// without one), wrapping at the ends.
     pub fn bookmark_list_move(&mut self, delta: i32) {
         let n = self.bookmark_list_items().len();
-        if n == 0 {
-            return;
-        }
-        self.bookmark_list_sel =
-            (self.bookmark_list_sel as i32 + delta).rem_euclid(n as i32) as usize;
+        self.bookmark_list_sel = self.overlay_step(
+            super::list_filter::ListId::Bookmarks,
+            self.bookmark_list_sel,
+            n,
+            delta,
+        );
+    }
+    /// Whether the selected bookmark is a row the `/` query shows (what acts on it asks first).
+    fn bookmark_sel_shown(&self) -> bool {
+        self.list_row_shown(
+            super::list_filter::ListId::Bookmarks,
+            self.bookmark_list_sel,
+        )
     }
     /// Jump to the selected bookmark (closes the list).
     pub fn bookmark_list_jump(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             self.bookmark_list = false;
@@ -275,6 +289,9 @@ impl App {
     /// If the selected list item is a file, **open it directly in the editor** without going through the preview
     /// (closes the list and sets pending_edit; the run loop launches run_editor). Directories cannot be edited and flash.
     pub fn bookmark_list_edit(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             if p.is_file() {
@@ -296,6 +313,9 @@ impl App {
     }
     /// Delete the selected bookmark (the list stays open; the selection is clamped).
     pub fn bookmark_list_delete(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((_, key, _)) = items.get(self.bookmark_list_sel) {
             let key = *key;
@@ -309,6 +329,8 @@ impl App {
             if self.bookmark_list_sel >= n {
                 self.bookmark_list_sel = n.saturating_sub(1);
             }
+            // Keep the cursor on a row the query still shows.
+            self.list_filter_changed(super::list_filter::ListId::Bookmarks);
         }
     }
 

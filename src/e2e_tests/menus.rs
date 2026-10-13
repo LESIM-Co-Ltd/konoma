@@ -46,16 +46,18 @@ fn e2e_options_menu_in_the_tree_sorts_and_shows() {
     s.key('s');
     assert_eq!(s.app.pending_leader, None);
     assert_eq!(s.app.sort.key, crate::app::SortKey::Size);
-    assert!(
-        !s.app.is_sort_menu(),
-        "the menu does not turn the old overlay on"
+    assert_eq!(
+        s.app.surface(),
+        crate::keymap::Surface::Tree,
+        "the menu does not turn an overlay on"
     );
     s.key(',');
     s.key('r');
     assert!(s.app.sort.reverse);
-    assert!(
-        !s.app.is_sort_menu(),
-        "a toggle does not open the old overlay either"
+    assert_eq!(
+        s.app.surface(),
+        crate::keymap::Surface::Tree,
+        "a toggle does not open an overlay either"
     );
     s.key(',');
     s.key('.');
@@ -480,4 +482,192 @@ fn e2e_help_lists_the_menus_of_the_screen() {
     for want in ["Copy path", "Sort & display", "Actions", ", w", "Space "] {
         assert!(help.contains(want), "help lacks {want:?}:\n{help}");
     }
+}
+
+/// Checks the `Space` menu of the screen in front: it starts with the footer plan's operations in
+/// the footer's order, and every operation a footer token names carries the token's label.
+/// Returns the context it checked.
+fn check_space_menu_like_the_footer(s: &Sim) -> Context {
+    let ctx = s.app.key_context().expect("a keymap context");
+    let prio = crate::ops::footer::priority(&s.app, ctx);
+    let declared = crate::ops::menu::declared_actions_menu(&s.app, ctx);
+    let in_menu = |a: Action| declared.iter().any(|i| i.action == a);
+    // The footer plan's operations, once each, in plan order, those the menu offers.
+    let mut want: Vec<Action> = Vec::new();
+    for (a, _) in &prio {
+        if in_menu(*a) && !want.contains(a) {
+            want.push(*a);
+        }
+    }
+    assert!(want.len() >= 3, "{ctx:?}: too little to compare: {want:?}");
+    let got: Vec<Action> = declared.iter().map(|i| i.action).take(want.len()).collect();
+    assert_eq!(
+        got, want,
+        "{ctx:?}: the menu does not start with the footer plan"
+    );
+    // What acts now keeps that order too.
+    let open: Vec<Action> = menu(&s.app, ctx, LeaderId::Actions, View::Open)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|i| i.action)
+        .collect();
+    let open_want: Vec<Action> = want.iter().copied().filter(|a| open.contains(a)).collect();
+    assert_eq!(
+        open.iter()
+            .copied()
+            .take(open_want.len())
+            .collect::<Vec<_>>(),
+        open_want,
+        "{ctx:?}: the open menu does not start with the footer plan"
+    );
+    // Each footer token's label is the label of its operations in the menu.
+    let plan = crate::ops::footer::plan(&s.app, ctx);
+    for tok in crate::ops::footer::render_tokens(&s.app, ctx, &plan) {
+        let Some((_, label)) = tok.text.split_once(':') else {
+            continue;
+        };
+        for a in &tok.actions {
+            if let Some(it) = declared.iter().find(|i| i.action == *a) {
+                assert_eq!(
+                    it.label, label,
+                    "{ctx:?}: {a:?} is `{}` in the menu but `{}` in the footer ({})",
+                    it.label, label, tok.text
+                );
+            }
+        }
+    }
+    // And never a sentence: no label is the help's description of a different, longer text.
+    for it in &declared {
+        let help = crate::ops::decl::text(&s.app, ctx, it.action).help;
+        if let Some(h) = help {
+            let long = crate::i18n::tr(s.app.lang, h);
+            assert!(
+                it.label == long
+                    || it.label.chars().count() < long.chars().count()
+                    || long.chars().count() <= 24,
+                "{ctx:?}: {:?} is labelled with the help's sentence: {}",
+                it.action,
+                it.label
+            );
+        }
+        assert!(
+            it.label.chars().count() <= 26,
+            "{ctx:?}: {:?} label is not short: {}",
+            it.action,
+            it.label
+        );
+    }
+    ctx
+}
+
+/// The `Space` menu is ordered like the footer and calls things what the footer calls them
+/// (plugin stage 2 / B4): the operations of the footer plan come first, in the footer's order, and
+/// every operation the footer names carries the footer's label — not the help's sentence.
+#[test]
+fn e2e_space_menu_follows_the_footer_order_and_labels_in_the_previews() {
+    let dir = sandbox("menus_space_order_pv");
+    seed_files(&dir);
+    write_solid_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
+    let mut s = Sim::new(&canon(&dir)).with_media();
+    let mut checked: Vec<Context> = Vec::new();
+    for (name, want) in [
+        ("notes.txt", Context::Text),
+        ("readme.md", Context::Document),
+        ("data.csv", Context::Table),
+        ("pic.png", Context::Image),
+    ] {
+        s.select(name);
+        s.enter();
+        if want == Context::Image {
+            s.drain_media();
+        }
+        let ctx = check_space_menu_like_the_footer(&s);
+        assert_eq!(ctx, want, "{name}");
+        checked.push(ctx);
+        s.key('q');
+    }
+    assert_eq!(checked.len(), 4);
+}
+
+/// The same for a diff and the version-control screens.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_space_menu_follows_the_footer_order_and_labels_in_git() {
+    use crate::keymap::Screen;
+    let dir = sandbox("menus_space_order_git");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    let mut checked: Vec<Context> = Vec::new();
+    s.select("a.rs");
+    s.key('d');
+    checked.push(check_space_menu_like_the_footer(&s)); // diff
+    s.key('q');
+    s.key('p');
+    checked.push(check_space_menu_like_the_footer(&s)); // changes
+    for _ in 0..4 {
+        s.tab();
+        checked.push(check_space_menu_like_the_footer(&s)); // log, graph, branches, worktrees
+    }
+    assert!(checked.contains(&Context::Diff));
+    for screen in [
+        Screen::Changes,
+        Screen::Log,
+        Screen::Graph,
+        Screen::Branches,
+        Screen::Worktrees,
+    ] {
+        assert!(
+            checked
+                .iter()
+                .any(|c| matches!(c, Context::Screen(_, sc) if *sc == screen)),
+            "{screen:?} was not checked"
+        );
+    }
+}
+
+/// The overlay lists have no footer; their `Space` menu leads with what the list is for (go to the
+/// row, filter, then the list's own keys) and closes with the keys every screen has.
+#[test]
+fn e2e_space_menu_of_an_overlay_leads_with_its_own_operations() {
+    let dir = sandbox("menus_space_overlay");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('T');
+    let tabs = items(&s, Context::Tabs, LeaderId::Actions);
+    let acts: Vec<Action> = tabs.iter().map(|(_, a)| *a).collect();
+    assert_eq!(
+        &acts[..4],
+        [
+            Action::TabListActivate,
+            Action::ListFilterStart,
+            Action::TabListClose,
+            Action::ToggleTabList
+        ]
+    );
+    s.key('T');
+    s.key('m');
+    s.key('a');
+    s.key('\'');
+    let bm = items(&s, Context::Bookmarks, LeaderId::Actions);
+    let acts: Vec<Action> = bm.iter().map(|(_, a)| *a).collect();
+    assert_eq!(
+        &acts[..5],
+        [
+            Action::BookmarkJump,
+            Action::ListFilterStart,
+            Action::BookmarkEdit,
+            Action::BookmarkDelete,
+            Action::BookmarkClose
+        ]
+    );
+    // The key the operation already has is the key it keeps: `/` for the filter, `l` for open.
+    assert!(
+        bm.contains(&("/".to_string(), Action::ListFilterStart)),
+        "{bm:?}"
+    );
+    assert!(
+        bm.contains(&("d".to_string(), Action::BookmarkDelete)),
+        "{bm:?}"
+    );
 }
