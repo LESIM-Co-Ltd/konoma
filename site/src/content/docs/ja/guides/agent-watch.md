@@ -18,7 +18,7 @@ konoma はひとつのレイアウトのために作られました: **左に ko
 加える変更だけです。エージェントが保存する → その新しい変更だけが目の前に
 出る、手放しのレビューです。
 
-<img src="/konoma/follow.gif" alt="フォローモード — 元から未コミットの変更があるファイルでも、F 以降はエージェントが足した行だけが強調され、f でフル git diff に切り替わる" width="1268" height="768" style="width:100%;height:auto;border-radius:8px" />
+<img src="/konoma/follow.gif" alt="フォローモード — 元から未コミットの変更があるファイルでも、F 以降はエージェントが足した行だけが強調され、, のあと f でフル git diff に切り替わる" width="1268" height="768" style="width:100%;height:auto;border-radius:8px" />
 
 *`src/main.rs` には元から自分の未コミット変更(`// TODO: handle retries`)があり、
 素の git diff にはそれが出ています。`F` のあとエージェントが関数を追記すると
