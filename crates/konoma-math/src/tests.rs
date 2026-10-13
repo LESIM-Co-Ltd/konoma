@@ -150,3 +150,55 @@ fn a_cancelled_open_or_view_is_a_cancel() {
         .unwrap_err();
     assert_eq!(err.kind, FailureKind::Cancelled);
 }
+
+#[test]
+fn the_text_mode_keeps_the_source_line_by_line() {
+    let settings = Settings::new().with("mode", Value::Str("text".into()));
+    let v = view(embed("math", "a = b\n+ c\n\n+ d", true), &settings).unwrap();
+    match v {
+        View::Text(TextView {
+            source: TextSource::Lines(lines),
+            styler,
+            file_lines,
+            ..
+        }) => {
+            let text: Vec<String> = lines.iter().map(Line::plain).collect();
+            assert_eq!(text, ["a = b", "+ c", "", "+ d"]);
+            assert!(styler.is_none() && !file_lines);
+        }
+        other => panic!("not a text view: {other:?}"),
+    }
+}
+
+#[test]
+fn a_formula_does_not_zoom_sharply_and_has_no_raster_cap() {
+    match view(embed("math", "x", false), Settings::empty()).unwrap() {
+        View::Image(iv) => {
+            assert!(!iv.sharp_zoom, "a formula is small: no sharp zoom");
+            assert_eq!(iv.raster_max_px, None);
+        }
+        other => panic!("not an image: {other:?}"),
+    }
+}
+
+#[test]
+fn the_declared_defaults_are_what_an_absent_setting_does() {
+    let m = math_manifest();
+    let mut explicit = Settings::new();
+    for d in &m.settings {
+        explicit.set(d.name.clone(), d.default.clone());
+    }
+    let a = svg_of(view(embed("math", "x^2", true), Settings::empty()).unwrap());
+    let b = svg_of(view(embed("math", "x^2", true), &explicit).unwrap());
+    assert_eq!(a, b);
+    let get = |n: &str| {
+        m.settings
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap()
+            .default
+            .clone()
+    };
+    assert_eq!(get("mode"), Value::Str(DEFAULT_MODE.into()));
+    assert_eq!(get("color"), Value::Str(DEFAULT_COLOR.into()));
+}

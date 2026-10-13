@@ -368,3 +368,18 @@ fn a_cancelled_open_or_view_is_a_cancel() {
         .unwrap_err();
     assert_eq!(err.kind, FailureKind::Cancelled);
 }
+
+#[test]
+fn the_source_view_names_the_markdown_syntax_for_a_file_and_for_a_converted_text() {
+    let (_dir, path) = tmp_file("a.md", b"# t\n");
+    let mut s = open_file(&MarkdownPlugin, &path).unwrap();
+    match view_of(s.as_mut(), Some(REPR_SOURCE)) {
+        View::Text(t) => assert_eq!(t.syntax_name.as_deref(), Some("markdown")),
+        other => panic!("not a text view: {other:?}"),
+    }
+    let mut s = open_content("# t\n", Resources::new(), converted("w.docx"));
+    match view_of(s.as_mut(), Some(REPR_SOURCE)) {
+        View::Text(t) => assert_eq!(t.syntax_name.as_deref(), Some("markdown")),
+        other => panic!("not a text view: {other:?}"),
+    }
+}

@@ -1113,3 +1113,154 @@ fn several_git_tables_at_once_merge_each_into_its_own_contexts() {
         assert_eq!(m.renames.len(), 7 + 1);
     }
 }
+
+/// The reverse of the check above: a default key that means one of layers 0 to 3 (or the layer 2
+/// of its display type) must be in the table the plugin crate reserves for that kind of context,
+/// or a plugin could take a key the host already uses. The contexts are mapped to the plugin
+/// crate's names (tree, text, document, table, image, diff, list).
+#[test]
+fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
+    use konoma_plugin::keys::{reserved, KeyCode as PKey, KeySpec};
+    use Action as A;
+    // The operations that are the meaning of a layer-0-to-3 key (or of the display type's own).
+    let layered = |a: Action| -> bool {
+        matches!(
+            a,
+            A::Navigate(_)
+                | A::TabNew
+                | A::TabNewAfter
+                | A::TabPrev
+                | A::TabNext
+                | A::TabGoto(_)
+                | A::ToggleHelp
+                | A::PasteJump
+                | A::Quit
+                | A::CloseTabOrQuit
+                | A::ToggleTabList
+                | A::ToggleFollow
+                | A::PreviewBack
+                | A::SearchStart
+                | A::SearchNext
+                | A::SearchPrev
+                | A::PreviewEnterVisual
+                | A::PreviewEnterVisualLine
+                | A::Refresh
+                | A::MarkSet
+                | A::MarkJump
+                | A::PreviewFileNext
+                | A::PreviewFilePrev
+                | A::OpenInNewTab
+                | A::RequestEdit
+                | A::OpenExternal
+                | A::OpenGitView
+                | A::PageNext
+                | A::PagePrev
+                | A::ToggleOutline
+                | A::CycleRepresentation
+                | A::ImageZoomIn
+                | A::ImageZoomOut
+                | A::ImageZoomReset
+                | A::LinkFocusNext
+                | A::LinkFocusPrev
+                | A::Cancel
+                | A::TreeActivate
+                | A::LinkOpen
+        )
+    };
+    // The tree's own layer 2.
+    let tree_layered = |a: Action| -> bool {
+        matches!(
+            a,
+            A::OpenGitDiffCursor
+                | A::ToggleChangedFilter
+                | A::SetAnchor
+                | A::ResetAnchor
+                | A::ToggleHidden
+                | A::ToggleInfo
+        )
+    };
+    // `PageUp`/`PageDown`/`Home`/`End` are aliases of keys that are reserved (`Ctrl-b`/`Ctrl-f`,
+    // `g`/`G`) but are not in the plugin crate's tables themselves: the one known gap, left out here.
+    let in_scope = |kp: KeyPress| {
+        !matches!(
+            kp.code,
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+        )
+    };
+    let spec = |kp: KeyPress| -> KeySpec {
+        match kp.code {
+            KeyCode::Char(c) if kp.ctrl => KeySpec::ctrl(c),
+            KeyCode::Char(c) => KeySpec::ch(c),
+            KeyCode::Tab => KeySpec::key(PKey::Tab),
+            KeyCode::BackTab => KeySpec::key(PKey::BackTab),
+            KeyCode::Enter => KeySpec::key(PKey::Enter),
+            KeyCode::Esc => KeySpec::key(PKey::Esc),
+            KeyCode::Up => KeySpec::key(PKey::Up),
+            KeyCode::Down => KeySpec::key(PKey::Down),
+            KeyCode::Left => KeySpec::key(PKey::Left),
+            KeyCode::Right => KeySpec::key(PKey::Right),
+            other => panic!("unexpected key {other:?}"),
+        }
+    };
+    // Every context that shows a pane or a list, with the table it falls under.
+    #[allow(unused_mut)]
+    let mut contexts: Vec<(Context, &str)> = vec![
+        (Context::Tree, "tree"),
+        (Context::Text, "text"),
+        (Context::Document, "document"),
+        (Context::Image, "image"),
+        (Context::Table, "table"),
+    ];
+    #[cfg(feature = "git")]
+    {
+        contexts.push((Context::Diff, "diff"));
+        for b in Backend::ALL {
+            for s in Screen::ALL {
+                // The commit detail is a text view and the graph picker a small list of its own.
+                if !matches!(s, Screen::Detail) {
+                    contexts.push((Context::Screen(b, s), "list"));
+                }
+            }
+        }
+    }
+    let m = KeyMap::defaults(KeyScheme::Vim);
+    let mut checked = 0;
+    let mut missing: Vec<String> = Vec::new();
+    for (ctx, name) in contexts {
+        let table: Vec<KeySpec> = reserved(name).into_iter().map(|(k, _)| k).collect();
+        let mut check = |kp: KeyPress, why: String| {
+            if !in_scope(kp) {
+                return;
+            }
+            checked += 1;
+            if !table.contains(&spec(kp)) {
+                missing.push(format!(
+                    "{}: `{}` ({why}) is not reserved for plugins in `{name}`",
+                    ctx.name(),
+                    kp.label()
+                ));
+            }
+        };
+        for (kp, a) in m.bound_actions(ctx) {
+            if layered(a) || (ctx == Context::Tree && tree_layered(a)) {
+                check(kp, format!("{a:?}"));
+            }
+        }
+        for (kp, id) in m.leader_keys_of(ctx) {
+            check(kp, format!("the {id:?} menu"));
+        }
+        for f in crate::ops::keys::fixed_bindings(ctx) {
+            // Known gap, left out here: `Tab` / `Shift-Tab` walk the version-control screens, but
+            // the plugin crate's "list" table does not reserve them (a plugin on a `git.*` screen
+            // could take them).
+            #[cfg(feature = "git")]
+            if matches!(f.action, Action::GitScreenNext | Action::GitScreenPrev) {
+                continue;
+            }
+            check(f.key, format!("fixed, {:?}", f.action));
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+    // Not vacuous: the walk really visited keys of every kind.
+    assert!(checked > 150, "only {checked} keys were checked");
+}

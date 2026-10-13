@@ -273,3 +273,61 @@ fn a_cancelled_open_or_view_is_a_cancel() {
         .unwrap_err();
     assert_eq!(err.kind, FailureKind::Cancelled);
 }
+
+#[test]
+fn the_session_offers_the_picture_first_then_the_text() {
+    let s = MermaidPlugin.open(embed(FLOW), &OpenCx::bare()).unwrap();
+    let layout = s.layout();
+    assert_eq!(layout.default_repr.as_deref(), Some(REPR_IMAGE));
+    let names: Vec<&str> = layout.reprs.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(names, [REPR_IMAGE, REPR_TEXT]);
+    assert_eq!(layout.default_repr_without_pixels, None);
+}
+
+#[test]
+fn trailing_newlines_do_not_change_the_text_diagram() {
+    let plain = text_diagram("graph LR\n  A --> B", 0);
+    for tail in ["\n", "\n\n", "\n\n\n"] {
+        let got = text_diagram(&format!("graph LR\n  A --> B{tail}"), 0);
+        assert_eq!(
+            got.iter().map(Line::plain).collect::<Vec<_>>(),
+            plain.iter().map(Line::plain).collect::<Vec<_>>(),
+            "{tail:?}"
+        );
+    }
+}
+
+/// The declared defaults are what the plugin does when a setting is absent: a view made with no
+/// settings is the view made with every declared default written out.
+#[test]
+fn the_declared_defaults_are_what_an_absent_setting_does() {
+    let m = mermaid_manifest();
+    let mut explicit = Settings::new();
+    for d in &m.settings {
+        explicit.set(d.name.clone(), d.default.clone());
+    }
+    let bytes = |v: View| match v {
+        View::Image(iv) => match iv.data {
+            ImageData::Svg { data, .. } => data.to_vec(),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("not a picture: {other:?}"),
+    };
+    let a = bytes(view(embed(FLOW), Settings::empty(), &ViewReq::default()).unwrap());
+    let b = bytes(view(embed(FLOW), &explicit, &ViewReq::default()).unwrap());
+    assert_eq!(a, b);
+    // And every declared default is the constant the module names.
+    let get = |n: &str| {
+        m.settings
+            .iter()
+            .find(|s| s.name == n)
+            .unwrap()
+            .default
+            .clone()
+    };
+    assert_eq!(get("mode"), Value::Str(DEFAULT_MODE.into()));
+    assert_eq!(get("theme"), Value::Str(DEFAULT_THEME.into()));
+    assert_eq!(get("curve"), Value::Str(DEFAULT_CURVE.into()));
+    assert_eq!(get("routing"), Value::Str(DEFAULT_ROUTING.into()));
+    assert_eq!(get("rows"), Value::Int(DEFAULT_ROWS));
+}

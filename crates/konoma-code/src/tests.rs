@@ -145,3 +145,122 @@ fn a_cancelled_open_or_view_is_a_cancel() {
         .unwrap_err();
     assert_eq!(err.kind, FailureKind::Cancelled);
 }
+
+#[test]
+fn every_modifier_bit_converts_to_its_own_bit_and_nothing_else() {
+    use ratatui::style::Modifier as R;
+    for (r, p) in [
+        (R::BOLD, Modifier::BOLD),
+        (R::DIM, Modifier::DIM),
+        (R::ITALIC, Modifier::ITALIC),
+        (R::UNDERLINED, Modifier::UNDERLINED),
+        (R::SLOW_BLINK, Modifier::SLOW_BLINK),
+        (R::RAPID_BLINK, Modifier::RAPID_BLINK),
+        (R::REVERSED, Modifier::REVERSED),
+        (R::HIDDEN, Modifier::HIDDEN),
+        (R::CROSSED_OUT, Modifier::CROSSED_OUT),
+    ] {
+        assert_eq!(modifier_of(r), p, "{r:?}");
+    }
+    assert_eq!(modifier_of(R::empty()), Modifier::EMPTY);
+    // All of them at once.
+    let all = R::BOLD
+        | R::DIM
+        | R::ITALIC
+        | R::UNDERLINED
+        | R::SLOW_BLINK
+        | R::RAPID_BLINK
+        | R::REVERSED
+        | R::HIDDEN
+        | R::CROSSED_OUT;
+    let got = modifier_of(all);
+    for p in [
+        Modifier::BOLD,
+        Modifier::DIM,
+        Modifier::ITALIC,
+        Modifier::UNDERLINED,
+        Modifier::SLOW_BLINK,
+        Modifier::RAPID_BLINK,
+        Modifier::REVERSED,
+        Modifier::HIDDEN,
+        Modifier::CROSSED_OUT,
+    ] {
+        assert!(got.contains(p), "{p:?}");
+    }
+}
+
+#[test]
+fn a_style_keeps_what_it_adds_and_what_it_removes() {
+    use ratatui::style::{Modifier as R, Style as RS};
+    let s = style_of(
+        RS::default()
+            .add_modifier(R::BOLD)
+            .remove_modifier(R::ITALIC | R::DIM),
+    );
+    assert_eq!(s.add, Modifier::BOLD);
+    assert!(s.sub.contains(Modifier::ITALIC) && s.sub.contains(Modifier::DIM));
+    assert!(!s.sub.contains(Modifier::BOLD));
+    assert_eq!(style_of(RS::default()).sub, Modifier::EMPTY);
+}
+
+#[test]
+fn the_code_theme_setting_reaches_the_colors() {
+    let src = "fn main() { let x = \"s\"; }\n";
+    let colors = |settings: &Settings| -> Vec<Option<Color>> {
+        let mut v = view_with(settings, "a.rs");
+        let styler = v.styler.as_mut().expect("a styler");
+        styler
+            .style_block(0, src)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.style.fg))
+            .collect()
+    };
+    let dracula = Settings::new().with("code_theme", Value::Str("Dracula".into()));
+    let nord = Settings::new().with("code_theme", Value::Str("Nord".into()));
+    let default = colors(Settings::empty());
+    let d = colors(&dracula);
+    let n = colors(&nord);
+    assert_ne!(d, default, "a theme of its own changes the colors");
+    assert_ne!(n, d);
+    // And they are the colors of that theme.
+    let mut direct = CodeStyler::new("a.rs", "Dracula");
+    let want: Vec<Option<Color>> = direct
+        .style_block(0, src)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.style.fg))
+        .collect();
+    assert_eq!(d, want);
+    // Absent means the default theme.
+    let mut def = CodeStyler::new("a.rs", DEFAULT_THEME);
+    let want: Vec<Option<Color>> = def
+        .style_block(0, src)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.style.fg))
+        .collect();
+    assert_eq!(default, want);
+}
+
+#[test]
+fn a_file_without_an_extension_is_never_warm_whatever_else_is() {
+    // Warm `rs` first: a name with no extension must not read as `rs`.
+    let mut rs = CodeStyler::new("a.rs", "TwoDark");
+    let _ = rs.style_block(0, "fn main() {}\n");
+    assert!(rs.ready());
+    assert!(!CodeStyler::new("Makefile", "TwoDark").ready());
+    assert!(!CodeStyler::new("noext", "TwoDark").ready());
+}
+
+#[test]
+fn the_declared_default_of_syntax_highlight_is_what_the_view_does_without_it() {
+    let m = code_manifest();
+    let decl = m
+        .settings
+        .iter()
+        .find(|s| s.name == "syntax_highlight")
+        .unwrap();
+    assert_eq!(decl.default, Value::Bool(true));
+    assert_eq!(
+        view_with(Settings::empty(), "a.rs").styler.is_some(),
+        matches!(decl.default, Value::Bool(true))
+    );
+}

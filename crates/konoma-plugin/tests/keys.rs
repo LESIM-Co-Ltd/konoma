@@ -252,3 +252,174 @@ fn a_dropped_key_does_not_block_a_later_action() {
     let issues = validate(&m(vec![Act::new("b").key("j"), Act::new("c").key("w")]));
     assert_eq!(issues.len(), 1);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The reserved tables, pinned key by key (a key dropped from one string of `reserved` must fail).
+// ---------------------------------------------------------------------------------------------
+
+/// `layer:key` for every reserved key of a context, sorted.
+fn table(ctx: &str) -> Vec<String> {
+    let mut v: Vec<String> = reserved(ctx)
+        .into_iter()
+        .map(|(k, l)| format!("{l:?}:{k}"))
+        .collect();
+    v.sort();
+    v
+}
+
+fn expected(groups: &[(&str, &str)]) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for (layer, keys) in groups {
+        for k in keys.split(' ').filter(|k| !k.is_empty()) {
+            v.push(format!("{layer}:{k}"));
+        }
+    }
+    v.sort();
+    v
+}
+
+/// Layers 0 to 3 and the page keys: the part every context shares.
+fn shared() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Global", "? Q F P t T [ ] 1 2 3 4 5 6 7 8 9"),
+        (
+            "Base",
+            "j k h l g G 0 $ q / n N v V y Y r m ' , Space Ctrl-d Ctrl-u Ctrl-f Ctrl-b Ctrl-n Ctrl-p Ctrl-t Up Down Left Right Esc Enter",
+        ),
+        ("Verb", "e o p !"),
+        ("Type", "J K O"),
+    ]
+}
+
+fn with(extra: &[(&'static str, &'static str)]) -> Vec<String> {
+    let mut g = shared();
+    g.extend_from_slice(extra);
+    expected(&g)
+}
+
+#[test]
+fn the_global_table_is_exactly_layers_zero_to_three_and_the_page_keys() {
+    assert_eq!(table("global"), with(&[]));
+}
+
+#[test]
+fn every_context_table_is_exactly_the_shared_part_plus_its_own_layer_two() {
+    assert_eq!(table("tree"), with(&[("Type", "d C a A . i")]));
+    for ctx in ["text", "document"] {
+        assert_eq!(
+            table(ctx),
+            with(&[("Type", "Tab Shift-Tab R + - = f")]),
+            "{ctx}"
+        );
+    }
+    assert_eq!(table("image"), with(&[("Type", "R + - =")]));
+    assert_eq!(table("table"), with(&[("Type", "R")]));
+    assert_eq!(table("diff"), with(&[("Type", "s R")]));
+    // "list" and every unknown name (a plugin's screen, `git.changes`).
+    for ctx in ["list", "git.changes", "my.screen", ""] {
+        assert_eq!(table(ctx), with(&[("Type", "R")]), "{ctx}");
+    }
+}
+
+#[test]
+fn no_context_table_lists_a_key_twice() {
+    for ctx in [
+        "global", "tree", "text", "document", "table", "image", "diff", "list",
+    ] {
+        let r = reserved(ctx);
+        for (i, (a, _)) in r.iter().enumerate() {
+            assert!(
+                r.iter().skip(i + 1).all(|(b, _)| a != b),
+                "{ctx}: {a} twice"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_notation_aliases_parse_to_one_key_each() {
+    for s in ["pagedown", "PgDn", "pagedn", "PAGEDN"] {
+        assert_eq!(
+            parse_key(s).unwrap(),
+            KeySpec::key(KeyCode::PageDown),
+            "{s}"
+        );
+    }
+    for s in ["pageup", "PgUp"] {
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::PageUp), "{s}");
+    }
+    for s in ["esc", "Escape", "ESCAPE"] {
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Esc), "{s}");
+    }
+    for s in ["enter", "Return"] {
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Enter), "{s}");
+    }
+    for s in ["delete", "Del"] {
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Delete), "{s}");
+    }
+    assert_eq!(parse_key("F1").unwrap(), KeySpec::key(KeyCode::F(1)));
+    assert_eq!(parse_key("f12").unwrap(), KeySpec::key(KeyCode::F(12)));
+    assert!(parse_key("F13").is_err());
+    assert!(parse_key("F0").is_err());
+}
+
+#[test]
+fn ctrl_keeps_its_modifier_on_shift_tab_and_shift_letters() {
+    assert_eq!(
+        parse_key("Ctrl-Shift-Tab").unwrap(),
+        KeySpec {
+            code: KeyCode::BackTab,
+            ctrl: true
+        }
+    );
+    assert_eq!(
+        parse_key("c-shift-tab").unwrap(),
+        KeySpec {
+            code: KeyCode::BackTab,
+            ctrl: true
+        }
+    );
+    assert_eq!(
+        parse_key("Ctrl-Shift-w").unwrap(),
+        KeySpec {
+            code: KeyCode::Char('W'),
+            ctrl: true
+        }
+    );
+    assert_eq!(
+        parse_key("Shift-Tab").unwrap(),
+        KeySpec::key(KeyCode::BackTab)
+    );
+    assert_eq!(
+        parse_key("Ctrl-Tab").unwrap(),
+        KeySpec {
+            code: KeyCode::Tab,
+            ctrl: true
+        }
+    );
+}
+
+#[test]
+fn a_repeated_action_id_reports_only_the_repetition() {
+    // The later declaration is rejected and nothing else is said about it: its own key (reserved
+    // here) is not examined, and it does not take the key `w` the first one holds.
+    let issues = validate(&m(vec![
+        Act::new("a").key("w"),
+        Act::new("a").key("j"),
+        Act::new("a").key("w"),
+    ]));
+    assert_eq!(issues.len(), 2);
+    assert!(issues
+        .iter()
+        .all(|i| i.kind == KeyIssueKind::DuplicateActId && i.effect == Effect::Rejected));
+    // The repetition's own key (`y2` does not even parse) is not examined; `c` collides with the
+    // first `a` on `x`.
+    let issues = validate(&m(vec![
+        Act::new("a").key("x"),
+        Act::new("a").key("y2"),
+        Act::new("c").key("x"),
+    ]));
+    assert_eq!(issues.len(), 2);
+    assert_eq!(issues[0].kind, KeyIssueKind::DuplicateActId);
+    assert!(matches!(&issues[1].kind, KeyIssueKind::Duplicate { other, .. } if other == "a"));
+}

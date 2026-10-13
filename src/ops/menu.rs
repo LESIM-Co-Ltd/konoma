@@ -379,3 +379,7 @@ fn actions_menu(app: &App, ctx: Context) -> Menu {
         items,
     }
 }
+
+#[cfg(test)]
+#[path = "menu_tests.rs"]
+mod tests;

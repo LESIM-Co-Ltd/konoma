@@ -383,3 +383,7 @@ impl App {
         pick.copied().unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+#[path = "list_filter_tests.rs"]
+mod tests;

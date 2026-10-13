@@ -361,4 +361,33 @@ mod tests {
         assert_eq!(g.cell(0, 0), "one.txt");
         assert_eq!(g.cell(0, 1), "5 B");
     }
+
+    #[test]
+    fn a_cancelled_archive_open_stops_before_listing() {
+        use std::io::Write as _;
+        let dir = unique_tmp("konoma_table_archive_cancel");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.zip");
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file("one.txt", opts).unwrap();
+        zw.write_all(b"hello").unwrap();
+        zw.finish().unwrap();
+        let settings = konoma_plugin::Settings::new();
+        let cx = OpenCx::new(&settings, "en").with_cancel(konoma_plugin::Cancel::from_fn(|| true));
+        let err = ArchivePlugin
+            .open(
+                Input::File {
+                    path: p.clone(),
+                    hint: None,
+                },
+                &cx,
+            )
+            .err()
+            .expect("a cancelled open");
+        assert_eq!(err.kind, konoma_plugin::FailureKind::Cancelled);
+        // Not cancelled: the same file lists.
+        assert!(open_file(&ArchivePlugin, &p).is_ok());
+    }
 }

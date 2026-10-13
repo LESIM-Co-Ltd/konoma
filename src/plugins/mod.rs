@@ -14,6 +14,8 @@ mod listing;
 mod profile;
 mod resolve;
 #[cfg(test)]
+mod survivor_tests;
+#[cfg(test)]
 pub(crate) mod test_plugins;
 #[cfg(test)]
 pub(crate) mod test_views;
@@ -76,22 +78,6 @@ fn b(v: bool) -> konoma_plugin::Value {
     konoma_plugin::Value::Bool(v)
 }
 
-/// `edit` opens the user's editor in the terminal; `open` hands the file to the OS default
-/// application as a GUI program.
-fn default_verbs(m: Manifest) -> Manifest {
-    m.verb(
-        VerbDecl::new(Verb::Edit)
-            .launcher(Launcher::Editor)
-            .mode(LaunchMode::Terminal)
-            .line_token(),
-    )
-    .verb(
-        VerbDecl::new(Verb::Open)
-            .launcher(Launcher::OsDefault)
-            .mode(LaunchMode::Gui),
-    )
-}
-
 fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
     Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
 }
@@ -114,7 +100,8 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     let video = konoma_media::video_manifest();
     let pdf = konoma_media::pdf_manifest();
 
-    let mut out: Vec<Manifest> = [
+    // Every one of them already carries its own `edit` / `open` chain.
+    let mut out: Vec<Manifest> = vec![
         md,
         mermaid,
         svg,
@@ -127,17 +114,7 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
         code,
         video,
         pdf,
-    ]
-    .into_iter()
-    .map(|m| {
-        // The Office plugins already carry their own chain.
-        if m.verbs.is_empty() {
-            default_verbs(m)
-        } else {
-            m
-        }
-    })
-    .collect();
+    ];
     // `math` only takes the formulas inside Markdown, so it has no file to edit or open.
     out.insert(2, math);
     out

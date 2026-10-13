@@ -20745,3 +20745,5 @@ fn e2e_markdown_inline_svg_refused_shows_the_reason_under_its_fallback() {
     s.see("before");
     s.see("after");
 }
+
+mod survivors_f7;

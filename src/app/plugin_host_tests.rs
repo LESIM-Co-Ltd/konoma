@@ -794,3 +794,111 @@ fn the_layout_gate_gives_the_layout_to_exactly_one_side() {
         "released, not timed out"
     );
 }
+
+// ---- the install step itself: only the newest generation is applied ----------------------------
+
+fn table_view(rows: usize) -> View {
+    View::Table(TableView {
+        grid: Arc::new(Rows(rows)),
+        title: None,
+        rainbow: true,
+        addressed: false,
+    })
+}
+
+/// An answer for the stand-in plugin of generation `gen` carrying a table of `rows` rows.
+fn answer_of(gen: u64, rows: usize) -> PluginResult {
+    PluginResult::answer(
+        gen,
+        "stand",
+        None,
+        Some(table_view(rows)),
+        None,
+        ViewReq::new(80, 24),
+    )
+}
+
+/// An answer of an older generation for the same plugin and the same file (two opens of one file,
+/// two page turns) is not put into the show, however it got here, and it does not end the loading
+/// mark of the newer job; the newest generation is applied and ends it.
+#[test]
+fn a_result_of_an_older_generation_is_not_installed_for_the_same_file() {
+    let (dir, file) = sandbox("konoma_plugin_host_install_gen");
+    let mut app = app_on(&dir, &file);
+    let (plugin, _) = stand(Script {
+        rows: 5,
+        ..Script::default()
+    });
+    open_stand(&mut app, plugin, &file);
+    assert_eq!(rows_of(&app), Some(5));
+    // A newer job is out (a page turn): the loading mark is up.
+    app.bump_media_gen();
+    app.media_loading = true;
+    let newest = app.media_gen;
+    // The result of the older job arrives late.
+    assert!(!app.install_plugin_result(answer_of(newest - 1, 9)));
+    assert_eq!(rows_of(&app), Some(5), "the late page is not shown");
+    assert!(app.media_loading, "the newer job is still out");
+    // The result of the newest job is applied and ends the mark.
+    assert!(app.install_plugin_result(answer_of(newest, 7)));
+    assert_eq!(rows_of(&app), Some(7));
+    assert!(!app.media_loading);
+    // And a result from the future of nothing (a generation not yet reached) is not the newest.
+    app.media_loading = true;
+    assert!(!app.install_plugin_result(answer_of(newest + 1, 3)));
+    assert_eq!(rows_of(&app), Some(7));
+    assert!(app.media_loading);
+}
+
+/// A failure of an older generation does not replace the view of the newer one either.
+#[test]
+fn a_failure_of_an_older_generation_does_not_replace_the_view() {
+    let (dir, file) = sandbox("konoma_plugin_host_install_gen_fail");
+    let mut app = app_on(&dir, &file);
+    let (plugin, _) = stand(Script {
+        rows: 4,
+        ..Script::default()
+    });
+    open_stand(&mut app, plugin, &file);
+    app.bump_media_gen();
+    let old = app.media_gen - 1;
+    let failed = PluginResult::failed(
+        old,
+        "stand".into(),
+        ViewReq::new(80, 24),
+        Failure::external(t!(en: "late failure")),
+    );
+    assert!(!app.install_plugin_result(failed));
+    assert!(app.plugin_failure().is_none());
+    assert_eq!(rows_of(&app), Some(4));
+}
+
+/// `[external] pdf` and `[external] video` are what the worker is told to allow; no other plugin is
+/// ever allowed to start an external program.
+#[test]
+fn the_external_switches_reach_the_work_of_the_plugin_they_belong_to() {
+    let (dir, file) = sandbox("konoma_plugin_host_external");
+    for (pdf, video) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut cfg = Config::default();
+        cfg.external.pdf = pdf;
+        cfg.external.video = video;
+        let app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let work = |id: &str| {
+            let (plugin, _) = stand(Script::default());
+            let job = plugin_host::PluginJob::Open {
+                plugin,
+                input: Input::File {
+                    path: file.clone(),
+                    hint: None,
+                },
+            };
+            app.plugin_work(id.to_string(), file.clone(), job, ViewReq::default())
+                .external
+        };
+        assert_eq!(work(konoma_media::PDF_ID), pdf, "pdf={pdf}");
+        assert_eq!(work(konoma_media::VIDEO_ID), video, "video={video}");
+        assert!(!work(konoma_media::IMAGE_ID));
+        assert!(!work(konoma_table::CSV_ID));
+        assert!(!work("stand"));
+    }
+}

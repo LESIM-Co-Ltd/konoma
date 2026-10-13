@@ -410,3 +410,35 @@ fn describe_lists_every_target_with_owner_and_state() {
     assert_eq!(rows[2].priority, konoma_plugin::Priority::Option);
     assert!(r.plugin("a").is_some() && r.plugin("zz").is_none());
 }
+
+#[test]
+fn a_content_type_is_taken_by_the_plugin_that_binds_that_type_only() {
+    let mut r = Registry::new();
+    r.register(
+        stub(Manifest::new("md", "1").bind(Bind::content("markdown"))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    r.register(
+        stub(Manifest::new("rst", "1").bind(Bind::content("restructured"))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    assert_eq!(r.resolve_content("markdown").as_deref(), Some("md"));
+    assert_eq!(r.resolve_content("restructured").as_deref(), Some("rst"));
+    assert_eq!(r.resolve_content("textile"), None);
+    // The same for embedded kinds.
+    r.register(
+        stub(Manifest::new("m1", "1").bind(Bind::embed("math"))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    r.register(
+        stub(Manifest::new("m2", "1").bind(Bind::embed("fence:mermaid"))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    assert_eq!(r.resolve_embed("math").as_deref(), Some("m1"));
+    assert_eq!(r.resolve_embed("fence:mermaid").as_deref(), Some("m2"));
+    assert_eq!(r.resolve_embed("fence:dot"), None);
+}

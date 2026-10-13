@@ -210,6 +210,12 @@ impl App {
         }
     }
 
+    /// The scroll rows `n` / `N` step through in the diff on screen, for the tests.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn diff_block_rows_for_test(&self) -> Vec<usize> {
+        self.diff_blocks().rows
+    }
+
     /// Whether the diff on screen has a change block `n` / `N` can step to (cheap; never the side
     /// by side view of pictures, which has nothing to scroll).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -256,3 +262,7 @@ impl App {
         crate::preview::gitdiff::block_new_line(&c.lines, starts[pick]).map(|n| n as usize)
     }
 }
+
+#[cfg(test)]
+#[path = "change_jump_tests.rs"]
+mod tests;

@@ -1255,12 +1255,10 @@ impl App {
         match wait {
             Wait::Nothing => false,
             Wait::Result(budget) => match handoff.and_then(|h| h.wait(budget)) {
+                // A job of a work group is never waited for (`wait` is `Nothing` above), so a
+                // result handed over here has no group to release.
                 Some(result) => {
-                    let group = result.group.clone();
                     self.install_plugin_result(result);
-                    if let Some(group) = group {
-                        self.release_plugin_group(&group);
-                    }
                     true
                 }
                 None => false,
