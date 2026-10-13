@@ -511,9 +511,12 @@ code_theme = "TwoDark"
 # `[plugins.<id>]` is the table of one plugin:
 #   enabled = false    switch the plugin off — its files go to the next step (plain text if they read as
 #                      text, otherwise [can not preview]). Unknown ids are reported at startup.
+#   read_only = true   stop the writing actions of that plugin (the actions it declares as writing; such a key says why
+#                      and does nothing). The standard plugins declare no actions yet, so it has no effect on them today.
 # The other keys of the table are the plugin's own settings. They REPLACE the matching [ui] keys: the old
 # [ui] name is still read (used when the plugin table does not set the value); if both are set, the plugin
-# table wins. A key a plugin does not have is reported at startup and ignored.
+# table wins. A key a plugin does not have is reported at startup and ignored; a value of another type than the plugin
+# declares (rainbow = "yes") is named at startup and the plugin's default is used.
 # While a setting is still under its old [ui] name, the footer says so once at start ("[ui] md_alerts is an old
 # name — write [plugins.markdown] alerts instead"); move the value and the message goes away.
 #   csv          rainbow          (was [ui] csv_rainbow)
@@ -639,7 +642,8 @@ code_theme = "TwoDark"
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (O: open the heading outline of a Markdown preview, or the list of the pages of a PDF / workbook / presentation with 2+ pages; Enter jumps)
 #                  "cycle_representation" (R: cycles the representation — decorated ⇄ raw source; on a presentation,
-#                    the slide pictures ⇄ the text view; in a diff, its presentations. Was "toggle_markdown_raw", still read)
+#                    the slide pictures ⇄ the text view; in a diff, its presentations; on a plugin that declares two or more
+#                    representations, those in the declared order — a table has one, so no R there. Was "toggle_markdown_raw", still read)
 #                  "image_zoom_in" (+) "image_zoom_out" (-) "image_zoom_reset" (=)
 #                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image and in an image/PDF/SVG diff, where they turn the page
 #                    instead of scrolling: next/previous PDF page, spreadsheet
