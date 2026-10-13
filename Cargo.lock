@@ -1732,6 +1732,7 @@ dependencies = [
  "konoma-media-core",
  "konoma-mermaid",
  "konoma-mermaid-core",
+ "konoma-office",
  "konoma-office-core",
  "konoma-plugin",
  "konoma-svg",
@@ -1876,6 +1877,16 @@ dependencies = [
  "serde",
  "serde_json",
  "svgtypes",
+]
+
+[[package]]
+name = "konoma-office"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-office-core",
+ "konoma-plugin",
+ "konoma-test-support",
 ]
 
 [[package]]

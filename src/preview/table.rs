@@ -1,41 +1,36 @@
-//! What the table renderer shows: a plugin's table (CSV/TSV, an archive listing) or one sheet of a
-//! workbook, both read through the same [`Grid`].
+//! What the table renderer shows: a plugin's table (CSV/TSV, an archive listing, the sheet of a
+//! workbook) read through the same [`Grid`].
 //!
-//! The CSV/TSV and archive files themselves are read by the `csv` and `archive` plugins
-//! (`crates/konoma-table`); this module only re-exports what the host's tests and the spreadsheet
-//! share, and holds the borrowed view over either kind of table.
+//! The CSV/TSV and archive files are read by the `csv` and `archive` plugins
+//! (`crates/konoma-table`), the workbooks by the `spreadsheet` plugin (`crates/konoma-office`);
+//! this module only re-exports what the host's tests share, and holds the borrowed view over the
+//! table a plugin returned.
 
 use std::borrow::Cow;
 
-use konoma_plugin::view::Grid as PluginGrid;
-
-use crate::preview::office::Sheet;
+use konoma_plugin::view::{CellDetail, Grid as PluginGrid};
 
 /// What the host's tests read a CSV with: the parser, its row cap, the parsed table, and the
 /// (thread-local) counter of full-file parses.
 #[cfg(test)]
 pub use konoma_table::table::{parse, TableData, MAX_ROWS, PARSE_CALLS};
 
-/// A read-only view of whatever the table renderer is showing: a plugin's table (a parsed
-/// CSV/TSV or an archive listing, read cell by cell through [`PluginGrid`]) or one sheet of a
-/// workbook ([`Sheet`]). Both are borrowed, never converted into each other (a sheet can hold 4M
-/// cells — copying it would double that).
+/// A read-only view of the table the renderer is showing: a table a plugin returned (a parsed
+/// CSV/TSV, an archive listing, one sheet of a workbook), read cell by cell through [`PluginGrid`].
+/// It is borrowed, never converted (a sheet can hold 4M cells — copying it would double that).
 ///
 /// "Rows" always means data rows: a CSV's header record is exposed through [`Grid::header`], and a
-/// sheet has no header record (its header is the column letters, see [`column_letters`]).
+/// sheet has no header record (its header is the column letters).
 #[derive(Clone, Copy)]
 pub enum Grid<'a> {
     /// A table a plugin returned.
     Plugin(&'a dyn PluginGrid),
-    /// One sheet of a spreadsheet.
-    Sheet(&'a Sheet),
 }
 
 impl std::fmt::Debug for Grid<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Grid::Plugin(g) => write!(f, "Grid::Plugin({}x{})", g.nrows(), g.ncols()),
-            Grid::Sheet(_) => write!(f, "Grid::Sheet"),
         }
     }
 }
@@ -45,7 +40,6 @@ impl<'a> Grid<'a> {
     pub fn nrows(&self) -> usize {
         match self {
             Grid::Plugin(g) => g.nrows(),
-            Grid::Sheet(s) => s.nrows,
         }
     }
 
@@ -53,16 +47,14 @@ impl<'a> Grid<'a> {
     pub fn ncols(&self) -> usize {
         match self {
             Grid::Plugin(g) => g.ncols(),
-            Grid::Sheet(s) => s.ncols,
         }
     }
 
-    /// The header text of `col`: the plugin table's header cell (empty when it has none), or the
-    /// spreadsheet column letters (`A`, `B`, .. `AA`).
+    /// The header text of `col`: the plugin table's header cell (empty when it has none; a
+    /// sheet's are the column letters `A`, `B`, .. `AA`).
     pub fn header(&self, col: usize) -> Cow<'a, str> {
         match self {
             Grid::Plugin(g) => Cow::Owned(g.header(col).unwrap_or_default()),
-            Grid::Sheet(_) => Cow::Owned(column_letters(col)),
         }
     }
 
@@ -75,15 +67,14 @@ impl<'a> Grid<'a> {
                 Some(s) => Cow::Borrowed(s),
                 None => Cow::Owned(g.cell(row, col)),
             },
-            Grid::Sheet(s) => Cow::Borrowed(s.display(row, col)),
         }
     }
 
-    /// How many cells data row `row` really has (a ragged CSV row is shorter than `ncols`).
+    /// How many cells data row `row` really has (a ragged CSV row is shorter than `ncols`; a sheet
+    /// row ends at its last cell that shows something).
     pub fn row_len(&self, row: usize) -> usize {
         match self {
             Grid::Plugin(g) => g.row_len(row),
-            Grid::Sheet(s) => s.ncols,
         }
     }
 
@@ -91,13 +82,22 @@ impl<'a> Grid<'a> {
     pub fn truncated(&self) -> bool {
         match self {
             Grid::Plugin(g) => g.truncated(),
-            Grid::Sheet(s) => s.rows_truncated || s.cols_truncated,
         }
     }
 
-    /// Whether this is a spreadsheet sheet (row-number gutter, cell addresses, no header record).
-    pub fn is_sheet(&self) -> bool {
-        matches!(self, Grid::Sheet(_))
+    /// Calls `f(col, text)` for each cell of `row` that has something to search (see
+    /// [`PluginGrid::visit_row`]).
+    pub fn visit_row(&self, row: usize, f: &mut dyn FnMut(usize, &str)) {
+        match self {
+            Grid::Plugin(g) => g.visit_row(row, f),
+        }
+    }
+
+    /// The labelled lines of the cell popup, if the table has them (a sheet's).
+    pub fn detail(&self, row: usize, col: usize) -> Option<CellDetail> {
+        match self {
+            Grid::Plugin(g) => g.detail(row, col),
+        }
     }
 }
 
@@ -163,18 +163,21 @@ mod tests {
         assert_eq!(g.cell(0, 1), "b");
         assert_eq!(g.cell(5, 5), "");
         assert!(g.truncated());
-        assert!(!g.is_sheet());
     }
 
     #[test]
     fn grid_over_an_empty_sheet_is_empty_with_letter_headers() {
-        let s = Sheet::default();
-        let g = Grid::Sheet(&s);
+        let wb = crate::preview::office::Workbook {
+            sheets: vec![crate::preview::office::Sheet::default()],
+            ..Default::default()
+        };
+        let view = konoma_office::table_view(wb, 0, "en", true);
+        let g = Grid::Plugin(&*view.grid);
         assert_eq!((g.nrows(), g.ncols()), (0, 0));
         assert_eq!(g.header(0), "A");
         assert_eq!(g.cell(0, 0), "");
         assert!(!g.truncated());
-        assert!(g.is_sheet());
+        assert!(view.addressed);
     }
 
     /// A plugin table that makes its cell text on demand (no borrowed string) reads the same.

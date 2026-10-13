@@ -122,17 +122,7 @@ impl App {
             PreviewKind::Plugin { id, .. } if kind.is_media_plugin() => {
                 self.start_media_plugin(id, path)
             }
-            // A spreadsheet: parsed on the worker (no graphics backend needed — the table is drawn
-            // with ordinary text). The display language picks the locale that decides what
-            // locale-dependent built-in number formats look like.
-            PreviewKind::Spreadsheet(_) => {
-                let locale = match self.lang {
-                    crate::i18n::Lang::Jp => crate::preview::office::Locale::Ja,
-                    crate::i18n::Lang::En => crate::preview::office::Locale::En,
-                };
-                self.spawn_workbook_job(path.to_path_buf(), locale, self.tab.sheet_idx);
-            }
-            // A Word document: converted to Markdown on the same worker (no graphics backend
+            // A Word document: converted to Markdown on the Office worker (no graphics backend
             // needed to read it; the pictures it holds are decoded later, when drawn).
             PreviewKind::Document(_) => {
                 self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
@@ -312,32 +302,20 @@ impl App {
     }
 
     /// Starts a new media generation: whatever is running for the old one is stale (its result is
-    /// dropped on arrival, and a workbook load sees it and stops).
+    /// dropped on arrival, and a plugin's or a Word load sees it and stops).
     pub(super) fn bump_media_gen(&mut self) {
         self.media_gen = self.media_gen.wrapping_add(1);
         self.media_gen_shared
             .store(self.media_gen, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Loads one sheet of a spreadsheet on a worker thread — **one load at a time, newest request
-    /// only**. Holding `J` asks for a sheet per key repeat; each load of a large workbook can take
-    /// gigabytes, and a load that is no longer wanted used to run to its end beside the next ones.
-    /// Now a request made while a load is running replaces the one waiting behind it (the same
-    /// shape as the media diff's worker, `kick_media_diff`) and the running one is told to stop
-    /// (`Cancel` on the generation: the sheet builder checks it at every row). With no channel
-    /// attached (tests), the load runs inline.
-    fn spawn_workbook_job(
-        &mut self,
-        path: PathBuf,
-        locale: crate::preview::office::Locale,
-        sheet: usize,
-    ) {
-        self.spawn_office_job(MediaJob::Workbook(path, locale, sheet));
-    }
-
-    /// The one entry of the Office worker slot: a workbook sheet or a Word document (`job` is
-    /// `MediaJob::Workbook` or `MediaJob::Document`), with the one-at-a-time / newest-only rule
-    /// described on [`Self::spawn_workbook_job`].
+    /// The one entry of the Office worker slot for a Word document (`job` is `MediaJob::Document`),
+    /// **one load at a time, newest request only**: each load can take gigabytes, and a load that
+    /// is no longer wanted used to run to its end beside the next ones. A request made while a
+    /// load is running replaces the one waiting behind it (the same shape as the media diff's
+    /// worker, `kick_media_diff`, and as the work groups of the plugins, which spreadsheets use)
+    /// and the running one is told to stop (`Cancel` on the generation). With no channel attached
+    /// (tests), the load runs inline.
     fn spawn_office_job(&mut self, job: MediaJob) {
         let Some(_) = self.media_tx else {
             if let Some(payload) = job.run() {
@@ -358,13 +336,14 @@ impl App {
         }
     }
 
-    /// Test-only: workbook loads started on a thread so far.
+    /// Test-only: Office loads started on a thread so far (a Word document, and the jobs of the
+    /// Office plugins' work group: a workbook's sheets).
     #[cfg(test)]
     pub fn workbook_loads_started(&self) -> u32 {
-        self.wb_dispatches
+        self.wb_dispatches + self.plugin_group_dispatches
     }
 
-    /// Starts `req` on the one workbook thread.
+    /// Starts `req` on the one Office thread.
     fn dispatch_workbook(&mut self, req: WbRequest) {
         let Some(tx) = self.media_tx.clone() else {
             return;
@@ -393,8 +372,14 @@ impl App {
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
-        // The workbook thread is free again, current result or not; what was asked for meanwhile
-        // starts now (and is dropped if the preview moved on since).
+        // The Office thread is free again, current result or not; what was asked for meanwhile
+        // starts now (and is dropped if the preview moved on since). The same for the work group
+        // of a plugin whose job just answered.
+        if let Some(MediaPayload::Plugin(res)) = &result.payload {
+            if let Some(group) = res.group.clone() {
+                self.release_plugin_group(&group);
+            }
+        }
         if result.wb_worker {
             self.wb_worker_busy = false;
             if let Some(next) = self.wb_queued.take() {
@@ -404,10 +389,9 @@ impl App {
             }
         }
         if result.gen != self.media_gen {
-            // Stale: we've already moved on to another file. A workbook nobody wants is freed off
-            // the UI thread like any other (see `set_workbook`).
+            // Stale: we've already moved on to another file. A document nobody wants is freed off
+            // the UI thread like any other.
             match result.payload {
-                Some(MediaPayload::Workbook(wb)) => super::table_actions::discard_in_background(wb),
                 Some(MediaPayload::Document(doc)) => {
                     super::table_actions::discard_in_background(doc)
                 }
@@ -467,33 +451,6 @@ impl App {
             }
             MediaPayload::CommandFailed(msg) => {
                 self.command_err = Some(msg);
-            }
-            // A late result for a preview that has since been replaced by something else (the
-            // generation only guards against a *newer media job*, and a non-media preview starts
-            // none) must not be adopted by the new preview.
-            MediaPayload::Workbook(wb) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    // The worker clamps the requested sheet to the file as it is now (it may have
-                    // lost sheets since): what it loaded is what is shown.
-                    if let Some(i) = wb.loaded_index() {
-                        self.tab.sheet_idx = i;
-                    }
-                    self.workbook_error = wb.sheet_error.clone();
-                    self.set_workbook(Some(wb));
-                    self.clamp_table_cursor();
-                    // The search in force runs on what arrived (a reload after an outside edit, or
-                    // another sheet): hits recorded for the old cells are not hits any more.
-                    self.rescan_table_search();
-                } else {
-                    super::table_actions::discard_in_background(wb);
-                }
-            }
-            MediaPayload::WorkbookFailed(e) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    self.set_workbook(None);
-                    self.workbook_error = Some(e);
-                    self.tab.search_pending = false;
-                }
             }
             MediaPayload::Plugin(res) => {
                 self.install_plugin_result(*res);
@@ -741,13 +698,6 @@ impl App {
     /// Extension point: a slide deck adds one arm here (its own `PreviewKind`).
     pub fn page_turn(&mut self, dir: i32) {
         match self.tab.preview_kind {
-            Some(PreviewKind::Spreadsheet(_)) => {
-                if dir >= 0 {
-                    self.sheet_next()
-                } else {
-                    self.sheet_prev()
-                }
-            }
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
             // The slides of a presentation (a Word document ignores the keys).
@@ -773,8 +723,9 @@ impl App {
     }
 
     /// Jump to a 1-based page (clamped to [1, total]). No-op if the preview has no pages to turn or
-    /// is already there. Asks the plugin for the new page on the media worker and resets the view
-    /// to fit (each page shows whole).
+    /// is already there. Asks the plugin for the new page on the media worker; a picture's view
+    /// is reset to fit (each page shows whole), a table (a workbook's sheets) goes back to its
+    /// top left (`turn_table_page`).
     fn goto_page(&mut self, page: u32) {
         if !self.can_turn_pages() {
             return;
@@ -787,15 +738,19 @@ impl App {
             return;
         }
         self.tab.page = page;
-        // Reset to fit so the whole new page is visible (set_static_image doesn't touch zoom/center,
-        // so reset it explicitly).
-        self.tab.image_zoom = 1.0;
-        self.tab.image_center = (0.5, 0.5);
-        self.image_crop = None;
-        if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
-            // Keep showing the old page's image until the new one arrives (staleness judged by
-            // media_gen; the spinner overlays on top).
-            self.start_media_plugin(&id, &path);
+        if self.shows_media_plugin() {
+            // Reset to fit so the whole new page is visible (set_static_image doesn't touch
+            // zoom/center, so reset it explicitly).
+            self.tab.image_zoom = 1.0;
+            self.tab.image_center = (0.5, 0.5);
+            self.image_crop = None;
+            if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
+                // Keep showing the old page's image until the new one arrives (staleness judged by
+                // media_gen; the spinner overlays on top).
+                self.start_media_plugin(&id, &path);
+            }
+        } else if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. })) {
+            self.turn_table_page();
         }
     }
 

@@ -741,18 +741,12 @@ pub enum MediaPayload {
     /// unsupported format) — carried as a payload so the reason travels through the same
     /// generation-checked channel as success. Goes to `App::image_failure`.
     ImageFailed(crate::preview::image::ImageFailure),
-    /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
-    /// sheet that was asked for) → goes to `App::workbook`.
-    Workbook(Box<crate::preview::office::Workbook>),
-    /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
-    /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
-    /// through the same generation-checked channel as success.
-    WorkbookFailed(crate::preview::office::OfficeError),
     /// An opened Word document (`PreviewKind::Document`): its Markdown and pictures → goes to
     /// `App::document`.
     Document(Box<office_doc::LoadedDocument>),
     /// A Word document that could not be loaded (the reason maps to a translated message on the
-    /// render side), carried like [`MediaPayload::WorkbookFailed`].
+    /// render side), carried as a payload (not the plain `None` failure) so the *reason* travels
+    /// through the same generation-checked channel as success.
     DocumentFailed(crate::preview::office::OfficeError),
     /// A plugin's result (`PreviewKind::Plugin`): the session, its layout, the view it returned
     /// and, when that was a picture, the picture decoded on the same worker
@@ -766,7 +760,8 @@ pub enum MediaPayload {
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
-    /// The result of the (single) workbook load thread: its slot is free again, whatever `gen` is.
+    /// The result of the (single) Office load thread (a Word document): its slot is free again,
+    /// whatever `gen` is.
     wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
@@ -781,10 +776,9 @@ impl MediaResult {
     }
 }
 
-/// An Office load (a workbook or a Word document) waiting for the running one to end
-/// (`App::wb_queued`). Both kinds share the one Office worker slot.
+/// An Office load (a Word document) waiting for the running one to end (`App::wb_queued`).
 struct WbRequest {
-    /// `MediaJob::Workbook` or `MediaJob::Document`.
+    /// `MediaJob::Document`.
     job: MediaJob,
     /// The `media_gen` it was asked under; stale (dropped) if that moved on.
     gen: u64,
@@ -812,14 +806,9 @@ enum MediaJob {
     /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
     /// than from konoma's own mermaid renderer.
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
-    /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
-    /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
-    /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
-    /// reason it could not be opened.
-    Workbook(PathBuf, crate::preview::office::Locale, usize),
     /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
-    /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
-    /// is serialised with workbook loads and stops when its generation is superseded.
+    /// the document, or the reason it could not be opened. Runs on the Office worker slot (one at
+    /// a time, newest request only) and stops when its generation is superseded.
     Document(PathBuf, crate::i18n::Lang),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
@@ -840,7 +829,7 @@ impl MediaJob {
         self.run_cancellable(None)
     }
 
-    /// [`Self::run`]; `cancel` is honoured by the workbook load (the other kinds are short).
+    /// [`Self::run`]; `cancel` is honoured by the Word load (the other kinds are short).
     fn run_cancellable(
         self,
         cancel: Option<crate::preview::office::Cancel>,
@@ -868,25 +857,6 @@ impl MediaJob {
                     crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
                 };
                 Some(MediaPayload::Vector { img, svg })
-            }
-            MediaJob::Workbook(p, locale, sheet) => {
-                use crate::preview::office::{
-                    load_workbook_sheet_cancellable, LoadOptions, OfficeError,
-                };
-                let opts = LoadOptions {
-                    locale,
-                    ..LoadOptions::default()
-                };
-                // The readers sit on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_workbook_sheet_cancellable(&p, &opts, sheet, cancel)
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
-                    Err(e) => MediaPayload::WorkbookFailed(e),
-                })
             }
             MediaJob::Document(p, lang) => {
                 use crate::preview::office::docx::pptx::load_presentation_cancellable;
@@ -1642,24 +1612,14 @@ pub struct App {
     media_cache: Option<MediaCache>,
     /// The plugin display that is open (`PreviewKind::Plugin`, tables and pictures alike): the
     /// plugin's `Session` (a PDF keeps it so a page turn does not open the file again), its layout
-    /// and the view it returned (`app/plugin_host.rs`). Lives on `App` (like `workbook`): the data
+    /// and the view it returned (`app/plugin_host.rs`). Lives on `App` (like `document`): the data
     /// can be large, so a tab switch opens it again instead of cloning it into every tab snapshot.
     /// Assigned only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind`
     /// whenever the preview is not a plugin's and by `clear_image`.
     plugin: Option<plugin_host::PluginShow>,
-    /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
-    /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
-    /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
-    /// Lives on `App` (like `table_data`), not on `PerTab`: a sheet can hold up to 4M cells, so
-    /// cloning it into every tab snapshot is not an option — a tab switch re-reads it on the worker
-    /// instead (the sheet number and cursor are `PerTab` state and survive).
-    workbook: Option<Box<crate::preview::office::Workbook>>,
-    /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
-    /// reason shown on the "can not preview" screen.
-    workbook_error: Option<crate::preview::office::OfficeError>,
     /// The opened Word document while a `PreviewKind::Document` preview is active and its worker
     /// finished: the converted Markdown and the pictures it refers to. App-level (not `PerTab`) for
-    /// the same reason as `workbook`; a tab switch re-reads it on the worker. Assigned only through
+    /// the same reason as the plugin show; a tab switch re-reads it on the worker. Assigned only through
     /// `set_document`, which frees the old one off the UI thread.
     document: Option<Box<office_doc::LoadedDocument>>,
     /// Why the last Word document load failed (`Some` only while `document` is `None`).
@@ -1791,20 +1751,26 @@ pub struct App {
     md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
-    /// `media_gen`, shared with the running workbook load so it can see that it was superseded
+    /// `media_gen`, shared with the running loads so they can see that they were superseded
     /// (every change of `media_gen` goes through `bump_media_gen`).
     media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
-    /// A workbook load is running on its thread. **At most one at a time**: a spreadsheet is read
-    /// in one pass of a parser that can hold gigabytes, so `J` held down must not start one per
-    /// press (see `spawn_workbook_job`).
+    /// A Word load is running on its thread. **At most one at a time** (see `spawn_office_job`).
+    /// The Office plugins that went through the plugin road (`spreadsheet`) hold the same rule
+    /// through their work group instead (`plugin_groups`).
     wb_worker_busy: bool,
-    /// The newest workbook load asked for while one was running; it starts when that one ends.
+    /// The newest Word load asked for while one was running; it starts when that one ends.
     wb_queued: Option<WbRequest>,
-    /// Test-only: workbook loads started on a thread.
+    /// Test-only: Word loads started on a thread.
     #[cfg(test)]
     wb_dispatches: u32,
+    /// The exclusive work groups of the plugins (`Manifest::work_group`): which have a job running
+    /// and the newest one waiting behind it (`app/plugin_host.rs`).
+    plugin_groups: std::collections::BTreeMap<String, plugin_host::GroupSlot>,
+    /// Test-only: plugin jobs of a work group started on a thread.
+    #[cfg(test)]
+    plugin_group_dispatches: u32,
 
     /// Run2 keymap (Surface × key → Action). Built from the config at startup.
     pub keymaps: crate::keymap::KeyMap,
@@ -3048,9 +3014,6 @@ pub(crate) struct PerTab {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
-    /// Which visible sheet (0-based) a spreadsheet preview shows. Clamped to the workbook's sheet
-    /// count whenever a (re)load lands.
-    sheet_idx: usize,
     // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
     git_view: bool,
     git_view_sel: usize,
@@ -3257,7 +3220,6 @@ impl Default for PerTab {
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
-            sheet_idx: 0,
             git_view: false,
             git_view_sel: 0,
             git_view_entries: Vec::new(),
@@ -3417,8 +3379,6 @@ impl App {
             md_cache_budget_for_test: None,
             media_cache: None,
             plugin: None,
-            workbook: None,
-            workbook_error: None,
             document: None,
             document_error: None,
             tab: PerTab {
@@ -3460,6 +3420,9 @@ impl App {
             wb_queued: None,
             #[cfg(test)]
             wb_dispatches: 0,
+            plugin_groups: std::collections::BTreeMap::new(),
+            #[cfg(test)]
+            plugin_group_dispatches: 0,
             keymaps,
             pending_leader: None,
             #[cfg(test)]
@@ -4275,8 +4238,8 @@ impl App {
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
-        // A spreadsheet's sheet number belongs to the file shown under the old root.
-        self.tab.sheet_idx = 0;
+        // A spreadsheet's sheet number (the page) belongs to the file shown under the old root.
+        self.tab.page = 1;
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
@@ -4429,14 +4392,12 @@ impl App {
         self.tab.diff_scroll_pending = None;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
-        // A new preview target: the previous spreadsheet (if any) and its sheet number are done
-        // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
-        // workbook right away.
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // A new preview target: the previous Word document (if any) is done for. (The previous
+        // spreadsheet and its sheet number went with `clear_image` above: the plugin show and the
+        // page.) Must precede `start_media_load` below, whose synchronous fallback can land the
+        // new document right away.
         self.set_document(None);
         self.document_error = None;
-        self.tab.sheet_idx = 0;
         // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
         // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
@@ -4628,9 +4589,9 @@ impl App {
         // (The `code` plugin's answer is not media: the text is on screen before it lands.)
         if self.media_loading && !self.shows_code_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
-            v.push(match self.tab.preview_kind {
+            v.push(match &self.tab.preview_kind {
                 Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
-                Some(PreviewKind::Spreadsheet(_)) => crate::i18n::Msg::BusySheet,
+                Some(k) if k.is_spreadsheet() => crate::i18n::Msg::BusySheet,
                 _ => crate::i18n::Msg::BusyMedia,
             });
         }
@@ -5116,11 +5077,8 @@ impl App {
         self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
         self.drop_plugin();
-        self.set_workbook(None);
-        self.workbook_error = None;
         self.set_document(None);
         self.document_error = None;
-        self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -5233,15 +5191,11 @@ impl App {
         // A mermaid file loads a picture in image mode only (in text mode it draws via the
         // decorated path).
         (kind.is_media_plugin() && (!kind.is_mermaid_file() || self.mermaid_image_mode()))
-            // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed reload
-            // must re-read it exactly like the picture plugins.
-            || matches!(
-                kind,
-                PreviewKind::Spreadsheet(_)
-                // A Word document is converted on the same worker; a tab switch / mtime-changed
-                // reload re-reads it exactly like a spreadsheet.
-                | PreviewKind::Document(_)
-        ) || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
+            // A Word document is converted on the media worker; a tab switch / mtime-changed
+            // reload re-reads it exactly like the picture plugins. (A spreadsheet is a plugin's
+            // table: it is opened again by `load_plugin`.)
+            || matches!(kind, PreviewKind::Document(_))
+            || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
             // function of the source file, so a tab switch / mtime-changed reload must re-run it
             // exactly like every other media kind. `detached=true` is deliberately excluded — that
@@ -5279,6 +5233,7 @@ impl App {
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
         self.wb_queued = None;
+        self.drop_queued_plugin_work();
         self.media_loading = false;
         self.vector_reraster_inflight = false;
         // When image state is discarded, also discard the mtime claim (an invariant). Leaving it
@@ -7556,6 +7511,9 @@ mod md_model_snapshot_tests;
 // row-keyed features that must follow the extra row. Reuses `md_snapshot_tests::render_case`.
 #[cfg(test)]
 mod md_table_gap_tests;
+
+#[cfg(test)]
+mod spreadsheet_plugin_tests;
 
 #[cfg(test)]
 mod survivor_tests;

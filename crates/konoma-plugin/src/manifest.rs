@@ -29,6 +29,8 @@ pub struct Manifest {
     pub settings: Vec<SettingDecl>,
     /// Names of the plugin's own screens (the contexts of its keys: `<id>.<screen>`).
     pub screens: Vec<String>,
+    /// The exclusive work group the plugin's jobs belong to, if any. See [`Manifest::work_group`].
+    pub work_group: Option<String>,
 }
 
 impl Manifest {
@@ -45,6 +47,7 @@ impl Manifest {
             verbs: Vec::new(),
             settings: Vec::new(),
             screens: Vec::new(),
+            work_group: None,
         }
     }
 
@@ -75,6 +78,20 @@ impl Manifest {
 
     pub fn screen(mut self, name: impl Into<String>) -> Manifest {
         self.screens.push(name.into());
+        self
+    }
+
+    /// Put the plugin in an **exclusive work group** (for plugins whose `open` and `view` can
+    /// hold gigabytes: spreadsheets, Word documents, slide decks).
+    ///
+    /// The host runs the jobs of all plugins that name the same group **one at a time**. A job
+    /// asked for while another of the group runs waits, and only the **newest** waiting job is
+    /// kept (a newer one replaces it), so holding a page key cannot pile up loads. The running job
+    /// is told to stop the usual way: its [`Cancel`](crate::Cancel) turns true as soon as a newer
+    /// job is asked for, so a plugin should check it often (at least once per row or part it
+    /// reads).
+    pub fn work_group(mut self, group: impl Into<String>) -> Manifest {
+        self.work_group = Some(group.into());
         self
     }
 }

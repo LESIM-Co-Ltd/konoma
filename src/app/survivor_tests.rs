@@ -19,7 +19,7 @@ fn app_with_media_channel() -> (
     (app, dir, rx)
 }
 
-/// A workbook request waiting behind the running load is started when that load ends — unless the
+/// An Office request waiting behind the running load is started when that load ends — unless the
 /// preview moved on since it was asked (the media generation changed): then it is dropped, and the
 /// one worker is simply free again. (Leaving a file clears the waiting request itself; this is the
 /// second line of defence for any other path that bumps the generation.)
@@ -27,11 +27,7 @@ fn app_with_media_channel() -> (
 fn a_waiting_workbook_request_of_an_old_generation_is_dropped_when_the_load_ends() {
     let (mut app, dir, _rx) = app_with_media_channel();
     let ask = |app: &App| WbRequest {
-        job: MediaJob::Workbook(
-            dir.join("never-there.xlsx"),
-            crate::preview::office::Locale::En,
-            0,
-        ),
+        job: MediaJob::Document(dir.join("never-there.docx"), crate::i18n::Lang::En),
         gen: app.media_gen,
     };
 

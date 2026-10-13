@@ -247,6 +247,7 @@ konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0" }
 konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
+konoma-office = { path = "crates/konoma-office", version = "0.1.0" }
 konoma-media = { path = "crates/konoma-media", version = "0.1.0" }
 konoma-code-core = { path = "crates/konoma-code-core", version = "0.1.0" }
 konoma-code = { path = "crates/konoma-code", version = "0.1.0" }

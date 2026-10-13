@@ -46,7 +46,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let ncols = t.ncols();
     // A spreadsheet sheet gets a row-number gutter on the left (1-based, like Excel); it is not
     // data (never copied/searched) and stays put while the columns scroll sideways.
-    let gutter_w = if t.is_sheet() {
+    let addressed = app.table_addressed();
+    let gutter_w = if addressed {
         nrows.max(1).to_string().len() + COL_GAP
     } else {
         0
@@ -54,7 +55,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Decided once per frame: it reads the plugin's view (or the csv plugin's setting for a sheet).
     let rainbow = app.table_rainbow();
-    let title = build_title(app, &t, cur_row, cur_col);
+    let title = build_title(app, &t, cur_row, cur_col, addressed);
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
 
@@ -263,9 +264,9 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).
-/// A spreadsheet shows the sheet name and position, the hidden-sheet count and the cursor's cell
-/// address instead of the row/column counters.
-fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> String {
+/// A spreadsheet shows the sheet name and position, the hidden-sheet count (the note its plugin
+/// gives) and the cursor's cell address instead of the row/column counters.
+fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize, addressed: bool) -> String {
     let (nrows, ncols) = (t.nrows(), t.ncols());
     let path = app
         .tab
@@ -278,17 +279,9 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
     } else {
         String::new()
     };
-    if t.is_sheet() {
-        let (name, idx, count, hidden) = app.sheet_info().unwrap_or(("", 1, 1, 0));
-        let hidden = if hidden > 0 {
-            format!(
-                " +{hidden} {}",
-                tr(app.lang, crate::i18n::Msg::SheetHiddenWord)
-            )
-        } else {
-            String::new()
-        };
+    if addressed {
         // e.g. " book.xlsx  Sales (1/3) +1 hidden  B3  5×6  (capped) "
+        let note = app.table_title_note().unwrap_or_default();
         let addr = if nrows > 0 && ncols > 0 {
             format!(
                 "  {}",
@@ -297,7 +290,7 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
         } else {
             String::new()
         };
-        return format!(" {path}  {name} ({idx}/{count}){hidden}{addr}  {nrows}×{ncols}{cap} ");
+        return format!(" {path}  {note}{addr}  {nrows}×{ncols}{cap} ");
     }
     // e.g. " data.csv  r3/100 c2/5  100×5  (capped) "
     format!(

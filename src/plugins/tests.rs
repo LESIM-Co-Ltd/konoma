@@ -114,7 +114,7 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
                 },
                 None => PreviewKind::can_not_preview(path),
             },
-            "spreadsheet" => PreviewKind::Spreadsheet(p),
+            "spreadsheet" => PreviewKind::plugin("spreadsheet", p),
             "document" => PreviewKind::Document(p),
             "text" => PreviewKind::Text(p),
             _ => PreviewKind::can_not_preview(path),
@@ -407,10 +407,7 @@ fn old_builtin_names_read_as_plugins() {
     assert!(one("video", "").is_plugin("video"));
     assert!(one("pdf", "").is_plugin("pdf"));
     assert!(one("code", "").is_code_plugin());
-    assert!(matches!(
-        one("spreadsheet", ""),
-        PreviewKind::Spreadsheet(_)
-    ));
+    assert!(one("spreadsheet", "").is_spreadsheet());
     assert!(matches!(one("document", ""), PreviewKind::Document(_)));
     assert!(matches!(one("text", ""), PreviewKind::Text(_)));
     let separator = |kind: PreviewKind| match kind {
@@ -686,7 +683,16 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
 
 /// The standard plugins that are wired to the display: really opened, not declarations only.
 const WIRED: &[&str] = &[
-    "csv", "archive", "code", "image", "svg", "pdf", "video", "mermaid", "math",
+    "csv",
+    "archive",
+    "spreadsheet",
+    "code",
+    "image",
+    "svg",
+    "pdf",
+    "video",
+    "mermaid",
+    "math",
 ];
 
 #[test]

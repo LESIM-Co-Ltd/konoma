@@ -186,6 +186,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         expects_picture: true,
         decode_cancel: None,
         on_layout: None,
+        group: None,
     }
 }
 

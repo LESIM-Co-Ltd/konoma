@@ -1,28 +1,14 @@
 use super::plugin_host::PluginShow;
 use super::search::SEARCH_MATCH_CAP;
 use super::*;
-use crate::preview::office::{CellType, NumFmtRef};
 use crate::preview::table::{cell_address, Grid};
 
-/// What the table renderer shows right now, built from borrowed *fields* (not `&self`) so callers
-/// can keep reading the grid while writing a different field such as `tab.table_cur_row`.
-/// A loaded workbook wins (it is only ever set while a spreadsheet preview is active); otherwise
-/// the table a plugin returned (CSV/TSV, an archive listing). `None` while loading, after a failed
-/// load, or with no visible sheet.
-fn grid_of<'a>(
-    plugin: &'a Option<PluginShow>,
-    workbook: &'a Option<Box<crate::preview::office::Workbook>>,
-    sheet_idx: usize,
-) -> Option<Grid<'a>> {
-    if let Some(wb) = workbook {
-        // Only the sheet on screen has cells: while another one is being read (or failed to
-        // read) there is no grid, whatever was loaded before.
-        return wb
-            .sheets
-            .get(sheet_idx)
-            .filter(|s| s.loaded)
-            .map(Grid::Sheet);
-    }
+/// What the table renderer shows right now, built from a borrowed *field* (not `&self`) so callers
+/// can keep reading the grid while writing a different field such as `tab.table_cur_row`: the
+/// table the plugin returned (CSV/TSV, an archive listing, the sheet of a workbook). `None` while
+/// loading, after a failed load, or with no visible sheet. Only the page on screen has a grid:
+/// while another one is being read there is none, whatever was shown before.
+fn grid_of(plugin: &Option<PluginShow>) -> Option<Grid<'_>> {
     match plugin.as_ref()?.view.as_ref()? {
         konoma_plugin::view::View::Table(t) => Some(Grid::Plugin(&*t.grid)),
         _ => None,
@@ -456,18 +442,14 @@ impl App {
     /// Clamp the cell cursor into the table's bounds (after a reload/restore that may have shrunk it).
     pub(super) fn clamp_table_cursor(&mut self) {
         // A spreadsheet (or a plugin's table) that is still loading has nothing to clamp against
-        // yet: keep the saved sheet number and cursor so they apply when it lands. (A failed load
-        // has no table either, and the cursor is irrelevant then.)
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            && self.grid().is_none()
-        {
+        // yet: keep the saved cursor so it applies when it lands. (A spreadsheet page that failed
+        // to read has no table either, and its cursor is kept too: the other sheets are one key
+        // away. A failed CSV has no table and the cursor is irrelevant then.)
+        if self.is_spreadsheet_preview() && self.grid().is_none() {
             return;
         }
         if self.is_plugin_loading() {
             return;
-        }
-        if let Some(wb) = &self.workbook {
-            self.tab.sheet_idx = self.tab.sheet_idx.min(wb.sheets.len().saturating_sub(1));
         }
         let dims = self.grid().map(|g| (g.nrows(), g.ncols()));
         match dims {
@@ -482,37 +464,42 @@ impl App {
         }
     }
 
-    /// Whether a plugin's table preview (CSV/TSV, an archive listing) is active **and read** (routes
-    /// the PreviewTable surface / renderer). One that failed returns false → the preview degrades to
-    /// raw text (CSV/TSV) or a can-not-preview-style hint (archive); one still loading shows the
-    /// loading screen.
+    /// Whether a plugin's table preview (CSV/TSV, an archive listing, a workbook's sheet) is active
+    /// **and read** (routes the PreviewTable surface / renderer). One that failed returns false →
+    /// the preview degrades to raw text (CSV/TSV) or a can-not-preview-style hint (archive); one
+    /// still loading shows the loading screen.
     ///
-    /// A spreadsheet counts as soon as its workbook is open with at least one visible sheet, even
-    /// while the cells of the sheet just switched to are still being read: the surface (keys,
-    /// footer, help) stays the table's, so `J`/`K` keep working. The renderer draws the spinner
-    /// (`is_sheet_loading`) or the reason the sheet could not be read until the grid is there.
+    /// A table with pages (a workbook) counts as soon as the plugin has reported its pages, even
+    /// while the sheet just switched to is still being read, or when it could not be read: the
+    /// surface (keys, footer, help) stays the table's, so `J`/`K` keep working. The renderer draws
+    /// the spinner (`is_sheet_loading`) or the reason the sheet could not be read until the grid
+    /// is there.
     pub fn is_table_preview(&self) -> bool {
         match self.tab.preview_kind {
-            Some(PreviewKind::Plugin { .. }) => self.plugin_table().is_some(),
-            Some(PreviewKind::Spreadsheet(_)) => {
-                self.workbook.as_ref().is_some_and(|w| !w.sheets.is_empty())
+            Some(PreviewKind::Plugin { .. }) => {
+                self.plugin_table().is_some()
+                    || (!self.shows_media_plugin() && self.plugin_is_paged())
             }
             _ => false,
         }
     }
 
-    /// Sets what the preview shows. **The one place a preview kind is assigned**: the parsed
-    /// spreadsheet is App-level state that can hold hundreds of MB, so whenever the preview is
-    /// not a spreadsheet (a git diff, the tree, a diagram, another file) it is released here.
-    /// This keeps the invariant "`workbook` is `Some` only while the kind is `Spreadsheet`"
-    /// (`App::workbook_matches_preview`) true after every operation, instead of each caller
-    /// remembering to reset it.
+    /// Whether the open plugin show has reported separate pages (a workbook's sheets).
+    fn plugin_is_paged(&self) -> bool {
+        self.plugin.as_ref().is_some_and(|p| {
+            matches!(
+                p.layout.pages,
+                Some(konoma_plugin::view::PageLayout::Separate { .. })
+            )
+        })
+    }
+
+    /// Sets what the preview shows. **The one place a preview kind is assigned**: the plugin show
+    /// (a parsed spreadsheet's sheet can hold hundreds of MB) and the converted Word document are
+    /// App-level state, so whenever the preview is not theirs (a git diff, the tree, a diagram,
+    /// another file) they are released here, instead of each caller remembering to reset them.
     pub(super) fn set_preview_kind(&mut self, kind: Option<PreviewKind>) {
-        if !matches!(kind, Some(PreviewKind::Spreadsheet(_))) {
-            self.set_workbook(None);
-            self.workbook_error = None;
-        }
-        // Likewise the converted Word document: App-level, only while the kind is `Document`.
+        // The converted Word document: App-level, only while the kind is `Document`.
         if !matches!(kind, Some(PreviewKind::Document(_))) {
             self.set_document(None);
             self.document_error = None;
@@ -524,21 +511,15 @@ impl App {
         self.tab.preview_kind = kind;
     }
 
-    /// Replaces the open workbook. **The one place a workbook is dropped**: freeing a large one
-    /// (millions of cells and strings) takes about 40 ms, which on the UI thread is a visible
-    /// stall at every `q`, sheet or tab switch, so the old one goes to [`discard_in_background`].
-    pub(super) fn set_workbook(&mut self, wb: Option<Box<crate::preview::office::Workbook>>) {
-        if let Some(old) = std::mem::replace(&mut self.workbook, wb) {
-            discard_in_background(old);
-        }
-    }
-
-    /// The invariant [`App::set_preview_kind`] keeps: a loaded workbook (or its error) exists only
-    /// while the preview is a spreadsheet.
+    /// The invariant [`App::set_preview_kind`] keeps: a spreadsheet's show exists only while the
+    /// preview is a spreadsheet.
     #[cfg(test)]
     pub(crate) fn workbook_matches_preview(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            || (self.workbook.is_none() && self.workbook_error.is_none())
+        self.is_spreadsheet_preview()
+            || !self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.id == konoma_office::SPREADSHEET_ID)
     }
 
     /// The field-separator byte of the active table (`,` by default, the tab for a TSV). A
@@ -572,15 +553,26 @@ impl App {
         })
     }
 
-    /// What the table renderer shows: the CSV/TSV/archive table, or the current sheet of the loaded
-    /// spreadsheet. None while a workbook is still loading / failed to load / has no visible sheet.
+    /// What the table renderer shows: the CSV/TSV/archive table, or the sheet of the workbook on
+    /// screen. None while a page is still loading / failed to load / has no visible sheet.
     pub fn grid(&self) -> Option<Grid<'_>> {
-        grid_of(&self.plugin, &self.workbook, self.tab.sheet_idx)
+        grid_of(&self.plugin)
     }
 
-    /// Whether the columns are colored in turn. A plugin's table says so in its view (`rainbow`); a
-    /// spreadsheet sheet follows the `csv` plugin's setting (`[plugins.csv] rainbow`, or the old
-    /// `[ui] csv_rainbow`) until the spreadsheet is a plugin of its own.
+    /// Whether the cells of the table on screen have spreadsheet addresses (a sheet): the renderer
+    /// draws the row-number gutter and names the cursor cell by its address.
+    pub fn table_addressed(&self) -> bool {
+        self.plugin_table().is_some_and(|t| t.addressed)
+    }
+
+    /// The note the plugin gave for the table's frame title (a sheet's name and position).
+    pub fn table_title_note(&self) -> Option<&str> {
+        self.plugin_table().and_then(|t| t.title.as_deref())
+    }
+
+    /// Whether the columns are colored in turn. A plugin's table says so in its view (`rainbow`; a
+    /// sheet follows `[plugins.spreadsheet] rainbow`, then the `csv` plugin's setting, then the
+    /// old `[ui] csv_rainbow`); with no table yet the `csv` plugin's setting answers.
     pub fn table_rainbow(&self) -> bool {
         match self.plugin_table() {
             Some(t) => t.rainbow,
@@ -589,114 +581,111 @@ impl App {
         }
     }
 
+    /// Whether the preview is a workbook (the `spreadsheet` plugin's).
+    pub fn is_spreadsheet_preview(&self) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_spreadsheet)
+    }
+
     /// Whether a spreadsheet preview is on screen (a sheet is showing).
     #[cfg(test)]
     pub fn is_sheet_preview(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            && matches!(self.grid(), Some(Grid::Sheet(_)))
+        self.is_spreadsheet_preview() && self.table_addressed() && self.grid().is_some()
     }
 
     /// True while a spreadsheet's worker has not delivered the sheet to show: the "loading" screen
     /// (opening the file, or moving to another sheet). A *re*load keeps the sheet that is on
     /// screen instead.
     pub fn is_sheet_loading(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
+        self.is_spreadsheet_preview()
             && self.grid().is_none()
-            && self.workbook_error.is_none()
+            && self.plugin_failure().is_none()
             && self.media_loading
     }
 
-    /// Test-only: the loaded workbook, if any.
-    #[cfg(test)]
-    pub fn workbook_for_test(&self) -> Option<&crate::preview::office::Workbook> {
-        self.workbook.as_deref()
-    }
-
-    /// A spreadsheet's worker (or a plugin's first `open`) has not delivered yet (the file is being
-    /// opened, another sheet is being read, or the sheet on screen is being re-read after an outside
-    /// edit).
+    /// A table's plugin (or its first `open`) has not delivered yet: the file is being opened, or
+    /// another sheet is being read.
     pub(super) fn sheet_load_in_flight(&self) -> bool {
-        (matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) && self.media_loading)
-            || self.is_plugin_loading()
+        self.is_plugin_loading()
     }
 
     /// How many sheets of the open workbook hold cells (at most one: the sheet on screen); `None`
     /// when no workbook is open.
     #[cfg(test)]
     pub(crate) fn loaded_sheet_count(&self) -> Option<usize> {
-        self.workbook
+        self.plugin
             .as_ref()
-            .map(|w| w.sheets.iter().filter(|s| s.loaded).count())
+            .filter(|p| p.id == konoma_office::SPREADSHEET_ID)
+            .map(|p| usize::from(matches!(p.view, Some(konoma_plugin::view::View::Table(_)))))
     }
 
     /// Why the spreadsheet could not be shown (None while loading, or on success).
-    pub fn sheet_error(&self) -> Option<&crate::preview::office::OfficeError> {
-        self.workbook_error.as_ref()
+    #[cfg(test)]
+    pub fn sheet_error(&self) -> Option<&konoma_plugin::Failure> {
+        if self.is_spreadsheet_preview() {
+            self.plugin_failure()
+        } else {
+            None
+        }
     }
 
-    /// Whether the loaded spreadsheet has more than one visible sheet — the single predicate behind
-    /// `J`/`K`, the footer hint and the help row (a hint shows only when its key acts).
-    /// It does not depend on whether the sheet on screen has been read yet: the keys act the same
-    /// while a sheet is loading.
+    /// Whether the open workbook has more than one visible sheet — the single predicate behind
+    /// `J`/`K`, the footer hint and the help row (a hint shows only when its key acts): the
+    /// plugin's page count, the same as for a PDF.
+    #[cfg(test)]
     pub fn sheet_can_switch(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            && self.workbook.as_ref().is_some_and(|w| w.sheets.len() > 1)
+        self.is_spreadsheet_preview() && self.can_turn_pages()
     }
 
-    /// `(name, 1-based index, sheet count, hidden sheet count)` of the sheet on screen.
-    pub fn sheet_info(&self) -> Option<(&str, usize, usize, usize)> {
-        let wb = self.workbook.as_ref()?;
-        let sheet = wb.sheets.get(self.tab.sheet_idx)?;
-        Some((
-            sheet.name.as_str(),
-            self.tab.sheet_idx + 1,
-            wb.sheets.len(),
-            wb.hidden_sheets,
-        ))
+    /// `(name, 1-based index, sheet count)` of the sheet the tab is on, from the plugin's layout
+    /// (so it is known while that sheet is still being read).
+    pub fn sheet_info(&self) -> Option<(&str, usize, usize)> {
+        let show = self.plugin.as_ref()?;
+        let Some(konoma_plugin::view::PageLayout::Separate { titles, .. }) = &show.layout.pages
+        else {
+            return None;
+        };
+        let idx = self.tab.page as usize;
+        let name = titles.get(idx.checked_sub(1)?)?;
+        Some((name.as_str(), idx, titles.len()))
     }
 
-    /// `J`: the next sheet (stops at the last one, like the PDF page keys). The cursor and scroll
-    /// go back to A1 — a sheet is a different grid.
+    /// `J`: the next sheet (stops at the last one, like the PDF page keys).
+    #[cfg(test)]
     pub fn sheet_next(&mut self) {
-        self.sheet_goto(self.tab.sheet_idx.saturating_add(1));
+        if self.is_spreadsheet_preview() {
+            self.next_page();
+        }
     }
 
     /// `K`: the previous sheet (stops at the first one).
+    #[cfg(test)]
     pub fn sheet_prev(&mut self) {
-        self.sheet_goto(self.tab.sheet_idx.saturating_sub(1));
+        if self.is_spreadsheet_preview() {
+            self.prev_page();
+        }
     }
 
-    /// Moves to sheet `idx`. Only one sheet's cells are held at a time (memory stays that of the
-    /// largest sheet shown), so this drops the cells of the sheet being left and starts the worker
-    /// that reads the one being entered; the table shows the loading screen until it arrives
-    /// (`apply_payload` then re-runs an active search on the new sheet). A result of a worker
-    /// started earlier is dropped by the media generation, so quick `J J J` ends on the last sheet.
-    fn sheet_goto(&mut self, idx: usize) {
-        if !self.sheet_can_switch() {
-            return;
-        }
-        let Some(wb) = self.workbook.as_mut() else {
-            return;
-        };
-        let idx = idx.min(wb.sheets.len() - 1);
-        if idx == self.tab.sheet_idx {
-            return;
-        }
-        // The cells of the sheet being left are freed on another thread (about 40 ms for a
-        // large one).
-        discard_in_background(wb.unload_cells());
-        self.workbook_error = None;
-        self.tab.sheet_idx = idx;
+    /// The page of a table plugin changed (`PerTab::page`: a workbook's next sheet). The cursor
+    /// and scroll go back to the top left — a sheet is a different grid — and the old sheet's
+    /// match cells and the cell popup mean nothing there; then the plugin reads the page
+    /// (`plugin_turn_page`: the old sheet's cells are freed on another thread, the screen shows
+    /// "Loading..." and a result of a read started earlier is dropped by the media generation, so
+    /// quick `J J J` ends on the last sheet). A page that landed on the spot runs an active search
+    /// on its cells.
+    pub(super) fn turn_table_page(&mut self) {
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
         self.table_cell_open = false;
-        // The old sheet's match cells mean nothing here.
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
-        if let Some(PreviewKind::Spreadsheet(path)) = self.tab.preview_kind.clone() {
-            self.start_media_load(&PreviewKind::Spreadsheet(path.clone()), &path);
+        if self.plugin_turn_page() {
+            self.clamp_table_cursor();
+            self.rescan_table_search();
         }
     }
 
@@ -766,35 +755,24 @@ impl App {
     /// Cell = the current cell's value; Row = the current row's cells joined by the delimiter;
     /// Column = the column's header + every cell value, one per line.
     pub(super) fn table_copy_text(&self, kind: TableCopyKind) -> Option<String> {
-        let g = self.grid()?;
+        let t = self.grid()?;
         let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
         // A sheet copies the text Excel shows (never the raw value, never the row-number gutter or
         // the column letters — those are not data).
-        let t = match g {
-            Grid::Sheet(sheet) => {
-                return Some(match kind {
-                    TableCopyKind::Cell => sheet.display(r, c).to_string(),
-                    // Tab-separated, up to the last non-empty cell (no trailing tabs).
-                    TableCopyKind::Row => match sheet
-                        .row_cells(r)
-                        .iter()
-                        .rev()
-                        .find(|(_, cell)| !cell.display().is_empty())
-                    {
-                        Some(&(last, _)) => (0..=last as usize)
-                            .map(|c| sheet.display(r, c))
-                            .collect::<Vec<_>>()
-                            .join("\t"),
-                        None => String::new(),
-                    },
-                    TableCopyKind::Column => (0..sheet.nrows)
-                        .map(|r| sheet.display(r, c))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                });
-            }
-            Grid::Plugin(_) => g,
-        };
+        if self.table_addressed() {
+            return Some(match kind {
+                TableCopyKind::Cell => t.cell(r, c).to_string(),
+                // Tab-separated, up to the last cell that shows something (no trailing tabs).
+                TableCopyKind::Row => (0..t.row_len(r))
+                    .map(|c| t.cell(r, c))
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+                TableCopyKind::Column => (0..t.nrows())
+                    .map(|r| t.cell(r, c))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            });
+        }
         // A table with no data rows (a header-only file) copies its header; a ragged row copies
         // the cells it has, no padding.
         let sep = (self.table_delimiter() as char).to_string();
@@ -843,42 +821,29 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_truncated = false;
         let needle = Needle::new(q);
-        let Some(g) = grid_of(&self.plugin, &self.workbook, self.tab.sheet_idx) else {
+        let Some(g) = grid_of(&self.plugin) else {
             return;
         };
-        let (matches, truncated) = match g {
-            // A sheet is sparse (up to 16k columns): walk only the cells that exist, in reading
-            // order, and match the displayed text.
-            Grid::Sheet(sheet) => scan_rows(
-                sheet.nrows,
-                |r| {
-                    let cells = sheet.row_cells(r);
-                    row_weight(
-                        cells.len(),
-                        cells.iter().map(|(_, c)| c.display().len()).sum(),
-                    )
-                },
-                |r, out| {
-                    for (c, cell) in sheet.row_cells(r) {
-                        let shown = cell.display();
-                        if !shown.is_empty() && needle.found_in(shown) {
-                            out.push((0, r, *c as usize));
-                        }
+        // Each row is visited through `visit_row`: a plugin's sparse grid (a sheet 16,000 columns
+        // wide) gives only the cells that exist, in reading order, and a dense one every column.
+        let (matches, truncated) = scan_rows(
+            g.nrows(),
+            |r| {
+                let (mut cells, mut bytes) = (0usize, 0usize);
+                g.visit_row(r, &mut |_, text| {
+                    cells += 1;
+                    bytes += text.len();
+                });
+                row_weight(cells, bytes)
+            },
+            |r, out| {
+                g.visit_row(r, &mut |c, text| {
+                    if needle.found_in(text) {
+                        out.push((0, r, c));
                     }
-                },
-            ),
-            Grid::Plugin(t) => scan_rows(
-                t.nrows(),
-                |r| row_weight(t.ncols(), (0..t.ncols()).map(|c| t.cell(r, c).len()).sum()),
-                |r, out| {
-                    for c in 0..t.ncols() {
-                        if needle.found_in(&t.cell(r, c)) {
-                            out.push((0, r, c));
-                        }
-                    }
-                },
-            ),
-        };
+                });
+            },
+        );
         self.tab.search_matches = matches;
         self.tab.search_truncated = truncated;
     }
@@ -888,14 +853,12 @@ impl App {
     /// itself: no second copy of a (possibly multi-million) result set to build, and nothing that
     /// could outlive a tab switch (`search_matches` is per tab).
     pub fn table_cell_is_hit(&self, row: usize, col: usize) -> bool {
-        matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Plugin { .. } | PreviewKind::Spreadsheet(_))
-        ) && self
-            .tab
-            .search_matches
-            .binary_search(&(0, row, col))
-            .is_ok()
+        matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+            && self
+                .tab
+                .search_matches
+                .binary_search(&(0, row, col))
+                .is_ok()
     }
 
     // ---- Table cell full-text popup (`Enter` in a table preview) --------------
@@ -937,17 +900,30 @@ impl App {
             return None;
         }
         let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
-        let text = match g {
-            // A spreadsheet cell: the address, what Excel shows, and everything behind it.
-            Grid::Sheet(sheet) => self.sheet_cell_detail(sheet, r, c),
-            Grid::Plugin(t) if t.nrows() == 0 => String::new(), // a header-only file: the content is empty.
-            Grid::Plugin(t) => t.cell(r, c).to_string(),
+        let addressed = self.table_addressed();
+        let text = if addressed {
+            // A spreadsheet cell: the address, what Excel shows, and everything behind it (the
+            // plugin's labelled lines, one `label: value` per line).
+            match g.detail(r, c) {
+                Some(detail) => detail
+                    .lines
+                    .iter()
+                    .map(|(label, value)| format!("{}: {value}", label.get(self.plugin_lang())))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => g.cell(r, c).to_string(),
+            }
+        } else if g.nrows() == 0 {
+            String::new() // a header-only file: the content is empty.
+        } else {
+            g.cell(r, c).to_string()
         };
         Some(TableCellView {
             // For a sheet the "header" is the cell address (`B3`), the natural name of the cell.
-            header: match g {
-                Grid::Sheet(_) => cell_address(r, c),
-                Grid::Plugin(_) => g.header(c).to_string(),
+            header: if addressed {
+                cell_address(r, c)
+            } else {
+                g.header(c).to_string()
             },
             row: r + 1,
             col: c + 1,
@@ -955,79 +931,6 @@ impl App {
             ncols: g.ncols(),
             text,
         })
-    }
-
-    /// The spreadsheet cell popup body: address, displayed text, raw value, type, formula (when the
-    /// cell has one) and number-format code (when it is not General). One `label: value` per line.
-    fn sheet_cell_detail(
-        &self,
-        sheet: &crate::preview::office::Sheet,
-        r: usize,
-        c: usize,
-    ) -> String {
-        use crate::i18n::Msg;
-        let lang = self.lang;
-        let mut lines = vec![
-            format!(
-                "{}: {}",
-                tr(lang, Msg::SheetCellAddress),
-                cell_address(r, c)
-            ),
-            format!(
-                "{}: {}",
-                tr(lang, Msg::SheetCellDisplayed),
-                sheet.display(r, c)
-            ),
-        ];
-        if let Some(cell) = sheet.cell(r, c) {
-            lines.push(format!(
-                "{}: {}",
-                tr(lang, Msg::SheetCellRaw),
-                cell.raw_text()
-            ));
-            let ty = match cell.cell_type() {
-                CellType::Number => Msg::SheetTypeNumber,
-                CellType::Text => Msg::SheetTypeText,
-                CellType::Bool => Msg::SheetTypeBool,
-                CellType::Error => Msg::SheetTypeError,
-                CellType::DateTime => Msg::SheetTypeDateTime,
-            };
-            lines.push(format!(
-                "{}: {}",
-                tr(lang, Msg::SheetCellType),
-                tr(lang, ty)
-            ));
-            if let Some(f) = sheet.formula(r, c) {
-                lines.push(format!("{}: ={f}", tr(lang, Msg::SheetCellFormula)));
-            }
-            let locale = match lang {
-                crate::i18n::Lang::Jp => crate::preview::office::Locale::Ja,
-                crate::i18n::Lang::En => crate::preview::office::Locale::En,
-            };
-            let code = self
-                .workbook
-                .as_ref()
-                .and_then(|wb| match wb.format_of(cell) {
-                    NumFmtRef::General => None,
-                    NumFmtRef::Custom(code) => Some(code.to_string()),
-                    NumFmtRef::Builtin(n) => Some(
-                        crate::preview::office::numfmt::builtin_format_code(u32::from(*n), locale)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("#{n}")),
-                    ),
-                });
-            if let Some(code) = code.filter(|c| c != "General") {
-                lines.push(format!("{}: {code}", tr(lang, Msg::SheetCellFormat)));
-            }
-        } else {
-            // No stored cell: still say it is empty (the type line is the one place that does).
-            lines.push(format!(
-                "{}: {}",
-                tr(lang, Msg::SheetCellType),
-                tr(lang, Msg::SheetTypeEmpty)
-            ));
-        }
-        lines.join("\n")
     }
 
     /// The popup's current vertical scroll offset (wrapped-row units).

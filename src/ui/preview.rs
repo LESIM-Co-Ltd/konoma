@@ -27,8 +27,10 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     if app.is_image_preview() {
         spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
     }
-    // PDF also shows the page position (e.g. 2/5), only when the total page count is known.
-    if let Some((cur, total)) = app.page_indicator() {
+    // PDF also shows the page position (e.g. 2/5), only when the total page count is known. A
+    // table's pages (a workbook's sheets) say their position in the table's own frame title
+    // (`Sales (2/3)`), so the status bar does not repeat it.
+    if let Some((cur, total)) = app.page_indicator().filter(|_| !app.is_table_preview()) {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
     // A presentation shows the slide at the top of the view (hidden slides count).
@@ -316,7 +318,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         // A plugin's table is already drawn via the dedicated path above. Reaching here means the
         // plugin failed: a CSV/TSV shows its raw text (safe degradation), an archive says it
         // cannot be listed rather than dumping the raw zip/tar byte stream as text (principle #3),
-        // and any other plugin says why.
+        // and any other plugin says why (a workbook that did not load: encrypted / too large /
+        // corrupt / unsupported, with the file name; never a crash, never raw bytes).
         Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::CSV_ID => {
             (load_body(path, app.lang), true)
         }
@@ -341,16 +344,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                         })
                         .to_string()
                 ),
-                path.display()
-            ),
-            false,
-        ),
-        // A spreadsheet that did not load: say why (encrypted / too large / corrupt / unsupported),
-        // with the file name. Principle #3: never a crash, never raw bytes.
-        Some(PreviewKind::Spreadsheet(path)) => (
-            format!(
-                "{}\n{}",
-                sheet_error_text(app.lang, app.sheet_error()),
                 path.display()
             ),
             false,
@@ -392,10 +385,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // A reason a workbook/document could not be shown is a sentence the user has to read to the
     // end (it can name the `e` key): it wraps whatever `[ui] wrap` says and the width.
-    let reason_screen = matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Spreadsheet(_) | PreviewKind::Document(_))
-    );
+    let reason_screen = app.is_spreadsheet_preview()
+        || matches!(app.tab.preview_kind, Some(PreviewKind::Document(_)));
     let wrap = (is_text && app.cfg.ui.wrap) || reason_screen;
 
     // Compute the clamp baselines for vertical/horizontal before moving `body`.
@@ -1541,9 +1532,9 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
     frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), line_area);
 }
 
-/// The limit a "too large" message names, read from the limits the readers actually enforce (so a
-/// changed limit can never leave the sentence stating an old number). `{n}` in the catalog text
-/// is replaced by it.
+/// The limit a Word "too large" message names, read from the limits the readers actually enforce
+/// (so a changed limit can never leave the sentence stating an old number). `{n}` in the catalog
+/// text is replaced by it. (A workbook's own messages are the `spreadsheet` plugin's.)
 fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
     use crate::i18n::Msg;
     use crate::preview::office::container::Limits;
@@ -1557,20 +1548,12 @@ fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
         }
     };
     match msg {
-        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile | Msg::DocErrTooLargeFileSlides => {
-            bytes(l.max_file_bytes)
+        Msg::DocErrTooLargeFile | Msg::DocErrTooLargeFileSlides => bytes(l.max_file_bytes),
+        Msg::DocErrTooLargeEntries | Msg::DocErrTooLargeEntriesSlides => {
+            group_thousands(l.max_entries as u64)
         }
-        Msg::SheetErrTooLargeEntries
-        | Msg::DocErrTooLargeEntries
-        | Msg::DocErrTooLargeEntriesSlides => group_thousands(l.max_entries as u64),
-        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry | Msg::DocErrTooLargeEntrySlides => {
-            bytes(l.max_part_bytes)
-        }
-        Msg::SheetErrTooLargePackage
-        | Msg::DocErrTooLargePackage
-        | Msg::DocErrTooLargePackageSlides => bytes(l.max_total_bytes),
-        Msg::SheetErrTooLargeArea => group_thousands(l.max_dense_cells),
-        Msg::SheetErrTooLargeText => bytes(l.max_text_bytes),
+        Msg::DocErrTooLargeEntry | Msg::DocErrTooLargeEntrySlides => bytes(l.max_part_bytes),
+        Msg::DocErrTooLargePackage | Msg::DocErrTooLargePackageSlides => bytes(l.max_total_bytes),
         _ => String::new(),
     }
 }
@@ -1622,38 +1605,6 @@ fn doc_error_text(
     tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
 }
 
-/// The translated, fully formed reason a spreadsheet could not be shown.
-fn sheet_error_text(
-    lang: crate::i18n::Lang,
-    err: Option<&crate::preview::office::OfficeError>,
-) -> String {
-    let msg = sheet_error_msg(err);
-    tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
-}
-
-/// The translated reason for a spreadsheet that could not be shown. `None` (a workbook that loaded
-/// but has no visible sheet — every sheet hidden) gets its own message.
-fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::i18n::Msg {
-    use crate::i18n::Msg;
-    use crate::preview::office::OfficeError;
-    match err {
-        None => Msg::SheetNoVisibleSheets,
-        Some(OfficeError::Encrypted) => Msg::SheetErrEncrypted,
-        Some(OfficeError::TooLarge { what }) => match *what {
-            "file" => Msg::SheetErrTooLargeFile,
-            "entries" => Msg::SheetErrTooLargeEntries,
-            "entry" => Msg::SheetErrTooLargeEntry,
-            "package" => Msg::SheetErrTooLargePackage,
-            "sheet area" | "sheet cells" => Msg::SheetErrTooLargeArea,
-            "text" => Msg::SheetErrTooLargeText,
-            _ => Msg::SheetErrTooLargeOther,
-        },
-        Some(OfficeError::Corrupt(_)) => Msg::SheetErrCorrupt,
-        Some(OfficeError::Unsupported) => Msg::SheetErrUnsupported,
-        Some(OfficeError::Io(_)) => Msg::SheetErrIo,
-    }
-}
-
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = app
@@ -1664,7 +1615,7 @@ fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| " image ".to_string());
     // A spreadsheet moving to another sheet says which one (the table's own title shape).
     if app.is_sheet_loading() {
-        if let Some((name, idx, count, _)) = app.sheet_info() {
+        if let Some((name, idx, count)) = app.sheet_info() {
             title = format!("{} {name} ({idx}/{count}) ", title.trim_end());
         }
     }
@@ -2346,103 +2297,8 @@ mod gitdiff_tests {
 }
 
 #[cfg(test)]
-mod sheet_error_tests {
-    use super::{group_thousands, sheet_error_msg, sheet_error_text};
-    use crate::i18n::{tr, Lang, Msg};
-    use crate::preview::office::OfficeError;
-
-    /// Every way a workbook can fail has its own explanation: the user is told *which* limit or
-    /// problem it was, so two failures must never share a sentence by accident.
-    #[test]
-    fn every_office_error_has_its_own_message() {
-        let cases: Vec<(Option<OfficeError>, Msg)> = vec![
-            (None, Msg::SheetNoVisibleSheets),
-            (Some(OfficeError::Encrypted), Msg::SheetErrEncrypted),
-            (
-                Some(OfficeError::TooLarge { what: "file" }),
-                Msg::SheetErrTooLargeFile,
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "entries" }),
-                Msg::SheetErrTooLargeEntries,
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "entry" }),
-                Msg::SheetErrTooLargeEntry,
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "package" }),
-                Msg::SheetErrTooLargePackage,
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "sheet area" }),
-                Msg::SheetErrTooLargeArea,
-            ),
-            (
-                Some(OfficeError::TooLarge {
-                    what: "sheet cells",
-                }),
-                Msg::SheetErrTooLargeArea,
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "text" }),
-                Msg::SheetErrTooLargeText,
-            ),
-            (
-                Some(OfficeError::TooLarge {
-                    what: "something new",
-                }),
-                Msg::SheetErrTooLargeOther,
-            ),
-            (Some(OfficeError::Corrupt("x".into())), Msg::SheetErrCorrupt),
-            (Some(OfficeError::Unsupported), Msg::SheetErrUnsupported),
-            (Some(OfficeError::Io("x".into())), Msg::SheetErrIo),
-        ];
-        for (err, want) in &cases {
-            assert_eq!(sheet_error_msg(err.as_ref()), *want, "{err:?}");
-        }
-        // And the sentences themselves differ, in both languages (one per distinct `Msg`).
-        for lang in [Lang::En, Lang::Jp] {
-            let mut seen: Vec<(Msg, &str)> = Vec::new();
-            for (_, m) in &cases {
-                if seen.iter().any(|(s, _)| s == m) {
-                    continue;
-                }
-                let text = tr(lang, *m);
-                if let Some((other, _)) = seen.iter().find(|(_, t)| *t == text) {
-                    panic!("{m:?} and {other:?} read the same: {text}");
-                }
-                seen.push((*m, text));
-            }
-        }
-    }
-
-    /// The numbers in the "too large" sentences come from the limits the readers enforce: a
-    /// placeholder is never left in the text and the figure is the real one, in both languages.
-    #[test]
-    fn too_large_messages_state_the_enforced_limits() {
-        use crate::preview::office::container::Limits;
-        let l = Limits::default();
-        let cases: [(&'static str, String); 6] = [
-            ("file", format!("{} MiB", l.max_file_bytes / 1024 / 1024)),
-            ("entries", group_thousands(l.max_entries as u64)),
-            ("entry", format!("{} MiB", l.max_part_bytes / 1024 / 1024)),
-            (
-                "package",
-                format!("{} GiB", l.max_total_bytes / 1024 / 1024 / 1024),
-            ),
-            ("sheet area", group_thousands(l.max_dense_cells)),
-            ("text", format!("{} MiB", l.max_text_bytes / 1024 / 1024)),
-        ];
-        for lang in [Lang::En, Lang::Jp] {
-            for (what, figure) in &cases {
-                let err = OfficeError::TooLarge { what };
-                let text = sheet_error_text(lang, Some(&err));
-                assert!(!text.contains("{n}"), "{what}: {text}");
-                assert!(text.contains(figure.as_str()), "{what} {lang:?}: {text}");
-            }
-        }
-    }
+mod group_thousands_tests {
+    use super::group_thousands;
 
     #[test]
     fn group_thousands_groups_by_three() {

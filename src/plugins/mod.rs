@@ -4,7 +4,7 @@
 //! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
 //! (user rules first, then the standard plugins in registration order, then plain text, then
 //! "can not preview"), and the result is mapped onto today's `PreviewKind`. The plugins that are
-//! wired to the display (`csv`, `archive`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
+//! wired to the display (`csv`, `archive`, `spreadsheet`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
 mod listing;
@@ -168,11 +168,7 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     let svg = konoma_media::svg_manifest();
     let image = konoma_media::image_manifest();
     let csv = konoma_table::csv_manifest();
-    let spreadsheet = office(
-        standard("spreadsheet", t!(en: "Spreadsheet", ja: "表計算")),
-        OfficeKind::Excel,
-        "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}",
-    );
+    let spreadsheet = konoma_office::spreadsheet_manifest();
     let document = office(
         standard("document", t!(en: "Word document", ja: "Word 文書")),
         OfficeKind::Word,
@@ -244,6 +240,7 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
         konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
         konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
+        konoma_office::SPREADSHEET_ID => Arc::new(konoma_office::SpreadsheetPlugin),
         konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
         konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
         _ => Arc::new(Declared(m)),
@@ -345,6 +342,12 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
     };
     if id == konoma_table::CSV_ID {
         fill_missing("rainbow", b(cfg.ui.csv_rainbow));
+    }
+    if id == konoma_office::SPREADSHEET_ID {
+        // A sheet's columns follow `[plugins.csv] rainbow` (and the old `[ui] csv_rainbow`) until
+        // the sheet is given a value of its own.
+        let csv = effective_settings(cfg, konoma_table::CSV_ID);
+        fill_missing("rainbow", b(csv.bool("rainbow", true)));
     }
     if id == konoma_code::CODE_ID {
         fill_missing("syntax_highlight", b(cfg.ui.syntax_highlight));
