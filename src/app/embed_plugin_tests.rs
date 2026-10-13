@@ -644,3 +644,45 @@ fn the_plugin_is_asked_once_per_fence_not_again_when_the_decoration_is_rebuilt()
     app.ensure_md_cache(100);
     assert_eq!(asked.lock().unwrap().len(), n);
 }
+
+// ---- who vouches for the SVG an embedded kind keeps -----------------------------------------------
+
+/// The standard plugins draw konoma's own SVG (in this process, drawn again so); a plugin the user
+/// added is never believed, so its entry is marked and is drawn again by the child process only.
+#[test]
+fn the_entries_of_a_plugin_the_user_added_are_marked_untrusted_and_the_standard_ones_are_not() {
+    let (app, _dir, _) = app_showing(
+        "konoma_embed_trust_std",
+        "d.md",
+        FENCE_DOC,
+        Config::default(),
+    );
+    let kept: Vec<_> = app
+        .md_image_cache
+        .values()
+        .filter(|e| e.svg.is_some())
+        .collect();
+    assert!(!kept.is_empty(), "the standard plugin drew the fence");
+    assert!(
+        kept.iter().all(|e| !e.svg_untrusted),
+        "konoma's own diagram"
+    );
+
+    let marker = crate::plugins::test_plugins::register(
+        "embed_trust_user",
+        std::sync::Arc::new(crate::plugins::test_views::EmbedSvg),
+    );
+    let (app, _dir, _) = app_showing(
+        "konoma_embed_trust_user",
+        "d.md",
+        FENCE_DOC,
+        crate::plugins::test_plugins::marker_config(&marker),
+    );
+    let kept: Vec<_> = app
+        .md_image_cache
+        .values()
+        .filter(|e| e.svg.is_some())
+        .collect();
+    assert!(!kept.is_empty(), "the user's plugin drew the fence");
+    assert!(kept.iter().all(|e| e.svg_untrusted), "never believed");
+}

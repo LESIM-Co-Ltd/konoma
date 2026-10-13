@@ -202,6 +202,60 @@ fn an_empty_line_of_the_text_diagram_has_no_span() {
 }
 
 #[test]
+fn a_diagram_file_over_the_limit_is_refused_not_read_into_memory() {
+    let dir = konoma_test_support::unique_tmp("konoma_mermaid_limit");
+    std::fs::create_dir_all(&dir).unwrap();
+    // One byte over the limit: refused by its size, without reading it.
+    let big = dir.join("big.mmd");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(MAX_BYTES + 1)
+        .unwrap();
+    let mut s = MermaidPlugin
+        .open(
+            Input::File {
+                path: big,
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    let err = s.view(&ViewReq::default(), &ViewCx::bare()).unwrap_err();
+    assert_eq!(err.kind, konoma_plugin::FailureKind::TooLarge, "{err}");
+    // At the limit it is read.
+    let ok = dir.join("ok.mmd");
+    let mut text = String::from("graph LR\n  A --> B\n");
+    text.push_str(&"%".repeat(1000));
+    std::fs::write(&ok, &text).unwrap();
+    let mut s = MermaidPlugin
+        .open(
+            Input::File {
+                path: ok,
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    assert!(s.view(&ViewReq::default(), &ViewCx::bare()).is_ok());
+}
+
+#[test]
+fn a_diagram_that_is_not_a_regular_file_is_refused() {
+    let dir = konoma_test_support::unique_tmp("konoma_mermaid_not_a_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = MermaidPlugin
+        .open(
+            Input::File {
+                path: dir.to_path_buf(),
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    assert!(s.view(&ViewReq::default(), &ViewCx::bare()).is_err());
+}
+
+#[test]
 fn a_cancelled_open_or_view_is_a_cancel() {
     use konoma_plugin::{Cancel, FailureKind};
     let cancelled = || Cancel::from_fn(|| true);

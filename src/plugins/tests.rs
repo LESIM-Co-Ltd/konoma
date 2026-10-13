@@ -1027,3 +1027,96 @@ fn the_picture_plugins_are_the_real_ones_and_open_any_file_path() {
     // The declarations are the ones the crate itself makes.
     assert_eq!(r.plugin("svg").unwrap().manifest().id, konoma_media::SVG_ID);
 }
+
+// ---- what the standard plugins declare (the host chooses their screens from it) --------------------
+
+#[test]
+fn the_standard_plugins_declare_the_display_type_the_host_draws_them_with() {
+    let p = |id: &str| profile_of(id);
+    // Pictures: the image pipeline.
+    for id in ["image", "svg", "pdf", "video", "mermaid"] {
+        assert!(p(id).image, "{id}");
+        assert!(!p(id).document && !p(id).table && !p(id).text, "{id}");
+    }
+    // Tables; the workbook converts and has pages, the others read the file as it is.
+    assert!(p("csv").table && !p("csv").converts);
+    assert!(p("archive").table && !p("archive").converts);
+    assert!(p("spreadsheet").table && p("spreadsheet").converts);
+    // Documents: Markdown is the file as it is; Word and presentations are converted.
+    assert!(p("markdown").document && !p("markdown").converts);
+    assert!(p("document").document && p("document").converts);
+    assert!(p("presentation").document && p("presentation").converts);
+    // Text: the `code` plugin's text is the file itself.
+    assert!(p("code").text && p("code").file_text);
+    // `math` takes formulas only: no screen of its own for a file.
+    assert_eq!(
+        p("math"),
+        Profile {
+            own_svg: true,
+            ..Profile::default()
+        }
+    );
+    // Only the two plugins that draw their own SVG are believed when they say it is trusted.
+    for id in ["mermaid", "math"] {
+        assert!(p(id).own_svg, "{id}");
+    }
+    for id in [
+        "image", "svg", "pdf", "video", "csv", "markdown", "document", "code",
+    ] {
+        assert!(!p(id).own_svg, "{id}");
+    }
+    // An id nobody registered declares nothing.
+    assert_eq!(p("no-such-plugin"), Profile::default());
+}
+
+#[test]
+fn the_words_the_picture_and_archive_plugins_declare_are_the_words_the_host_catalog_has() {
+    use crate::i18n::{tr, Lang, Msg};
+    use konoma_plugin::Unavailable;
+    for (id, msg) in [
+        ("pdf", Msg::PdfPreviewUnavailable),
+        ("video", Msg::VideoThumbUnavailable),
+        ("archive", Msg::ArchiveListUnavailable),
+    ] {
+        let Unavailable::Notice(words) = unavailable_of(id) else {
+            panic!("{id} declares a sentence of its own");
+        };
+        assert_eq!(words.get("en"), tr(Lang::En, msg), "{id} en");
+        assert_eq!(words.get("ja"), tr(Lang::Jp, msg), "{id} ja");
+    }
+    // The ones that show their file as text, and the picture frame.
+    for id in ["csv", "code", "mermaid"] {
+        assert_eq!(
+            unavailable_of(id),
+            Unavailable::RawText { with_reason: false },
+            "{id}"
+        );
+    }
+    assert_eq!(
+        unavailable_of("svg"),
+        Unavailable::RawText { with_reason: true }
+    );
+    assert_eq!(unavailable_of("image"), Unavailable::Picture);
+    // Everything else says the failure's message.
+    for id in ["markdown", "document", "presentation", "spreadsheet"] {
+        assert_eq!(unavailable_of(id), Unavailable::Message, "{id}");
+    }
+}
+
+#[test]
+fn a_plugin_the_user_added_never_takes_the_place_of_a_standard_id_in_the_table() {
+    // A test plugin that names a standard id is not recorded over it (the registry refuses the
+    // duplicate id as well): the standard profile, and its trust, stay.
+    struct Imposter;
+    impl Plugin for Imposter {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("mermaid", "9.9.9").shows(konoma_plugin::ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+            Err(Failure::unsupported(t!(en: "no")))
+        }
+    }
+    profile::record(&Imposter.manifest());
+    assert!(profile_of("mermaid").own_svg && profile_of("mermaid").image);
+    assert!(!profile_of("mermaid").text);
+}

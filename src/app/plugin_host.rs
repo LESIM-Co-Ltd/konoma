@@ -115,16 +115,18 @@ pub(crate) enum PluginJob {
     },
 }
 
-/// What a worker needs to turn a plugin's document into the host's container.
+/// What a worker needs to turn a plugin's document into the host's container. Given to every
+/// plugin that declares it shows a document; what is done with it follows the **view** the plugin
+/// returns (a `Document` or a `Reopen`), not the plugin's id.
 pub(super) struct DocumentJob {
     /// The plugin that takes the content type a `Reopen` names (Word hands its converted text
     /// over to it). `None` when no enabled plugin takes `markdown`: the document cannot be shown.
     pub(super) reopen: Option<super::markdown_plugin::ContentTarget>,
-    /// The options for a `Document` that a plugin other than the Markdown one returns (a
-    /// presentation): the display options are the Markdown settings'; only what the view says
-    /// is its own (no front matter, not written back) is kept. `None` for the Markdown plugin
-    /// (its view's options are used as they are).
-    pub(super) display: Option<DocOptions>,
+    /// The options for a `Document` whose origin is `Converted` (a presentation): a converted
+    /// document is drawn with the Markdown settings; only what the view says is its own (no front
+    /// matter, not written back) is kept. A document read from the file as it is (a Markdown
+    /// file) is drawn with the options its own view carries.
+    pub(super) display: DocOptions,
 }
 
 /// What a worker calls with the layout `open` learned.
@@ -153,7 +155,7 @@ pub(crate) struct PluginWork {
     pub(super) external: bool,
     /// The longest side to rasterize a vector source at when the plugin does not say.
     pub(super) default_raster_px: u32,
-    /// Whether the plugin is one of the picture plugins: its `view` must be a picture, and the
+    /// Whether the plugin declares it shows pictures: its `view` must be a picture, and the
     /// picture is decoded here, on the worker.
     pub(super) expects_picture: bool,
     /// Set when the plugin's `view` is a document (the Markdown plugin, and the Word and
@@ -384,6 +386,9 @@ impl PluginWork {
                 .collect()
         };
         let term = TermCaps { pixels };
+        // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
+        // plugin comes from, never by what it says.
+        let trust_own_svg = crate::plugins::profile_of(&id).own_svg;
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
             let cx = ViewCx::new(&settings, &lang)
                 .with_cancel(cancel.clone())
@@ -398,6 +403,7 @@ impl PluginWork {
                         &path,
                         default_raster_px,
                         decode_cancel.as_ref(),
+                        trust_own_svg,
                     ) {
                         Some(p) => Picture::Decoded(Box::new(p)),
                         None => Picture::Failed,
@@ -420,7 +426,11 @@ impl PluginWork {
                     }
                 }
                 Ok(View::Document(d)) if document_job.is_some() => {
-                    let display = document_job.as_ref().and_then(|j| j.display.clone());
+                    // A converted document is drawn with the Markdown settings; one read from
+                    // the file as it is, with the options its own view carries.
+                    let display = matches!(d.origin, konoma_plugin::Origin::Converted { .. })
+                        .then(|| document_job.as_ref().map(|j| j.display.clone()))
+                        .flatten();
                     document = Some(Box::new(document_of(d, display)));
                     (None, None)
                 }
@@ -651,7 +661,7 @@ impl App {
             && !self.shows_media_plugin()
             // Text is read by the host in windows, so the file is on screen (plain) before the
             // plugin has answered; there is no "Loading..." screen for it.
-            && !self.shows_code_plugin()
+            && !self.shows_file_text_plugin()
             && self
                 .plugin
                 .as_ref()
@@ -685,6 +695,21 @@ impl App {
                 source: konoma_plugin::view::TextSource::Owned(s),
                 ..
             }) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The lines of the `Message` view a plugin answered with (a notice shown in place of the
+    /// content), joined. `None` unless the show holds one.
+    pub fn plugin_message_body(&self) -> Option<String> {
+        match self.plugin.as_ref()?.view.as_ref()? {
+            View::Message(m) => Some(
+                m.lines
+                    .iter()
+                    .map(|l| l.plain())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             _ => None,
         }
     }
@@ -823,21 +848,16 @@ impl App {
         }
     }
 
-    /// What a worker needs when `id` is a plugin whose view is a document: the Markdown plugin
-    /// (answers with the document itself), or the Word and presentation plugins (a `Reopen` goes
-    /// to the plugin that takes `markdown`; a presentation's `Document` is drawn with the Markdown
-    /// settings). `None` for every other plugin.
+    /// What a worker needs when the plugin `id` declares it shows a document (`shows(Document)`):
+    /// the plugin that takes `markdown` for a `Reopen` it may answer with, and the Markdown
+    /// settings for a converted `Document` it may answer with. `None` for every other plugin.
     fn document_job(&self, id: &str) -> Option<DocumentJob> {
-        if id == konoma_markdown::MARKDOWN_ID {
-            return Some(DocumentJob {
-                reopen: None,
-                display: None,
-            });
-        }
-        crate::preview::PreviewKind::is_office_document_id(id).then(|| DocumentJob {
-            reopen: self.content_target(konoma_markdown::CONTENT_TYPE),
-            display: Some(self.cfg_doc_options()),
-        })
+        crate::plugins::profile_of(id)
+            .document
+            .then(|| DocumentJob {
+                reopen: self.content_target(konoma_markdown::CONTENT_TYPE),
+                display: self.cfg_doc_options(),
+            })
     }
 
     /// A job for the plugin `id` on the file `path`, with everything the worker needs from the
@@ -913,6 +933,7 @@ impl App {
                 enabled: Default::default(),
             });
         }
+        self.plugin_stamp = file_stamp(&path);
         // A Markdown or Word document is asked for in its rendered form first, whatever the tab
         // chose: the document is what the source view returns to (`land_document` asks for the
         // source once it is there).
@@ -920,7 +941,11 @@ impl App {
         if req.repr.as_deref() == Some(super::markdown_plugin::REPR_SOURCE) {
             req.repr = None;
         }
-        let budget = if id == konoma_markdown::MARKDOWN_ID {
+        // A document read from the file as it is (the Markdown plugin) is waited for longer; the
+        // ones that convert a file work in a group and are never waited for.
+        let budget = if crate::plugins::profile_of(&id).document
+            && !crate::plugins::profile_of(&id).converts
+        {
             MARKDOWN_FIRST_FRAME_BUDGET
         } else {
             FIRST_FRAME_BUDGET
@@ -1430,6 +1455,9 @@ impl App {
             // The source of a Markdown file or a Word document: open the windowed reader on it.
             if text_landed && self.holds_document() {
                 self.source_view_landed();
+            } else if text_landed && self.text_plugin_is_generated() {
+                // A plugin that makes its text (a hex dump): the reader windows what it made.
+                self.made_text_landed();
             }
         }
         match outcome {
@@ -1481,7 +1509,7 @@ impl App {
         // Only a table has a cursor and a search of its own to settle; a text view is searched
         // by the host's window reader, which a plugin landing does not touch, and a document by
         // the Markdown pipeline.
-        if self.shows_code_plugin() || self.holds_document() {
+        if self.shows_text_plugin() || self.holds_document() {
             return true;
         }
         // A read that failed ends the wait of a search confirmed meanwhile: a later successful

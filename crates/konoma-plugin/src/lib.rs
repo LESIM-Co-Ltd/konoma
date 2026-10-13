@@ -33,8 +33,8 @@ pub mod view;
 
 pub use input::{Input, LazyResource, Origin, Resource, ResourceReq, Resources};
 pub use manifest::{
-    Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target, Verb,
-    VerbDecl, ViewKind,
+    Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
+    Unavailable, Verb, VerbDecl, ViewKind,
 };
 pub use session::{
     ActCx, Cancel, Failure, FailureKind, OpenCx, Outcome, Plugin, Session, TermCaps, ViewCx,

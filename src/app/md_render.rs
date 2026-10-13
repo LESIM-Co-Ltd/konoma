@@ -1169,7 +1169,7 @@ impl App {
                 diff_marks: Vec::new(),
             },
             // A standalone code file is syntax-highlighted via syntect.
-            Some(k) if k.is_code_plugin() => DecoratedMarkdown {
+            Some(k) if k.is_file_text() => DecoratedMarkdown {
                 lines: crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
                 images: Vec::new(),
                 remote_urls: Vec::new(),

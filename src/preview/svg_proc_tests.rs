@@ -2258,3 +2258,107 @@ fn the_bounded_readers_return_what_a_healthy_child_wrote() {
     assert_eq!(first, b"KSRDY");
     wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok");
 }
+
+// ---- who vouches for an SVG: the host decides by where it came from ---------------------------
+
+/// A plugin's `trusted: true` is a claim. The host believes it only for a standard plugin that
+/// draws its own SVG (mermaid, math); anything else, whatever it says, is drawn by the supervised
+/// child process, and with no directory named it reads no file.
+#[test]
+fn a_plugins_trusted_claim_is_believed_only_for_a_standard_plugin_that_draws_its_own_svg() {
+    use crate::app::{MediaPayload, SvgTrust};
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-trust");
+    let shown = dir.join("x.xsvg");
+    let red = crate::plugins::test_views::RED_SQUARE.as_bytes();
+    super::svg_proc::with_real_child(bin(), || {
+        let draw = |dir_named: bool, claims: bool, believed: bool| {
+            crate::app::svg_view_payload(
+                red,
+                dir_named.then(|| dir.to_path_buf()),
+                claims,
+                believed,
+                &shown,
+            )
+        };
+        // Claims to be trusted, not believed, names its directory: the child, reading from there.
+        match draw(true, true, false) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::File(_)), "{trust:?}")
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1, "drawn by a child");
+        // Claims to be trusted, not believed, names no directory: the child, reading no file.
+        match draw(false, true, false) {
+            Some(MediaPayload::Vector { trust, .. }) => assert_eq!(trust, SvgTrust::Embedded),
+            _ => panic!("a Vector payload was expected"),
+        }
+        kill_live();
+        assert_eq!(live_children(), 0);
+        // Believed (a standard plugin that draws its own SVG) and vouching: this process.
+        match draw(false, true, true) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::Trusted(_)), "{trust:?}")
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 0, "no child for konoma's own SVG");
+        // Believed but not vouching: the child.
+        match draw(false, false, true) {
+            Some(MediaPayload::Vector { trust, .. }) => assert_eq!(trust, SvgTrust::Embedded),
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1);
+    });
+    kill_live();
+}
+
+/// An embedded kind (a fence) drawn by a plugin the user added is drawn by the child process every
+/// time; the standard plugin's picture stays in this process.
+#[test]
+fn an_embedded_svg_from_a_plugin_the_user_added_is_drawn_by_the_child() {
+    use crate::plugins::test_plugins;
+    let _g = serial();
+    no_children_left();
+    super::svg_proc::with_real_child(bin(), || {
+        // The standard plugin: believed, no child.
+        let (trusted, img, kept) =
+            crate::app::probe_fence_picture(crate::config::Config::default());
+        assert!(trusted && img.is_ok() && kept);
+        assert_eq!(
+            live_children(),
+            0,
+            "konoma's own diagram is drawn in this process"
+        );
+        // A plugin of the user's takes the fence: not believed, drawn by the child.
+        let marker = test_plugins::register(
+            "svg_proc_embed",
+            std::sync::Arc::new(crate::plugins::test_views::EmbedSvg),
+        );
+        let (trusted, img, kept) =
+            crate::app::probe_fence_picture(test_plugins::marker_config(&marker));
+        assert!(!trusted, "a plugin the user added is never believed");
+        assert!(img.is_ok(), "{:?}", img.err());
+        assert!(kept, "the SVG is kept for layout");
+        assert_eq!(live_children(), 1, "drawn by a child");
+    });
+    kill_live();
+}
+
+/// An SVG kept to be drawn again (sharp zoom, rebuilding evicted pixels) is drawn again the way it
+/// was drawn the first time.
+#[test]
+fn a_kept_svg_is_drawn_again_in_the_child_unless_konoma_made_it() {
+    let _g = serial();
+    no_children_left();
+    let red = crate::plugins::test_views::RED_SQUARE.as_bytes();
+    super::svg_proc::with_real_child(bin(), || {
+        assert!(crate::app::redraw_svg(red, "rebuild.svg", 100, false).is_ok());
+        assert_eq!(live_children(), 0, "konoma's own SVG: this process");
+        assert!(crate::app::redraw_svg(red, "rebuild.svg", 100, true).is_ok());
+        assert_eq!(live_children(), 1, "anything else: the child");
+    });
+    kill_live();
+}

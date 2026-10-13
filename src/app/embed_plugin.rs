@@ -10,7 +10,9 @@
 //!    switched off, and the fence / formula is then shown the way it is when it cannot be drawn).
 //! 2. The worker (or the caller, in tests with no channel) opens the plugin with
 //!    `Input::Embed { kind, source, display }` and asks for its view ([`EmbedRender::picture`]).
-//! 3. The view is a picture whose SVG is marked trusted; the host rasterizes it in-process.
+//! 3. The view is a picture whose SVG the host rasterizes: in-process for a standard plugin that
+//!    draws its own SVG and vouches for it (`trusted`; mermaid and math), in the supervised child
+//!    process (no file is read) for any other plugin, whatever it claims.
 //! 4. The raster and the SVG go to the same place they always went: the `md_image_cache` entry under
 //!    the synthetic key (`mermaid-fence://`, `math://`), which the document's layout and the kitty
 //!    pipeline read. Everything about those keys (who may rebuild them, when they are swept, the
@@ -37,6 +39,10 @@ pub(super) struct EmbedRender {
     plugin: Arc<dyn Plugin>,
     settings: Settings,
     lang: String,
+    /// Whether the host believes this plugin's `trusted` claim: it is a standard plugin that draws
+    /// its own SVG (`Profile::own_svg`). Decided by where the plugin comes from, never by
+    /// what it says.
+    trusted_origin: bool,
 }
 
 /// The raster and the SVG it was made from, or the reason there is none.
@@ -47,9 +53,11 @@ impl EmbedRender {
     /// side). `label` names the thing for the failure text; `base` is the file name the rasterizer
     /// resolves relative references from (the SVGs konoma draws have none).
     ///
-    /// The picture must be marked **trusted**: the host keeps the SVG and rasterizes it again later
-    /// (sharp zoom, rebuilding an evicted raster) in this process, so an SVG the plugin does not
-    /// vouch for is refused rather than drawn without the supervised child process.
+    /// An SVG from a plugin whose origin the host trusts is drawn in this process, and only when
+    /// the plugin vouches for it (`trusted`): the host keeps the SVG and rasterizes it again later
+    /// (sharp zoom, rebuilding an evicted raster) in this process too. An SVG from any other
+    /// plugin is drawn by the supervised child process, with no file to read, and is drawn the
+    /// same way every time it is made again (see [`EmbedRender::trusts_svg`]).
     pub(super) fn picture(
         &self,
         kind: &str,
@@ -71,12 +79,7 @@ impl EmbedRender {
         };
         let view_cx = ViewCx::new(&self.settings, &self.lang);
         let Ok(View::Image(ImageView {
-            data:
-                ImageData::Svg {
-                    data,
-                    trusted: true,
-                    ..
-                },
+            data: ImageData::Svg { data, trusted, .. },
             ..
         })) = session.view(&ViewReq::default(), &view_cx)
         else {
@@ -84,10 +87,48 @@ impl EmbedRender {
         };
         // The retained copy is what the md entry keeps for the layout and for later rasters.
         let svg = Arc::new(data.to_vec());
-        let img = crate::preview::svg::rasterize_trusted(&svg, Path::new(base), max_px)
-            .ok_or_else(|| "rasterize failed".to_string());
+        let img = if self.trusted_origin {
+            // A plugin we trust that does not vouch for its own SVG is a bug in it: refuse, so an
+            // entry is never half trusted.
+            if !trusted {
+                return failed();
+            }
+            crate::preview::svg::rasterize_trusted(&svg, Path::new(base), max_px)
+                .ok_or_else(|| "rasterize failed".to_string())
+        } else {
+            crate::preview::svg::rasterize_embedded(&svg, max_px, &|| false)
+                .map_err(|_| "rasterize failed".to_string())
+        };
         (img, Some(svg))
     }
+
+    /// Whether the SVG this plugin makes is drawn in this process (and drawn again so): a trusted
+    /// origin. Otherwise it is drawn in the child process every time.
+    pub(super) fn trusts_svg(&self) -> bool {
+        self.trusted_origin
+    }
+}
+
+/// Test seam: whether the host believes the `fence:mermaid` plugin of `cfg`, and what drawing a
+/// fence with it gives (the picture, and whether the SVG was kept).
+#[cfg(test)]
+pub(crate) fn probe_fence_picture(
+    cfg: crate::config::Config,
+) -> (bool, Result<image::DynamicImage, String>, bool) {
+    let dir = std::env::temp_dir();
+    let app = App::new(dir, cfg).expect("an app");
+    let embed = app
+        .embed_render(FENCE_MERMAID)
+        .expect("a plugin takes the fence");
+    let (img, svg) = embed.picture(
+        FENCE_MERMAID,
+        "graph TD;A-->B",
+        false,
+        100,
+        "mermaid",
+        "mermaid.svg",
+    );
+    (embed.trusts_svg(), img, svg.is_some())
 }
 
 #[cfg(test)]
@@ -114,6 +155,7 @@ impl App {
             plugin,
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
+            trusted_origin: crate::plugins::profile_of(&id).own_svg,
         })
     }
 

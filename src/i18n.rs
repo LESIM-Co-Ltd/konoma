@@ -802,8 +802,14 @@ pub enum Msg {
     SvgMemory,
     SvgCrashed,
     SvgInvalid,
+    // The next three are the words the `video`, `pdf` and `archive` plugins declare themselves
+    // (`Manifest::unavailable`); the catalog keeps them as the reference the tests check those
+    // declarations against.
+    #[cfg_attr(not(test), allow(dead_code))]
     VideoThumbUnavailable,
+    #[cfg_attr(not(test), allow(dead_code))]
     PdfPreviewUnavailable,
+    #[cfg_attr(not(test), allow(dead_code))]
     ArchiveListUnavailable,
     HintSheet,
     SheetSwitchHelp,

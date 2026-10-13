@@ -11,8 +11,9 @@
 //! - `mode` (`image` by default): `text` keeps the source as text (the host does not even ask
 //!   for a picture then);
 //! - `color` (`#d0d0d0` by default): the color of the glyphs. RaTeX paints pure black, which is
-//!   invisible on a dark terminal. The host hands over a value it has already checked against
-//!   the parser the rasterizer uses.
+//!   invisible on a dark terminal. The value is checked again here, against the parser the
+//!   rasterizer uses ([`visible_color`]), because it is pasted into the SVG as it is: whoever
+//!   hands it over (a setting, another host), nothing but a visible color reaches the SVG.
 
 use std::sync::Arc;
 
@@ -83,6 +84,18 @@ impl Plugin for MathPlugin {
     }
 }
 
+/// `value` when it is a color that paints something (a CSS/SVG color the rasterizer parses, not
+/// fully transparent), else the default. The value is pasted into the SVG, so anything the parser
+/// does not take whole (a quote, a tag) is refused here.
+pub fn visible_color(value: &str) -> &str {
+    use std::str::FromStr;
+    let c = value.trim();
+    match svgtypes::Color::from_str(c) {
+        Ok(col) if col.alpha != 0 => c,
+        _ => DEFAULT_COLOR,
+    }
+}
+
 struct MathSession {
     latex: String,
     display: bool,
@@ -107,7 +120,7 @@ impl Session for MathSession {
         let svg = konoma_math_core::latex_to_svg(
             &self.latex,
             self.display,
-            cx.settings.str("color", DEFAULT_COLOR),
+            visible_color(cx.settings.str("color", DEFAULT_COLOR)),
         )
         .ok_or_else(|| {
             Failure::unsupported(t!(

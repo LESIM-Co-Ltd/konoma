@@ -18,7 +18,7 @@ use konoma_plugin::style::{Color, Line, Modifier, Span, Style};
 use konoma_plugin::view::{LineStyler, TextSource, TextView, View, ViewReq};
 use konoma_plugin::{
     t, Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Session, SettingDecl,
-    Value, Verb, VerbDecl, ViewCx,
+    Unavailable, Value, Verb, VerbDecl, ViewCx, ViewKind,
 };
 
 /// The id of the plugin.
@@ -35,6 +35,9 @@ pub fn code_manifest() -> Manifest {
     Manifest::new(CODE_ID, env!("CARGO_PKG_VERSION"))
         .name(t!(en: "Source code", ja: "ソースコード"))
         .bind(Bind::files([CODE_GLOB]))
+        .shows(ViewKind::Text)
+        .file_text()
+        .unavailable(Unavailable::RawText { with_reason: false })
         .setting(SettingDecl::new(
             "syntax_highlight",
             Value::Bool(true),

@@ -376,6 +376,7 @@ impl App {
         let (Some(img), Some(svg)) = (entry.decoded.as_ref(), entry.svg.clone()) else {
             return FenceSharpen::NotNeeded;
         };
+        let untrusted = entry.svg_untrusted;
         let (sw, sh) = img.dimensions();
         let cur = sw.max(sh);
         if needed_px <= cur + cur / 8 || cur >= 4096 || entry.reraster_inflight {
@@ -389,9 +390,7 @@ impl App {
         // of `kp` into the `MdImageResult` it builds on success, so the failure path needs its own.
         let kp_on_panic = kp.clone();
         let job = move || {
-            let image =
-                crate::preview::svg::rasterize_trusted(&svg, Path::new("mermaid.svg"), target)
-                    .ok_or_else(|| "rasterize failed".to_string());
+            let image = redraw_svg(&svg, "mermaid.svg", target, untrusted);
             MdImageResult {
                 path: kp,
                 image,
@@ -515,6 +514,7 @@ impl App {
         // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`); none
         // (switched off) is the same "cannot be drawn" as a failed render.
         let embed = self.embed_render(crate::app::embed_plugin::FENCE_MERMAID);
+        let svg_untrusted = !embed.as_ref().is_some_and(|e| e.trusts_svg());
         let render = move || -> crate::app::embed_plugin::EmbedPicture {
             match &embed {
                 Some(e) => e.picture(
@@ -541,8 +541,13 @@ impl App {
             if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return false;
             }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_untrusted,
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
@@ -561,8 +566,13 @@ impl App {
             });
             false
         } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_untrusted,
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
@@ -592,6 +602,7 @@ impl App {
         // setting is the glyph color (RaTeX paints pure black, invisible on a dark terminal; the
         // default is a light gray, from `[plugins.math] color` or the old `[ui] math_color`).
         let embed = self.embed_render(crate::app::embed_plugin::MATH);
+        let svg_untrusted = !embed.as_ref().is_some_and(|e| e.trusts_svg());
         let render = move || -> crate::app::embed_plugin::EmbedPicture {
             match &embed {
                 Some(e) => e.picture(
@@ -611,8 +622,13 @@ impl App {
             if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return false;
             }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_untrusted,
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
@@ -628,8 +644,13 @@ impl App {
             });
             false
         } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_untrusted,
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
@@ -898,6 +919,7 @@ impl App {
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return true;
         };
+        let untrusted = entry.svg_untrusted;
         let Some(svg) = entry.svg.clone() else {
             // A picture of the open document: decoded again from the bytes it keeps, through the
             // same entry as the first decode (the defences of the first decode apply again).
@@ -928,12 +950,7 @@ impl App {
                     let kp = kp.clone();
                     move || MdImageResult {
                         path: kp,
-                        image: crate::preview::svg::rasterize_trusted(
-                            &svg,
-                            Path::new("rebuild.svg"),
-                            max_px,
-                        )
-                        .ok_or_else(|| "rasterize failed".to_string()),
+                        image: redraw_svg(&svg, "rebuild.svg", max_px, untrusted),
                         svg: None,
                         reraster: true,
                         frames: None,
@@ -1654,6 +1671,23 @@ impl App {
             min = Some(min.map_or(remaining, |m| m.min(remaining)));
         }
         min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+    }
+}
+
+/// Draw a retained SVG again at `max_px`: in this process when konoma made it itself, by the
+/// supervised child process (which reads no file) when it did not (`MdImgEntry::svg_untrusted`).
+pub(crate) fn redraw_svg(
+    svg: &[u8],
+    name: &str,
+    max_px: u32,
+    untrusted: bool,
+) -> Result<image::DynamicImage, String> {
+    if untrusted {
+        crate::preview::svg::rasterize_embedded(svg, max_px, &|| false)
+            .map_err(|_| "rasterize failed".to_string())
+    } else {
+        crate::preview::svg::rasterize_trusted(svg, Path::new(name), max_px)
+            .ok_or_else(|| "rasterize failed".to_string())
     }
 }
 

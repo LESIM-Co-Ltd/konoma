@@ -360,6 +360,14 @@ pub enum ImageData {
     /// An encoded image (PNG, JPEG...).
     Encoded(Arc<[u8]>),
     /// SVG. `trusted: false` makes the host draw it in a child process with limits.
+    ///
+    /// **`trusted` is a claim, not a decision.** The host believes it only for a standard plugin
+    /// that draws the SVG itself (the mermaid and math plugins: the SVG is made by konoma's own
+    /// code from a diagram or a formula). For any other plugin, whatever it claims, and for any
+    /// SVG that comes from a file or a document, the host draws it in the supervised child
+    /// process, and reads no file outside `base_dir`'s file name. Set `trusted: true` only when
+    /// the plugin made the SVG from scratch; the value is an upper bound, never a way to skip
+    /// the limits.
     Svg {
         data: Arc<[u8]>,
         base_dir: Option<PathBuf>,

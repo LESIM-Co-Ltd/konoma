@@ -45,7 +45,11 @@ mod media_diff;
 mod media_load;
 mod media_plugin;
 #[cfg(test)]
-pub(crate) use media_plugin::svg_file_payload;
+pub(crate) use embed_plugin::probe_fence_picture;
+#[cfg(test)]
+pub(crate) use md_media::redraw_svg;
+#[cfg(test)]
+pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
 mod office_doc;
 pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
@@ -765,6 +769,20 @@ pub fn sizeof_pertab() -> usize {
     std::mem::size_of::<PerTab>()
 }
 
+/// Who vouches for a retained SVG, and so how it is drawn again (sharp zoom, rebuilding evicted
+/// pixels). Decided by the host from where the SVG came from, never by what a plugin claims.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SvgTrust {
+    /// Made by konoma's own code (a mermaid diagram, a formula): drawn in this process. The path is
+    /// the base for relative resources (the diagrams have none).
+    Trusted(PathBuf),
+    /// From a file: drawn by the supervised child process, reading files relative to this path.
+    File(PathBuf),
+    /// From a document, a plugin or git, with no file to be relative to: drawn by the supervised
+    /// child process, which reads no file.
+    Embedded,
+}
+
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
@@ -776,6 +794,8 @@ pub enum MediaPayload {
     Vector {
         img: image::DynamicImage,
         svg: std::sync::Arc<Vec<u8>>,
+        /// How `svg` is drawn again.
+        trust: SvgTrust,
     },
     /// Text-mode `PreviewKind::Command` output: the temp file its captured stdout / `{out}`
     /// artifact was written to. Goes to `tab.command_out`, which the windowed (less-style) text
@@ -834,11 +854,9 @@ enum MediaJob {
     /// (unsupported diagram / parse failure / the plugin switched off) → the caller's
     /// "unavailable" screen shows.
     MermaidSrc(String, u32, embed_plugin::EmbedRender),
-    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
-    /// the base for relative resources inside the SVG (mermaid output has none).
-    /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
-    /// than from konoma's own mermaid renderer.
-    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
+    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom), the way it was
+    /// drawn the first time (`SvgTrust`).
+    SvgReraster(std::sync::Arc<Vec<u8>>, SvgTrust, u32),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -858,7 +876,8 @@ impl MediaJob {
         self.run_cancellable(None)
     }
 
-    /// [`Self::run`]; `cancel` is honoured by the Word load (the other kinds are short).
+    /// [`Self::run`]; `cancel` stops the drawing of an untrusted SVG (`SvgReraster`). The other jobs
+    /// are short, and the plugins' own work is cancelled by the generation (`plugin_host`).
     fn run_cancellable(
         self,
         cancel: Option<crate::preview::office::Cancel>,
@@ -873,19 +892,32 @@ impl MediaJob {
                     "mermaid",
                     "mermaid.svg",
                 );
+                let trust = if embed.trusts_svg() {
+                    SvgTrust::Trusted(PathBuf::from("mermaid.svg"))
+                } else {
+                    SvgTrust::Embedded
+                };
                 Some(MediaPayload::Vector {
                     img: img.ok()?,
                     svg: svg?,
+                    trust,
                 })
             }
-            MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
-                let img = if untrusted {
-                    let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                    crate::preview::svg::rasterize_untrusted(&svg, &p, max_px, &cancelled).ok()?
-                } else {
-                    crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
+            MediaJob::SvgReraster(svg, trust, max_px) => {
+                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                let img = match &trust {
+                    SvgTrust::Trusted(p) => {
+                        crate::preview::svg::rasterize_trusted(&svg, p, max_px)?
+                    }
+                    SvgTrust::File(p) => {
+                        crate::preview::svg::rasterize_untrusted(&svg, p, max_px, &cancelled)
+                            .ok()?
+                    }
+                    SvgTrust::Embedded => {
+                        crate::preview::svg::rasterize_embedded(&svg, max_px, &cancelled).ok()?
+                    }
                 };
-                Some(MediaPayload::Vector { img, svg })
+                Some(MediaPayload::Vector { img, svg, trust })
             }
             MediaJob::Command {
                 argv,
@@ -995,6 +1027,7 @@ struct MediaCache {
     src: std::sync::Arc<image::DynamicImage>,
     logical: Option<(u32, u32)>,
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    vector_trust: Option<SvgTrust>,
 }
 
 /// Result of `git status` + branch computed on a separate thread. Staleness is judged by `gen` exactly like
@@ -1593,6 +1626,8 @@ pub struct App {
     /// Zooming past the raster's density re-rasterizes this at the needed scale on a worker thread
     /// ("sharp zoom"); raster images leave it None (pixel zoom only).
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// How `vector_svg` is drawn again (`SvgTrust`): set with it.
+    vector_trust: Option<SvgTrust>,
     /// Logical (layout) pixel size of a vector-backed image = the dimensions of its **first** raster.
     /// `image_layout` sizes/zooms against this identity, so swapping in a sharper raster changes only
     /// pixel density, never the on-screen geometry (HiDPI-style backing store).
@@ -1614,6 +1649,11 @@ pub struct App {
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
+    /// The (mtime, size) of the file the open plugin show was last opened on. A plugin that reads
+    /// heavily (declares a work group: the Office ones) is opened again on an FS event only when
+    /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
+    /// not re-read a workbook of hundreds of megabytes.
+    plugin_stamp: Option<(std::time::SystemTime, u64)>,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -2478,6 +2518,10 @@ struct MdImgEntry {
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Whether `svg` is not konoma's own (a picture from git, or from a plugin that is not a
+    /// trusted one): it is drawn again, whenever it is, by the supervised child process that reads
+    /// no file, never in this process. Set where the entry is made.
+    svg_untrusted: bool,
     /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
     /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
     /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
@@ -3422,12 +3466,14 @@ impl App {
             image_crop: None,
             image_vis_frac: (1.0, 1.0),
             vector_svg: None,
+            vector_trust: None,
             image_logical: None,
             vector_reraster_inflight: false,
             md_overlay_last: None,
             md_overlay_seen: None,
             md_overlay_moved: false,
             preview_media_mtime: None,
+            plugin_stamp: None,
             command_err: None,
             image_failure: None,
             #[cfg(test)]
@@ -4598,7 +4644,7 @@ impl App {
         // is enabled, and the grammar isn't compiled yet (cold), a loading display / staged
         // display is needed just for the first time. If already warm, it colors instantly from the start.
         self.hl_pending = crate::plugins::syntax_highlight_on(&self.cfg)
-            && self.shows_code_plugin()
+            && self.shows_file_text_plugin()
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
         // Code/Text are always windowed. Markdown/Mermaid become windowed only in raw display
@@ -4614,7 +4660,7 @@ impl App {
                 self.tab.preview_kind,
                 Some(PreviewKind::Command { ref render_as, .. }) if render_as.as_deref() != Some("image")
             );
-        let windowed_kind = self.shows_code_plugin()
+        let windowed_kind = self.shows_text_plugin()
             || matches!(self.tab.preview_kind, Some(PreviewKind::Text(_)))
             || self.is_raw_source()
             || is_text_command;
@@ -4700,7 +4746,7 @@ impl App {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
         // (The `code` plugin's answer is not media: the text is on screen before it lands.)
-        if self.media_loading && !self.shows_code_plugin() {
+        if self.media_loading && !self.shows_file_text_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
             v.push(match &self.tab.preview_kind {
                 Some(k) if k.is_document_kind() => crate::i18n::Msg::BusyDocument,
@@ -4769,6 +4815,12 @@ impl App {
         }
     }
 
+    /// Test-only: the line `e` would open the editor at.
+    #[cfg(test)]
+    pub fn preview_edit_line_for_test(&self) -> Option<usize> {
+        self.preview_edit_line()
+    }
+
     /// The 1-based file line to open the external editor at, matching the on-screen position.
     /// - Windowed preview (plain text / code / raw-Markdown via `R`): the exact caret line.
     /// - Rendered Markdown: an **approximate** source line for the top of the current view. Reflow means
@@ -4792,6 +4844,10 @@ impl App {
         }
         // The converted Markdown of a Word document has no line in the .docx to open at.
         if self.is_document() {
+            return None;
+        }
+        // Text a plugin made (a hex dump) has a line in the file only if the plugin says so.
+        if self.text_plugin_is_generated() && !self.text_plugin_lines_are_file_lines() {
             return None;
         }
         if self.is_windowed() {
@@ -4932,12 +4988,35 @@ impl App {
             // (The `code` plugin has nothing to read again: its styler works on the lines the
             // window reader has just reopened.)
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
-                && !self.shows_code_plugin()
+                && !self.shows_file_text_plugin()
             {
-                self.reload_plugin();
+                if !self.plugin_file_unchanged() {
+                    self.reload_plugin();
+                }
                 self.clamp_table_cursor();
             }
         }
+    }
+
+    /// Whether the open plugin show reads heavily (its manifest names a work group) and the file it
+    /// shows is the one it was opened on, unchanged since: reading it again would only repeat the
+    /// work (an FS event for `.git`, or for another file, reaches `reload_preview` as well).
+    /// A plugin that reads cheaply (a CSV, an archive listing) is opened again every time, as it
+    /// always was.
+    fn plugin_file_unchanged(&self) -> bool {
+        let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
+            return false;
+        };
+        let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
+            .manifest(id)
+            .is_some_and(|m| m.work_group.is_some());
+        heavy
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.id == *id && p.path == *path)
+            && self.plugin_stamp.is_some()
+            && file_stamp(path) == self.plugin_stamp
     }
 
     /// On an FS-driven reload, re-load media (image/svg/gif/video/pdf) **only when the previewed file
@@ -5041,6 +5120,12 @@ impl App {
     #[cfg(test)]
     pub fn preview_top_line(&self) -> usize {
         self.tab.preview_top_line
+    }
+
+    /// The windowed preview's caret line (0-based). Test-only.
+    #[cfg(test)]
+    pub fn preview_caret_line(&self) -> usize {
+        self.tab.preview_cursor_line
     }
 
     /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
@@ -5259,6 +5344,7 @@ impl App {
             src,
             logical: self.image_logical,
             vector_svg: self.vector_svg.clone(),
+            vector_trust: self.vector_trust.clone(),
         });
     }
 
@@ -5312,6 +5398,7 @@ impl App {
         let c = self.media_cache.as_ref().expect("checked above");
         self.image_logical = c.logical;
         self.vector_svg = c.vector_svg.clone();
+        self.vector_trust = c.vector_trust.clone();
         self.preview_media_mtime = c.mtime;
         // The Arc's contents are shared, so the image is not duplicated. protocol was already
         // dropped by the preceding `clear_image`, and `image_crop = None` is the signal to rebuild
@@ -5351,6 +5438,7 @@ impl App {
         self.image_crop = None;
         self.image_vis_frac = (1.0, 1.0);
         self.vector_svg = None;
+        self.vector_trust = None;
         self.image_logical = None;
         self.gif_frames = Vec::new();
         self.gif_idx = 0;
@@ -5408,7 +5496,12 @@ impl App {
         if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. }))
             || self.is_document()
             || self.source_view_is_owned()
+            || self.text_plugin_is_generated()
         {
+            // (A text plugin that names a file of its own is read in place: see below.)
+            if let Some(p) = self.text_plugin_own_file() {
+                return Some(p);
+            }
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
@@ -5634,13 +5727,16 @@ impl App {
         // from the extension/filename" = colors config files like .bashrc/Makefile/Dockerfile while
         // keeping truly plain text uncolored.
         // Only while progressive is waiting is it "plain text before the swap", so it isn't cached (it's replaced by the colored version later).
+        // A text plugin whose text is made (not the file itself) is colored by its own styler
+        // alone: the host never builds a grammar for it, and the grammar switch (`syntax_highlight`)
+        // is the `code` plugin's, not its.
+        let made_text = self.text_plugin_is_generated();
         let syntax_kind = match &self.tab.preview_kind {
-            Some(k) if k.is_code_plugin() => true,
+            Some(k) if k.is_text_plugin() => !made_text || self.text_plugin_has_styler(),
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
-            Some(PreviewKind::Plugin { id, path: p, .. })
-                if (id == konoma_markdown::MARKDOWN_ID || id == konoma_mermaid::MERMAID_ID)
-                    && self.is_md_raw() =>
+            Some(k @ PreviewKind::Plugin { path: p, .. })
+                if (k.is_markdown() || k.is_mermaid_file()) && self.is_md_raw() =>
             {
                 crate::preview::code::has_named_syntax(p)
             }
@@ -5655,57 +5751,63 @@ impl App {
         } else {
             path.clone()
         };
-        let syntax_on = crate::plugins::syntax_highlight_on(&self.cfg);
+        let syntax_on = made_text || crate::plugins::syntax_highlight_on(&self.cfg);
         // The `code` plugin colors through the styler it returned; until its first result lands
         // the window is plain and uncached.
         let want_syntax = syntax_on
             && syntax_kind
-            && !self.code_plugin_pending()
+            && !self.text_plugin_pending()
             && (!self.hl_pending || self.loading_is_indicator());
         // Only the plain text while progressive is waiting is left uncached (since it gets
         // replaced by the colored version later). Everything else is cached by (path, top, height)
         // even as plain text = never re-reads the file every frame. `styled` is part of the key so
         // the colored and plain versions are never confused.
         let cacheable = want_syntax || !(syntax_on && syntax_kind);
-        let mut content: Vec<Line<'static>> = if cacheable {
-            let hit = matches!(
-                &self.win_cache,
-                Some(c) if c.path == path && c.byte_top == top && c.height == height
-                    && c.styled == want_syntax
-            );
-            if !hit {
+        let mut content: Vec<Line<'static>> =
+            if let Some(lines) = self.made_text_window(self.tab.preview_top_line, h) {
+                // The plugin handed over its lines already colored: the window is a slice of them
+                // (the file the reader windows holds the same lines as plain text, for the caret, the
+                // search and the copy).
+                lines
+            } else if cacheable {
+                let hit = matches!(
+                    &self.win_cache,
+                    Some(c) if c.path == path && c.byte_top == top && c.height == height
+                        && c.styled == want_syntax
+                );
+                if !hit {
+                    let raw = self
+                        .preview_win
+                        .as_mut()
+                        .and_then(|w| w.read_lines(top, h).ok())
+                        .unwrap_or_default();
+                    let lines = if want_syntax {
+                        let src = raw.join("\n");
+                        self.style_text_window(&src, self.tab.preview_top_line, &hl_path)
+                    } else {
+                        raw.into_iter().map(Line::from).collect()
+                    };
+                    self.win_cache = Some(WinCache {
+                        path,
+                        byte_top: top,
+                        height,
+                        styled: want_syntax,
+                        lines,
+                    });
+                }
+                self.win_cache
+                    .as_ref()
+                    .map(|c| c.lines.clone())
+                    .unwrap_or_default()
+            } else {
+                // Plain text while progressive is waiting (not cached = replaced once coloring completes).
                 let raw = self
                     .preview_win
                     .as_mut()
                     .and_then(|w| w.read_lines(top, h).ok())
                     .unwrap_or_default();
-                let lines = if want_syntax {
-                    let src = raw.join("\n");
-                    self.style_text_window(&src, self.tab.preview_top_line, &hl_path)
-                } else {
-                    raw.into_iter().map(Line::from).collect()
-                };
-                self.win_cache = Some(WinCache {
-                    path,
-                    byte_top: top,
-                    height,
-                    styled: want_syntax,
-                    lines,
-                });
-            }
-            self.win_cache
-                .as_ref()
-                .map(|c| c.lines.clone())
-                .unwrap_or_default()
-        } else {
-            // Plain text while progressive is waiting (not cached = replaced once coloring completes).
-            let raw = self
-                .preview_win
-                .as_mut()
-                .and_then(|w| w.read_lines(top, h).ok())
-                .unwrap_or_default();
-            raw.into_iter().map(Line::from).collect()
-        };
+                raw.into_iter().map(Line::from).collect()
+            };
         // Expand tabs into a visible marker (→) + tab-stop spaces (since terminals don't align tabs to columns).
         // Done before the line-number gutter/search highlight = column tracking is based on the body's start (column 0). Only the window's visible lines = cheap.
         content = crate::preview::code::expand_tabs(content, self.cfg.ui.tab_width);
@@ -6888,6 +6990,12 @@ fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.
 fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// The modification time and size of `path` (both, so a copy that keeps the mtime still shows).
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 /// Assemble the copy string (a pure function; does not touch the clipboard).

@@ -37,7 +37,7 @@ use konoma_plugin::view::{
 };
 use konoma_plugin::{
     t, Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Origin, Plugin, Resources,
-    Session, SettingDecl, Settings, Value, Verb, VerbDecl, ViewCx,
+    Session, SettingDecl, Settings, Value, Verb, VerbDecl, ViewCx, ViewKind,
 };
 
 /// The id of the plugin.
@@ -68,6 +68,7 @@ pub fn markdown_manifest() -> Manifest {
         .name(t!(en: "Markdown", ja: "Markdown"))
         .bind(Bind::files(["*.md"]))
         .bind(Bind::content(CONTENT_TYPE))
+        .shows(ViewKind::Document)
         .setting(SettingDecl::new(
             "task_states",
             Value::List(vec![s(" "), s("x")]),

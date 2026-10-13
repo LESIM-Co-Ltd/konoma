@@ -306,7 +306,12 @@ impl App {
                 // its result to `apply_md_image` — that fn drops any result whose key isn't already
                 // present (its own guard against reviving an evicted entry), so the insert has to
                 // happen here, not inside it.
-                self.md_image_cache.entry(p.cache_key.clone()).or_default();
+                // The SVG it keeps is a file's (git's old version, the working file): drawn again
+                // only by the supervised child process.
+                self.md_image_cache
+                    .entry(p.cache_key.clone())
+                    .or_default()
+                    .svg_untrusted = true;
                 let request = self.begin_md_request(&p.cache_key);
                 // No transparency handling here: each side draws with exactly the same pixels the
                 // ordinary preview would for that kind — a PDF's own renderer composites its pages
@@ -512,7 +517,7 @@ impl App {
         let resolved = self.diff_target_kind(path);
         let windowed_text = matches!(resolved, PreviewKind::Text(_))
             || resolved.is_markdown()
-            || resolved.is_code_plugin()
+            || resolved.is_file_text()
             || resolved.is_mermaid_file()
             || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
         !windowed_text

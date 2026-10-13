@@ -29,7 +29,7 @@ use konoma_plugin::style::{Line, Modifier, Span, Style};
 use konoma_plugin::view::{ImageData, ImageView, Layout, ReprDecl, TextSource, TextView};
 use konoma_plugin::{
     t, Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Session, SettingDecl,
-    Value, Verb, VerbDecl, View, ViewCx, ViewReq,
+    Unavailable, Value, Verb, VerbDecl, View, ViewCx, ViewKind, ViewReq,
 };
 
 /// The id of the plugin.
@@ -55,6 +55,8 @@ pub fn mermaid_manifest() -> Manifest {
         .name(t!(en: "Mermaid", ja: "Mermaid"))
         .bind(Bind::files(["*.{mmd,mermaid}"]))
         .bind(Bind::embed(FENCE_KIND))
+        .shows(ViewKind::Image)
+        .unavailable(Unavailable::RawText { with_reason: false })
         .setting(SettingDecl::new(
             "mode",
             Value::Str(DEFAULT_MODE.into()),
@@ -169,6 +171,46 @@ impl Plugin for MermaidPlugin {
     }
 }
 
+/// The most bytes of a diagram file that are read (the same as a Markdown file: past it the
+/// preview does not need the rest, and a multi-gigabyte file named `.mmd` must not be read whole).
+pub const MAX_BYTES: u64 = 1024 * 1024;
+
+/// Read a diagram file: a regular file of at most [`MAX_BYTES`] bytes of UTF-8 (as
+/// `read_to_string` was). Anything else is refused with the reason, never read into memory.
+fn read_limited(path: &std::path::Path) -> Result<String, Failure> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(Failure::unsupported(t!(
+            en: "this is not a regular file",
+            ja: "通常のファイルではありません",
+        )));
+    }
+    if meta.len() > MAX_BYTES {
+        return Err(Failure::too_large(t!(
+            en: "[mermaid] not drawn: the file is too large",
+            ja: "[mermaid] 描画しません: ファイルが大きすぎます",
+        )));
+    }
+    // The size was read before the file: a file that grows meanwhile is still cut at the limit.
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_BYTES {
+        return Err(Failure::too_large(t!(
+            en: "[mermaid] not drawn: the file is too large",
+            ja: "[mermaid] 描画しません: ファイルが大きすぎます",
+        )));
+    }
+    String::from_utf8(buf).map_err(|e| {
+        Failure::from(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e.utf8_error().to_string(),
+        ))
+    })
+}
+
 enum Source {
     /// A file, read each time a view is made (so an edit shows).
     File(PathBuf),
@@ -183,7 +225,7 @@ struct MermaidSession {
 impl MermaidSession {
     fn code(&self) -> Result<String, Failure> {
         match &self.source {
-            Source::File(p) => Ok(std::fs::read_to_string(p)?),
+            Source::File(p) => read_limited(p),
             Source::Text(s) => Ok(s.clone()),
         }
     }

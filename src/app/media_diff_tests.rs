@@ -1489,3 +1489,35 @@ fn every_dispatch_gets_a_fresh_flag_and_a_cancelled_result_is_not_applied() {
         "the result of a cancelled computation is not applied"
     );
 }
+
+/// The SVG a media diff keeps for a side is a file's (git's old version, the working file): its
+/// entry is marked so the pixels are drawn again only by the supervised child process, never
+/// in-process (`rebuild_evicted_md_image`).
+#[test]
+fn an_svg_side_lands_as_an_entry_that_is_drawn_again_only_by_the_child() {
+    let dir = unique_tmp("konoma_media_diff_svg_untrusted_entry");
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("icon.svg");
+    std::fs::write(
+        &svg,
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#f00"/></svg>"##,
+    )
+    .unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let outcome = app
+        .poll_media_diff(&svg, 1, (400, 300))
+        .expect("同期で返るはず");
+    let MediaDiffOutcome::Ready {
+        new: MediaDiffSide::Picture(p),
+        ..
+    } = outcome
+    else {
+        panic!("a picture was expected");
+    };
+    let entry = app
+        .md_image_cache
+        .get(&p.cache_key)
+        .expect("the side is in the cache");
+    assert!(entry.svg.is_some(), "the SVG is kept");
+    assert!(entry.svg_untrusted, "and marked as not konoma's own");
+}
