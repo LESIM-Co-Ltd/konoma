@@ -87,7 +87,7 @@ skrifa = "0.44"
 # (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページのラスタライズ本体も
 # 今は hayro(下記)が担うので、「数えられる ⟹ そのページを描ける」がほぼ常に成立し、複数ページの
 # ナビゲーションを外部ツールの有無でゲートする必要はもう無い(preview/pdf.rs 参照)。
-hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
+hayro-syntax = { version = "0.8", default-features = false, features = ["std"] }
 
 # PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。フォールバックは macOS 同梱の
 # qlmanage/sips のみ(1ページ目専用・preview/pdf.rs)で、hayro が失敗した時だけ使う。poppler は
