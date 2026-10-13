@@ -127,16 +127,17 @@ impl PreviewKind {
     /// Whether this is a file the picture plugins show (`image`, `svg`, `pdf`, `video`): the ones
     /// whose result is an image in the host's image pipeline.
     pub fn is_media_plugin(&self) -> bool {
+        matches!(self, PreviewKind::Plugin { id, .. } if Self::is_media_plugin_id(id))
+    }
+
+    /// Whether `id` names one of the picture plugins (`image`, `svg`, `pdf`, `video`).
+    pub fn is_media_plugin_id(id: &str) -> bool {
         matches!(
-            self,
-            PreviewKind::Plugin { id, .. }
-                if matches!(
-                    id.as_str(),
-                    konoma_media::IMAGE_ID
-                        | konoma_media::SVG_ID
-                        | konoma_media::PDF_ID
-                        | konoma_media::VIDEO_ID
-                )
+            id,
+            konoma_media::IMAGE_ID
+                | konoma_media::SVG_ID
+                | konoma_media::PDF_ID
+                | konoma_media::VIDEO_ID
         )
     }
 

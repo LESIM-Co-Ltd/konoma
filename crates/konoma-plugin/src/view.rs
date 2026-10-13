@@ -306,11 +306,12 @@ pub enum ImageData {
         base_dir: Option<PathBuf>,
         trusted: bool,
     },
-    /// Raw RGBA pixels, row by row.
+    /// Raw RGBA pixels, row by row. Held as an `Arc<Vec<u8>>` so a host that is the only owner can
+    /// take the buffer without copying it (`Arc::try_unwrap`).
     Rgba {
         width: u32,
         height: u32,
-        pixels: Arc<[u8]>,
+        pixels: Arc<Vec<u8>>,
     },
     /// Animation frames with their durations.
     Frames(Vec<(ImageData, Duration)>),

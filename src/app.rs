@@ -44,7 +44,6 @@ mod office_doc;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
-pub use plugin_host::PluginResult;
 mod outline;
 mod paste_jump;
 mod plugin_host;
@@ -772,10 +771,13 @@ pub enum MediaPayload {
     /// A Word document that could not be loaded (the reason maps to a translated message on the
     /// render side), carried like [`MediaPayload::WorkbookFailed`].
     DocumentFailed(crate::preview::office::OfficeError),
-    /// A picture plugin's result (`PreviewKind::Plugin` of `image`, `svg`, `pdf`, `video`): the
-    /// decoded picture, and the session and page layout the plugin reported
-    /// (`app/media_plugin.rs`).
-    Plugin(Box<media_plugin::PluginLanded>),
+    /// A plugin's result (`PreviewKind::Plugin`): the session, its layout, the view it returned
+    /// and, when that was a picture, the picture decoded on the same worker
+    /// (`app/plugin_host.rs`).
+    Plugin(Box<plugin_host::PluginResult>),
+    /// What a plugin's `open` learned (the page count of a PDF), sent ahead of the first picture.
+    /// Not a final result: the loading mark stays until the real one lands.
+    PluginLayout(Box<plugin_host::PluginLayoutMsg>),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -785,6 +787,15 @@ pub struct MediaResult {
     wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
+}
+
+impl MediaResult {
+    /// Test-only: whether this is only the layout a plugin's `open` learned, sent ahead of its
+    /// picture (the loading is not over).
+    #[cfg(test)]
+    pub fn is_layout_only(&self) -> bool {
+        matches!(self.payload, Some(MediaPayload::PluginLayout(_)))
+    }
 }
 
 /// An Office load (a workbook or a Word document) waiting for the running one to end
@@ -808,9 +819,6 @@ pub struct KittyResult {
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Run a picture plugin (`image`, `svg`, `pdf`, `video`): open it or reuse its session, ask for
-    /// the view, and decode the picture it returns, all on this worker.
-    Plugin(Box<media_plugin::MediaPluginJob>),
     /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
     /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
     /// fallback shows.
@@ -857,7 +865,6 @@ impl MediaJob {
         cancel: Option<crate::preview::office::Cancel>,
     ) -> Option<MediaPayload> {
         match self {
-            MediaJob::Plugin(job) => Some(job.run(cancel)),
             MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
                 let code = std::fs::read_to_string(&p).ok()?;
                 MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
@@ -1657,18 +1664,13 @@ pub struct App {
     /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
     /// externally edited file is always re-read.
     media_cache: Option<MediaCache>,
-    /// The open session of the picture plugin that shows the current preview (a PDF keeps its page
-    /// count here so a page turn does not open the file again). Dropped with the picture.
-    media_session: Option<media_plugin::MediaSession>,
-
-    /// The plugin display that is open (`PreviewKind::Plugin`): the plugin's `Session`, its layout and
-    /// the view it returned (`app/plugin_host.rs`). Lives on `App` (like `workbook`): the data can be
-    /// large, so a tab switch opens it again instead of cloning it into every tab snapshot. Assigned
-    /// only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind` whenever the
-    /// preview is not a plugin's.
+    /// The plugin display that is open (`PreviewKind::Plugin`, tables and pictures alike): the
+    /// plugin's `Session` (a PDF keeps it so a page turn does not open the file again), its layout
+    /// and the view it returned (`app/plugin_host.rs`). Lives on `App` (like `workbook`): the data
+    /// can be large, so a tab switch opens it again instead of cloning it into every tab snapshot.
+    /// Assigned only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind`
+    /// whenever the preview is not a plugin's and by `clear_image`.
     plugin: Option<plugin_host::PluginShow>,
-    /// Where plugin results go (`None` in tests: the plugin's work runs on the spot).
-    plugin_tx: Option<std::sync::mpsc::Sender<PluginResult>>,
     /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
     /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
     /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
@@ -3437,9 +3439,7 @@ impl App {
             #[cfg(test)]
             md_cache_budget_for_test: None,
             media_cache: None,
-            media_session: None,
             plugin: None,
-            plugin_tx: None,
             workbook: None,
             workbook_error: None,
             document: None,
@@ -5268,7 +5268,9 @@ impl App {
         self.gif_proto_key = None;
         self.tab.page = 1;
         self.tab.page_count = None;
-        self.media_session = None;
+        // The plugin's show (its session and view) goes with the picture it made, and with a
+        // table: whatever is opened next opens its own.
+        self.drop_plugin();
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
         self.wb_queued = None;

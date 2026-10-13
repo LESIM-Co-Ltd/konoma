@@ -2,88 +2,30 @@
 //!
 //! A picture plugin's `view` returns an [`ImageView`]; the host draws it with the image pipeline it
 //! always had (decoding under the size limits, GIF frames, the kitty compressed transfer, zoom and
-//! pan, sharp zoom of vector sources). The plugin's work and the decoding run **in one go on the
-//! same media worker** ([`MediaPluginJob`]): the worker opens the plugin (or reuses the session of
-//! the page before), asks it for the view, decodes what comes back, and delivers a
-//! [`MediaPayload::Plugin`] — the decoded picture, the session and the layout it reported — through
-//! the media channel under the media generation, so a result that is no longer wanted is dropped
-//! on arrival exactly like every other media job. Without a channel (tests) the same job runs on
-//! the spot.
+//! pan, sharp zoom of vector sources). They go through the same road as every plugin
+//! (`app/plugin_host.rs`): the plugin's work and the decoding run **in one go on the same
+//! worker** ([`decode_image_view`] is the decoding step of that job), and the result is dropped on
+//! arrival when it is no longer wanted, exactly like every other job. This module holds what is
+//! particular to pictures: starting the job for a page, the decoding, and the reasons a failed
+//! picture shows.
 //!
 //! Pages: the layout a plugin reports (`Layout.pages`) is the host's page state
 //! (`PerTab::page`, `PerTab::page_count`), and `J`/`K` ask the session for another page while the
-//! old picture stays on screen.
+//! old picture stays on screen. The page count reaches the host as soon as `open` returns, before
+//! the first page is drawn.
 
-use konoma_plugin::view::{ImageData, ImageView, Layout, PageLayout, View, ViewReq};
-use konoma_plugin::{
-    Cancel as PluginCancel, Failure, FailureKind, Input, OpenCx, Plugin, Session, Settings,
-    TermCaps, ViewCx,
-};
+use konoma_plugin::view::{ImageData, ImageView, ViewReq};
+use konoma_plugin::{Failure, FailureKind, Input, Plugin};
 
+use super::plugin_host::{PluginJob, PluginPhase, PluginShow, Wait, FIRST_FRAME_BUDGET};
 use super::*;
-
-/// An open picture session kept between page turns (the PDF the tab shows).
-pub(super) struct MediaSession {
-    id: String,
-    path: PathBuf,
-    session: Box<dyn Session>,
-}
-
-/// Everything a media worker needs to run a picture plugin (owned: it moves to a thread).
-pub(super) struct MediaPluginJob {
-    plugin: Arc<dyn Plugin>,
-    id: String,
-    path: PathBuf,
-    /// The open session of this file, when there is one (a page turn); otherwise `open` is called.
-    session: Option<Box<dyn Session>>,
-    /// The page asked for, counted from 1.
-    page: u32,
-    req: ViewReq,
-    settings: Settings,
-    lang: &'static str,
-    pixels: bool,
-    /// Whether the plugin may start an external program (`[external] pdf` / `video`).
-    external: bool,
-    /// The longest side to rasterize a vector source at when the plugin does not say.
-    default_raster_px: u32,
-}
-
-/// What a picture plugin job delivers.
-pub struct PluginLanded {
-    id: String,
-    path: PathBuf,
-    /// The session, handed back for the next page turn (`None` when the plugin failed to open or
-    /// panicked).
-    session: Option<Box<dyn Session>>,
-    /// What the session reported about its pages.
-    layout: Option<Layout>,
-    /// The decoded picture, or why the plugin could not make one.
-    outcome: Result<Option<Box<MediaPayload>>, Failure>,
-}
-
-impl PluginLanded {
-    /// The picture payload this landing stands for: the decoded picture, or the reason it could
-    /// not be made (a failed read of an SVG file is an `ImageFailed` like a failed decode).
-    #[cfg(test)]
-    pub(super) fn into_image_payload(self) -> Option<MediaPayload> {
-        outcome_payload(&self.id, self.outcome)
-    }
-}
-
-/// The payload of a job's outcome (see [`PluginLanded::outcome`]).
-fn outcome_payload(
-    id: &str,
-    outcome: Result<Option<Box<MediaPayload>>, Failure>,
-) -> Option<MediaPayload> {
-    match outcome {
-        Ok(payload) => payload.map(|b| *b),
-        Err(f) => image_failure_of(id, &f).map(MediaPayload::ImageFailed),
-    }
-}
 
 /// The reason an image failure shows for a plugin's `Failure`. The pictures that have a fixed
 /// fallback text of their own (a PDF, a video) show that text, so they have no reason here.
-fn image_failure_of(id: &str, f: &Failure) -> Option<crate::preview::image::ImageFailure> {
+pub(super) fn image_failure_of(
+    id: &str,
+    f: &Failure,
+) -> Option<crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     use crate::preview::svg_guard::SvgFail;
     match (id, f.kind) {
@@ -99,82 +41,9 @@ fn image_failure_of(id: &str, f: &Failure) -> Option<crate::preview::image::Imag
     }
 }
 
-impl MediaPluginJob {
-    /// Open (or reuse the session), ask for the view, decode it. Never panics on its own; a plugin
-    /// that panics takes the worker's `catch_silent` with it (no payload, as every media job).
-    pub(super) fn run(self, cancel: Option<crate::preview::office::Cancel>) -> MediaPayload {
-        let cancel_fn = {
-            let cancel = cancel.clone();
-            PluginCancel::from_fn(move || cancel.as_ref().is_some_and(|c| c.is_cancelled()))
-        };
-        let term = TermCaps {
-            pixels: self.pixels,
-        };
-        let MediaPluginJob {
-            plugin,
-            id,
-            path,
-            session,
-            page,
-            req,
-            settings,
-            lang,
-            external,
-            default_raster_px,
-            ..
-        } = self;
-        let landed = |session, layout, outcome| {
-            MediaPayload::Plugin(Box::new(PluginLanded {
-                id: id.clone(),
-                path: path.clone(),
-                session,
-                layout,
-                outcome,
-            }))
-        };
-        let mut session = match session {
-            Some(s) => s,
-            None => {
-                let cx = OpenCx::new(&settings, lang)
-                    .with_cancel(cancel_fn.clone())
-                    .with_term(term)
-                    .with_external(external);
-                let input = Input::File {
-                    path: path.clone(),
-                    hint: None,
-                };
-                match plugin.open(input, &cx) {
-                    Ok(s) => s,
-                    Err(f) => return landed(None, None, Err(f)),
-                }
-            }
-        };
-        let layout = session.layout();
-        let cx = ViewCx::new(&settings, lang)
-            .with_cancel(cancel_fn)
-            .with_term(term)
-            .with_external(external);
-        let req = ViewReq {
-            page: Some(page.saturating_sub(1) as usize),
-            ..req
-        };
-        let outcome = match session.view(&req, &cx) {
-            Ok(View::Image(iv)) => {
-                Ok(decode_image_view(iv, &path, default_raster_px, cancel.as_ref()).map(Box::new))
-            }
-            Ok(_) => Err(Failure::unsupported(konoma_plugin::t!(
-                en: "the plugin did not return a picture",
-                ja: "プラグインが画像を返しませんでした",
-            ))),
-            Err(f) => Err(f),
-        };
-        landed(Some(session), Some(layout), outcome)
-    }
-}
-
 /// Decode what a picture plugin returned into the host's media payload. `None` is a failure with
 /// no reason to show (the render side falls back), as for any media job.
-fn decode_image_view(
+pub(super) fn decode_image_view(
     iv: ImageView,
     path: &Path,
     default_raster_px: u32,
@@ -228,7 +97,9 @@ fn decode_image_view(
             height,
             pixels,
         } => {
-            let img = image::RgbaImage::from_raw(width, height, pixels.to_vec())?;
+            // The plugin handed over the only reference: the buffer is taken, not copied.
+            let raw = Arc::try_unwrap(pixels).unwrap_or_else(|shared| (*shared).clone());
+            let img = image::RgbaImage::from_raw(width, height, raw)?;
             Some(MediaPayload::Static(image::DynamicImage::ImageRgba8(img)))
         }
         // Not made by the picture plugins; a plugin that returns them gets the honest reason.
@@ -238,10 +109,17 @@ fn decode_image_view(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: a plugin that stands in for whatever the registry would give, on this thread.
+    pub(super) static STAND_IN: std::cell::RefCell<Option<Arc<dyn Plugin>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl App {
     /// Start showing the file `path` with the picture plugin `id` for the current preview: on the
-    /// media worker (or on the spot without one), asking for the page the tab is on. The session of
-    /// the page before is reused when it belongs to this file.
+    /// worker (or on the spot without one), asking for the page the tab is on. The session of the
+    /// page before is reused when it belongs to this file.
     pub(super) fn start_media_plugin(&mut self, id: &str, path: &Path) {
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
         if !registry.is_enabled(id) {
@@ -250,6 +128,8 @@ impl App {
         let Some(plugin) = registry.plugin(id) else {
             return;
         };
+        #[cfg(test)]
+        let plugin = STAND_IN.with(|s| s.borrow().clone()).unwrap_or(plugin);
         // A still image needs the decode backend too (its encode is made asynchronously at render
         // time); every other picture only needs a graphics backend. An animation is a "GIF" to
         // the host when its first bytes say so.
@@ -257,62 +137,59 @@ impl App {
         if self.picker.is_none() || (still && self.img_tx.is_none()) {
             return; // the render side falls back to text or a message
         }
-        let session = match self.media_session.take() {
-            Some(s) if s.id == id && s.path == path => Some(s.session),
-            _ => None,
-        };
-        let external = match id {
-            konoma_media::PDF_ID => self.cfg.external.pdf,
-            konoma_media::VIDEO_ID => self.cfg.external.video,
-            _ => false,
-        };
-        let job = MediaPluginJob {
-            plugin,
-            id: id.to_string(),
-            path: path.to_path_buf(),
-            session,
-            page: self.tab.page.max(1),
-            req: self.plugin_view_req(),
-            settings: crate::plugins::effective_settings(&self.cfg, id),
-            lang: self.plugin_lang(),
-            pixels: self.terminal_draws_pixels(),
-            external,
-            default_raster_px: self.cfg.ui.svg_max_px,
-        };
-        self.spawn_or_sync_media(MediaJob::Plugin(Box::new(job)));
+        self.start_media_plugin_with(plugin, id, path);
     }
 
-    /// A picture plugin's result landed (current generation): keep its session, take the page
-    /// count it reported, then apply the picture.
-    pub(super) fn land_media_plugin(&mut self, landed: Box<PluginLanded>) {
-        let landed = *landed;
-        // The preview moved on to something else that started no media job of its own.
-        if !self
-            .tab
-            .preview_kind
-            .as_ref()
-            .is_some_and(|k| k.is_plugin(&landed.id))
-        {
-            return;
-        }
-        self.media_session = landed.session.map(|session| MediaSession {
-            id: landed.id.clone(),
-            path: landed.path.clone(),
-            session,
-        });
-        if let Some(Layout {
-            pages: Some(PageLayout::Separate { count, .. }),
-            ..
-        }) = &landed.layout
-        {
-            self.tab.page_count = count.and_then(|n| u32::try_from(n).ok());
-            if let Some(n) = self.tab.page_count {
-                self.tab.page = self.tab.page.clamp(1, n.max(1));
+    /// [`App::start_media_plugin`] with the plugin already in hand (the tests hand in a stand-in).
+    pub(super) fn start_media_plugin_with(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        id: &str,
+        path: &Path,
+    ) {
+        // The show of the page before is kept (and its session reused) when it is this file's;
+        // anything else is dropped and a fresh one begins.
+        let kept = self
+            .plugin
+            .as_mut()
+            .filter(|p| p.id == id && p.path == path)
+            .map(|p| p.session.take());
+        let session = match kept {
+            Some(session) => session,
+            None => {
+                self.drop_plugin();
+                self.plugin = Some(PluginShow {
+                    id: id.to_string(),
+                    path: path.to_path_buf(),
+                    phase: PluginPhase::Loading,
+                    session: None,
+                    layout: konoma_plugin::view::Layout::single(),
+                    view: None,
+                    req: ViewReq::default(),
+                });
+                None
             }
-        }
-        if let Some(payload) = outcome_payload(&landed.id, landed.outcome) {
-            self.apply_payload(payload);
-        }
+        };
+        // The page asked for, counted from 0 in the request.
+        let req = ViewReq {
+            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
+            ..self.plugin_view_req()
+        };
+        let (job, wait) = match session {
+            Some(session) => (PluginJob::View { session }, Wait::Nothing),
+            None => (
+                PluginJob::Open {
+                    plugin,
+                    input: Input::File {
+                        path: path.to_path_buf(),
+                        hint: None,
+                    },
+                },
+                Wait::Layout(FIRST_FRAME_BUDGET),
+            ),
+        };
+        let work = self.plugin_work(id.to_string(), path.to_path_buf(), job, req);
+        self.dispatch_plugin_work(work, wait);
     }
 }
 
@@ -320,23 +197,25 @@ impl App {
 /// the spot (the same job the worker runs, unwrapped to its picture payload).
 #[cfg(test)]
 pub(crate) fn svg_file_payload(path: &Path, max_px: u32) -> Option<MediaPayload> {
-    let job = MediaPluginJob {
+    let mut cfg = Config::default();
+    cfg.ui.svg_max_px = max_px;
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    let app = App::new(dir.to_path_buf(), cfg).ok()?;
+    let job = PluginJob::Open {
         plugin: Arc::new(konoma_media::SvgPlugin),
-        id: konoma_media::SVG_ID.to_string(),
-        path: path.to_path_buf(),
-        session: None,
-        page: 1,
-        req: ViewReq::default(),
-        settings: Settings::new().with("max_px", konoma_plugin::Value::Int(i64::from(max_px))),
-        lang: "en",
-        pixels: false,
-        external: false,
-        default_raster_px: max_px,
+        input: Input::File {
+            path: path.to_path_buf(),
+            hint: None,
+        },
     };
-    match job.run(None) {
-        MediaPayload::Plugin(landed) => landed.into_image_payload(),
-        other => Some(other),
-    }
+    app.plugin_work(
+        konoma_media::SVG_ID.to_string(),
+        path.to_path_buf(),
+        job,
+        ViewReq::default(),
+    )
+    .run_on_the_spot()
+    .into_image_payload()
 }
 
 #[cfg(test)]

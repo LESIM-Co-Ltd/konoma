@@ -26,14 +26,19 @@ All notable changes to konoma are documented in this file. The format is based o
 - **Images, SVG, PDF and video are shown by plugins** (`image`, `svg`, `pdf`, `video`, in the new `konoma-media` crate). What you see
   does not change: the host still decodes, animates, zooms and draws the pictures, and an SVG is still drawn in a supervised
   child process. New: `[plugins.svg] max_px` (the old `[ui] svg_max_px` is still read), and `[plugins.<id>] enabled = false`
-  switches a picture viewer off. A PDF's page count now comes with its first picture rather than before it, so `J`/`K` start
-  working when page 1 has landed.
+  switches a picture viewer off. A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn,
+  so `J`/`K` work from the first frame.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
   under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
   (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block
   model), on top of `konoma-base`, plus `konoma-test-support` for tests. The `konoma` binary behaves exactly as before.
   They are not published to crates.io yet. To check from source, use `cargo test --workspace` (a plain `cargo test` only
   covers the `konoma` package).
+
+### Fixed
+- Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
+  restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
+  page first and then opens the file, so the picture is the page the indicator names.
 
 ## [0.31.0] - 2026-10-12
 

@@ -48,9 +48,6 @@ struct Sim {
     media_rx: Option<std::sync::mpsc::Receiver<crate::app::MediaResult>>,
     /// Receiver for background remote (http/https) Markdown image fetches (`with_media`). Drained by `drain_remote`.
     md_remote_rx: Option<std::sync::mpsc::Receiver<crate::app::RemoteFetch>>,
-    /// Receiver for a plugin's background work (`with_async_plugins`, the run loop's `rx.plugin`).
-    /// `None` = the plugin's work runs on the spot (every test that doesn't opt in).
-    plugin_rx: Option<std::sync::mpsc::Receiver<crate::app::PluginResult>>,
     /// Receiver for background Markdown block-diff computation (`with_async_md_diff` —
     /// `docs/STATUS.md` ★未修正 item 4). `None` = the synchronous fallback in `spawn_or_sync_md_diff`
     /// is used (every test that doesn't explicitly opt in, matching every other `with_async_*`).
@@ -91,7 +88,6 @@ impl Sim {
             md_enc_rx: None,
             media_rx: None,
             md_remote_rx: None,
-            plugin_rx: None,
             #[cfg(feature = "git")]
             md_diff_rx: None,
         };
@@ -99,13 +95,13 @@ impl Sim {
         sim
     }
 
-    /// Opt in to the **real background path** for plugins (`App::attach_plugin_runner`, as `main`
-    /// does): a plugin's `open` runs on a worker and the first frame waits only its budget. Results
-    /// that miss it are applied by `drain_plugin`.
+    /// Opt in to the **real background path** for plugins (the one worker channel,
+    /// `App::attach_media_loader`, as `main` does): a plugin's `open` runs on a worker and the first
+    /// frame waits only its budget. Results that miss it are applied by `drain_plugin`.
     fn with_async_plugins(mut self) -> Sim {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.app.attach_plugin_runner(tx);
-        self.plugin_rx = Some(rx);
+        self.app.attach_media_loader(tx);
+        self.media_rx = Some(rx);
         self
     }
 
@@ -114,13 +110,13 @@ impl Sim {
     #[track_caller]
     fn drain_plugin(&mut self) -> bool {
         let rx = self
-            .plugin_rx
+            .media_rx
             .as_ref()
             .expect("with_async_plugins() を呼んでいない");
         let res = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("plugin worker が結果を返す");
-        let applied = self.app.apply_plugin_result(res);
+        let applied = self.app.apply_media(res);
         self.draw();
         applied
     }
@@ -312,10 +308,18 @@ impl Sim {
     #[track_caller]
     fn drain_media(&mut self) {
         let rx = self.media_rx.as_ref().expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("media loader が結果を返す");
-        assert!(self.app.apply_media(res), "現世代の結果は適用される");
+        loop {
+            let res = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("media loader が結果を返す");
+            // A plugin's page count sent ahead of its picture (the UI stopped waiting for it) is
+            // not the result being drained: apply it and wait for the picture.
+            let layout_only = res.is_layout_only();
+            assert!(self.app.apply_media(res), "現世代の結果は適用される");
+            if !layout_only {
+                break;
+            }
+        }
         self.draw();
     }
 
@@ -16444,6 +16448,79 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
     assert!(
         distinct.len() > 1,
         "白地と黒インクが両方描かれるはずなので、描画セルの色は一色だけではないはず: {distinct:?}"
+    );
+}
+
+/// The RGBA pixels the `pdf` plugin draws for page `index` (counted from 0) of `path`.
+fn pdf_page_rgba(path: &std::path::Path, index: usize) -> (u32, u32, Vec<u8>) {
+    use konoma_plugin::view::{ImageData, View, ViewReq};
+    let mut session = konoma_plugin::testing::open_file(&konoma_media::PdfPlugin, path).unwrap();
+    let req = ViewReq {
+        page: Some(index),
+        ..ViewReq::default()
+    };
+    match session.view(&req, &konoma_plugin::ViewCx::bare()).unwrap() {
+        View::Image(iv) => match iv.data {
+            ImageData::Rgba {
+                width,
+                height,
+                pixels,
+            } => (width, height, (*pixels).clone()),
+            other => panic!("{other:?}"),
+        },
+        _ => panic!("a picture was expected"),
+    }
+}
+
+/// Going back to a tab that showed page 3 of a PDF shows page 3 again, not page 1 under a `3/3`
+/// indicator. The tab restore reloaded with the page reset to 1 by `clear_image` and put the saved
+/// page back only afterwards, so the picture and the indicator disagreed whenever the one-slot
+/// decoded-picture cache did not hold the page (another tab's picture had taken the slot).
+#[test]
+fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("pdf_tab_roundtrip_page");
+    let doc = dir.join("doc.pdf");
+    std::fs::copy(&pdf, &doc).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+        .save(dir.join("pic.png"))
+        .unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_media();
+
+    s.select("doc.pdf");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    assert_eq!(s.app.page_indicator(), Some((3, 3)), "前提: 3/3");
+    let page3 = pdf_page_rgba(&doc, 2);
+    assert_ne!(
+        pdf_page_rgba(&doc, 0),
+        page3,
+        "前提: 1 ページ目と 3 ページ目は別の絵"
+    );
+    assert_eq!(s.app.shown_picture_rgba(), Some(page3.clone()), "前提");
+
+    // Another tab shows another picture, which takes the one slot of the picture cache.
+    s.key('t');
+    s.select("pic.png");
+    s.enter();
+    s.drain_media();
+    assert!(s.app.shown_picture_rgba().is_some());
+
+    // Back: the PDF is loaded again (the cache no longer holds it) and must be asked for page 3.
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.drain_media();
+    assert_eq!(s.app.page_indicator(), Some((3, 3)));
+    assert_eq!(
+        s.app.shown_picture_rgba(),
+        Some(page3),
+        "表示は 3/3 なのに絵が 1 ページ目になっていた"
     );
 }
 
