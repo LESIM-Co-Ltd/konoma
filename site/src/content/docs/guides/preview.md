@@ -82,7 +82,7 @@ as real pixels).
   *within* a cell, which a column's `:---:` still decides.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
-- **Outline**: `O` opens the heading outline; `Enter` jumps to a heading.
+- **Outline**: `O` opens the heading outline; `Enter` jumps to a heading. On a PDF, a workbook or a presentation with two or more pages, `O` opens the list of its pages instead (the current one marked); `Enter` goes to the chosen page.
 - **Change gutter**: a file with uncommitted changes shows the same
   editor-style git gutter (green added / blue modified / red deleted) as code
   and text previews, block-aware here — a changed paragraph or list item is

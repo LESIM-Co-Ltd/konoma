@@ -101,7 +101,7 @@ when it has no key of its own.
 | `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `J` `K` | presentations: next / previous slide, in the picture view and the text view alike (no-op elsewhere and on a one-slide deck; actions `page_next` / `page_prev`) |
 | `R` | cycle the representation: rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); on a presentation, slide pictures ⇄ text view, keeping the current slide; while this preview *is* a diff's `preview` presentation, returns to that diff instead |
-| `O` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
+| `O` | heading outline of a Markdown preview (`Enter` jumps to a heading); on a PDF, a workbook or a presentation with 2+ pages, the list of its pages (`Enter` goes to the page) |
 | `+` `-` `=` | zoom a focused diagram in place / zoom out / fit |
 | `v` / `V` | select by character / by line, then `y` copies (`q` or `Esc` leaves the selection) |
 | `y` → `n r f p @ c` | copy name / relative / full / parent / `@ref` / the focused Markdown code block (`Tab` focuses one) |
@@ -209,7 +209,7 @@ letter-jump — select those with `j`/`k` + `Enter`, or rebind.
 
 | Screen | Keys |
 |---|---|
-| Outline | `j` `k` `g` `G` move · `Enter` jump to the heading · `O` `q` `Esc` close |
+| Outline (the page list on a PDF, workbook or presentation) | `j` `k` `g` `G` move · `Enter` jump to the heading (or go to the page) · `O` `q` `Esc` close |
 | File info | `i` `q` `Esc` close |
 | Help | `j` `k` `g` `G` scroll · `?` `q` `Esc` close |
 

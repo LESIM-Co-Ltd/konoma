@@ -301,6 +301,11 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
                 _ => {}
             }
         }
+        // The list of the pages on a preview made of pages, the outline otherwise.
+        A::ToggleOutline if app.is_page_list_preview() => {
+            t.label = Some(M::HintPageList);
+            t.help = Some(M::HintPageList);
+        }
         A::ToggleMarkdownRaw => {
             let (label, help) = if app.is_deck() {
                 (app.deck_view_hint(), app.deck_view_help())

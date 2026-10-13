@@ -720,7 +720,7 @@ impl App {
 
     /// Logical lines of the pages' headings in the decorated view, or `None` when they are not
     /// exactly the open document's pages (then nothing is offered).
-    fn anchored_head_lines(&self, c: &MdCache) -> Option<Vec<usize>> {
+    pub(super) fn anchored_head_lines(&self, c: &MdCache) -> Option<Vec<usize>> {
         let (level, count) = self.anchored_pages()?;
         let heads: Vec<usize> = c
             .anchors
@@ -741,7 +741,7 @@ impl App {
     /// The pages' headings as the view shows them (display rows), with the view's top:
     /// `(heads, top)`. `None` when this is not a paged document on screen, or its headings are not
     /// exactly its pages.
-    fn anchored_view(&self) -> Option<(Vec<usize>, usize)> {
+    pub(super) fn anchored_view(&self) -> Option<(Vec<usize>, usize)> {
         self.anchored_pages()?;
         let c = self.md_cache.as_ref()?;
         let heads: Vec<usize> = self

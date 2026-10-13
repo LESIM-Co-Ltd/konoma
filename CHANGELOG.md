@@ -7,6 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
 - **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
   `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
   What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
