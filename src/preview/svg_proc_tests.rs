@@ -848,16 +848,18 @@ fn a_refusal_made_by_the_child_leaves_the_child_fit_for_the_next_drawing() {
 fn a_child_that_had_to_be_stopped_is_never_asked_again() {
     let _g = serial();
     no_children_left();
-    assert!(draw(badge(1).as_bytes(), None, limits(), &never).is_ok());
+    // The same drawing limit as the slow one below: an idle child is only reused for the limit it
+    // was started with.
+    let lim = Limits {
+        wall: Duration::from_secs(2),
+        rss: 1 << 30,
+        ..Limits::default()
+    };
+    assert!(draw(badge(1).as_bytes(), None, lim, &never).is_ok());
     let first_pid = live_pids();
     assert_eq!(first_pid.len(), 1);
     // Taken over by a drawing that outlasts its limit: stopped.
     let slow = svg(&r#"<rect width="800" height="600"/>"#.repeat(100_000));
-    let lim = Limits {
-        wall: Duration::from_millis(800),
-        rss: 1 << 30,
-        ..Limits::default()
-    };
     let r = draw(slow.as_bytes(), None, lim, &never);
     assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Timeout)));
     assert_eq!(live_children(), 0, "the stopped child was reaped");
@@ -2429,4 +2431,127 @@ fn a_kept_svg_is_drawn_again_in_the_child_unless_konoma_made_it() {
         assert_eq!(live_children(), 1, "a file's: the child too");
     });
     kill_live();
+}
+
+// ---- the child's own backstop clock follows the limit the parent supervises with ---------------
+
+/// A drawing that takes far longer than any limit used below (measured: over a minute in a debug
+/// build), so every run that ends early ends by a limit and not by finishing.
+fn endless_drawing() -> String {
+    svg(&r#"<rect width="800" height="600" fill-opacity="0.5"/>"#.repeat(100_000))
+}
+
+fn run_endless(wall: Duration) -> (Result<DynamicImage, RunError>, Duration) {
+    let data = endless_drawing();
+    let lim = Limits {
+        wall,
+        rss: 2 << 30,
+        ..Limits::default()
+    };
+    let t = Instant::now();
+    let r = run_with(
+        &bin(),
+        lim,
+        &Request {
+            data: data.as_bytes(),
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    (r, t.elapsed())
+}
+
+#[test]
+fn a_drawing_past_the_childs_old_fixed_backstop_ends_by_the_parents_limit_not_as_a_crash() {
+    let _g = serial();
+    no_children_left();
+    // The child used to arm a fixed 8 s clock whatever limit it was given, so a drawing allowed 12 s
+    // was ended by the child at 8 s and reported as a crash.
+    let (r, took) = run_endless(Duration::from_secs(12));
+    assert_eq!(
+        r.err(),
+        Some(RunError::Failed(SvgFail::Timeout)),
+        "{took:?}"
+    );
+    assert!(took >= Duration::from_secs(11), "{took:?}");
+    no_children_left();
+}
+
+#[test]
+fn a_short_drawing_limit_ends_as_a_timeout_not_a_crash() {
+    let _g = serial();
+    no_children_left();
+    let (r, took) = run_endless(Duration::from_secs(1));
+    assert_eq!(
+        r.err(),
+        Some(RunError::Failed(SvgFail::Timeout)),
+        "{took:?}"
+    );
+    assert!(took < Duration::from_secs(4), "{took:?}");
+    no_children_left();
+}
+
+#[test]
+fn the_real_child_arms_its_backstop_from_the_limit_it_is_given() {
+    let _g = serial();
+    no_children_left();
+    // Hand-driven, with a 1 s limit: the backstop is 1 s + 3 s. With the fixed 8 s one the child
+    // would still be drawing when the test gives up on it.
+    let mut child = std::process::Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("2147483648")
+        .arg("1000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let ready = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
+    assert_eq!(&ready, b"KSRDY");
+    let data = endless_drawing();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(&800u32.to_le_bytes());
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    wire.extend_from_slice(data.as_bytes());
+    std::io::Write::write_all(&mut stdin, &wire).unwrap();
+    let t = Instant::now();
+    let status = wait_bounded(
+        &mut child,
+        Duration::from_secs(7),
+        "the child on its backstop",
+    );
+    let took = t.elapsed();
+    assert!(!status.success(), "{status:?}");
+    assert!(took < Duration::from_secs(7), "{took:?}");
+    drop(stdin);
+}
+
+#[test]
+fn an_idle_child_is_only_reused_for_the_limit_it_was_started_with() {
+    let _g = serial();
+    no_children_left();
+    let with = |wall: u64| Limits {
+        wall: Duration::from_secs(wall),
+        rss: 700 << 20,
+        ..Limits::default()
+    };
+    assert!(draw(badge(1).as_bytes(), None, with(4), &never).is_ok());
+    let first = live_pids();
+    assert_eq!(first.len(), 1);
+    // Same limit: the same child.
+    assert!(draw(badge(2).as_bytes(), None, with(4), &never).is_ok());
+    assert_eq!(live_pids(), first);
+    // Another limit: its backstop clock would not match, so a new child is started.
+    assert!(draw(badge(3).as_bytes(), None, with(6), &never).is_ok());
+    let second = live_pids();
+    assert!(
+        second.iter().any(|p| !first.contains(p)),
+        "{first:?} {second:?}"
+    );
+    no_children_left();
 }
