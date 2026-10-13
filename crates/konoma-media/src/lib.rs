@@ -96,7 +96,7 @@ fn rgba_view(img: DynamicImage) -> ImageView {
     ImageView::new(ImageData::Rgba {
         width,
         height,
-        pixels: Arc::from(rgba.into_raw()),
+        pixels: Arc::new(rgba.into_raw()),
     })
 }
 

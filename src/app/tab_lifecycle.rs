@@ -118,6 +118,11 @@ impl App {
                 // Clamp `t.page` right here: use the same clamped value both as the argument
                 // to restore_media_cache below and as the final value carried by `self.tab = t` at the end.
                 t.page = t.page.max(1);
+                // `clear_image` above reset `self.tab.page` to 1, and the load below asks the plugin
+                // for `self.tab.page`: put the tab's own page back **before** opening, or the
+                // picture is page 1 while the indicator (restored from `t` at the end) says
+                // page N. The display state comes first, then the plugin is opened.
+                self.tab.page = t.page;
                 // page_count: a plain copy with no transformation. Not read here, so leave it to the
                 // bulk restore at the end.
                 // If it's the same file, same mtime, same page — e.g. returning to a tab you just
@@ -126,6 +131,12 @@ impl App {
                 let reused = self.restore_media_cache(&path, t.page);
                 if !reused {
                     self.start_media_load(&kind, &path);
+                    // A load that landed on the spot (no worker) may have found fewer pages than
+                    // the tab remembered: what it clamped is what is shown.
+                    t.page = self.tab.page;
+                    if self.tab.page_count.is_some() {
+                        t.page_count = self.tab.page_count;
+                    }
                 }
                 self.tab.image_zoom = t.image_zoom;
                 // image_center: a plain copy with no transformation. Not read here, so leave it to

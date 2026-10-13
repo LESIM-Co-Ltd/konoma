@@ -7,12 +7,15 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use konoma_plugin::view::{ImageData, ImageView, Layout, PageLayout, View, ViewReq};
 use konoma_plugin::{
     t, Failure, FailureKind, Input, Manifest, OpenCx, Plugin, Session, Settings, Value, ViewCx,
 };
 
+use super::plugin_host::{PluginResult, PluginWork};
+use super::STAND_IN;
 use super::*;
 use crate::test_support::{sample_path_or_skip, unique_tmp};
 
@@ -49,12 +52,17 @@ struct Stand {
     seen: Arc<Seen>,
     reply: Reply,
     pages: Option<usize>,
+    /// How long `open` takes.
+    open_delay: std::time::Duration,
+    /// How long each `view` takes (the page is slow to draw).
+    view_delay: std::time::Duration,
 }
 
 struct StandSession {
     seen: Arc<Seen>,
     reply: Reply,
     pages: Option<usize>,
+    view_delay: std::time::Duration,
 }
 
 impl Plugin for Stand {
@@ -70,10 +78,12 @@ impl Plugin for Stand {
             .store(cx.term.pixels, Ordering::SeqCst);
         *self.seen.settings.lock().unwrap() = Some(cx.settings.clone());
         *self.seen.lang.lock().unwrap() = cx.lang.to_string();
+        std::thread::sleep(self.open_delay);
         Ok(Box::new(StandSession {
             seen: self.seen.clone(),
             reply: self.reply.clone(),
             pages: self.pages,
+            view_delay: self.view_delay,
         }))
     }
 }
@@ -97,6 +107,7 @@ impl Session for StandSession {
         self.seen.view_external.store(cx.external, Ordering::SeqCst);
         *self.seen.view_thread.lock().unwrap() = Some(std::thread::current().id());
         self.seen.pages.lock().unwrap().push(req.page);
+        std::thread::sleep(self.view_delay);
         match &self.reply {
             Reply::Picture => Ok(View::Image(ImageView::new(ImageData::Rgba {
                 width: 4,
@@ -126,42 +137,60 @@ impl Session for StandSession {
 const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#;
 
 fn stand(reply: Reply, pages: Option<usize>) -> (Arc<dyn Plugin>, Arc<Seen>) {
+    stand_slow(reply, pages, Duration::ZERO, Duration::ZERO)
+}
+
+/// A stand-in whose `open` and `view` take the given time.
+fn stand_slow(
+    reply: Reply,
+    pages: Option<usize>,
+    open_delay: Duration,
+    view_delay: Duration,
+) -> (Arc<dyn Plugin>, Arc<Seen>) {
     let seen = Arc::new(Seen::default());
     (
         Arc::new(Stand {
             seen: seen.clone(),
             reply,
             pages,
+            open_delay,
+            view_delay,
         }),
         seen,
     )
 }
 
-fn job(plugin: Arc<dyn Plugin>, id: &str) -> MediaPluginJob {
-    MediaPluginJob {
-        plugin,
+fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
+    let path = PathBuf::from("/x/file.bin");
+    PluginWork {
         id: id.to_string(),
-        path: PathBuf::from("/x/file.bin"),
-        session: None,
-        page: 1,
-        req: ViewReq::new(80, 24),
+        gen: 0,
+        job: PluginJob::Open {
+            plugin,
+            input: Input::File {
+                path: path.clone(),
+                hint: None,
+            },
+        },
+        // The first page, counted from 0 in the request.
+        req: ViewReq {
+            page: Some(0),
+            ..ViewReq::new(80, 24)
+        },
         settings: Settings::new(),
-        lang: "en",
+        lang: "en".to_string(),
         pixels: false,
+        path,
         external: false,
         default_raster_px: 800,
+        expects_picture: true,
+        decode_cancel: None,
+        on_layout: None,
     }
 }
 
-fn landed(payload: MediaPayload) -> Box<PluginLanded> {
-    match payload {
-        MediaPayload::Plugin(l) => l,
-        _ => panic!("a picture plugin job always delivers a landing"),
-    }
-}
-
-fn image_payload(payload: MediaPayload) -> Option<MediaPayload> {
-    landed(payload).into_image_payload()
+fn image_payload(result: PluginResult) -> Option<MediaPayload> {
+    result.into_image_payload()
 }
 
 // ---- the job --------------------------------------------------------------------------------
@@ -173,9 +202,9 @@ fn the_contexts_reach_the_plugin_in_open_and_view() {
         let mut j = job(plugin, "stand");
         j.external = external;
         j.pixels = true;
-        j.lang = "ja";
+        j.lang = "ja".to_string();
         j.settings = Settings::new().with("k", Value::Int(7));
-        let out = j.run(None);
+        let out = j.run_on_the_spot();
         assert!(matches!(
             image_payload(out),
             Some(MediaPayload::Static(img)) if (img.width(), img.height()) == (4, 3)
@@ -197,15 +226,15 @@ fn the_contexts_reach_the_plugin_in_open_and_view() {
 fn the_page_asked_for_is_counted_from_zero_in_the_request() {
     let (plugin, seen) = stand(Reply::Picture, Some(5));
     let mut j = job(plugin, "stand");
-    j.page = 3;
-    let _ = j.run(None);
+    j.req.page = Some(2);
+    let _ = j.run_on_the_spot();
     assert_eq!(*seen.pages.lock().unwrap(), vec![Some(2)]);
 }
 
 #[test]
 fn the_session_is_handed_back_and_a_later_job_reuses_it_without_opening_again() {
     let (plugin, seen) = stand(Reply::Picture, Some(3));
-    let first = landed(job(plugin.clone(), "stand").run(None));
+    let first = job(plugin.clone(), "stand").run_on_the_spot();
     assert_eq!(seen.opens.load(Ordering::SeqCst), 1);
     let session = first.session.expect("the session comes back");
     let layout = first.layout.expect("and the layout it reported");
@@ -214,9 +243,9 @@ fn the_session_is_handed_back_and_a_later_job_reuses_it_without_opening_again() 
         Some(PageLayout::Separate { count: Some(3), .. })
     ));
     let mut second = job(plugin, "stand");
-    second.session = Some(session);
-    second.page = 2;
-    let again = landed(second.run(None));
+    second.job = PluginJob::View { session };
+    second.req.page = Some(1);
+    let again = second.run_on_the_spot();
     assert_eq!(
         seen.opens.load(Ordering::SeqCst),
         1,
@@ -229,22 +258,22 @@ fn the_session_is_handed_back_and_a_later_job_reuses_it_without_opening_again() 
 #[test]
 fn a_view_that_is_not_a_picture_is_refused_and_the_session_still_comes_back() {
     let (plugin, _) = stand(Reply::Text, None);
-    let l = landed(job(plugin, "stand").run(None));
+    let l = job(plugin, "stand").run_on_the_spot();
     assert!(l.session.is_some());
-    let f = l.outcome.err().expect("a refusal");
+    let f = l.failure.expect("a refusal");
     assert_eq!(f.kind, FailureKind::Unsupported);
 }
 
 #[test]
 fn pixels_that_do_not_add_up_make_no_picture() {
     let (plugin, _) = stand(Reply::BadPixels, None);
-    assert!(image_payload(job(plugin, "stand").run(None)).is_none());
+    assert!(image_payload(job(plugin, "stand").run_on_the_spot()).is_none());
 }
 
 #[test]
 fn an_svg_without_sharp_zoom_is_a_plain_picture_at_the_size_the_plugin_names() {
     let (plugin, _) = stand(Reply::PlainSvg, None);
-    match image_payload(job(plugin, "stand").run(None)) {
+    match image_payload(job(plugin, "stand").run_on_the_spot()) {
         Some(MediaPayload::Static(img)) => {
             // 10x10 drawn at its own size or shrunk to the 64px the plugin named, never beyond.
             assert!(img.width() <= 64 && img.height() <= 64, "{}", img.width());
@@ -264,9 +293,9 @@ fn a_plugin_that_fails_to_open_lands_with_no_session() {
             Err(Failure::corrupt(t!(en: "broken")))
         }
     }
-    let l = landed(job(Arc::new(NoOpen), "stand").run(None));
+    let l = job(Arc::new(NoOpen), "stand").run_on_the_spot();
     assert!(l.session.is_none() && l.layout.is_none());
-    assert_eq!(l.outcome.err().unwrap().kind, FailureKind::Corrupt);
+    assert_eq!(l.failure.unwrap().kind, FailureKind::Corrupt);
 }
 
 #[test]
@@ -362,7 +391,23 @@ fn png(path: &Path, w: u32, h: u32) {
         .unwrap();
 }
 
-fn recv(rx: &std::sync::mpsc::Receiver<MediaResult>) -> MediaResult {
+/// The next final result of the worker. A layout sent ahead of a picture (the UI stopped waiting
+/// for it) is applied on the way, as the run loop would, and is not what is returned.
+#[track_caller]
+fn recv(app: &mut App, rx: &std::sync::mpsc::Receiver<MediaResult>) -> MediaResult {
+    loop {
+        let r = recv_any(rx);
+        if matches!(r.payload, Some(MediaPayload::PluginLayout(_))) {
+            app.apply_media(r);
+            continue;
+        }
+        return r;
+    }
+}
+
+/// The next message of the worker, a layout included.
+#[track_caller]
+fn recv_any(rx: &std::sync::mpsc::Receiver<MediaResult>) -> MediaResult {
     rx.recv_timeout(std::time::Duration::from_secs(30))
         .expect("the media worker must answer")
 }
@@ -388,14 +433,14 @@ fn the_view_and_the_decode_run_in_one_go_on_the_worker_and_one_result_comes_back
     assert!(app.is_media_loading());
     assert!(app.image_src.is_none());
     // One result carries the plugin's session and the decoded picture: no second trip.
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     assert!(app.apply_media(r));
     assert!(rx.try_recv().is_err(), "no second result follows");
     let src = app.image_src.as_ref().expect("the picture landed");
     assert_eq!((src.width(), src.height()), (30, 20));
     assert!(!app.is_media_loading());
     assert!(
-        app.media_session.is_some(),
+        app.plugin.as_ref().is_some_and(|p| p.session.is_some()),
         "the session is kept for the next page"
     );
 }
@@ -406,7 +451,7 @@ fn the_view_of_a_picture_plugin_is_asked_on_the_worker_thread() {
     let me = std::thread::current().id();
     let j = job(plugin, "stand");
     let worker = std::thread::spawn(move || {
-        let _ = j.run(None);
+        let _ = j.run_on_the_spot();
     });
     worker.join().unwrap();
     let on = seen.view_thread.lock().unwrap().expect("viewed");
@@ -435,7 +480,7 @@ fn a_gif_is_told_from_a_still_by_its_first_bytes_and_animates() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     show(&mut app, PreviewKind::image(p.clone()), &p);
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     assert!(app.apply_media(r));
     assert!(app.is_gif_active(), "the frames of the animation are kept");
     assert!(app.image_src.is_none());
@@ -469,8 +514,11 @@ fn an_svg_keeps_its_source_for_sharp_zoom_and_is_drawn_untrusted() {
     assert!(app.image_logical.is_some());
 }
 
+/// The page count is what `open` learns, so it reaches the host before the first page is drawn:
+/// the keys that turn pages work as soon as the PDF is opened (it used to be known only when the
+/// first page had been drawn).
 #[test]
-fn a_pdf_reports_its_page_count_when_it_lands_and_not_before() {
+fn a_pdf_reports_its_page_count_before_the_first_page_is_drawn() {
     let Some(sample) = sample_path_or_skip("sample.pdf") else {
         return;
     };
@@ -482,15 +530,143 @@ fn a_pdf_reports_its_page_count_when_it_lands_and_not_before() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     show(&mut app, PreviewKind::pdf(p.clone()), &p);
-    // Counting the pages is the plugin's work, on the worker: until it lands the keys do nothing.
-    assert_eq!(app.page_indicator(), None);
-    assert!(!app.can_turn_pages());
-    app.next_page();
-    assert_eq!(app.tab.page, 1, "no page to turn to yet");
-    let r = recv(&rx);
-    assert!(app.apply_media(r));
+    // Within the first frame's wait, or else as the first message of the worker (the layout goes
+    // ahead of the picture): the picture is not drawn yet either way.
+    if app.page_indicator().is_none() {
+        let r = recv_any(&rx);
+        assert!(matches!(r.payload, Some(MediaPayload::PluginLayout(_))));
+        assert!(app.apply_media(r));
+    }
     assert_eq!(app.page_indicator(), Some((1, 3)));
     assert!(app.can_turn_pages());
+    assert!(app.image_src.is_none(), "page 1 is not on screen yet");
+    assert!(app.is_media_loading(), "the picture is still being made");
+    // Then the picture lands and nothing changes about the count.
+    let r = recv(&mut app, &rx);
+    assert!(app.apply_media(r));
+    assert!(app.image_src.is_some());
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+}
+
+/// `J` right after the file is opened, while page 1 is still being drawn, asks the plugin for
+/// page 2 (the guard against the page keys being dead until the first picture lands).
+#[test]
+fn j_right_after_opening_asks_for_page_two_before_page_one_is_drawn() {
+    let dir = unique_tmp("konoma_media_j_early");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("doc.pdf");
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::pdf(p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    // `open` is quick and learns three pages; every page takes 400ms to draw.
+    let (plugin, seen) = stand_slow(
+        Reply::Picture,
+        Some(3),
+        Duration::ZERO,
+        Duration::from_millis(400),
+    );
+    // Every start on this thread (the first open and the page turn) gets the stand-in.
+    STAND_IN.with(|s| *s.borrow_mut() = Some(plugin));
+    app.start_media_plugin(konoma_media::PDF_ID, &p);
+    if app.page_indicator().is_none() {
+        let r = recv_any(&rx);
+        assert!(app.apply_media(r), "the layout message");
+    }
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+    assert!(app.image_src.is_none(), "page 1 is still being drawn");
+    app.next_page(); // J
+    assert_eq!(app.tab.page, 2, "the key worked before any page was drawn");
+    // Results until the newest one lands: page 1's is stale and dropped.
+    while app.is_media_loading() {
+        let r = recv_any(&rx);
+        app.apply_media(r);
+    }
+    assert_eq!(app.page_indicator(), Some((2, 3)));
+    assert!(app.image_src.is_some());
+    let asked = seen.pages.lock().unwrap().clone();
+    assert!(
+        asked.contains(&Some(1)),
+        "the plugin was asked for page 2 (index 1): {asked:?}"
+    );
+}
+
+/// A plugin whose `open` takes longer than the first frame waits still gets its page count to the
+/// host ahead of the picture, as a message of its own that does not end the loading.
+#[test]
+fn a_slow_open_sends_the_layout_ahead_of_the_picture() {
+    let dir = unique_tmp("konoma_media_layout_msg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("doc.pdf");
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::pdf(p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let (plugin, _) = stand_slow(
+        Reply::Picture,
+        Some(3),
+        Duration::from_millis(250),
+        Duration::from_millis(100),
+    );
+    let t0 = std::time::Instant::now();
+    app.start_media_plugin_with(plugin, konoma_media::PDF_ID, &p);
+    assert!(
+        t0.elapsed() < Duration::from_millis(200),
+        "the UI waited {:?} for a plugin that needs 250ms to open",
+        t0.elapsed()
+    );
+    assert_eq!(app.page_indicator(), None, "open has not returned yet");
+    let first = recv_any(&rx);
+    assert!(
+        matches!(first.payload, Some(MediaPayload::PluginLayout(_))),
+        "the layout comes first"
+    );
+    assert!(app.apply_media(first));
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+    assert!(app.is_media_loading(), "a layout does not end the loading");
+    assert!(app.image_src.is_none());
+    let second = recv_any(&rx);
+    assert!(matches!(second.payload, Some(MediaPayload::Plugin(_))));
+    assert!(app.apply_media(second));
+    assert!(!app.is_media_loading());
+    assert!(app.image_src.is_some());
+}
+
+/// A layout that arrives for a generation that has moved on is dropped and ends nothing.
+#[test]
+fn a_stale_layout_message_is_dropped() {
+    let dir = unique_tmp("konoma_media_layout_stale");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("doc.pdf");
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::pdf(p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let (plugin, _) = stand_slow(
+        Reply::Picture,
+        Some(3),
+        Duration::from_millis(250),
+        Duration::ZERO,
+    );
+    app.start_media_plugin_with(plugin, konoma_media::PDF_ID, &p);
+    let layout = recv_any(&rx);
+    assert!(matches!(
+        layout.payload,
+        Some(MediaPayload::PluginLayout(_))
+    ));
+    // The user moved on before it was applied.
+    app.clear_image();
+    assert!(!app.apply_media(layout));
+    assert_eq!(app.tab.page_count, None);
 }
 
 #[test]
@@ -506,13 +682,13 @@ fn holding_j_draws_only_the_newest_page_and_drops_the_older_results() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     show(&mut app, PreviewKind::pdf(p.clone()), &p);
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     assert!(app.apply_media(r));
     // Two page turns before either result is applied.
     app.next_page();
     app.next_page();
     assert_eq!(app.tab.page, 3);
-    let (a, b) = (recv(&rx), recv(&rx));
+    let (a, b) = (recv(&mut app, &rx), recv(&mut app, &rx));
     let mut verdicts = vec![app.apply_media(a), app.apply_media(b)];
     verdicts.sort();
     assert_eq!(
@@ -538,7 +714,7 @@ fn a_page_turn_keeps_the_old_picture_on_screen_until_the_new_one_lands() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     show(&mut app, PreviewKind::pdf(p.clone()), &p);
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     assert!(app.apply_media(r));
     let before = app.image_src.clone().expect("page 1");
     app.next_page();
@@ -549,7 +725,7 @@ fn a_page_turn_keeps_the_old_picture_on_screen_until_the_new_one_lands() {
             .is_some_and(|s| Arc::ptr_eq(s, &before)),
         "page 1 stays until page 2 lands"
     );
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     assert!(app.apply_media(r));
     assert!(app
         .image_src
@@ -567,25 +743,25 @@ fn a_result_for_a_preview_that_moved_on_is_dropped_with_its_session() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     show(&mut app, PreviewKind::image(p.clone()), &p);
-    let r = recv(&rx);
+    let r = recv(&mut app, &rx);
     // The user moved on to another file before the result was applied.
     app.clear_image();
     assert!(!app.apply_media(r), "stale");
     assert!(app.image_src.is_none());
-    assert!(app.media_session.is_none(), "its session is not kept");
+    assert!(app.plugin.is_none(), "its session is not kept");
 }
 
 #[test]
 fn a_landing_for_another_kind_of_preview_is_not_adopted() {
     let (plugin, _) = stand(Reply::Picture, Some(3));
-    let l = landed(job(plugin, "stand").run(None));
+    let l = job(plugin, "stand").run_on_the_spot();
     let dir = unique_tmp("konoma_media_other_kind");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = app_in(&dir);
     // The preview on screen is a text file: no picture plugin shows it.
     app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("/x/a.txt")));
-    app.apply_payload(MediaPayload::Plugin(l));
-    assert!(app.media_session.is_none());
+    app.apply_payload(MediaPayload::Plugin(Box::new(l)));
+    assert!(app.plugin.is_none());
     assert!(app.image_src.is_none());
     assert_eq!(app.tab.page_count, None);
 }
@@ -598,9 +774,9 @@ fn leaving_the_picture_drops_its_session() {
     png(&p, 6, 6);
     let mut app = app_in(&dir);
     show(&mut app, PreviewKind::image(p.clone()), &p);
-    assert!(app.media_session.is_some());
+    assert!(app.plugin.as_ref().is_some_and(|p| p.session.is_some()));
     app.clear_image();
-    assert!(app.media_session.is_none());
+    assert!(app.plugin.is_none());
 }
 
 #[test]
@@ -612,16 +788,13 @@ fn a_session_of_another_file_is_not_reused() {
     png(&b, 9, 9);
     let mut app = app_in(&dir);
     show(&mut app, PreviewKind::image(a.clone()), &a);
-    let kept = app.media_session.as_ref().map(|s| s.path.clone());
+    let kept = app.plugin.as_ref().map(|s| s.path.clone());
     assert_eq!(kept.as_deref(), Some(a.as_path()));
     // Showing b without leaving a first (the preview kind changed under it): a's session is taken
     // out and not used for b.
     show(&mut app, PreviewKind::image(b.clone()), &b);
     assert_eq!(
-        app.media_session
-            .as_ref()
-            .map(|s| s.path.clone())
-            .as_deref(),
+        app.plugin.as_ref().map(|s| s.path.clone()).as_deref(),
         Some(b.as_path())
     );
     assert_eq!(app.image_src.as_ref().map(|i| i.width()), Some(9));
@@ -716,12 +889,12 @@ fn the_svg_size_comes_from_the_old_ui_setting_unless_the_plugin_table_sets_it() 
 fn a_plugin_failure_lands_as_the_reason_of_the_picture() {
     use crate::preview::image::ImageFailure;
     let (plugin, _) = stand(Reply::Fail(FailureKind::TooLarge), None);
-    let out = job(plugin, "image").run(None);
+    let out = job(plugin, "image").run_on_the_spot();
     assert!(matches!(
         image_payload(out),
         Some(MediaPayload::ImageFailed(ImageFailure::TooLarge))
     ));
     // A PDF's failure has no reason of its own: the render side shows its fixed hint.
     let (plugin, _) = stand(Reply::Fail(FailureKind::Unsupported), None);
-    assert!(image_payload(job(plugin, "pdf").run(None)).is_none());
+    assert!(image_payload(job(plugin, "pdf").run_on_the_spot()).is_none());
 }

@@ -415,19 +415,24 @@ impl App {
                 Some(MediaPayload::Document(doc)) => {
                     super::table_actions::discard_in_background(doc)
                 }
-                // A picture plugin's session is dropped off the UI thread too.
-                Some(MediaPayload::Plugin(landed)) => {
-                    super::table_actions::discard_in_background(landed)
-                }
+                // A plugin's session is dropped off the UI thread too.
+                Some(MediaPayload::Plugin(res)) => super::table_actions::discard_in_background(res),
                 _ => {}
             }
             return false;
+        }
+        // What a plugin's `open` learned, sent ahead of its picture: not a final result, so the
+        // loading mark stays.
+        if let Some(MediaPayload::PluginLayout(msg)) = result.payload {
+            return self.apply_plugin_layout(*msg);
         }
         self.media_loading = false;
         // The current generation's result arrived = the reraster in-flight flag is resolved (clear
         // it even on a None failure so it doesn't get stuck).
         self.vector_reraster_inflight = false;
         match result.payload {
+            // A plugin's result changes the screen only when it still belongs to the preview.
+            Some(MediaPayload::Plugin(res)) => self.land_plugin_result(*res),
             Some(payload) => {
                 self.apply_payload(payload);
                 true
@@ -494,7 +499,12 @@ impl App {
                     self.tab.search_pending = false;
                 }
             }
-            MediaPayload::Plugin(landed) => self.land_media_plugin(landed),
+            MediaPayload::Plugin(res) => {
+                self.install_plugin_result(*res);
+            }
+            MediaPayload::PluginLayout(msg) => {
+                self.apply_plugin_layout(*msg);
+            }
             MediaPayload::Document(doc) => self.land_document(doc),
             MediaPayload::DocumentFailed(e) => {
                 if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
@@ -688,6 +698,13 @@ impl App {
                             | PreviewKind::Command { .. }
                     )
                 ))
+    }
+
+    /// Test-only: the pixels of the still picture on screen (width, height, RGBA bytes).
+    #[cfg(test)]
+    pub fn shown_picture_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let img = self.image_src.as_ref()?.to_rgba8();
+        Some((img.width(), img.height(), img.into_raw()))
     }
 
     /// Whether the preview is a file the picture plugins (`image`, `svg`, `pdf`, `video`) show.

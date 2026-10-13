@@ -14,7 +14,7 @@ use konoma_plugin::{
     t, ActCx, Failure, Input, Manifest, OpenCx, Outcome, Plugin, Session, Settings, Value, ViewCx,
 };
 
-use super::plugin_host::{Handoff, FIRST_FRAME_BUDGET};
+use super::plugin_host::{Handoff, PluginResult, FIRST_FRAME_BUDGET};
 use super::*;
 use crate::test_support::unique_tmp;
 
@@ -168,11 +168,11 @@ fn open_stand(app: &mut App, plugin: Arc<dyn Plugin>, path: &Path) {
 
 /// Receive one result and apply it, the way the run loop does.
 #[track_caller]
-fn land(app: &mut App, rx: &Receiver<PluginResult>) -> bool {
+fn land(app: &mut App, rx: &Receiver<MediaResult>) -> bool {
     let res = rx
         .recv_timeout(Duration::from_secs(10))
         .expect("the worker always answers");
-    app.apply_plugin_result(res)
+    app.apply_media(res)
 }
 
 fn rows_of(app: &App) -> Option<usize> {
@@ -196,7 +196,7 @@ fn a_quick_open_is_on_screen_in_the_first_frame() {
     let (dir, file) = sandbox("konoma_plugin_host_quick");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (plugin, _) = stand(Script {
         rows: 3,
         ..Script::default()
@@ -218,7 +218,7 @@ fn a_slow_open_does_not_block_the_ui_and_lands_later() {
     let (dir, file) = sandbox("konoma_plugin_host_slow");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (plugin, seen) = stand(Script {
         rows: 7,
         open_delay: Duration::from_millis(400),
@@ -280,7 +280,7 @@ fn opening_a_big_csv_does_not_block_enter_preview() {
 
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let t0 = Instant::now();
     app.enter_preview(&csv);
     let spent = t0.elapsed();
@@ -317,7 +317,7 @@ fn a_result_from_an_older_generation_is_dropped() {
     let (dir, file) = sandbox("konoma_plugin_host_stale");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (plugin, seen) = stand(Script {
         rows: 5,
         open_delay: Duration::from_millis(300),
@@ -342,7 +342,7 @@ fn only_the_newest_open_is_applied() {
     let (dir, file) = sandbox("konoma_plugin_host_newest");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (slow, _) = stand(Script {
         rows: 1,
         open_delay: Duration::from_millis(200),
@@ -367,7 +367,7 @@ fn a_result_after_the_kind_changed_is_dropped() {
     let (dir, file) = sandbox("konoma_plugin_host_kind");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (plugin, _) = stand(Script {
         rows: 2,
         open_delay: Duration::from_millis(150),
@@ -392,7 +392,7 @@ fn a_panic_in_open_becomes_a_failure_not_a_stuck_loading() {
     let (dir, file) = sandbox("konoma_plugin_host_panic_open");
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
-    app.attach_plugin_runner(tx);
+    app.attach_media_loader(tx);
     let (plugin, _) = stand(Script {
         panic_in_open: true,
         open_delay: Duration::from_millis(120),
@@ -415,7 +415,7 @@ fn a_panic_is_a_failure_in_the_first_frame_and_without_a_worker_channel() {
         let (dir, file) = sandbox("konoma_plugin_host_panic_quick");
         let mut app = app_on(&dir, &file);
         let (tx, _rx) = channel();
-        app.attach_plugin_runner(tx);
+        app.attach_media_loader(tx);
         let (plugin, _) = stand(Script {
             panic_in_open,
             panic_in_view,
@@ -604,7 +604,7 @@ fn a_later_view_reuses_the_open_session() {
         let mut app = app_on(&dir, &file);
         let rx = if with_channel {
             let (tx, rx) = channel();
-            app.attach_plugin_runner(tx);
+            app.attach_media_loader(tx);
             Some(rx)
         } else {
             None
@@ -751,4 +751,45 @@ fn the_handoff_gives_the_result_to_exactly_one_side() {
     });
     assert!(h.wait(Duration::from_secs(5)).is_some());
     assert!(rx.try_recv().is_err());
+}
+
+/// The layout gate gives what `open` learned to exactly one side: the waiting UI, or the channel
+/// when the UI has stopped waiting; and a job that ends without a layout releases a waiter.
+#[test]
+fn the_layout_gate_gives_the_layout_to_exactly_one_side() {
+    use super::plugin_host::LayoutGate;
+    let layout = || Layout {
+        default_repr: Some("g".into()),
+        ..Layout::single()
+    };
+    // Published in time: the waiter gets it and the worker has nothing to send.
+    let g = LayoutGate::new();
+    assert!(g.publish(layout()).is_none());
+    assert!(g.wait(Duration::from_millis(50)).is_some());
+    // The waiter gave up first: the worker is handed the layout back to send itself.
+    let g = LayoutGate::new();
+    assert!(g.wait(Duration::ZERO).is_none());
+    assert!(g.publish(layout()).is_some());
+    // A waiter woken from another thread takes it.
+    let g = Arc::new(LayoutGate::new());
+    let worker = Arc::clone(&g);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(worker.publish(layout()).is_none());
+    });
+    assert!(g.wait(Duration::from_secs(5)).is_some());
+    // A job that never got as far as a layout (a failed open) releases the waiter at once, with
+    // nothing.
+    let g = Arc::new(LayoutGate::new());
+    let worker = Arc::clone(&g);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        worker.release();
+    });
+    let t0 = Instant::now();
+    assert!(g.wait(Duration::from_secs(5)).is_none());
+    assert!(
+        t0.elapsed() < Duration::from_secs(2),
+        "released, not timed out"
+    );
 }
