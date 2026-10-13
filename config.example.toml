@@ -55,10 +55,10 @@ preview_loading = "indicator"
 path_style = "relative"
 # Default page-turn key profile for previews. j/k line moves, arrows, and PageUp/Down are common to both.
 #   vim  = Ctrl-f/Ctrl-b page, Ctrl-d/Ctrl-u half-page (default).
-#   less = Space/b page, d/u half-page (preview surfaces only; the tree's Space is already the file-management
+#   less = Space/b page, d/u half-page (preview contexts only; the tree's Space is already the file-management
 #          leader, so even under less the tree keeps vim paging).
 # Note: this is the "default page-turn profile". Individual keys can be overridden under the top-level
-#   [keys.<surface>] sections below (those take precedence and are a separate thing).
+#   [keys.<context>] sections below (those take precedence and are a separate thing).
 keys = "vim"
 # Display-size scale for image previews (0.1–1.0). Shrinks the display rect by this factor.
 # At the default 1.0: "initial = image size (fit), + zooms in, pan with hjkl once it overflows the viewport".
@@ -91,7 +91,7 @@ graph_max_branches = 12
 # 2. The first one that exists becomes the "base" = pinned to lane0 in a straight line.
 # 3. The order also drives the legend/panel display order (array → HEAD → recency).
 # The graph's `b` panel J/K reorders for the current session only (never written back to the config).
-# Also reused as the base for the worktree list's diff (`d`, in git_worktrees): the candidate pool is the
+# Also reused as the base for the worktree list's diff (`d`, in git.worktrees): the candidate pool is the
 # entries here that exist plus the main worktree's branch, and whichever candidate's merge-base (common
 # ancestor) with the diffed worktree's HEAD is newest becomes the base — i.e. the branch it actually
 # diverged from, not necessarily the first one listed here; ties fall back to this array's order.
@@ -516,23 +516,36 @@ code_theme = "TwoDark"
 # [Top-level sections] — write these at the outermost level of the file, NOT inside [ui].
 # (Distinct from the ui keys="vim" above — easy to confuse.)
 #
-# Model: "for each surface, map a key → a command (action)". There is a built-in default map, and here you can
+# Model: "for each context, map a key → a command (action)". There is a built-in default map, and here you can
 # override / add / disable (anything not written keeps its default). helix-style notation:
-#   [keys.<surface>]
+#   [keys.<context>]
 #   <key> = "<action>"
 #
-# ■ Surface names — a separate map per "which screen am I on". snake_case:
-#   global        : effective on any surface (tabs t/I/[/]/1-9, T=tab list, help ?). "tab_new" (t) always
+# ■ Context names — a separate map per "what am I looking at". A key is looked up in the context's own map,
+#   then in the keys shared by that kind of view, then in the basic keys (j/k), then in global.
+#   Lowercase, snake_case:
+#   global        : effective in every context (tabs t/I/[/]/1-9, T=tab list, help ?). "tab_new" (t) always
 #                  appends a new tab at the end; "tab_new_after" (I) inserts it right after the current
 #                  tab instead. w is unbound by default
 #                  (it clashes with vim's word motion; close is the tree's q; restore with "w"="tab_close").
 #   tree          : the full-screen tree      tree_visual   : the tree's visual selection
-#   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff
-#   preview_table : CSV/TSV/archive tables    table_cell : the full-cell popup (Enter in preview_table)
-#   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
-#   git_graph_picker : the graph's branch-visibility panel (b)
-#   git_worktrees : the linked-worktree list (w, in the changes hub)
-#   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
+#   text          : source and plain text (also a preview that cannot be shown)
+#   document      : a decorated document — rendered Markdown, a Word file, slides, a mermaid diagram
+#   text_visual   : the text preview's visual selection (v / V)
+#   image         : images and PDF pages      diff : a file's git/jj diff
+#   table         : CSV/TSV/archive/spreadsheet tables    table_cell : the full-cell popup (Enter in a table)
+#   git.changes   : the Git changes hub (o)   git.log / git.graph / git.branches / git.detail
+#   git.graph_picker : the graph's branch-visibility panel (b)
+#   git.worktrees : the linked-worktree list (w, in the changes hub)
+#   jj.changes ... : the same screens opened for a jj repository (jj.log jj.graph jj.graph_picker
+#                   jj.branches jj.worktrees jj.detail); they start out with the same keys as git.*
+#   sort  bookmarks  tabs (tab list: d=tab_list_close)  outline  info  help
+#   A name with a dot needs quotes in TOML: [keys."git.changes"].
+#   The names used before contexts existed are still read — preview_text (= text + document),
+#   preview_text_visual (= text_visual), preview_image (= image), preview_table (= table),
+#   preview_git_diff (= diff), git_changes / git_log / git_graph / git_graph_picker / git_branches /
+#   git_worktrees / git_detail (= the "git.…" and "jj.…" context of that name) — and konoma says at
+#   startup what to rename each to. If a context is written under both names, the new name wins.
 #
 # ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / '",
 #   modifiers "ctrl-f" (alias "c-f"), named "tab enter esc up down left right home end pageup pagedown".
@@ -577,7 +590,7 @@ code_theme = "TwoDark"
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
-#                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Surface [keys.table_cell] covers the popup's keys.)
+#                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Context [keys.table_cell] covers the popup's keys.)
 #   Sort         : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
@@ -613,7 +626,7 @@ code_theme = "TwoDark"
 #   y     → copy path      (n=name r=relative f=full p=parent @=AI-oriented @relative-path reference)
 #   Space → file ops       (n=create r=rename d=delete c=copy x=cut p=paste) — tree / visual.
 #
-# ■ Conflict detection: a setting that steals an important default key on a surface (a single key clobbering a
+# ■ Conflict detection: a setting that steals an important default key in a context (a single key clobbering a
 #   leader prefix, repurposing a global tab key, …) is detected at startup, notified in the footer, and reverted
 #   to the default (it will not silently break things).
 #
@@ -624,15 +637,15 @@ code_theme = "TwoDark"
 # "y f" = "copy_full"          # y→f to copy the full path (default)
 # x = "noop"                   # disable x
 #
-# [keys.preview_text]
+# [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys.git_changes]
+# [keys."git.changes"]
 # g = "git_open_graph"
 #
 # (Backward compat) The old [keys] copy_name/copy_full/copy_relative/copy_parent (suffix) are still read for now
 # and mapped to the y copy leader. copy_prefix is ignored (the prefix is fixed to y in the new scheme).
-# All are deprecated — prefer the new [keys.<surface>] form.
+# All are deprecated — prefer the new [keys.<context>] form.
 
 # External editor (launched with the `e` key). Can be specified per extension.
 # Resolution order: [editor.ext] per-extension → command (overall default) → $VISUAL → $EDITOR → vim.
@@ -665,7 +678,7 @@ media_diff  = "auto"      # Initial layout for the image/PDF/SVG side-by-side "d
                         # (they mean different things). `s` cycles auto→side→stack→auto while that view is showing.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
-worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved
+worktree_dir = "../"   # Where `n` (in the worktree list, [keys."git.worktrees"]) places a new linked worktree: resolved
                         # against the MAIN worktree's own path (not wherever this tab's root is), then joined with the
                         # branch name (its / replaced with -, since a slash would otherwise make git nest directories).
                         # Default = a sibling of the main worktree, e.g. ~/work/proj + branch feat -> ~/work/feat. An

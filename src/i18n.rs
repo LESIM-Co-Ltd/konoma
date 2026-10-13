@@ -286,6 +286,12 @@ pub enum Msg {
     HelpJumpTab,
     JustNow,
     Keymap,
+    /// Startup note: `{old}` is an old `[keys.…]` table name; `{new}` is what to write instead.
+    KeymapOldName,
+    /// Startup note about the first key conflict: `{key}` kept `{kept}`, `{dropped}` was refused.
+    KeymapConflictDetail,
+    /// Startup note suffix: `{n}` more of the same kind were left out.
+    KeymapMore,
     GitLayout,
     LineStartEnd,
     /// The tree listing could not be rebuilt on a path that cannot propagate the error (the
@@ -1130,6 +1136,9 @@ fn en(msg: Msg) -> &'static str {
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         Keymap => "keymap",
+        KeymapOldName => "{old} is an old name — write {new} instead",
+        KeymapConflictDetail => "{key}: kept {kept}, dropped {dropped}",
+        KeymapMore => "(+{n} more)",
         GitLayout => "layout: unified / split / auto",
         LineStartEnd => "line start / line end (horizontal)",
         ListingStale => "listing may be out of date (refresh failed): ",
@@ -1744,6 +1753,9 @@ fn jp(msg: Msg) -> &'static str {
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         Keymap => "キーマップ",
+        KeymapOldName => "{old} は古い名前です — {new} に書き換えてください",
+        KeymapConflictDetail => "{key}: {kept} を維持し {dropped} を破棄",
+        KeymapMore => "(ほか {n} 件)",
         GitLayout => "並び: 縦 / 横 / Auto",
         LineStartEnd => "行頭 / 行末へ(横)",
         ListingStale => "一覧が古いままの可能性 (更新に失敗): ",
@@ -2447,6 +2459,9 @@ mod tests {
         Msg::HelpJumpTab,
         Msg::JustNow,
         Msg::Keymap,
+        Msg::KeymapOldName,
+        Msg::KeymapConflictDetail,
+        Msg::KeymapMore,
         Msg::GitLayout,
         Msg::LineStartEnd,
         Msg::ListingStale,

@@ -5,8 +5,8 @@ sidebar:
   order: 2
 ---
 
-Every binding below is a default — all of them can be changed per screen via
-`[keys.<surface>]` in the config (see
+Every binding below is a default — all of them can be changed per context via
+`[keys.<context>]` in the config (see
 [Configuration](../configuration/)). `?` shows this
 information contextually inside the app.
 

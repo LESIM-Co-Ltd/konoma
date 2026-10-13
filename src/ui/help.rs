@@ -4,7 +4,6 @@
 // Shows a bordered popup centered on the screen, clearing what's underneath with Clear. Reflects
 // configured keys (copy, etc.).
 
-use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -99,18 +98,7 @@ pub fn leader_section(app: &App, id: LeaderId, prefix: &str) -> Option<HelpSecti
 
 /// Turn a leader's suffix key into a display string (handles Space/modifiers/special keys).
 fn leader_key_str(kp: KeyPress) -> String {
-    let base = match kp.code {
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        other => format!("{other:?}"),
-    };
-    if kp.ctrl {
-        format!("Ctrl-{base}")
-    } else {
-        base
-    }
+    kp.label()
 }
 
 /// Common operations that work in any mode (tabs, path copy, common keys). The copy keys reflect the config.

@@ -7,6 +7,13 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
+- **Key tables are now per context, not per screen** (the default keys are unchanged). `[keys.<context>]` is keyed by what you
+  are looking at: `text` (source and plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are
+  separate, and the version-control screens exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot).
+  A key is looked up in the context's own table, then the keys shared by that kind of view, then `j`/`k`, then `global`. The
+  old names (`preview_text`, `preview_text_visual`, `preview_image`, `preview_table`, `preview_git_diff`, `git_changes` ...) are
+  still read and apply to every context they now cover; if both are written the new name wins. At startup the notice now says
+  *which* old name to rename to what, and shows the first conflicting or ignored key setting instead of only a count.
 - **`[[preview.rules]]` now adds to the defaults instead of replacing them.** Which plugin shows a file is settled by
   one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins (markdown, mermaid, svg,
   image, csv, spreadsheet, document, presentation, archive, code, video, pdf), then plain text, then

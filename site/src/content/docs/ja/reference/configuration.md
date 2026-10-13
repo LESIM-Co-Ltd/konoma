@@ -302,7 +302,7 @@ PDF や動画など 1 種類のプレビューだけ止めたいときは、`[[p
 
 ## `[keys]` — キーバインド
 
-すべてのコマンドが再割当できます。モデルは「**画面(surface)ごとに キー → アクション
+すべてのコマンドが再割当できます。モデルは「**文脈(今見ているもの)ごとに キー → アクション
 を割り当てる**」helix 流:
 
 ```toml
@@ -312,16 +312,25 @@ PDF や動画など 1 種類のプレビューだけ止めたいときは、`[[p
 "space d" = "file_delete"      # 2 トークン = 和音(リーダー + キー)
 "o" = "noop"                   # 既定の割当を消す
 
-[keys.global]                  # 入力面以外の全画面が継承
+[keys.global]                  # すべての文脈が継承
 "Q" = "quit"
 ```
 
-面(surface)名: `global`・`tree`・`tree_visual`・`preview_text`・
-`preview_text_visual`・`preview_image`・`preview_table`・`table_cell`
-(`preview_table` で `Enter` を押して開くセル全文ポップアップ)・`sort`・`bookmarks`・
-`tabs`・`outline`・`info`・`help`、および(git ビルドで)`preview_git_diff`・
-`git_changes`・`git_log`・`git_graph`・`git_graph_picker`・`git_branches`・
-`git_worktrees`(変更ハブの `w` で開くリンクワークツリー一覧)・`git_detail`。
+文脈名(今何を見ているか。キーは、その文脈自身の表 → 同じ種類の表示で共通のキー → 基本のキー
+`j`/`k` → `global` の順に探されます): `global`・`tree`・`tree_visual`・`text`(ソースとプレーン
+テキスト)・`document`(描画した Markdown・Word・スライド・mermaid 図)・`text_visual`・`image`・
+`table`・`table_cell`(表で `Enter` を押して開くセル全文ポップアップ)・`sort`・`bookmarks`・
+`tabs`・`outline`・`info`・`help`、および(git ビルドで)`diff`・`git.changes`・`git.log`・
+`git.graph`・`git.graph_picker`・`git.branches`・`git.worktrees`(変更ハブの `w` で開く
+リンクワークツリー一覧)・`git.detail`。同じ画面を jj リポジトリで開いたときは `jj.changes`・
+`jj.log`・`jj.graph`・`jj.graph_picker`・`jj.branches`・`jj.worktrees`・`jj.detail` で、最初は
+`git.*` と同じキーです。ドットを含む名前は TOML では引用符が要ります: `[keys."git.changes"]`。
+
+文脈ができる前の名前も読みます: `preview_text`(= `text` + `document`)・`preview_text_visual`
+(= `text_visual`)・`preview_image`(= `image`)・`preview_table`(= `table`)・`preview_git_diff`
+(= `diff`)・`git_changes`・`git_log`・`git_graph`・`git_graph_picker`・`git_branches`・
+`git_worktrees`・`git_detail`(= 同名の `git.…` と `jj.…`)。起動時に、それぞれ何へ書き換えればよいかを
+知らせます。同じ文脈を新旧両方の名前で書いたときは新しい名前が勝ちます。
 
 キー表記: 単文字(大文字=Shift 込み)・`space`・リテラル `0 $ ! + - = . / '`・
 修飾 `ctrl-<k>`(別名 `c-<k>`)・名前付き `tab enter esc backspace delete up down
@@ -339,12 +348,12 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 - **パスコピー**(`y` リーダー): `copy_name`・`copy_relative`・`copy_full`・`copy_parent`・`copy_at_ref`(AI チャット用 `@相対パス`)・`copy_code_block`(`y c` = `Tab` でフォーカス中の Markdown コードブロックをコピー。フォーカス中のときだけメニューに出ます)
 - **ファイル管理**(`Space` リーダー): `file_create`・`file_rename`・`file_delete`・`file_copy`・`file_cut`・`file_paste`・`file_duplicate`(`Space→D`=カーソル/選択をその場に複製。例 `note copy.md`)
 - **プレビュー**: `preview_back`・`search_start`・`search_next`・`search_prev`・`preview_enter_visual`(`v`)・`preview_enter_visual_line`(`V`)・`preview_copy_selection`・`preview_copy_selection_ref`(`Y` = `@path#L12-34`)・`toggle_markdown_raw`(`R`=装飾表示 ⇄ 生のソース。プレゼンではスライドの絵 ⇄ 文字の表示〔今のスライドを保つ〕。diff の `"preview"` 表現を見ているときは diff に戻る)・`link_focus_next/prev`・`link_open`(`Enter`=同タブ)・`open_link_new_tab`(`Ctrl-t`=ローカルリンクのみ別タブ。アンカーはその場で移動・URL は外部で開く)・`image_zoom_in/out/reset`・`page_next` / `page_prev`(`J` / `K`・画像面と画像/PDF/SVG の diff 面の `PageDown` / `PageUp`(diff ではスクロールの代わりにページを送る): PDF のページ・表計算のシート・プレゼンのスライド・画像/PDF の diff では PDF のページを両側同時に送る。旧名 `pdf_next_page`・`pdf_prev_page`・`sheet_next`・`sheet_prev`・`media_diff_page_next`・`media_diff_page_prev` も別名として使える)・`preview_next_file` / `preview_prev_file`(`Ctrl-n` / `Ctrl-p`=ツリー表示順で次/前のファイルへ。ディレクトリはスキップ・端で wrap)
-- **テーブル**(`preview_table`): `table_copy_cell/row/column`(`y` リーダー)・`toggle_table_cell`(`Enter`= カーソル位置のセルの全文ポップアップ。グリッドは幅の広いセルを `…` で切り詰めるので、こちらは切り詰めない全文を折返しで表示し `j`/`k`/`g`/`G`/PageUp/PageDown でスクロールできます。`q`/Esc/`Enter` で閉じる。ポップアップ自身のキーは `[keys.table_cell]`)
+- **テーブル**(`table`): `table_copy_cell/row/column`(`y` リーダー)・`toggle_table_cell`(`Enter`= カーソル位置のセルの全文ポップアップ。グリッドは幅の広いセルを `…` で切り詰めるので、こちらは切り詰めない全文を折返しで表示し `j`/`k`/`g`/`G`/PageUp/PageDown でスクロールできます。`q`/Esc/`Enter` で閉じる。ポップアップ自身のキーは `[keys.table_cell]`)
 - **Agent Watch**: `toggle_follow`(`F`)・`toggle_changed_filter`(`C`)・`jump_next_change`(`n`)・`jump_prev_change`(`N`)・`toggle_follow_diff_scope`(`f`、フォロー diff 内で「開始以降」⇄ フル git diff を切替)
 - **Git**: `open_git_view`(`o`)・`open_git_diff_cursor`(`d`)・`git_stage`・`git_unstage`・`git_stage_all`・`git_unstage_all`・`git_discard`・`git_commit`・`git_open_log`・`git_open_graph`・`git_open_branches`・`git_launch_tool`(`!`・変更ハブ内)・`cycle_diff_layout`(`s`: テキストの diff は unified/split/auto を巡回=`[git] diff`・並べて表示の diff は auto/side/stack を巡回=`[git] media_diff`)・`cycle_diff_view`(`R`・全画面 diff 内: そのファイルが持つ表現だけを巡回 — Markdown と SVG はソース/整形/プレビュー・画像/PDF は整形/プレビューのみ・`[ui] diff_view`)・`git_copy_*`・`branch_*`
-- **jj**(`git_changes`): `jj_sync`(`R`= jj に作業コピーを取り込ませる。konoma が jj リポジトリに書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
-- **Git グラフ**(`git_graph`): `git_graph_toggle_all`(`a`= バックエンドの既定範囲でなく全リビジョンを表示。狭い既定を持つのは jj だけ)・`git_graph_set_base`・`git_graph_clear_base`・`git_graph_open_picker`(`b`= ブランチ選択パネルを開く)。パネル内(`[keys.git_graph_picker]`)は `git_graph_picker_toggle`・`git_graph_picker_all`・`git_graph_picker_current_only`・`git_graph_picker_move_up`・`git_graph_picker_move_down`
-- **Git ワークツリー**(`git_worktrees` — `git worktree add` で作る**リンク**ワークツリーのこと。このページの他の箇所で言う「ワークツリー」= 未コミットの作業ツリーとは別概念): `git_open_worktrees`(`w`・変更ハブ内)・`worktree_filter_start`(`/`= ブランチ名/パスで絞り込み)・`worktree_goto`(`Enter`・固定キー: このタブの root(と `open_dir`)を選択ワークツリーへ切替。config で別キーにも割当可)・`worktree_goto_new_tab`(`Ctrl-t`= 選択を別タブで開く。現在のタブは不変)・`worktree_create`(`n`= ブランチ名の入力ダイアログを開く。新規/既存は自動判別で追加の質問はしません → 上の `[git] worktree_dir` の位置にメインワークツリーの隣として `git worktree add` し、このタブをそこへ切替)・`worktree_show_changes`(`d`= 選択ワークツリーの base ブランチからの diff。**コミット済みと未コミットをまとめて**表示します — ワークツリーで作業するエージェントは途中でコミットしてしまうことが多く、未コミットのみの diff だと空になるためです。base が解決できない/何も積み上がっていない場合は未コミットのみの diff にフォールバックします → 上の `graph_base_branches` 参照)・`worktree_close`(`q`/Esc)。bare のメインワークツリー・locked/prunable なもの・現在アクティブなものは切替を拒否します(理由は flash で表示)。`worktree_show_changes` は現在アクティブなものでも動きます。
+- **jj**(`jj.changes`): `jj_sync`(`R`= jj に作業コピーを取り込ませる。konoma が jj リポジトリに書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
+- **Git グラフ**(`git.graph`): `git_graph_toggle_all`(`a`= バックエンドの既定範囲でなく全リビジョンを表示。狭い既定を持つのは jj だけ)・`git_graph_set_base`・`git_graph_clear_base`・`git_graph_open_picker`(`b`= ブランチ選択パネルを開く)。パネル内(`[keys."git.graph_picker"]`)は `git_graph_picker_toggle`・`git_graph_picker_all`・`git_graph_picker_current_only`・`git_graph_picker_move_up`・`git_graph_picker_move_down`
+- **Git ワークツリー**(`git.worktrees` — `git worktree add` で作る**リンク**ワークツリーのこと。このページの他の箇所で言う「ワークツリー」= 未コミットの作業ツリーとは別概念): `git_open_worktrees`(`w`・変更ハブ内)・`worktree_filter_start`(`/`= ブランチ名/パスで絞り込み)・`worktree_goto`(`Enter`・固定キー: このタブの root(と `open_dir`)を選択ワークツリーへ切替。config で別キーにも割当可)・`worktree_goto_new_tab`(`Ctrl-t`= 選択を別タブで開く。現在のタブは不変)・`worktree_create`(`n`= ブランチ名の入力ダイアログを開く。新規/既存は自動判別で追加の質問はしません → 上の `[git] worktree_dir` の位置にメインワークツリーの隣として `git worktree add` し、このタブをそこへ切替)・`worktree_show_changes`(`d`= 選択ワークツリーの base ブランチからの diff。**コミット済みと未コミットをまとめて**表示します — ワークツリーで作業するエージェントは途中でコミットしてしまうことが多く、未コミットのみの diff だと空になるためです。base が解決できない/何も積み上がっていない場合は未コミットのみの diff にフォールバックします → 上の `graph_base_branches` 参照)・`worktree_close`(`q`/Esc)。bare のメインワークツリー・locked/prunable なもの・現在アクティブなものは切替を拒否します(理由は flash で表示)。`worktree_show_changes` は現在アクティブなものでも動きます。
 - **パス貼り付けジャンプ**(`global`): `paste_jump`(`P`) — クリップボードのパス/GitHub リンクを読んでその場所へジャンプ(reveal+プレビュー)。ローカルの絶対/相対パス・GitHub `blob`/`raw` URL・`#L123` / `:123` の行アンカーに対応。対象が root 外ならそのリポジトリへ root を切替えます。
 - **タブ / アプリ**(`global`): `tab_new`(`t`=常に末尾に新規タブを追加)・`tab_new_after`(`I`=現在のタブの右隣に挿入)・`toggle_tab_list`(`T`=タブ一覧。一覧内 `tab_list_close`=`d`)・`tab_prev`/`tab_next`(`[`/`]`)・`quit`(`Q`)・`toggle_help`(`?`)。`tab_close` は既定キー無し(閉じるはツリーの `q`。`"w" = "tab_close"` で復活可)
 - `noop`(別名 `disabled`)は既定の割当を消します。

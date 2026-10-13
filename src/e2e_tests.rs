@@ -20351,6 +20351,9 @@ fn e2e_complex_many_sheets_navigate_to_the_end_and_back() {
 mod survivors;
 
 #[cfg(test)]
+mod key_context;
+
+#[cfg(test)]
 mod word;
 
 #[cfg(test)]
