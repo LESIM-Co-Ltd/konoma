@@ -1,20 +1,23 @@
-//! Word document and presentation preview: the `document` and `presentation` plugins
-//! (`crates/konoma-office`) convert the file to Markdown with its pictures and the host draws it
-//! with the ordinary Markdown pipeline. Nothing is ever written back to the file.
+//! The document container and the Office documents: a Markdown file (the `markdown` plugin), a
+//! Word document and a presentation (the `document` and `presentation` plugins in
+//! `crates/konoma-office`, which convert the file to Markdown with its pictures) are all drawn by
+//! the host with the ordinary Markdown pipeline, from the document the plugin returned. Nothing is
+//! written back to a converted file; a Markdown file's checkboxes are (`markdown_plugin.rs` holds
+//! the options and the representations).
 //!
-//! The job runs on the plugin road (`plugin_host.rs`) in the Office work group (one read at a time
-//! across the spreadsheet, Word and slide plugins, the newest request waiting). On the worker the
-//! plugin's view (a `Reopen` for Word, a `Document` for slides) is turned into a
+//! The job runs on the plugin road (`plugin_host.rs`; the Office plugins in the Office work group:
+//! one read at a time across the spreadsheet, Word and slide plugins, the newest request waiting).
+//! On the worker the plugin's view (a `Document` for a Markdown file and for slides; for Word a
+//! `Reopen` that the plugin taking `markdown` answers with a `Document`) is turned into a
 //! [`LoadedDocument`], the host's container for the document on screen; this module holds it, the
-//! App-level accessors the renderer and key handlers share, the `R` raw view of a Word document
-//! (the converted Markdown written to a private temp file so the less-style reader can window it),
-//! and the **anchored pages** of a presentation (`Layout.pages = Anchored`: one long document whose
-//! pages start at the headings of a level; `J`/`K`, the chip, the scroll limit) with the
-//! **representations** the plugin offers (`Layout.reprs`: slide pictures / text; `R`).
+//! App-level accessors the renderer and key handlers share, and the **anchored pages** of a
+//! presentation (`Layout.pages = Anchored`: one long document whose pages start at the headings of
+//! a level; `J`/`K`, the chip, the scroll limit) with the **representations** the plugin offers
+//! (`Layout.reprs`: slide pictures / text; `R`).
 
 use super::*;
-use konoma_plugin::input::{Resource, Resources};
-use konoma_plugin::view::{Layout, PageLayout};
+use konoma_plugin::input::{Origin, Resource, Resources};
+use konoma_plugin::view::{DocOptions, Layout, PageLayout};
 use konoma_plugin::LazyResource;
 use std::collections::HashMap;
 
@@ -119,10 +122,12 @@ pub struct DocPicture {
     pub(super) raster: bool,
 }
 
-/// A converted Word document or presentation, as the plugin returned it.
+/// A document as a plugin returned it (a Markdown file, a converted Word document or a
+/// presentation): the host's container for the one on screen.
 pub struct LoadedDocument {
-    /// The Markdown the view draws: the converted text, or a presentation's picture view (the same
-    /// headings with the slide pictures between them), as the representation on screen says.
+    /// The Markdown the view draws: the file's text, the converted text, or a presentation's
+    /// picture view (the same headings with the slide pictures between them), as the
+    /// representation on screen says.
     pub(super) markdown: String,
     /// The conversion stopped at one of its budgets (the end, some pictures, or part of a table is
     /// missing).
@@ -134,6 +139,11 @@ pub struct LoadedDocument {
     /// The representation `markdown` is (an id of the plugin's `Layout.reprs`); `None` for a
     /// document with a single one. Set when the view lands.
     pub(super) repr: Option<String>,
+    /// How the document is drawn (the plugin's `DocumentView::options`): the document widget reads
+    /// these, not the `[ui] md_*` settings.
+    pub(super) options: DocOptions,
+    /// Where the text came from: a file (the checkboxes can be written back) or a conversion.
+    pub(super) origin: Origin,
 }
 
 /// Pixel size of an in-memory picture without decoding it: raster formats first, then SVG (the same
@@ -152,7 +162,31 @@ fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
 impl LoadedDocument {
     /// Builds the App-side form on the worker thread (sizes are read here, so the UI thread never
     /// parses an image header).
+    #[cfg(test)]
     pub(super) fn from_parts(markdown: String, truncated: bool, resources: Resources) -> Self {
+        Self::from_view(
+            markdown,
+            truncated,
+            resources,
+            DocOptions {
+                front_matter: false,
+                tasks_writable: false,
+                ..DocOptions::default()
+            },
+            Origin::Converted {
+                from: PathBuf::new(),
+            },
+        )
+    }
+
+    /// The container for a plugin's document view.
+    pub(super) fn from_view(
+        markdown: String,
+        truncated: bool,
+        resources: Resources,
+        options: DocOptions,
+        origin: Origin,
+    ) -> Self {
         let render_truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut pictures: HashMap<String, DocPicture> = HashMap::new();
         for (key, resource) in resources.iter() {
@@ -183,7 +217,14 @@ impl LoadedDocument {
             render_truncated,
             pictures,
             repr: None,
+            options,
+            origin,
         }
+    }
+
+    /// Whether the text was converted from another file (not read from a Markdown file).
+    pub(super) fn is_converted(&self) -> bool {
+        matches!(self.origin, Origin::Converted { .. })
     }
 }
 
@@ -254,7 +295,8 @@ impl App {
     }
 
     /// Whether the preview is a Word document or a presentation (loaded or not): the file the
-    /// `document` or `presentation` plugin shows.
+    /// `document` or `presentation` plugin shows. (A *converted* document: it has no file with
+    /// the lines it shows, and is never written back.)
     pub fn is_document(&self) -> bool {
         self.tab
             .preview_kind
@@ -262,23 +304,33 @@ impl App {
             .is_some_and(PreviewKind::is_office_document)
     }
 
-    /// Whether the converted document is here and can be drawn.
-    pub fn document_ready(&self) -> bool {
-        self.is_document() && self.document.is_some()
+    /// Whether the preview is drawn by the host's document widget from a plugin's document view
+    /// (loaded or not): a Markdown file, a Word document or a presentation. The host's container
+    /// for it is [`App::document`](App).
+    pub fn holds_document(&self) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_document_kind)
     }
 
-    /// A Word/ODF document whose text is not on screen: its conversion is still running (also
-    /// when the tab came back in the raw `R` view) or it failed. The one predicate the footer, the
-    /// `?` help and the text keys (`/`, `v`, `V`) share, so what is offered is what acts
+    /// Whether the document is here and can be drawn.
+    pub fn document_ready(&self) -> bool {
+        self.holds_document() && self.document.is_some()
+    }
+
+    /// A document whose text is not on screen: its plugin is still reading it (also when the tab
+    /// came back in the source view) or failed. The one predicate the footer, the `?` help and the
+    /// text keys (`/`, `v`, `V`) share, so what is offered is what acts
     /// ([[hint-shown-iff-key-acts]]). A *re*load keeps the old text and is not "missing".
     pub fn document_text_missing(&self) -> bool {
-        self.is_document() && !self.document_ready()
+        self.holds_document() && !self.document_ready()
     }
 
     /// True while the plugin has not delivered the document yet (the "loading" screen). A *re*load
     /// keeps the previous text on screen instead.
     pub fn is_document_loading(&self) -> bool {
-        self.is_document()
+        self.holds_document()
             && self.document.is_none()
             && self
                 .plugin
@@ -288,41 +340,32 @@ impl App {
 
     /// Why the document could not be shown (`None` while loading or on success).
     pub fn document_error(&self) -> Option<&konoma_plugin::Failure> {
-        if self.is_document() {
+        if self.holds_document() {
             self.plugin_failure()
         } else {
             None
         }
     }
 
-    /// Whether the conversion stopped at a budget, or drawing a slide had to leave something out
-    /// (the title says so).
+    /// Whether a converted document stopped at a budget, or drawing a slide had to leave something
+    /// out (the title says so). A Markdown file cut at the preview limit says so inside its text.
     pub fn document_truncated(&self) -> bool {
         self.document.as_ref().is_some_and(|d| {
-            d.truncated
-                || d.render_truncated
-                    .load(std::sync::atomic::Ordering::Relaxed)
+            d.is_converted()
+                && (d.truncated
+                    || d.render_truncated
+                        .load(std::sync::atomic::Ordering::Relaxed))
         })
     }
 
-    /// The Markdown the decorated view draws, when there is one for the document on screen: a
-    /// presentation's picture view or text view, else the converted text.
-    pub(super) fn document_markdown(&self) -> Option<&str> {
-        if !self.is_document() {
+    /// Test-only: the Markdown the decorated view draws, when there is one for the document on
+    /// screen: the file's text, a presentation's picture view or text view, or the converted text.
+    #[cfg(test)]
+    pub fn document_markdown_for_test(&self) -> Option<&str> {
+        if !self.holds_document() {
             return None;
         }
         Some(self.document.as_ref()?.markdown.as_str())
-    }
-
-    /// The converted text of the document (what the raw `R` view of a Word document shows).
-    fn document_text_source(&self) -> Option<&str> {
-        self.document_markdown()
-    }
-
-    /// Test-only: the converted Markdown.
-    #[cfg(test)]
-    pub fn document_markdown_for_test(&self) -> Option<&str> {
-        self.document_markdown()
     }
 
     /// Test-only: the state of a plugin whose job produced neither a document nor a reason: the
@@ -557,11 +600,11 @@ impl App {
             .is_some_and(|p| matches!(p.source, PictureSource::Lazy { .. }))
     }
 
-    /// What arrived from the plugin for a Word document or a presentation. Dropped (off the UI
-    /// thread) if the preview has since moved to something else. `asked` is the representation
-    /// the request named (`None` = the plugin's default for the terminal).
+    /// What arrived from the plugin for a Markdown file, a Word document or a presentation.
+    /// Dropped (off the UI thread) if the preview has since moved to something else. `asked` is
+    /// the representation the request named (`None` = the plugin's default for the terminal).
     pub(super) fn land_document(&mut self, mut doc: Box<LoadedDocument>, asked: Option<&str>) {
-        if !self.is_document() {
+        if !self.holds_document() {
             super::table_actions::discard_in_background(doc);
             return;
         }
@@ -596,19 +639,17 @@ impl App {
             self.tab.deck_pending_slide = slide;
         }
         // A search in force ran on the old text; its hits are re-scanned lazily by the next `n`.
-        if self.tab.md_raw {
-            // Raw view: the temp file holds the old text. Replace it and reopen the reader.
-            self.clear_command_out();
-            if self.write_document_raw() {
-                self.setup_windowed();
-            }
+        if self.is_md_raw() {
+            // Source view: the reader holds the old text (a converted document's temp file, or the
+            // file as it was). Ask the session for the source again and reopen the reader.
+            self.show_source_view();
         }
     }
 
     /// The plugin could not show the document (the reason is the show's failure): nothing of an
     /// earlier document stays on screen.
     pub(super) fn document_failed(&mut self) {
-        if !self.is_document() {
+        if !self.holds_document() {
             return;
         }
         self.set_document(None);
@@ -616,7 +657,9 @@ impl App {
         // A raw (`R`) view of the previous text must not outlive the document it came from: drop
         // the temp file and the reader so the reason is what is shown.
         self.clear_command_out();
-        self.tab.md_raw = false;
+        if self.is_md_raw() {
+            self.tab.repr = None;
+        }
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -954,6 +997,7 @@ impl App {
         self.tab
             .repr
             .as_deref()
+            .filter(|r| *r == konoma_office::REPR_TEXT || *r == konoma_office::REPR_PICTURE)
             .map(|r| r == konoma_office::REPR_TEXT)
     }
 
@@ -966,29 +1010,6 @@ impl App {
             .iter()
             .find(|(k, p)| k.ends_with(&suffix) && matches!(p.source, PictureSource::Lazy { .. }))
             .map(|(k, _)| k.clone())
-    }
-
-    /// Writes the converted Markdown to a private temp file and records it as the windowed reader's
-    /// source (`tab.command_out`, see `App::windowed_src`). Returns whether there was text to write
-    /// and the write worked. The file is deleted by `clear_command_out` (leaving the raw view, a
-    /// new preview target, leaving Preview, closing the tab).
-    pub(super) fn write_document_raw(&mut self) -> bool {
-        let Some(md) = self.document_text_source() else {
-            return false;
-        };
-        match crate::preview::command::write_private_temp(md.as_bytes()) {
-            Ok(p) => {
-                self.tab.command_out = Some(p);
-                true
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}{e}",
-                    tr(self.lang, crate::i18n::Msg::OperationFailed)
-                ));
-                false
-            }
-        }
     }
 }
 
@@ -1150,7 +1171,7 @@ mod slide_state_tests {
         r.app.toggle_md_raw();
         assert!(!r.app.is_raw_source());
         // And if a raw view did exist (windowed reader, no decorated cache), `J`/`K` would not act.
-        r.app.tab.md_raw = true;
+        r.app.tab.repr = Some("source".into());
         r.app.md_cache = None;
         assert!(!r.app.slide_can_turn());
     }

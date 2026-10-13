@@ -452,7 +452,7 @@ impl App {
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.as_ref() else {
             return false;
         };
-        !matches!(self.diff_target_kind(path), PreviewKind::Markdown(_))
+        !self.diff_target_kind(path).is_markdown()
     }
 
     /// `Config::resolve_preview(path)`, memoized in `diff_target_kind_cache` — the single read side of
@@ -503,7 +503,8 @@ impl App {
     /// outcome rather than `Summary`, which the caller handles correctly either way.
     pub(crate) fn diff_binary_summary_eligible(&self, path: &Path) -> bool {
         let resolved = self.diff_target_kind(path);
-        let windowed_text = matches!(resolved, PreviewKind::Markdown(_) | PreviewKind::Text(_))
+        let windowed_text = matches!(resolved, PreviewKind::Text(_))
+            || resolved.is_markdown()
             || resolved.is_code_plugin()
             || resolved.is_mermaid_file()
             || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));

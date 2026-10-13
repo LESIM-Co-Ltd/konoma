@@ -468,10 +468,11 @@ fn markdown_app(name: &str, md_body: &str, files: &[(&str, Vec<u8>)]) -> Setup {
         .expect("doc.md in the tree");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(PreviewKind::is_markdown));
     (app, dir, img_rx, enc_rx)
 }
 

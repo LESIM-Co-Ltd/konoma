@@ -232,9 +232,7 @@ fn image(_app: &App) -> Vec<Foot> {
 /// Whether the text preview is shown as a decorated Markdown / document view (the screen with
 /// links to follow) rather than as text.
 fn is_decorated_footer(app: &App) -> bool {
-    use crate::preview::PreviewKind;
-    (matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) || app.document_ready())
-        && !app.is_raw_source()
+    app.document_ready() && !app.is_raw_source()
 }
 
 fn text_preview(app: &App) -> Vec<Foot> {

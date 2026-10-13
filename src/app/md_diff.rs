@@ -116,15 +116,17 @@ impl App {
         self.md_diff_pending = Some((path.clone(), kind));
         let gen = self.md_diff_gen;
         let baseline = self.diff_baseline(&path, kind);
+        // The same options the render uses (the open document's, else the settings').
+        let opts = self.doc_options();
         let req = MdDiffRequest {
             gen,
             path,
             root: self.tab.root.clone(),
             kind,
             baseline,
-            md_frontmatter: self.cfg.ui.md_frontmatter,
-            md_footnotes: self.cfg.ui.md_footnotes,
-            md_inline_html: self.cfg.ui.md_inline_html,
+            md_frontmatter: opts.front_matter,
+            md_footnotes: opts.footnotes,
+            md_inline_html: opts.inline_html,
         };
         self.spawn_or_sync_md_diff(req);
     }

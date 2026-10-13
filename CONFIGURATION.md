@@ -249,6 +249,16 @@ rainbow = false      # monochrome CSV / TSV columns
 |---|---|---|---|
 | `csv` | `rainbow` | `true` | `[ui] csv_rainbow` |
 | `spreadsheet` | `rainbow` | follows `csv` | `[plugins.csv] rainbow`, `[ui] csv_rainbow` |
+| `markdown` | `task_states` | `[" ", "x"]` | `[ui] md_task_states` |
+| `markdown` | `autolink` | `true` | `[ui] md_autolink` |
+| `markdown` | `alerts` | `true` | `[ui] md_alerts` |
+| `markdown` | `emoji` | `true` | `[ui] md_emoji` |
+| `markdown` | `frontmatter` | `true` | `[ui] md_frontmatter` |
+| `markdown` | `footnotes` | `true` | `[ui] md_footnotes` |
+| `markdown` | `inline_html` | `true` | `[ui] md_inline_html` |
+| `markdown` | `details` | `"auto"` | `[ui] md_details` |
+| `markdown` | `table_align` | `"left"` | `[ui] md_table_align` |
+| `markdown` | `image_align` | `"center"` | `[ui] md_image_align` |
 | `code` | `syntax_highlight` | `true` | `[ui] syntax_highlight` |
 | `svg` | `max_px` | `800` | `[ui] svg_max_px` |
 | `mermaid` | `mode` | `"image"` | `[ui] mermaid` |
@@ -259,8 +269,10 @@ rainbow = false      # monochrome CSV / TSV columns
 | `math` | `mode` | `"image"` | `[ui] math` |
 | `math` | `color` | `"#d0d0d0"` | `[ui] math_color` |
 
-The values and what they do are described with the `[ui]` keys above. The other plugins (`markdown`, `image`, `video`, `pdf`,
-`archive`, `document`, `presentation`) take no setting from this table yet: Markdown's options stay `[ui] md_*`.
+The values and what they do are described with the `[ui]` keys above. The other plugins (`image`, `video`, `pdf`,
+`archive`, `document`, `presentation`) take no setting from this table yet. A Word document is drawn with the
+`markdown` plugin's options (except front matter, which a converted document does not show), and so is a
+presentation's text view.
 Display settings that belong to the viewer rather than to one plugin (`wrap`, `line_numbers`, `git_gutter`,
 `tab_width`, `image_render_scale`) stay in `[ui]`, and `[external]` still has the switches for external processes.
 

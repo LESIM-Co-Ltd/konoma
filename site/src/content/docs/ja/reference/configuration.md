@@ -234,6 +234,16 @@ rainbow = false      # CSV / TSV の列をモノクロに
 |---|---|---|---|
 | `csv` | `rainbow` | `true` | `[ui] csv_rainbow` |
 | `spreadsheet` | `rainbow` | `csv` に従う | `[plugins.csv] rainbow`・`[ui] csv_rainbow` |
+| `markdown` | `task_states` | `[" ", "x"]` | `[ui] md_task_states` |
+| `markdown` | `autolink` | `true` | `[ui] md_autolink` |
+| `markdown` | `alerts` | `true` | `[ui] md_alerts` |
+| `markdown` | `emoji` | `true` | `[ui] md_emoji` |
+| `markdown` | `frontmatter` | `true` | `[ui] md_frontmatter` |
+| `markdown` | `footnotes` | `true` | `[ui] md_footnotes` |
+| `markdown` | `inline_html` | `true` | `[ui] md_inline_html` |
+| `markdown` | `details` | `"auto"` | `[ui] md_details` |
+| `markdown` | `table_align` | `"left"` | `[ui] md_table_align` |
+| `markdown` | `image_align` | `"center"` | `[ui] md_image_align` |
 | `code` | `syntax_highlight` | `true` | `[ui] syntax_highlight` |
 | `svg` | `max_px` | `800` | `[ui] svg_max_px` |
 | `mermaid` | `mode` | `"image"` | `[ui] mermaid` |
@@ -244,8 +254,9 @@ rainbow = false      # CSV / TSV の列をモノクロに
 | `math` | `mode` | `"image"` | `[ui] math` |
 | `math` | `color` | `"#d0d0d0"` | `[ui] math_color` |
 
-値の意味は上の `[ui]` の各キーにあります。ほかのプラグイン(`markdown`・`image`・`video`・`pdf`・`archive`・`document`・
-`presentation`)は、今のところこの表から設定を受け取りません: Markdown のオプションは引き続き `[ui] md_*` です。
+値の意味は上の `[ui]` の各キーにあります。ほかのプラグイン(`image`・`video`・`pdf`・`archive`・`document`・
+`presentation`)は、今のところこの表から設定を受け取りません。Word 文書は `markdown` プラグインのオプションで描かれ
+(変換した文書は front matter だけ出しません)、スライドの文字の表現も同じです。
 特定のプラグインでなく表示そのものに属する設定(`wrap`・`line_numbers`・`git_gutter`・`tab_width`・
 `image_render_scale`)は `[ui]` のまま、外部プロセスのスイッチは `[external]` のままです。
 

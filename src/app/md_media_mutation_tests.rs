@@ -95,6 +95,10 @@ fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
         repr: None,
+        options: konoma_plugin::view::DocOptions::default(),
+        origin: konoma_plugin::Origin::Converted {
+            from: PathBuf::new(),
+        },
     }));
     // no image backend yet: the cell size is unknown
     assert_eq!(app.slide_raster_px(slide, 10, 10), None);
@@ -169,6 +173,10 @@ fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
         repr: None,
+        options: konoma_plugin::view::DocOptions::default(),
+        origin: konoma_plugin::Origin::Converted {
+            from: PathBuf::new(),
+        },
     }));
     let url = "office-img://deck/slide-1";
     assert_eq!(app.slide_raster_cap(url), None, "0 = not drawn yet");
@@ -214,6 +222,10 @@ fn a_reloaded_document_keeps_only_the_pictures_it_still_has() {
             render_truncated: Arc::new(AtomicBool::new(false)),
             pictures,
             repr: None,
+            options: konoma_plugin::view::DocOptions::default(),
+            origin: konoma_plugin::Origin::Converted {
+                from: PathBuf::new(),
+            },
         }),
         None,
     );

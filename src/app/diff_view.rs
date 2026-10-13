@@ -164,7 +164,7 @@ impl App {
         use DiffView::{Preview, Rendered, Source};
         let resolved = self.diff_target_kind(path);
         let mut reps = match resolved {
-            PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
+            ref k if k.is_markdown() => vec![Source, Rendered, Preview],
             PreviewKind::Text(_) => vec![Source, Preview],
             ref k if k.is_code_plugin() || k.is_mermaid_file() => vec![Source, Preview],
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
@@ -380,7 +380,7 @@ impl App {
     /// to — `toggle_md_raw` only acts on a *decorated* kind, excluding every image preview, so
     /// falling through would have been a no-op regardless *except* for a standalone `.mmd`/`.mermaid`
     /// file's full-screen image preview (`[ui] mermaid = "image"`, still `is_decorated_kind`): pressing
-    /// `R` there, never advertised by any hint on that surface, silently flipped `md_raw` and changed
+    /// `R` there, never advertised by any hint on that surface, silently flipped the chosen representation (`tab.repr`) and changed
     /// what a *later* Markdown preview in the same tab would show, entirely outside any diff.
     /// [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the image
     /// surface's own hint is never shown outside the `preview_from_diff` case — so the handler must

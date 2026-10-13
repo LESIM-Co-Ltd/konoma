@@ -93,7 +93,7 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
     let p = path.to_path_buf();
     if let Some(builtin) = rule.builtin.as_deref() {
         return match builtin {
-            "markdown" => PreviewKind::Markdown(p),
+            "markdown" => PreviewKind::markdown(p),
             "mermaid" => PreviewKind::mermaid(p),
             "image" => PreviewKind::image(p),
             "svg" => PreviewKind::svg(p),
@@ -359,10 +359,7 @@ fn one_user_rule_no_longer_replaces_the_standard_assignments() {
     // The user's rule wins for what it names...
     assert!(matches!(kind_of_name(&cfg, "a.rs"), PreviewKind::Text(_)));
     // ...and everything else is still decided by the standard plugins.
-    assert!(matches!(
-        kind_of_name(&cfg, "a.md"),
-        PreviewKind::Markdown(_)
-    ));
+    assert!(kind_of_name(&cfg, "a.md").is_markdown());
     assert!(kind_of_name(&cfg, "a.pdf").is_plugin("pdf"));
     assert!(kind_of_name(&cfg, "a.zip").is_plugin("archive"));
 }
@@ -401,7 +398,7 @@ fn old_builtin_names_read_as_plugins() {
         let _ = name;
         cfg.resolve_preview(Path::new("/nonexistent/x.q"))
     };
-    assert!(matches!(one("markdown", ""), PreviewKind::Markdown(_)));
+    assert!(one("markdown", "").is_markdown());
     assert!(one("mermaid", "").is_mermaid_file());
     assert!(one("image", "").is_plugin("image"));
     assert!(one("svg", "").is_plugin("svg"));
@@ -524,10 +521,7 @@ fn a_command_rule_carries_its_template_output_kind_and_detach_flag() {
         PreviewKind::CanNotPreview { .. }
     ));
     // And a non-command file is unaffected.
-    assert!(matches!(
-        kind_of_name(&cfg, "x.md"),
-        PreviewKind::Markdown(_)
-    ));
+    assert!(kind_of_name(&cfg, "x.md").is_markdown());
 }
 
 fn cfg_from(toml_text: &str) -> Config {
@@ -556,7 +550,7 @@ fn enabled_false_hands_the_file_to_the_next_step() {
     assert!(cfg.resolve_preview(&csv).is_plugin("csv"));
     // `enabled = true` and absent behave the same.
     let on = cfg_from("[plugins.markdown]\nenabled = true\n");
-    assert!(matches!(on.resolve_preview(&md), PreviewKind::Markdown(_)));
+    assert!(on.resolve_preview(&md).is_markdown());
 }
 
 #[test]
@@ -567,10 +561,7 @@ fn a_user_rule_aimed_at_a_disabled_plugin_is_skipped() {
         builtin: Some("code".into()),
         ..Rule::default()
     });
-    assert!(matches!(
-        kind_of_name(&cfg, "a.md"),
-        PreviewKind::Markdown(_)
-    ));
+    assert!(kind_of_name(&cfg, "a.md").is_markdown());
 }
 
 #[test]
@@ -738,6 +729,7 @@ const WIRED: &[&str] = &[
     "video",
     "mermaid",
     "math",
+    "markdown",
 ];
 
 #[test]
@@ -982,10 +974,7 @@ fn a_decision_asks_for_the_content_only_when_a_rule_needs_it() {
     let cfg = Config::default();
     // A name rule decides without touching the file (it does not even exist).
     let (_, _) = crate::test_support::count_resolve_preview_calls(|| {
-        assert!(matches!(
-            cfg.resolve_preview(&dir.join("gone.md")),
-            PreviewKind::Markdown(_)
-        ));
+        assert!(cfg.resolve_preview(&dir.join("gone.md")).is_markdown());
     });
     // The facts closures are the only readers: count them through the registry directly.
     use konoma_plugin::registry::{FileFacts, Resolution};

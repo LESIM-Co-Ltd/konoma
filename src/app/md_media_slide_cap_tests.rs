@@ -576,6 +576,10 @@ fn app_with_slide(
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
         repr: None,
+        options: konoma_plugin::view::DocOptions::default(),
+        origin: konoma_plugin::Origin::Converted {
+            from: PathBuf::new(),
+        },
     }));
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_md_image_loader(tx);

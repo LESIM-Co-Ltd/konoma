@@ -8102,9 +8102,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     app.rebuild_tree().unwrap();
 
     // Pretend an md is open, with a.md as the relative link base.
-    app.tab.preview_path = Some(base.join("a.md"));
-    app.tab.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(base.join("a.md"));
 
     // For an anchor (#), if there's no matching heading, flash a "not found" notice (this isn't
     // "unsupported"). Here md_cache hasn't been built (nothing has rendered), so anchors is
@@ -13824,7 +13822,10 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     // q (back_to_tree) = returns to the md, restoring scroll/focus.
     app.back_to_tree();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "ツリーでなく md プレビューへ戻る"
     );
     assert!(matches!(app.tab.mode, Mode::Preview));
@@ -15046,7 +15047,10 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     app.md_activate_focused().unwrap(); // Enter -> full screen
     app.back_to_tree(); // q -> return to md
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "md ビューへ戻る"
     );
     let arc1 = app
@@ -15624,9 +15628,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let md = dir.canonicalize().unwrap().join("doc.md");
-    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
-    app.tab.preview_path = Some(md);
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(md);
     app.tab.preview_viewport = 10;
     let _ = app.md_layout(80); // populate the decoration cache (same path as the real render)
 
@@ -17281,9 +17283,7 @@ fn diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap()
 
     let mut ordinary = App::new(dir.clone(), Config::default()).unwrap();
     ordinary.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    ordinary.tab.preview_path = Some(doc.clone());
-    ordinary.tab.preview_kind = Some(PreviewKind::Markdown(doc.clone()));
-    ordinary.tab.mode = Mode::Preview;
+    ordinary.show_markdown_for_test(doc.clone());
     let ordinary_lines = ordinary.decorated_lines(width);
 
     let mut diffed = App::new(dir.clone(), Config::default()).unwrap();
@@ -24045,10 +24045,11 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
         .expect("doc.md がツリーにあるはず");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
 
     let width: u16 = 40;
     let (total_rows, _) = app.md_layout(width);
@@ -24756,7 +24757,7 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
     ) {
         app.open_git_diff(path);
         let kind = app.diff_target_kind(path);
-        let ground_truth = !matches!(kind, PreviewKind::Markdown(_));
+        let ground_truth = !kind.is_markdown();
         assert_eq!(
             app.diff_media_active(),
             ground_truth,

@@ -11,21 +11,22 @@ impl App {
     /// supplied lines: collapse links, rebuild `md_items`, and invert the focused item. Shares
     /// `build_md_items` / `invert_focused_line` with the cache path so the two cannot drift.
     /// Post-process decorated Markdown lines just before caching/rendering: collapse the `label
-    /// (URL)` links konoma's own renderer emits, then (when `ui.md_autolink`) auto-link bare URLs/emails, then
-    /// (when `ui.md_emoji`) convert `:shortcode:` emoji. Shared by the cache build (`ensure_md_cache`)
+    /// (URL)` links konoma's own renderer emits, then (when the document's `autolink` option) auto-link bare URLs/emails, then
+    /// (when its `emoji` option) convert `:shortcode:` emoji. Shared by the cache build (`ensure_md_cache`)
     /// and the test-only decorate path so link/emoji collection cannot drift between them. Emoji runs
     /// last so width-affecting substitutions are reflected in the caller's reflow/`row_prefix`.
     pub(super) fn postprocess_md(
         &self,
         lines: Vec<Line<'static>>,
     ) -> (Vec<Line<'static>>, Vec<String>) {
+        let opts = self.doc_options();
         let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
-        let (lines, targets) = if self.cfg.ui.md_autolink {
+        let (lines, targets) = if opts.autolink {
             autolink_bare_urls(lines, targets)
         } else {
             (lines, targets)
         };
-        let lines = if self.cfg.ui.md_emoji {
+        let lines = if opts.emoji {
             substitute_emoji(lines)
         } else {
             lines

@@ -32,6 +32,7 @@ mod file_actions;
 mod follow;
 mod git_view;
 pub(crate) mod list_filter;
+mod markdown_plugin;
 mod md_diff;
 mod md_items;
 mod md_media;
@@ -3125,11 +3126,11 @@ pub(crate) struct PerTab {
     /// How many pages the plugin reported (`Layout.pages`), or `None` when it has none or does not
     /// know (page keys do nothing then).
     page_count: Option<u32>,
-    // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
-    md_raw: bool,
+    // --- Chosen representation (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
     /// The representation the user chose with `R` (an id of the plugin's `Layout.reprs`), or
     /// `None` for the plugin's default for the terminal. Reset per file. A presentation's are
-    /// `picture` and `text` (`App::deck_picture_view`).
+    /// `picture` and `text` (`App::deck_picture_view`); a Markdown file's and a Word document's
+    /// are `rendered` and `source` (`App::is_md_raw`: the source is shown in the windowed reader).
     repr: Option<String>,
     /// The page (0-based) of an anchored page list (the slides of a presentation) to keep: scrolled
     /// to by the next draw, once the layout of the new representation or size exists
@@ -3265,7 +3266,6 @@ impl Default for PerTab {
             // PDF pages are 1-based (same as App::new used to set it to 1).
             page: 1,
             page_count: None,
-            md_raw: false,
             repr: None,
             deck_pending_slide: None,
             preview_viewport_drawn: false,
@@ -4392,9 +4392,9 @@ impl App {
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
         // `setup_windowed`, which decides whether to open the windowed reader by reading
         // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        // A new file starts decorated, and this must hold *before* the load: a Word document that
-        // lands synchronously (no media_tx) decides there whether to build its raw view.
-        self.tab.md_raw = false;
+        // A new file starts in the plugin's default representation (the rendered document for
+        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
+        // synchronously (no media_tx) decides there whether the source view is the one wanted.
         self.tab.repr = None;
         self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
@@ -4402,15 +4402,14 @@ impl App {
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
-        self.tab.md_raw = false; // A new file starts in decorated display (Markdown/Mermaid). `R` switches to raw.
-                                 // This preview is not the diff's own `Preview` representation unless the one caller that
-                                 // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
-                                 // immediately after this call returns — every *other* way of reaching a preview (a tree
-                                 // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
-                                 // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
-                                 // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
-                                 // having been on the diff's own `Preview` representation) kept routing back into a stale
-                                 // diff for the *original* file instead of behaving like an ordinary preview.
+        // This preview is not the diff's own `Preview` representation unless the one caller that
+        // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
+        // immediately after this call returns — every *other* way of reaching a preview (a tree
+        // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
+        // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
+        // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
+        // having been on the diff's own `Preview` representation) kept routing back into a stale
+        // diff for the *original* file instead of behaving like an ordinary preview.
         self.tab.preview_from_diff = false;
         self.md_cache = None; // Switching to a different file: invalidate the decoration cache
         self.md_items.clear();
@@ -4579,7 +4578,7 @@ impl App {
         if self.media_loading && !self.shows_code_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
             v.push(match &self.tab.preview_kind {
-                Some(k) if k.is_office_document() => crate::i18n::Msg::BusyDocument,
+                Some(k) if k.is_document_kind() => crate::i18n::Msg::BusyDocument,
                 Some(k) if k.is_spreadsheet() => crate::i18n::Msg::BusySheet,
                 _ => crate::i18n::Msg::BusyMedia,
             });
@@ -4676,7 +4675,12 @@ impl App {
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
         // source line proportionally, then refine by content (see md_content_anchor_line).
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_))) {
+        if self
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
+        {
             if let Some(c) = &self.md_cache {
                 let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
                 if same && c.src_lines > 0 && self.md_view_rows > 0 {
@@ -4927,29 +4931,34 @@ impl App {
             .collect()
     }
 
-    /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
-    /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
+    /// Whether the current preview is a Markdown/Mermaid file (or a Word document) shown as its raw
+    /// source (`R` toggled on). Such a preview is windowed like a code file, so the 2D caret
+    /// selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
-        self.tab.md_raw
-            && (matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
+        self.is_md_raw()
+            && (self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_markdown)
                 || self.is_document()
                 || self.shows_plugin(konoma_mermaid::MERMAID_ID))
     }
 
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
             || self.is_document()
             || self.shows_plugin(konoma_mermaid::MERMAID_ID)
     }
 
-    /// Whether raw source view is currently on (for the footer/title indicator).
-    pub fn is_md_raw(&self) -> bool {
-        self.tab.md_raw
-    }
-
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source. No-op for other kinds.
-    /// Rebuilds the windowed reader and resets the caret/scroll/selection so the new view starts at the top.
+    /// Asks the plugin for the other representation (a Markdown file or a converted Word
+    /// document: `rendered` / `source`), then resets the caret/scroll/selection so the new view
+    /// starts at the top and rebuilds the windowed reader (source) / decoration (rendered).
     pub fn toggle_md_raw(&mut self) {
         if !self.is_decorated_kind() {
             return;
@@ -4965,16 +4974,17 @@ impl App {
             self.toggle_deck_view();
             return;
         }
-        if self.is_document() {
-            if self.tab.md_raw {
-                // Leaving the raw view: the converted-Markdown temp file is done for.
-                self.clear_command_out();
-            } else if !self.write_document_raw() {
-                return; // nothing converted yet (still loading / failed): there is no raw view
-            }
+        let want_source = !self.is_md_raw();
+        if !self.choose_source_repr(want_source) {
+            return;
         }
-        self.tab.md_raw = !self.tab.md_raw;
-        // A view switch = start from the top. Rebuild the windowed reader (raw) / decoration (rendered).
+        self.reset_view_for_repr_change();
+    }
+
+    /// What every change of representation resets: a view switch = start from the top, with no
+    /// selection and no stale decoration. The windowed reader is rebuilt (source) or dropped
+    /// (rendered) from the state the new representation left.
+    fn reset_view_for_repr_change(&mut self) {
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.tab.preview_scroll = 0;
@@ -5053,7 +5063,7 @@ impl App {
                             // otherwise sit in `md_image_cache` orphaned forever (see that fn's own doc comment).
         self.prune_media_diff_picture_cache();
         self.md_cache = None;
-        self.tab.md_raw = false;
+        self.tab.repr = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -5260,9 +5270,12 @@ impl App {
     /// one), so the temp path never leaks into the UI.
     pub fn windowed_src(&self) -> Option<&Path> {
         // A Word document's raw view is the converted Markdown, written to a private temp file
-        // (`App::write_document_raw`) so the less-style reader can window it; the .docx itself is a
-        // zip and never readable as text.
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) || self.is_document()
+        // (`App::source_view_landed`) so the less-style reader can window it; the .docx itself is a
+        // zip and never readable as text. The same for any source view a plugin hands over as a
+        // string (`TextSource::Owned`) rather than as a file.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. }))
+            || self.is_document()
+            || self.source_view_is_owned()
         {
             return self.tab.command_out.as_deref();
         }
@@ -5493,16 +5506,14 @@ impl App {
             Some(k) if k.is_code_plugin() => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
-            Some(PreviewKind::Markdown(p)) if self.tab.md_raw => {
-                crate::preview::code::has_named_syntax(p)
-            }
             Some(PreviewKind::Plugin { id, path: p, .. })
-                if id == konoma_mermaid::MERMAID_ID && self.tab.md_raw =>
+                if (id == konoma_markdown::MARKDOWN_ID || id == konoma_mermaid::MERMAID_ID)
+                    && self.is_md_raw() =>
             {
                 crate::preview::code::has_named_syntax(p)
             }
             // The converted Markdown of a Word document (`R`): colored as Markdown.
-            Some(k) if k.is_office_document() && self.tab.md_raw => true,
+            Some(k) if k.is_office_document() && self.is_md_raw() => true,
             _ => false,
         };
         // The grammar is picked from the path's name: a Word document's raw view is Markdown, but
@@ -7489,6 +7500,11 @@ mod plugin_host_tests;
 
 #[cfg(test)]
 mod text_plugin_tests;
+
+// The Markdown plugin on the host: a file and a converted document as the document display type,
+// the options they are drawn with, and `R` as a request for the plugin's other representation.
+#[cfg(test)]
+mod markdown_plugin_tests;
 // The same kind of safety net, over the new Markdown block model instead of rendering — see its
 // own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
 // directly (a sibling, not a descendant, so those are `pub(super)` there).

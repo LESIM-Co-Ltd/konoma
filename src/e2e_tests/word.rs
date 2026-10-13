@@ -2688,8 +2688,10 @@ fn e2e_word_the_picture_bytes_are_freed_when_the_document_is_left() {
     s.app.begin_md_image_frame();
     s.app.evict_md_images_to_for_test(0);
     settle_images(&mut s);
+    // The open document and the plugin's session (which serves the rendered view again after the
+    // source view) share the one allocation; the cache entry that was dropped keeps no third.
     assert!(
-        weak.strong_count() == 1,
+        weak.strong_count() == 2,
         "a dropped picture's entry keeps no copy of the bytes: {}",
         weak.strong_count()
     );

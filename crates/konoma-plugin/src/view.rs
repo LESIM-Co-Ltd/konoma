@@ -199,6 +199,44 @@ pub struct DocOptions {
     pub image_align: String,
 }
 
+impl DocOptions {
+    /// The options a `[plugins.markdown]` table (with the old `[ui] md_*` values filled in by the
+    /// host) asks for. A key that is missing or of another type keeps its default. `task_states`
+    /// must be at least two single-character entries, or the default pair is used (a cycle needs
+    /// somewhere to go). `tasks_writable` stays true: whether a document can be written back is
+    /// decided by where it came from, not by a setting.
+    pub fn from_settings(settings: &crate::settings::Settings) -> DocOptions {
+        let d = DocOptions::default();
+        let raw = settings.list_str("task_states");
+        let chars: Vec<char> = raw
+            .iter()
+            .filter_map(|s| {
+                let mut it = s.chars();
+                let c = it.next()?;
+                it.next().is_none().then_some(c)
+            })
+            .collect();
+        let task_states = if chars.len() >= 2 && chars.len() == raw.len() {
+            chars
+        } else {
+            d.task_states.clone()
+        };
+        DocOptions {
+            front_matter: settings.bool("frontmatter", d.front_matter),
+            footnotes: settings.bool("footnotes", d.footnotes),
+            inline_html: settings.bool("inline_html", d.inline_html),
+            autolink: settings.bool("autolink", d.autolink),
+            emoji: settings.bool("emoji", d.emoji),
+            alerts: settings.bool("alerts", d.alerts),
+            details: settings.str("details", &d.details).to_string(),
+            task_states,
+            tasks_writable: d.tasks_writable,
+            table_align: settings.str("table_align", &d.table_align).to_string(),
+            image_align: settings.str("image_align", &d.image_align).to_string(),
+        }
+    }
+}
+
 impl Default for DocOptions {
     fn default() -> DocOptions {
         DocOptions {

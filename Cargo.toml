@@ -253,6 +253,7 @@ konoma-code-core = { path = "crates/konoma-code-core", version = "0.1.0" }
 konoma-code = { path = "crates/konoma-code", version = "0.1.0" }
 konoma-mermaid = { path = "crates/konoma-mermaid", version = "0.1.0" }
 konoma-math = { path = "crates/konoma-math", version = "0.1.0" }
+konoma-markdown = { path = "crates/konoma-markdown", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to

@@ -33,14 +33,14 @@
 //!   one at a time; a job asked for meanwhile waits in the group's slot, a newer one replaces it,
 //!   and the running one is cancelled the usual way (the generation moved). Holding `J` over a big
 //!   workbook therefore starts one read and one waiting request, whatever the key repeat does.
-//! - **Documents.** The Word and presentation plugins answer with a `Reopen` / `Document` view;
-//!   the worker turns it into the host's `LoadedDocument` (`office_doc.rs`) in the same job, so the
-//!   sizes of the pictures are read off the UI thread and the view itself is not kept. Their other
-//!   representation (`R`) is asked for on the spot ([`App::plugin_view_now`]).
-//! - **Documents.** The Word and presentation plugins answer with a `Reopen` / `Document` view;
-//!   the worker turns it into the host's `LoadedDocument` (`office_doc.rs`) in the same job, so the
-//!   sizes of the pictures are read off the UI thread and the view itself is not kept. Their other
-//!   representation (`R`) is asked for on the spot (`App::plugin_view_now`).
+//! - **Documents.** The Markdown, Word and presentation plugins answer with a `Document` (Word
+//!   with a `Reopen`, "open this again as Markdown": the worker opens the plugin that takes the
+//!   content type on the converted text, in the same job, and keeps *its* session as the show's);
+//!   the worker turns the document into the host's `LoadedDocument` (`office_doc.rs`) in the same
+//!   job, so the sizes of the pictures are read off the UI thread and the view itself is not kept.
+//!   Their other representation (`R`: a presentation's text, a Markdown file's or Word document's
+//!   source) is asked for on the spot ([`App::plugin_view_now`]). The Markdown plugin is waited
+//!   for longer on the first frame ([`MARKDOWN_FIRST_FRAME_BUDGET`]): it only reads a file.
 //! - **Pages.** A table plugin with pages (a workbook's sheets) is turned with
 //!   [`App::plugin_turn_page`]: the grid of the page being left is released off the UI thread and
 //!   the show is "Loading..." until the page lands.
@@ -48,7 +48,7 @@
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use konoma_plugin::view::{Layout, PageLayout, TableView, View, ViewReq};
+use konoma_plugin::view::{DocOptions, DocumentView, Layout, PageLayout, TableView, View, ViewReq};
 use konoma_plugin::{
     t, ActCx, Cancel, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings, TermCaps, ViewCx,
 };
@@ -58,6 +58,12 @@ use super::*;
 
 /// How long the UI waits for a freshly started `open` before it draws "Loading...".
 pub(crate) const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(30);
+
+/// How long the UI waits for a freshly started `open` of the Markdown plugin. Longer than for the
+/// others: what it does is read a file of at most 1 MiB, which the preview always did on the UI
+/// thread, so a small file is on the first frame exactly as it always was. The wait is only a
+/// ceiling: past it the screen says "Loading..." and the document lands when the worker is done.
+pub(crate) const MARKDOWN_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(1000);
 
 /// Where the plugin show stands.
 pub(crate) enum PluginPhase {
@@ -104,6 +110,18 @@ pub(crate) enum PluginJob {
     },
 }
 
+/// What a worker needs to turn a plugin's document into the host's container.
+pub(super) struct DocumentJob {
+    /// The plugin that takes the content type a `Reopen` names (Word hands its converted text
+    /// over to it). `None` when no enabled plugin takes `markdown`: the document cannot be shown.
+    pub(super) reopen: Option<super::markdown_plugin::ContentTarget>,
+    /// The options for a `Document` that a plugin other than the Markdown one returns (a
+    /// presentation): the display options are the Markdown settings'; only what the view says
+    /// is its own (no front matter, not written back) is kept. `None` for the Markdown plugin
+    /// (its view's options are used as they are).
+    pub(super) display: Option<DocOptions>,
+}
+
 /// What a worker calls with the layout `open` learned.
 pub(super) type LayoutAnnounce = Box<dyn Fn(&Layout) + Send>;
 
@@ -133,10 +151,11 @@ pub(crate) struct PluginWork {
     /// Whether the plugin is one of the picture plugins: its `view` must be a picture, and the
     /// picture is decoded here, on the worker.
     pub(super) expects_picture: bool,
-    /// Whether the plugin is the Word or the presentation plugin: its `view` is a document
-    /// (`Reopen` / `Document`), turned into the host's [`LoadedDocument`] here, on the worker
-    /// (sizes of the pictures are read here, never on the UI thread).
-    pub(super) expects_document: bool,
+    /// Set when the plugin's `view` is a document (the Markdown plugin, and the Word and
+    /// presentation plugins): the `Document` it returns, or the `Reopen` it hands to the plugin
+    /// that takes the content type, is turned into the host's [`LoadedDocument`] here, on the
+    /// worker (sizes of the pictures are read here, never on the UI thread).
+    pub(super) document: Option<DocumentJob>,
     /// What stops the drawing of an untrusted SVG (the generation moved on).
     pub(super) decode_cancel: Option<crate::preview::office::Cancel>,
     /// Called with the layout as soon as `open` returns, before the first `view`.
@@ -241,6 +260,68 @@ impl PluginResult {
     }
 }
 
+/// The host's container for a plugin's document view. `display` replaces the display options of
+/// a view that did not come from the Markdown plugin, keeping the two things the view itself
+/// decides: whether there is front matter to show and whether a checkbox can be written back.
+fn document_of(d: DocumentView, display: Option<DocOptions>) -> super::office_doc::LoadedDocument {
+    let options = match display {
+        Some(display) => DocOptions {
+            front_matter: d.options.front_matter,
+            tasks_writable: d.options.tasks_writable,
+            ..display
+        },
+        None => d.options,
+    };
+    super::office_doc::LoadedDocument::from_view(
+        d.markdown,
+        d.truncated,
+        d.resources,
+        options,
+        d.origin,
+    )
+}
+
+/// Open the plugin that takes the content type of `r` on its text and ask it for the document.
+/// Returns its session (the plugin show keeps it: the other representation is its to give) and
+/// the container. A conversion cut short stays cut short in the container.
+fn reopen_document(
+    target: Option<&super::markdown_plugin::ContentTarget>,
+    r: konoma_plugin::view::Reopen,
+    lang: &str,
+    cancel: &Cancel,
+    term: TermCaps,
+) -> Result<(Box<dyn Session>, Box<super::office_doc::LoadedDocument>), Failure> {
+    let Some(target) = target.filter(|_| r.content_type == konoma_markdown::CONTENT_TYPE) else {
+        return Err(Failure::unsupported(t!(
+            en: "no plugin is available to show this document",
+            ja: "この文書を表示するプラグインを使えません",
+        )));
+    };
+    let truncated = r.truncated;
+    let input = Input::Content {
+        content_type: r.content_type,
+        text: r.text,
+        resources: r.resources,
+        origin: r.origin,
+    };
+    let open_cx = OpenCx::new(&target.settings, lang)
+        .with_cancel(cancel.clone())
+        .with_term(term);
+    let mut session = target.plugin.open(input, &open_cx)?;
+    let view_cx = ViewCx::new(&target.settings, lang)
+        .with_cancel(cancel.clone())
+        .with_term(term);
+    let View::Document(d) = session.view(&ViewReq::default(), &view_cx)? else {
+        return Err(Failure::unsupported(t!(
+            en: "the plugin did not return a document",
+            ja: "プラグインが文書を返しませんでした",
+        )));
+    };
+    let mut doc = document_of(d, None);
+    doc.truncated |= truncated;
+    Ok((session, Box::new(doc)))
+}
+
 impl PluginWork {
     /// Test-only: run the job here, with nothing to cancel it.
     #[cfg(test)]
@@ -277,7 +358,7 @@ impl PluginWork {
             external,
             default_raster_px,
             expects_picture,
-            expects_document,
+            document: document_job,
             decode_cancel,
             on_layout,
             group: _,
@@ -303,22 +384,24 @@ impl PluginWork {
                     };
                     (None, None)
                 }
-                // A converted document: the Markdown, its pictures (sized here) and whether it
-                // was cut short become the host's container; the view itself is not kept.
-                Ok(View::Reopen(r)) if expects_document && r.content_type == "markdown" => {
-                    document = Some(Box::new(super::office_doc::LoadedDocument::from_parts(
-                        r.text,
-                        r.truncated,
-                        r.resources,
-                    )));
-                    (None, None)
+                // "Open this again as Markdown" (a converted Word document): the plugin that takes
+                // the content type is opened on the text and answers with the document; its
+                // session is the one the show keeps from here on. The pictures are sized and
+                // the Markdown plugin's options kept; the view itself is not kept.
+                Ok(View::Reopen(r)) if document_job.is_some() => {
+                    let target = document_job.as_ref().and_then(|j| j.reopen.as_ref());
+                    match reopen_document(target, r, &lang, &cancel, term) {
+                        Ok((opened, doc)) => {
+                            session = opened;
+                            document = Some(doc);
+                            (None, None)
+                        }
+                        Err(f) => (None, Some(f)),
+                    }
                 }
-                Ok(View::Document(d)) if expects_document => {
-                    document = Some(Box::new(super::office_doc::LoadedDocument::from_parts(
-                        d.markdown,
-                        d.truncated,
-                        d.resources,
-                    )));
+                Ok(View::Document(d)) if document_job.is_some() => {
+                    let display = document_job.as_ref().and_then(|j| j.display.clone());
+                    document = Some(Box::new(document_of(d, display)));
                     (None, None)
                 }
                 Ok(_) if expects_picture => (
@@ -652,11 +735,35 @@ impl App {
     /// the page the tab is on (counted from 0; a plugin without pages ignores it).
     pub(super) fn plugin_view_req(&self) -> ViewReq {
         let rows = self.tab.preview_viewport.max(1);
+        // The source view is the host's own for a standalone diagram file (no plugin round trip),
+        // and the picture plugins have no such representation.
+        let repr = self
+            .tab
+            .repr
+            .clone()
+            .filter(|r| !(r == super::markdown_plugin::REPR_SOURCE && !self.holds_document()));
         ViewReq {
-            repr: self.tab.repr.clone(),
+            repr,
             page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
             ..ViewReq::new(80, rows)
         }
+    }
+
+    /// What a worker needs when `id` is a plugin whose view is a document: the Markdown plugin
+    /// (answers with the document itself), or the Word and presentation plugins (a `Reopen` goes
+    /// to the plugin that takes `markdown`; a presentation's `Document` is drawn with the Markdown
+    /// settings). `None` for every other plugin.
+    fn document_job(&self, id: &str) -> Option<DocumentJob> {
+        if id == konoma_markdown::MARKDOWN_ID {
+            return Some(DocumentJob {
+                reopen: None,
+                display: None,
+            });
+        }
+        crate::preview::PreviewKind::is_office_document_id(id).then(|| DocumentJob {
+            reopen: self.content_target(konoma_markdown::CONTENT_TYPE),
+            display: Some(self.cfg_doc_options()),
+        })
     }
 
     /// A job for the plugin `id` on the file `path`, with everything the worker needs from the
@@ -682,7 +789,7 @@ impl App {
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
-            expects_document: crate::preview::PreviewKind::is_office_document_id(&id),
+            document: self.document_job(&id),
             id,
             path,
             external,
@@ -727,13 +834,20 @@ impl App {
                 req: ViewReq::default(),
             });
         }
-        let work = self.plugin_work(
-            id,
-            path,
-            PluginJob::Open { plugin, input },
-            self.plugin_view_req(),
-        );
-        self.dispatch_plugin_work(work, Wait::Result(FIRST_FRAME_BUDGET));
+        // A Markdown or Word document is asked for in its rendered form first, whatever the tab
+        // chose: the document is what the source view returns to (`land_document` asks for the
+        // source once it is there).
+        let mut req = self.plugin_view_req();
+        if req.repr.as_deref() == Some(super::markdown_plugin::REPR_SOURCE) {
+            req.repr = None;
+        }
+        let budget = if id == konoma_markdown::MARKDOWN_ID {
+            MARKDOWN_FIRST_FRAME_BUDGET
+        } else {
+            FIRST_FRAME_BUDGET
+        };
+        let work = self.plugin_work(id, path, PluginJob::Open { plugin, input }, req);
+        self.dispatch_plugin_work(work, Wait::Result(budget));
     }
 
     /// The user's language as the plugins name it.
@@ -1102,8 +1216,12 @@ impl App {
         }
         let id = show.id.clone();
         let mut image_failure = None;
+        // Whether this very result carried a text view (the source of a document): a text view
+        // that was already there, kept while a document landed, is not "landed" again.
+        let mut text_landed = false;
         match (res.view, res.failure) {
             (Some(view), _) => {
+                text_landed = matches!(view, View::Text(_));
                 // The view replaced may hold a big grid: it is freed off the UI thread.
                 if let Some(old) = show.view.replace(view) {
                     super::table_actions::discard_in_background(old);
@@ -1122,6 +1240,13 @@ impl App {
             // result: the view is what it was.
             (None, None) => {
                 if !matches!(res.picture, Picture::None) || res.document.is_some() {
+                    // The document replaces whatever view was kept (the source text of the other
+                    // representation).
+                    if res.document.is_some() {
+                        if let Some(old) = show.view.take() {
+                            super::table_actions::discard_in_background(old);
+                        }
+                    }
                     show.req = res.req.clone();
                     show.phase = PluginPhase::Ready;
                 }
@@ -1148,6 +1273,10 @@ impl App {
         }
         if self.plugin_view_is_text() {
             self.text_view_landed();
+            // The source of a Markdown file or a Word document: open the windowed reader on it.
+            if text_landed && self.holds_document() {
+                self.source_view_landed();
+            }
         }
         match outcome {
             Some(Outcome::Flash(msg)) => {
@@ -1176,7 +1305,7 @@ impl App {
         // Only a table has a cursor and a search of its own to settle; a text view is searched
         // by the host's window reader, which a plugin landing does not touch, and a document by
         // the Markdown pipeline.
-        if self.shows_code_plugin() || self.is_document() {
+        if self.shows_code_plugin() || self.holds_document() {
             return true;
         }
         // A read that failed ends the wait of a search confirmed meanwhile: a later successful
