@@ -16,6 +16,8 @@ use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{FilterType, Resize};
+
+use konoma_widgets::layout::{fence_crop, image_layout, ImageLayout, PxRect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
@@ -6210,29 +6212,6 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
         .collect()
 }
 
-/// The rectangle that centers an image of size `cells` (natural size) within `inner` while preserving the aspect ratio.
-/// With `allow_upscale=false`, downscale only (scale<=1=fit behavior); with `true`, it may upscale to fill the area.
-fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
-    let (cw, ch) = cells;
-    if cw == 0 || ch == 0 || inner.width == 0 || inner.height == 0 {
-        return inner;
-    }
-    let mut scale = (inner.width as f64 / cw as f64).min(inner.height as f64 / ch as f64);
-    if !allow_upscale {
-        scale = scale.min(1.0);
-    }
-    let w = ((cw as f64 * scale).round() as u16).clamp(1, inner.width);
-    let h = ((ch as f64 * scale).round() as u16).clamp(1, inner.height);
-    let x = inner.x + (inner.width - w) / 2;
-    let y = inner.y + (inner.height - h) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
-
 /// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
 const MD_IMAGE_MAX_ROWS: u16 = 24;
 /// Rows around a slide picture that are not the picture: its heading line and the blank line
@@ -6904,115 +6883,6 @@ fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> 
         cols = (cols * s).round().max(1.0);
     }
     (cols as u16, rows as u16)
-}
-
-/// Source-pixel crop rectangle (x, y, w, h).
-type PxRect = (u32, u32, u32, u32);
-
-/// Crop window for the in-place zoom of an inline diagram. `f` is the visible fraction, i.e.
-/// 1/zoom, of the source; `center` is clamped so the window stays inside the image. Returns the
-/// crop px rect plus the clamped center. Fractions are scale-free, so the same zoom and center
-/// map onto a sharper re-raster unchanged.
-fn fence_crop(dims: (u32, u32), f: f64, center: (f64, f64)) -> (PxRect, (f64, f64)) {
-    let (sw, sh) = dims;
-    let f = f.clamp(0.0, 1.0);
-    let cx = center.0.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cy = center.1.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cw = ((sw as f64 * f).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * f).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    ((x0, y0, cw, ch), (cx, cy))
-}
-
-/// Result of [`image_layout`]. `center` and `frac` are both `(f64, f64)` pairs with different
-/// meanings (image-space center vs. per-axis visible fraction), so this struct keeps them from
-/// being swapped at the call site.
-///
-/// - `target`  : the render-target rectangle (centered; z=1=fit, grows when zooming, clips when exceeding the viewport)
-/// - `crop_rect`: the source-image window of the visible portion (px: x,y,w,h)
-/// - `center`  : the center clamped to where the visible window fits within the image [0,1]
-/// - `frac`    : the visible fraction per axis (<1=clipped=pan possible)
-#[derive(Clone, Copy)]
-struct ImageLayout {
-    target: Rect,
-    crop_rect: PxRect,
-    center: (f64, f64),
-    frac: (f64, f64),
-}
-
-/// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
-/// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
-/// an [`ImageLayout`] (None if size 0).
-fn image_layout(
-    src: &image::DynamicImage,
-    font_size: ratatui_image::FontSize,
-    zoom: f64,
-    center: (f64, f64),
-    inner: Rect,
-    render_scale: f64,
-    logical: Option<(u32, u32)>,
-) -> Option<ImageLayout> {
-    use image::GenericImageView;
-    let (sw, sh) = src.dimensions();
-    if sw == 0 || sh == 0 || inner.width == 0 || inner.height == 0 {
-        return None;
-    }
-    // The z=1 fit display size (cells, never enlarged). A vector-derived preview is measured by its
-    // **logical size** (the initial raster's dimensions), so swapping in a sharper raster never
-    // moves the on-screen size or the crop window at all (the HiDPI backing-store approach — the
-    // crop itself is mapped to real pixels by ratio).
-    let (nw, nh) = match logical {
-        Some((lw, lh)) if lw > 0 && lh > 0 => (
-            (lw as u16).div_ceil(font_size.width.max(1)),
-            (lh as u16).div_ceil(font_size.height.max(1)),
-        ),
-        _ => {
-            let n = Resize::natural_size(src, font_size);
-            (n.width, n.height)
-        }
-    };
-    let base = centered_rect((nw, nh), inner, false);
-    // The logical display size after zoom.
-    let disp_w = (base.width as f64 * zoom).max(1.0);
-    let disp_h = (base.height as f64 * zoom).max(1.0);
-    // The on-screen size = min(display size, display area).
-    let tw = (disp_w.min(inner.width as f64).round() as u16).max(1);
-    let th = (disp_h.min(inner.height as f64).round() as u16).max(1);
-    // The visible fraction on each axis (<1 means it's clipped = pan is possible).
-    let fw = (tw as f64 / disp_w).min(1.0);
-    let fh = (th as f64 / disp_h).min(1.0);
-    // Clamp the center so the visible window stays within the image.
-    let cx = center.0.clamp(fw / 2.0, 1.0 - fw / 2.0);
-    let cy = center.1.clamp(fh / 2.0, 1.0 - fh / 2.0);
-    // Crop the visible window out of the original image (px).
-    let cw = ((sw as f64 * fw).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * fh).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    let crop_rect = (x0, y0, cw, ch);
-    // The display rect (centered). Optionally downscaled by render_scale (reduces transfer size = less render wait).
-    let scale = render_scale.clamp(0.1, 1.0);
-    let (tw, th) = if scale >= 0.999 {
-        (tw, th)
-    } else {
-        (
-            ((tw as f64 * scale).round() as u16).max(1),
-            ((th as f64 * scale).round() as u16).max(1),
-        )
-    };
-    let target = Rect {
-        x: inner.x + (inner.width - tw.min(inner.width)) / 2,
-        y: inner.y + (inner.height - th.min(inner.height)) / 2,
-        width: tw.min(inner.width),
-        height: th.min(inner.height),
-    };
-    Some(ImageLayout {
-        target,
-        crop_rect,
-        center: (cx, cy),
-        frac: (fw, fh),
-    })
 }
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.

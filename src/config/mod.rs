@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use crate::preview::PreviewKind;
 
-/// Default code background color for Markdown (dark slate). Used when `ui.theme.code_bg` is unspecified.
-pub const DEFAULT_CODE_BG: Color = Color::Rgb(43, 48, 59);
+// The default code background and the badge-brightening helper live in `konoma-widgets` (the
+// document renderer's tests use them); this path stays for the host.
+pub use konoma_widgets::colors::{lighten, DEFAULT_CODE_BG};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -766,18 +767,6 @@ fn parse_color_opt(s: &str, fallback: Option<Color>) -> Option<Color> {
     match Color::from_str(s) {
         Ok(c) => Some(c),
         Err(_) => fallback,
-    }
-}
-
-/// Brightens a background color slightly (to distinguish the language badge from body code). Non-Rgb is left as-is.
-pub fn lighten(c: Color) -> Color {
-    match c {
-        Color::Rgb(r, g, b) => Color::Rgb(
-            r.saturating_add(27),
-            g.saturating_add(30),
-            b.saturating_add(40),
-        ),
-        other => other,
     }
 }
 

@@ -1,0 +1,40 @@
+[package]
+name = "konoma-widgets"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's display parts for ratatui: windowed file reading, kitty graphics transmit, image layout, diff rows, the Markdown document renderer, icon glyphs"
+
+[dependencies]
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-code-core = { path = "../konoma-code-core", version = "0.1.0" }
+konoma-markdown-core = { path = "../konoma-markdown-core", version = "0.1.0" }
+konoma-mermaid-core = { path = "../konoma-mermaid-core", version = "0.1.0" }
+konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
+ratatui.workspace = true
+# Image layout asks the resizer for an image's natural size in cells; the kitty module is a port of
+# this crate's kitty protocol path (with a compressed transmit added).
+ratatui-image.workspace = true
+image.workspace = true
+# The kitty transmit is zlib-compressed (`o=z`) and base64 encoded.
+flate2.workspace = true
+base64.workspace = true
+unicode-width.workspace = true
+# ```mermaid fences that are not drawn as pictures render as Unicode box-drawing text.
+mermaid-text.workspace = true
+# The Markdown renderer walks the same parser the block model uses.
+pulldown-cmark.workspace = true
+
+[dev-dependencies]
+# The core's `cfg(test)` helpers and corpora, which this crate's own tests use.
+konoma-markdown-core = { path = "../konoma-markdown-core", features = ["test-hooks"] }
+konoma-test-support = { path = "../konoma-test-support" }
+konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
+
+[features]
+# Keeps the `cfg(test)` seams (the call counters, the test-only render shorthands) active when the
+# root package's tests call into this crate (a `cfg(test)` is only true while this crate's own tests
+# build). Enabled by the root package's `[dev-dependencies]` only.
+test-hooks = ["konoma-markdown-core/test-hooks"]

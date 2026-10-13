@@ -1,4 +1,4 @@
-//! The renderer built directly on the block model (`crate::preview::markdown::model`), rather than on
+//! The renderer built directly on the block model (`crate::markdown::model`), rather than on
 //! tui-markdown's own rendered output (tui-markdown itself no longer exists — it was dropped entirely
 //! once nothing called into it any more; see `markdown.rs`'s own module doc comment). This module is
 //! now the **sole** production Markdown renderer: `render_markdown_with_images` calls `render_doc`
@@ -87,7 +87,7 @@
 //! definition lives in a *different* top-level block resolves correctly here — the accepted-gap
 //! category an earlier, per-block-re-parsing version of this file had to document (and
 //! `md_render_diff_tests` had to carve a dedicated, unlisted pin around) no longer exists at all; see
-//! `crate::preview::markdown::inline_corpus`'s own doc comment for the structural proof, and
+//! `crate::markdown::inline_corpus`'s own doc comment for the structural proof, and
 //! `model::Doc.events`'s doc comment for why a single walk gets this "for free".
 //!
 //! **The one exception**: `render_details_from_model`, for a `<details>` block whose body could not
@@ -187,7 +187,7 @@ use super::{
 /// is always empty in practice (`contains_unsupported`'s own doc comment) — the field, and the
 /// `render_markdown_with_images` legacy fallback that reads it, are kept rather than removed for now;
 /// see that doc comment for why.
-pub(crate) struct RenderOut {
+pub struct RenderOut {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<ImagePlacement>,
     pub unsupported: Vec<&'static str>,
@@ -367,7 +367,7 @@ struct BlockCtx {
 /// dispatches to its own children and staying `false` for everything nested inside it from then on,
 /// however many more `List`s or `Quote`s that subtree goes on to contain).
 #[allow(clippy::too_many_arguments)] // mirrors render_markdown_with_images's own signature (see that function's own identical allow) — one call site (the diff harness)
-pub(crate) fn render_doc(
+pub fn render_doc(
     doc: &Doc<'_>,
     src: &str,
     width: u16,
@@ -495,7 +495,7 @@ fn new_top_writer<'m>(
 /// they are fixed for a whole render and are read at exactly three places
 /// (`flush_row_group`, `render_mermaid_slot`, `emit_table`).
 #[allow(clippy::too_many_arguments)] // as `render_doc` above, plus the alignments
-pub(crate) fn render_doc_aligned(
+pub fn render_doc_aligned(
     doc: &Doc<'_>,
     src: &str,
     width: u16,
@@ -697,7 +697,7 @@ pub(crate) fn render_doc_aligned(
 /// dependency on `crate::git`/`crate::vcs` at all, and a block-diff render only ever needs `old`/`new`
 /// `Doc`/`src` context (`render_block`'s own parameters), never a `GutterMark`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiffMark {
+pub enum DiffMark {
     /// An inserted block, drawn from `new`'s own content (`BlockOp::Insert`).
     Added,
     /// The **new** half of a `BlockOp::Replace` pair — drawn immediately after its own `Removed` half.
@@ -709,7 +709,7 @@ pub(crate) enum DiffMark {
 }
 
 /// [`RenderOut`] plus the diff marks [`render_doc_diff`] produces alongside it.
-pub(crate) struct DiffRenderOut {
+pub struct DiffRenderOut {
     pub out: RenderOut,
     /// Every non-`Equal` block's own final (post-`decorate_headings_and_extras`) logical line range,
     /// in document order, ascending and non-overlapping — an `Equal` block contributes no entry at
@@ -763,7 +763,7 @@ pub(crate) struct DiffRenderOut {
 /// structurally impossible either) records no mark rather than an empty range, keeping the "every mark
 /// range is non-empty" invariant the module's own tests below pin.
 #[allow(clippy::too_many_arguments)] // mirrors render_doc_aligned's own parameter list, plus `ops`
-pub(crate) fn render_doc_diff(
+pub fn render_doc_diff(
     old: &Doc<'_>,
     old_src: &str,
     new: &Doc<'_>,
@@ -4556,7 +4556,7 @@ fn width_once_decorated(line: &Line<'_>, icons: bool) -> usize {
         if folds {
             width += spans[i].width();
             if icons {
-                width += unicode_width::UnicodeWidthChar::width(crate::ui::icons::link_icon())
+                width += unicode_width::UnicodeWidthChar::width(crate::icons::link_icon())
                     .unwrap_or(1)
                     + 1;
             }
@@ -4582,9 +4582,7 @@ fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
         w.lines.push(match w.heading_row_style {
             // A heading wrapped here is still one heading: the next row keeps its style and says
             // which heading it belongs to (the rule goes under the last row, not the first).
-            Some(style) => {
-                Line::from(crate::preview::markdown::heading_continuation_span()).style(style)
-            }
+            Some(style) => Line::from(crate::markdown::heading_continuation_span()).style(style),
             None => Line::default(),
         });
         col = 0;
@@ -7097,7 +7095,7 @@ mod tests {
     /// literal string), every body line carrying the alert's own colored bar.
     #[test]
     fn alert_header_bar_icon_label_and_recursive_body_render_from_the_model() {
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let src = "> [!TIP] Hey\n> - a\n> - b\n";
@@ -7171,7 +7169,7 @@ mod tests {
     /// for the *shared* decoration functions).
     #[test]
     fn details_marker_style_bar_and_recursive_body_render_from_the_model() {
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let src = "<details open>\n<summary>More</summary>\n\n- x\n- y\n\n</details>\n";
@@ -7251,7 +7249,7 @@ mod tests {
     /// visible text — the shorthand every HTML-table test below reaches for. `icons` is off so a
     /// link's own Nerd Font prefix does not shift the column widths these tests read.
     fn html_table_lines(src: &str, width: u16) -> Vec<String> {
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let doc = Doc::parse(src);
         let out = render_doc(
@@ -7498,7 +7496,7 @@ mod tests {
     fn html_table_stray_th_is_styled_without_a_header_rule() {
         let src =
             "<table>\n<tr><td>a</td><th>b</th></tr>\n<tr><td>c</td><td>d</td></tr>\n</table>\n";
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let doc = Doc::parse(src);
         let out = render_doc(
@@ -7579,7 +7577,7 @@ mod tests {
     /// string-based pipeline.
     #[test]
     fn details_closed_state_hides_its_body() {
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let src = "<details>\n<summary>S</summary>\n\nSECRET\n\n</details>\n";
@@ -7632,7 +7630,7 @@ mod tests {
         // Slot 0 is the *only* real top-level `Details` block below (the alert's own nested one is
         // not supposed to be counted at all) — seeded closed, opposite its own `open` attribute, so
         // a wrongly-consumed slot would be directly observable as the wrong body showing up.
-        crate::preview::markdown::set_details_open(vec![false]);
+        crate::markdown::set_details_open(vec![false]);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let src = "> [!NOTE]\n> <details open>\n> <summary>Nested</summary>\n>\n> shown\n>\n> </details>\n\n\
@@ -8611,13 +8609,13 @@ mod tests {
     #[test]
     fn mermaid_fence_url_matches_production_for_a_top_level_fence() {
         for src in ["```mermaid\nA-->B\n```\n", "```mermaid\nA-->B\n\n\n```\n"] {
-            let prod_fences = crate::preview::markdown::collect_mermaid_fences(src);
+            let prod_fences = crate::markdown::collect_mermaid_fences(src);
             assert_eq!(
                 prod_fences.len(),
                 1,
                 "src: {src:?}, fences: {prod_fences:?}"
             );
-            let want = crate::preview::markdown::mermaid_fence_url(&prod_fences[0]);
+            let want = crate::markdown::mermaid_fence_url(&prod_fences[0]);
 
             let doc = Doc::parse(src);
             let code = CodeStyle::default();
@@ -8698,11 +8696,11 @@ mod tests {
             ("\\(a\\,b\\)\n", false),
             ("\\[a\\,b\\]\n", true),
         ] {
-            let prod = crate::preview::markdown::collect_math_exprs(src);
+            let prod = crate::markdown::collect_math_exprs(src);
             assert_eq!(prod.len(), 1, "src: {src:?}, exprs: {prod:?}");
             let (latex, prod_display) = &prod[0];
             assert_eq!(*prod_display, display, "src: {src:?}, exprs: {prod:?}");
-            let want = crate::preview::markdown::math_url(latex, *prod_display);
+            let want = crate::markdown::math_url(latex, *prod_display);
 
             let doc = Doc::parse(src);
             let code = CodeStyle::default();
@@ -8796,7 +8794,7 @@ mod tests {
     #[test]
     fn escaped_backslash_math_content_keeps_the_escapes_own_backslash() {
         for (src, want_display) in [("\\(a\\,b\\)\n", false), ("\\[a\\,b\\]\n", true)] {
-            let prod = crate::preview::markdown::collect_math_exprs(src);
+            let prod = crate::markdown::collect_math_exprs(src);
             assert_eq!(
                 prod,
                 vec![("a\\,b".to_string(), want_display)],
@@ -8859,7 +8857,7 @@ mod tests {
             // give-up path ever rendered from the raw slice instead of replaying the original events.
             "cost \\$5 and \\$10 for \\*not italic\\*.\n",
         ] {
-            let prod = crate::preview::markdown::collect_math_exprs(src);
+            let prod = crate::markdown::collect_math_exprs(src);
             assert!(prod.is_empty(), "src: {src:?}, exprs: {prod:?}");
 
             let doc = Doc::parse(src);
@@ -8951,7 +8949,7 @@ mod tests {
                 ])],
             ),
         ] {
-            let prod = crate::preview::markdown::collect_math_exprs(src);
+            let prod = crate::markdown::collect_math_exprs(src);
             assert!(prod.is_empty(), "src: {src:?}, exprs: {prod:?}");
 
             let doc = Doc::parse(src);
@@ -9100,10 +9098,10 @@ mod tests {
     #[test]
     fn dollar_math_resolves_across_an_intervening_code_span_or_nested_markup() {
         for src in ["$$a\\,b `x` c\\_d$$\n", "$$a\\,b **c** d\\_e$$\n"] {
-            let prod = crate::preview::markdown::collect_math_exprs(src);
+            let prod = crate::markdown::collect_math_exprs(src);
             assert_eq!(prod.len(), 1, "src: {src:?}, exprs: {prod:?}");
             let (latex, display) = &prod[0];
-            let want_url = crate::preview::markdown::math_url(latex, *display);
+            let want_url = crate::markdown::math_url(latex, *display);
 
             let doc = Doc::parse(src);
             let code = CodeStyle::default();
@@ -11643,7 +11641,7 @@ mod tests {
         fn diff_of(old_src: &str, new_src: &str) -> DiffRenderOut {
             let old = Doc::parse(old_src);
             let new = Doc::parse(new_src);
-            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let ops = crate::markdown::diff::block_ops(&old, &new, old_src, new_src);
             render_doc_diff(
                 &old,
                 old_src,
@@ -11830,7 +11828,7 @@ mod tests {
             let new_src = "![alt](pic.png)\n";
             let old = Doc::parse(old_src);
             let new = Doc::parse(new_src);
-            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let ops = crate::markdown::diff::block_ops(&old, &new, old_src, new_src);
             let diff_out = render_doc_diff(
                 &old,
                 old_src,
@@ -11898,10 +11896,10 @@ mod tests {
             let new_src = "```mermaid\ngraph TD; A-->C;\n```\n";
             let old = Doc::parse(old_src);
             let new = Doc::parse(new_src);
-            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let ops = crate::markdown::diff::block_ops(&old, &new, old_src, new_src);
             assert_eq!(
                 ops,
-                vec![crate::preview::markdown::BlockOp::Replace { old: 0, new: 0 }]
+                vec![crate::markdown::BlockOp::Replace { old: 0, new: 0 }]
             );
             let diff_out = render_doc_diff(
                 &old,
@@ -11953,7 +11951,7 @@ mod tests {
             let new_src = "$$y^2$$\n";
             let old = Doc::parse(old_src);
             let new = Doc::parse(new_src);
-            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let ops = crate::markdown::diff::block_ops(&old, &new, old_src, new_src);
             let diff_out = render_doc_diff(
                 &old,
                 old_src,
@@ -11990,8 +11988,8 @@ mod tests {
         fn footnote_definition_block_present_only_in_old_renders_in_old_context() {
             let old_raw = "See the note.[^a]\n\n[^a]: Old definition text.\n";
             let new_raw = "See the note.\n";
-            let old_src = crate::preview::markdown::process_footnotes(old_raw);
-            let new_src = crate::preview::markdown::process_footnotes(new_raw);
+            let old_src = crate::markdown::process_footnotes(old_raw);
+            let new_src = crate::markdown::process_footnotes(new_raw);
             let old = Doc::parse(&old_src);
             let new = Doc::parse(&new_src);
             // `process_footnotes` appends `"\n---\n\n"` (a thematic break) ahead of the numbered
@@ -12001,7 +11999,7 @@ mod tests {
             // else.
             assert_eq!(old.blocks.len(), 3, "old_src: {old_src:?}");
             assert_eq!(new.blocks.len(), 1, "new_src: {new_src:?}");
-            let ops = crate::preview::markdown::diff::block_ops(&old, &new, &old_src, &new_src);
+            let ops = crate::markdown::diff::block_ops(&old, &new, &old_src, &new_src);
             let diff_out = render_doc_diff(
                 &old,
                 &old_src,
@@ -12606,10 +12604,10 @@ mod cell_image_tests {
     /// and two columns to the left. `assert_reserved` proves the rebase landed on the real rectangle.
     #[test]
     fn a_table_inside_details_places_its_cell_image_where_it_was_drawn() {
-        crate::preview::markdown::set_details_open(vec![true]);
+        crate::markdown::set_details_open(vec![true]);
         let src = "intro\n\n<details open>\n<summary>S</summary>\n\n| a |\n|---|\n| ![x](a.png) |\n\n</details>\n";
         let out = render(src, 70);
-        crate::preview::markdown::set_details_open(Vec::new());
+        crate::markdown::set_details_open(Vec::new());
         assert_eq!(out.images.len(), 1, "{:?}", out.images);
         let p = &out.images[0];
         assert!(p.line > 1, "文書先頭に貼り付いている: {p:?}");
