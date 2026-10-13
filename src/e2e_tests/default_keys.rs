@@ -108,7 +108,11 @@ fn e2e_the_tree_s_and_o_and_p_changes() {
     seed_files(&dir);
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
     s.key('s');
-    assert!(!s.app.is_sort_menu(), "s no longer opens the sort menu");
+    assert_eq!(
+        s.app.pending_leader, None,
+        "s no longer opens the sort menu (the `,` menu)"
+    );
+    assert_eq!(s.app.key_context(), Some(crate::keymap::Context::Tree));
     let before = s.app.path_style;
     s.key('o');
     assert!(!s.app.is_git_view(), "o no longer opens the Git hub");

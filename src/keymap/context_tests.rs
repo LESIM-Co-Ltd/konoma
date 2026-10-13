@@ -36,7 +36,6 @@ fn context_names_are_the_documented_ones() {
         "image",
         "info",
         "outline",
-        "sort",
         "table",
         "table_cell",
         "tabs",
@@ -159,8 +158,7 @@ fn layer_one_gives_j_and_k_to_every_context_with_a_cursor() {
             }
         }
     }
-    // The two that have no cursor.
-    assert!(!Context::Sort.inherits_basic());
+    // The one that has no cursor.
     assert!(!Context::Info.inherits_basic());
 }
 
@@ -558,7 +556,8 @@ fn global_and_the_unchanged_names_are_read_as_before() {
             ("help", &[("Z", "refresh")]),
         ]),
     );
-    // `[keys.sort]` is read (it re-letters the sort overlay and the tree's `,` menu) and says so.
+    // `[keys.sort]` is read (it re-letters the tree's `,` menu, the sort overlay's successor) and
+    // says so.
     assert!(m.warnings.is_empty());
     assert_eq!(m.renames.len(), 1, "{:?}", m.renames);
     assert_eq!(m.renames[0].0, "[keys.sort]");
@@ -566,7 +565,6 @@ fn global_and_the_unchanged_names_are_read_as_before() {
     for ctx in [
         Context::TreeVisual,
         Context::TableCell,
-        Context::Sort,
         Context::Bookmarks,
         Context::Tabs,
         Context::Outline,

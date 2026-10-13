@@ -8,6 +8,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::app::list_filter::ListId;
 use crate::app::App;
 use crate::i18n::tr;
 
@@ -17,8 +18,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let current = app.outline_current_row();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut sel_line: u16 = 0;
+    // The `/` filter narrows the rows that are drawn; `sel` and `current` index all of `items`.
+    let shown = app.list_visible(ListId::Outline);
 
     for (i, (level, text)) in items.iter().enumerate() {
+        if shown.as_ref().is_some_and(|v| v.binary_search(&i).is_err()) {
+            continue;
+        }
         // Indent by level (H1 flush-left); a bullet marks the heading.
         let indent = "  ".repeat((*level).saturating_sub(1) as usize);
         // The page list marks the page the preview is on.
@@ -69,8 +75,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(inner_h.saturating_sub(1))
         .min(max_scroll);
 
+    // A query shows as " /<query>" after the title.
+    let q = app.list_filter_query(ListId::Outline);
+    let title = if q.is_empty() {
+        tr(app.lang, title).to_string()
+    } else {
+        format!("{} /{q} ", tr(app.lang, title).trim_end())
+    };
     let block = Block::bordered()
-        .title(tr(app.lang, title))
+        .title(title)
         .border_style(Style::new().fg(Color::Cyan));
     let para = Paragraph::new(lines)
         .block(block)

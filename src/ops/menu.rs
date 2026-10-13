@@ -16,12 +16,17 @@
 //
 // The items of the two built menus are decided over *all* the candidate operations, before the
 // gate is asked: a letter does not move because another operation happens not to act right now.
+//
+// The `Space` menu lists its items by how often the context uses them — the order of the footer
+// plan (`footer::priority`: the footer cuts from the end, so the front is what matters most), then
+// the rest in the order the help declares them, then whatever neither names — and calls each by
+// the footer's short label, not by the help's sentence.
 
 use crate::app::App;
 use crate::i18n::{tr, Msg};
 use crate::keymap::{Action, Context, KeyPress, LeaderId};
 
-use super::{action_enabled, decl, keys};
+use super::{action_enabled, decl, footer, help, keys};
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +95,7 @@ fn fixed_menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu>
         .map(|it| {
             let label = match it.label {
                 // A user-added entry has no label of its own: name it as the declaration does.
-                Msg::Empty => label_of(app, ctx, it.action),
+                Msg::Empty => label_of(app, ctx, it.action, &footer::priority(app, ctx)),
                 m => Some(crate::ui::status::relabel_for_backend(app, m)),
             };
             MenuItem {
@@ -151,12 +156,29 @@ fn special_label(a: Action) -> Option<Msg> {
     })
 }
 
-/// What `a` is called in a menu of `ctx`: the declaration's label as it reads now, else its
-/// description, else a label of its own. `None` = the operation is not named anywhere, so it is
-/// not offered.
-fn label_of(app: &App, ctx: Context, a: Action) -> Option<Msg> {
-    let t = decl::text(app, ctx, a);
-    t.label.or(t.help).or_else(|| special_label(a))
+/// A short label for an operation that has none in the footer or its declaration (the help's
+/// sentence is too long for a menu line). `search` in a footer is `n/N:match`, a status; here the
+/// two directions are items of their own.
+fn short_label(a: Action) -> Option<Msg> {
+    Some(match a {
+        Action::SearchNext => Msg::WkNextMatch,
+        Action::SearchPrev => Msg::WkPrevMatch,
+        Action::Refresh => Msg::WkRefresh,
+        Action::TabNewAfter => Msg::HintNewTab,
+        _ => return None,
+    })
+}
+
+/// What `a` is called in a menu of `ctx`: the footer's label for it (`prio` is the footer plan,
+/// `footer::priority`), else the declaration's label as it reads now, else a short label of the
+/// menu's own. Never the help's sentence. `None` = the operation is not named, so it is not
+/// offered.
+fn label_of(app: &App, ctx: Context, a: Action, prio: &[(Action, Option<Msg>)]) -> Option<Msg> {
+    prio.iter()
+        .find_map(|(p, l)| (*p == a).then_some(*l).flatten())
+        .or_else(|| decl::text(app, ctx, a).label)
+        .or_else(|| short_label(a))
+        .or_else(|| special_label(a))
 }
 
 /// A letter that says what the operation is, tried before the free letters in order.
@@ -184,7 +206,11 @@ const FREE_LETTERS: &str = "abcdefghijklmnoprstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0
 /// Every operation `ctx` can run, in the order the menu lists them: the keyed ones by their key
 /// (with that key when it is a plain character), then the fixed keys' operations, then the ones
 /// without a key. Movement and the closing of overlays are not operations to offer.
-fn candidates(app: &App, ctx: Context) -> Vec<(Action, Option<KeyPress>)> {
+fn candidates(
+    app: &App,
+    ctx: Context,
+    prio: &[(Action, Option<Msg>)],
+) -> Vec<(Action, Option<KeyPress>)> {
     let mut out: Vec<(Action, Option<KeyPress>)> = Vec::new();
     let mut add = |a: Action, key: Option<KeyPress>| {
         if matches!(
@@ -193,7 +219,7 @@ fn candidates(app: &App, ctx: Context) -> Vec<(Action, Option<KeyPress>)> {
         ) {
             return;
         }
-        if label_of(app, ctx, a).is_none() {
+        if label_of(app, ctx, a, prio).is_none() {
             return;
         }
         match out.iter_mut().find(|(o, _)| *o == a) {
@@ -265,16 +291,45 @@ fn assign(cands: &[(Action, Option<KeyPress>)]) -> Vec<Option<KeyPress>> {
     chosen
 }
 
-fn actions_menu(app: &App, ctx: Context) -> Menu {
-    let cands = candidates(app, ctx);
+/// Where an operation sorts in the menu: its place in the footer plan, then the operations the
+/// help lists for the screen itself (in the help's order), then the ones neither names (an
+/// overlay's own keys, a rebinding's leftovers; they keep the order of `candidates`), then the
+/// rows every screen lists (tabs, help, quit).
+fn rank(
+    a: Action,
+    prio: &[(Action, Option<Msg>)],
+    own: &[Action],
+    everywhere: &[Action],
+) -> (usize, u8, usize) {
+    let p = prio.iter().position(|(p, _)| *p == a).unwrap_or(usize::MAX);
+    if let Some(i) = own.iter().position(|d| *d == a) {
+        (p, 0, i)
+    } else if let Some(i) = everywhere.iter().position(|d| *d == a) {
+        (p, 2, i)
+    } else {
+        (p, 1, 0)
+    }
+}
+
+/// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that
+/// act now.
+fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
+    let prio = footer::priority(app, ctx);
+    let mut cands = candidates(app, ctx, &prio);
+    // Menu order first: the free letters then run along the menu (a, b, c ...) for the items that
+    // have no key of their own. Neither the order nor the letters look at the gate, so a letter
+    // does not move because another operation happens not to act right now.
+    let (own, everywhere) = help::declared_groups(app, ctx);
+    cands.sort_by_key(|(a, _)| rank(*a, &prio, &own, &everywhere));
+
     let letters = assign(&cands);
-    let items = cands
+    let items: Vec<MenuItem> = cands
         .iter()
         .zip(letters)
-        .filter(|((a, _), _)| action_enabled(app, ctx, *a))
+        .filter(|((a, _), _)| !gated || action_enabled(app, ctx, *a))
         .filter_map(|((a, _), key)| {
             let key = key?;
-            let label = label_of(app, ctx, *a)?;
+            let label = label_of(app, ctx, *a, &prio)?;
             Some(MenuItem {
                 key,
                 action: *a,
@@ -282,6 +337,17 @@ fn actions_menu(app: &App, ctx: Context) -> Menu {
             })
         })
         .collect();
+    items
+}
+
+/// Every item the `Space` menu of `ctx` can hold, whether or not it acts right now, in menu order.
+#[cfg(test)]
+pub fn declared_actions_menu(app: &App, ctx: Context) -> Vec<MenuItem> {
+    build_actions(app, ctx, false)
+}
+
+fn actions_menu(app: &App, ctx: Context) -> Menu {
+    let items = build_actions(app, ctx, true);
     Menu {
         id: LeaderId::Actions,
         title: tr(app.lang, Msg::WkActionsTitle).to_string(),

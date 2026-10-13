@@ -5,6 +5,7 @@
 /// The default keys of the vim scheme.
 pub const VIM: &str = r"bookmarks | Space | leader:actions
 bookmarks | ' | bookmark_close
+bookmarks | / | list_filter_start
 bookmarks | 1 | tab_goto
 bookmarks | 2 | tab_goto
 bookmarks | 3 | tab_goto
@@ -688,6 +689,7 @@ jj.worktrees | r | refresh
 jj.worktrees | t | tab_new_after
 jj.worktrees | Ctrl-t | worktree_goto_new_tab
 outline | Space | leader:actions
+outline | / | list_filter_start
 outline | 1 | tab_goto
 outline | 2 | tab_goto
 outline | 3 | tab_goto
@@ -707,33 +709,12 @@ outline | T | toggle_tab_list
 outline | [ | tab_prev
 outline | ] | tab_next
 outline | g | navigate:top
+outline | h | toggle_outline
 outline | j | navigate:down
 outline | k | navigate:up
+outline | l | outline_jump
 outline | q | toggle_outline
 outline | t | tab_new_after
-sort | . | sort_toggle_dirs_first
-sort | 1 | tab_goto
-sort | 2 | tab_goto
-sort | 3 | tab_goto
-sort | 4 | tab_goto
-sort | 5 | tab_goto
-sort | 6 | tab_goto
-sort | 7 | tab_goto
-sort | 8 | tab_goto
-sort | 9 | tab_goto
-sort | ? | toggle_help
-sort | F | toggle_follow
-sort | P | paste_jump
-sort | Q | quit
-sort | T | toggle_tab_list
-sort | [ | tab_prev
-sort | ] | tab_next
-sort | e | sort_ext
-sort | m | sort_modified
-sort | n | sort_name
-sort | r | sort_toggle_reverse
-sort | s | sort_size
-sort | t | tab_new_after
 table | Space | leader:actions
 table | ! | git_launch_tool
 table | $ | navigate:line_end
@@ -810,6 +791,7 @@ table_cell | t | tab_new_after
 table_cell | PageDown | navigate:page_down
 table_cell | PageUp | navigate:page_up
 tabs | Space | leader:actions
+tabs | / | list_filter_start
 tabs | 1 | tab_goto
 tabs | 2 | tab_goto
 tabs | 3 | tab_goto
@@ -827,8 +809,10 @@ tabs | T | toggle_tab_list
 tabs | [ | tab_prev
 tabs | ] | tab_next
 tabs | d | tab_list_close
+tabs | h | toggle_tab_list
 tabs | j | navigate:down
 tabs | k | navigate:up
+tabs | l | tab_list_activate
 tabs | q | toggle_tab_list
 tabs | t | tab_new_after
 text | Space | leader:actions

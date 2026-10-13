@@ -284,10 +284,9 @@ pub enum Action {
     GitScreenNext,
     #[cfg(feature = "git")]
     GitScreenPrev,
-    /// `/` on the changes, log and graph screens: filter the rows by the text they show (the
-    /// branch and worktree lists have their own `BranchFilterStart` / `WorktreeFilterStart`; the
-    /// three share one filter).
-    #[cfg(feature = "git")]
+    /// `/` on a list: filter the rows by the text they show. The changes, log and graph screens
+    /// and the overlay lists (outline / page list, tab list, bookmark list) share one filter (the
+    /// branch and worktree lists have their own `BranchFilterStart` / `WorktreeFilterStart`).
     ListFilterStart,
 
     // --- Git branches ---
@@ -431,9 +430,9 @@ pub enum Surface {
     BranchFilter,
     #[cfg(feature = "git")]
     WorktreeFilter,
-    /// The `/` filter of the changes list, the log or the graph (which one is
+    /// The `/` filter of a list that shares the one list filter: the changes list, the log, the
+    /// graph, the outline / page list, the tab list or the bookmark list (which one is
     /// `App::filtering_list`).
-    #[cfg(feature = "git")]
     ListFilter,
 
     // --- Confirm modal (y/n/c/m/! fixed) ---
@@ -447,7 +446,6 @@ pub enum Surface {
 
     // --- Overlays (keymap-driven) ---
     Help,
-    Sort,
     Bookmarks,
     /// Tab-list overlay (`T`): j/k + Enter switch, `w` closes the selected tab.
     Tabs,
@@ -493,7 +491,6 @@ impl Surface {
             Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
             #[cfg(feature = "git")]
             Surface::BranchFilter => true,
-            #[cfg(feature = "git")]
             Surface::ListFilter => true,
             #[cfg(feature = "git")]
             Surface::WorktreeFilter => true,
@@ -954,7 +951,6 @@ pub enum Context {
     Image,
     Table,
     TableCell,
-    Sort,
     Bookmarks,
     Tabs,
     Outline,
@@ -1016,7 +1012,6 @@ impl Context {
             Context::Image,
             Context::Table,
             Context::TableCell,
-            Context::Sort,
             Context::Bookmarks,
             Context::Tabs,
             Context::Outline,
@@ -1047,7 +1042,6 @@ impl Context {
             Context::Image => "image".into(),
             Context::Table => "table".into(),
             Context::TableCell => "table_cell".into(),
-            Context::Sort => "sort".into(),
             Context::Bookmarks => "bookmarks".into(),
             Context::Tabs => "tabs".into(),
             Context::Outline => "outline".into(),
@@ -1086,7 +1080,6 @@ impl Context {
             Context::Tree
             | Context::TreeVisual
             | Context::TableCell
-            | Context::Sort
             | Context::Bookmarks
             | Context::Tabs
             | Context::Outline
@@ -1101,10 +1094,10 @@ impl Context {
         }
     }
 
-    /// Whether the basic table (layer 1) applies. Everything that has a cursor does; the sort menu
-    /// and the info popup are one-shot pickers without one.
+    /// Whether the basic table (layer 1) applies. Everything that has a cursor does; the info
+    /// popup is a one-shot picker without one.
     pub fn inherits_basic(self) -> bool {
-        !matches!(self, Context::Sort | Context::Info)
+        !matches!(self, Context::Info)
     }
 
     /// The keymap [`Surface`] this context is a refinement of (the surface that [`Context::of_surface`]
@@ -1118,7 +1111,6 @@ impl Context {
             Context::Image => Surface::PreviewImage,
             Context::Table => Surface::PreviewTable,
             Context::TableCell => Surface::TableCell,
-            Context::Sort => Surface::Sort,
             Context::Bookmarks => Surface::Bookmarks,
             Context::Tabs => Surface::Tabs,
             Context::Outline => Surface::Outline,
@@ -1159,10 +1151,10 @@ impl Context {
             | Surface::DialogRenamePreview
             | Surface::DialogConfirmQuit
             | Surface::DialogConfirmBookmark => return None,
+            Surface::ListFilter => return None,
             #[cfg(feature = "git")]
-            Surface::BranchFilter | Surface::WorktreeFilter | Surface::ListFilter => return None,
+            Surface::BranchFilter | Surface::WorktreeFilter => return None,
             Surface::Help => Context::Help,
-            Surface::Sort => Context::Sort,
             Surface::Bookmarks => Context::Bookmarks,
             Surface::Tabs => Context::Tabs,
             Surface::Outline => Context::Outline,
@@ -1338,7 +1330,8 @@ impl KeyMap {
         tree.insert(KeyPress::ch('.'), run(Action::ToggleHidden));
         tree.insert(KeyPress::ch('r'), run(Action::Refresh));
         // `s` (sort menu) and `p` (path style) have no default key: both live in the `,` menu.
-        // The actions stay (`open_sort_menu`, `cycle_path_style`) for `[keys]`.
+        // The actions stay for `[keys]`: `open_sort_menu` opens the `,` menu, `cycle_path_style`
+        // runs the path style.
         tree.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
         tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
@@ -1644,16 +1637,6 @@ impl KeyMap {
             }
         }
 
-        // --- Sort menu (scheme-independent) ---
-        let mut sort: ContextMap = HashMap::new();
-        sort.insert(KeyPress::ch('n'), run(Action::SortSet(SortKey::Name)));
-        sort.insert(KeyPress::ch('s'), run(Action::SortSet(SortKey::Size)));
-        sort.insert(KeyPress::ch('m'), run(Action::SortSet(SortKey::Modified)));
-        sort.insert(KeyPress::ch('e'), run(Action::SortSet(SortKey::Ext)));
-        sort.insert(KeyPress::ch('r'), run(Action::SortToggleReverse));
-        sort.insert(KeyPress::ch('.'), run(Action::SortToggleDirsFirst));
-        contexts.insert(Context::Sort, sort);
-
         // --- Bookmark list. Enter→BookmarkJump is a fixed key. Plain letters are reserved for
         // bookmark-name jumps (main's Unbound fallback), so editing is on a Ctrl-modified key and
         // deleting is only in the `Space` menu. ---
@@ -1662,6 +1645,10 @@ impl KeyMap {
         // Deleting a bookmark is in the list's `Space` menu (`d`): `Ctrl-d` is layer 1's half page.
         bm.insert(KeyPress::ch('q'), run(Action::BookmarkClose));
         bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
+        // `/` filters the rows, like on every list. `h` and `l` stay *unbound* here, unlike the
+        // other lists (layer 1's back / open): in this list every plain letter is the name of a
+        // bookmark and jumps straight to it, and `h` / `l` can be bookmark names too.
+        bm.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
         contexts.insert(Context::Bookmarks, bm);
 
         // --- Tab list (`T` toggles it open/closed. Enter=switch is a fixed key; T closes it via
@@ -1669,6 +1656,10 @@ impl KeyMap {
         let mut tl: ContextMap = HashMap::new();
         tl.insert(KeyPress::ch('d'), run(Action::TabListClose));
         tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
+        // Layer 1 on a list: `l` = open (`Enter`'s operation), `h` = back (`q`), `/` = filter.
+        tl.insert(KeyPress::ch('l'), run(Action::TabListActivate));
+        tl.insert(KeyPress::ch('h'), run(Action::ToggleTabList));
+        tl.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
         contexts.insert(Context::Tabs, tl);
 
         // --- Heading outline list (`O` toggles it open/closed. Enter=jump is a fixed key) ---
@@ -1677,6 +1668,12 @@ impl KeyMap {
         outline.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         outline.insert(KeyPress::ch('q'), run(Action::ToggleOutline));
         outline.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
+        // Layer 1 on a list: `l` = go to the heading / page (`Enter`'s operation), `h` = back
+        // (`q`), `/` = filter.
+
+        outline.insert(KeyPress::ch('l'), run(Action::OutlineJump));
+        outline.insert(KeyPress::ch('h'), run(Action::ToggleOutline));
+        outline.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
         contexts.insert(Context::Outline, outline);
 
         // --- Info ---
@@ -1788,6 +1785,8 @@ impl KeyMap {
             let table = &cfg.surfaces[name];
             if name == "global" {
                 new_tables.push((vec![KeyTarget::Global], table));
+            } else if name == "sort" {
+                old_tables.push((vec![KeyTarget::OldSort], table));
             } else if let Some(c) = Context::from_name(name) {
                 new_tables.push((vec![KeyTarget::Context(c)], table));
             } else if let Some(cs) = old_surface_contexts(name) {
@@ -1871,7 +1870,7 @@ impl KeyMap {
                     self.set_key(target, kp, action);
                     // The old `[keys.sort]` table re-letters the sort menu; that menu is now the
                     // tree's `,` menu, so its sort entries (and removals) carry over to it.
-                    if target == KeyTarget::Context(Context::Sort)
+                    if target == KeyTarget::OldSort
                         && action.is_none_or(|a| {
                             matches!(
                                 a,
@@ -1930,6 +1929,7 @@ impl KeyMap {
             None => m.remove(suf),
         };
         match target {
+            KeyTarget::OldSort => Err(format!("`{}` opens no menu in [keys.sort]", pre.label())),
             KeyTarget::Global => {
                 let id = prefix_menu(pre).ok_or_else(|| "no such menu".to_string())?;
                 if let Some(m) = self.leaders.get_mut(&id) {
@@ -1971,6 +1971,7 @@ impl KeyMap {
     /// from a surface's table.
     fn set_key(&mut self, target: KeyTarget, kp: KeyPress, action: Option<Action>) {
         match target {
+            KeyTarget::OldSort => {}
             KeyTarget::Global => match action {
                 Some(a) => {
                     self.global.insert(kp, Binding::Run(a));
@@ -2310,6 +2311,9 @@ fn binding_to_resolution(b: &Binding) -> Resolution {
 enum KeyTarget {
     Global,
     Context(Context),
+    /// The old `[keys.sort]` table of the sort overlay, which no longer exists: it owns no keys,
+    /// and its sort letters re-letter the tree's `,` menu (see `apply_one`).
+    OldSort,
 }
 
 /// The key that opens a menu, as `[keys.global]` writes it in a chord → the menu it changes
@@ -2889,7 +2893,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "git_screen_next" => Action::GitScreenNext,
         #[cfg(feature = "git")]
         "git_screen_prev" => Action::GitScreenPrev,
-        #[cfg(feature = "git")]
         "list_filter_start" => Action::ListFilterStart,
         #[cfg(feature = "git")]
         "branch_filter_start" => Action::BranchFilterStart,
@@ -3097,7 +3100,6 @@ pub fn action_name(a: Action) -> String {
         Action::GitScreenNext => "git_screen_next",
         #[cfg(feature = "git")]
         Action::GitScreenPrev => "git_screen_prev",
-        #[cfg(feature = "git")]
         Action::ListFilterStart => "list_filter_start",
         #[cfg(feature = "git")]
         Action::BranchFilterStart => "branch_filter_start",
@@ -3995,15 +3997,15 @@ mod tests {
         );
     }
 
-    // §10.10 scheme-inapplicable surfaces are unaffected (Sort).
+    // §10.10 scheme-inapplicable menus are unaffected (the sort letters of the `,` menu).
     #[test]
     fn scheme_does_not_affect_sort() {
         let vim = KeyMap::defaults(KeyScheme::Vim);
         let less = KeyMap::defaults(KeyScheme::Less);
         for kp in [KeyPress::ch('n'), KeyPress::ch('s'), KeyPress::ch('r')] {
             assert_eq!(
-                vim.resolve(Context::Sort, None, kp),
-                less.resolve(Context::Sort, None, kp)
+                vim.resolve_leader(Context::Tree, LeaderId::Options, kp),
+                less.resolve_leader(Context::Tree, LeaderId::Options, kp)
             );
         }
     }
@@ -4062,7 +4064,7 @@ mod tests {
         assert!(Surface::Filter.is_text_input());
         assert!(!Surface::Tree.is_text_input());
         assert!(Surface::DialogConfirmDelete.is_modal_confirm());
-        assert!(!Surface::Sort.is_modal_confirm());
+        assert!(!Surface::Help.is_modal_confirm());
         assert!(Surface::Tree.allows_tabs());
         assert!(!Surface::Filter.allows_tabs());
         assert!(!Surface::DialogConfirmDelete.allows_tabs());

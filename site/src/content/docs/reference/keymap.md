@@ -42,12 +42,12 @@ when it has no key of its own.
 
 | Key | Action |
 |---|---|
-| `j` `k` `h` `l`, arrows | move (in the tree and in the lists of the Git screens `l` opens / descends and `h` goes back) |
+| `j` `k` `h` `l`, arrows | move (in the tree and in the lists — the Git screens, the outline / page list and the tab list — `l` opens / descends and `h` goes back; the bookmark list keeps `h` and `l` as bookmark names) |
 | `g` `G`, `Ctrl-d` `Ctrl-u`, `Ctrl-f` `Ctrl-b`, `0` `$` | top / bottom, half page, page, line start / end (`ui.keys = "less"`: `d` `u`, `f` `b`) |
 | `q` | go back / close (the tree: close the tab, the last tab quits) |
 | `Esc` | cancel (an input, a selection, a search; otherwise go back) |
 | `Enter` | the default operation of the screen (open, expand, jump, toggle a focused checkbox) |
-| `/` | search (the tree and the lists filter as you type; `Esc` clears) — also on the changes list, the log and the graph |
+| `/` | search (the tree and the lists filter as you type; `Esc` clears) — also on the changes list, the log, the graph, the outline / page list, the tab list and the bookmark list |
 | `n` / `N` | next / previous match; **with nothing searched, next / previous change** (the tree: changed file · a code or text preview: change-gutter block · a rendered document: changed block · a diff: change block) |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file in tree order (in a diff: the next / previous changed file) |
 | `r` | read again (the tree, a preview, a diff, every list of the Git screens) |
@@ -178,7 +178,7 @@ log, graph, branches, worktrees (jj has no worktree screen, so its cycle skips i
 |---|---|
 | `y` | the copy menu of the screen: the tree and previews copy paths (`n r f p @`, and `c` for a focused code block) · a table copies `c` cell · `r` row · `C` column · `f` path · a commit `s h t m a d` · a branch `n` name |
 | `,` | the sort and display options of the screen (see the tree, text and diff tables above) |
-| `Space` | the tree: the file menu (`n r d c x p D`). Everywhere else: every operation that acts on the screen now, built automatically — an operation you rebound or that has no single key is still here |
+| `Space` | the tree: the file menu (`n r d c x p D`). Everywhere else: every operation that acts on the screen now, built automatically — an operation you rebound or that has no single key is still here. The items come in the order of the screen's footer (the operations used most first) and carry the footer's short labels |
 
 A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes that context's menu only; see
 [Configuration](../configuration/#menus-and-chords).
@@ -187,10 +187,11 @@ A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes that conte
 
 | Key | Action |
 |---|---|
-| `1`-`9` / `Enter` | switch to that tab / to the selection |
+| `1`-`9` / `Enter` / `l` | switch to that tab / to the selection |
 | `j` `k` | move |
+| `/` | filter the rows by the text they show (`Enter` keeps the query, `Esc` clears it; then `Esc` closes) |
 | `d` | close the **selected** tab (list stays open; the last tab refuses) |
-| `T` `q` `Esc` | close the list |
+| `T` `q` `h` `Esc` | close the list |
 
 ## Bookmark list (`'`)
 
@@ -198,18 +199,20 @@ A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes that conte
 |---|---|
 | any letter | jump to that bookmark (a-z local / A-Z global) |
 | `j` `k` + `Enter` | select + jump |
+| `/` | filter the rows by the text they show; while you type, letters are text, not bookmark names (`Enter` keeps the query, `Esc` clears it; then `Esc` closes) |
 | `Ctrl-e` | edit target in editor |
 | `Space` `d` | delete the bookmark |
 | `'` `q` `Esc` | close |
 
 Letters used by the list or global keys (`F` `P` `Q` `T` `j` `k` `q` `t`) can't
-letter-jump — select those with `j`/`k` + `Enter`, or rebind.
+letter-jump — select those with `j`/`k` + `Enter`, or rebind. `h` and `l` are *not* back / open
+here, unlike every other list: they are bookmark names like the other letters.
 
 ## Outline (`O`), file info (`i`), help (`?`)
 
 | Screen | Keys |
 |---|---|
-| Outline (the page list on a PDF, workbook or presentation) | `j` `k` `g` `G` move · `Enter` jump to the heading (or go to the page) · `O` `q` `Esc` close |
+| Outline (the page list on a PDF, workbook or presentation) | `j` `k` `g` `G` move · `Enter` / `l` jump to the heading (or go to the page) · `/` filter the rows (`Enter` keeps the query, `Esc` clears it) · `O` `q` `h` `Esc` close |
 | File info | `i` `q` `Esc` close |
 | Help | `j` `k` `g` `G` scroll · `?` `q` `Esc` close |
 
@@ -232,6 +235,7 @@ letter-jump — select those with `j`/`k` + `Enter`, or rebind.
 | preview `Space` (toggle a checkbox / `<details>`) | `Enter` (it already worked) |
 | `ui.keys = "less"` `Space` (page down) | `f` (`Space` is the operations menu) |
 | diff `f` (follow scope) | the `,` menu → `f` |
-| *(new)* | `o` open in another app · `e` in a diff and on the changes list · `/` on the changes list, log and graph · `r` everywhere · `n` / `N` step through changes · `,` and `Space` menus · `Tab` walks the Git screens |
+| the sort overlay (`open_sort_menu`) | `open_sort_menu` opens the `,` menu; the `,` menu closes after one choice (the overlay stayed open for `r` and `.`) |
+| *(new)* | `o` open in another app · `e` in a diff and on the changes list · `/` on the changes list, log and graph, and on the outline / page list, the tab list and the bookmark list · `l` / `h` open / back on the outline, page list and tab list · `r` everywhere · `n` / `N` step through changes · `,` and `Space` menus · `Tab` walks the Git screens |
 
 Any of these can be put back in `[keys]` — see [Configuration](../configuration/#action-names).

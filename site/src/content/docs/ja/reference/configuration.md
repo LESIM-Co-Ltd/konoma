@@ -428,7 +428,7 @@ left right home end pageup pagedown`。`Esc`/`Enter`/`Tab`/`Shift-Tab`/矢印/`H
 
 - **移動**: `navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end`
 - **ツリー**: `quit`(`Q`)・`close_tab_or_quit`(`q`)・`tree_descend`(`l`)・`tree_leave`(`h`)・`tree_activate`(`Enter`)・`filter_start`(`/`)・`toggle_hidden`(`.`)・`refresh`(`r`・全文脈で効く)・`toggle_info`(`i`)・`request_edit`(`e`・プレビュー・diff・変更一覧の行でも効く)・`open_external`(`o`・下記)・`set_anchor` / `reset_anchor`(`a` / `A`)・`enter_visual`(`v`)・`toggle_select`(`V`)・`open_in_new_tab`(`Ctrl-t`=カーソル下のエントリを別タブ(前面)で開く)
-- **並べ替えと表示のオプション**(`,` メニュー): `open_sort_menu`・`sort_name`・`sort_size`・`sort_modified`・`sort_ext`・`sort_toggle_reverse`・`sort_toggle_dirs_first`・`cycle_path_style`・`toggle_wrap` — ツリーの `s` と `p` は既定では割り当てられていません(`,` メニューにあります)。戻したいときは `open_sort_menu` / `cycle_path_style` を好きなキーに割り当ててください
+- **並べ替えと表示のオプション**(`,` メニュー): `open_sort_menu`・`sort_name`・`sort_size`・`sort_modified`・`sort_ext`・`sort_toggle_reverse`・`sort_toggle_dirs_first`・`cycle_path_style`・`toggle_wrap` — ツリーの `s` と `p` は既定では割り当てられていません(`,` メニューにあります)。戻したいときは `open_sort_menu`(今いる画面の `,` メニューを開く)/ `cycle_path_style` を好きなキーに割り当ててください
 - **ブックマーク**: `mark_set`(`m`)・`mark_jump`(`'` = 一覧を開く。一覧内の素の英字はジャンプ)・`bookmark_edit`(`ctrl-e`)・`bookmark_delete`(単キー無し: ブックマーク一覧の `Space` メニューの `d`)・`bookmark_close`。`m`/`'` はツリーとプレビューの両面に既定割当(プレビューでは表示中ファイルを登録)。
 - **コピー**(`y` メニュー): `copy_name`・`copy_relative`・`copy_full`・`copy_parent`・`copy_at_ref`(AI チャット用 `@相対パス`)・`copy_code_block`(`y c` = `Tab` でフォーカス中の Markdown コードブロックをコピー。フォーカス中のときだけメニューに出ます)
 - **ファイル管理**(ツリーの `Space` メニュー): `file_create`・`file_rename`・`file_delete`・`file_copy`・`file_cut`・`file_paste`・`file_duplicate`(`Space→D`=カーソル/選択をその場に複製。例 `note copy.md`)

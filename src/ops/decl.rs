@@ -191,10 +191,9 @@ pub fn decl(a: Action) -> Decl {
         #[cfg(feature = "git")]
         A::GitGraphPickerApply => d(Some(M::FtApply), None),
 
-        // The version-control screens
+        // The version-control screens, and the filter every list shares
         #[cfg(feature = "git")]
         A::GitScreenNext | A::GitScreenPrev => d(Some(M::FtScreens), Some(M::GitScreensHelp)),
-        #[cfg(feature = "git")]
         A::ListFilterStart => d(Some(M::HintSearch), Some(M::ListFilterHelp)),
 
         // Branches and worktrees

@@ -947,11 +947,12 @@ fn e2e_sort_menu_switches_order() {
     let dir = sandbox("sort");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('s');
-    s.see("sort"); // the sort menu's footer/display
+    s.key(',');
+    s.see("Sort & display"); // the `,` menu's which-key line
     s.key('s'); // by size
                 // The menu closes and the order has changed (directories still stay first).
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(s.app.pending_leader, None);
+    assert_eq!(s.app.sort.key, crate::app::SortKey::Size);
 }
 
 // =============================================================================
@@ -4536,16 +4537,22 @@ fn e2e_sort_reverse_flips_order() {
     seed_files(&dir);
     let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     let before: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
-    s.key('s');
-    s.key('r'); // reverse toggle (toggle-type items keep the menu open so several can be switched — as designed)
-    assert!(
-        s.app.is_sort_menu(),
-        "r/. はトグルなのでメニューは開いたまま"
+    s.key('s'); // `open_sort_menu` opens the `,` menu
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Options));
+    s.key('r'); // reverse toggle (the `,` menu closes after the one operation)
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu is one-shot: r closes it (the old overlay stayed open for toggles)"
     );
     let after: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_ne!(before, after, "反転で並びが変わる");
-    s.esc(); // close the menu
-    assert!(!s.app.is_sort_menu(), "Esc でメニューが閉じる");
+    // And Esc closes an open menu without sorting.
+    s.key('s');
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Options));
+    s.esc();
+    assert_eq!(s.app.pending_leader, None, "Esc でメニューが閉じる");
+    let again: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(after, again, "Esc sorts nothing");
 }
 
 #[test]
@@ -10407,7 +10414,10 @@ fn e2e_sort_by_size_orders_ascending() {
     assert_eq!(names, vec!["aaa.txt", "bbb.txt", "ccc.txt"]);
     s.key('s');
     s.key('s');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -10433,7 +10443,10 @@ fn e2e_sort_by_modified_orders_ascending() {
     let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     s.key('s');
     s.key('m');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -10461,7 +10474,10 @@ fn e2e_sort_by_ext_orders_ascending() {
     assert_eq!(names, vec!["aaa.zzz", "mmm.mmm", "zzz.aaa"]);
     s.key('s');
     s.key('e');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -12354,8 +12370,8 @@ fn e2e_ui_sort_config_sets_initial_order_without_pressing_s() {
         vec!["bbb.txt", "ccc.txt", "aaa.txt"],
         "sort.key=\"size\" は起動時からサイズ順のはず(sメニュー不要)"
     );
-    assert!(
-        !s_cfg.app.is_sort_menu(),
+    assert_eq!(
+        s_cfg.app.pending_leader, None,
         "メニューを開かず既に反映済みのはず"
     );
 }
@@ -20546,6 +20562,9 @@ mod ops_keys;
 
 #[cfg(test)]
 mod menus;
+
+#[cfg(test)]
+mod overlay_lists;
 
 #[cfg(test)]
 mod newkeys;

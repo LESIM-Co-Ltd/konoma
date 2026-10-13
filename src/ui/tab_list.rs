@@ -9,6 +9,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::app::list_filter::ListId;
 use crate::app::App;
 use crate::i18n::tr;
 
@@ -18,10 +19,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut sel_line: u16 = 0;
 
+    // The `/` filter narrows the rows that are drawn; `sel` and `active` index all the tabs.
+    let shown = app.list_visible(ListId::Tabs);
     for i in 0..app.tab_count() {
+        if shown.as_ref().is_some_and(|v| v.binary_search(&i).is_err()) {
+            continue;
+        }
         let marker = if i == active { "●" } else { " " };
-        let root = crate::app::home_relative(&app.tab_root(i));
-        let row = format!(" {marker} {}:{}  —  {root}", i + 1, app.tab_label(i));
+        let row = format!(" {marker} {}", app.tab_row_text(i));
         if i == sel {
             sel_line = lines.len() as u16;
             lines.push(Line::from(row).reversed());
@@ -53,8 +58,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(inner_h.saturating_sub(1))
         .min(max_scroll);
 
+    // A query shows as " /<query>" after the title.
+    let q = app.list_filter_query(ListId::Tabs);
+    let title = if q.is_empty() {
+        tr(app.lang, crate::i18n::Msg::TabsTitle).to_string()
+    } else {
+        format!(
+            "{} /{q} ",
+            tr(app.lang, crate::i18n::Msg::TabsTitle).trim_end()
+        )
+    };
     let block = Block::bordered()
-        .title(tr(app.lang, crate::i18n::Msg::TabsTitle))
+        .title(title)
         .border_style(Style::new().fg(Color::Cyan));
     let para = Paragraph::new(lines)
         .block(block)

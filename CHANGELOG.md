@@ -38,7 +38,9 @@ All notable changes to konoma are documented in this file. The format is based o
 - **`/` filters the changes list, the log and the graph** by the text each row shows (case-insensitive), the way it already filtered
   the branch and worktree lists, with the same input line in the footer, `Enter` to keep the query and `Esc` to drop it (a second
   `Esc` leaves the screen). All five lists now share one filter, so a pasted text also reaches the worktree list's query.
-  Action name: `list_filter_start`.
+  **The outline / page list, the tab list and the bookmark list filter the same way** (the query shows in the title and starts
+  empty each time the list opens; in the bookmark list the letters are text while you type, and a hidden row cannot be deleted
+  or edited). Action name: `list_filter_start`.
 - **`n` / `N` step through the changes when nothing is being searched**: in a code or text preview to the next / previous block of
   the git change gutter, in a rendered document to the next / previous changed block, in a diff to the next / previous change
   block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files stays on `Ctrl-n` / `Ctrl-p`). While a
@@ -61,7 +63,8 @@ All notable changes to konoma are documented in this file. The format is based o
   down under `ui.keys = "less"` (`f` does); the branch and worktree lists create with `c` (it was `n`, the next match);
   the graph's base is cleared by `x` only (`0` is the line start); the graph's branch panel shows the current branch only
   with `c` (it was `n`) and applies with `l`; in every list of the Git screens `l` opens (what `Enter` does) and `h` goes
-  back. The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
+  back, and so it is in the outline / page list and the tab list (the bookmark list keeps `h` and `l` as bookmark names, like
+  every other letter). The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
   have no default key: the first three are in the `,` menu and the log and the graph are reached with `Tab`, and `[keys]`
   can still bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
   The footer and the `?` help show the new keys by themselves, as they are set.
@@ -72,7 +75,10 @@ All notable changes to konoma are documented in this file. The format is based o
   single one and a letter otherwise, so an operation whose key was moved or lost is still one keystroke away; in the tree it is
   still the file menu. `y` opens the copy menu of the screen (paths, a table's cell / row / column, a commit's fields, a branch
   name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes the menu of that context only; the old
-  `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as the tree's `,` menu. The bookmark list deletes
+  `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as the tree's `,` menu. The `Space` menu lists its
+  operations in the order of the screen's footer (the ones used most first, then the rest in the help's order) and calls them by the
+  footer's short labels. The old sort overlay is gone: `open_sort_menu` opens the `,` menu of the screen you are on, which closes
+  after one choice (the overlay stayed open for reverse and folders-first). The bookmark list deletes
   with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
 - **Key tables are per context, not per screen.** `[keys.<context>]` is keyed by what you are looking at: `text` (source and
   plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are separate, and the version-control screens

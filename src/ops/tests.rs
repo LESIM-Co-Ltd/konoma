@@ -524,7 +524,6 @@ fn is_overlay_nav(ctx: Context, a: Action) -> bool {
             | Context::Tabs
             | Context::Outline
             | Context::Info
-            | Context::Sort
             | Context::Help
             | Context::TableCell
             | Context::TextVisual
@@ -534,6 +533,7 @@ fn is_overlay_nav(ctx: Context, a: Action) -> bool {
         && matches!(
             a,
             Action::Navigate(_)
+                | Action::ListFilterStart
                 | Action::BookmarkClose
                 | Action::ToggleTabList
                 | Action::ToggleOutline

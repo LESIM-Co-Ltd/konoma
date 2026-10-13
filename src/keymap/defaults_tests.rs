@@ -24,7 +24,6 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::DialogConfirmQuit,
         Surface::DialogConfirmBookmark,
         Surface::Help,
-        Surface::Sort,
         Surface::Bookmarks,
         Surface::Tabs,
         Surface::Outline,
@@ -36,12 +35,12 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::PreviewTextVisual,
         Surface::PreviewImage,
         Surface::PreviewTable,
+        Surface::ListFilter,
     ];
     #[cfg(feature = "git")]
     v.extend([
         Surface::BranchFilter,
         Surface::WorktreeFilter,
-        Surface::ListFilter,
         Surface::GitDetail,
         Surface::GitLog,
         Surface::GitGraph,
@@ -66,18 +65,18 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::DialogConfirmQuit => 7,
         Surface::DialogConfirmBookmark => 8,
         Surface::Help => 9,
-        Surface::Sort => 10,
-        Surface::Bookmarks => 11,
-        Surface::Tabs => 12,
-        Surface::Outline => 13,
-        Surface::Info => 14,
-        Surface::TableCell => 15,
-        Surface::Visual => 16,
-        Surface::Tree => 17,
-        Surface::PreviewText => 18,
-        Surface::PreviewTextVisual => 19,
-        Surface::PreviewImage => 20,
-        Surface::PreviewTable => 21,
+        Surface::Bookmarks => 10,
+        Surface::Tabs => 11,
+        Surface::Outline => 12,
+        Surface::Info => 13,
+        Surface::TableCell => 14,
+        Surface::Visual => 15,
+        Surface::Tree => 16,
+        Surface::PreviewText => 17,
+        Surface::PreviewTextVisual => 18,
+        Surface::PreviewImage => 19,
+        Surface::PreviewTable => 20,
+        Surface::ListFilter => 21,
         #[cfg(feature = "git")]
         Surface::BranchFilter => 22,
         #[cfg(feature = "git")]
@@ -98,8 +97,6 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::GitWorktrees => 30,
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => 31,
-        #[cfg(feature = "git")]
-        Surface::ListFilter => 32,
     }
 }
 
@@ -109,7 +106,7 @@ fn the_surface_list_is_complete() {
     let mut ords: Vec<usize> = all.iter().map(|&s| surface_ordinal(s)).collect();
     ords.sort_unstable();
     let expected: Vec<usize> = if cfg!(feature = "git") {
-        (0..33).collect()
+        (0..32).collect()
     } else {
         (0..22).collect()
     };
@@ -514,10 +511,9 @@ fn the_git_screens_use_a_layer_four_key_only_where_no_layer_reserves_it() {
 #[test]
 fn layer_one_keys_mean_the_same_in_every_context() {
     let m = KeyMap::defaults(KeyScheme::Vim);
-    // Contexts whose letters are not a cursor's keys: the old sort overlay (kept only for
-    // `open_sort_menu`; the `,` menu replaced it) and the info popup are one-shot pickers with
-    // their own letters.
-    let pickers = [Context::Sort, Context::Info];
+    // Contexts whose letters are not a cursor's keys: the info popup is a one-shot picker with its
+    // own letters.
+    let pickers = [Context::Info];
     // key -> the operations that mean the same thing for it. Anything else is a violation.
     let same_meaning = |kp: KeyPress| -> Vec<String> {
         let nav = |mo: Motion| action_name(Action::Navigate(mo));
@@ -539,6 +535,9 @@ fn layer_one_keys_mean_the_same_in_every_context() {
                 action_name(Action::TreeLeave),
                 "git_close".to_string(),
                 "worktree_close".to_string(),
+                // The outline / page list and the tab list: back (`q`).
+                action_name(Action::ToggleOutline),
+                action_name(Action::ToggleTabList),
             ],
             "l" => vec![
                 nav(Motion::Right),
@@ -548,6 +547,9 @@ fn layer_one_keys_mean_the_same_in_every_context() {
                 "branch_checkout".to_string(),
                 "worktree_goto".to_string(),
                 "git_graph_picker_apply".to_string(),
+                // The outline / page list and the tab list: open (`Enter`).
+                action_name(Action::OutlineJump),
+                action_name(Action::TabListActivate),
             ],
             // q: go back / close, whatever there is to close.
             "q" => vec![
@@ -1042,7 +1044,12 @@ fn several_tables_at_once_merge_each_into_its_own_contexts() {
             Resolution::Action(Action::Navigate(Motion::Top))
         );
         assert_eq!(at(Context::Table, 'J'), Resolution::Unbound);
-        assert_eq!(at(Context::Sort, 'n'), Resolution::Unbound);
+        // `[keys.sort] n = noop` takes the letter out of the tree's `,` menu, where the old sort
+        // overlay's letters live now.
+        assert_eq!(
+            m.resolve_leader(Context::Tree, LeaderId::Options, KeyPress::ch('n')),
+            Resolution::Unbound
+        );
         assert_eq!(
             at(Context::Bookmarks, 'e'),
             Resolution::Action(Action::Refresh)

@@ -566,7 +566,8 @@ code_theme = "TwoDark"
 #                    [external] office_apps と open_links で止められる)
 #   並べ替え/表示: ツリーとプレビューの `,` メニュー。"open_sort_menu" "sort_name" "sort_size" "sort_modified" "sort_ext"
 #                  "sort_toggle_reverse" "sort_toggle_dirs_first" "cycle_path_style" "toggle_wrap"
-#                  (既定キー無し: ツリーの旧 s と p は `,` メニューにある。キーを戻したければ割り当てる)
+#                  (既定キー無し: ツリーの旧 s と p は `,` メニューにある。キーを戻したければ割り当てる。
+#                    "open_sort_menu" は今いる画面の `,` メニューを開く。旧ソートの重ね物は無くなった)
 #   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change" / "jump_prev_change"
 #                    (ツリーの n / N、diff の Ctrl-n / Ctrl-p = 次/前の変更ファイル)
 #                  "diff_next_change" / "diff_prev_change"(diff の n / N = ファイル内の次/前の変更ブロック)
@@ -663,7 +664,7 @@ code_theme = "TwoDark"
 # "t" = "tab_new"              # 旧「末尾に新規タブ」のキー
 # [keys.tree]
 # o = "open_git_view"          # 旧 Git ハブのキー(今は p。o はファイルを他のアプリで開く)
-# s = "open_sort_menu"         # 旧ソートメニューのキー(今は `,` メニュー)
+# s = "open_sort_menu"         # 旧ソートメニューのキー(`,` メニューを開く)
 #
 # 例(コメントを外して使う):
 # [keys.tree]

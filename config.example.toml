@@ -605,7 +605,8 @@ code_theme = "TwoDark"
 #                    [external] office_apps and open_links switch it off)
 #   Sort/display : the `,` menu of the tree and previews. "open_sort_menu" "sort_name" "sort_size" "sort_modified" "sort_ext"
 #                  "sort_toggle_reverse" "sort_toggle_dirs_first" "cycle_path_style" "toggle_wrap"
-#                  (no default keys: the tree's old s and p are in the `,` menu; bind them if you want the keys back)
+#                  (no default keys: the tree's old s and p are in the `,` menu; bind them if you want the keys back.
+#                    "open_sort_menu" opens the `,` menu of the screen you are on; the old sort overlay is gone)
 #   Agent Watch  : "toggle_changed_filter" (C: show only changed files) "jump_next_change" / "jump_prev_change"
 #                    (n / N in the tree; Ctrl-n / Ctrl-p in a diff: next / previous changed FILE)
 #                  "diff_next_change" / "diff_prev_change" (n / N in a diff: next / previous change block of the file)
@@ -707,7 +708,7 @@ code_theme = "TwoDark"
 # "t" = "tab_new"              # the old "append a tab at the end" key
 # [keys.tree]
 # o = "open_git_view"          # the old Git hub key (p now; o opens the file in another app)
-# s = "open_sort_menu"         # the old sort menu key (now in the `,` menu)
+# s = "open_sort_menu"         # the old sort menu key (opens the `,` menu)
 #
 # Example (uncomment to use):
 # [keys.tree]

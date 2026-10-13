@@ -4097,25 +4097,20 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     assert_eq!(names(&app), vec!["zdir", "a.md", "b.txt", "c.log"]);
 
     // Size ascending (directories still pinned first): files are 10<30<50 = b,a,c.
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap();
     assert_eq!(names(&app), vec!["zdir", "b.txt", "a.md", "c.log"]);
-    assert!(!app.is_sort_menu(), "基準選択(n/s/m/e)でメニューは閉じる");
 
-    // Reversed (size descending): large→small = c,a,b. Toggling keeps the menu open.
-    app.open_sort_menu();
+    // Reversed (size descending): large→small = c,a,b.
     app.sort_menu_key('r').unwrap();
-    assert!(app.is_sort_menu(), "トグル(r/.)はメニューを開いたまま");
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 
     // Turn off directories-first and go back to name ascending → dirs get mixed in by name too.
     app.sort_menu_key('.').unwrap(); // dirs_first off
     app.sort_menu_key('r').unwrap(); // reverse off (back to normal)
-    app.sort_menu_key('n').unwrap(); // name (closes the menu on selection)
+    app.sort_menu_key('n').unwrap(); // name
     assert_eq!(names(&app), vec!["a.md", "b.txt", "c.log", "zdir"]);
 
     // Extension ascending (dirs_first off): "" < log < md < txt = zdir, c.log, a.md, b.txt.
-    app.open_sort_menu();
     app.sort_menu_key('e').unwrap();
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 }
@@ -6445,17 +6440,20 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     assert!(!app.tab.show_hidden && !has_dot(&app), "もう一度で隠れる");
 }
 
+/// The sort overlay is gone: sorting never puts a layer in front of the tree (the `,` menu is a
+/// leader, which is not a surface), whichever sort operation runs.
 #[test]
-fn sort_menu_open_and_close_toggles_flag() {
+fn sorting_never_opens_an_overlay() {
     let dir = unique_tmp("konoma_sortmenu_close_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    assert!(!app.is_sort_menu());
-    app.open_sort_menu();
-    assert!(app.is_sort_menu());
-    app.close_sort_menu();
-    assert!(!app.is_sort_menu(), "close_sort_menu でフラグが下りる");
+    assert_eq!(app.surface(), crate::keymap::Surface::Tree);
+    for c in ['s', 'r', '.', 'n'] {
+        app.sort_menu_key(c).unwrap();
+        assert_eq!(app.surface(), crate::keymap::Surface::Tree, "after {c}");
+        assert_eq!(app.internal_mode(), None, "after {c}");
+    }
 }
 
 #[test]
@@ -20285,12 +20283,6 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::Mark),
         },
         LayerCase {
-            name: "Sort / Sort",
-            setup: |a| a.sort_menu = true,
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
-        },
-        LayerCase {
             name: "Search / Search",
             setup: |a| a.tab.search_input = Some(String::new()),
             surface: S::Search,
@@ -20477,22 +20469,13 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::Filter),
         },
         LayerCase {
-            name: "order: search beats the sort menu",
+            name: "order: search beats mark",
             setup: |a| {
                 a.tab.search_input = Some(String::new());
-                a.sort_menu = true;
+                a.mark_set_pending = true;
             },
             surface: S::Search,
             internal: Some(InternalMode::Search),
-        },
-        LayerCase {
-            name: "order: sort beats mark",
-            setup: |a| {
-                a.sort_menu = true;
-                a.mark_set_pending = true;
-            },
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
         },
         LayerCase {
             name: "order: mark beats the bookmark list",
@@ -20510,6 +20493,49 @@ fn layer_cases() -> Vec<LayerCase> {
                 a.tab_list = true;
             },
             surface: S::Bookmarks,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the bookmark list's /query input",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the tab list's /query input",
+            setup: |a| {
+                a.tab_list = true;
+                a.tab_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Tabs),
+        },
+        LayerCase {
+            name: "overlay filter: the outline's /query input",
+            setup: |a| {
+                a.outline_open = true;
+                a.outline_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Outline),
+        },
+        LayerCase {
+            name: "overlay filter: typing into a closed overlay does not capture keys",
+            setup: |a| a.outline_filtering = true,
+            surface: S::Tree,
+            internal: None,
+        },
+        LayerCase {
+            name: "order: the bookmark filter beats the tab list",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+                a.tab_list = true;
+            },
+            surface: S::ListFilter,
             internal: Some(InternalMode::Bookmarks),
         },
         LayerCase {
@@ -20916,7 +20942,6 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::Filter,
         M::ChangedFilter,
         M::Search,
-        M::Sort,
         M::Mark,
         M::Bookmarks,
         M::Tabs,
@@ -20964,7 +20989,6 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::Filter => "Filter",
         M::ChangedFilter => "ChangedFilter",
         M::Search => "Search",
-        M::Sort => "Sort",
         M::Mark => "Mark",
         M::Bookmarks => "Bookmarks",
         M::Tabs => "Tabs",
@@ -21009,7 +21033,7 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::DialogConfirmQuit,
         S::DialogConfirmBookmark,
         S::Help,
-        S::Sort,
+        S::ListFilter,
         S::Bookmarks,
         S::Tabs,
         S::Outline,
@@ -21183,6 +21207,60 @@ fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
     }
 }
 
+/// The `/` filter of the overlay lists (bookmarks, tabs, outline) behaves like the git lists': its
+/// own text-input surface for the keys, the overlay's own chip, the `/query` prompt in the footer.
+#[test]
+fn an_overlay_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
+    let dir = layer_fixture();
+    for (name, list, filtering, mode) in [
+        (
+            "bookmarks",
+            (|a: &mut App| a.bookmark_list = true) as fn(&mut App),
+            (|a: &mut App| a.bookmark_list_filtering = true) as fn(&mut App),
+            InternalMode::Bookmarks,
+        ),
+        (
+            "tabs",
+            (|a: &mut App| a.tab_list = true) as fn(&mut App),
+            (|a: &mut App| a.tab_list_filtering = true) as fn(&mut App),
+            InternalMode::Tabs,
+        ),
+        (
+            "outline",
+            (|a: &mut App| a.outline_open = true) as fn(&mut App),
+            (|a: &mut App| a.outline_filtering = true) as fn(&mut App),
+            InternalMode::Outline,
+        ),
+    ] {
+        let mut app = layer_app(&dir);
+        list(&mut app);
+        let footer_before: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: chip before");
+        assert_ne!(app.surface(), crate::keymap::Surface::ListFilter, "{name}");
+
+        filtering(&mut app);
+        assert_eq!(
+            app.surface(),
+            crate::keymap::Surface::ListFilter,
+            "{name}: the keymap must switch to the text-input surface"
+        );
+        assert!(app.surface().is_text_input(), "{name}");
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: the chip stays");
+        assert_eq!(app.key_context(), None, "{name}: no keymap while typing");
+        let footer_after: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_after.starts_with('/') && footer_after != footer_before,
+            "{name}: the footer must show the /query prompt: {footer_after:?}"
+        );
+    }
+}
+
 /// The priority order is written down once — as the order of `UiLayer`'s variants, which
 /// `App::frontmost_layer` walks. This checks the two really do agree, so the enum can be read as
 /// the order: turn on everything that can be on at once, then repeatedly ask for the frontmost
@@ -21212,11 +21290,13 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
     }
     app.tab.filter_input = Some(String::new());
     app.tab.search_input = Some(String::new());
-    app.sort_menu = true;
     app.mark_set_pending = true;
     app.bookmark_list = true;
+    app.bookmark_list_filtering = true;
     app.tab_list = true;
+    app.tab_list_filtering = true;
     app.outline_open = true;
+    app.outline_filtering = true;
     app.show_info = true;
     app.table_cell_open = true;
     app.tab.visual_anchor = Some(0);
@@ -22922,7 +23002,6 @@ fn sort_menu_key_keeps_the_changed_filter_active() {
     let changed_before: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_eq!(changed_before.len(), 3, "土台: 変更3件");
 
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap(); // switch sort key to Size
 
     assert!(

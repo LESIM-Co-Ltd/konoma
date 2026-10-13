@@ -1650,14 +1650,8 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
         Surface::Outline => match m {
             Motion::Up => app.outline_move(-1),
             Motion::Down => app.outline_move(1),
-            Motion::Top => {
-                let d = -(app.outline_sel() as i32);
-                app.outline_move(d);
-            }
-            Motion::Bottom => {
-                let d = (app.outline_len() as i32 - 1) - app.outline_sel() as i32;
-                app.outline_move(d);
-            }
+            Motion::Top => app.outline_to_edge(false),
+            Motion::Bottom => app.outline_to_edge(true),
             _ => {}
         },
         // Table-cell full-text popup: it's likely wrapped long text, so up/down scroll + paging.
@@ -1776,7 +1770,13 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
             app.reload_front_list();
         }
         Action::CyclePathStyle => app.cycle_path_style(),
-        Action::OpenSortMenu => app.open_sort_menu(),
+        // The old sort overlay is gone: `open_sort_menu` is another name for the `,` menu of the
+        // frontmost context (the tree's holds the sort letters).
+        Action::OpenSortMenu => {
+            if ops::menu::opens(app, ctx, keymap::LeaderId::Options) {
+                app.pending_leader = Some(keymap::LeaderId::Options);
+            }
+        }
         Action::MarkSet => app.start_mark_set(),
         // `'`: instead of the old invisible "waiting to jump" state, open the bookmark list
         // immediately (which-key style).
@@ -1907,7 +1907,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::GitScreenNext => app.git_screen_cycle(1),
         #[cfg(feature = "git")]
         Action::GitScreenPrev => app.git_screen_cycle(-1),
-        #[cfg(feature = "git")]
         Action::ListFilterStart => {
             if let Some(l) = app.front_list() {
                 app.list_filter_start(l);
@@ -2016,15 +2015,27 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
 }
 
 /// The list screen a `/` filter belongs to, as the surface its movement keys are dispatched on.
-#[cfg(feature = "git")]
 fn list_surface(l: app::list_filter::ListId) -> Surface {
     use app::list_filter::ListId;
     match l {
+        #[cfg(feature = "git")]
         ListId::Changes => Surface::GitChanges,
+        #[cfg(feature = "git")]
         ListId::Log => Surface::GitLog,
+        #[cfg(feature = "git")]
         ListId::Graph => Surface::GitGraph,
+        #[cfg(feature = "git")]
         ListId::Branches => Surface::GitBranches,
+        #[cfg(feature = "git")]
         ListId::Worktrees => Surface::GitWorktrees,
+        // The version-control lists exist only in a build with `git`; there is nothing to move.
+        #[cfg(not(feature = "git"))]
+        ListId::Changes | ListId::Log | ListId::Graph | ListId::Branches | ListId::Worktrees => {
+            Surface::Tree
+        }
+        ListId::Bookmarks => Surface::Bookmarks,
+        ListId::Tabs => Surface::Tabs,
+        ListId::Outline => Surface::Outline,
     }
 }
 
@@ -2077,7 +2088,6 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.git_branch_filter_push(c),
             _ => {}
         },
-        #[cfg(feature = "git")]
         Surface::ListFilter => {
             let Some(l) = app.filtering_list() else {
                 return Ok(false);
@@ -2157,12 +2167,40 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     match sfc {
         Surface::Help => app.show_help = false,
         Surface::Visual => app.exit_visual_cancel(),
-        Surface::Sort => app.close_sort_menu(),
         Surface::Info => app.toggle_info(),
         Surface::TableCell => app.toggle_table_cell_view(),
-        Surface::Bookmarks => app.close_bookmark_list(),
-        Surface::Tabs => app.toggle_tab_list(),
-        Surface::Outline => app.toggle_outline(),
+        // With a query kept by `Enter`, `Esc` clears it first and a second one closes the list (as
+        // the version-control lists do); `q` and `h` close either way.
+        Surface::Bookmarks => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Bookmarks)
+                .is_empty()
+            {
+                app.close_bookmark_list();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Bookmarks);
+            }
+        }
+        Surface::Tabs => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Tabs)
+                .is_empty()
+            {
+                app.toggle_tab_list();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Tabs);
+            }
+        }
+        Surface::Outline => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Outline)
+                .is_empty()
+            {
+                app.toggle_outline();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Outline);
+            }
+        }
         Surface::Tree => {
             // Esc with a query clears the filter; without one, clears the selection (legacy tree behavior).
             if app.filter_query().is_some() {
