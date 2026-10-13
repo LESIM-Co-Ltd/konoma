@@ -17,7 +17,7 @@ use image::DynamicImage;
 use konoma_plugin::view::{ImageData, ImageView, Layout, PageLayout, View, ViewReq};
 use konoma_plugin::{
     t, Bind, Failure, FailureKind, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Session,
-    SettingDecl, Value, Verb, VerbDecl, ViewCx,
+    SettingDecl, Unavailable, Value, Verb, VerbDecl, ViewCx, ViewKind,
 };
 
 /// The ids of the four plugins.
@@ -55,6 +55,9 @@ pub fn svg_manifest() -> Manifest {
     default_verbs(
         manifest(SVG_ID, t!(en: "SVG", ja: "SVG"))
             .bind(Bind::files(["*.svg"]))
+            .shows(ViewKind::Image)
+            // An SVG that cannot be drawn is still XML text, with the reason above it.
+            .unavailable(Unavailable::RawText { with_reason: true })
             .setting(SettingDecl::new(
                 "max_px",
                 Value::Int(SVG_MAX_PX),
@@ -65,17 +68,38 @@ pub fn svg_manifest() -> Manifest {
 
 /// The declarations of the `image` plugin.
 pub fn image_manifest() -> Manifest {
-    default_verbs(manifest(IMAGE_ID, t!(en: "Image", ja: "画像")).bind(Bind::mime("image/*")))
+    default_verbs(
+        manifest(IMAGE_ID, t!(en: "Image", ja: "画像"))
+            .bind(Bind::mime("image/*"))
+            .shows(ViewKind::Image)
+            .unavailable(Unavailable::Picture),
+    )
 }
 
 /// The declarations of the `video` plugin.
 pub fn video_manifest() -> Manifest {
-    default_verbs(manifest(VIDEO_ID, t!(en: "Video", ja: "動画")).bind(Bind::mime("video/*")))
+    default_verbs(
+        manifest(VIDEO_ID, t!(en: "Video", ja: "動画"))
+            .bind(Bind::mime("video/*"))
+            .shows(ViewKind::Image)
+            .unavailable(Unavailable::Notice(t!(
+                en: "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)",
+                ja: "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)",
+            ))),
+    )
 }
 
 /// The declarations of the `pdf` plugin.
 pub fn pdf_manifest() -> Manifest {
-    default_verbs(manifest(PDF_ID, t!(en: "PDF", ja: "PDF")).bind(Bind::files(["*.pdf"])))
+    default_verbs(
+        manifest(PDF_ID, t!(en: "PDF", ja: "PDF"))
+            .bind(Bind::files(["*.pdf"]))
+            .shows(ViewKind::Image)
+            .unavailable(Unavailable::Notice(t!(
+                en: "[pdf] cannot render — use a kitty-graphics terminal (or this PDF is encrypted/corrupt)",
+                ja: "[PDF] 表示不可 — kitty graphics 対応端末を使ってください(または暗号化/破損した PDF です)",
+            ))),
+    )
 }
 
 /// The path of a file input, or why the input is not one.

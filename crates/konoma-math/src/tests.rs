@@ -97,3 +97,36 @@ fn it_opens_only_a_formula() {
         .open(embed("fence:mermaid", "x", false), &OpenCx::bare())
         .is_err());
 }
+
+#[test]
+fn only_a_color_that_paints_something_reaches_the_svg() {
+    // The color is pasted into the SVG as it is, so whatever the parser does not take whole
+    // (a quote and a tag) never gets there, whoever hands the value over.
+    assert_eq!(visible_color("#ff0000"), "#ff0000");
+    assert_eq!(visible_color("  rgb(1, 2, 3) "), "rgb(1, 2, 3)");
+    assert_eq!(visible_color("red"), "red");
+    for bad in [
+        "",
+        "none",
+        "transparent",
+        "rgba(0,0,0,0)",
+        "#12",
+        "red\"/><script>x</script><path fill=\"red",
+        "url(#a)",
+    ] {
+        assert_eq!(visible_color(bad), DEFAULT_COLOR, "{bad:?}");
+    }
+}
+
+#[test]
+fn the_plugin_checks_the_color_it_is_given() {
+    let mut settings = Settings::new();
+    settings.set(
+        "color",
+        Value::Str("red\"/><script>x</script><path fill=\"red".into()),
+    );
+    let svg = svg_of(view(embed("math", "x", false), &settings).expect("draws"));
+    let text = String::from_utf8(svg).unwrap();
+    assert!(!text.contains("<script"), "{text}");
+    assert!(text.contains(DEFAULT_COLOR), "falls back to the default");
+}

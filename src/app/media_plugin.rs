@@ -22,32 +22,48 @@ use super::*;
 
 /// The reason an image failure shows for a plugin's `Failure`. The pictures that have a fixed
 /// fallback text of their own (a PDF, a video) show that text, so they have no reason here.
+///
+/// What a failure is explained as follows from the plugin's declared `Unavailable`, not from its
+/// id: a plugin whose file is still text when it cannot be drawn (`RawText { with_reason: true }`,
+/// the SVG one) gets the vector-file reasons, one that names the host's picture frame
+/// (`Picture`, the image one) gets the picture reasons, and any other (a PDF, a video, a plugin
+/// the user installed) shows the failure's own message instead.
 pub(super) fn image_failure_of(
     id: &str,
     f: &Failure,
 ) -> Option<crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     use crate::preview::svg_guard::SvgFail;
-    match (id, f.kind) {
+    use konoma_plugin::Unavailable;
+    match (crate::plugins::unavailable_of(id), f.kind) {
         (_, FailureKind::Cancelled) => Some(ImageFailure::Cancelled),
-        (konoma_media::SVG_ID, FailureKind::TooLarge) => Some(ImageFailure::Svg(SvgFail::TooLarge)),
-        (konoma_media::SVG_ID, _) => Some(ImageFailure::Svg(SvgFail::Invalid)),
-        (konoma_media::IMAGE_ID, FailureKind::TooLarge | FailureKind::TooHeavy) => {
+        (Unavailable::RawText { with_reason: true }, FailureKind::TooLarge) => {
+            Some(ImageFailure::Svg(SvgFail::TooLarge))
+        }
+        (Unavailable::RawText { with_reason: true }, _) => {
+            Some(ImageFailure::Svg(SvgFail::Invalid))
+        }
+        (Unavailable::Picture, FailureKind::TooLarge | FailureKind::TooHeavy) => {
             Some(ImageFailure::TooLarge)
         }
-        (konoma_media::IMAGE_ID, FailureKind::Unsupported) => Some(ImageFailure::UnsupportedFormat),
-        (konoma_media::IMAGE_ID, _) => Some(ImageFailure::Corrupt),
+        (Unavailable::Picture, FailureKind::Unsupported) => Some(ImageFailure::UnsupportedFormat),
+        (Unavailable::Picture, _) => Some(ImageFailure::Corrupt),
         _ => None,
     }
 }
 
 /// Decode what a picture plugin returned into the host's media payload. `None` is a failure with
 /// no reason to show (the render side falls back), as for any media job.
+///
+/// `trust_own_svg` is whether the host believes the plugin's `trusted` claim on an SVG it returns
+/// (`plugins::draws_own_svg`: decided by where the plugin comes from). Without it every SVG is
+/// drawn by the supervised child process; with no `base_dir` such an SVG reads no file.
 pub(super) fn decode_image_view(
     iv: ImageView,
     path: &Path,
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
+    trust_own_svg: bool,
 ) -> Option<MediaPayload> {
     use crate::preview::image::ImageFailure;
     let cancelled = || cancel.is_some_and(|c| c.is_cancelled());
@@ -74,12 +90,22 @@ pub(super) fn decode_image_view(
                 (Some(dir), Some(name)) => dir.join(name),
                 _ => path.to_path_buf(),
             };
-            let img = if trusted {
-                crate::preview::svg::rasterize_trusted(&data, &base, max_px)?
-            } else {
+            let (img, trust) = if trusted && trust_own_svg {
+                (
+                    crate::preview::svg::rasterize_trusted(&data, &base, max_px)?,
+                    SvgTrust::Trusted(base),
+                )
+            } else if base_dir.is_some() {
                 // A file the user opened: drawn by a supervised child process.
                 match crate::preview::svg::rasterize_untrusted(&data, &base, max_px, &cancelled) {
-                    Ok(img) => img,
+                    Ok(img) => (img, SvgTrust::File(base)),
+                    Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
+                }
+            } else {
+                // The plugin names no directory: nothing to read relative to, so the drawing reads
+                // no file at all (the shown file's directory is not the SVG's).
+                match crate::preview::svg::rasterize_embedded(&data, max_px, &cancelled) {
+                    Ok(img) => (img, SvgTrust::Embedded),
                     Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
                 }
             };
@@ -87,6 +113,7 @@ pub(super) fn decode_image_view(
                 MediaPayload::Vector {
                     img,
                     svg: Arc::new(data.to_vec()),
+                    trust,
                 }
             } else {
                 MediaPayload::Static(img)
@@ -222,6 +249,29 @@ pub(crate) fn svg_file_payload(path: &Path, max_px: u32) -> Option<MediaPayload>
     )
     .run_on_the_spot()
     .into_image_payload()
+}
+
+/// Test seam: what the host makes of an SVG a plugin returned for the file `shown`, with the
+/// plugin's `base_dir` and its `trusted` claim; `trust_own` is whether the host believes the claim
+/// (a standard plugin that draws its own SVG).
+#[cfg(test)]
+pub(crate) fn svg_view_payload(
+    data: &[u8],
+    base_dir: Option<PathBuf>,
+    claims_trusted: bool,
+    trust_own: bool,
+    shown: &Path,
+) -> Option<MediaPayload> {
+    let view = ImageView {
+        data: ImageData::Svg {
+            data: Arc::from(data),
+            base_dir,
+            trusted: claims_trusted,
+        },
+        sharp_zoom: true,
+        raster_max_px: None,
+    };
+    decode_image_view(view, shown, 100, None, trust_own)
 }
 
 #[cfg(test)]

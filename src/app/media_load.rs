@@ -326,7 +326,7 @@ impl App {
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::ImageFailed(why) => self.set_image_failure(why),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
-            MediaPayload::Vector { img, svg } => {
+            MediaPayload::Vector { img, svg, trust } => {
                 use image::GenericImageView;
                 // The first raster's arrival = this size becomes the logical (layout) size. Later
                 // sharp rerasters swap only the pixel density (clear_image clears `logical` = reset
@@ -335,6 +335,7 @@ impl App {
                     self.image_logical = Some(img.dimensions());
                 }
                 self.vector_svg = Some(svg);
+                self.vector_trust = Some(trust);
                 self.set_static_image(img);
                 // If the zoom advanced further while the job was running, fire off one more to
                 // converge (returns immediately on the not-needed side if it's already sufficient /
@@ -551,6 +552,25 @@ impl App {
             .is_some_and(PreviewKind::is_media_plugin)
     }
 
+    /// Test-only: how the vector picture on screen is drawn again (`SvgTrust`).
+    #[cfg(test)]
+    pub fn vector_trust_for_test(&self) -> Option<&SvgTrust> {
+        self.vector_trust.as_ref()
+    }
+
+    /// Whether the preview is a picture plugin that names the host's picture frame as what to show
+    /// when it has no picture (`Unavailable::Picture`: the `image` plugin): the frame is drawn
+    /// even while there is nothing to show in it, with the reason or a general line.
+    pub fn shows_picture_frame_plugin(&self) -> bool {
+        match &self.tab.preview_kind {
+            Some(PreviewKind::Plugin { id, .. }) => {
+                crate::plugins::profile_of(id).image
+                    && crate::plugins::unavailable_of(id) == konoma_plugin::Unavailable::Picture
+            }
+            _ => false,
+        }
+    }
+
     /// Whether the preview is a file the plugin `id` shows.
     pub fn shows_plugin(&self, id: &str) -> bool {
         self.tab
@@ -673,9 +693,12 @@ impl App {
         if self.vector_reraster_inflight {
             return;
         }
-        let (Some(svg), Some(src), Some((lw, lh))) =
-            (&self.vector_svg, &self.image_src, self.image_logical)
-        else {
+        let (Some(svg), Some(trust), Some(src), Some((lw, lh))) = (
+            &self.vector_svg,
+            &self.vector_trust,
+            &self.image_src,
+            self.image_logical,
+        ) else {
             return;
         };
         let cur_side = src.dimensions().0.max(src.dimensions().1);
@@ -684,20 +707,15 @@ impl App {
         if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
             return;
         }
-        let base = self.tab.preview_path.clone().unwrap_or_default();
         // Don't spawn for the synchronous fallback (no media_tx = tests) — there's no room for
         // duplication there, so don't set the flag either.
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
         }
-        // A file's SVG is drawn by a supervised child process; a mermaid diagram (konoma's own
-        // output) in this one.
-        let untrusted = self
-            .tab
-            .preview_kind
-            .as_ref()
-            .is_some_and(|k| k.is_plugin(konoma_media::SVG_ID));
-        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want, untrusted));
+        // Drawn again the way it was drawn the first time: an SVG konoma made itself in this
+        // process, any other in the supervised child process (`SvgTrust`).
+        let job = MediaJob::SvgReraster(svg.clone(), trust.clone(), want);
+        self.spawn_or_sync_media(job);
     }
 
     /// Reset to 1x (fit). Zoom=1 and recenter. Applies to the focused inline diagram when no

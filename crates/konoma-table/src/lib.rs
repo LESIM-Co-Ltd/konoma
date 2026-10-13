@@ -13,7 +13,7 @@ use std::sync::Arc;
 use konoma_plugin::view::{Grid, TableView, View, ViewReq};
 use konoma_plugin::{
     t, Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Session, SettingDecl,
-    Value, Verb, VerbDecl, ViewCx,
+    Unavailable, Value, Verb, VerbDecl, ViewCx, ViewKind,
 };
 
 pub use archive::ArchiveKind;
@@ -46,6 +46,9 @@ pub fn csv_manifest() -> Manifest {
         Manifest::new(CSV_ID, env!("CARGO_PKG_VERSION"))
             .name(t!(en: "CSV / TSV", ja: "CSV / TSV"))
             .bind(Bind::files(["*.csv", "*.tsv"]))
+            .shows(ViewKind::Table)
+            // A table that cannot be read as a table is still text.
+            .unavailable(Unavailable::RawText { with_reason: false })
             .setting(SettingDecl::new(
                 "rainbow",
                 Value::Bool(true),
@@ -59,7 +62,13 @@ pub fn archive_manifest() -> Manifest {
     default_verbs(
         Manifest::new(ARCHIVE_ID, env!("CARGO_PKG_VERSION"))
             .name(t!(en: "Archive", ja: "アーカイブ"))
-            .bind(Bind::files(["*.{zip,tar,tgz}", "*.tar.gz"])),
+            .bind(Bind::files(["*.{zip,tar,tgz}", "*.tar.gz"]))
+            .shows(ViewKind::Table)
+            // The bytes of an archive are not text: say that it cannot be listed.
+            .unavailable(Unavailable::Notice(t!(
+                en: "[archive] cannot list entries — corrupt file or unsupported format",
+                ja: "[アーカイブ] 一覧化できません — 壊れたファイルか非対応形式です",
+            ))),
     )
 }
 

@@ -61,7 +61,15 @@ impl App {
             .preview_kind
             .as_ref()
             .is_some_and(PreviewKind::is_spreadsheet);
-        let is_pdf = self.shows_plugin(konoma_media::PDF_ID);
+        // A picture plugin with separate pages (a PDF's pages) lists them even before the page
+        // count is known: its layout says it has pages.
+        let is_pdf = self.shows_media_plugin()
+            && self.plugin.as_ref().is_some_and(|p| {
+                matches!(
+                    p.layout.pages,
+                    Some(konoma_plugin::view::PageLayout::Separate { .. })
+                )
+            });
         if self.is_document() || !(is_sheet || is_pdf || self.tab.page_count.is_some()) {
             return None;
         }

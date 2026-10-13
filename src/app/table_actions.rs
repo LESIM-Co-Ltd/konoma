@@ -523,10 +523,10 @@ impl App {
     #[cfg(test)]
     pub(crate) fn workbook_matches_preview(&self) -> bool {
         self.is_spreadsheet_preview()
-            || !self
-                .plugin
-                .as_ref()
-                .is_some_and(|p| p.id == konoma_office::SPREADSHEET_ID)
+            || !self.plugin.as_ref().is_some_and(|p| {
+                let profile = crate::plugins::profile_of(&p.id);
+                profile.table && profile.converts
+            })
     }
 
     /// The field-separator byte of the active table (`,` by default, the tab for a TSV). A
@@ -631,7 +631,10 @@ impl App {
     pub(crate) fn loaded_sheet_count(&self) -> Option<usize> {
         self.plugin
             .as_ref()
-            .filter(|p| p.id == konoma_office::SPREADSHEET_ID)
+            .filter(|p| {
+                let profile = crate::plugins::profile_of(&p.id);
+                profile.table && profile.converts
+            })
             .map(|p| usize::from(matches!(p.view, Some(konoma_plugin::view::View::Table(_)))))
     }
 

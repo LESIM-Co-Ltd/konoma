@@ -11,9 +11,12 @@
 mod acts;
 mod command;
 mod listing;
+mod profile;
 mod resolve;
 #[cfg(test)]
 pub(crate) mod test_plugins;
+#[cfg(test)]
+pub(crate) mod test_views;
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +32,7 @@ use konoma_plugin::{
 pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
+pub(crate) use profile::{profile_of, unavailable_of, Profile};
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
@@ -204,6 +208,7 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
         // `test_plugins`.
         #[cfg(test)]
         if let Some(plugin) = test_plugins::lookup(id) {
+            profile::record(&plugin.manifest());
             let _ = r.register(plugin, PluginOrigin::User);
             continue;
         }

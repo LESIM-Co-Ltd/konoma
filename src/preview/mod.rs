@@ -91,6 +91,7 @@ impl PreviewKind {
     }
 
     /// A file shown by the plugin `id` (no note).
+    #[cfg(test)]
     pub fn plugin(id: &str, path: PathBuf) -> Self {
         PreviewKind::Plugin {
             path,
@@ -99,27 +100,51 @@ impl PreviewKind {
         }
     }
 
-    /// Whether this is a file the `markdown` plugin shows (its document is drawn by the host's
-    /// decorated-document widget).
-    pub fn is_markdown(&self) -> bool {
-        self.is_plugin(konoma_markdown::MARKDOWN_ID)
+    /// What the plugin of this kind declares (all false for any other kind).
+    pub fn profile(&self) -> crate::plugins::Profile {
+        match self {
+            PreviewKind::Plugin { id, .. } => crate::plugins::profile_of(id),
+            _ => crate::plugins::Profile::default(),
+        }
     }
 
-    /// Whether the host's document container (`App::document`) belongs to this kind: a Markdown
-    /// file, or a Word document or presentation (`is_office_document`).
+    /// Whether this is a document the plugin reads from the file as is (a Markdown file): the
+    /// host's decorated-document widget draws it, its source view is the file itself, and a
+    /// checkbox can be written back to it. Decided by what the plugin declares (it shows a
+    /// document and does not convert), never by its id.
+    pub fn is_markdown(&self) -> bool {
+        let p = self.profile();
+        p.document && !p.converts
+    }
+
+    /// Whether the host's document container (`App::document`) belongs to this kind: any plugin
+    /// that shows a document (a Markdown file, a converted Word document or presentation).
     pub fn is_document_kind(&self) -> bool {
-        self.is_markdown() || self.is_office_document()
+        self.profile().document
+    }
+
+    /// Whether the main view of this kind's plugin is text (the host's windowed reader): the
+    /// `code` plugin, and any plugin that declares `shows(Text)`.
+    pub fn is_text_plugin(&self) -> bool {
+        self.profile().text
+    }
+
+    /// [`PreviewKind::is_text_plugin`] under its old name, which the existing tests use.
+    #[cfg(test)]
+    pub fn is_code_plugin(&self) -> bool {
+        self.is_text_plugin()
+    }
+
+    /// Whether the text view of this kind's plugin is the file itself (read in windows at once).
+    pub fn is_file_text(&self) -> bool {
+        let p = self.profile();
+        p.text && p.file_text
     }
 
     /// A Markdown file shown by the `markdown` plugin.
     #[cfg(test)]
     pub fn markdown(path: PathBuf) -> Self {
         Self::plugin(konoma_markdown::MARKDOWN_ID, path)
-    }
-
-    /// Whether this is a file the `code` plugin shows.
-    pub fn is_code_plugin(&self) -> bool {
-        self.is_plugin(konoma_code::CODE_ID)
     }
 
     /// A picture file shown by the `image` plugin.
@@ -181,43 +206,37 @@ impl PreviewKind {
         }
     }
 
-    /// Whether this is a file the `document` (Word) or `presentation` plugin shows: the ones whose
-    /// result is a converted Markdown document with pictures (`app/office_doc.rs`).
+    /// Whether this is a document of a plugin that converts the file (Word, a presentation): the
+    /// result is Markdown with pictures that no file has the lines of (`app/office_doc.rs`).
     pub fn is_office_document(&self) -> bool {
-        matches!(self, PreviewKind::Plugin { id, .. } if Self::is_office_document_id(id))
+        let p = self.profile();
+        p.document && p.converts
     }
 
-    /// Whether `id` names the Word or the presentation plugin.
-    pub fn is_office_document_id(id: &str) -> bool {
-        id == konoma_office::DOCUMENT_ID || id == konoma_office::PRESENTATION_ID
-    }
-
-    /// Whether this is a workbook the `spreadsheet` plugin shows.
+    /// Whether this is a table of a plugin that converts the file (a workbook): it has pages
+    /// (sheets) read one at a time, addressed cells, and takes long enough to read for a
+    /// "Loading..." screen.
     pub fn is_spreadsheet(&self) -> bool {
-        self.is_plugin(konoma_office::SPREADSHEET_ID)
+        let p = self.profile();
+        p.table && p.converts
     }
 
-    /// Whether this is a file the picture plugins show (`image`, `svg`, `pdf`, `video`, `mermaid`):
-    /// the ones whose result is an image in the host's image pipeline. A `mermaid` file shown as
-    /// text (`mode = "text"`, or a terminal with no image backend) never loads a picture; the
-    /// callers that start a load check the mode.
+    /// Whether this is a file the picture plugins show: the ones whose result is an image in the
+    /// host's image pipeline (`app/media_plugin.rs`). A `mermaid` file shown as text
+    /// (`mode = "text"`, or a terminal with no image backend) never loads a picture; the callers
+    /// that start a load check the mode.
     pub fn is_media_plugin(&self) -> bool {
-        matches!(self, PreviewKind::Plugin { id, .. } if Self::is_media_plugin_id(id))
+        self.profile().image
     }
 
-    /// Whether `id` names one of the picture plugins (`image`, `svg`, `pdf`, `video`, `mermaid`).
+    /// Whether the plugin `id` declares that it shows pictures.
     pub fn is_media_plugin_id(id: &str) -> bool {
-        matches!(
-            id,
-            konoma_media::IMAGE_ID
-                | konoma_media::SVG_ID
-                | konoma_media::PDF_ID
-                | konoma_media::VIDEO_ID
-                | konoma_mermaid::MERMAID_ID
-        )
+        crate::plugins::profile_of(id).image
     }
 
-    /// Whether this is a standalone `.mmd` / `.mermaid` file (the `mermaid` plugin's).
+    /// Whether this is a standalone `.mmd` / `.mermaid` file of the standard `mermaid` plugin. The
+    /// one place the host knows a diagram plugin by name: its text diagram (`mode = "text"`) and
+    /// source view are drawn by the host from the plugin's `fence:mermaid` representation.
     pub fn is_mermaid_file(&self) -> bool {
         self.is_plugin(konoma_mermaid::MERMAID_ID)
     }

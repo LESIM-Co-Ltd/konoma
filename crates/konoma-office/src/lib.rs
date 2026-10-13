@@ -17,7 +17,9 @@ mod documents;
 mod spreadsheet;
 mod texts;
 
-use konoma_plugin::{t, Bind, LaunchMode, Launcher, Manifest, SettingDecl, Value, Verb, VerbDecl};
+use konoma_plugin::{
+    t, Bind, LaunchMode, Launcher, Manifest, SettingDecl, Value, Verb, VerbDecl, ViewKind,
+};
 
 pub use documents::{
     read_converted, slide_px, slide_resource, Converted, DocKind, DocumentPlugin, OfficeSession,
@@ -78,6 +80,8 @@ pub fn spreadsheet_manifest() -> Manifest {
         Manifest::new(SPREADSHEET_ID, env!("CARGO_PKG_VERSION"))
             .name(t!(en: "Spreadsheet", ja: "表計算"))
             .bind(Bind::files([SPREADSHEET_GLOB]))
+            .shows(ViewKind::Table)
+            .converts()
             .setting(SettingDecl::new(
                 "rainbow",
                 Value::Bool(true),
@@ -94,6 +98,8 @@ pub fn document_manifest() -> Manifest {
         Manifest::new(DOCUMENT_ID, env!("CARGO_PKG_VERSION"))
             .name(t!(en: "Word document", ja: "Word 文書"))
             .bind(Bind::files([DOCUMENT_GLOB]))
+            .shows(ViewKind::Document)
+            .converts()
             .work_group(OFFICE_WORK_GROUP),
         "com.microsoft.Word",
     )
@@ -105,6 +111,8 @@ pub fn presentation_manifest() -> Manifest {
         Manifest::new(PRESENTATION_ID, env!("CARGO_PKG_VERSION"))
             .name(t!(en: "Presentation", ja: "プレゼンテーション"))
             .bind(Bind::files([PRESENTATION_GLOB]))
+            .shows(ViewKind::Document)
+            .converts()
             .work_group(OFFICE_WORK_GROUP),
         "com.microsoft.Powerpoint",
     )

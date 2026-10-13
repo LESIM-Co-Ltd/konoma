@@ -166,7 +166,7 @@ impl App {
         let mut reps = match resolved {
             ref k if k.is_markdown() => vec![Source, Rendered, Preview],
             PreviewKind::Text(_) => vec![Source, Preview],
-            ref k if k.is_code_plugin() || k.is_mermaid_file() => vec![Source, Preview],
+            ref k if k.is_file_text() || k.is_mermaid_file() => vec![Source, Preview],
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
                 vec![Source, Preview]
             }

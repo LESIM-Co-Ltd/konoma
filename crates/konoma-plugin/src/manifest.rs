@@ -67,6 +67,25 @@ impl ViewKind {
     }
 }
 
+/// What the host shows in place of the content when the plugin shows nothing for a file: it
+/// failed, the terminal cannot draw what it returned, or nothing has come back. A plugin picks one
+/// in its manifest ([`Manifest::unavailable`]); the host does the drawing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Unavailable {
+    /// The failure's message (a general "can not preview" without one), then the file name.
+    #[default]
+    Message,
+    /// The file as plain text: a table or a diagram that cannot be drawn is still text.
+    /// `with_reason` puts the reason the picture failed (a vector file that is too heavy, say)
+    /// above the text.
+    RawText { with_reason: bool },
+    /// Always this sentence, then the file name, whatever the failure said.
+    Notice(Tr),
+    /// The host's own frame for a picture that is missing: the reason in the frame when there is
+    /// one, otherwise the general "cannot display the image" line.
+    Picture,
+}
+
 /// Everything a plugin declares. The host reads it once at startup; the implementation is not
 /// called until a file is opened.
 #[derive(Clone, Debug)]
@@ -86,6 +105,12 @@ pub struct Manifest {
     pub shows: Vec<ViewKind>,
     /// The exclusive work group the plugin's jobs belong to, if any. See [`Manifest::work_group`].
     pub work_group: Option<String>,
+    /// Whether the plugin shows a converted form of the file. See [`Manifest::converts`].
+    pub converts: bool,
+    /// Whether a text view is the file itself. See [`Manifest::file_text`].
+    pub file_text: bool,
+    /// What the host shows when the plugin shows nothing. See [`Unavailable`].
+    pub unavailable: Unavailable,
 }
 
 impl Manifest {
@@ -104,6 +129,9 @@ impl Manifest {
             screens: Vec::new(),
             shows: Vec::new(),
             work_group: None,
+            converts: false,
+            file_text: false,
+            unavailable: Unavailable::Message,
         }
     }
 
@@ -118,6 +146,35 @@ impl Manifest {
         if !self.shows.contains(&kind) {
             self.shows.push(kind);
         }
+        self
+    }
+
+    /// Declare that the plugin shows a **converted** form of the file (a workbook as a table, a Word
+    /// document as Markdown): there is no file with the lines it shows, so what it shows is never
+    /// written back, its source view is a generated text, and the host names its pages after what
+    /// they are (sheets, slides). The host decides which screen a plugin gets from
+    /// [`Manifest::shows`] and this, never from its id.
+    pub fn converts(mut self) -> Manifest {
+        self.converts = true;
+        self
+    }
+
+    /// Declare that the text view of the plugin is the file itself (a [`TextSource::File`] of the
+    /// file it was opened on): the host starts reading the file in windows at once, before the
+    /// plugin has answered, and colors it with the plugin's styler when that arrives. Without this
+    /// the host waits ("Loading...") for the plugin's text, which may be made from the file (a hex
+    /// dump).
+    ///
+    /// [`TextSource::File`]: crate::view::TextSource::File
+    pub fn file_text(mut self) -> Manifest {
+        self.file_text = true;
+        self
+    }
+
+    /// What the host shows when the plugin shows nothing for a file. The default is the failure's
+    /// message and the file name.
+    pub fn unavailable(mut self, how: Unavailable) -> Manifest {
+        self.unavailable = how;
         self
     }
 

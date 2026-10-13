@@ -179,7 +179,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Images take a dedicated path: draw the frame, then draw StatefulImage inside it.
     // An uninitialized backend / decode failure (app.image=None) falls back to text.
-    if app.shows_plugin(konoma_media::IMAGE_ID) {
+    if app.shows_picture_frame_plugin() {
         render_image(frame, app, area);
         return;
     }
@@ -224,7 +224,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // Dedicated path for Markdown/Mermaid/code, drawing the already-decorated
     // (konoma's own block-model renderer / mermaid-text / syntect) lines.
     if app.shows_plugin(konoma_mermaid::MERMAID_ID)
-        || app.shows_code_plugin()
+        || app.shows_file_text_plugin()
         || app.document_ready()
     {
         render_decorated(frame, app, area);
@@ -234,48 +234,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (body, is_text) = match &app.tab.preview_kind {
         // Text (unregistered extension) draws the real body as-is.
         Some(PreviewKind::Text(p)) => (load_body(p, app.lang), true),
-        // Likewise for a mermaid file (the decorated path above draws it).
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_mermaid::MERMAID_ID => {
-            (load_body(path, app.lang), true)
-        }
-        // The `code` plugin's file is drawn by the windowed or decorated path above; this is the
-        // same safe fallback.
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_code::CODE_ID => {
-            (load_body(path, app.lang), true)
-        }
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::IMAGE_ID => {
-            (format!("[image] {}", path.display()), false)
-        }
-        // An SVG that failed to rasterize / whose terminal is unsupported. Shows the raw XML as text (a safe fallback).
-        // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::SVG_ID => {
-            match app.image_failure().and_then(|f| f.message(app.lang)) {
-                Some(why) => (format!("{why}\n\n{}", load_body(path, app.lang)), true),
-                None => (load_body(path, app.lang), true),
-            }
+        // A plugin that shows nothing for the file says in its manifest what the host shows in its
+        // place (`Manifest::unavailable`): the file as text (a table, a diagram or an SVG that
+        // cannot be drawn is still text), a sentence of its own, or the picture frame. The ones that
+        // say nothing get the failure's message below.
+        Some(PreviewKind::Plugin { id, path, .. })
+            if crate::plugins::unavailable_of(id) != konoma_plugin::Unavailable::Message =>
+        {
+            unavailable_body(app, id, path)
         }
         // Rendering failed in the full-screen fence view (an unsupported diagram kind, etc.). Shows guidance (q returns to the md).
         Some(PreviewKind::MermaidFence(_)) => (
             tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),
-            false,
-        ),
-        // A video whose thumbnail couldn't be extracted (no ffmpeg family/unsupported terminal/failure). Shows the target file + an install hint.
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::VIDEO_ID => (
-            format!(
-                "{}\n{}",
-                tr(app.lang, crate::i18n::Msg::VideoThumbUnavailable),
-                path.display()
-            ),
-            false,
-        ),
-        // A PDF that couldn't be rasterized (neither hayro nor — on macOS, for page 1 —
-        // qlmanage/sips worked, or the terminal is unsupported). Shows the target file + a hint.
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::PDF_ID => (
-            format!(
-                "{}\n{}",
-                tr(app.lang, crate::i18n::Msg::PdfPreviewUnavailable),
-                path.display()
-            ),
             false,
         ),
         // Reached only for `detached` (a one-line "opened externally" summary that stays on
@@ -317,21 +287,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             None => (tr(app.lang, crate::i18n::Msg::Loading).to_string(), false),
         },
         // A plugin's table is already drawn via the dedicated path above. Reaching here means the
-        // plugin failed: a CSV/TSV shows its raw text (safe degradation), an archive says it
-        // cannot be listed rather than dumping the raw zip/tar byte stream as text (principle #3),
-        // and any other plugin says why (a workbook that did not load: encrypted / too large /
-        // corrupt / unsupported, with the file name; never a crash, never raw bytes).
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::CSV_ID => {
-            (load_body(path, app.lang), true)
-        }
-        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::ARCHIVE_ID => (
-            format!(
-                "{}\n{}",
-                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
-                path.display()
-            ),
-            false,
-        ),
+        // plugin failed: the arm for a declared `unavailable` came first (a CSV/TSV shows its raw
+        // text, an archive says it cannot be listed rather than dumping the raw zip/tar byte
+        // stream as text: principle #3), and any other plugin says why (a workbook that did not
+        // load: encrypted / too large / corrupt / unsupported, with the file name; never a crash,
+        // never raw bytes).
         // A Word document or presentation that did not load: say why (encrypted / too large /
         // corrupt / not a format konoma reads), with the file name. Principle #3: never a crash,
         // never raw bytes. The words are the plugin's.
@@ -361,6 +321,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         // with a text view: its lines, drawn as plain scrolling text.
         Some(PreviewKind::Plugin { .. }) if app.plugin_text_body().is_some() => {
             (app.plugin_text_body().unwrap_or_default(), true)
+        }
+        // A plugin that answers with a notice (a `Message` view) in place of the content.
+        Some(PreviewKind::Plugin { .. }) if app.plugin_message_body().is_some() => {
+            (app.plugin_message_body().unwrap_or_default(), false)
         }
         Some(PreviewKind::Plugin { path, .. }) => (
             format!(
@@ -1627,6 +1591,37 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_stateful_widget(widget, target, state);
         }
         _ => fallback(frame),
+    }
+}
+
+/// What the host shows in place of a plugin's content when the plugin declared how
+/// (`Manifest::unavailable`): the body, and whether it is text (wrapped per `[ui] wrap`).
+fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, bool) {
+    use konoma_plugin::Unavailable;
+    let lang_code = match app.lang {
+        crate::i18n::Lang::Jp => "ja",
+        crate::i18n::Lang::En => "en",
+    };
+    match crate::plugins::unavailable_of(id) {
+        Unavailable::RawText { with_reason } => {
+            let body = load_body(path, app.lang);
+            // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
+            match app
+                .image_failure()
+                .and_then(|f| f.message(app.lang))
+                .filter(|_| with_reason)
+            {
+                Some(why) => (format!("{why}\n\n{body}"), true),
+                None => (body, true),
+            }
+        }
+        Unavailable::Notice(words) => (
+            format!("{}\n{}", words.get(lang_code), path.display()),
+            false,
+        ),
+        Unavailable::Picture => (format!("[image] {}", path.display()), false),
+        // (Not reached: the caller handles the default.)
+        Unavailable::Message => (format!("[can not preview]\n{}", path.display()), false),
     }
 }
 

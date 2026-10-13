@@ -115,11 +115,32 @@ All notable changes to konoma are documented in this file. The format is based o
   `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
   transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
+- **A plugin installed under another id is drawn like the standard plugin of the same display type.** The host now picks a
+  plugin's screen from what the plugin declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and from the view
+  it returns, not from its id: a replacement for `markdown`, `csv`, `spreadsheet`, `presentation`, `code`, a picture plugin,
+  and so on, registered under its own id with the standard one switched off, gets the same document widget, table, image
+  pipeline, windowed reader, page keys and `R` as the standard one. A text view a plugin makes (`TextSource::Lines` or
+  `Owned`) is read in windows like a file (caret, `v`/`V`, `/`, line numbers, `y`), in the colors the plugin gave it. What
+  the host shows when a plugin cannot show a file is the plugin's own declaration (`Manifest::unavailable`) rather than a
+  text per standard id. What you see with the standard plugins does not change.
 
 ### Fixed
 - Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
   restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
   page first and then opens the file, so the picture is the page the indicator names.
+- An SVG of a Git diff (a changed `.svg`) that was dropped from memory to stay within the picture budget was drawn again in
+  konoma's own process, without the limits a file's SVG gets. The SVGs a picture keeps to draw again (the old and new
+  sides of a diff, and every SVG a plugin other than the standard `mermaid` and `math` returns) are now drawn again by the
+  same supervised child process as the first time, which reads no file.
+- A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
+  and when it is not a regular file, with the reason shown.
+- A plugin's `trusted: true` on an SVG was believed. Now only the standard plugins that draw their own SVG (`mermaid`,
+  `math`) are believed; any other plugin's SVG is drawn by the child process, and an SVG that names no directory reads no
+  file (it used to read relative to the file being shown).
+- The `[plugins.math] color` setting is checked inside the `math` plugin as well, before it is put into the drawing.
+- A workbook, Word document or presentation was read again on every change event that reached the preview (an event for
+  `.git`, or for an unrelated file), however large it was. A plugin that reads heavily (one that names a work group) is
+  now read again only when its file's modification time or size changed.
 
 ## [0.31.0] - 2026-10-12
 

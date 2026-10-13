@@ -85,25 +85,12 @@ fn kind_of(
         Resolution::Text => PreviewKind::Text(p),
         Resolution::CanNotPreview { .. } => PreviewKind::can_not_preview(path),
         Resolution::Plugin { id, hint } => match id.as_str() {
-            konoma_media::IMAGE_ID
-            | konoma_media::SVG_ID
-            | konoma_media::VIDEO_ID
-            | konoma_media::PDF_ID
-            | konoma_mermaid::MERMAID_ID => PreviewKind::plugin(&id, p),
-            konoma_code::CODE_ID | konoma_markdown::MARKDOWN_ID => PreviewKind::plugin(&id, p),
-            // A workbook: the sheets are the plugin's pages, read one at a time.
-            konoma_office::SPREADSHEET_ID => PreviewKind::plugin(&id, p),
             // The separator is settled here, as it always was, and handed over as the note.
             "csv" => PreviewKind::Plugin {
                 hint: Some(csv_note(hint.as_deref(), path).to_string()),
                 id,
                 path: p,
             },
-            // Word and presentations: converted to a Markdown document (the reading is the
-            // plugin's, on the Office work group).
-            konoma_office::DOCUMENT_ID | konoma_office::PRESENTATION_ID => {
-                PreviewKind::plugin(&id, p)
-            }
             // A name that is not a zip / tar / tar.gz (a user rule can aim any glob at the
             // archive plugin) is the safe "can not preview", as before.
             "archive" => match archive::ArchiveKind::from_path(path) {
@@ -133,16 +120,25 @@ fn kind_of(
                     None => PreviewKind::can_not_preview(path),
                 }
             }
-            // A plugin the user registered: opened through the same Session road as the standard
-            // ones, and drawn by the host's own widget for the view it returns.
-            _ if with_registry(disabled, |r| r.origin(&id)) == Some(PluginOrigin::User) => {
-                PreviewKind::plugin(&id, p)
-            }
+            // Any other plugin that shows files, standard or the user's, is opened through the same
+            // Session road and drawn by the host's own widget for the view it returns. What it is
+            // told apart by is what it declares (`Manifest::shows`), never its id.
+            _ if shows_files(&id, disabled) => PreviewKind::Plugin { path: p, id, hint },
             // `can-not-preview`, or a standard plugin that has no display of its own (it only
             // takes embedded things).
             _ => PreviewKind::can_not_preview(path),
         },
     }
+}
+
+/// Whether the plugin `id` shows files: it declares what its main view shows, or it is one the user
+/// registered (a plugin that declares nothing is still given the files it is bound to). A plugin
+/// that only takes embedded things or content types (`math`) does not.
+fn shows_files(id: &str, disabled: &[String]) -> bool {
+    with_registry(disabled, |r| {
+        r.origin(id) == Some(PluginOrigin::User)
+            || r.manifest(id).is_some_and(|m| !m.shows.is_empty())
+    })
 }
 
 /// Decide the `PreviewKind` of `path`. `sniff` is the content of a file that may no longer exist
