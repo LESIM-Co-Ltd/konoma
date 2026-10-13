@@ -35,8 +35,6 @@ use std::path::{Path, PathBuf};
 /// A resolved preview kind. Determined from the config rule (the first one that matched).
 #[derive(Debug, Clone)]
 pub enum PreviewKind {
-    /// Built-in Markdown renderer (decorated by konoma's own block-model renderer; mermaid fences inside the md are composited via mermaid-text).
-    Markdown(PathBuf),
     /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
     /// plugin's `Session` returns a display type and the host draws it. The plugins wired so far
     /// are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old `builtin` name) and
@@ -90,6 +88,24 @@ impl PreviewKind {
             id: id.to_string(),
             hint: None,
         }
+    }
+
+    /// Whether this is a file the `markdown` plugin shows (its document is drawn by the host's
+    /// decorated-document widget).
+    pub fn is_markdown(&self) -> bool {
+        self.is_plugin(konoma_markdown::MARKDOWN_ID)
+    }
+
+    /// Whether the host's document container (`App::document`) belongs to this kind: a Markdown
+    /// file, or a Word document or presentation (`is_office_document`).
+    pub fn is_document_kind(&self) -> bool {
+        self.is_markdown() || self.is_office_document()
+    }
+
+    /// A Markdown file shown by the `markdown` plugin.
+    #[cfg(test)]
+    pub fn markdown(path: PathBuf) -> Self {
+        Self::plugin(konoma_markdown::MARKDOWN_ID, path)
     }
 
     /// Whether this is a file the `code` plugin shows.

@@ -4,7 +4,8 @@
 //! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
 //! (user rules first, then the standard plugins in registration order, then plain text, then
 //! "can not preview"), and the result is mapped onto today's `PreviewKind`. The plugins that are
-//! wired to the display (`csv`, `archive`, `spreadsheet`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
+//! wired to the display (`csv`, `archive`, `spreadsheet`, `code`, `markdown`, the Office plugins and
+//! the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
 mod listing;
@@ -18,8 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use konoma_plugin::registry::{PluginOrigin, Registry};
 use konoma_plugin::t;
 use konoma_plugin::{
-    Bind, Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, SettingDecl, Settings,
-    Verb, VerbDecl,
+    Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Settings, Verb, VerbDecl,
 };
 
 pub(crate) use listing::plugins_table;
@@ -90,59 +90,7 @@ fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
 /// default `[[preview.rules]]` konoma had before plugins (svg before `image/*`, the mime rules for
 /// images and videos in their old places), so a file is decided exactly as it was.
 pub(crate) fn standard_manifests() -> Vec<Manifest> {
-    let md = standard("markdown", t!(en: "Markdown", ja: "Markdown"))
-        .bind(Bind::files(["*.md"]))
-        .bind(Bind::content("markdown"))
-        .setting(SettingDecl::new(
-            "task_states",
-            konoma_plugin::Value::List(vec![s(" "), s("x")]),
-            t!(en: "Checkbox states Space cycles through", ja: "Space で巡回するチェックボックスの状態"),
-        ))
-        .setting(SettingDecl::new(
-            "autolink",
-            b(true),
-            t!(en: "Turn bare URLs into links", ja: "裸の URL をリンクにする"),
-        ))
-        .setting(SettingDecl::new(
-            "alerts",
-            b(true),
-            t!(en: "Draw GitHub alerts (> [!NOTE])", ja: "GitHub のアラート(> [!NOTE])を描く"),
-        ))
-        .setting(SettingDecl::new(
-            "emoji",
-            b(true),
-            t!(en: "Replace :shortcode: emoji", ja: ":shortcode: の絵文字を置き換える"),
-        ))
-        .setting(SettingDecl::new(
-            "frontmatter",
-            b(true),
-            t!(en: "Show front matter as a block", ja: "front matter をブロックとして表示する"),
-        ))
-        .setting(SettingDecl::new(
-            "footnotes",
-            b(true),
-            t!(en: "Draw footnotes", ja: "脚注を描く"),
-        ))
-        .setting(SettingDecl::new(
-            "inline_html",
-            b(true),
-            t!(en: "Render inline HTML", ja: "インライン HTML を描く"),
-        ))
-        .setting(SettingDecl::new(
-            "details",
-            s("auto"),
-            t!(en: "<details> folding: auto, open or closed", ja: "<details> の折りたたみ: auto・open・closed"),
-        ))
-        .setting(SettingDecl::new(
-            "table_align",
-            s("left"),
-            t!(en: "Table alignment: left, center or right", ja: "表の寄せ: left・center・right"),
-        ))
-        .setting(SettingDecl::new(
-            "image_align",
-            s("center"),
-            t!(en: "Image alignment: left, center or right", ja: "画像の寄せ: left・center・right"),
-        ));
+    let md = konoma_markdown::markdown_manifest();
     let mermaid = konoma_mermaid::mermaid_manifest();
     let math = konoma_math::math_manifest();
     let svg = konoma_media::svg_manifest();
@@ -231,6 +179,7 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_office::PRESENTATION_ID => Arc::new(konoma_office::PresentationPlugin),
         konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
         konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
+        konoma_markdown::MARKDOWN_ID => Arc::new(konoma_markdown::MarkdownPlugin),
         _ => Arc::new(Declared(m)),
     }
 }
@@ -328,6 +277,22 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
             settings.set(key, value);
         }
     };
+    if id == konoma_markdown::MARKDOWN_ID {
+        let ui = &cfg.ui;
+        fill_missing(
+            "task_states",
+            konoma_plugin::Value::List(ui.md_task_states.iter().map(|x| s(x)).collect()),
+        );
+        fill_missing("autolink", b(ui.md_autolink));
+        fill_missing("alerts", b(ui.md_alerts));
+        fill_missing("emoji", b(ui.md_emoji));
+        fill_missing("frontmatter", b(ui.md_frontmatter));
+        fill_missing("footnotes", b(ui.md_footnotes));
+        fill_missing("inline_html", b(ui.md_inline_html));
+        fill_missing("details", s(&ui.md_details));
+        fill_missing("table_align", s(&ui.md_table_align));
+        fill_missing("image_align", s(&ui.md_image_align));
+    }
     if id == konoma_table::CSV_ID {
         fill_missing("rainbow", b(cfg.ui.csv_rainbow));
     }

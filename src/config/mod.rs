@@ -609,6 +609,9 @@ impl UiConfig {
 
     /// `md_task_states` resolved to chars: every entry must be exactly 1 char and there must be at
     /// least 2 states (a cycle needs somewhere to go) — otherwise fall back to the default (` `/`x`).
+    /// The reference for `DocOptions::from_settings` (the Markdown plugin's options, which the app
+    /// draws with): a test checks the two agree. Not used at run time.
+    #[cfg(test)]
     pub fn md_task_state_chars(&self) -> Vec<char> {
         let chars: Vec<char> = self
             .md_task_states
@@ -631,6 +634,7 @@ impl UiConfig {
     /// (`left` for tables, `center` for images), so a typo can never blank or mis-place a block —
     /// the same "unknown value = default" contract `md_details` / `follow_view` / `commit_meta_align`
     /// already have.
+    #[cfg(test)]
     pub fn md_block_aligns(&self) -> crate::preview::markdown::BlockAligns {
         use crate::preview::markdown::{BlockAlign, BlockAligns};
         let d = BlockAligns::default();
@@ -1129,7 +1133,7 @@ mod tests {
     fn markdown_rule_still_wins() {
         let p = tmp("README.md", b"# title\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Markdown(_)), "got {kind:?}");
+        assert!(kind.is_markdown(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 
@@ -1138,7 +1142,7 @@ mod tests {
         // Uppercase extensions (README.MD / equivalent to *.RS) also hit the rule case-insensitively.
         let p = tmp("README.MD", b"# title\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Markdown(_)), "got {kind:?}");
+        assert!(kind.is_markdown(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
 
         let p = tmp("MAIN.RS", b"fn main() {}\n");

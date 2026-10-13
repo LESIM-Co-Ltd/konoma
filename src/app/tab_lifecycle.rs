@@ -42,7 +42,7 @@ impl App {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
         // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
-        // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
+        // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
         // Same reason: `kind_loads_media`/`start_media_load` below may read/overwrite it
@@ -151,11 +151,12 @@ impl App {
                 }
             }
         }
-        // Restore the raw-source display state before re-arming windowed (order matters since raw
-        // md is windowed reading). setup_windowed reads it via is_raw_source, so copy it here
-        // without waiting for the bulk restore at the end
-        // (it's Copy, so `t` isn't consumed, and the same value still lands on `self.tab = t` at the end).
-        self.tab.md_raw = t.md_raw;
+        // Restore the chosen representation before re-arming windowed (order matters since the raw
+        // source of a Markdown file is windowed reading). setup_windowed reads it via
+        // is_raw_source, so copy it here without waiting for the bulk restore at the end (the same
+        // value still lands on `self.tab = t` at the end). The plugin is also opened with it
+        // below.
+        self.tab.repr = t.repr.clone();
         // Tab focus / the inline diagram's zoom / full-screen-return info go to this tab's saved
         // values (never apply the previous tab's values to a different document). md_items gets
         // rebuilt by the next render's ensure_md_cache for this tab's document, and focused_item is
@@ -181,10 +182,14 @@ impl App {
             t.page = t.page.max(1);
             self.tab.page = t.page;
         }
-        // The representation this tab chose (`R`) is asked for when the plugin is opened: put it
-        // back before, as the page.
-        self.tab.repr = t.repr.clone();
+        // The representation this tab chose (`R`) is asked for when the plugin is opened (put
+        // back above, before the windowed reader), as the page is.
         self.load_plugin();
+        // A source view that landed on the spot wrote its own temp file: keep that one, not the
+        // path the saved tab held (the bulk restore below would put the stale one back).
+        if self.holds_document() {
+            t.command_out = self.tab.command_out.clone();
+        }
         if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
         {
             t.page = self.tab.page;

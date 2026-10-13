@@ -223,8 +223,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Dedicated path for Markdown/Mermaid/code, drawing the already-decorated
     // (konoma's own block-model renderer / mermaid-text / syntect) lines.
-    if matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_)))
-        || app.shows_plugin(konoma_mermaid::MERMAID_ID)
+    if app.shows_plugin(konoma_mermaid::MERMAID_ID)
         || app.shows_code_plugin()
         || app.document_ready()
     {
@@ -235,10 +234,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (body, is_text) = match &app.tab.preview_kind {
         // Text (unregistered extension) draws the real body as-is.
         Some(PreviewKind::Text(p)) => (load_body(p, app.lang), true),
-        Some(PreviewKind::Markdown(p)) => {
-            // Unreachable (already branched to the decorated path above), but kept safe for exhaustiveness.
-            (load_body(p, app.lang), true)
-        }
         // Likewise for a mermaid file (the decorated path above draws it).
         Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_mermaid::MERMAID_ID => {
             (load_body(path, app.lang), true)
@@ -977,7 +972,7 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     let mut drawn = 0usize;
     // Resolved once per frame, not per image: the focus frame below reads it, and re-parsing two
     // config strings inside the draw loop would be needless work on every redraw.
-    let image_align = app.cfg.ui.md_block_aligns().image;
+    let image_align = app.doc_block_aligns().image;
     let scroll = app.tab.preview_scroll as i32;
     let top_bound = inner.y as i32;
     let bottom_bound = (inner.y + inner.height) as i32;

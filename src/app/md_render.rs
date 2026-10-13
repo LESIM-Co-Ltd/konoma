@@ -66,10 +66,13 @@ impl GutterAlign<'_> {
 pub(super) fn decorated_file_text(content: &crate::preview::text::TextContent) -> String {
     let mut s = content.lines.join("\n");
     if content.truncated {
-        s.push_str("\n\n— (省略: 表示上限に達しました) —");
+        s.push_str(TRUNCATED_NOTE);
     }
     s
 }
+
+/// The notice appended to a Markdown file cut at the display cap (its own paragraph).
+pub(super) const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
 
 impl App {
     /// Build (or reuse) the decorated cache for a Markdown/Mermaid/code preview, **or** the diff's
@@ -112,7 +115,11 @@ impl App {
         // `None` = not ready for this frame — degrade rather than block (see the two branches
         // below), matching the render path's long-standing "never block the UI" contract.
         let want_gutter = self.cfg.ui.git_gutter
-            && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)));
+            && self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_markdown);
         let outcome: Option<MdDiffOutcome> = if want_diff_rendered {
             self.poll_md_diff(&path, MdDiffKind::Rendered)
         } else if want_gutter {
@@ -263,9 +270,10 @@ impl App {
                     &decorated.images,
                     &decorated.extras,
                 );
-                // A Word document is never written: a checkbox glyph in its text is only text, so
-                // it is not a focusable, toggleable item (the toggle would write to the .docx).
-                if self.is_document() {
+                // A document that cannot be written back (a Word document: the toggle would write
+                // to the .docx) shows a checkbox glyph as only text, so it is not a focusable,
+                // toggleable item.
+                if !self.doc_tasks_writable() {
                     items.retain(|it| !matches!(it.kind, MdItemKind::Task { .. }));
                 }
                 items
@@ -495,12 +503,6 @@ impl App {
         self.md_cache
             .as_ref()
             .is_some_and(|c| !c.diff_marks.is_empty() || !c.preview_gutter_marks.is_empty())
-    }
-
-    /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute
-    /// — [`details_default_open`], read off this `App`'s own config.
-    fn details_default_open(&self, open_attr: bool) -> bool {
-        details_default_open(&self.cfg.ui.md_details, open_attr)
     }
 
     /// `Space`/`Enter` on a focused `<details>` summary: flip its open state and rebuild the cache.
@@ -898,6 +900,9 @@ impl App {
                 &math_slot,
             ),
             DecoratedSource::Diff { old_pre, new_pre } => {
+                // The rendered diff is drawn with the Markdown settings (no document is open).
+                let opts = self.doc_options();
+                let aligns = super::markdown_plugin::block_aligns(&opts);
                 // No per-ordinal `<details>` overrides make sense across two documents whose own
                 // block alignment isn't known until `render_markdown_diff_aligned` runs — every
                 // `<details>` block in either version simply falls back to its own `open`
@@ -925,14 +930,14 @@ impl App {
                             code,
                             &theme.code_theme,
                             self.cfg.ui.icons,
-                            &self.cfg.ui.md_task_state_chars(),
+                            &opts.task_states,
                             &slot_of,
                             &mermaid_slot,
                             tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                            self.cfg.ui.md_alerts,
+                            opts.alerts,
                             &math_slot,
                             math_on,
-                            self.cfg.ui.md_block_aligns(),
+                            aligns,
                         )
                     }
                     _ => crate::preview::markdown::render_markdown_diff_aligned(
@@ -942,14 +947,14 @@ impl App {
                         code,
                         &theme.code_theme,
                         self.cfg.ui.icons,
-                        &self.cfg.ui.md_task_state_chars(),
+                        &opts.task_states,
                         &slot_of,
                         &mermaid_slot,
                         tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        self.cfg.ui.md_alerts,
+                        opts.alerts,
                         &math_slot,
                         math_on,
-                        self.cfg.ui.md_block_aligns(),
+                        aligns,
                     ),
                 };
                 // Collected from **both** versions' text — a diagram/image/equation that only
@@ -1010,10 +1015,11 @@ impl App {
         math_on: bool,
         math_slot: &dyn Fn(&str, bool) -> crate::preview::markdown::MathSlot,
     ) -> DecoratedMarkdown {
-        // A Word document draws the Markdown it was converted to, never the .docx on disk.
-        let is_doc = self.is_document();
+        // A Markdown file, a Word document and a presentation draw the text their plugin handed
+        // over (a Word document: the Markdown it was converted to, never the .docx on disk).
+        let is_doc = self.holds_document();
         let loaded = if is_doc {
-            Ok(self.document_markdown().unwrap_or("").to_string())
+            Ok(self.document_source_text())
         } else {
             crate::preview::text::load(path).map(|content| decorated_file_text(&content))
         };
@@ -1037,11 +1043,13 @@ impl App {
         // Source line count, used to map the scroll position back to an approximate source line.
         let src_lines = src.lines().count();
         match &self.tab.preview_kind {
-            Some(k) if is_doc || matches!(k, PreviewKind::Markdown(_)) => {
+            Some(_) if is_doc => {
                 let theme = &self.cfg.ui.theme;
+                // How the document is drawn: the options its plugin returned with it.
+                let opts = self.doc_options();
                 // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
                 // metadata block is prepended to the result below (and image line indices offset).
-                let (fm_lines, src) = if self.cfg.ui.md_frontmatter && !is_doc {
+                let (fm_lines, src) = if opts.front_matter {
                     match crate::preview::markdown::strip_front_matter(&src) {
                         (Some(fm), body) => (
                             crate::preview::markdown::render_front_matter(&fm, width),
@@ -1058,13 +1066,13 @@ impl App {
                 // checkbox toggle can prove the checkbox it is about to edit really is the one on
                 // screen instead of trusting that the two counts tally (see `markdown::LineOrigin`).
                 let origin = crate::preview::markdown::identity_origin(&src);
-                let (src, origin) = if self.cfg.ui.md_footnotes {
+                let (src, origin) = if opts.footnotes {
                     crate::preview::markdown::process_footnotes_traced(&src, &origin)
                 } else {
                     (src, origin)
                 };
                 // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode konoma's own renderer draws.
-                let (src, origin) = if self.cfg.ui.md_inline_html {
+                let (src, origin) = if opts.inline_html {
                     crate::preview::markdown::process_inline_html_traced(&src, &origin)
                 } else {
                     (src, origin)
@@ -1084,7 +1092,7 @@ impl App {
                             self.details_open
                                 .get(&ord)
                                 .copied()
-                                .unwrap_or_else(|| self.details_default_open(attr))
+                                .unwrap_or_else(|| details_default_open(&opts.details, attr))
                         })
                         .collect();
                 crate::preview::markdown::set_details_open(details_states.clone());
@@ -1095,17 +1103,17 @@ impl App {
                         code,
                         &theme.code_theme,
                         self.cfg.ui.icons,
-                        &self.cfg.ui.md_task_state_chars(),
+                        &opts.task_states,
                         slot_of,
                         mermaid_slot,
                         tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        self.cfg.ui.md_alerts,
+                        opts.alerts,
                         math_slot,
                         math_on,
                         // `[ui] md_table_align` / `[ui] md_image_align`. The default pair is the
                         // historical layout (tables left, images and diagrams centered), so an
                         // unconfigured konoma draws exactly what it always did.
-                        self.cfg.ui.md_block_aligns(),
+                        super::markdown_plugin::block_aligns(&opts),
                     );
                 let remote = if self.picker.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)

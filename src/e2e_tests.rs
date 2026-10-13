@@ -3029,10 +3029,12 @@ fn e2e_md_preview_gutter_marks_changed_blocks() {
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
     s.enter();
-    assert!(matches!(
-        s.app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(s
+        .app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
     let marks = s
         .app
         .md_diff_marks_for_test()
@@ -3058,10 +3060,12 @@ fn e2e_md_preview_gutter_build_calls_base_contents_once() {
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
     let (_, calls) = crate::test_support::count_base_contents_calls(|| s.enter());
-    assert!(matches!(
-        s.app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(s
+        .app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
     // Sanity: the gutter really did build (there is something to compute a baseline for) — a
     // vacuous "0 calls because nothing happened" pass would prove nothing.
     let marks = s
@@ -4014,10 +4018,11 @@ fn e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold() 
         "follow_view=\"file\" は通常プレビューのはず"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Markdown(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_markdown),
         "装飾 Markdown のはず"
     );
     assert!(
@@ -14155,10 +14160,11 @@ fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
 
     s.key('q');
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Markdown(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_markdown),
         "q でMarkdownへ戻るはず: {:?}",
         s.app.tab.preview_kind
     );

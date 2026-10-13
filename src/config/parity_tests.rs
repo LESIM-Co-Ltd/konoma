@@ -1555,10 +1555,7 @@ builtin = "code"
 fn cfg_preview_absent_preview_keeps_default_rules() {
     let cfg: Config = toml::from_str("[ui]\nwrap = false\n").unwrap();
     assert!(
-        matches!(
-            cfg.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "missing [preview] keeps builtins"
     );
 }
@@ -1610,10 +1607,7 @@ preview_commands = false
 "#;
     let cfg2: Config = toml::from_str(toml2).unwrap();
     assert!(
-        matches!(
-            cfg2.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg2.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "preview_commands=false leaves builtin rules intact"
     );
 }

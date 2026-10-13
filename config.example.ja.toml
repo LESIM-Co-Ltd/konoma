@@ -483,9 +483,13 @@ code_theme = "TwoDark"
 #   svg          max_px           ([ui] svg_max_px だったもの)
 #   mermaid      mode theme curve routing rows   ([ui] mermaid mermaid_theme mermaid_curve mermaid_routing mermaid_rows だったもの)
 #   math         mode color       ([ui] math math_color だったもの)
-# 値の意味は上の [ui] の各キーと同じ。Markdown のオプションは当面 [ui] md_* のまま。
+#   markdown     task_states autolink alerts emoji frontmatter footnotes inline_html details table_align image_align
+#                                 ([ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
+#                                  md_inline_html md_details md_table_align md_image_align だったもの)
+# 値の意味は上の [ui] の各キーと同じ。Word 文書も markdown のオプションで描かれる。
 # [plugins.markdown]
 # enabled = false
+# alerts = false
 # [plugins.video]
 # enabled = false
 # [plugins.csv]
