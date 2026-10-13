@@ -10,8 +10,8 @@ sidebar:
 - `j` / `k` move; `l` descends into a directory (it becomes the new root),
   `h` goes to the parent; `Enter` expands/collapses in place.
 - `/` filters the tree as you type — `Enter` keeps the filter, `Esc` clears it.
-- `.` toggles dotfiles; `s` opens the sort menu (name/size/modified/extension,
-  reverse, dirs-first); `i` pops up file info; `r` refreshes.
+- `.` toggles dotfiles; `,` opens the sort and display menu (name/size/modified/extension,
+  reverse, dirs-first, path style, hidden files); `i` pops up file info; `r` refreshes.
 - `ui.details = ["size", "modified"]` adds metadata columns to every row.
 
 ## File operations — `Space`
@@ -47,13 +47,13 @@ launched in, **uppercase = global** across everything.
 - `'` opens the bookmark list immediately (local and global sections; global
   entries show absolute `~/...` paths). Press a letter to jump: directories
   become the new root, files open as previews. `Ctrl-e` edits the selected
-  entry's file directly, `Ctrl-d` deletes the bookmark, `q` closes.
+  entry's file directly, `Space` then `d` deletes the bookmark, `q` closes.
 - Anchors: `a` re-anchors relative-path display to the current root, `A`
   resets it to the launch directory.
 
 ## Tabs
 
-- `t` new tab, `[` / `]` switch, `1`-`9` jump by number; closing is `q` on the
+- `t` new tab (right after the current one), `[` / `]` switch, `1`-`9` jump by number; closing is `q` on the
   tree (`w` is deliberately unbound — vim word-motion muscle memory).
 - `T` opens the tab list from any screen: `Enter`/digits switch, `d` closes the
   selected tab, `q`/`Esc` closes the list. When tabs overflow the bar, a window
@@ -74,7 +74,7 @@ launched in, **uppercase = global** across everything.
 | `p` | parent directory |
 | `@` | `@relative/path` — an AI-agent reference |
 
-## Delegating edits — `e`
+## Delegating edits and opening elsewhere — `e` and `o`
 
 konoma deliberately has no built-in editor. `e` opens the file in your editor
 (`[editor]` config → `$VISUAL` → `$EDITOR` → `vim`), per-extension overrides
@@ -82,3 +82,7 @@ included, and returns to the preview with the content refreshed when you quit.
 On a Word, Excel, PowerPoint or OpenDocument file `e` opens the Office app instead
 (Microsoft Office, then LibreOffice, then the system default) — see
 [Previews](../preview/).
+
+`o` opens the file in the app made for it instead — an Office file in Microsoft Office or
+LibreOffice, anything else in the system default (`open` / `xdg-open`), without blocking the terminal.
+`e` and `o` work in the tree, in every preview, in a diff and on a row of the changes list.

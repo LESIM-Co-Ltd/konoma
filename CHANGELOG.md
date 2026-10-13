@@ -7,6 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
+  `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
+  What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
+  then the standard plugins), and `[plugins.<id>] enabled = false` switches one off: its files go on to plain text if they
+  read as text, otherwise to `[can not preview]`. An unknown id in `[plugins.*]` is reported at startup. A plugin's own
+  settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
+  the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
+  `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
 - **`o` opens the file in another app** (the `open` verb; `e` edits). In the tree, in every preview and diff, and on a row of the
   changes list: an Office file goes to the Office apps (Microsoft's, then LibreOffice, then the OS default, the same chain `e`
   already used for Office files), anything else to the OS default (`open` / `xdg-open`). It runs on a worker, so the screen
@@ -31,18 +39,9 @@ All notable changes to konoma are documented in this file. The format is based o
 - **`e` works in a diff and on the changes list**: in a diff it opens the editor at the line of the change block on screen (the
   block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
   that file in a new tab.
+- **Line wrapping can be switched while running**: `,` then `w` in a text or document preview (action `toggle_wrap`).
 
 ### Changed
-- **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
-  modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
-  wrapping, which can now be switched while running; a table or image: path style; a diff: the follow scope and path style),
-  replacing the tree's `s` and the previews' `p`. `Space` outside the tree opens a menu of every operation that acts on that
-  screen, each under its own key where it has a single one and a letter otherwise, so an operation whose key was moved or lost
-  is still one keystroke away; in the tree it is still the file menu. `y` opens the copy menu of the screen (paths, a table's
-  cell / row / column, a commit's fields, a branch name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) now
-  changes the menu of that context only; the old `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as
-  the tree's `,` menu. The bookmark list deletes with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel
-  toggles a branch with `x` (`Space` is the menu).
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
   new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches
@@ -56,34 +55,39 @@ All notable changes to konoma are documented in this file. The format is based o
   back. The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
   have no default key: the first three are in the `,` menu and the log and the graph are reached with `Tab`, and `[keys]`
   can still bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
-  The footer and the `?` help show the new keys by themselves.
-- **Key tables are now per context, not per screen** (the default keys are unchanged). `[keys.<context>]` is keyed by what you
-  are looking at: `text` (source and plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are
-  separate, and the version-control screens exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot).
-  A key is looked up in the context's own table, then the keys shared by that kind of view, then `j`/`k`, then `global`. The
-  old names (`preview_text`, `preview_text_visual`, `preview_image`, `preview_table`, `preview_git_diff`, `git_changes` ...) are
-  still read and apply to every context they now cover; if both are written the new name wins. At startup the notice now says
-  *which* old name to rename to what, and shows the first conflicting or ignored key setting instead of only a count.
+  The footer and the `?` help show the new keys by themselves, as they are set.
+- **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
+  modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
+  wrapping; a table or image: path style; a diff: the follow scope and path style), replacing the tree's `s` and the previews'
+  `p`. `Space` outside the tree opens a menu of every operation that acts on that screen, each under its own key where it has a
+  single one and a letter otherwise, so an operation whose key was moved or lost is still one keystroke away; in the tree it is
+  still the file menu. `y` opens the copy menu of the screen (paths, a table's cell / row / column, a commit's fields, a branch
+  name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes the menu of that context only; the old
+  `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as the tree's `,` menu. The bookmark list deletes
+  with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
+- **Key tables are per context, not per screen.** `[keys.<context>]` is keyed by what you are looking at: `text` (source and
+  plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are separate, and the version-control screens
+  exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot). A key is looked up in the context's own table,
+  then the keys shared by that kind of view, then `j`/`k`, then `global`. The old names (`preview_text`, `preview_text_visual`,
+  `preview_image`, `preview_table`, `preview_git_diff`, `git_changes` ...) are still read and apply to every context they now
+  cover; if both are written the new name wins. At startup the notice says *which* old name to rename to what, and shows the
+  first conflicting or ignored key setting instead of only a count.
 - **`[[preview.rules]]` now adds to the defaults instead of replacing them.** Which plugin shows a file is settled by
-  one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins (markdown, mermaid, svg,
-  image, csv, spreadsheet, document, presentation, archive, code, video, pdf), then plain text, then
+  one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins, then plain text, then
   `[can not preview]`. With no rules of your own every file is decided exactly as before. If your config wrote
   `[[preview.rules]]`, the files you did not name used to fall to plain text and now keep their standard viewer; to
   keep the old effect for one kind, switch the standard plugin off with `[plugins.<id>] enabled = false`.
   `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
-  by extension. New: `konoma --plugins` lists every assignment (yours first), and an unknown `[plugins.<id>]` is
-  reported at startup.
-- **Images, SVG, PDF and video are shown by plugins** (`image`, `svg`, `pdf`, `video`, in the new `konoma-media` crate). What you see
-  does not change: the host still decodes, animates, zooms and draws the pictures, and an SVG is still drawn in a supervised
-  child process. New: `[plugins.svg] max_px` (the old `[ui] svg_max_px` is still read), and `[plugins.<id>] enabled = false`
-  switches a picture viewer off. A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn,
-  so `J`/`K` work from the first frame.
+  by extension.
+- A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn, so `J` / `K` work from the
+  first frame.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
   under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
-  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block
-  model), on top of `konoma-base`, plus `konoma-test-support` for tests. The `konoma` binary behaves exactly as before.
-  They are not published to crates.io yet. To check from source, use `cargo test --workspace` (a plain `cargo test` only
-  covers the `konoma` package).
+  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), `konoma-markdown-core` (the Markdown block model)
+  and `konoma-code-core` (syntax coloring), on top of `konoma-base`, plus `konoma-plugin` (the plugin API) and the plugin
+  crates `konoma-table`, `konoma-media`, `konoma-code`, `konoma-mermaid`, `konoma-math` and `konoma-office`, and
+  `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
+  from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
 
 ### Fixed
 - Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab

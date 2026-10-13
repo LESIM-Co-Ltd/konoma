@@ -23,17 +23,17 @@ looking at exactly that edit, hands off.
 *`src/main.rs` starts with an uncommitted line of your own (`// TODO: handle
 retries`) — the plain git diff shows it. After `F`, the agent appends a function
 and konoma opens the file by itself, with that new function as the only
-highlighted change: your earlier edit has dropped back to context. `f` switches
+highlighted change: your earlier edit has dropped back to context. `,` then `f` switches
 to the full git diff, where both changes are highlighted. The agent then edits
 `docs/guide.md` and konoma follows again.*
 
 Details that make it comfortable:
 
-- **Follow is sticky.** Reading the diff — scrolling, `n`/`N` (cycling
-  changed files), `f` (below) — doesn't turn it off. Only `q` (leaving the
+- **Follow is sticky.** Reading the diff — scrolling, `n`/`N` (change blocks),
+  `Ctrl-n`/`Ctrl-p` (cycling changed files), `f` in the `,` menu (below) — doesn't turn it off. Only `q` (leaving the
   diff), entering a text-input/confirm prompt, or pressing `F` again stops
   following.
-- Press `f` inside a follow diff to switch between the diff **since
+- Open the `,` menu inside a follow diff and press `f` to switch between the diff **since
   follow-start** (default) and the **full git diff** for that file — the
   title shows which one you're looking at (`· since follow start` /
   `· full diff`).
@@ -49,7 +49,7 @@ Details that make it comfortable:
   normal preview.
 - Rapid multi-file edits are rate-limited to about one view-switch per second
   (the latest change wins), so bursts don't thrash the screen.
-- While a diff is on screen, `n` / `N` cycle **through the files changed in
+- While a diff is on screen, `Ctrl-n` / `Ctrl-p` cycle **through the files changed in
   this follow session** — the title shows your position like `(2/5)`. Files
   that were already dirty before you pressed `F` don't clutter the loop, and
   neither does a changed video (it never became a diff to cycle to in the
@@ -86,14 +86,14 @@ Coding agents accept `@path` references. konoma copies them ready-to-paste:
 
 Paste into the conversation and the agent knows exactly which lines you mean.
 
-## Worktrees — one checkout per agent — `o` `w`
+## Worktrees — one checkout per agent — `p` `w`
 
 Agents work best with a checkout of their own, which is why `git worktree` has
-become the usual way to run several at once. konoma lists them: `o` then `w`.
+become the usual way to run several at once. konoma lists them: `p` then `w`.
 
 <img src="/konoma/worktrees.gif" alt="Worktrees — listing the repository's worktrees, showing what an agent's worktree added since its base branch, and stepping into it with the WT chip naming the repository" width="1268" height="768" style="width:100%;height:auto;border-radius:8px" />
 
-*Your own checkout has an uncommitted edit of your own. `o` `w` lists the
+*Your own checkout has an uncommitted edit of your own. `p` `w` lists the
 worktrees; the agent has one to itself. `d` shows what that worktree added since
 its base branch — the commit it landed **and** the line it is still writing. After
 `Enter` you are inside it, and `WT demo` names the repository `add-retry` belongs
@@ -120,7 +120,7 @@ to.*
 ## A typical loop
 
 1. `F` — follow on. Ask the agent for a change.
-2. Watch the diffs land as the agent works; `n`/`N` to flip between files.
+2. Watch the diffs land as the agent works; `Ctrl-n`/`Ctrl-p` to flip between files.
 3. Spot something off? `Y` the exact lines, paste the `@path#L12-34` reference
    into the chat with your comment.
-4. Happy? `o` → stage → `c` commit, all inside konoma.
+4. Happy? `p` → stage → `c` commit, all inside konoma.
