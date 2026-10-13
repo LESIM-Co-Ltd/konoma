@@ -902,3 +902,200 @@ fn the_external_switches_reach_the_work_of_the_plugin_they_belong_to() {
         assert!(!work("stand"));
     }
 }
+
+// ---- a stale answer hands the session back (`reclaim_plugin_session`) ---------------------------
+
+/// An app with the stand-in open on `file` and ready, the session of its show taken out the way a
+/// job takes it, and a stale answer carrying that session and `outcome`.
+fn stale_answer_with_session(
+    app: &mut App,
+    file: &Path,
+    outcome: Option<Outcome>,
+) -> (Arc<Seen>, MediaResult) {
+    let (plugin, seen) = stand(Script {
+        rows: 2,
+        ..Script::default()
+    });
+    open_stand(app, plugin, file);
+    let session = app.plugin.as_mut().unwrap().session.take();
+    assert!(session.is_some(), "the show was ready with its session");
+    app.bump_media_gen();
+    let mut res = answer_of(app.media_gen - 1, 9);
+    res.session = session;
+    res.outcome = outcome;
+    let result = MediaResult {
+        gen: res.gen,
+        payload: Some(MediaPayload::Plugin(Box::new(res))),
+    };
+    (seen, result)
+}
+
+/// The stale answer is not applied; what it carries is the session and what it said.
+#[test]
+fn a_stale_answer_returns_its_session_and_flash_to_the_open_show() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_flash");
+    let mut app = app_on(&dir, &file);
+    let (seen, stale) = stale_answer_with_session(
+        &mut app,
+        &file,
+        Some(Outcome::Flash(t!(en: "flashed", ja: "表示した"))),
+    );
+    assert!(!app.apply_media(stale));
+    assert!(app.plugin.as_ref().unwrap().session.is_some(), "given back");
+    assert_eq!(
+        app.flash.as_deref(),
+        Some("flashed"),
+        "what it said is said"
+    );
+    assert_eq!(rows_of(&app), Some(2), "the stale view is not applied");
+    // And the session is the one that came back: the next action runs on it.
+    assert!(app.plugin_act("again"));
+    assert_eq!(*seen.acts.lock().unwrap(), ["again"]);
+}
+
+/// A `Reload` the stale action asked for is still done: the file is opened again.
+#[test]
+fn a_stale_answer_that_asked_for_a_reload_reloads() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_reload");
+    let mut app = app_on(&dir, &file);
+    let (_, stale) = stale_answer_with_session(&mut app, &file, Some(Outcome::Reload));
+    assert!(app.plugin_failure().is_none());
+    assert!(!app.apply_media(stale));
+    assert!(
+        app.plugin_failure().is_some(),
+        "the reload asked the registry for `stand`, which it does not have"
+    );
+}
+
+/// A show that already holds a session (something else gave one back first) keeps it: the stale
+/// one is dropped, not put over it.
+#[test]
+fn a_stale_answer_does_not_replace_a_session_the_show_holds() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_has");
+    let mut app = app_on(&dir, &file);
+    let (stale_seen, stale) =
+        stale_answer_with_session(&mut app, &file, Some(Outcome::Flash(t!(en: "flashed"))));
+    // The show's own session: a second, distinguishable stand-in.
+    let (own, own_seen) = stand(Script {
+        rows: 2,
+        ..Script::default()
+    });
+    open_stand(&mut app, own, &file);
+    assert!(app.plugin.as_ref().unwrap().session.is_some());
+    // The first open moved the generation on: the stale answer is older than that too.
+    assert!(!app.apply_media(stale));
+    assert!(app.flash.is_none(), "nothing of the stale answer is said");
+    assert!(app.plugin_act("mine"));
+    assert_eq!(*own_seen.acts.lock().unwrap(), ["mine"]);
+    assert!(stale_seen.acts.lock().unwrap().is_empty());
+}
+
+/// A show that is not ready (still loading) does not take the session back.
+#[test]
+fn a_stale_answer_is_not_given_to_a_show_that_is_not_ready() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_phase");
+    let mut app = app_on(&dir, &file);
+    let (_, stale) =
+        stale_answer_with_session(&mut app, &file, Some(Outcome::Flash(t!(en: "flashed"))));
+    app.plugin.as_mut().unwrap().phase = plugin_host::PluginPhase::Loading;
+    assert!(!app.apply_media(stale));
+    assert!(app.plugin.as_ref().unwrap().session.is_none());
+    assert!(app.flash.is_none());
+}
+
+/// A show of another file (the preview moved to a file of the same plugin) does not take it.
+#[test]
+fn a_stale_answer_is_not_given_to_a_show_of_another_file() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_file");
+    let mut app = app_on(&dir, &file);
+    let (_, stale) =
+        stale_answer_with_session(&mut app, &file, Some(Outcome::Flash(t!(en: "flashed"))));
+    let other = dir.join("other.stand");
+    std::fs::write(&other, "y").unwrap();
+    app.tab.preview_kind = Some(PreviewKind::Plugin {
+        path: other,
+        id: "stand".into(),
+        hint: None,
+    });
+    assert!(!app.apply_media(stale));
+    assert!(app.plugin.as_ref().unwrap().session.is_none());
+    assert!(app.flash.is_none());
+}
+
+/// An answer of another plugin never goes to this plugin's show.
+#[test]
+fn a_stale_answer_is_not_given_to_a_show_of_another_plugin() {
+    let (dir, file) = sandbox("konoma_plugin_host_reclaim_id");
+    let mut app = app_on(&dir, &file);
+    let (_, mut stale) =
+        stale_answer_with_session(&mut app, &file, Some(Outcome::Flash(t!(en: "flashed"))));
+    if let Some(MediaPayload::Plugin(res)) = stale.payload.as_mut() {
+        res.id = "someone-else".into();
+    }
+    assert!(!app.apply_media(stale));
+    assert!(app.plugin.as_ref().unwrap().session.is_none());
+    assert!(app.flash.is_none());
+}
+
+// ---- the page state follows what the session reports -------------------------------------------
+
+/// A session that reports separate pages gives the tab a page count; one that reports none (a
+/// workbook that failed to open has no sheets) takes it away, so the page keys have nothing to
+/// turn; one that reports pages of another kind leaves the count as it was.
+#[test]
+fn the_page_count_follows_the_layout_the_session_reports() {
+    use konoma_plugin::view::PageLayout;
+    let (dir, file) = sandbox("konoma_plugin_host_page_count");
+    let mut app = app_on(&dir, &file);
+    let (plugin, _) = stand(Script {
+        rows: 2,
+        ..Script::default()
+    });
+    open_stand(&mut app, plugin, &file);
+    let answer = |app: &App, layout: Layout, failed: bool| {
+        let (view, failure) = if failed {
+            (None, Some(Failure::external(t!(en: "no sheets"))))
+        } else {
+            (Some(table_view(2)), None)
+        };
+        PluginResult::answer(
+            app.media_gen,
+            "stand",
+            Some(layout),
+            view,
+            failure,
+            ViewReq::new(80, 24),
+        )
+    };
+    let separate = |n: usize| Layout {
+        pages: Some(PageLayout::Separate {
+            count: Some(n),
+            titles: Vec::new(),
+        }),
+        ..Layout::single()
+    };
+    assert!(app.install_plugin_result(answer(&app, separate(5), false)));
+    assert_eq!(app.tab.page_count, Some(5));
+    // Pages that the host's page keys do not turn: the count is not touched.
+    let anchored = Layout {
+        pages: Some(PageLayout::Anchored {
+            heading_level: 1,
+            count: 3,
+        }),
+        ..Layout::single()
+    };
+    assert!(app.install_plugin_result(answer(&app, anchored, false)));
+    assert_eq!(
+        app.tab.page_count,
+        Some(5),
+        "anchored pages are not its pages"
+    );
+    // No pages at all (the file could not be opened as a book): the page keys have nothing to turn.
+    assert!(app.install_plugin_result(answer(&app, Layout::single(), true)));
+    assert_eq!(app.tab.page_count, None);
+    // And the other way round: a count comes back with the next good answer.
+    assert!(app.install_plugin_result(answer(&app, separate(2), false)));
+    assert_eq!(app.tab.page_count, Some(2));
+    assert!(app.install_plugin_result(answer(&app, Layout::single(), false)));
+    assert_eq!(app.tab.page_count, None);
+}

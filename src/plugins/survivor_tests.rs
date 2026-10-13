@@ -194,3 +194,406 @@ fn the_declared_default_of_every_setting_is_what_the_host_hands_over() {
     }
     assert!(checked >= 20, "checked {checked} settings");
 }
+
+// ---- the rest of the plugin-table audit ---------------------------------------------------------
+
+/// "A spreadsheet" is a table of a plugin that **converts** the file: a CSV or an archive listing
+/// is a table too and a Word document is a converting plugin too, and neither is one.
+#[test]
+fn only_a_table_that_converts_is_a_spreadsheet() {
+    let cfg = Config::default();
+    let kind = |name: &str| cfg.resolve_preview(Path::new(&format!("/nonexistent/{name}")));
+    assert!(kind("a.xlsx").is_spreadsheet());
+    assert!(kind("a.ods").is_spreadsheet());
+    // Tables that are read as they are.
+    assert!(kind("a.csv").profile().table);
+    assert!(!kind("a.csv").is_spreadsheet());
+    assert!(kind("a.zip").profile().table);
+    assert!(!kind("a.zip").is_spreadsheet());
+    // Converts, but is not a table.
+    assert!(kind("a.docx").profile().converts);
+    assert!(!kind("a.docx").profile().table);
+    assert!(!kind("a.docx").is_spreadsheet());
+    // Neither.
+    assert!(!kind("a.rs").is_spreadsheet());
+}
+
+/// `enabled = false` is a complaint only for the host-internal pieces: an ordinary plugin may be
+/// switched off without a word, and a host-internal one is told it cannot be.
+#[test]
+fn switching_an_ordinary_plugin_off_is_not_a_problem() {
+    let lang = crate::i18n::Lang::En;
+    let tables = |id: &str| {
+        let mut t = toml::Table::new();
+        t.insert("enabled".into(), toml::Value::Boolean(false));
+        let mut all = PluginTables::new();
+        all.insert(id.to_string(), t);
+        all
+    };
+    for id in ["csv", "archive", "code", "markdown", "pdf"] {
+        let problems = table_problems(&tables(id), lang);
+        assert!(problems.is_empty(), "{id}: {problems:?}");
+    }
+    for id in [TEXT_ID, COMMAND_ID] {
+        let problems = table_problems(&tables(id), lang);
+        assert_eq!(problems.len(), 1, "{id}: {problems:?}");
+        assert!(problems[0].contains("cannot be disabled"), "{problems:?}");
+    }
+    // `enabled = true` on an internal piece is fine.
+    let mut t = toml::Table::new();
+    t.insert("enabled".into(), toml::Value::Boolean(true));
+    let mut all = PluginTables::new();
+    all.insert(TEXT_ID.to_string(), t);
+    assert!(table_problems(&all, lang).is_empty());
+}
+
+// ---- the actions a plugin declares (`plugins/acts.rs`) -------------------------------------------
+
+mod declared_acts {
+    use super::super::acts::{keypress_of, PluginKeys, PluginNote};
+    use crate::keymap::KeyPress;
+    use crossterm::event::KeyCode;
+    use konoma_plugin::keys::{KeyCode as PKeyCode, KeySpec};
+    use konoma_plugin::prelude::*;
+    use konoma_plugin::registry::{PluginOrigin, Registry};
+    use konoma_plugin::Act;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// A plugin with actions in each key context and one in none, and two it names `w` and `x`.
+    struct Declares;
+
+    impl Plugin for Declares {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("declares", "1")
+                .shows(ViewKind::Text)
+                .action(Act::new("anywhere").key("w").label("a").help("a help"))
+                .action(
+                    Act::new("in-table")
+                        .context("table")
+                        .label("t")
+                        .help("t help"),
+                )
+                .action(
+                    Act::new("in-image")
+                        .context("image")
+                        .label("i")
+                        .help("i help"),
+                )
+                .action(
+                    Act::new("in-doc")
+                        .context("document")
+                        .label("d")
+                        .help("d help"),
+                )
+                .action(
+                    Act::new("in-text")
+                        .context("text")
+                        .label("x")
+                        .help("x help"),
+                )
+                .action(Act::new("second").key("x").label("s").help("s help"))
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Err(Failure::unsupported("not opened"))
+        }
+    }
+
+    fn build(entries: &[(&str, &str)]) -> PluginKeys {
+        let mut r = Registry::new();
+        r.register(Arc::new(Declares), PluginOrigin::User).unwrap();
+        let mut tables = HashMap::new();
+        if !entries.is_empty() {
+            tables.insert(
+                "declares".to_string(),
+                entries
+                    .iter()
+                    .map(|(k, a)| (k.to_string(), a.to_string()))
+                    .collect::<HashMap<_, _>>(),
+            );
+        }
+        PluginKeys::build(&r, &mut tables)
+    }
+
+    fn key_of(k: &PluginKeys, act: &str) -> Option<KeyPress> {
+        k.acts_of("declares")
+            .iter()
+            .find(|b| b.act.act() == act)
+            .and_then(|b| b.key)
+    }
+
+    /// An action keeps the key context it was declared in, and the rest of its declaration.
+    #[test]
+    fn an_action_keeps_the_context_it_was_declared_in() {
+        let k = build(&[]);
+        let ctx = |act: &str| {
+            k.acts_of("declares")
+                .iter()
+                .find(|b| b.act.act() == act)
+                .unwrap_or_else(|| panic!("{act}"))
+                .context
+                .clone()
+        };
+        assert_eq!(ctx("anywhere"), None);
+        assert_eq!(ctx("in-table").as_deref(), Some("table"));
+        assert_eq!(ctx("in-image").as_deref(), Some("image"));
+        assert_eq!(ctx("in-doc").as_deref(), Some("document"));
+        assert_eq!(ctx("in-text").as_deref(), Some("text"));
+        assert_eq!(k.acts_of("declares").len(), 6, "in declaration order");
+        assert_eq!(k.acts_of("declares")[0].act.act(), "anywhere");
+        assert_eq!(k.acts_of("declares")[5].act.act(), "second");
+    }
+
+    /// `disabled` is another word for `noop`: it takes the key from the action that has it by
+    /// default, and the action stays.
+    #[test]
+    fn disabled_takes_a_key_away_like_noop() {
+        for word in ["noop", "disabled"] {
+            let k = build(&[("w", word)]);
+            assert_eq!(key_of(&k, "anywhere"), None, "{word}");
+            assert_eq!(
+                key_of(&k, "second"),
+                Some(KeyPress::ch('x')),
+                "{word}: only that key"
+            );
+            assert_eq!(k.acts_of("declares").len(), 6, "{word}");
+            assert!(k.notes().is_empty(), "{word}: {:?}", k.notes());
+        }
+    }
+
+    /// A key that is not a key is said so even where the entry only takes a key away.
+    #[test]
+    fn a_noop_on_something_that_is_not_a_key_is_told() {
+        for word in ["noop", "disabled"] {
+            let k = build(&[("ab", word)]);
+            let told = k.notes().iter().any(|n| {
+                matches!(n, PluginNote::BadKey { key, why, .. } if key == "ab" && why == "not a key")
+            });
+            assert!(told, "{word}: {:?}", k.notes());
+            assert_eq!(
+                key_of(&k, "anywhere"),
+                Some(KeyPress::ch('w')),
+                "{word}: nothing taken"
+            );
+        }
+    }
+
+    /// One key per action: the first key (in key order) is kept, the second is refused with its
+    /// reason, and the action keeps the first.
+    #[test]
+    fn a_second_key_for_one_action_is_refused_and_the_first_is_kept() {
+        let k = build(&[("W", "anywhere"), ("w", "anywhere")]);
+        assert_eq!(key_of(&k, "anywhere"), Some(KeyPress::ch('W')));
+        let refused: Vec<_> = k
+            .notes()
+            .iter()
+            .filter_map(|n| match n {
+                PluginNote::BadKey { key, why, .. } => Some((key.as_str(), why.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refused.len(), 1, "{:?}", k.notes());
+        assert_eq!(refused[0].0, "w");
+        assert!(refused[0].1.contains("one key per action"), "{refused:?}");
+    }
+
+    /// Every key the plugin API has is the host key of the same name.
+    #[test]
+    fn every_plugin_key_code_is_its_host_key() {
+        let all = [
+            (PKeyCode::Char('q'), KeyCode::Char('q')),
+            (PKeyCode::Enter, KeyCode::Enter),
+            (PKeyCode::Tab, KeyCode::Tab),
+            (PKeyCode::BackTab, KeyCode::BackTab),
+            (PKeyCode::Esc, KeyCode::Esc),
+            (PKeyCode::Backspace, KeyCode::Backspace),
+            (PKeyCode::Delete, KeyCode::Delete),
+            (PKeyCode::Up, KeyCode::Up),
+            (PKeyCode::Down, KeyCode::Down),
+            (PKeyCode::Left, KeyCode::Left),
+            (PKeyCode::Right, KeyCode::Right),
+            (PKeyCode::Home, KeyCode::Home),
+            (PKeyCode::End, KeyCode::End),
+            (PKeyCode::PageUp, KeyCode::PageUp),
+            (PKeyCode::PageDown, KeyCode::PageDown),
+            (PKeyCode::F(3), KeyCode::F(3)),
+        ];
+        for (p, h) in all {
+            assert_eq!(keypress_of(KeySpec::key(p)), KeyPress::key(h), "{p:?}");
+        }
+        assert_eq!(keypress_of(KeySpec::ctrl('r')), KeyPress::ctrl_ch('r'));
+    }
+}
+
+// ---- `konoma --plugins` -------------------------------------------------------------------------
+
+mod listing_table {
+    use super::*;
+    use crate::plugins::plugins_table;
+    use unicode_width::UnicodeWidthStr;
+
+    fn cfg_of(text: &str) -> Config {
+        toml::from_str::<Config>(text).unwrap()
+    }
+
+    fn rule_row(builtin: &str) -> Rule {
+        Rule {
+            glob: Some("*.zzz".into()),
+            builtin: Some(builtin.into()),
+            ..Rule::default()
+        }
+    }
+
+    /// The columns of the first row whose assignment is `glob *.zzz` (a user rule's).
+    fn user_row(out: &str) -> Vec<String> {
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("glob *.zzz"))
+            .unwrap_or_else(|| panic!("no row:\n{out}"));
+        // `glob *.zzz` has a space inside: the rest is single words but the last column.
+        let rest = line.strip_prefix("glob *.zzz").unwrap();
+        let mut cols: Vec<String> = vec!["glob *.zzz".into()];
+        cols.extend(rest.split_whitespace().map(String::from));
+        cols
+    }
+
+    /// Whether a user rule names a plugin the host has: the STANDARD column. A host piece
+    /// (`text`, `command`) and a standard plugin say yes, a name nobody registered says no.
+    #[test]
+    fn a_rules_row_says_whether_its_plugin_is_one_the_host_has() {
+        for (builtin, plugin, standard) in [
+            ("markdown", "markdown", "yes"),
+            ("text", "text", "yes"),
+            ("no-such-plugin", "can-not-preview", "yes"),
+        ] {
+            let mut cfg = Config::default();
+            cfg.preview.rules = vec![rule_row(builtin)];
+            let cols = user_row(&plugins_table(&cfg));
+            assert_eq!(cols[1], plugin, "{builtin}");
+            assert_eq!(cols[2], standard, "{builtin}: STANDARD");
+        }
+        // A command rule is the host's `command` piece.
+        let mut cfg = Config::default();
+        cfg.preview.rules = vec![Rule {
+            glob: Some("*.zzz".into()),
+            command: Some("cat {path}".into()),
+            ..Rule::default()
+        }];
+        let cols = user_row(&plugins_table(&cfg));
+        assert_eq!((cols[1].as_str(), cols[2].as_str()), ("command", "yes"));
+    }
+
+    /// A rule for `document` covers Word and presentations: it is enabled while either is, and the
+    /// row says so.
+    #[test]
+    fn the_document_rule_is_enabled_while_either_of_its_plugins_is() {
+        for (off, enabled) in [
+            ("", "yes"),
+            ("[plugins.document]\nenabled = false\n", "yes"),
+            ("[plugins.presentation]\nenabled = false\n", "yes"),
+            (
+                "[plugins.document]\nenabled = false\n[plugins.presentation]\nenabled = false\n",
+                "no",
+            ),
+        ] {
+            let mut cfg = cfg_of(off);
+            cfg.preview.rules = vec![rule_row("document")];
+            let cols = user_row(&plugins_table(&cfg));
+            assert_eq!(cols[1], "document/presentation", "{off:?}");
+            assert_eq!(cols[2], "yes", "{off:?}: STANDARD");
+            assert_eq!(cols[3], enabled, "{off:?}: ENABLED");
+        }
+    }
+
+    /// A rule for one plugin is enabled as that plugin is.
+    #[test]
+    fn another_rules_row_is_enabled_as_its_plugin_is() {
+        let mut cfg = cfg_of("[plugins.pdf]\nenabled = false\n");
+        cfg.preview.rules = vec![rule_row("pdf")];
+        assert_eq!(user_row(&plugins_table(&cfg))[3], "no");
+        let mut cfg = Config::default();
+        cfg.preview.rules = vec![rule_row("pdf")];
+        assert_eq!(user_row(&plugins_table(&cfg))[3], "yes");
+    }
+
+    /// A plugin a user added is not a standard one: its rows say `no` in STANDARD and the standard
+    /// plugins say `yes`.
+    #[test]
+    fn a_user_plugin_is_not_marked_standard() {
+        use super::super::test_plugins::{marker_config, register, Hexdump, Variant};
+        use std::sync::Arc;
+        let marker = register("listing_user_plugin", Arc::new(Hexdump(Variant::default())));
+        let out = plugins_table(&marker_config(&marker));
+        let row = |glob: &str| -> Vec<String> {
+            out.lines()
+                .find(|l| l.starts_with(glob))
+                .unwrap_or_else(|| panic!("no {glob}:\n{out}"))
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        };
+        let user = row("glob *.bin");
+        assert_eq!(&user[2..], ["hexdump", "no", "yes", "built-in"], "{user:?}");
+        let standard = row("glob *.md");
+        assert_eq!(
+            &standard[2..],
+            ["markdown", "yes", "yes", "built-in"],
+            "{standard:?}"
+        );
+    }
+
+    /// The columns are as wide as the widest cell **on the screen** (a wide character takes two
+    /// columns, three bytes), a narrower cell is padded to that, and the last column is not padded.
+    #[test]
+    fn columns_are_measured_and_padded_by_display_width() {
+        // 20 wide characters: 40 columns, 60 bytes. 50 ASCII letters: 50 columns, 50 bytes. By
+        // columns the ASCII one is the widest; by bytes the other would be.
+        let cjk = "資".repeat(20);
+        let ascii = "x".repeat(50);
+        let mut cfg = Config::default();
+        cfg.preview.rules = ["short", cjk.as_str(), ascii.as_str()]
+            .into_iter()
+            .map(|g| Rule {
+                glob: Some(g.into()),
+                command: Some("cat {path}".into()),
+                ..Rule::default()
+            })
+            .collect();
+        let out = plugins_table(&cfg);
+        let lines: Vec<&str> = out.lines().collect();
+        let head = lines
+            .iter()
+            .position(|l| l.starts_with("ASSIGNMENT"))
+            .unwrap();
+        let start = |l: &str, word: &str| UnicodeWidthStr::width(&l[..l.find(word).unwrap()]);
+        // Every row's second column starts where the header's does, and that is two spaces
+        // after the widest first cell, measured on the screen.
+        let second = start(lines[head], "PLUGIN");
+        let mut widest = 0;
+        for l in &lines[head..] {
+            if l.is_empty() {
+                break;
+            }
+            let end = l
+                .char_indices()
+                .map(|(i, _)| i)
+                .find(|&i| UnicodeWidthStr::width(&l[..i]) == second);
+            let cell = l[..end.unwrap_or(l.len())].trim_end();
+            widest = widest.max(UnicodeWidthStr::width(cell));
+        }
+        assert_eq!(
+            second,
+            widest + 2,
+            "no wider than the widest cell on the screen"
+        );
+        for row in 1..=3 {
+            let l = lines[head + row];
+            assert_eq!(start(l, "command"), second, "{l:?}");
+        }
+        assert!(lines[head + 2].contains(&cjk));
+        // The last column is not padded: no line ends in a space.
+        for l in &lines[head..head + 4] {
+            assert_eq!(l.trim_end(), *l, "{l:?}");
+        }
+    }
+}

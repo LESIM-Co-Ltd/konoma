@@ -2555,3 +2555,45 @@ fn an_idle_child_is_only_reused_for_the_limit_it_was_started_with() {
     );
     no_children_left();
 }
+
+/// The child's backstop is the limit it is given **plus a margin**: it rings after the parent's own
+/// supervision has had its chance to stop the drawing and say "timeout", never before it. A child
+/// told 1 s that ended itself at 1 s would be reported as a crash by a parent that stops it at 1 s.
+#[test]
+fn the_childs_backstop_rings_after_the_limit_it_is_given_not_with_it() {
+    let _g = serial();
+    no_children_left();
+    let mut child = std::process::Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("2147483648")
+        .arg("1000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let ready = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
+    assert_eq!(&ready, b"KSRDY");
+    let data = endless_drawing();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(&800u32.to_le_bytes());
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    wire.extend_from_slice(data.as_bytes());
+    std::io::Write::write_all(&mut stdin, &wire).unwrap();
+    let t = Instant::now();
+    let status = wait_bounded(
+        &mut child,
+        Duration::from_secs(30),
+        "the child on its backstop",
+    );
+    let took = t.elapsed();
+    assert!(!status.success(), "{status:?}");
+    // 1 s + 3 s: well past the 1 s the parent would stop it at (a lower bound only: a loaded
+    // machine can make the child later, never earlier).
+    assert!(took >= Duration::from_millis(3500), "{took:?}");
+    drop(stdin);
+}

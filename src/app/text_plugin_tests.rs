@@ -493,3 +493,217 @@ fn a_stale_result_leaves_no_temp_file_behind() {
     }
     assert!(!path.exists(), "its temp file is gone");
 }
+
+// ---- the plugin's colors reach the host unchanged -------------------------------------------------
+
+mod mapping {
+    use super::*;
+    use konoma_plugin::{Color as PColor, Modifier as PModifier, Style as PStyle};
+    use ratatui::style::{Color as R, Modifier as RM};
+
+    /// One span in `style`, as the host draws it.
+    fn drawn(style: PStyle) -> ratatui::style::Style {
+        let line = text_plugin_line(PLine {
+            spans: vec![PSpan::styled("x", style)],
+            style: PStyle::default(),
+        });
+        line.spans[0].style
+    }
+
+    fn text_plugin_line(l: PLine) -> Line<'static> {
+        super::super::text_plugin::ratatui_line(l)
+    }
+
+    const COLORS: [(PColor, R); 19] = [
+        (PColor::Reset, R::Reset),
+        (PColor::Black, R::Black),
+        (PColor::Red, R::Red),
+        (PColor::Green, R::Green),
+        (PColor::Yellow, R::Yellow),
+        (PColor::Blue, R::Blue),
+        (PColor::Magenta, R::Magenta),
+        (PColor::Cyan, R::Cyan),
+        (PColor::Gray, R::Gray),
+        (PColor::DarkGray, R::DarkGray),
+        (PColor::LightRed, R::LightRed),
+        (PColor::LightGreen, R::LightGreen),
+        (PColor::LightYellow, R::LightYellow),
+        (PColor::LightBlue, R::LightBlue),
+        (PColor::LightMagenta, R::LightMagenta),
+        (PColor::LightCyan, R::LightCyan),
+        (PColor::White, R::White),
+        (PColor::Indexed(77), R::Indexed(77)),
+        (PColor::Rgb(1, 2, 3), R::Rgb(1, 2, 3)),
+    ];
+
+    const MODIFIERS: [(PModifier, RM); 9] = [
+        (PModifier::BOLD, RM::BOLD),
+        (PModifier::DIM, RM::DIM),
+        (PModifier::ITALIC, RM::ITALIC),
+        (PModifier::UNDERLINED, RM::UNDERLINED),
+        (PModifier::SLOW_BLINK, RM::SLOW_BLINK),
+        (PModifier::RAPID_BLINK, RM::RAPID_BLINK),
+        (PModifier::REVERSED, RM::REVERSED),
+        (PModifier::HIDDEN, RM::HIDDEN),
+        (PModifier::CROSSED_OUT, RM::CROSSED_OUT),
+    ];
+
+    /// Every color of the plugin's palette is the same color on the host, as a foreground and as a
+    /// background, and the one never leaks into the other.
+    #[test]
+    fn every_color_is_the_same_color_as_a_foreground_and_as_a_background() {
+        for (p, r) in COLORS {
+            let fg = drawn(PStyle::new().fg(p));
+            assert_eq!(fg.fg, Some(r), "{p:?} as fg");
+            assert_eq!(fg.bg, None, "{p:?} as fg leaves the background");
+            let bg = drawn(PStyle::new().bg(p));
+            assert_eq!(bg.bg, Some(r), "{p:?} as bg");
+            assert_eq!(bg.fg, None, "{p:?} as bg leaves the foreground");
+        }
+        // Both at once, different.
+        let both = drawn(PStyle::new().fg(PColor::Red).bg(PColor::DarkGray));
+        assert_eq!((both.fg, both.bg), (Some(R::Red), Some(R::DarkGray)));
+    }
+
+    /// Every modifier is added as itself, and taken away as itself (`sub`), one at a time.
+    #[test]
+    fn every_modifier_is_added_and_removed_as_itself() {
+        for (p, r) in MODIFIERS {
+            let added = drawn(PStyle::new().add_modifier(p));
+            assert_eq!(added.add_modifier, r, "{p:?} added");
+            assert_eq!(added.sub_modifier, RM::empty(), "{p:?} added only");
+            let removed = drawn(PStyle::new().sub_modifier(p));
+            assert_eq!(removed.sub_modifier, r, "{p:?} removed");
+            assert_eq!(removed.add_modifier, RM::empty(), "{p:?} removed only");
+        }
+    }
+
+    /// The style of the whole line is kept under the spans' own, and an unstyled line has none.
+    #[test]
+    fn the_style_of_a_line_is_kept() {
+        let line = text_plugin_line(PLine {
+            spans: vec![PSpan::raw("x")],
+            style: PStyle::new().fg(PColor::Green).bg(PColor::Blue).bold(),
+        });
+        assert_eq!(line.style.fg, Some(R::Green));
+        assert_eq!(line.style.bg, Some(R::Blue));
+        assert_eq!(line.style.add_modifier, RM::BOLD);
+        assert_eq!(line.spans[0].style, ratatui::style::Style::default());
+        let plain = text_plugin_line(PLine::raw("x"));
+        assert_eq!(plain.style, ratatui::style::Style::default());
+    }
+}
+
+// ---- how the host asks the styler ---------------------------------------------------------------
+
+/// A styler that remembers the first line number of each block it is asked about.
+struct Remembering(Arc<std::sync::Mutex<Vec<usize>>>);
+
+impl LineStyler for Remembering {
+    fn style_block(&mut self, first: usize, text: &str) -> Vec<PLine> {
+        self.0.lock().unwrap().push(first);
+        text.split('\n')
+            .map(|l| PLine::from(PSpan::raw(l.to_string())))
+            .collect()
+    }
+}
+
+/// The styler is told which line of the file its block starts at, as the window moves.
+#[test]
+fn the_styler_is_told_the_line_its_block_starts_at() {
+    let body: String = (0..200).map(|i| format!("let v{i} = {i};\n")).collect();
+    let (dir, path) = sandbox("konoma_text_plugin_first_line", "a.rs", &body);
+    let mut app = open(&dir, &path, Config::default());
+    let firsts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    app.plugin.as_mut().unwrap().view = Some(View::Text(TextView {
+        source: TextSource::Lines(Vec::new()),
+        styler: Some(Box::new(Remembering(Arc::clone(&firsts)))),
+        file_lines: true,
+        syntax_name: None,
+    }));
+    app.win_cache = None;
+    let _ = app.windowed_lines(20, 80);
+    assert_eq!(firsts.lock().unwrap().last().copied(), Some(0));
+    app.preview_scroll(7);
+    let _ = app.windowed_lines(20, 80);
+    assert_eq!(
+        firsts.lock().unwrap().last().copied(),
+        Some(7),
+        "the window starts at line 7 of the file"
+    );
+    app.preview_scroll(30);
+    let _ = app.windowed_lines(20, 80);
+    assert_eq!(firsts.lock().unwrap().last().copied(), Some(37));
+}
+
+// ---- a made text lands again and the file it replaces goes -----------------------------------------
+
+/// A text landing again (a reload, another representation) removes the temp file of the text it
+/// replaces: the tab owns one file at a time.
+#[test]
+fn a_made_text_landing_again_removes_the_file_it_replaces() {
+    use super::plugin_host::MadeText;
+    let (mut app, _d) = hexdump_app("konoma_text_plugin_land_twice");
+    let first = MadeText::write("one\n").unwrap();
+    let first_path = first.path_for_test().unwrap().to_path_buf();
+    app.made_text_landed(Some(Ok(first)));
+    assert_eq!(app.tab.command_out.as_deref(), Some(first_path.as_path()));
+    let second = MadeText::write("two\n").unwrap();
+    let second_path = second.path_for_test().unwrap().to_path_buf();
+    app.made_text_landed(Some(Ok(second)));
+    assert_eq!(app.tab.command_out.as_deref(), Some(second_path.as_path()));
+    assert!(!first_path.exists(), "the replaced text's file is removed");
+    assert!(second_path.exists());
+}
+
+// ---- a text plugin that names a file of its own ---------------------------------------------------
+
+/// A text plugin that is not `file_text` but answers with `TextSource::File` of another file is read
+/// in place: the window shows that file, not the one that was opened, and no temp file is made.
+#[test]
+fn a_text_plugin_naming_a_file_of_its_own_is_read_in_place() {
+    use crate::plugins::test_plugins::{marker_config, register};
+    use konoma_plugin::prelude::*;
+    struct Names(PathBuf);
+    struct NamesSession(PathBuf);
+    impl Plugin for Names {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("x-names-a-file", "0.1.0")
+                .bind(Bind::files(["*.nm"]))
+                .shows(ViewKind::Text)
+        }
+        fn open(&self, _: konoma_plugin::Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(NamesSession(self.0.clone())))
+        }
+    }
+    impl Session for NamesSession {
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<konoma_plugin::View, Failure> {
+            Ok(konoma_plugin::View::Text(TextView {
+                source: TextSource::File(self.0.clone()),
+                styler: None,
+                file_lines: false,
+                syntax_name: None,
+            }))
+        }
+    }
+    let dir = unique_tmp("konoma_text_plugin_own_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let opened = dir.join("a.nm");
+    std::fs::write(&opened, "the opened file\n").unwrap();
+    let other = dir.join("other.txt");
+    std::fs::write(&other, "the plugin's own file\n").unwrap();
+    let marker = register("text_plugin_own_file", Arc::new(Names(other.clone())));
+    let mut app = App::new(dir.to_path_buf(), marker_config(&marker)).unwrap();
+    app.enter_preview(&opened);
+    assert!(app.shows_text_plugin());
+    assert_eq!(app.text_plugin_own_file(), Some(other.as_path()));
+    assert!(app.tab.command_out.is_none(), "nothing is written for it");
+    let shown: String = app
+        .windowed_lines(10, 80)
+        .iter()
+        .map(text_of)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(shown.contains("the plugin's own file"), "{shown}");
+    assert!(!shown.contains("the opened file"), "{shown}");
+}
