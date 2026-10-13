@@ -316,7 +316,7 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     }
     // which-key: after pressing a leader (Space = file management / y = path copy), show the
     // candidates for the next keystroke.
-    if let Some(spans) = whichkey_spans(app) {
+    if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
     }
     // While branch-filter input is active, show the query prompt (takes priority over the mode
@@ -409,30 +409,30 @@ pub(crate) fn relabel_for_backend(app: &App, label: crate::i18n::Msg) -> crate::
 }
 
 /// (`key:label`). Returns None if pending_leader is None. Zero per-frame cost (only while waiting).
+#[cfg(test)]
 fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
+    whichkey_spans_fit(app, u16::MAX)
+}
+
+/// The which-key line of the open menu, as many items as fit in `width` (the menu of `Space` can
+/// hold a screenful of operations; the rest are in the `?` help). All three menus (`y`, `Space`,
+/// `,`) are drawn here: what is in a menu is `ops::menu`'s to say. The code-block copy entry is
+/// only offered while a Markdown code block is focused, and jj names a commit by its change ID —
+/// both are applied when the menu is built.
+fn whichkey_spans_fit(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lead = app.pending_leader?;
-    let menu = app.keymaps.leaders.get(&lead)?;
-    let title = tr(app.lang, menu.title);
-    // The code-block copy entry only makes sense while a Markdown code block is focused; hide it
-    // everywhere else so the normal path-copy menu stays uncluttered.
-    let show_code = app
-        .key_context()
-        .is_some_and(|c| crate::ops::action_enabled(app, c, crate::keymap::Action::CopyCodeBlock));
-    let items: Vec<String> = menu
+    let ctx = app.key_context()?;
+    let menu = crate::ops::menu::menu(app, ctx, lead, crate::ops::menu::View::Open)?;
+    let prefix = format!("{} ▸ ", menu.title);
+    let room = width.saturating_sub(prefix.width() as u16);
+    let tokens: Vec<String> = menu
         .items
         .iter()
-        .filter(|it| show_code || !matches!(it.action, crate::keymap::Action::CopyCodeBlock))
-        .map(|it| {
-            let k = crate::ui::help::leader_key_str(it.key);
-            // jj names a commit by its change ID and keeps the hash underneath; the menu copies the
-            // right thing already, so only the words need to follow.
-            let label = tr(app.lang, relabel_for_backend(app, it.label));
-            format!("{k}:{label}")
-        })
+        .map(|it| format!("{}:{}", crate::ui::help::leader_key_str(it.key), it.label))
         .collect();
     Some(vec![
-        Span::from(format!("{title} ▸ ")).bold(),
-        Span::from(items.join("  ")).dim(),
+        Span::from(prefix).bold(),
+        Span::from(fit_tokens(&tokens, room)).dim(),
     ])
 }
 
@@ -1338,7 +1338,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "j/k:scroll  C-n/C-p:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}",
+                "j/k:scroll  C-n/C-p:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}  ,:view",
                 tr(Lang::En, Msg::DiffViewPreview)
             )
         );
@@ -1373,7 +1373,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "C-n/C-p:{}  x:discard  q/Esc:back",
+                "C-n/C-p:{}  x:discard  q/Esc:back  ,:view",
                 tr(Lang::En, Msg::HintNextPrevFile),
             )
         );

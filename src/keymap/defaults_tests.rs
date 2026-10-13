@@ -292,6 +292,20 @@ fn leader_dump(m: &KeyMap) -> String {
             ));
         }
     }
+    // The menus a context has of its own (the `,` menus), `<menu>@<context>`.
+    let mut own: Vec<(&(Context, LeaderId), &LeaderMenu)> = m.ctx_menus.iter().collect();
+    own.sort_by_key(|((c, id), _)| (c.name(), leader_name(*id)));
+    for ((c, id), menu) in own {
+        for it in &menu.items {
+            out.push_str(&format!(
+                "{}@{} | {} | {}\n",
+                leader_name(*id),
+                c.name(),
+                it.key.label(),
+                action_name(it.action)
+            ));
+        }
+    }
     out
 }
 
@@ -369,7 +383,10 @@ fn the_default_menus_are_the_snapshot() {
     let want: String = LEADERS
         .lines()
         .filter(|l| {
-            cfg!(feature = "git") || !(l.starts_with("git_copy") || l.starts_with("branch_copy"))
+            cfg!(feature = "git")
+                || !(l.starts_with("git_copy")
+                    || l.starts_with("branch_copy")
+                    || l.starts_with("options@diff"))
         })
         .map(|l| format!("{l}\n"))
         .collect();
@@ -445,8 +462,6 @@ fn the_git_screens_use_a_layer_four_key_only_where_no_layer_reserves_it() {
         ("y", "copy menu"),
         ("Ctrl-t", "open in a new tab"),
         ("!", "launch the project tool"),
-        // Layer 1's `Space` is the operation menu (B3b); the panel's toggle moves then.
-        ("Space", "toggle in the branch panel"),
         ("J", "reorder in the branch panel"),
         ("K", "reorder in the branch panel"),
     ];
@@ -489,10 +504,10 @@ fn the_git_screens_use_a_layer_four_key_only_where_no_layer_reserves_it() {
 #[test]
 fn layer_one_keys_mean_the_same_in_every_context() {
     let m = KeyMap::defaults(KeyScheme::Vim);
-    // Contexts whose letters are not a cursor's keys: the sort menu is a one-shot picker with
-    // its own letters (moving into the `,` menu in B3b), the bookmark list gives plain letters
-    // to bookmark names, and the tab list and the info popup are small pickers.
-    let pickers = [Context::Sort, Context::Bookmarks, Context::Info];
+    // Contexts whose letters are not a cursor's keys: the old sort overlay (kept only for
+    // `open_sort_menu`; the `,` menu replaced it) and the info popup are one-shot pickers with
+    // their own letters.
+    let pickers = [Context::Sort, Context::Info];
     // key -> the operations that mean the same thing for it. Anything else is a violation.
     let same_meaning = |kp: KeyPress| -> Vec<String> {
         let nav = |mo: Motion| action_name(Action::Navigate(mo));
@@ -572,6 +587,9 @@ fn layer_one_keys_mean_the_same_in_every_context() {
                 action_name(Action::MarkJump),
                 action_name(Action::BookmarkClose),
             ],
+            // Space: the menu of operations (the tree's is the file menu). `,`: the options.
+            " " | "Space" => vec!["leader".to_string()],
+            "," => vec!["leader".to_string()],
             "ctrl-t" => vec![
                 action_name(Action::OpenInNewTab),
                 action_name(Action::OpenLinkNewTab),
@@ -590,6 +608,7 @@ fn layer_one_keys_mean_the_same_in_every_context() {
     };
     let layer_one: Vec<KeyPress> = [
         "j", "k", "g", "G", "0", "$", "h", "l", "q", "/", "n", "N", "v", "V", "r", "m", "'",
+        "space", ",",
     ]
     .iter()
     .map(|s| KeyPress::parse(s).unwrap())
@@ -843,22 +862,129 @@ fn a_refused_entry_warns_once_and_changes_nothing() {
     }
 }
 
+/// A menu entry written in a `[keys.<context>]` table reaches the menu that key opens *in that
+/// context* and no other: the `y` of the tree, of the text and of a table are three menus.
+/// `[keys.global]` keeps reaching the shared menus (and every context's copy of them), as it did
+/// when there was one `y` menu for everything.
 #[test]
-fn a_menu_entry_reaches_its_menu_from_any_table() {
+fn a_menu_entry_reaches_the_menu_of_the_context_it_is_written_in() {
+    let z = KeyPress::ch('z');
+    let copy_full = Resolution::Action(Action::CopyPath(CopyKind::Full));
+    let at = |m: &KeyMap, c: Context, id: LeaderId| m.resolve_leader(c, id, z);
     for scheme in [KeyScheme::Vim, KeyScheme::Less] {
-        for name in ["tree", "global", "text"] {
-            let cfg = cfg_from(&[(name, &[("y z", "copy_full"), ("space z", "file_delete")])]);
-            let m = KeyMap::from_config(scheme, &cfg);
-            assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        // tree: its own `y` and `Space` menus, nothing else.
+        let m = KeyMap::from_config(
+            scheme,
+            &cfg_from(&[("tree", &[("y z", "copy_full"), ("space z", "file_delete")])]),
+        );
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(at(&m, Context::Tree, LeaderId::Copy), copy_full);
+        assert_eq!(
+            at(&m, Context::Tree, LeaderId::File),
+            Resolution::Action(Action::FileDelete)
+        );
+        for c in [
+            Context::Text,
+            Context::Document,
+            Context::Image,
+            Context::TreeVisual,
+        ] {
             assert_eq!(
-                m.resolve_leader(LeaderId::Copy, KeyPress::ch('z')),
-                Resolution::Action(Action::CopyPath(CopyKind::Full))
-            );
-            assert_eq!(
-                m.resolve_leader(LeaderId::File, KeyPress::ch('z')),
-                Resolution::Action(Action::FileDelete)
+                at(&m, c, LeaderId::Copy),
+                Resolution::Unbound,
+                "{}",
+                c.name()
             );
         }
+        assert_eq!(
+            at(&m, Context::TreeVisual, LeaderId::File),
+            Resolution::Unbound
+        );
+
+        // text: only the text's copy menu (a document is a different context).
+        let m = KeyMap::from_config(scheme, &cfg_from(&[("text", &[("y z", "copy_full")])]));
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(at(&m, Context::Text, LeaderId::Copy), copy_full);
+        for c in [Context::Tree, Context::Document, Context::Image] {
+            assert_eq!(
+                at(&m, c, LeaderId::Copy),
+                Resolution::Unbound,
+                "{}",
+                c.name()
+            );
+        }
+
+        // table: the table's own copy menu.
+        let m = KeyMap::from_config(scheme, &cfg_from(&[("table", &[("y z", "copy_full")])]));
+        assert_eq!(at(&m, Context::Table, LeaderId::TableCopy), copy_full);
+        assert_eq!(at(&m, Context::Tree, LeaderId::Copy), Resolution::Unbound);
+
+        // global: the shared menus, as before, and every context that shows them.
+        let m = KeyMap::from_config(
+            scheme,
+            &cfg_from(&[(
+                "global",
+                &[("y z", "copy_full"), ("space z", "file_delete")],
+            )]),
+        );
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        for c in [
+            Context::Tree,
+            Context::Text,
+            Context::Document,
+            Context::Image,
+        ] {
+            assert_eq!(at(&m, c, LeaderId::Copy), copy_full, "{}", c.name());
+        }
+        assert_eq!(
+            at(&m, Context::Tree, LeaderId::File),
+            Resolution::Action(Action::FileDelete)
+        );
+    }
+}
+
+/// The `Space` menu outside the tree lists the context's operations itself, so a chord on it in
+/// a context's table says why it is refused; a context with no menu on the key is refused too.
+/// The old `[keys.sort]` table re-letters the tree's `,` menu now, and says so at start-up.
+#[test]
+fn the_old_sort_table_re_letters_the_options_menu() {
+    let m = KeyMap::from_config(
+        KeyScheme::Vim,
+        &cfg_from(&[("sort", &[("z", "sort_size"), ("n", "noop")])]),
+    );
+    assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+    assert_eq!(m.renames.len(), 1);
+    let at = |k: char| m.resolve_leader(Context::Tree, LeaderId::Options, KeyPress::ch(k));
+    assert_eq!(at('z'), Resolution::Action(Action::SortSet(SortKey::Size)));
+    assert_eq!(at('n'), Resolution::Unbound);
+    // The other menus are untouched.
+    assert_eq!(
+        m.resolve_leader(Context::Text, LeaderId::Options, KeyPress::ch('z')),
+        Resolution::Unbound
+    );
+}
+
+#[test]
+fn a_menu_entry_for_a_menu_that_cannot_hold_it_is_refused_once() {
+    for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+        for (name, chord) in [("text", "space z"), ("table", "space z")] {
+            let m = KeyMap::from_config(scheme, &cfg_from(&[(name, &[(chord, "refresh")])]));
+            assert_eq!(
+                m.warnings.len(),
+                1,
+                "[keys.{name}] {chord}: {:?}",
+                m.warnings
+            );
+        }
+        // A context with a `,` menu takes the entry, one without says so.
+        let m = KeyMap::from_config(scheme, &cfg_from(&[("text", &[(", z", "refresh")])]));
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(
+            m.resolve_leader(Context::Text, LeaderId::Options, KeyPress::ch('z')),
+            Resolution::Action(Action::Refresh)
+        );
+        let m = KeyMap::from_config(scheme, &cfg_from(&[("bookmarks", &[(", z", "refresh")])]));
+        assert_eq!(m.warnings.len(), 1, "{:?}", m.warnings);
     }
 }
 
@@ -915,7 +1041,7 @@ fn several_tables_at_once_merge_each_into_its_own_contexts() {
             m.warnings
         );
         assert_eq!(
-            m.resolve_leader(LeaderId::File, KeyPress::ch('z')),
+            m.resolve_leader(Context::Tree, LeaderId::File, KeyPress::ch('z')),
             Resolution::Action(Action::FileDelete)
         );
     }

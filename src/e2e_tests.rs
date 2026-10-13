@@ -1660,9 +1660,10 @@ fn e2e_bookmarks_set_list_jump() {
     let before =
         s.app.bookmarks.get('b').is_some() as u8 + s.app.bookmarks.get('z').is_some() as u8;
     assert_eq!(before, 2, "削除前は b/z の2件");
-    s.ctrl('d');
+    s.key(' '); // the list's operation menu: `d` deletes the selected bookmark
+    s.key('d');
     let after = s.app.bookmarks.get('b').is_some() as u8 + s.app.bookmarks.get('z').is_some() as u8;
-    assert_eq!(after, 1, "Ctrl-d で選択中の1件が削除される");
+    assert_eq!(after, 1, "Space → d で選択中の1件が削除される");
 }
 
 #[test]
@@ -9096,6 +9097,7 @@ fn e2e_preview_page_less_scheme_first_page_up_after_paging_down_moves_the_window
     // less: `f` pages down. `Space` does not (it is the operation menu, not a page key).
     s.key(' ');
     assert_eq!(s.app.preview_top_line(), 0, "Space はページ送りではない");
+    s.esc(); // it opened the operation menu
     s.key('f');
     s.key('f');
     s.key('f');
@@ -11181,6 +11183,7 @@ fn e2e_ui_keys_less_scheme_uses_plain_letters_not_ctrl() {
         top1,
         "less: Space はページ送りではない"
     );
+    s.esc(); // it opened the operation menu
     s.key('f');
     let top2 = s.app.preview_top_line();
     assert!(top2 > top1, "less: f は続けてページ送りになるはず");
@@ -11214,8 +11217,9 @@ fn e2e_ui_keys_vim_scheme_uses_ctrl_not_plain_letters() {
     assert_eq!(
         s.app.preview_top_line(),
         top0,
-        "vim スキームでは Space もバインドされていないはず"
+        "vim スキームでは Space もページ送りではないはず"
     );
+    s.esc(); // it opened the operation menu
 
     // Ctrl-f/Ctrl-b (vim's own keys) work.
     s.ctrl('f');
@@ -18699,7 +18703,8 @@ fn e2e_sheet_bookmarks_and_path_style_keys_still_work_in_a_sheet() {
         return;
     };
     let before = s.screen();
-    s.key('p'); // cycle the path style: the title changes, the grid stays
+    s.key(','); // the options menu: `p` cycles the path style, the title changes, the grid stays
+    s.key('p');
     assert_ne!(before.lines().nth(1), s.screen().lines().nth(1));
     see_cjk(&mut s, "¥1,500");
     s.key('q');
@@ -20500,6 +20505,9 @@ mod default_keys;
 
 #[cfg(test)]
 mod ops_keys;
+
+#[cfg(test)]
+mod menus;
 
 #[cfg(test)]
 mod word;

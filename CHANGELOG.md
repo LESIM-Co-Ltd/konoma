@@ -7,6 +7,16 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
+- **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
+  modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
+  wrapping, which can now be switched while running; a table or image: path style; a diff: the follow scope and path style),
+  replacing the tree's `s` and the previews' `p`. `Space` outside the tree opens a menu of every operation that acts on that
+  screen, each under its own key where it has a single one and a letter otherwise, so an operation whose key was moved or lost
+  is still one keystroke away; in the tree it is still the file menu. `y` opens the copy menu of the screen (paths, a table's
+  cell / row / column, a commit's fields, a branch name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) now
+  changes the menu of that context only; the old `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as
+  the tree's `,` menu. The bookmark list deletes with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel
+  toggles a branch with `x` (`Space` is the menu).
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
   new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches

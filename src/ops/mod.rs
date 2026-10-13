@@ -13,6 +13,7 @@
 //   ("the hint is shown iff the key acts").
 // - `keys` knows which keys are bound to an operation in a context (the layers of the keymap plus
 //   the fixed keys `Enter`, `Tab`, `Esc`, ... which now also run through `dispatch_action`).
+// - `menu` builds the menus behind `y`, `Space` and `,` for a context.
 // - `footer` and `help` list, per context, which operations appear and in what order; the key
 //   notation is generated from `keys`.
 
@@ -21,6 +22,7 @@ pub mod footer;
 pub mod gate;
 pub mod help;
 pub mod keys;
+pub mod menu;
 
 #[cfg(test)]
 mod tests;

@@ -48,6 +48,7 @@ fn e2e_enter_toggles_the_focused_item_and_space_does_not() {
         s.enter();
         s.tab();
         s.key(' ');
+        s.esc(); // Space opens the operation menu
         assert!(
             std::fs::read_to_string(dir.join("d.md"))
                 .unwrap()
@@ -64,6 +65,7 @@ fn e2e_enter_toggles_the_focused_item_and_space_does_not() {
         // And the same for `<details>`: Space leaves it closed, Enter opens it.
         s.tab();
         s.key(' ');
+        s.esc();
         s.dont_see("body text");
         s.enter();
         s.see("body text");

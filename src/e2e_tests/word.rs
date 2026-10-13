@@ -2109,7 +2109,6 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
             "0 / $",
             "Ctrl-t",
             "outline",
-            "Space",
         ] {
             assert!(!help.contains(dead), "[{label}] help lists {dead}:\n{help}");
         }

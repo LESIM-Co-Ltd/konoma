@@ -169,7 +169,7 @@ fn tree(app: &App) -> Vec<Foot> {
         Foot::Op(Action::TabNew),
         Foot::Op(Action::OpenInNewTab),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Op(Action::CyclePathStyle),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
         Foot::Op(Action::ToggleHidden),
         Foot::Op(Action::ToggleInfo),
         Foot::Op(Action::OpenSortMenu),
@@ -207,7 +207,7 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Op(Action::CyclePathStyle),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
     ]
 }
 
@@ -223,7 +223,7 @@ fn image(_app: &App) -> Vec<Foot> {
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Op(Action::CyclePathStyle),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
     ]
 }
 
@@ -246,7 +246,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
             Foot::Op(Action::ToggleHelp),
             Foot::Op(Action::RequestEdit),
             Foot::Group(TABS, Msg::HintTab),
-            Foot::Op(Action::CyclePathStyle),
+            Foot::Leader(LeaderId::Options, Msg::HintOptions),
         ];
     }
     if is_decorated_footer(app) {
@@ -287,7 +287,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
             Foot::Op(Action::RequestEdit),
             Foot::Group(ENDS, Msg::HintEnds),
             Foot::Group(TABS, Msg::HintTab),
-            Foot::Op(Action::CyclePathStyle),
+            Foot::Leader(LeaderId::Options, Msg::HintOptions),
             Foot::Group(PAGE_KEYS, Msg::HintPage),
         ]);
         return v;
@@ -317,7 +317,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
         Foot::Group(HSCROLL, Msg::HintHscroll),
         Foot::Group(LINE_ENDS, Msg::HintLineEnds),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Op(Action::CyclePathStyle),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
         Foot::Group(PAGE_KEYS, Msg::HintPage),
     ]);
     v
@@ -390,6 +390,7 @@ fn diff(app: &App) -> Vec<Foot> {
     if !media {
         v.push(Foot::Op(Action::CycleDiffView));
     }
+    v.push(Foot::Leader(LeaderId::Options, Msg::HintOptions));
     v
 }
 
