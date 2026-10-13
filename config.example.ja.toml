@@ -51,9 +51,9 @@ preview_loading = "indicator"
 path_style = "relative"
 # プレビューのページ送りキー流儀(既定プロファイル)。j/k 行移動・矢印・PageUp/Down は両流儀共通。
 #   vim  = Ctrl-f/Ctrl-b でページ、Ctrl-d/Ctrl-u でハーフページ (既定)。
-#   less = Space/b でページ、d/u でハーフページ (※プレビュー系の面のみ。ツリーの Space は
+#   less = Space/b でページ、d/u でハーフページ (※プレビュー系の文脈のみ。ツリーの Space は
 #          ファイル管理リーダーに割り当て済みのため less でも vim ページのまま)。
-# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<面>] で
+# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<文脈>] で
 #   上書きできる(そちらが優先・別物)。
 keys = "vim"
 # 画像プレビューの表示サイズスケール (0.1〜1.0)。表示矩形をこの倍率に縮めて表示する。
@@ -87,7 +87,7 @@ graph_max_branches = 12
 # ② 左から最初に存在するものを「基準」= lane0 に左一直線で固定する。
 # ③ 並び順が凡例/パネルの表示順にも反映される(配列→HEAD→最近順)。
 # グラフ内 `b` パネルの J/K で当セッション限り並び替え可(config への書き戻しはしない)。
-# ワークツリー一覧の diff(`d`・git_worktrees)の基準にも流用される＝候補はここに挙げた中で実在するもの＋
+# ワークツリー一覧の diff(`d`・git.worktrees)の基準にも流用される＝候補はここに挙げた中で実在するもの＋
 # メインワークツリーのブランチ。選択ワークツリーの HEAD との merge-base(共通祖先)が最も新しい候補を基準
 # に選ぶ＝実際に分岐した枝が優先される(先頭に挙げたものとは限らない)。同着はこの配列の並び順で決める。
 graph_base_branches = []
@@ -461,22 +461,34 @@ builtin = "pdf"
 # 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
 # (上の ui の keys="vim" とは別物。混同しやすいので注意)
 #
-# モデル: 「面(surface) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
+# モデル: 「文脈(今見ているもの) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
 # あり、ここで上書き/追加/無効化できる(書かなければ既定のまま)。helix 風の表記:
-#   [keys.<面>]
+#   [keys.<文脈>]
 #   <キー> = "<アクション>"
 #
-# ■ 面(surface)名 — 「今どの画面か」で別々のマップを持つ。snake_case:
-#   global        : どの面でも効く(タブ t/I/[/]/1-9・T=タブ一覧・ヘルプ ?)。"tab_new"(t)は常に末尾に
+# ■ 文脈名 — 「今何を見ているか」で別々のマップを持つ。キーは、その文脈自身のマップ →
+#   同じ種類の表示で共通のキー → 基本のキー(j/k) → global の順に探される。小文字の snake_case:
+#   global        : どの文脈でも効く(タブ t/I/[/]/1-9・T=タブ一覧・ヘルプ ?)。"tab_new"(t)は常に末尾に
 #                  新規タブを追加、"tab_new_after"(I)は現在のタブの右隣に挿入する。w は既定未割当
 #                  (vim の単語移動と誤爆するため。閉じるはツリーの q。"w"="tab_close" で復活可)
 #   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
-#   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
-#   preview_table : CSV/TSV/アーカイブ表   table_cell : セル全文ポップアップ(preview_table の Enter)
-#   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
-#   git_graph_picker : グラフのブランチ表示パネル(b)
-#   git_worktrees : リンクワークツリー一覧(w・変更ハブ内)
-#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
+#   text          : ソースとプレーンテキスト(表示できないプレビューもここ)
+#   document      : 装飾表示の文書 — 描画した Markdown・Word・スライド・mermaid 図
+#   text_visual   : テキストプレビューのビジュアル選択中(v / V)
+#   image         : 画像・PDF のページ       diff : 1 ファイルの git/jj 差分
+#   table         : CSV/TSV/アーカイブ/表計算の表   table_cell : セル全文ポップアップ(表の Enter)
+#   git.changes   : Git 変更ハブ(o)        git.log / git.graph / git.branches / git.detail
+#   git.graph_picker : グラフのブランチ表示パネル(b)
+#   git.worktrees : リンクワークツリー一覧(w・変更ハブ内)
+#   jj.changes ... : 同じ画面を jj リポジトリで開いたとき(jj.log jj.graph jj.graph_picker
+#                   jj.branches jj.worktrees jj.detail)。最初は git.* と同じキー
+#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  outline  info  help
+#   ドットを含む名前は TOML では引用符が要る: [keys."git.changes"]。
+#   文脈ができる前の名前も読む — preview_text(= text + document)・preview_text_visual(= text_visual)・
+#   preview_image(= image)・preview_table(= table)・preview_git_diff(= diff)・
+#   git_changes / git_log / git_graph / git_graph_picker / git_branches / git_worktrees / git_detail
+#   (= 同名の "git.…" と "jj.…")。起動時に何へ書き換えればよいかを知らせる。
+#   同じ文脈を新旧両方の名前で書いたときは新しい名前が勝つ。
 #
 # ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
 #   装飾 "ctrl-f"(別名 "c-f")・名前付き "tab enter esc up down left right home end pageup pagedown"。
@@ -554,7 +566,7 @@ builtin = "pdf"
 #   y     → パスコピー   (n=名前 r=相対 f=フル p=親 @=AI 向け @相対パス参照)
 #   Space → ファイル管理 (n=作成 r=改名 d=削除 c=コピー x=カット p=貼付) ※ツリー / ビジュアル
 #
-# ■ 衝突検知: 同じ面で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の
+# ■ 衝突検知: 同じ文脈で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の
 #   タブキーを別用途にする等)は起動時に検知し、フッターに通知して既定へ戻す(黙って壊さない)。
 #
 # 例(コメントを外して使う):
@@ -564,15 +576,15 @@ builtin = "pdf"
 # "y f" = "copy_full"          # y→f でフルパスコピー (既定)
 # x = "noop"                   # x を無効化
 #
-# [keys.preview_text]
+# [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys.git_changes]
+# [keys."git.changes"]
 # g = "git_open_graph"
 #
 # (後方互換) 旧 [keys] の copy_name/copy_full/copy_relative/copy_parent (suffix) は当面読み込み、
 # パスコピーの y リーダーへ反映する。**copy_prefix は無視** (新スキームでプレフィクスは y 固定)。
-# いずれも非推奨・新形式 [keys.<面>] を推奨。
+# いずれも非推奨・新形式 [keys.<文脈>] を推奨。
 
 # 外部エディタ(`e` キーで起動)。**拡張子ごとに指定可能**。
 # 解決順: [editor.ext] の拡張子別 → command(全体既定) → $VISUAL → $EDITOR → vim。
@@ -604,7 +616,7 @@ media_diff  = "auto"      # 画像/PDF/SVG の並べて表示「diff」の初期
                         # auto→side→stack→auto を巡回。
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
-worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で新規リンクワークツリーを置く場所: **メイン**
+worktree_dir = "../"   # ワークツリー一覧(`n`・[keys."git.worktrees"])で新規リンクワークツリーを置く場所: **メイン**
                         # ワークツリー自身のパス(今いる root ではない)を基準に、ブランチ名(`/` は `-` に置換=そのまま
                         # だと git が入れ子ディレクトリを作る)を足す。既定=メインの隣(例: ~/work/proj + feat →
                         # ~/work/feat)。絶対パスはそのまま使う。**repo 内(例 ".worktrees/")は避ける**こと=そこに作った

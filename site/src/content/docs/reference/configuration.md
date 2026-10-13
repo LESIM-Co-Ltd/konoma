@@ -291,8 +291,8 @@ the `sys-locale` crate — no external process is launched) — setting it expli
 
 ## `[keys]` — keybindings
 
-Every command is rebindable. The model: **each screen ("surface") maps keys to actions**,
-helix-style:
+Every command is rebindable. The model: **each context (what you are looking at) maps keys to
+actions**, helix-style:
 
 ```toml
 [keys.tree]
@@ -301,15 +301,27 @@ helix-style:
 "space d" = "file_delete"      # two tokens = chord (leader + key)
 "o" = "noop"                   # disable a default binding
 
-[keys.global]                  # inherited by every non-input surface
+[keys.global]                  # inherited by every context
 "Q" = "quit"
 ```
 
-Surface names: `global`, `tree`, `tree_visual`, `preview_text`, `preview_text_visual`,
-`preview_image`, `preview_table`, `table_cell` (the full-cell popup opened by `Enter` in
-`preview_table`), `sort`, `bookmarks`, `tabs`, `outline`, `info`, `help`, and (git builds)
-`preview_git_diff`, `git_changes`, `git_log`, `git_graph`, `git_graph_picker`, `git_branches`,
-`git_worktrees` (the linked-worktree list, `w` in the changes hub), `git_detail`.
+Context names (what you are looking at; a key is looked up in the context's own table, then in
+the keys shared by that kind of view, then the basic keys `j`/`k`, then `global`): `global`, `tree`,
+`tree_visual`, `text` (source and plain text), `document` (rendered Markdown, a Word file, slides, a
+mermaid diagram), `text_visual`, `image`, `table`, `table_cell` (the full-cell popup opened by `Enter`
+in a table), `sort`, `bookmarks`, `tabs`, `outline`, `info`, `help`, and (git builds) `diff`,
+`git.changes`, `git.log`, `git.graph`, `git.graph_picker`, `git.branches`, `git.worktrees` (the
+linked-worktree list, `w` in the changes hub), `git.detail`. The same screens opened for a jj
+repository are `jj.changes`, `jj.log`, `jj.graph`, `jj.graph_picker`, `jj.branches`, `jj.worktrees`
+and `jj.detail`; they start with the same keys as the `git.*` ones. A name with a dot needs quotes in
+TOML: `[keys."git.changes"]`.
+
+The names used before contexts existed are still read: `preview_text` (= `text` + `document`),
+`preview_text_visual` (= `text_visual`), `preview_image` (= `image`), `preview_table` (= `table`),
+`preview_git_diff` (= `diff`) and `git_changes`, `git_log`, `git_graph`, `git_graph_picker`,
+`git_branches`, `git_worktrees`, `git_detail` (= the `git.…` and `jj.…` context of that name). konoma
+tells you at startup what to rename each one to. If a context is written under both names, the new
+name wins.
 
 Key tokens: single characters (uppercase = Shift), `space`, literals like `0 $ ! + - = . / '`,
 modifiers `ctrl-<k>` (alias `c-<k>`), named keys `tab enter esc backspace delete up down
@@ -326,12 +338,12 @@ Action names are snake_case strings — the full annotated list is in
 - **Path copy** (`y` leader): `copy_name`, `copy_relative`, `copy_full`, `copy_parent`, `copy_at_ref` (`@relative/path` for AI chats), `copy_code_block` (`y c` — copy the Markdown code block currently focused with `Tab`; the entry only appears in the menu while one is focused)
 - **File management** (`Space` leader): `file_create`, `file_rename`, `file_delete`, `file_copy`, `file_cut`, `file_paste`, `file_duplicate` (`Space→D`: duplicate the cursor/selection in place, e.g. `note copy.md`)
 - **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R` — toggles decorated ⇄ raw source; on a presentation, the slide pictures ⇄ the text view, keeping the current slide; while this preview *is* a diff's `"preview"` presentation, `R` instead returns to that diff), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab for a local link only; an anchor jumps in place, a URL opens externally), `image_zoom_in/out/reset`, `page_next` / `page_prev` (`J` / `K`, and `PageDown` / `PageUp` on an image and in an image/PDF/SVG diff (where they turn the page instead of scrolling): a PDF's page, a spreadsheet's sheet, a presentation's slide, or the PDF page of an image/PDF diff on both sides together; the old names `pdf_next_page`, `pdf_prev_page`, `sheet_next`, `sheet_prev`, `media_diff_page_next`, `media_diff_page_prev` still work as aliases), `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends)
-- **Table** (`preview_table`): `table_copy_cell/row/column` (`y` leader), `toggle_table_cell` (`Enter`: a full-text popup for the cursor cell — the grid truncates wide cells with `…`, this shows the untruncated value, wrapped and scrollable with `j`/`k`/`g`/`G`/PageUp/PageDown; `q`/Esc/`Enter` close it; `[keys.table_cell]` covers the popup's own keys)
+- **Table** (`table`): `table_copy_cell/row/column` (`y` leader), `toggle_table_cell` (`Enter`: a full-text popup for the cursor cell — the grid truncates wide cells with `…`, this shows the untruncated value, wrapped and scrollable with `j`/`k`/`g`/`G`/PageUp/PageDown; `q`/Esc/`Enter` close it; `[keys.table_cell]` covers the popup's own keys)
 - **Agent Watch**: `toggle_follow` (`F`), `toggle_changed_filter` (`C`), `jump_next_change` (`n`), `jump_prev_change` (`N`), `toggle_follow_diff_scope` (`f`, in a follow diff: switch between "since follow start" and the full git diff)
 - **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`!`, in the changes hub), `cycle_diff_layout` (`s`: a text diff cycles unified/split/auto — `[git] diff`; a media diff cycles auto/side/stack instead — `[git] media_diff`), `cycle_diff_view` (`R`, in a full-screen diff: cycles the presentations available for that file — source/rendered/preview for Markdown and SVG, rendered/preview only for an image/PDF — `[ui] diff_view`), `git_copy_*`, `branch_*`
-- **jj** (`git_changes`): `jj_sync` (`R` — let jj snapshot the working copy; konoma's only write to a jj repository, and only after a confirmation. Does nothing in a git repository.)
-- **Git graph** (`git_graph`): `git_graph_toggle_all` (`a` — show every revision instead of the range the backend considers current; only jj has a narrower one), `git_graph_set_base`, `git_graph_clear_base`, `git_graph_open_picker` (`b`, opens the branch panel). Inside the branch panel (`[keys.git_graph_picker]`): `git_graph_picker_toggle`, `git_graph_picker_all`, `git_graph_picker_current_only`, `git_graph_picker_move_up`, `git_graph_picker_move_down`
-- **Git worktrees** (`git_worktrees` — a *linked* working tree from `git worktree add`, a different concept from the "worktree" meant everywhere else on this page, which is always the uncommitted working tree): `git_open_worktrees` (`w`, in the changes hub), `worktree_filter_start` (`/`, filter by branch name / path), `worktree_goto` (`Enter`, fixed key: switch this tab's root — and `open_dir` — to the selected worktree; still config-rebindable to another key), `worktree_goto_new_tab` (`Ctrl-t`: open the selection in a new tab, leaving this tab as-is), `worktree_create` (`n`: open an input dialog for a branch name — new vs. existing is auto-detected, no separate prompt for it — then `git worktree add` it under `[git] worktree_dir` (see above) next to the main worktree, and switch this tab into it), `worktree_show_changes` (`d`: show the selected worktree's diff since the base branch — committed and uncommitted content together, since an agent working in a worktree often commits along the way and an uncommitted-only diff would otherwise go blank; falls back to an uncommitted-only diff when there's no resolvable base or nothing has piled up — see `graph_base_branches` above), `worktree_close` (`q`/Esc). A bare main worktree, a locked/prunable one, or the currently-active one all refuse to switch (a flash explains why); `worktree_show_changes` still works on the currently-active one.
+- **jj** (`jj.changes`): `jj_sync` (`R` — let jj snapshot the working copy; konoma's only write to a jj repository, and only after a confirmation. Does nothing in a git repository.)
+- **Git graph** (`git.graph`): `git_graph_toggle_all` (`a` — show every revision instead of the range the backend considers current; only jj has a narrower one), `git_graph_set_base`, `git_graph_clear_base`, `git_graph_open_picker` (`b`, opens the branch panel). Inside the branch panel (`[keys."git.graph_picker"]`): `git_graph_picker_toggle`, `git_graph_picker_all`, `git_graph_picker_current_only`, `git_graph_picker_move_up`, `git_graph_picker_move_down`
+- **Git worktrees** (`git.worktrees` — a *linked* working tree from `git worktree add`, a different concept from the "worktree" meant everywhere else on this page, which is always the uncommitted working tree): `git_open_worktrees` (`w`, in the changes hub), `worktree_filter_start` (`/`, filter by branch name / path), `worktree_goto` (`Enter`, fixed key: switch this tab's root — and `open_dir` — to the selected worktree; still config-rebindable to another key), `worktree_goto_new_tab` (`Ctrl-t`: open the selection in a new tab, leaving this tab as-is), `worktree_create` (`n`: open an input dialog for a branch name — new vs. existing is auto-detected, no separate prompt for it — then `git worktree add` it under `[git] worktree_dir` (see above) next to the main worktree, and switch this tab into it), `worktree_show_changes` (`d`: show the selected worktree's diff since the base branch — committed and uncommitted content together, since an agent working in a worktree often commits along the way and an uncommitted-only diff would otherwise go blank; falls back to an uncommitted-only diff when there's no resolvable base or nothing has piled up — see `graph_base_branches` above), `worktree_close` (`q`/Esc). A bare main worktree, a locked/prunable one, or the currently-active one all refuse to switch (a flash explains why); `worktree_show_changes` still works on the currently-active one.
 - **Paste-jump** (`global`): `paste_jump` (`P`) — reads a path or GitHub link from the clipboard and jumps there (reveal + preview). Understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and `#L123` / `:123` line anchors; switches root to the target's repository when it lies outside the current root.
 - **Tabs / app** (`global`): `tab_new` (`t` — always appends a new tab at the end), `tab_new_after` (`I` — inserts a new tab immediately to the right of the current one instead of appending), `toggle_tab_list` (`T` — tab list; `tab_list_close` = `d` inside it), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`). `tab_close` has no default key (closing is `q` on the tree; rebind with `"w" = "tab_close"` if you want it back)
 - `noop` (alias `disabled`) removes a default binding.

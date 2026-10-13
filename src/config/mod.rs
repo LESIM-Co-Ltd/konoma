@@ -290,7 +290,7 @@ fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
 /// Keybinding settings (`[keys]`).
 ///
 /// Two systems coexist in the same `[keys]` table:
-/// - **New form (Run2)**: subtables under `[keys.<surface>]` (surface name -> (chord string -> action string)).
+/// - **New form (Run2)**: subtables under `[keys.<context>]` (context name -> (chord string -> action string)).
 ///   Interpreted by the `crate::keymap` layer. serde flatten collects only the subtables directly under `[keys]` into `surfaces`.
 /// - **Old form (backward-compat alias)**: the `copy_prefix`/`copy_*` scalars for path copy (FR-6). Kept for now.
 ///   The named fields consume them first, so they do not end up on the flatten side (`surfaces`).
@@ -304,7 +304,7 @@ pub struct KeysConfig {
     pub copy_full: String,     // full path
     pub copy_relative: String, // relative path
     pub copy_parent: String,   // parent directory
-    /// The raw new-form `[keys.<surface>]` table (surface name -> (chord string -> action string)).
+    /// The raw new-form `[keys.<context>]` table (context name -> (chord string -> action string)).
     /// Example: `surfaces["tree"]["space d"] = "file_delete"`. Interpreted by `crate::keymap::KeyMap::from_config`.
     #[serde(flatten)]
     pub surfaces: HashMap<String, HashMap<String, String>>,
@@ -325,7 +325,7 @@ impl Default for KeysConfig {
 
 impl KeysConfig {
     /// Builds the settings interpreted by the keymap layer (`crate::keymap`).
-    /// Passes the new-form `[keys.<surface>]` (`surfaces`) through as-is, while mapping the old `copy_*` aliases onto the `y` leader.
+    /// Passes the new-form `[keys.<context>]` (`surfaces`) through as-is, while mapping the old `copy_*` aliases onto the `y` leader.
     ///
     /// The old aliases add `"y <suffix>"` to the Copy leader **only for suffixes the user changed from the default**
     /// (when left at the default it respects the new defaults n/r/f/p and does not clobber them). Since leaders are surface-independent,
@@ -1518,7 +1518,7 @@ mod tests {
 
     #[test]
     fn keys_surfaces_parse_from_toml() {
-        // The new-form [keys.<surface>] subtables are picked up into surfaces and can coexist with
+        // The new-form [keys.<context>] subtables are picked up into surfaces and can coexist with
         // the old copy_* scalars.
         let p = tmp(
             "keys_surfaces.toml",
@@ -1562,20 +1562,73 @@ d = "refresh"
         std::fs::remove_file(&p).ok();
     }
 
+    /// A context name with a dot (`git.changes`) must be quoted in TOML: `[keys."git.changes"]` is
+    /// one table called `git.changes`, whereas `[keys.git.changes]` is a table `git` holding a table
+    /// `changes`, which is not a key table. The quoted form reaches the keymap; the unquoted one is
+    /// refused with the position in the file (the whole config falls back to defaults and says so,
+    /// like any other malformed `[keys]`).
+    #[test]
+    fn keys_context_names_with_a_dot_need_quotes() {
+        use crate::keymap::{Action, Context, KeyMap, KeyPress, KeyScheme, Resolution};
+        let ok: Config = toml::from_str(
+            "[keys.\"git.changes\"]\nZ = \"refresh\"\n\n[keys.\"jj.log\"]\nZ = \"tab_new\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.keys.surfaces["git.changes"]["Z"], "refresh");
+        assert_eq!(ok.keys.surfaces["jj.log"]["Z"], "tab_new");
+        let km = KeyMap::from_config(KeyScheme::Vim, &ok.keys.to_keymap_config());
+        #[cfg(feature = "git")]
+        {
+            use crate::keymap::{Backend, Screen};
+            assert!(km.warnings.is_empty(), "{:?}", km.warnings);
+            assert_eq!(
+                km.resolve(
+                    Context::Screen(Backend::Git, Screen::Changes),
+                    None,
+                    KeyPress::ch('Z')
+                ),
+                Resolution::Action(Action::Refresh)
+            );
+            assert_eq!(
+                km.resolve(
+                    Context::Screen(Backend::Jj, Screen::Log),
+                    None,
+                    KeyPress::ch('Z')
+                ),
+                Resolution::Action(Action::TabNew)
+            );
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = (
+                Context::Tree,
+                KeyPress::ch('Z'),
+                Action::Quit,
+                Resolution::Unbound,
+            );
+            assert!(!km.warnings.is_empty(), "no git: the names are unknown");
+        }
+
+        let bad = toml::from_str::<Config>("[keys.git.changes]\nZ = \"refresh\"\n")
+            .expect_err("a nested table is not a key table");
+        let msg = format_config_load_error(&bad);
+        assert!(msg.contains("line 1"), "{msg}");
+    }
+
     #[test]
     fn to_keymap_config_maps_changed_copy_alias_only() {
         use crate::app::CopyKind;
-        use crate::keymap::{Action, KeyMap, KeyPress, KeyScheme, LeaderId, Resolution, Surface};
+        use crate::keymap::{Action, Context, KeyMap, KeyPress, KeyScheme, LeaderId, Resolution};
         // A copy_* left at its default doesn't clobber the new defaults (n/r/f/p).
         let def = KeysConfig::default();
         let km = KeyMap::from_config(KeyScheme::Vim, &def.to_keymap_config());
         // f=Full / p=Parent (the new defaults) are preserved.
         assert_eq!(
-            km.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
+            km.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         assert_eq!(
-            km.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('p')),
+            km.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('p')),
             Resolution::Action(Action::CopyPath(CopyKind::Parent))
         );
 
@@ -1586,12 +1639,12 @@ d = "refresh"
         };
         let km2 = KeyMap::from_config(KeyScheme::Vim, &custom.to_keymap_config());
         assert_eq!(
-            km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('P')),
+            km2.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('P')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         // The new default f=Full also remains (additive).
         assert_eq!(
-            km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
+            km2.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
     }

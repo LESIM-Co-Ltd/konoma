@@ -2185,6 +2185,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // The previous transient message (flash) is cleared on the next key input.
     app.flash = None;
     let sfc = app.surface();
+    // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
+    // confirm modals), which are handled before any lookup below.
+    let ctx = app.key_context();
 
     if app.follow_enabled() {
         // User's choice (2026-07-23): follow is maximally sticky = within the follow diff, every
@@ -2193,10 +2196,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         // the follow view." F (ToggleFollow) already turns it off explicitly via dispatch's
         // toggle_follow, so follow_break isn't needed there (= treated as kept here).
         let leaves_follow_view = app.pending_leader.is_none()
-            && matches!(
-                app.keymaps.resolve(sfc, None, KeyPress::norm(&key)),
-                Resolution::Action(Action::PreviewBack)
-            );
+            && ctx.is_some_and(|c| {
+                matches!(
+                    app.keymaps.resolve(c, None, KeyPress::norm(&key)),
+                    Resolution::Action(Action::PreviewBack)
+                )
+            });
         if sfc.is_text_input() || sfc.is_modal_confirm() || leaves_follow_view {
             app.follow_break();
         }
@@ -2215,7 +2220,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
     // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
-        return match app.keymaps.resolve(sfc, Some(lead), kp) {
+        return match app.keymaps.resolve_leader(lead, kp) {
             Resolution::Action(a) => dispatch_action(app, a, sfc),
             _ => Ok(false),
         };
@@ -2226,8 +2231,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(done);
     }
 
-    // 4) Keymap resolution (1 input = 1-2 HashMap lookups — requirement 5).
-    match app.keymaps.resolve(sfc, None, kp) {
+    // 4) Keymap resolution (1 input = a few HashMap lookups — requirement 5).
+    let Some(ctx) = ctx else {
+        return Ok(false);
+    };
+    match app.keymaps.resolve(ctx, None, kp) {
         Resolution::EnterLeader(id) => {
             // The copy leader (default `y`) always opens the which-key menu. While focused on a
             // code block in decorated Markdown, `c:code block` appears in that menu and is

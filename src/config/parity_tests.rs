@@ -2207,6 +2207,57 @@ fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The example configs' `[keys]` section names every key context, and the `[keys.<name>]` examples in
+/// them (commented out, so `toml::from_str` never sees them) use names konoma actually knows — so an
+/// example a user uncomments does not just produce an "unknown key surface" warning. Context names
+/// that were renamed (plugin stage 2 / B1) are the thing this guards: the lists are hand-written
+/// in two languages.
+#[test]
+fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
+    use crate::keymap::Context;
+    for name in ["config.example.toml", "config.example.ja.toml"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name} — not present (published-crate build?)");
+            continue;
+        };
+        for ctx in Context::all() {
+            assert!(
+                text.contains(&ctx.name()),
+                "{name}: the [keys] section does not mention the context {:?}",
+                ctx.name()
+            );
+        }
+        // Every `[keys.<name>]` / `[keys."<name>"]` header, commented out or not.
+        let mut headers = 0;
+        for line in text.lines() {
+            let l = line.trim_start_matches('#').trim();
+            let Some(rest) = l.strip_prefix("[keys.") else {
+                continue;
+            };
+            let Some(end) = rest.find(']') else { continue };
+            let n = rest[..end].trim_matches('"');
+            if n.starts_with('<') {
+                continue; // the `[keys.<context>]` placeholder
+            }
+            headers += 1;
+            // Without git the dotted version-control names are unknown by design.
+            let known = n == "global" || Context::from_name(n).is_some() || n.contains('.');
+            assert!(known, "{name}: `[keys.{n}]` is not a key context");
+            if cfg!(feature = "git") && n.contains('.') {
+                assert!(
+                    Context::from_name(n).is_some(),
+                    "{name}: `[keys.\"{n}\"]` is not a key context"
+                );
+            }
+        }
+        assert!(
+            headers >= 3,
+            "{name}: found only {headers} [keys.…] examples"
+        );
+    }
+}
+
 /// Looks up a dotted TOML path (e.g. `"ui.sort"`) from the root table, returning the sub-table only
 /// if every segment exists and is itself a table.
 fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Table> {
@@ -2228,7 +2279,7 @@ fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
     // field-name scan can't derive on its own, so it's named here.
     //
     // Deliberately NOT covered below, with reasons (do not add a path here without one):
-    //   - `[keys]` / `[keys.<surface>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
+    //   - `[keys]` / `[keys.<context>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
     //     key not matching a named field is legal there (captured as a keymap surface/chord) — there
     //     is no fixed field list a key could be "misplaced" against.
     //   - `[editor.ext]`: `EditorConfig::ext` is an open `HashMap<extension, command>` — any

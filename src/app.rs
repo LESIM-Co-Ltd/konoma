@@ -3387,7 +3387,7 @@ impl App {
         let diff_layout = DiffLayout::parse(&cfg.git.diff);
         // The media diff's initial layout (config git.media_diff). At runtime, `s` cycles auto → side → stack → auto.
         let media_diff_layout = MediaDiffLayout::parse(&cfg.git.media_diff);
-        // Run2 keymap: merge the defaults + config (`[keys.<surface>]` + the old copy_* alias) and
+        // Run2 keymap: merge the defaults + config (`[keys.<context>]` + the old copy_* alias) and
         // validate for conflicts. The page/half profile follows ui.keys (vim/less). Stage 2 is
         // construction only (dispatch is not yet wired up).
         let keymaps = crate::keymap::KeyMap::from_config(
@@ -3580,28 +3580,54 @@ impl App {
         self.session_store = Some(store);
     }
 
-    /// Summarize startup keymap conflicts / ignored settings into one line (for the startup flash; i18n).
-    /// Conflicts have already safely fallen back to defaults (#17/FR-8). None if there is nothing.
+    /// Summarize startup keymap conflicts / ignored settings / old table names into one line (for
+    /// the startup flash; i18n). Conflicts have already safely fallen back to defaults (#17/FR-8).
+    /// Each kind gets its count and its first instance (so the flash says *which* key or table, not
+    /// just how many), followed by "(+n more)". None if there is nothing.
     pub fn keymap_report(&self) -> Option<String> {
-        let nc = self.keymaps.conflicts.len();
-        let nw = self.keymaps.warnings.len();
-        if nc == 0 && nw == 0 {
+        use crate::i18n::Msg;
+        let k = &self.keymaps;
+        let (nc, nw, nr) = (k.conflicts.len(), k.warnings.len(), k.renames.len());
+        if nc == 0 && nw == 0 && nr == 0 {
             return None;
         }
+        let lang = self.lang;
+        let more = |total: usize| -> String {
+            if total > 1 {
+                format!(
+                    " {}",
+                    tr(lang, Msg::KeymapMore).replace("{n}", &(total - 1).to_string())
+                )
+            } else {
+                String::new()
+            }
+        };
         let mut parts: Vec<String> = Vec::new();
-        if nc > 0 {
-            parts.push(match self.lang {
+        if let Some(c) = k.conflicts.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("キー衝突{nc}件(既定で継続)"),
                 crate::i18n::Lang::En => format!("{nc} key conflict(s) (using defaults)"),
-            });
+            };
+            let detail = tr(lang, Msg::KeymapConflictDetail)
+                .replace("{key}", &c.key.label())
+                .replace("{kept}", &c.kept)
+                .replace("{dropped}", &c.dropped);
+            parts.push(format!("{count}: {detail}{}", more(nc)));
         }
-        if nw > 0 {
-            parts.push(match self.lang {
+        if let Some(w) = k.warnings.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("無効な設定{nw}件を無視"),
                 crate::i18n::Lang::En => format!("{nw} invalid key setting(s) ignored"),
-            });
+            };
+            parts.push(format!("{count}: {w}{}", more(nw)));
         }
-        let head = tr(self.lang, crate::i18n::Msg::Keymap);
+        if let Some((old, new)) = k.renames.first() {
+            let note = tr(lang, Msg::KeymapOldName)
+                .replace("{old}", old)
+                .replace("{new}", new);
+            parts.push(format!("{note}{}", more(nr)));
+        }
+        let head = tr(lang, Msg::Keymap);
         Some(format!("{head}: {}", parts.join(" / ")))
     }
 
@@ -3937,6 +3963,28 @@ impl App {
             // base layer always has a surface. Degrade rather than panic (design principle #3).
             None => self.base_layer().surface(),
         }
+    }
+
+    /// Whether the text preview on screen is a decorated *document* (rendered Markdown, a Word
+    /// document, slides, a mermaid diagram) rather than source or plain text. A windowed preview
+    /// (code, plain text, a document's raw source after `R`) is text; so is a preview that cannot
+    /// be shown yet or at all (a Word file still converting, an unsupported type).
+    fn shows_document(&self) -> bool {
+        !self.is_windowed() && self.is_decorated_kind() && !self.document_text_missing()
+    }
+
+    /// The **key context** the next key is looked up in (`None` for text input and confirm
+    /// modals, which do not use the keymap). A projection of [`App::surface`] refined by what is on
+    /// screen: a decorated document vs source for the text preview, and git vs jj for the
+    /// version-control screens. The one place that decides the context; `handle_key` uses nothing
+    /// else.
+    pub fn key_context(&self) -> Option<crate::keymap::Context> {
+        // A build without `git` has no jj (and `VcsKind` has no `Jj`).
+        #[cfg(feature = "git")]
+        let jj = self.git_vcs == crate::vcs::VcsKind::Jj;
+        #[cfg(not(feature = "git"))]
+        let jj = false;
+        crate::keymap::Context::of_surface(self.surface(), self.shows_document(), jj)
     }
 
     // --- Copy/cut & paste (M7 Phase B, default keys Y/X/P, changeable via keymap) ---
