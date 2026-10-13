@@ -1332,31 +1332,6 @@ fn git_view_move_extremes_no_panic() {
     assert_eq!(app.tab.git_view_sel, 0, "先頭へ");
 }
 
-#[test]
-fn centered_fit_centers_and_downscales() {
-    let inner = Rect {
-        x: 0,
-        y: 0,
-        width: 80,
-        height: 24,
-    };
-    // A small image: centered at native (40x15) without upscaling (allow_upscale=false).
-    let r = centered_rect((40, 15), inner, false);
-    assert_eq!((r.width, r.height), (40, 15));
-    assert_eq!((r.x, r.y), (20, 4));
-
-    // A large image: downscaled preserving aspect ratio and centered (200x100 → scale 0.24).
-    let r = centered_rect((200, 100), inner, false);
-    assert_eq!((r.width, r.height), (48, 24));
-    assert_eq!((r.x, r.y), (16, 0));
-
-    // When zoomed (allow_upscale=true): even a small image is upscaled to fill the area and centered.
-    let r = centered_rect((40, 15), inner, true);
-    // scale = min(80/40, 24/15)=min(2.0,1.6)=1.6 → 64x24, x=(80-64)/2=8.
-    assert_eq!((r.width, r.height), (64, 24));
-    assert_eq!((r.x, r.y), (8, 0));
-}
-
 /// A test App with image state. Provides a source image (400x300=4:3), the image kind, a halfblocks picker
 /// (font 10x20, no terminal needed), and a dummy tx so that prepare_image can run.
 fn app_with_image() -> (App, crate::test_support::TmpDir) {
@@ -14355,25 +14330,6 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     // + while focused on the link is a no-op (the diagram isn't focused).
     app.image_zoom_by(2.0);
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
-}
-
-/// fence_crop: pure-function verification of the visible fraction and clamping (ratio-based =
-/// maps to the same window even after re-rasterizing).
-#[test]
-fn fence_crop_clamps_and_scales() {
-    // 2x zoom (f=0.5), centered: a half-size window at the center.
-    let ((x, y, w, h), c) = fence_crop((800, 400), 0.5, (0.5, 0.5));
-    assert_eq!((w, h), (400, 200));
-    assert_eq!((x, y), (200, 100));
-    assert_eq!(c, (0.5, 0.5));
-    // Pan to the edge: the center is clamped and the window stays within the image.
-    let ((x, _y, w, _h), c) = fence_crop((800, 400), 0.5, (1.0, 0.5));
-    assert_eq!(x + w, 800, "右端で止まる");
-    assert!((c.0 - 0.75).abs() < 1e-9, "中心は f/2 でクランプ");
-    // A raster at 4x density (f=0.25): the same ratio window maps to 2x the pixels.
-    let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
-    let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
-    assert_eq!((x2, w2), (x1 * 2, w1 * 2));
 }
 
 /// A math expression's cell dimensions (pure function): the SVG's em unit (40/em) → rows,

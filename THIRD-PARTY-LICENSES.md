@@ -5974,6 +5974,7 @@ Used by:
 - konoma-office-core 0.1.0
 - konoma-svg 0.1.0
 - konoma-vcs-core 0.1.0
+- konoma-widgets 0.1.0
 
 ```
 MIT License
@@ -8854,7 +8855,7 @@ the following restrictions:
 
 ### Markdown renderer, from `tui-markdown` (MIT)
 
-konoma's Markdown renderer (`src/preview/markdown/render.rs`) reimplements
+konoma's Markdown renderer (`crates/konoma-widgets/src/markdown/render.rs`) reimplements
 `tui_markdown::TextWriter` method-for-method -- the module doc there spells out
 the correspondence. `tui-markdown` itself is no longer a Cargo dependency (see
 `cargo tree -i tui-markdown`, which resolves to nothing), so `cargo-about` no

@@ -33,7 +33,9 @@ host-independent engines under `crates/` — `konoma-base` (small shared utiliti
 `konoma-svg` (SVG rasterising and fonts), `konoma-math-core`, `konoma-mermaid-core`,
 `konoma-media-core` (PDF / video), `konoma-office-core` (Word / spreadsheet / slide
 documents), `konoma-vcs-core` (git / jj), `konoma-markdown-core` (the Markdown block model
-and diff), and `konoma-test-support` (shared test helpers). The cores know nothing about
+and diff), `konoma-widgets` (display parts for ratatui that do not depend on the app: windowed file
+reading, kitty graphics transmit, image layout, diff rows, icon glyphs and the Markdown document
+renderer), and `konoma-test-support` (shared test helpers). The cores know nothing about
 the UI, the config or the i18n catalogue; the host passes in whatever text they show.
 Use `--workspace` so every crate is checked, and `-p <crate>` to work on one.
 

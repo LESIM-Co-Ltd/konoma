@@ -65,38 +65,10 @@ pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize
     )
 }
 
-thread_local! {
-    /// How many times `preview::markdown::diff_align` ran **on this thread** — the call this
-    /// measures is a `Doc::parse` pair + a Myers diff over block keys (`block_ops`), a real,
-    /// measurable CPU cost on a large document (see `diff_align`'s own doc comment: ~3ms on a
-    /// 20k-line document in a release build). Since `docs/STATUS.md` ★未修正 item 4, the only
-    /// production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
-    /// background worker thread — see `BASE_CONTENTS_CALLS`'s own doc comment above for what that
-    /// means for a UI-thread assertion via `count_diff_align_calls`. Thread-local for the same
-    /// reason `STAT_CALLS` is.
-    static DIFF_ALIGN_CALLS: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Called by `preview::markdown::diff_align` right before it parses either side. Cheap enough to
-/// be unconditional in test builds; compiled out entirely otherwise (the call site is
-/// `#[cfg(test)]`).
-pub(crate) fn note_diff_align_call() {
-    let _ = DIFF_ALIGN_CALLS.try_with(|c| c.set(c.get() + 1));
-}
-
-/// Runs `f` and returns `(its value, how many times diff_align ran while it did)`. Only ever
-/// called from `#[cfg(feature = "git")]` tests (the two scenarios it pins — the ordinary preview's
-/// gutter and the diff's `Rendered` presentation — both need a real backend to set up) — unused,
-/// not unreachable, on a no-`git` test build.
-#[cfg_attr(not(feature = "git"), allow(dead_code))]
-pub(crate) fn count_diff_align_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let before = DIFF_ALIGN_CALLS.with(|c| c.get());
-    let out = f();
-    (
-        out,
-        DIFF_ALIGN_CALLS.with(|c| c.get()).saturating_sub(before),
-    )
-}
+// The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests
+// reach it through this path.
+#[allow(unused_imports)]
+pub(crate) use konoma_widgets::markdown::count_diff_align_calls;
 
 thread_local! {
     /// How many times `config::resolve_preview_kind` ran **on this thread** — the call both

@@ -1740,6 +1740,7 @@ dependencies = [
  "konoma-table",
  "konoma-test-support",
  "konoma-vcs-core",
+ "konoma-widgets",
  "libc",
  "mermaid-text",
  "notify",
@@ -1979,6 +1980,27 @@ dependencies = [
  "konoma-test-support",
  "ratatui",
  "similar",
+]
+
+[[package]]
+name = "konoma-widgets"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-code-core",
+ "konoma-markdown-core",
+ "konoma-mermaid-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "konoma-vcs-core",
+ "mermaid-text",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-image",
+ "unicode-width",
 ]
 
 [[package]]

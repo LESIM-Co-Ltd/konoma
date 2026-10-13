@@ -101,7 +101,8 @@ All notable changes to konoma are documented in this file. The format is based o
   (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), `konoma-markdown-core` (the Markdown block model)
   and `konoma-code-core` (syntax coloring), on top of `konoma-base`, plus `konoma-plugin` (the plugin API) and the plugin
   crates `konoma-table`, `konoma-media`, `konoma-code`, `konoma-mermaid`, `konoma-math` and `konoma-office`, and
-  `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
+  `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
+  transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
 
 ### Fixed

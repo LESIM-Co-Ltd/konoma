@@ -358,12 +358,9 @@ pub fn media_diff_url(
     }
 }
 
-/// Whether an inline-image URL is a synthetic media-diff key (never a real file on disk) — the
-/// `media-diff://` counterpart of `preview::markdown::is_mermaid_fence_url`/`is_math_url`.
-/// `preview::markdown::is_synthetic_md_url` includes this.
-pub fn is_media_diff_url(url: &str) -> bool {
-    url.starts_with("media-diff://")
-}
+// `is_media_diff_url` (a synthetic media-diff key is never a real file on disk) lives beside
+// `is_synthetic_md_url` in `konoma-widgets`, which includes it.
+pub use konoma_widgets::markdown::is_media_diff_url;
 
 /// FNV-1a 64, byte-for-byte the same constants `preview::markdown::math_url` hashes its input with
 /// (see that function's own doc comment) — the media-diff worker (`app/media_diff.rs`) hashes each
