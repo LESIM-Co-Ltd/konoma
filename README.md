@@ -107,7 +107,7 @@ and shows you only what the agent just did. Open the `,` menu and press `f` to s
 and `q` to stop.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and f reveals the full git diff" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and , then f reveals the full git diff" width="860">
 </p>
 <p align="center">
   <b>Follow mode</b> — the file already has an uncommitted line (<code>// TODO: handle retries</code>).
