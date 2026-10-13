@@ -229,8 +229,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // (konoma's own block-model renderer / mermaid-text / syntect) lines.
     if matches!(
         app.tab.preview_kind,
-        Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_)) | Some(PreviewKind::Code(_))
-    ) || app.document_ready()
+        Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
+    ) || app.shows_code_plugin()
+        || app.document_ready()
     {
         render_decorated(frame, app, area);
         return;
@@ -239,11 +240,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (body, is_text) = match &app.tab.preview_kind {
         // Text (unregistered extension) draws the real body as-is.
         Some(PreviewKind::Text(p)) => (load_body(p, app.lang), true),
-        Some(PreviewKind::Markdown(p))
-        | Some(PreviewKind::Mermaid(p))
-        | Some(PreviewKind::Code(p)) => {
+        Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) => {
             // Unreachable (already branched to the decorated path above), but kept safe for exhaustiveness.
             (load_body(p, app.lang), true)
+        }
+        // The `code` plugin's file is drawn by the windowed or decorated path above; this is the
+        // same safe fallback.
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_code::CODE_ID => {
+            (load_body(path, app.lang), true)
         }
         Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::IMAGE_ID => {
             (format!("[image] {}", path.display()), false)

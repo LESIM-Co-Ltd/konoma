@@ -1723,6 +1723,8 @@ dependencies = [
  "image",
  "infer",
  "konoma-base",
+ "konoma-code",
+ "konoma-code-core",
  "konoma-markdown-core",
  "konoma-math-core",
  "konoma-media",
@@ -1748,12 +1750,10 @@ dependencies = [
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "syntect",
  "sys-locale",
  "tokio",
  "toml",
  "trash",
- "two-face",
  "unicode-width",
  "ureq",
  "zip",
@@ -1765,6 +1765,28 @@ version = "0.1.0"
 dependencies = [
  "konoma-test-support",
  "libc",
+]
+
+[[package]]
+name = "konoma-code"
+version = "0.1.0"
+dependencies = [
+ "konoma-code-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-code-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "ratatui",
+ "syntect",
+ "two-face",
+ "unicode-width",
 ]
 
 [[package]]

@@ -99,7 +99,7 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
             "svg" => PreviewKind::svg(p),
             "video" => PreviewKind::video(p),
             "pdf" => PreviewKind::pdf(p),
-            "code" => PreviewKind::Code(p),
+            "code" => PreviewKind::plugin("code", p),
             // The note is the old `builtin` name: the separator settled when the file is decided.
             "csv" | "tsv" => PreviewKind::Plugin {
                 path: p,
@@ -406,7 +406,7 @@ fn old_builtin_names_read_as_plugins() {
     assert!(one("svg", "").is_plugin("svg"));
     assert!(one("video", "").is_plugin("video"));
     assert!(one("pdf", "").is_plugin("pdf"));
-    assert!(matches!(one("code", ""), PreviewKind::Code(_)));
+    assert!(one("code", "").is_code_plugin());
     assert!(matches!(
         one("spreadsheet", ""),
         PreviewKind::Spreadsheet(_)
@@ -472,8 +472,8 @@ fn a_rule_with_a_glob_and_a_mime_matches_on_either() {
         builtin: Some("code".into()),
         ..Rule::default()
     });
-    assert!(matches!(cfg.resolve_preview(&png), PreviewKind::Code(_)));
-    assert!(matches!(kind_of_name(&cfg, "a.zzz"), PreviewKind::Code(_)));
+    assert!(cfg.resolve_preview(&png).is_code_plugin());
+    assert!(kind_of_name(&cfg, "a.zzz").is_code_plugin());
 }
 
 #[test]
@@ -685,7 +685,7 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
 }
 
 /// The standard plugins that are wired to the display: really opened, not declarations only.
-const WIRED: &[&str] = &["csv", "archive", "image", "svg", "pdf", "video"];
+const WIRED: &[&str] = &["csv", "archive", "code", "image", "svg", "pdf", "video"];
 
 #[test]
 fn the_declared_plugins_refuse_to_open_until_they_are_wired() {

@@ -1506,7 +1506,7 @@ fn cfg_preview_default_code_lowercase_exts() {
     ] {
         let p = tmp(name, body);
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Code(_)), "{name}: {kind:?}");
+        assert!(kind.is_code_plugin(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }
@@ -1537,7 +1537,7 @@ builtin = "code"
     let cfg: Config = toml::from_str(toml).unwrap();
     let md = tmp("cfgp_ovr.md", b"# title\n");
     assert!(
-        matches!(cfg.resolve_preview(&md), PreviewKind::Code(_)),
+        cfg.resolve_preview(&md).is_code_plugin(),
         "user rule should win for .md"
     );
     std::fs::remove_file(&md).ok();
@@ -1545,7 +1545,7 @@ builtin = "code"
     // Writing a rule used to replace the whole default list (a `.rs` file then fell to plain
     // text); the rules are now tried first and the standard plugins take what they do not name.
     assert!(
-        matches!(cfg.resolve_preview(&rs), PreviewKind::Code(_)),
+        cfg.resolve_preview(&rs).is_code_plugin(),
         "defaults must be merged (user rules first), not replaced"
     );
     std::fs::remove_file(&rs).ok();

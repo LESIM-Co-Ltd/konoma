@@ -98,7 +98,7 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
             | konoma_media::SVG_ID
             | konoma_media::VIDEO_ID
             | konoma_media::PDF_ID => PreviewKind::plugin(&id, p),
-            "code" => PreviewKind::Code(p),
+            konoma_code::CODE_ID => PreviewKind::plugin(&id, p),
             // The separator is settled here, as it always was, and handed over as the note.
             "csv" => PreviewKind::Plugin {
                 hint: Some(csv_note(hint.as_deref(), path).to_string()),

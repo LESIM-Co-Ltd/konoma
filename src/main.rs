@@ -305,7 +305,7 @@ fn main() -> Result<()> {
     // single thread + yield so it doesn't get in the way of other work.
     // With highlighting off (ui.syntax_highlight=false), syntect is never used at all, so no
     // warm-up is needed.
-    if cfg.ui.syntax_highlight {
+    if plugins::syntax_highlight_on(&cfg) {
         let root = dir.clone();
         std::thread::spawn(move || preview::code::warm_dir(root));
     }

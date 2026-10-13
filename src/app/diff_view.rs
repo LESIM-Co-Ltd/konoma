@@ -165,9 +165,8 @@ impl App {
         let resolved = self.diff_target_kind(path);
         let mut reps = match resolved {
             PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
-            PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => {
-                vec![Source, Preview]
-            }
+            PreviewKind::Text(_) | PreviewKind::Mermaid(_) => vec![Source, Preview],
+            ref k if k.is_code_plugin() => vec![Source, Preview],
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
                 vec![Source, Preview]
             }

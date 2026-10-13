@@ -177,14 +177,8 @@ ureq.workspace = true
 # 手書きスキャナ自体を廃してこのパーサへ問い合わせる方式に置き換えた)。
 pulldown-cmark.workspace = true
 mermaid-text.workspace = true
-# 拡張子付き単体コードファイル・md フェンスコードとも共通のハイライト用(konoma 自身のレンダラが
-# 両方でこれを呼ぶ)。既定の onig バックエンドは oniguruma(C ライブラリ)を要求し配布容易性(PRD §5)
-# に反するため、default-features を切り純 Rust の fancy-regex(default-fancy) を使う
-# (chafa を切ったのと同じ方針)。
-syntect.workspace = true
-# syntect 同梱シンタックスに無い言語(TypeScript/TOML 等)を補う拡張シンタックス集(bat 由来・
-# ライセンス処理済み)。onig を避け純 Rust の fancy-regex を使う(syntect-fancy)。
-two-face.workspace = true
+# Syntax highlighting (syntect + two-face, pure Rust) lives in `konoma-code-core`, shared by the `code`
+# plugin, the Markdown code blocks and the diff view.
 # 表(GFM table)の桁揃え用。konoma 自身のパーサ設定は `ENABLE_TABLES` を意図的に切っており
 # (`markdown_parse_options`)、表ブロックは横取りして自前で列幅(全角=2幅)を測り罫線描画する。
 # 全角を正しく測れるので CJK でも崩れない。
@@ -254,6 +248,8 @@ konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0"
 konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0" }
 konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
 konoma-media = { path = "crates/konoma-media", version = "0.1.0" }
+konoma-code-core = { path = "crates/konoma-code-core", version = "0.1.0" }
+konoma-code = { path = "crates/konoma-code", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to

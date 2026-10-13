@@ -4,7 +4,7 @@
 //! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
 //! (user rules first, then the standard plugins in registration order, then plain text, then
 //! "can not preview"), and the result is mapped onto today's `PreviewKind`. The plugins that are
-//! wired to the display (`csv`, `archive`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
+//! wired to the display (`csv`, `archive`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
 mod listing;
@@ -226,15 +226,7 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
         "*.{pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}",
     );
     let archive = konoma_table::archive_manifest();
-    let code = standard("code", t!(en: "Source code", ja: "ソースコード"))
-        .bind(Bind::files([
-            "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}",
-        ]))
-        .setting(SettingDecl::new(
-            "syntax_highlight",
-            b(true),
-            t!(en: "Color code and config files", ja: "コードと設定ファイルに色を付ける"),
-        ));
+    let code = konoma_code::code_manifest();
     let video = konoma_media::video_manifest();
     let pdf = konoma_media::pdf_manifest();
 
@@ -290,6 +282,7 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_media::SVG_ID => Arc::new(konoma_media::SvgPlugin),
         konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
         konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
+        konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
         _ => Arc::new(Declared(m)),
     }
 }
@@ -390,6 +383,12 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
     if id == konoma_table::CSV_ID {
         fill_missing("rainbow", b(cfg.ui.csv_rainbow));
     }
+    if id == konoma_code::CODE_ID {
+        fill_missing("syntax_highlight", b(cfg.ui.syntax_highlight));
+        // The theme is shared with the Markdown code blocks, so it stays `[ui.theme] code_theme`;
+        // the host hands it to the plugin as a value, not as a `[plugins.code]` setting.
+        fill_missing("code_theme", s(&cfg.ui.theme.code_theme));
+    }
     if id == konoma_media::SVG_ID {
         fill_missing(
             "max_px",
@@ -397,6 +396,20 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
         );
     }
     settings
+}
+
+/// Whether code and config files are colored: `[plugins.code] syntax_highlight`, or the old
+/// `[ui] syntax_highlight` when the new name is not set (the same rule [`effective_settings`]
+/// applies, without building the settings: the text window asks this on every frame).
+pub(crate) fn syntax_highlight_on(cfg: &crate::config::Config) -> bool {
+    match cfg
+        .plugins
+        .get(konoma_code::CODE_ID)
+        .and_then(|t| t.get("syntax_highlight"))
+    {
+        Some(toml::Value::Boolean(on)) => *on,
+        _ => cfg.ui.syntax_highlight,
+    }
 }
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
