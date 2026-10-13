@@ -1,4 +1,5 @@
 use super::*;
+use crate::preview::image::ImageFailureMessage;
 
 /// Which document(s) `App::build_decorated` renders from — the seam that lets the diff's
 /// `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) share the **entire** decorated-

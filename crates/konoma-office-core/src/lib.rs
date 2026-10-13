@@ -1,0 +1,233 @@
+//! Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the reading side.
+//!
+//! xlsx / xlsm / xltx / xltm are read by konoma itself in one pass (`xlsx.rs`: values, number
+//! formats, formulas, merged ranges). For xlsb / xls / ods the values, sheet list, visibility and
+//! formulas come from `calamine`, and the number format of each cell (which `calamine` does not
+//! expose) is read by konoma's own per-format "format pass" (`fmt_*.rs`). Every file passes
+//! through [`container`] first: size limits, decompression accounting and encryption detection
+//! happen *before* any reader runs.
+//!
+//! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
+//! (the caller maps each variant to a translated message).
+
+pub(crate) mod chart_xml;
+pub mod container;
+pub mod docx;
+// (`pub` and hidden only for the host's tests; feature `test-hooks`)
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod docx_styles;
+#[cfg(not(any(test, feature = "test-hooks")))]
+mod docx_styles;
+mod docx_symbols;
+mod docx_xml;
+pub mod fmt_ods;
+pub mod fmt_xls;
+pub mod fmt_xlsb;
+pub mod fmt_xlsx;
+// (`pub` and hidden only for the host's tests; feature `test-hooks`)
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod mathml;
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub(crate) mod mathml;
+pub mod numfmt;
+mod ods_formula;
+// (`pub` and hidden only for the host's tests; feature `test-hooks`)
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod omml;
+#[cfg(not(any(test, feature = "test-hooks")))]
+pub(crate) mod omml;
+pub mod slide_draw;
+pub(crate) mod slide_order;
+pub mod workbook;
+pub(crate) mod xlsx;
+
+use std::fmt;
+use std::path::Path;
+
+pub use workbook::{
+    load_workbook_sheet_cancellable, Cancel, CellType, LoadOptions, NumFmtRef, Sheet, Workbook,
+};
+// What the tests of this module (`use super::*`) name directly.
+#[cfg(any(test, feature = "test-hooks"))]
+pub use workbook::{
+    display_text, load_workbook, load_workbook_sheet, Cell, CellValue, DisplayCtx, MergeRange,
+};
+
+/// The spreadsheet kinds konoma previews, by file extension (case-insensitive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetKind {
+    /// `.xlsx`
+    Xlsx,
+    /// `.xlsm` (macro-enabled; macros are never executed)
+    Xlsm,
+    /// `.xltx` (template)
+    Xltx,
+    /// `.xltm` (macro-enabled template)
+    Xltm,
+    /// `.xlsb` (binary)
+    Xlsb,
+    /// `.xls` (BIFF8)
+    Xls,
+    /// `.ods` (OpenDocument)
+    Ods,
+}
+
+impl SheetKind {
+    /// The kind for an extension without the dot (`"XLSX"` works).
+    pub fn from_ext(ext: &str) -> Option<SheetKind> {
+        Some(match ext.to_ascii_lowercase().as_str() {
+            "xlsx" => SheetKind::Xlsx,
+            "xlsm" => SheetKind::Xlsm,
+            "xltx" => SheetKind::Xltx,
+            "xltm" => SheetKind::Xltm,
+            "xlsb" => SheetKind::Xlsb,
+            "xls" => SheetKind::Xls,
+            "ods" => SheetKind::Ods,
+            _ => return None,
+        })
+    }
+
+    /// The kind for a path, from its extension.
+    pub fn from_path(path: &Path) -> Option<SheetKind> {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(SheetKind::from_ext)
+    }
+}
+
+/// The locale that decides what a locale-dependent built-in format looks like (e.g. built-in
+/// number 14 is `m/d/yy` in English and `yyyy/m/d` in Japanese). Defined by the number-format
+/// engine so there is one type.
+pub use numfmt::Locale;
+
+/// Why a workbook could not be loaded. No user-facing text here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfficeError {
+    /// Password-protected / encrypted.
+    Encrypted,
+    /// A safety limit was exceeded; `what` names the limit (`"file"`, `"entries"`, `"entry"`,
+    /// `"package"`, `"sheet area"`, `"sheet cells"`, `"text"`).
+    TooLarge {
+        /// Which limit.
+        what: &'static str,
+    },
+    /// Damaged, truncated or not a spreadsheet container at all; the string is for logs.
+    Corrupt(String),
+    /// A valid file that is not a spreadsheet we read (docx, doc, unknown extension, ...).
+    Unsupported,
+    /// The file could not be opened or read from disk; the string is for logs.
+    Io(String),
+}
+
+impl fmt::Display for OfficeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OfficeError::Encrypted => write!(f, "encrypted workbook"),
+            OfficeError::TooLarge { what } => write!(f, "workbook too large ({what})"),
+            OfficeError::Corrupt(m) => write!(f, "corrupt workbook: {m}"),
+            OfficeError::Unsupported => write!(f, "unsupported file"),
+            OfficeError::Io(m) => write!(f, "io error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for OfficeError {}
+
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod test_labels;
+// Shared with the host's tests that need its Markdown renderer (feature `test-hooks`).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests;
+#[cfg(test)]
+mod tests_chart_3d;
+#[cfg(test)]
+mod tests_chart_dump;
+#[cfg(test)]
+mod tests_chart_xml;
+#[cfg(test)]
+mod tests_complex;
+// Shared with the host's tests that need its Markdown renderer (feature `test-hooks`).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_docx;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_docx_lists;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_docx_more;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_docx_robust;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_fidelity;
+#[cfg(test)]
+mod tests_fidelity_rank;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_fx34b;
+#[cfg(test)]
+mod tests_limits;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_math_fx;
+#[cfg(test)]
+mod tests_mathml;
+#[cfg(test)]
+mod tests_numfmt;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_odp;
+#[cfg(test)]
+mod tests_odp_robust;
+#[cfg(test)]
+mod tests_ods;
+// Shared with the host's tests that need its Markdown renderer (feature `test-hooks`).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_odt;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_odt_more;
+// Shared with the host's tests that need its Markdown renderer (feature `test-hooks`).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_pptx;
+#[cfg(test)]
+mod tests_pptx_golden;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_pptx_real;
+#[cfg(test)]
+mod tests_pptx_robust;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod tests_review_fix;
+#[cfg(test)]
+mod tests_slide_dump;
+#[cfg(test)]
+mod tests_slide_order_mut;
+#[cfg(test)]
+mod tests_slides_mut;
+#[cfg(test)]
+mod tests_slides_r2;
+#[cfg(test)]
+mod tests_slides_review;
+#[cfg(test)]
+mod tests_survivors;
+#[cfg(test)]
+mod tests_word_survivors;
+#[cfg(test)]
+mod tests_word_survivors2;
+#[cfg(test)]
+mod tests_xls;
+#[cfg(test)]
+mod tests_xlsb;
+#[cfg(test)]
+mod tests_xlsx;

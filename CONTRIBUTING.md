@@ -22,11 +22,20 @@ configurations:
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo clippy --all-targets --no-default-features -- -D warnings
-cargo test
-cargo test --no-default-features
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo test --workspace
+cargo test --workspace --no-default-features
 ```
+
+The repository is a Cargo workspace: the `konoma` binary at the root (`src/`) plus the
+host-independent engines under `crates/` — `konoma-base` (small shared utilities),
+`konoma-svg` (SVG rasterising and fonts), `konoma-math-core`, `konoma-mermaid-core`,
+`konoma-media-core` (PDF / video), `konoma-office-core` (Word / spreadsheet / slide
+documents), `konoma-vcs-core` (git / jj), `konoma-markdown-core` (the Markdown block model
+and diff), and `konoma-test-support` (shared test helpers). The cores know nothing about
+the UI, the config or the i18n catalogue; the host passes in whatever text they show.
+Use `--workspace` so every crate is checked, and `-p <crate>` to work on one.
 
 - The `git` feature is on by default; `--no-default-features` drops it. Keep both building.
 - Avoid panics in runtime code paths: return `Result` and add context with `anyhow`.

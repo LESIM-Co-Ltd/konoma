@@ -17,7 +17,8 @@ on:
     paths:
       - "site/**"
       - ".github/workflows/pages.yml"
-      - "src/preview/mermaid/**"
+      - "crates/konoma-mermaid-core/**"
+      - "crates/konoma-svg/**"
       - "src/preview/markdown.rs"
       - "src/preview/svg.rs"
       - "samples/mermaid.md"
@@ -28,7 +29,8 @@ on:
     paths:
       - "site/**"
       - ".github/workflows/pages.yml"
-      - "src/preview/mermaid/**"
+      - "crates/konoma-mermaid-core/**"
+      - "crates/konoma-svg/**"
       - "src/preview/markdown.rs"
       - "src/preview/svg.rs"
       - "samples/mermaid.md"
@@ -133,7 +135,7 @@ jobs:
       - name: Generate the mermaid catalog
         env:
           CARGO_TERM_COLOR: always
-        run: cargo test -- --ignored site_mermaid_catalog_dump
+        run: cargo test -p konoma-mermaid-core -- --ignored site_mermaid_catalog_dump
 
       # A silent partial dump would publish a page full of broken images, so the catalog is checked
       # before the site is built rather than after it is live. Nothing here is a hard-coded count:

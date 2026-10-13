@@ -59,7 +59,7 @@ impl App {
     /// installed" and keeps flashing "not a repo" as before.
     ///
     /// The two gates below (`[external] git` and the git-binary probe) only apply when the backend
-    /// that will actually answer is git. The jj backend (`src/vcs/jj.rs`) never shells out to `git` at
+    /// that will actually answer is git. The jj backend (`crates/konoma-vcs-core/src/vcs/jj.rs`) never shells out to `git` at
     /// all — it only ever runs the `jj` executable — so neither "git is disabled" nor "no git binary"
     /// is a real reason to refuse it. Applying them unconditionally used to make this view disagree
     /// with the tree: a jj workspace with no colocated `.git` already renders its chip and change
@@ -1596,7 +1596,7 @@ impl App {
             self.tab.git_graph_all,
             &self.tab.root,
             self.tab.git_graph_base.as_deref(),
-            self.lang,
+            &crate::i18n::worktree_labels(self.lang),
             refs,
         );
         // Also strip hidden branches from a row's decoration (refs) (keeping it consistent with the

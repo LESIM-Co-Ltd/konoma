@@ -14,7 +14,7 @@ use image::{DynamicImage, GenericImageView};
 use crate::preview::image::{
     decode_gif_bytes_inline, decode_static_capped, decode_static_why, dimensions_within_limits,
     gif_work_within_limit, shrink_exact, shrink_to_fit, with_decode_ticket, DecodeGate,
-    DecodeTicket, DecodeWish, ImageFailure,
+    DecodeTicket, DecodeWish, ImageFailure, ImageFailureMessage,
 };
 use crate::test_support::unique_tmp;
 

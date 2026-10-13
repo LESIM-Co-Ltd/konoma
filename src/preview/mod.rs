@@ -14,14 +14,17 @@ pub mod math;
 pub mod media_diff;
 pub mod mermaid;
 pub mod office;
+#[cfg(test)]
+mod office_host_tests;
 pub mod pdf;
-pub(crate) mod private_dir;
+pub(crate) use konoma_base::private_dir;
 pub mod svg;
 pub(crate) mod svg_guard;
 pub(crate) mod svg_proc;
 #[cfg(test)]
 mod svg_proc_tests;
-pub(crate) mod svg_size;
+#[cfg(test)]
+mod svg_size;
 pub mod table;
 pub mod text;
 pub mod video;

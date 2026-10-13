@@ -18,7 +18,7 @@ cd -- "$repo_root"
 
 # The same flags CI uses for tests: default features, which include `git`. The dump is `#[ignore]`d
 # because it writes files into the working tree, so it has to be named explicitly.
-cargo test -- --ignored site_mermaid_catalog_dump
+cargo test -p konoma-mermaid-core -- --ignored site_mermaid_catalog_dump
 
 out=site/src/assets/mermaid-catalog
 for lang in en ja; do

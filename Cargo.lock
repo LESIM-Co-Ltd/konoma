@@ -1715,46 +1715,37 @@ dependencies = [
  "anyhow",
  "arboard",
  "base64 0.23.1",
- "calamine",
  "cfb",
  "crossterm",
  "csv",
  "emojis",
- "encoding_rs",
  "flate2",
- "git2",
  "globset",
- "hayro",
- "hayro-syntax",
- "ignore",
  "image",
  "infer",
+ "konoma-base",
+ "konoma-markdown-core",
+ "konoma-math-core",
+ "konoma-media-core",
+ "konoma-mermaid-core",
+ "konoma-office-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "konoma-vcs-core",
  "libc",
- "log",
  "mermaid-text",
  "notify",
  "nucleo-matcher",
  "pulldown-cmark",
- "quick-xml",
  "ratatui",
  "ratatui-image",
- "ratex-katex-fonts",
- "ratex-layout",
- "ratex-parser",
- "ratex-svg",
- "ratex-types",
- "re_mp4",
  "resvg",
- "rust_h264",
- "rust_h265",
  "serde",
  "serde_json",
  "signal-hook",
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "symphonia-core",
- "symphonia-format-mkv",
  "syntect",
  "sys-locale",
  "tar",
@@ -1765,6 +1756,132 @@ dependencies = [
  "unicode-width",
  "ureq",
  "zip",
+]
+
+[[package]]
+name = "konoma-base"
+version = "0.1.0"
+dependencies = [
+ "konoma-test-support",
+ "libc",
+]
+
+[[package]]
+name = "konoma-markdown-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "pulldown-cmark",
+ "similar",
+]
+
+[[package]]
+name = "konoma-math-core"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-svg",
+ "konoma-test-support",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-svg",
+ "ratex-types",
+ "resvg",
+]
+
+[[package]]
+name = "konoma-media-core"
+version = "0.1.0"
+dependencies = [
+ "hayro",
+ "hayro-syntax",
+ "image",
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "re_mp4",
+ "resvg",
+ "rust_h264",
+ "rust_h265",
+ "symphonia-core",
+ "symphonia-format-mkv",
+]
+
+[[package]]
+name = "konoma-mermaid-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "log",
+ "mermaid-text",
+ "resvg",
+ "serde",
+ "serde_json",
+ "svgtypes",
+]
+
+[[package]]
+name = "konoma-office-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calamine",
+ "cfb",
+ "encoding_rs",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-math-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "libc",
+ "quick-xml",
+ "resvg",
+ "serde_json",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "sys-locale",
+ "zip",
+]
+
+[[package]]
+name = "konoma-svg"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "image",
+ "konoma-test-support",
+ "libc",
+ "ratex-katex-fonts",
+ "resvg",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-test-support"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "zip",
+]
+
+[[package]]
+name = "konoma-vcs-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "git2",
+ "ignore",
+ "konoma-base",
+ "konoma-test-support",
+ "ratatui",
+ "similar",
 ]
 
 [[package]]

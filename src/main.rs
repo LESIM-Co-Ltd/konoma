@@ -248,6 +248,9 @@ fn fix_picker_font_size(picker: Picker, window_size: Option<(u16, u16, u16, u16)
 static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
 
 fn main() -> Result<()> {
+    // First of all: this process is the application, so the crates' test-only seams that change
+    // behaviour (compiled in by `test-hooks` when `cargo test` builds this binary) stay off.
+    konoma_base::process::mark_app_main();
     // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
     // from a file, so that whatever such a file does cannot take the program down. It must run
     // before anything else is touched (arguments, configuration, the terminal), and it is not an
@@ -2608,6 +2611,38 @@ mod tests {
         assert_eq!((fixed.font_size().width, fixed.font_size().height), (9, 34));
     }
 
+    /// `main` declares the process to be the application before anything else (so before the
+    /// drawing-child branch): the test-only seams of the workspace crates that change behaviour
+    /// are guarded by `!is_app_main()`, and `cargo test` compiles them into this very binary
+    /// (feature `test-hooks`). Pinned by reading `main`'s own source, as the test below does.
+    #[test]
+    fn main_marks_the_app_process_first() {
+        let src = include_str!("main.rs");
+        let main_start = src
+            .find("\nfn main() -> Result<()> {")
+            .expect("fn main not found");
+        let body = &src[main_start..];
+        let mark = body
+            .find("konoma_base::process::mark_app_main();")
+            .expect("main must call mark_app_main");
+        let child = body
+            .find("preview::svg_proc::CHILD_FLAG")
+            .expect("main must branch to the drawing child");
+        assert!(
+            mark < child,
+            "mark_app_main must run before the child branch"
+        );
+        // No other statement may precede it: nothing but comments between the `{` and the call.
+        let before = &body["\nfn main() -> Result<()> {".len()..mark];
+        assert!(
+            before.lines().all(|l| {
+                let t = l.trim();
+                t.is_empty() || t.starts_with("//")
+            }),
+            "mark_app_main must be the first statement of main, found: {before:?}"
+        );
+    }
+
     // --- structural guard: validation must run before ratatui::init() touches the terminal --
 
     /// The property this whole fix exists for: `main`'s body must resolve+validate the startup
@@ -3236,7 +3271,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_help_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_view();
@@ -3273,7 +3308,7 @@ mod tests {
         let dir = unique_tmp("konoma_tab_gitview_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 

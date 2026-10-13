@@ -17506,58 +17506,10 @@ fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice()
 // Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods through the table grid)
 // ---------------------------------------------------------------------------------------------
 
-/// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
-pub(crate) fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
-    build_xlsx_with_styles(path, sheets, None);
-}
-
-/// [`build_xlsx`] plus an optional `xl/styles.xml` (the cells' `s="N"` pick `cellXfs` entry N).
-fn build_xlsx_with_styles(
-    path: &std::path::Path,
-    sheets: &[(&str, &str, &str, &str)],
-    styles: Option<&str>,
-) {
-    use std::io::Write as _;
-    const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-    const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    let mut wb = format!(r#"<?xml version="1.0"?><workbook xmlns="{NS}" xmlns:r="{RNS}"><sheets>"#);
-    let mut rels = String::from(
-        r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-    );
-    for (i, (name, state, _, _)) in sheets.iter().enumerate() {
-        let n = i + 1;
-        wb += &format!(r#"<sheet name="{name}" sheetId="{n}" state="{state}" r:id="rId{n}"/>"#);
-        rels += &format!(
-            r#"<Relationship Id="rId{n}" Type="x/worksheet" Target="worksheets/sheet{n}.xml"/>"#
-        );
-    }
-    wb += "</sheets></workbook>";
-    rels += "</Relationships>";
-    let root_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
-    let f = std::fs::File::create(path).unwrap();
-    let mut zw = zip::ZipWriter::new(f);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut put = |name: &str, body: &str| {
-        zw.start_file(name, opts).unwrap();
-        zw.write_all(body.as_bytes()).unwrap();
-    };
-    put("_rels/.rels", root_rels);
-    put("xl/workbook.xml", &wb);
-    put("xl/_rels/workbook.xml.rels", &rels);
-    if let Some(styles) = styles {
-        put("xl/styles.xml", styles);
-    }
-    for (i, (_, _, rows, after)) in sheets.iter().enumerate() {
-        put(
-            &format!("xl/worksheets/sheet{}.xml", i + 1),
-            &format!(
-                r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>{rows}</sheetData>{after}</worksheet>"#
-            ),
-        );
-    }
-    zw.finish().unwrap();
-}
+// `build_xlsx` / `build_xlsx_with_styles` live in `konoma-test-support` (the Office readers' own
+// tests use them too).
+pub(crate) use konoma_test_support::build_xlsx;
+use konoma_test_support::build_xlsx_with_styles;
 
 /// An inline-string cell.
 pub(crate) fn x_str(r: &str, text: &str) -> String {

@@ -639,7 +639,7 @@ fn gitignored_entries_detected_and_dimmed() {
     let dir = unique_tmp("konoma_gitignore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"ignored.log\nnode_modules/\n").unwrap();
     std::fs::write(dir.join("tracked.txt"), b"x").unwrap();
     std::fs::write(dir.join("ignored.log"), b"y").unwrap();
@@ -704,7 +704,7 @@ fn fs_burst_build_churn_skips_only_all_ignored_paths() {
     let dir = unique_tmp("konoma_fs_burst_churn_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"build/\n").unwrap();
     std::fs::create_dir_all(dir.join("build")).unwrap();
     std::fs::write(dir.join("build").join("out.o"), b"x").unwrap();
@@ -785,7 +785,7 @@ fn deleting_a_file_inside_an_ignored_directory_updates_the_tree() {
     let dir = unique_tmp("konoma_ignored_delete_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("out")).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"out/\n").unwrap();
     std::fs::write(dir.join("out").join("a_keep.jpg"), b"keep-me").unwrap();
     std::fs::write(dir.join("out").join("b_delete.png"), b"delete-me").unwrap();
@@ -23350,7 +23350,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
     );
 }
 
-/// The jj backend never shells out to `git` — `src/vcs/jj.rs` only ever runs the `jj` executable —
+/// The jj backend never shells out to `git` — `crates/konoma-vcs-core/src/vcs/jj.rs` only ever runs the `jj` executable —
 /// so a machine with no `git` executable at all must not block `o` on a jj workspace. Before the fix,
 /// `open_git_view` probed `git_binary_available()` before it had even decided which backend would
 /// answer, so this refused with `GitNotInstalled` on a directory the tree was already rendering jj's

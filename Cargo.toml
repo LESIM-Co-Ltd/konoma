@@ -49,12 +49,80 @@ exclude = [
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
 pkg-fmt = "tgz"
 
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/LESIM-Co-Ltd/konoma"
+
+# Versions of every external dependency live here; the root package and the crates under
+# `crates/` take them with `name.workspace = true`. Explanatory comments stay next to the
+# root package's `[dependencies]` below.
+[workspace.dependencies]
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = "0.29"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults", "tokio"] }
+image = "0.25"
+flate2 = "1"
+base64 = "0.23"
+resvg = "0.48"
+svgtypes = "0.16"
+skrifa = "0.44"
+hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
+hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+rust_h264 = "0.4"
+rust_h265 = "0.1"
+re_mp4 = "0.5"
+symphonia-core = "0.6"
+symphonia-format-mkv = "0.6"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
+mermaid-text = "0.57"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+unicode-width = "0.2"
+emojis = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+sys-locale = "0.3"
+arboard = { version = "3", features = ["wayland-data-control"] }
+globset = "0.4"
+infer = "0.22"
+csv = "1"
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+tar = { version = "0.4.45", default-features = false }
+calamine = { version = "0.36", default-features = false }
+encoding_rs = "0.8"
+cfb = "0.14"
+quick-xml = "0.41"
+git2 = "0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
+anyhow = "1"
+notify = "8.2.0"
+trash = "5"
+ratex-parser = "0.1"
+ratex-layout = "0.1"
+ratex-svg = { version = "0.1", default-features = false, features = ["embed-fonts"] }
+ratex-types = "0.1"
+ratex-katex-fonts = "0.1"
+similar = "3.1.1"
+nucleo-matcher = "0.3"
+ignore = "0.4.33"
+log = "0.4"
+libc = "0.2"
+signal-hook = "0.3"
+serde_json = "1"
+
 [dependencies]
 # TUI コア (ratatui 0.30 はモジュラー構成。アプリは main crate を使う)
 # unstable-rendered-line-info: 折返し後の表示行数 (Paragraph::line_count) を取得し、
 #   プレビューの縦スクロールを末尾でクランプするのに使う。システム依存ではなく cargo feature。
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
-crossterm = "0.29"
+ratatui.workspace = true
+crossterm.workspace = true
 
 # 画像 (kitty graphics protocol 等を統一して扱う)
 # 注意: default features の chafa-dyn はシステムライブラリ libchafa(pkg-config >= 1.8) を要求し、
@@ -62,91 +130,24 @@ crossterm = "0.29"
 # (半ブロック等のフォールバック描画) は不要。PRD §5「cargo install で動作・外部依存は任意=配布容易性」
 # にも反するため default-features を切る。crossterm=バックエンド / image-defaults=画像フォーマット /
 # tokio=非同期リサイズ・デコードのオフロード(FR-4 の非ブロッキング描画用)。
-ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults", "tokio"] }
-image = "0.25"
+ratatui-image.workspace = true
+image.workspace = true
 # 全画面画像の kitty graphics 転送を konoma 自前で行い、RGBA を **zlib 圧縮(kitty `o=z`)** して送る
 # (ratatui-image は非圧縮 RGBA を送る＝スクショ/図で転送量が数十倍になる)。両者とも既に推移依存として
 # ツリーに在り重複ビルドなし。詳細は docs/PERF-IMAGE-TRANSFER-2026-07.md。
-flate2 = "1"
-base64 = "0.23"
+flate2.workspace = true
+base64.workspace = true
 # SVG プレビュー: 純 Rust(usvg/tiny-skia/rustybuzz/fontdb)でラスタライズ→既存の画像経路へ流す。
 # chafa(C)/onig(C) を避けたのと同じ方針で、外部ライブラリ不要＝配布容易性(PRD §5)を維持。
 # default features に text/system-fonts/raster-images 等を含む(SVG 内テキスト/埋め込み画像対応)。
-resvg = "0.48"
+resvg.workspace = true
 # usvg と同じ SVG 色パーサ。`[ui] math_color` を **usvg が実際に受理する色か**で検証する
 # (valid ⟺ usvg が fill を黒フォールバックしない)ため直接依存として明示(既に resvg 経由で推移依存)。
-svgtypes = "0.16"
+svgtypes.workspace = true
 # usvg 0.48 が **実際にテキストを描くときに読むのと同じフォント読取クレート**(同一バージョン)。
 # mermaid の自作レンダラは箱の寸法を文字幅から決めるため、計測と描画でフォントの読み方がずれると
 # 図全体が壊れる(2026-07-17 に実際に起きた)。resvg 経由で既にツリーに在り重複ビルドは無い。
-skrifa = "0.44"
-
-# PDF のページ数取得(純 Rust・外部プロセス無し)。「何ページあるか」を知るためだけに
-# 子プロセス pdfinfo(poppler) を起動していたのを廃止し、純 Rust でページツリーを直接読む。
-# default-features を落として images(zune-jpeg 等・埋め込み画像デコード用)を外す
-# (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページのラスタライズ本体も
-# 今は hayro(下記)が担うので、「数えられる ⟹ そのページを描ける」がほぼ常に成立し、複数ページの
-# ナビゲーションを外部ツールの有無でゲートする必要はもう無い(preview/pdf.rs 参照)。
-hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
-
-# PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。フォールバックは macOS 同梱の
-# qlmanage/sips のみ(1ページ目専用・preview/pdf.rs)で、hayro が失敗した時だけ使う。poppler は
-# 2026-08 に梯子から外した: 実在 PDF 1,628 件で hayro が 1,604 件(98.53%)を描画し、降格した 24 件を
-# poppler は**1件も救えなかった**(18 件は poppler でも完全に均一な画像＝本当に白紙・6 件はそもそも
-# PDF でない)＝「PDF を見るには poppler を入れてください」を言わせるだけの依存だった。
-# `embed-fonts`/`embed-cmaps` は**既定 ON のまま明示指定**する:
-# 両方 off で実測したところ、①埋め込みフォントの PDF は無傷(バイト同一)だが、②**非埋め込みの標準14
-# フォント(Helvetica 等・reportlab 等が普通に出力する)と③Adobe-Japan1 等の定義済み CMap を使う
-# 非埋め込み CJK CID フォント(HeiseiMin-W3 等)が、エラーも警告も無く**無言で白紙**になる
-# (embed-cmaps 無しだとフォールバックフォントを font_resolver で渡してもグリフ→コード変換自体が
-# 失敗する)。バイナリ +0.7MB 程度の増分より、ありふれた PDF が理由も分からず白紙表示になる方を避ける。
-hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
-
-# 動画サムネイルの純 Rust 経路(preview/video.rs)。PDF と同じ形＝**内蔵で描けるものは何も入れずに描き、
-# 描けないものだけ ffmpegthumbnailer/ffmpeg へ降格**する。**コンテナ 2 種 × コーデック 2 種**:
-# mp4/m4v/mov は re_mp4 が索引(moov/stbl)を読み、mkv/webm は symphonia-format-mkv がデマルチプレクスして、
-# どちらもキーフレーム 1 枚ぶんのバイトだけを取り出して rust_h264 / rust_h265 でデコードする
-# (ファイル全体は読まない)。ガード・デコード・YUV→RGB・縮小はコンテナに依らず共通。
-#   - rust_h264: 依存クレート 0・C/asm/build.rs 無し(aarch64 の NEON は Rust の std::arch)・163KiB。
-#     Baseline/Main/High の 8bit 4:2:0 のみ。**High 10/4:2:2/4:4:4/モノクロはエラーを返さず壊れた絵を出す**
-#     ので、描く前に**ビットストリームの SPS**(コンテナの申告ではない)を読んで弾く
-#     (preview/video.rs の `sps_is_decodable`)。モノクロは profile_idc が High と同じ 100 なので
-#     profile だけでは区別できない＝コンテナの申告では足りない、が理由。
-#   - rust_h265: rust_h264 と同じ作者・同じ流儀。依存クレート 0(dev-dependencies のみ)・
-#     C/asm/build.rs 無し・17,941 行。**Main / Main 10 の 4:2:0(8bit/10bit)のみ**。
-#     危険の形は rust_h264 と違う: 4:2:2/4:4:4/モノクロは SPS パーサ自身が `Unsupported` を返して
-#     止まる(＝壊れた絵にはならない)一方、**12bit は SPS を通ってしまう**のに README が
-#     「12-bit infrastructure is in place but untested」と明言している＝無検証の経路に落ちる。
-#     加えて RExt 系プロファイルはツールセットそのものが未実装。よって H.264 と同じく
-#     **ビットストリームの SPS を自分で読んで**(hvcC の申告ではない)Main/Main 10・4:2:0・8/10bit・
-#     寸法上限を満たすものだけ通す(`hevc_sps_is_decodable`)。**HVCC(mp4 の長さ前置形式)は受け付けない**
-#     ので、パラメータセットとサンプルを Annex B に変換してから食わせる(`parse_hvcc`)。
-#   - re_mp4: 索引だけを読む(`Mp4::read` は Read+Seek・`read_bytes` と違い全体をメモリに載せない)。
-#     推移依存(byteorder/bytes/num-rational/serde/serde_json/thiserror)は全て既に konoma の
-#     Cargo.lock に互換版で在るので、新規パッケージはこの 3 つだけ。
-# VP9/AV1 と旧世代コーデック(および .avi)は引き続き ffmpeg 側の担当(原則#3 で降格)。
-rust_h264 = "0.4"
-rust_h265 = "0.1"
-re_mp4 = "0.5"
-
-# mkv/webm コンテナのデマルチプレクス(純 Rust・C 依存なし)。**デマルチプレクサだけ**を使い、
-# デコードは上の rust_h264/rust_h265 に流す＝コンテナの入口が増えるだけで、ガード(ビットストリームの
-# SPS 検査)も絵の作り方も mp4 と完全に共通。symphonia の**デコーダは一切引かない**
-# (symphonia 本体 crate や symphonia-codec-* は依存に入れていない＝音声デコーダも入らない)。
-#   - 取り出すもの: 映像トラックの CodecId(H264/HEVC/VP9/AV1…)と CodecPrivate(avcC/hvcC)。
-#     mkv の H.264/HEVC は mp4 と同じ**長さ前置**のサンプルなので、既存の avcC/hvcC パーサと
-#     Annex B 変換がそのまま使える。VP9/AV1 は CodecId の段階で弾く(デコードを試みない)。
-#   - **`Packet` にキーフレームのフラグが無い**(track_id/pts/dts/dur/trim_*/data のみ)ので、
-#     どのパケットがキーフレームかは NAL タイプを自分で見て決める(preview/video.rs の
-#     `sample_has_keyframe`)。mp4 の `stss`(同期サンプル表)に相当するものが mkv には無い、が理由。
-#   - **どちらの feature も既定は空**(symphonia-core の default = []・symphonia-format-mkv には
-#     [features] 自体が無い)なので切るものが無く、`default-features = false` は書いても無意味＝書かない。
-#   - 新規パッケージは symphonia-{core,common,metadata,format-mkv} と num-complex の **5 つ**
-#     (bitflags/bytemuck/smallvec/log/lazy_static/regex-lite は既に Cargo.lock に在る)。ライセンスは
-#     **MPL-2.0**(about.toml の accepted に既出)＝ファイル単位の弱いコピーレフトで、MIT の konoma に
-#     そのままリンクできる(改変しない限り追加義務は無い)。
-symphonia-core = "0.6"
-symphonia-format-mkv = "0.6"
+skrifa.workspace = true
 
 # Markdown 内 `http(s)://` 画像のリモート取得(`[external] remote_images`)。旧 `curl` 子プロセスの代わり。
 # TLS は rustls(+webpki-roots=純Rustのルート証明書同梱)に固定し native-tls/OpenSSL は一切引かない
@@ -154,7 +155,7 @@ symphonia-format-mkv = "0.6"
 # デフォルトが変わっても native-tls を拾わないよう明示する)。gzip は透過解凍のため有効化。
 # `ring`(rustls の暗号バックエンド)は入るが vendored/自己完結な Rust+一部アセンブリで、システムの
 # OpenSSL 等を要求しない＝配布容易性(PRD §5)を損なわない。
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+ureq.workspace = true
 
 # Markdown / Mermaid / コードハイライト
 # 当初候補の ratatui-markdown(0.3.6) は ratatui ^0.29 依存で、画像プレビューが要求する
@@ -174,36 +175,36 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 # (過去に6回ドリフトした実績＝箇条書き記号/アラート本体/`<details>`本体/サイズ上限/インデント
 # コード/入れ子フェンス。7回目はリスト相対インデントで、コンテナ追跡の再実装なしには手で直せず、
 # 手書きスキャナ自体を廃してこのパーサへ問い合わせる方式に置き換えた)。
-pulldown-cmark = { version = "0.13.4", default-features = false }
-mermaid-text = "0.57"
+pulldown-cmark.workspace = true
+mermaid-text.workspace = true
 # 拡張子付き単体コードファイル・md フェンスコードとも共通のハイライト用(konoma 自身のレンダラが
 # 両方でこれを呼ぶ)。既定の onig バックエンドは oniguruma(C ライブラリ)を要求し配布容易性(PRD §5)
 # に反するため、default-features を切り純 Rust の fancy-regex(default-fancy) を使う
 # (chafa を切ったのと同じ方針)。
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+syntect.workspace = true
 # syntect 同梱シンタックスに無い言語(TypeScript/TOML 等)を補う拡張シンタックス集(bat 由来・
 # ライセンス処理済み)。onig を避け純 Rust の fancy-regex を使う(syntect-fancy)。
-two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+two-face.workspace = true
 # 表(GFM table)の桁揃え用。konoma 自身のパーサ設定は `ENABLE_TABLES` を意図的に切っており
 # (`markdown_parse_options`)、表ブロックは横取りして自前で列幅(全角=2幅)を測り罫線描画する。
 # 全角を正しく測れるので CJK でも崩れない。
-unicode-width = "0.2"
+unicode-width.workspace = true
 
 # Markdown プレビューの `:shortcode:` 絵文字(GitHub の gemoji 相当)を Unicode 絵文字に変換する。
 # 純 Rust・gemoji 準拠のルックアップ表を同梱(外部依存なし=配布容易性 PRD §5 を維持)。
 # Unicode を持たない GitHub 独自ショートコードはそのまま素通しする(原則#3)。
-emojis = "0.9"
+emojis.workspace = true
 
 # 設定
-serde = { version = "1", features = ["derive"] }
-toml = "1"
+serde.workspace = true
+toml.workspace = true
 
 # OS 既定言語の判定(`[ui] lang = "auto"`)。旧 `defaults read -g AppleLanguages` 子プロセスの代わり。
 # 依存クレート 0。macOS は CoreFoundation(CFLocaleCopyPreferredLanguages)を直接 `#[link]` するので
 # 子プロセスを起動しない。Linux/BSD は LANGUAGE→LC_ALL→LC_MESSAGES→LANG を読む(旧実装の手書き
 # フォールバックを置換)。返り値は BCP-47(例 "ja-JP")または生の locale 文字列("ja_JP" 等)だが、
 # `Lang::from_lang_tag` は先頭の "ja" しか見ないのでどちらの区切りでも動く。
-sys-locale = "0.3"
+sys-locale.workspace = true
 
 # クリップボード。`wayland-data-control` を明示有効化=既定は X11 バックエンド(x11rb)のみで、
 # XWayland の無い Wayland セッション(sway/Hyprland で xwayland 無効・cage 等)では arboard の
@@ -211,113 +212,89 @@ sys-locale = "0.3"
 # Linux 分岐コメントは X11/Wayland 両対応と書いていたが実装は X11 のみだった)。
 # 新規依存 wl-clipboard-rs は `target.'cfg(all(unix, not(any(macos,android,emscripten))))'`
 # 配下=非 macOS Unix のみでビルドされ macOS には一切コンパイルされない(cargo tree で確認済)。
-arboard = { version = "3", features = ["wayland-data-control"] }
+arboard.workspace = true
 
 # glob / mime 判定
-globset = "0.4"
-infer = "0.22"
+globset.workspace = true
+infer.workspace = true
 
 # CSV/TSV プレビュー(テーブル表示)。純 Rust・外部依存なし=配布容易性(PRD §5)を維持。
 # 引用符内カンマ・改行埋め込み・可変列数を正しく扱う(素朴な split では壊れる)。
-csv = "1"
+csv.workspace = true
 
 # アーカイブ(zip/tar/tar.gz)の中身一覧プレビュー。展開はしない=メタデータ(名前/サイズ/更新日)のみ
 # 読む(preview/archive.rs のモジュール doc に安全境界の詳細)。zip の既定 feature は任意の展開コーデック
 # (bzip2 等・C ライブラリを引きうる)を有効化するが、`by_index_raw` はエントリの圧縮方式に関わらず
 # 非展開の生リーダーでメタデータを返すため default-features=false で足りる(実機検証済)。
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip.workspace = true
 # default-features=false で既定 feature の xattr(展開時の拡張属性復元。unpack 専用)を落とす。
 # エントリ列挙(`Archive::entries`)はこれを使わない。>=0.4.45 は過去の展開時シンボリックリンク/
 # パストラバーサル勧告(RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068)の修正版だが、
 # このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
-tar = { version = "0.4.45", default-features = false }
-
-# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust readers. xlsx/xlsm/xltx/xltm are read
-# by konoma itself in one pass (preview/office/xlsx.rs); for xlsb/xls/ods the values, sheet list,
-# visibility and formulas come from calamine, and the per-cell number formats (which calamine does
-# not expose) are read by konoma's own "format pass" (preview/office/). In the tests calamine is also
-# the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
-# arithmetic lives in konoma's own numfmt).
-calamine = { version = "0.36", default-features = false }
-# Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
-# through calamine; the PowerPoint EMF/WMF pictures need it directly.
-encoding_rs = "0.8"
-# Compound File Binary reader: used to detect a password-protected OOXML package (an
-# `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
-# Already in the graph through `infer`; named here because konoma reads it directly.
-cfb = "0.14"
-# XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
-# declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
-# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
-quick-xml = "0.41"
-
-# git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
-git2 = { version = "0.21", optional = true }
+tar.workspace = true
 
 # 非同期 (画像デコード・外部コマンドのオフロード)
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
+tokio.workspace = true
 
 # エラー処理
-anyhow = "1"
+anyhow.workspace = true
 
 # ファイル監視 (FR-1/FR-7 の自動更新)。macOS は FSEvents を使う。外部バイナリ不要・OS API ラッパ
 # のためコンパイル時依存のみ＝配布容易性(PRD §5)を損なわない。変更検知でツリー/git status を自動更新。
-notify = "8.2.0"
+notify.workspace = true
 
 # ゴミ箱送り (M7 Phase B・削除は復元可が既定)。macOS は NSFileManager の trashItem を使い
 # Finder の「戻す」に対応した正規ゴミ箱へ送る。外部バイナリ不要・コンパイル時依存のみ
 # (notify/git2 と同じ方針＝配布容易性を損なわない)。
-trash = "5"
-# LaTeX 数式 → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。KaTeX 構文を parse→layout→
-# DisplayList→SVG し、ラスタライズは konoma 側の resvg に統一する(mermaid/SVG と同経路)。ratex-svg の
-# `embed-fonts` feature が KaTeX TTF(ratex-katex-fonts)を同梱し、グリフを standalone な `<path>`
-# アウトラインで出力するので resvg は外部フォント不要で描ける。ab_glyph/base64/fancy-regex 等はすべて
-# 純 Rust=外部 C 依存なし。数式化に失敗した式は生 LaTeX テキストへ降格(原則#3)。
-ratex-parser = "0.1"
-ratex-layout = "0.1"
-ratex-svg = { version = "0.1", default-features = false, features = ["embed-fonts"] }
-# MathStyle(Display=ブロック / Text=インライン)を渡すため(ratex-layout は再エクスポートしない・推移依存)。
-ratex-types = "0.1"
-# The same embedded KaTeX TTFs, read directly: `preview::svg::shared_fontdb` registers
-# `KaTeX_SansSerif-Regular.ttf` as a last-resort `sans-serif` so that a machine with no usable
-# system font still gets mermaid diagrams instead of nothing. `ratex-svg`'s `embed-fonts` above
-# already puts this crate in the graph and its bytes in the binary, so naming it here adds no
-# package and no size — only a second reader of what is already linked in.
-ratex-katex-fonts = "0.1"
-similar = "3.1.1"
+trash.workspace = true
+similar.workspace = true
 
 # ツリー絞り込み(`/`)のファジー照合(`[ui] filter_mode = "fuzzy"`, 既定)。Helix editor 由来の純 Rust
 # fzf 風マッチャ(飛び石一致・スコア降順・空白区切り AND を無償で提供)。onig/chafa を避けたのと同じ方針
 # (配布容易性 PRD §5)＝C ライブラリ・build.rs 経由のネイティブビルド無し。`Matcher` はキー入力毎に
 # 作り直すと ~135KB の eager alloc が毎回走るため、呼び出し側で使い回す(bookmark_actions.rs 参照)。
-nucleo-matcher = "0.3"
-ignore = "0.4.33"
+nucleo-matcher.workspace = true
 
-# `src/preview/mermaid/layout/` (the vendored dagre layout engine) emits one `trace!`
-# call. The facade is a no-op unless a logger is installed and konoma installs none,
-# but keeping the call means the vendored subtree stays byte-identical to upstream
-# there. No new package: `log` is already in Cargo.lock via symphonia/ignore.
-log = "0.4"
+# Crates of this workspace (stage 1 of the plugin architecture: code moves out of `src/` unchanged).
+konoma-base = { path = "crates/konoma-base", version = "0.1.0" }
+konoma-svg = { path = "crates/konoma-svg", version = "0.1.0" }
+konoma-mermaid-core = { path = "crates/konoma-mermaid-core", version = "0.1.0" }
+konoma-math-core = { path = "crates/konoma-math-core", version = "0.1.0" }
+konoma-media-core = { path = "crates/konoma-media-core", version = "0.1.0" }
+konoma-office-core = { path = "crates/konoma-office-core", version = "0.1.0" }
+konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
+konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
 # supervise the SVG drawing process (`preview::svg_proc`: kill, resident-memory reading, the
 # child's own limits). Both already in the tree.
+# `libc::atexit` for the test process now lives in `konoma-base` (private temp dirs).
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
-signal-hook = "0.3"
+libc.workspace = true
+signal-hook.workspace = true
 
 [dev-dependencies]
-# Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
-# cross_validate.rs`) reads JSON: it parses `cross-validate/reference_data.json`,
-# the recorded output of the real `@dagrejs/dagre` JavaScript implementation.
-# A dev-dependency keeps serde_json out of the shipped binary; it is already in
-# Cargo.lock via re_mp4, so this adds no package.
-serde_json = "1"
+# Test-only JSON reading (the Office fixtures). A dev-dependency keeps serde_json out of the shipped
+# binary. The mermaid layout cross-validation (`cross-validate/reference_data.json`) reads JSON in
+# `konoma-mermaid-core`'s own dev-dependencies.
+serde_json.workspace = true
+# Test-only: builds a password-protected container in the Office tests (`e2e_tests`).
+cfb.workspace = true
+# Test-only helpers shared with the crates under `crates/` (path only: never published).
+konoma-test-support = { path = "crates/konoma-test-support" }
+# `test-hooks` keeps the crates' `cfg(test)` seams (exit-time temp cleanup, the decode gate, ...)
+# active when the root package's own tests call into them. `resolver = "2"`: dev-dependency
+# features never reach a normal build.
+konoma-base = { path = "crates/konoma-base", features = ["test-hooks"] }
+konoma-svg = { path = "crates/konoma-svg", features = ["test-hooks"] }
+konoma-office-core = { path = "crates/konoma-office-core", features = ["test-hooks"] }
+konoma-vcs-core = { path = "crates/konoma-vcs-core", features = ["test-hooks"] }
+konoma-markdown-core = { path = "crates/konoma-markdown-core", features = ["test-hooks"] }
 
 [features]
 default = ["git"]
-git = ["dep:git2"]
+git = ["konoma-vcs-core/git"]
 
 [profile.release]
 opt-level = 3

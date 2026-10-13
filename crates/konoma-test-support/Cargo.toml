@@ -1,0 +1,19 @@
+[package]
+name = "konoma-test-support"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test-only helpers shared by konoma and its crates (temp-dir guards, sample lookup)"
+# Published (not `publish = false`): konoma-office-core's `test-hooks` feature builds the test
+# modules it shares with the host on these helpers, and crates.io needs every dependency of a
+# published crate, optional ones included, to be published too.
+
+[dependencies]
+zip.workspace = true
+# `zip` is built with `default-features = false`, which leaves `flate2` with no compression
+# backend unless something else picks one; inside the workspace another crate always did, so
+# the crate only failed to build on its own (`cargo test -p ...`, and `cargo publish`). The
+# workspace `flate2` keeps its default `rust_backend`.
+flate2.workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "konoma-math-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's LaTeX math renderer: KaTeX syntax to a standalone SVG through RaTeX (pure Rust)"
+
+[dependencies]
+# LaTeX 数式 → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。KaTeX 構文を parse→layout→
+# DisplayList→SVG し、ラスタライズは konoma 側の resvg に統一する(mermaid/SVG と同経路)。ratex-svg の
+# `embed-fonts` feature が KaTeX TTF(ratex-katex-fonts)を同梱し、グリフを standalone な `<path>`
+# アウトラインで出力するので resvg は外部フォント不要で描ける。ab_glyph/base64/fancy-regex 等はすべて
+# 純 Rust=外部 C 依存なし。数式化に失敗した式は生 LaTeX テキストへ降格(原則#3)。
+ratex-parser.workspace = true
+ratex-layout.workspace = true
+ratex-svg.workspace = true
+# MathStyle(Display=ブロック / Text=インライン)を渡すため(ratex-layout は再エクスポートしない・推移依存)。
+ratex-types.workspace = true
+# The SVG tree reader (usvg) used to measure the SVG ratex writes.
+resvg.workspace = true
+konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
+
+[dev-dependencies]
+# The tests rasterize the SVG and count pixels.
+image.workspace = true
+konoma-test-support = { path = "../konoma-test-support" }

@@ -446,7 +446,7 @@ fn same_repo_navigation_does_not_rescan_git_status() {
     for i in 0..20 {
         std::fs::write(dir.join(format!("f{i:04}.txt")), b"x\n").unwrap();
     }
-    let repo = git2::Repository::init(&dir).unwrap();
+    let repo = konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     {
         let mut c = repo.config().unwrap();
         c.set_str("user.name", "T").unwrap();
@@ -520,7 +520,7 @@ fn worktree_chip_is_not_recomputed_on_every_render() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&linked);
     std::fs::create_dir_all(&dir).unwrap();
-    let repo = git2::Repository::init(&dir).unwrap();
+    let repo = konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     {
         let mut c = repo.config().unwrap();
         c.set_str("user.name", "T").unwrap();

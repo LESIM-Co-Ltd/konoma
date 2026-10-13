@@ -1,0 +1,31 @@
+[package]
+name = "konoma-vcs-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's version-control reading: git (libgit2 and the git CLI) and jj (Jujutsu) behind one read surface, plus the commit-graph layout"
+
+[dependencies]
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+ratatui.workspace = true
+anyhow.workspace = true
+similar.workspace = true
+# git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
+# git (optional feature). libgit2 reads repositories in-process; the CLI covers what it cannot.
+git2 = { workspace = true, optional = true }
+# jj working-copy scanning honours the repository's ignore files.
+ignore.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+
+[features]
+default = []
+git = ["dep:git2"]
+# Keeps the `cfg(test)` seams (the call counters, the git-binary override, the pinned backend
+# preference, the child's `LC_ALL=C`) active when another package's tests call into this crate
+# (a `cfg(test)` is only true while this crate's own tests build). Enabled by the root package's
+# `[dev-dependencies]` only.
+test-hooks = []

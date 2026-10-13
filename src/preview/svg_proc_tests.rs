@@ -2075,7 +2075,7 @@ fn draw_slide(svg: &str, max_px: u32) -> Result<DynamicImage, RunError> {
 
 #[test]
 fn a_slide_with_many_effects_is_drawn_by_the_real_child_at_the_size_its_effects_allow() {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     let _g = serial();
     let r = crate::preview::office::slide_draw::render_svg_cancellable(
         &shadowed_slide(2),
@@ -2107,7 +2107,7 @@ fn a_slide_with_many_effects_is_drawn_by_the_real_child_at_the_size_its_effects_
 
 #[test]
 fn a_slide_without_effects_is_drawn_by_the_real_child_at_the_whole_frame() {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     let _g = serial();
     let mut light = shadowed_slide(0);
     light.background = crate::preview::office::slide_draw::Fill::Solid(

@@ -1016,7 +1016,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&linked);
         std::fs::create_dir_all(&dir).unwrap();
-        let repo = git2::Repository::init(&dir).unwrap();
+        let repo = konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         {
             let mut c = repo.config().unwrap();
             c.set_str("user.name", "T").unwrap();
@@ -1094,7 +1094,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
-    // jj display-layer coverage (2026-08-19 audit). `src/vcs/jj.rs` (the data layer) is well
+    // jj display-layer coverage (2026-08-19 audit). `crates/konoma-vcs-core/src/vcs/jj.rs` (the data layer) is well
     // tested, but nothing checked that jj's own words actually reach the footer/chip on screen
     // instead of git's — the `?` help bug fixed on 2026-08-18 slipped through exactly this hole.
     // Each test below is **paired**: it checks jj's text shows up and git's does not, then checks

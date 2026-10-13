@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (368)
+- MIT License (376)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -5965,7 +5965,15 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.30.0
+- konoma 0.31.0
+- konoma-base 0.1.0
+- konoma-markdown-core 0.1.0
+- konoma-math-core 0.1.0
+- konoma-media-core 0.1.0
+- konoma-mermaid-core 0.1.0
+- konoma-office-core 0.1.0
+- konoma-svg 0.1.0
+- konoma-vcs-core 0.1.0
 
 ```
 MIT License
@@ -8900,7 +8908,7 @@ at `fonts/OFL.txt` in `ratex-katex-fonts`.
 
 konoma's mermaid renderer lays diagrams out with a vendored copy of the `dagre`
 crate, version 0.1.1 (https://github.com/kookyleo/dagre-rs, archived). The source
-lives in `src/preview/mermaid/layout/` and ships inside the konoma crate; it is not
+lives in `crates/konoma-mermaid-core/src/layout/` and ships inside the konoma-mermaid-core crate; it is not
 a Cargo dependency, because `[patch.crates-io]` is stripped by `cargo publish` and
 konoma has to be able to fix the layout engine in a released build. `cargo-about`
 walks the dependency graph, so it cannot see this code -- the notice below is
@@ -8909,9 +8917,9 @@ maintained by hand.
 The vendored files were modified by the konoma authors (edition-2024 let-chains
 desugared for konoma's edition 2021, module paths rewritten, unused graph algorithms
 dropped). Every file says so in its header and
-`src/preview/mermaid/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
+`crates/konoma-mermaid-core/src/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
 4(b) requires. Upstream ships no `NOTICE` file, so there is none to reproduce here.
-The full license text is in `src/preview/mermaid/layout/LICENSE-APACHE` and is also
+The full license text is in `crates/konoma-mermaid-core/src/layout/LICENSE-APACHE` and is also
 reproduced above under "Apache License 2.0".
 
 ```
@@ -8936,11 +8944,11 @@ konoma draws the PowerPoint/OpenDocument preset shapes from `presetShapeDefiniti
 the machine-readable definition of the DrawingML preset geometries published with
 ECMA-376 Part 1 (5th edition, December 2016;
 https://ecma-international.org/wp-content/uploads/ECMA-376-1_5th_edition_december_2016.zip).
-The file is embedded **unmodified** at `src/preview/office/slide_draw/presets/presetShapeDefinitions.xml`
+The file is embedded **unmodified** at `crates/konoma-office-core/src/slide_draw/presets/presetShapeDefinitions.xml`
 and parsed at run time; it is not a Cargo dependency, so `cargo-about` cannot see it and
 this notice is maintained by hand. **It is not under konoma's MIT licence**; it stays under
 the Ecma copyright licence below, which is also kept next to the file in
-`src/preview/office/slide_draw/presets/NOTICE.md`.
+`crates/konoma-office-core/src/slide_draw/presets/NOTICE.md`.
 
 ```
 COPYRIGHT NOTICE
@@ -8971,9 +8979,9 @@ This document and the information contained herein is provided on an “AS IS”
 ### Preset pattern bitmaps (OpenPresentation, MIT)
 
 The 54 8 x 8 bitmaps of the DrawingML preset patterns (`a:pattFill`) in
-`src/preview/office/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
+`crates/konoma-office-core/src/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
 published as `pattern-fills.ts` in https://github.com/OpenPresentation/opf (MIT licence). The
-Wingdings 2 and Webdings code tables in `src/preview/office/slide_draw/symbol_font.rs` were
+Wingdings 2 and Webdings code tables in `crates/konoma-office-core/src/slide_draw/symbol_font.rs` were
 read from the Unicode document L2/11-052 (https://www.unicode.org/L2/L2011/11052-wingding.pdf)
 and are konoma's own transcription.
 
