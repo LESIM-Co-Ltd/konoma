@@ -246,6 +246,9 @@ pub fn decl(a: Action) -> Decl {
         A::Cancel => NONE,
         A::TabListActivate | A::OutlineJump => NONE,
         A::ToggleFocusedItem => d(Some(M::HintToggle), Some(M::MdTaskToggleHelp)),
+        // A plugin's operation is named by the plugin (`Manifest::actions`), in the language of
+        // the interface; the footer, the help and the menu read it from the declaration.
+        A::Plugin(_) => NONE,
     }
 }
 

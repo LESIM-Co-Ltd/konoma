@@ -171,6 +171,7 @@ impl App {
                     layout: konoma_plugin::view::Layout::single(),
                     view: None,
                     req: ViewReq::default(),
+                    enabled: Default::default(),
                 });
                 None
             }

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use konoma_plugin::registry::{FileFacts, Resolution, UserRule};
+use konoma_plugin::registry::{FileFacts, PluginOrigin, Resolution, UserRule};
 use konoma_plugin::Target;
 
 use super::{with_registry, COMMAND_ID, TEXT_ID, UNSUPPORTED_ID};
@@ -73,7 +73,13 @@ fn csv_note(hint: Option<&str>, path: &Path) -> &'static str {
 }
 
 /// Map the registry's answer onto the `PreviewKind` that still carries the display.
-fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path) -> PreviewKind {
+fn kind_of(
+    res: Resolution,
+    rules: &[Rule],
+    disabled: &[String],
+    preview_commands: bool,
+    path: &Path,
+) -> PreviewKind {
     let p = path.to_path_buf();
     match res {
         Resolution::Text => PreviewKind::Text(p),
@@ -127,7 +133,13 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
                     None => PreviewKind::can_not_preview(path),
                 }
             }
-            // `can-not-preview`, a plugin that has no display here yet, or a user plugin.
+            // A plugin the user registered: opened through the same Session road as the standard
+            // ones, and drawn by the host's own widget for the view it returns.
+            _ if with_registry(disabled, |r| r.origin(&id)) == Some(PluginOrigin::User) => {
+                PreviewKind::plugin(&id, p)
+            }
+            // `can-not-preview`, or a standard plugin that has no display of its own (it only
+            // takes embedded things).
             _ => PreviewKind::can_not_preview(path),
         },
     }
@@ -161,7 +173,7 @@ pub(crate) fn resolve_kind(
         is_text: &text,
     };
     let res = with_registry(disabled, |r| r.resolve_file(&user, &facts));
-    kind_of(res, rules, preview_commands, path)
+    kind_of(res, rules, disabled, preview_commands, path)
 }
 
 /// The id of the plugin that shows `path` (a user rule first, then the standard plugins), or

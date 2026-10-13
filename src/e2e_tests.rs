@@ -20561,6 +20561,9 @@ mod default_keys;
 mod ops_keys;
 
 #[cfg(test)]
+mod hexdump;
+
+#[cfg(test)]
 mod menus;
 
 #[cfg(test)]

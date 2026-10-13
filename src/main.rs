@@ -1713,6 +1713,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
     }
     match action {
         Action::Noop => {}
+        Action::Plugin(p) => app.run_plugin_action(p),
         Action::Navigate(m) => dispatch_navigate(app, sfc, m),
         Action::TabNew => app.tab_new()?,
         Action::TabNewAfter => app.tab_new_after()?,
@@ -2369,6 +2370,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     let Some(ctx) = ctx else {
         return Ok(false);
     };
+    // The open plugin's own layer (layer 4): its keys cannot collide with the host's.
+    if let Some(a) = app.plugin_action_for_key(ctx, kp) {
+        return dispatch_action(app, a, sfc);
+    }
     match app.keymaps.resolve(ctx, None, kp) {
         Resolution::EnterLeader(id) => {
             // The copy leader (default `y`) always opens the which-key menu. While focused on a

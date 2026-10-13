@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use globset::{GlobBuilder, GlobMatcher};
 
-use crate::manifest::{Manifest, Priority, Target};
+use crate::keys::{sanitize, KeyIssue};
+use crate::manifest::{ApiVersion, Manifest, Priority, Target};
 use crate::session::Plugin;
 
 /// Who registered a plugin.
@@ -44,6 +45,24 @@ impl fmt::Display for RegistryError {
 }
 
 impl std::error::Error for RegistryError {}
+
+/// Something found about a plugin when it was registered, for the startup message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistryNote {
+    pub plugin: String,
+    pub kind: NoteKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteKind {
+    /// An action lost its key or was refused (see [`KeyIssue`]); the rest of the plugin works.
+    Key(KeyIssue),
+    /// The plugin was built against an API version this host does not speak; it is switched off.
+    ApiMismatch {
+        declared: ApiVersion,
+        host: ApiVersion,
+    },
+}
 
 /// A user binding (a `[[preview.rules]]` entry read as "this target goes to that plugin").
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,7 +120,11 @@ struct Entry {
     plugin: Arc<dyn Plugin>,
     origin: PluginOrigin,
     enabled: bool,
+    /// Set when the plugin cannot run at all (an API version this host does not speak). It stays
+    /// listed, but switched off for good: `set_enabled` cannot lift it.
+    blocked: bool,
     binds: Vec<CompiledBind>,
+    notes: Vec<NoteKind>,
 }
 
 /// The registered plugins.
@@ -180,6 +203,18 @@ impl Registry {
         origin: PluginOrigin,
     ) -> Result<(), RegistryError> {
         let manifest = plugin.manifest();
+        // What the host registers is the sanitized manifest: an action whose key is reserved
+        // (layers 0 to 3) or taken keeps the action and loses the key; one that cannot be
+        // registered is dropped. Both are noted for the startup message.
+        let (manifest, key_issues) = sanitize(&manifest);
+        let mut notes: Vec<NoteKind> = key_issues.into_iter().map(NoteKind::Key).collect();
+        let blocked = !manifest.api.works_with(ApiVersion::CURRENT);
+        if blocked {
+            notes.push(NoteKind::ApiMismatch {
+                declared: manifest.api,
+                host: ApiVersion::CURRENT,
+            });
+        }
         if self.entries.iter().any(|e| e.id == manifest.id) {
             return Err(RegistryError::DuplicateId(manifest.id));
         }
@@ -206,8 +241,10 @@ impl Registry {
             manifest,
             plugin,
             origin,
-            enabled: true,
+            enabled: !blocked,
+            blocked,
             binds,
+            notes,
         });
         Ok(())
     }
@@ -216,7 +253,7 @@ impl Registry {
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
         match self.entries.iter_mut().find(|e| e.id == id) {
             Some(e) => {
-                e.enabled = enabled;
+                e.enabled = enabled && !e.blocked;
                 true
             }
             None => false,
@@ -231,6 +268,25 @@ impl Registry {
         self.entries.iter().find(|e| e.id == id)
     }
 
+    /// Who registered the plugin.
+    pub fn origin(&self, id: &str) -> Option<PluginOrigin> {
+        self.entry(id).map(|e| e.origin)
+    }
+
+    /// What registering found out, for every plugin, in registration order.
+    pub fn notes(&self) -> Vec<RegistryNote> {
+        self.entries
+            .iter()
+            .flat_map(|e| {
+                e.notes.iter().map(|k| RegistryNote {
+                    plugin: e.id.clone(),
+                    kind: k.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// The manifest as registered (keys that could not be kept are removed).
     pub fn manifest(&self, id: &str) -> Option<&Manifest> {
         self.entry(id).map(|e| &e.manifest)
     }

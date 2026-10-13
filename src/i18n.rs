@@ -483,6 +483,8 @@ pub enum Msg {
     /// Flash when a write is asked of a backend that only reads (jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     VcsReadOnly,
+    /// Flash when a plugin's writing action is asked of a plugin set to `read_only = true`.
+    PluginReadOnly,
     /// Status-bar chip when a jj (Jujutsu) backend is answering, in place of `StGit`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StJj,
@@ -1262,6 +1264,7 @@ fn en(msg: Msg) -> &'static str {
         StQuitHint => "y / q / Enter = quit    n / Esc = cancel",
         StFilter => "FILTER",
         VcsReadOnly => "konoma only reads a jj repository — use jj itself to change it",
+        PluginReadOnly => "this plugin is set to read-only ([plugins.<id>] read_only = true)",
         StGit => "GIT",
         StJj => "JJ",
         StGraph => "GRAPH",
@@ -1872,6 +1875,7 @@ fn jp(msg: Msg) -> &'static str {
         StQuitHint => "y / q / Enter = 終了    n / Esc = 取消",
         StFilter => "絞り込み",
         VcsReadOnly => "konoma は jj リポジトリを読むだけです — 変更は jj で行ってください",
+        PluginReadOnly => "このプラグインは読み取り専用です([plugins.<id>] read_only = true)",
         StGit => "Git",
         StJj => "jj",
         StGraph => "グラフ",
@@ -2558,6 +2562,7 @@ mod tests {
         Msg::GraphShowingDefault,
         Msg::StBookmark,
         Msg::VcsReadOnly,
+        Msg::PluginReadOnly,
         Msg::StGit,
         Msg::StJj,
         Msg::StGraph,

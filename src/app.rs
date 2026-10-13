@@ -51,6 +51,7 @@ pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
 mod paste_jump;
+mod plugin_acts;
 mod plugin_host;
 mod preview_visual;
 mod search;
@@ -1783,6 +1784,8 @@ pub struct App {
     /// The exclusive work groups of the plugins (`Manifest::work_group`): which have a job running
     /// and the newest one waiting behind it (`app/plugin_host.rs`).
     plugin_groups: std::collections::BTreeMap<String, plugin_host::GroupSlot>,
+    /// The actions the plugins declare, with their keys (`app/plugin_acts.rs`).
+    pub(crate) plugin_keys: crate::plugins::PluginKeys,
     /// Test-only: plugin jobs of a work group started on a thread.
     #[cfg(test)]
     plugin_group_dispatches: u32,
@@ -3351,9 +3354,16 @@ impl App {
         // Run2 keymap: merge the defaults + config (`[keys.<context>]` + the old copy_* alias) and
         // validate for conflicts. The page/half profile follows ui.keys (vim/less). Stage 2 is
         // construction only (dispatch is not yet wired up).
+        // The `[keys.<plugin id>]` tables are the plugins', not the host's: they are taken out of
+        // the host's keymap config and applied to the plugins' declared actions.
+        let mut keys_config = cfg.keys.to_keymap_config();
+        let plugin_keys = crate::plugins::PluginKeys::build(
+            &crate::plugins::shared_registry(&cfg.plugin_disabled()),
+            &mut keys_config.surfaces,
+        );
         let keymaps = crate::keymap::KeyMap::from_config(
             crate::keymap::scheme_from_str(&cfg.ui.keys),
-            &cfg.keys.to_keymap_config(),
+            &keys_config,
         );
         let mut app = Self {
             launch_dir: root.clone(),
@@ -3459,6 +3469,7 @@ impl App {
             media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
             plugin_groups: std::collections::BTreeMap::new(),
+            plugin_keys,
             #[cfg(test)]
             plugin_group_dispatches: 0,
             keymaps,
@@ -3649,6 +3660,14 @@ impl App {
             notices.push(format!("{head}: {}", key_problems.join(" / ")));
         }
         notices.extend(self.cfg.plugin_report(self.lang));
+        let plugin_notes = self.plugin_keys.report(self.lang);
+        if !plugin_notes.is_empty() {
+            let head = match self.lang {
+                crate::i18n::Lang::Jp => "プラグイン",
+                crate::i18n::Lang::En => "plugins",
+            };
+            notices.push(format!("{head}: {}", plugin_notes.join(" / ")));
+        }
         if !key_guidance.is_empty() {
             notices.push(format!("{head}: {}", key_guidance.join(" / ")));
         }

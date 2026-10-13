@@ -55,6 +55,9 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         return Gate::Off(Some(Msg::VcsReadOnly));
     }
     match a {
+        // --- A plugin's own action: the session's word, the same one the footer and the help read ---
+        A::Plugin(p) => gate_plugin(app, ctx, p),
+
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]
@@ -231,6 +234,22 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
 
         _ => Gate::On,
     }
+}
+
+/// A declared action of the open plugin: it must belong to this context, the session must say it
+/// works (`PluginShow::enabled`), and a writing action is refused for a plugin set to
+/// `read_only = true` (one guard for every plugin's writes, with the reason).
+fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
+    let Some(binding) = app.plugin_binding_in(ctx, p) else {
+        return Gate::Off(None);
+    };
+    if !app.plugin_act_enabled(p) {
+        return Gate::Off(None);
+    }
+    if binding.writes && app.plugin_is_read_only(p.plugin()) {
+        return Gate::Off(Some(Msg::PluginReadOnly));
+    }
+    Gate::On
 }
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).

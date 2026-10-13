@@ -14,9 +14,11 @@
 //! - [`view`]: the display types a plugin returns
 //! - [`session`]: the entry traits and their contexts
 //! - [`registry`]: the rules that settle which plugin shows a file
+//! - [`hints`]: which declared actions are shown (one rule for the host and for tests)
 //! - [`keys`]: key notation, the layered reserved keys, and manifest validation
 //! - [`testing`]: checks that do not need the host
 
+pub mod hints;
 pub mod input;
 pub mod keys;
 pub mod manifest;
@@ -32,7 +34,7 @@ pub mod view;
 pub use input::{Input, LazyResource, Origin, Resource, ResourceReq, Resources};
 pub use manifest::{
     Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target, Verb,
-    VerbDecl,
+    VerbDecl, ViewKind,
 };
 pub use session::{
     ActCx, Cancel, Failure, FailureKind, OpenCx, Outcome, Plugin, Session, TermCaps, ViewCx,

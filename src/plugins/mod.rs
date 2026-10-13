@@ -8,9 +8,12 @@
 //! the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
+mod acts;
 mod command;
 mod listing;
 mod resolve;
+#[cfg(test)]
+pub(crate) mod test_plugins;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +26,7 @@ use konoma_plugin::{
     Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Settings, Verb, VerbDecl,
 };
 
+pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
@@ -195,6 +199,14 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
         let _ = r.register(plugin_of(m), PluginOrigin::Standard);
     }
     for id in disabled {
+        // Tests add plugins of their own through a name in the `disabled` list (the registry is
+        // shared per distinct list, so a test's plugin never reaches another test): see
+        // `test_plugins`.
+        #[cfg(test)]
+        if let Some(plugin) = test_plugins::lookup(id) {
+            let _ = r.register(plugin, PluginOrigin::User);
+            continue;
+        }
         if !is_internal(id) {
             r.set_enabled(id, false);
         }
@@ -458,6 +470,10 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
     let ids = registry.ids();
     let mut out = Vec::new();
     for (id, table) in tables {
+        #[cfg(test)]
+        if test_plugins::lookup(id).is_some() {
+            continue;
+        }
         if !ids.contains(&id.as_str()) {
             out.push(match lang {
                 Lang::Jp => format!("未知のプラグイン `{id}`(無視)"),

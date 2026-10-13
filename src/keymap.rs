@@ -386,6 +386,9 @@ pub enum Action {
     GitGraphPickerApply,
     /// `Space` in a decorated document: toggle the focused checkbox or `<details>`.
     ToggleFocusedItem,
+    /// An action the open plugin declared (`Manifest::actions`). It has no config name: its key
+    /// is the plugin's own (`[keys.<plugin id>]`), and it is always reachable from `Space`.
+    Plugin(crate::plugins::PluginAct),
 }
 
 #[cfg(feature = "git")]
@@ -1190,6 +1193,15 @@ impl Context {
             Surface::PreviewGitDiff => Context::Diff,
         })
     }
+}
+
+/// Whether `[keys.<name>]` is a table of the host (a context, `global`, the old `sort`, or an old
+/// surface name) rather than the keys of a plugin of that name.
+pub fn is_host_key_table(name: &str) -> bool {
+    name == "global"
+        || name == "sort"
+        || Context::from_name(name).is_some()
+        || old_surface_contexts(name).is_some()
 }
 
 /// The contexts an **old** (pre-context) `[keys.<surface>]` name stands for, for the names that
@@ -3038,6 +3050,7 @@ pub fn action_name(a: Action) -> String {
         #[cfg(feature = "git")]
         Action::GitGraphPickerApply => "git_graph_picker_apply",
         Action::ToggleFocusedItem => "toggle_focused_item",
+        Action::Plugin(p) => return format!("plugin:{}.{}", p.plugin(), p.act()),
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
         #[cfg(feature = "git")]
