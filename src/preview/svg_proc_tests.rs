@@ -2555,3 +2555,75 @@ fn an_idle_child_is_only_reused_for_the_limit_it_was_started_with() {
     );
     no_children_left();
 }
+
+// ---- the host's `SvgTrust` draws the way its origin allows --------------------------------
+
+/// A directory with a solid red PNG, and the SVG that paints it over a green page by `href`.
+fn red_picture_svg(dir: &Path, href: &str) -> String {
+    let _ = dir;
+    svg(&format!(
+        r##"<rect width="800" height="600" fill="#0a0"/><image width="800" height="600" href="{href}"/>"##
+    ))
+}
+
+fn red_png_in(dir: &Path) -> PathBuf {
+    let path = dir.join("red.png");
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 0, 255]))
+        .save(&path)
+        .unwrap();
+    path
+}
+
+#[test]
+fn an_embedded_svg_reads_no_file_but_a_file_svg_reads_the_ones_next_to_it() {
+    use crate::app::SvgTrust;
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-trust");
+    let png = red_png_in(&dir);
+    let green = [0, 170, 0, 255];
+    let red = [255, 0, 0, 255];
+    super::svg_proc::with_real_child(bin(), || {
+        // The control: the same picture drawn as a file's own SVG shows the red image, both by a
+        // relative and by an absolute reference (so the PNG is found and decodable here).
+        for href in ["red.png".to_string(), png.display().to_string()] {
+            let doc = red_picture_svg(&dir, &href);
+            let img = SvgTrust::File(dir.join("x.svg"))
+                .draw(doc.as_bytes(), 800, &never)
+                .expect("the file's SVG is drawn");
+            assert_eq!(img.to_rgba8().get_pixel(400, 300).0, red, "File: {href}");
+            // From a document (nothing to be relative to) the file is not read: the page behind
+            // it is all that shows.
+            let img = SvgTrust::Embedded
+                .draw(doc.as_bytes(), 800, &never)
+                .expect("the embedded SVG is drawn");
+            assert_eq!(
+                img.to_rgba8().get_pixel(400, 300).0,
+                green,
+                "Embedded read a file: {href}"
+            );
+        }
+        assert_eq!(live_children(), 1, "drawn by a child process");
+    });
+    no_children_left();
+}
+
+#[test]
+fn an_svg_of_unstated_origin_is_drawn_as_embedded_and_reads_no_file() {
+    use crate::app::SvgTrust;
+    let _g = serial();
+    no_children_left();
+    assert_eq!(SvgTrust::default(), SvgTrust::Embedded);
+    assert!(SvgTrust::default().is_untrusted());
+    let dir = unique_tmp("svg-proc-trust-default");
+    let png = red_png_in(&dir);
+    super::svg_proc::with_real_child(bin(), || {
+        let doc = red_picture_svg(&dir, &png.display().to_string());
+        let img = SvgTrust::default()
+            .draw(doc.as_bytes(), 800, &never)
+            .expect("drawn");
+        assert_eq!(img.to_rgba8().get_pixel(400, 300).0, [0, 170, 0, 255]);
+        assert_eq!(live_children(), 1, "drawn by a child process");
+    });
+    no_children_left();
+}

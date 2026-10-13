@@ -44,6 +44,13 @@ fn hub_screen_keys(cfg: &mut Config) {
     }
 }
 
+/// How long a `Sim::drain_*` helper waits for a result the worker owes. It is a bound that turns a
+/// worker that never answers into a failure instead of a hang, not a measurement: a result that is
+/// owed arrives however slowly a loaded machine runs it (an encode of a big picture took 1.5 s on
+/// an idle test run and over 10 s beside five other full runs), so the bound is far above that.
+/// Waiting is free when the result is there; only a worker that is really stuck costs this long.
+const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// One simulated konoma session: an App plus a terminal, with a draw after every key
 /// (mirroring the run loop's key→redraw cycle).
 struct Sim {
@@ -158,7 +165,7 @@ impl Sim {
             .as_ref()
             .expect("with_async_plugins() を呼んでいない");
         let res = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(DRAIN_WAIT)
             .expect("plugin worker が結果を返す");
         let applied = self.app.apply_media(res);
         self.draw();
@@ -283,7 +290,7 @@ impl Sim {
             .md_img_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let res = rx
@@ -304,7 +311,7 @@ impl Sim {
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let res = rx
@@ -335,7 +342,7 @@ impl Sim {
         // convergence while an encode was still on its way, and the *next* assertion (the placement
         // that never got its picture) is what failed.
         let wait = if self.app.md_encode_in_flight() {
-            std::time::Duration::from_secs(10)
+            DRAIN_WAIT
         } else {
             std::time::Duration::from_millis(50)
         };
@@ -354,7 +361,7 @@ impl Sim {
         let rx = self.media_rx.as_ref().expect("with_media() を呼んでいない");
         loop {
             let res = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(DRAIN_WAIT)
                 .expect("media loader が結果を返す");
             // A plugin's page count sent ahead of its picture (the UI stopped waiting for it) is
             // not the result being drained: apply it and wait for the picture.
@@ -376,7 +383,7 @@ impl Sim {
             .as_ref()
             .expect("with_media() を呼んでいない");
         let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(DRAIN_WAIT)
             .expect("remote fetch worker が結果を返す");
         assert!(self.app.apply_remote_fetch(res), "常に再描画を要求する");
         self.draw();
@@ -390,9 +397,7 @@ impl Sim {
             .fileop_rx
             .as_ref()
             .expect("with_async_file_ops() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("ワーカーが結果を返す");
+        let res = rx.recv_timeout(DRAIN_WAIT).expect("ワーカーが結果を返す");
         assert!(self.app.apply_file_op(res), "現世代の結果は適用される");
         self.draw();
     }
@@ -19843,7 +19848,7 @@ fn drain_all_media(s: &mut Sim, n: usize) {
             .media_rx
             .as_ref()
             .expect("with_media() を呼んでいない")
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(DRAIN_WAIT)
             .expect("media loader が結果を返す");
         s.app.apply_media(res);
     }
@@ -20132,7 +20137,7 @@ fn drain_media_until_current(s: &mut Sim) -> usize {
             .media_rx
             .as_ref()
             .expect("with_media() を呼んでいない")
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(DRAIN_WAIT)
             .expect("workbook worker が結果を返す");
         arrived += 1;
         if s.app.apply_media(res) {

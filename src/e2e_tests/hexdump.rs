@@ -470,8 +470,16 @@ fn e2e_hexdump_a_view_of_an_undeclared_type_is_explained_on_screen() {
 #[test]
 fn e2e_hexdump_the_hint_is_off_while_the_action_is_running() {
     let dir = files("e2e_hexdump_running");
-    let marker =
-        test_plugins::register("e2e_hexdump_running", Arc::new(Hexdump(Variant::default())));
+    // The job is held on the worker until the test lets it go: the host takes an answer that is
+    // already there, so a job that ends at once would not be "running" when the screen is read.
+    let latch = Arc::new(test_plugins::Latch::default());
+    let marker = test_plugins::register(
+        "e2e_hexdump_running",
+        Arc::new(Hexdump(Variant {
+            hold: Some(Arc::clone(&latch)),
+            ..Variant::default()
+        })),
+    );
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = "en".into();
     let mut s = Sim::with_config(&canon(&dir), cfg).with_async_plugins();
@@ -488,6 +496,7 @@ fn e2e_hexdump_the_hint_is_off_while_the_action_is_running() {
     // The answer has not been applied: the session is out with the job.
     assert!(!s.app.plugin_act_enabled(width()), "running");
     assert!(!footer(&s).contains("w:width"), "footer: {}", footer(&s));
+    latch.open();
     for _ in 0..5 {
         if s.app.plugin_act_enabled(width()) {
             break;
@@ -504,7 +513,16 @@ fn e2e_hexdump_the_hint_is_off_while_the_action_is_running() {
 #[test]
 fn e2e_hexdump_a_stale_answer_gives_the_session_back() {
     let dir = files("e2e_hexdump_stale");
-    let marker = test_plugins::register("e2e_hexdump_stale", Arc::new(Hexdump(Variant::default())));
+    // The action is held on the worker until the generation has moved on, so its answer is stale
+    // whatever the speed of the machine (an answer that is already there would be taken at once).
+    let latch = Arc::new(test_plugins::Latch::default());
+    let marker = test_plugins::register(
+        "e2e_hexdump_stale",
+        Arc::new(Hexdump(Variant {
+            hold: Some(Arc::clone(&latch)),
+            ..Variant::default()
+        })),
+    );
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = "en".into();
     let mut s = Sim::with_config(&canon(&dir), cfg).with_async_plugins();
@@ -518,6 +536,7 @@ fn e2e_hexdump_a_stale_answer_gives_the_session_back() {
     }
     s.key('w');
     s.app.another_media_job_starts_for_test();
+    latch.open();
     // The stale answer hands the session back and its redraw is asked for again.
     for _ in 0..5 {
         if s.app.plugin_act_enabled(width()) && !s.screen().contains("00 01 02 03 04 05 06 07 08") {

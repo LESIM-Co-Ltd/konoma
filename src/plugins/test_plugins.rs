@@ -66,6 +66,32 @@ pub(crate) struct Variant {
     pub no_shows: bool,
     /// Declare `shows(Text)` but answer with a table (under the id `hexdump-wrong`).
     pub wrong_view: bool,
+    /// Keeps the `width` action on the worker until the test opens the latch, so a test that looks
+    /// at the screen while the job is out does not race the worker (the host takes an answer that
+    /// is already there, so a job that finishes at once is not "running" for long enough to see).
+    pub hold: Option<Arc<Latch>>,
+}
+
+/// A gate a test opens by hand: [`Latch::wait`] returns once [`Latch::open`] was called (or after a
+/// long bound, so a test that forgets to open it fails instead of hanging).
+#[derive(Default)]
+pub(crate) struct Latch {
+    opened: Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl Latch {
+    pub(crate) fn open(&self) {
+        *self.opened.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        let guard = self.opened.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self
+            .cv
+            .wait_timeout_while(guard, std::time::Duration::from_secs(120), |open| !*open);
+    }
 }
 
 /// The hello-world plugin of the design (4-10), plus what the host's tests need around it.
@@ -155,6 +181,9 @@ impl Session for Dump {
         self.v.calls.fetch_add(1, Ordering::SeqCst);
         match action {
             "width" => {
+                if let Some(latch) = &self.v.hold {
+                    latch.wait();
+                }
                 self.width = if self.width == 16 { 8 } else { 16 };
                 Ok(Outcome::Redraw)
             }
