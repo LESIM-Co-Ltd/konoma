@@ -184,6 +184,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         external: false,
         default_raster_px: 800,
         expects_picture: true,
+        expects_document: false,
         decode_cancel: None,
         on_layout: None,
         group: None,

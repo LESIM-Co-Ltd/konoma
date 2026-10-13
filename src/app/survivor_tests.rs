@@ -19,51 +19,63 @@ fn app_with_media_channel() -> (
     (app, dir, rx)
 }
 
-/// An Office request waiting behind the running load is started when that load ends — unless the
-/// preview moved on since it was asked (the media generation changed): then it is dropped, and the
-/// one worker is simply free again. (Leaving a file clears the waiting request itself; this is the
-/// second line of defence for any other path that bumps the generation.)
+/// An Office request waiting behind the running job of the work group is started when that job
+/// ends — unless the preview moved on since it was asked (the media generation changed): then it
+/// is dropped, and the group is simply free again. (Leaving a file clears the waiting request
+/// itself; this is the second line of defence for any other path that bumps the generation.)
 #[test]
 fn a_waiting_workbook_request_of_an_old_generation_is_dropped_when_the_load_ends() {
+    use konoma_plugin::view::ViewReq;
+    use konoma_plugin::Input;
+    use plugin_host::PluginJob;
     let (mut app, dir, _rx) = app_with_media_channel();
-    let ask = |app: &App| WbRequest {
-        job: MediaJob::Document(dir.join("never-there.docx"), crate::i18n::Lang::En),
-        gen: app.media_gen,
+    let path = dir.join("never-there.docx");
+    let ask = |app: &App| {
+        let job = PluginJob::Open {
+            plugin: Arc::new(konoma_office::DocumentPlugin),
+            input: Input::File {
+                path: path.clone(),
+                hint: None,
+            },
+        };
+        let mut work = app.plugin_work(
+            konoma_office::DOCUMENT_ID.to_string(),
+            path.clone(),
+            job,
+            ViewReq::default(),
+        );
+        work.gen = app.media_gen;
+        work
     };
+    let group = konoma_office::OFFICE_WORK_GROUP;
 
     // Stale: asked under a generation that has since moved on.
-    app.wb_worker_busy = true;
-    app.wb_queued = Some(ask(&app));
-    let finished_gen = app.media_gen;
+    let work = ask(&app);
+    let slot = app.plugin_groups.entry(group.to_string()).or_default();
+    slot.busy = true;
+    slot.queued = Some(work);
     app.bump_media_gen();
-    let started = app.wb_dispatches;
-    let changed = app.apply_media(MediaResult {
-        gen: finished_gen,
-        wb_worker: true,
-        payload: None,
-    });
-    assert!(!changed, "the finished load is stale too");
+    let started = app.plugin_group_dispatches;
+    app.release_plugin_group(group);
     assert_eq!(
-        app.wb_dispatches, started,
+        app.plugin_group_dispatches, started,
         "the stale request was not started"
     );
-    assert!(!app.wb_worker_busy, "the worker is free");
-    assert!(app.wb_queued.is_none(), "and nothing waits any more");
+    let slot = &app.plugin_groups[group];
+    assert!(!slot.busy, "the group is free");
+    assert!(slot.queued.is_none(), "and nothing waits any more");
 
     // Current: asked under the generation in force: started.
-    app.wb_worker_busy = true;
-    app.wb_queued = Some(ask(&app));
-    let started = app.wb_dispatches;
-    let finished_gen = app.media_gen.wrapping_sub(1);
-    app.apply_media(MediaResult {
-        gen: finished_gen,
-        wb_worker: true,
-        payload: None,
-    });
+    let work = ask(&app);
+    let slot = app.plugin_groups.entry(group.to_string()).or_default();
+    slot.busy = true;
+    slot.queued = Some(work);
+    let started = app.plugin_group_dispatches;
+    app.release_plugin_group(group);
     assert_eq!(
-        app.wb_dispatches,
+        app.plugin_group_dispatches,
         started + 1,
         "the current request was started"
     );
-    assert!(app.wb_worker_busy);
+    assert!(app.plugin_groups[group].busy);
 }

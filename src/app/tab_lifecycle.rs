@@ -55,7 +55,6 @@ impl App {
         // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened
         // again by `load_plugin`.)
         self.set_document(None);
-        self.document_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -182,6 +181,9 @@ impl App {
             t.page = t.page.max(1);
             self.tab.page = t.page;
         }
+        // The representation this tab chose (`R`) is asked for when the plugin is opened: put it
+        // back before, as the page.
+        self.tab.repr = t.repr.clone();
         self.load_plugin();
         if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
         {
@@ -344,7 +346,6 @@ impl App {
         // A new tab shows no Word document (the source tab's was snapshotted by save_active; it is
         // re-read on the worker when that tab is activated again). Its page starts at the first.
         self.set_document(None);
-        self.document_error = None;
         self.tab.page = 1;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened

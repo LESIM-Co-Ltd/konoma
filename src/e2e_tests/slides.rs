@@ -1,4 +1,4 @@
-//! End-to-end tests of the presentation preview (`PreviewKind::Document` on a `.pptx`):
+//! End-to-end tests of the presentation preview (the `presentation` plugin on a `.pptx`):
 //! `testdata/office/slides.pptx` / `slides-ja.pptx` opened through the real key path, `J`/`K`
 //! between slides, the chip, the hints, the `R` raw view and the neighbours that must not change.
 

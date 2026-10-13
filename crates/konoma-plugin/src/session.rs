@@ -154,6 +154,8 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
     Unsupported,
+    /// The file is password-protected.
+    Encrypted,
     Corrupt,
     TooLarge,
     TooHeavy,
@@ -193,6 +195,7 @@ impl Failure {
 
     failure_ctor! {
         unsupported => Unsupported,
+        encrypted => Encrypted,
         corrupt => Corrupt,
         too_large => TooLarge,
         too_heavy => TooHeavy,

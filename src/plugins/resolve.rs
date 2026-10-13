@@ -9,19 +9,6 @@ use super::{with_registry, COMMAND_ID, TEXT_ID, UNSUPPORTED_ID};
 use crate::config::Rule;
 use crate::preview::{archive, PreviewKind};
 
-/// Extensions of the presentation formats (the rest of the old `builtin = "document"` is Word).
-fn is_presentation(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|e| {
-            matches!(
-                e.as_str(),
-                "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "odp" | "otp"
-            )
-        })
-}
-
 /// The plugin (and the note handed with it) an old `builtin = "<name>"` stands for. `path` decides
 /// the one name that covered two plugins: `document` is Word or a presentation by extension.
 fn plugin_of_builtin(name: &str, path: &Path) -> (&'static str, Option<&'static str>) {
@@ -37,7 +24,7 @@ fn plugin_of_builtin(name: &str, path: &Path) -> (&'static str, Option<&'static 
         "spreadsheet" => ("spreadsheet", None),
         "csv" => ("csv", Some("csv")),
         "tsv" => ("csv", Some("tsv")),
-        "document" if is_presentation(path) => ("presentation", None),
+        "document" if crate::app::is_presentation_path(path) => ("presentation", None),
         "document" => ("document", None),
         "text" => (TEXT_ID, None),
         _ => (UNSUPPORTED_ID, None),
@@ -107,8 +94,11 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
                 id,
                 path: p,
             },
-            // Word and presentations are one display until the plugins are wired in.
-            "document" | "presentation" => PreviewKind::Document(p),
+            // Word and presentations: converted to a Markdown document (the reading is the
+            // plugin's, on the Office work group).
+            konoma_office::DOCUMENT_ID | konoma_office::PRESENTATION_ID => {
+                PreviewKind::plugin(&id, p)
+            }
             // A name that is not a zip / tar / tar.gz (a user rule can aim any glob at the
             // archive plugin) is the safe "can not preview", as before.
             "archive" => match archive::ArchiveKind::from_path(path) {

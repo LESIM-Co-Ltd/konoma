@@ -265,7 +265,7 @@ impl App {
                 );
                 // A Word document is never written: a checkbox glyph in its text is only text, so
                 // it is not a focusable, toggleable item (the toggle would write to the .docx).
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+                if self.is_document() {
                     items.retain(|it| !matches!(it.kind, MdItemKind::Task { .. }));
                 }
                 items
@@ -1011,7 +1011,7 @@ impl App {
         math_slot: &dyn Fn(&str, bool) -> crate::preview::markdown::MathSlot,
     ) -> DecoratedMarkdown {
         // A Word document draws the Markdown it was converted to, never the .docx on disk.
-        let is_doc = matches!(self.tab.preview_kind, Some(PreviewKind::Document(_)));
+        let is_doc = self.is_document();
         let loaded = if is_doc {
             Ok(self.document_markdown().unwrap_or("").to_string())
         } else {
@@ -1037,7 +1037,7 @@ impl App {
         // Source line count, used to map the scroll position back to an approximate source line.
         let src_lines = src.lines().count();
         match &self.tab.preview_kind {
-            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_)) => {
+            Some(k) if is_doc || matches!(k, PreviewKind::Markdown(_)) => {
                 let theme = &self.cfg.ui.theme;
                 // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
                 // metadata block is prepended to the result below (and image line indices offset).

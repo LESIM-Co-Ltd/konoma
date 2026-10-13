@@ -391,6 +391,9 @@ pub struct Reopen {
     pub text: String,
     pub resources: Resources,
     pub origin: Origin,
+    /// Whether the conversion was cut at a limit (the end, some pictures, or part of a table is
+    /// missing); the host says so in the document's title.
+    pub truncated: bool,
 }
 
 /// A short message shown in place of the content.

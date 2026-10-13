@@ -4,7 +4,7 @@
 //! teaches nothing.
 
 use super::*;
-use crate::app::office_doc::{DocPicture, LoadedDocument, PictureSource, SlideRasterCap};
+use crate::app::office_doc::{DocPicture, LoadedDocument, SlideRasterCap};
 use crate::app::{decode_with_cap, decode_with_smaller_retries, md_decode_bytes_why};
 use crate::config::Config;
 use crate::preview::image::ImageFailure;
@@ -565,23 +565,17 @@ fn app_with_slide(
     pictures.insert(
         "office-img://deck/slide-1".to_string(),
         DocPicture {
-            source: PictureSource::Slide {
-                scene: Arc::new(scene),
-                media: Arc::new(HashMap::new()),
-                render_truncated: Arc::new(AtomicBool::new(false)),
-                raster_cap: cap.clone(),
-            },
+            source: crate::app::office_doc::lazy_slide_source(scene, cap.clone()),
             dims: Some((960, 540)),
             raster: false,
         },
     );
     app.document = Some(Box::new(LoadedDocument {
         markdown: String::new(),
-        picture_markdown: String::new(),
         truncated: false,
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
-        slides: Vec::new(),
+        repr: None,
     }));
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_md_image_loader(tx);

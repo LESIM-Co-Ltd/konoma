@@ -95,6 +95,18 @@ pub trait LazyResource: Send + Sync + std::fmt::Debug {
     fn natural_size(&self) -> Option<(u32, u32)>;
     /// Draw it. Check `cancel` between steps.
     fn render(&self, req: &ResourceReq, cancel: &Cancel) -> Result<ImageData, Failure>;
+    /// The longest side, in pixels, the last [`LazyResource::render`] found this resource can be
+    /// rasterized at within the drawing process's work budget (a slide with heavy effects can be
+    /// drawn smaller but not larger). `None` before the first render, or when there is no such
+    /// limit. The host cuts the size it asks for to it.
+    fn max_raster_px(&self) -> Option<u32> {
+        None
+    }
+    /// Whether a render had to leave something out (a size budget of the writer). Known after a
+    /// render; the host says so in the document's title.
+    fn truncated(&self) -> bool {
+        false
+    }
 }
 
 /// What the host asks of a [`LazyResource`].

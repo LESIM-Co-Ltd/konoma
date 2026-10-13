@@ -1,35 +1,41 @@
-//! Word document and presentation preview (`PreviewKind::Document`): the converted Markdown and its
-//! pictures live on `App`, are drawn by the ordinary Markdown pipeline, and are never written back
-//! to the file.
+//! Word document and presentation preview: the `document` and `presentation` plugins
+//! (`crates/konoma-office`) convert the file to Markdown with its pictures and the host draws it
+//! with the ordinary Markdown pipeline. Nothing is ever written back to the file.
 //!
-//! The document is converted on the Office worker slot (`MediaJob::Document`); this module holds
-//! what arrives (`LoadedDocument`), the App-level accessors the renderer / key handlers share, the
-//! `R` raw view of a Word document (the converted Markdown written to a private temp file so the
-//! less-style reader can window it), and the two views of a presentation (slide pictures / text).
+//! The job runs on the plugin road (`plugin_host.rs`) in the Office work group (one read at a time
+//! across the spreadsheet, Word and slide plugins, the newest request waiting). On the worker the
+//! plugin's view (a `Reopen` for Word, a `Document` for slides) is turned into a
+//! [`LoadedDocument`], the host's container for the document on screen; this module holds it, the
+//! App-level accessors the renderer and key handlers share, the `R` raw view of a Word document
+//! (the converted Markdown written to a private temp file so the less-style reader can window it),
+//! and the **anchored pages** of a presentation (`Layout.pages = Anchored`: one long document whose
+//! pages start at the headings of a level; `J`/`K`, the chip, the scroll limit) with the
+//! **representations** the plugin offers (`Layout.reprs`: slide pictures / text; `R`).
 
 use super::*;
+use konoma_plugin::input::{Resource, Resources};
+use konoma_plugin::view::{Layout, PageLayout};
+use konoma_plugin::LazyResource;
 use std::collections::HashMap;
 
 /// Where the pixels of a picture of the open document come from.
 #[derive(Clone)]
 pub(super) enum PictureSource {
     /// A file inside the package (png, jpeg, gif, bmp, webp, tiff or svg): its bytes, shared with
-    /// decode threads.
-    Bytes(Arc<Vec<u8>>),
-    /// A slide of a presentation: no bytes exist yet. The decode thread draws the scene to an SVG
-    /// (resolving the scene's image keys through `media`) and hands that to the untrusted-SVG
-    /// drawing path.
-    Slide {
-        scene: Arc<crate::preview::office::slide_draw::SlideScene>,
-        media: Arc<HashMap<String, Arc<Vec<u8>>>>,
-        /// Set by the decode thread when drawing the slide had to leave something out (a size
-        /// budget of the writer); shared by all the slides of the deck and read by
+    /// decode threads (and with the plugin's session).
+    Bytes(Arc<[u8]>),
+    /// A picture the plugin makes when asked (a slide of a presentation): no bytes exist yet. The
+    /// decode thread asks it for an SVG and hands that to the untrusted-SVG drawing path.
+    Lazy {
+        lazy: Arc<dyn LazyResource>,
+        /// Set by the decode thread when drawing the picture had to leave something out (a size
+        /// budget of the writer); shared by all the pictures of the document and read by
         /// `App::document_truncated`, so the title says so like it does for a reader's budget.
         render_truncated: Arc<std::sync::atomic::AtomicBool>,
-        /// The longest side, in px, this slide can be drawn at inside the drawing process's work
-        /// budget (`Rendered::max_raster_px`), stored by the decode thread after it wrote the
-        /// slide; 0 until then. The wish for a sharper redraw is cut to it, so a heavy slide on a
-        /// huge terminal is not redrawn again and again for a size it cannot have.
+        /// The longest side, in px, this picture can be drawn at inside the drawing process's work
+        /// budget, learned by the decode thread after it drew; the wish for a sharper redraw is
+        /// cut to it, so a heavy slide on a huge terminal is not redrawn again and again for a
+        /// size it cannot have.
         raster_cap: Arc<SlideRasterCap>,
     },
 }
@@ -113,101 +119,101 @@ pub struct DocPicture {
     pub(super) raster: bool,
 }
 
-/// A converted Word document or presentation.
+/// A converted Word document or presentation, as the plugin returned it.
 pub struct LoadedDocument {
-    /// The Markdown the text view draws (never read from disk).
+    /// The Markdown the view draws: the converted text, or a presentation's picture view (the same
+    /// headings with the slide pictures between them), as the representation on screen says.
     pub(super) markdown: String,
-    /// A presentation's picture view: the same headings with the slide pictures between them.
-    /// Empty for a Word document and for a deck without drawings (it has its text view only).
-    pub(super) picture_markdown: String,
     /// The conversion stopped at one of its budgets (the end, some pictures, or part of a table is
     /// missing).
     pub(super) truncated: bool,
-    /// A slide was drawn with something left out (see `PictureSource::Slide`).
+    /// A slide was drawn with something left out (see `PictureSource::Lazy`).
     pub(super) render_truncated: Arc<std::sync::atomic::AtomicBool>,
     /// Pictures by their `office-img://...` URL (the slides' pictures included).
     pub(super) pictures: HashMap<String, DocPicture>,
-    /// A presentation: its slides in order (empty for a Word document).
-    pub(super) slides: Vec<crate::preview::office::docx::pptx::SlideInfo>,
+    /// The representation `markdown` is (an id of the plugin's `Layout.reprs`); `None` for a
+    /// document with a single one. Set when the view lands.
+    pub(super) repr: Option<String>,
 }
 
-/// Pixels per EMU: slide pictures are SVGs at 96 dpi (1 px = 9525 EMU).
-const EMU_PER_PX: f64 = 9525.0;
-
-/// The pixel size of a slide drawn from `scene`; `None` for a size that is not a positive, finite
-/// number of pixels (such a slide has nothing to size a box by and is drawn as its alt text).
-pub(super) fn slide_px(
-    scene: &crate::preview::office::slide_draw::SlideScene,
-) -> Option<(u32, u32)> {
-    let side = |emu: f64| {
-        let px = (emu / EMU_PER_PX).round();
-        (px.is_finite() && px >= 1.0).then(|| px.min(u32::MAX as f64) as u32)
-    };
-    Some((side(scene.width)?, side(scene.height)?))
+/// Pixel size of an in-memory picture without decoding it: raster formats first, then SVG (the same
+/// order as `md_image_dims` for a file).
+fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
+    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
+    match raster {
+        Some(d) => (Some(d), true),
+        None => (crate::preview::svg::intrinsic_size_bytes(bytes), false),
+    }
 }
 
 impl LoadedDocument {
     /// Builds the App-side form on the worker thread (sizes are read here, so the UI thread never
     /// parses an image header).
-    pub(super) fn from_document(doc: crate::preview::office::docx::Document) -> Self {
-        let mut media: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
-        let mut pictures: HashMap<String, DocPicture> = HashMap::new();
+    pub(super) fn from_parts(markdown: String, truncated: bool, resources: Resources) -> Self {
         let render_truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        for im in doc.images {
-            let (dims, raster) = picture_dims(&im.bytes);
-            let bytes = Arc::new(im.bytes);
-            media.insert(im.key.clone(), bytes.clone());
-            pictures.insert(
-                im.key,
-                DocPicture {
-                    source: PictureSource::Bytes(bytes),
-                    dims,
-                    raster,
-                },
-            );
-        }
-        // The picture view needs one scene and one key per slide; anything else is a reader that
-        // did not (fully) fill them, and the deck then has its text view only.
-        let consistent = !doc.slides.is_empty()
-            && doc.slide_scenes.len() == doc.slides.len()
-            && doc.slide_keys.len() == doc.slides.len()
-            && !doc.picture_markdown.is_empty();
-        let picture_markdown = if consistent {
-            let media = Arc::new(media);
-            for (key, scene) in doc.slide_keys.into_iter().zip(doc.slide_scenes) {
-                let dims = slide_px(&scene);
-                pictures.insert(
-                    key,
+        let mut pictures: HashMap<String, DocPicture> = HashMap::new();
+        for (key, resource) in resources.iter() {
+            let picture = match resource {
+                Resource::Bytes(bytes) => {
+                    let (dims, raster) = picture_dims(bytes);
                     DocPicture {
-                        source: PictureSource::Slide {
-                            scene: Arc::new(scene),
-                            media: media.clone(),
-                            render_truncated: render_truncated.clone(),
-                            raster_cap: Arc::new(SlideRasterCap::default()),
-                        },
+                        source: PictureSource::Bytes(bytes.clone()),
                         dims,
-                        raster: false,
+                        raster,
+                    }
+                }
+                Resource::Lazy(lazy) => DocPicture {
+                    dims: lazy.natural_size(),
+                    source: PictureSource::Lazy {
+                        lazy: lazy.clone(),
+                        render_truncated: render_truncated.clone(),
+                        raster_cap: Arc::new(SlideRasterCap::default()),
                     },
-                );
-            }
-            doc.picture_markdown
-        } else {
-            String::new()
-        };
+                    raster: false,
+                },
+            };
+            pictures.insert(key.clone(), picture);
+        }
         LoadedDocument {
-            markdown: doc.markdown,
-            picture_markdown,
-            truncated: doc.truncated,
+            markdown,
+            truncated,
             render_truncated,
             pictures,
-            slides: doc.slides,
+            repr: None,
         }
     }
 }
 
+/// Test-only: the pixel size of a slide drawn from `scene`.
+#[cfg(test)]
+pub(super) use konoma_office::slide_px;
+
+/// Test-only: a slide's picture source over a blank scene, with `cap` as its raster cap.
+#[cfg(test)]
+pub(super) fn stub_slide_source(cap: Arc<SlideRasterCap>) -> PictureSource {
+    lazy_slide_source(Default::default(), cap)
+}
+
+/// Test-only: a slide's picture source drawn from `scene` (nothing in its media), with `cap` as
+/// its raster cap.
+#[cfg(test)]
+pub(super) fn lazy_slide_source(
+    scene: crate::preview::office::slide_draw::SlideScene,
+    cap: Arc<SlideRasterCap>,
+) -> PictureSource {
+    PictureSource::Lazy {
+        lazy: konoma_office::slide_resource(scene, HashMap::new()),
+        render_truncated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        raster_cap: cap,
+    }
+}
+
 /// Whether `path` is a presentation by its extension (PowerPoint or OpenDocument; the old binary
-/// `.ppt` included, which is told apart as unreadable). Decides which reader the worker calls and
-/// which words an error screen uses.
+/// `.ppt` included, which is told apart as unreadable). Decides which plugin a file under the old
+/// `builtin = "document"` rule goes to.
 pub(crate) fn is_presentation_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -238,46 +244,6 @@ pub(super) fn slide_turn_target(heads: &[usize], top: usize, dir: i32) -> Option
     heads.iter().rposition(|h| *h < top)
 }
 
-/// Pixel size of an in-memory picture without decoding it: raster formats first, then SVG (the same
-/// order as `md_image_dims` for a file).
-fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
-    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()
-        .and_then(|r| r.into_dimensions().ok());
-    match raster {
-        Some(d) => (Some(d), true),
-        None => (crate::preview::svg::intrinsic_size_bytes(bytes), false),
-    }
-}
-
-/// An old binary Office file (`.doc`, OLE/CFB) opened as a `.docx` is not a damaged zip, but when
-/// its compound-file structure cannot be read the zip reader reports it as `Corrupt` (a valid one
-/// is already `Unsupported`), which says "damaged". Looks at the first 8 bytes (the CFB signature)
-/// and reports `Unsupported` ("not a Word format konoma reads, an old .doc for one") instead.
-/// Every other error is returned as it came.
-pub(super) fn legacy_binary_reason(
-    path: &Path,
-    err: crate::preview::office::OfficeError,
-) -> crate::preview::office::OfficeError {
-    use crate::preview::office::OfficeError;
-    use std::io::Read as _;
-    const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-    if !matches!(err, OfficeError::Corrupt(_)) {
-        return err;
-    }
-    let mut head = [0u8; 8];
-    let is_cfb = std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut head))
-        .is_ok()
-        && head == CFB_MAGIC;
-    if is_cfb {
-        OfficeError::Unsupported
-    } else {
-        err
-    }
-}
-
 impl App {
     /// Replaces the open Word document. **The one place a document is dropped**: its pictures can
     /// total ~100 MiB, so the old one is freed off the UI thread (`discard_in_background`).
@@ -287,9 +253,13 @@ impl App {
         }
     }
 
-    /// Whether the preview is a Word document (loaded or not).
+    /// Whether the preview is a Word document or a presentation (loaded or not): the file the
+    /// `document` or `presentation` plugin shows.
     pub fn is_document(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Document(_)))
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_office_document)
     }
 
     /// Whether the converted document is here and can be drawn.
@@ -305,18 +275,24 @@ impl App {
         self.is_document() && !self.document_ready()
     }
 
-    /// True while a Word document's worker has not delivered yet (the "loading" screen). A *re*load
+    /// True while the plugin has not delivered the document yet (the "loading" screen). A *re*load
     /// keeps the previous text on screen instead.
     pub fn is_document_loading(&self) -> bool {
         self.is_document()
             && self.document.is_none()
-            && self.document_error.is_none()
-            && self.media_loading
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| matches!(p.phase, super::plugin_host::PluginPhase::Loading))
     }
 
     /// Why the document could not be shown (`None` while loading or on success).
-    pub fn document_error(&self) -> Option<&crate::preview::office::OfficeError> {
-        self.document_error.as_ref()
+    pub fn document_error(&self) -> Option<&konoma_plugin::Failure> {
+        if self.is_document() {
+            self.plugin_failure()
+        } else {
+            None
+        }
     }
 
     /// Whether the conversion stopped at a budget, or drawing a slide had to leave something out
@@ -335,21 +311,12 @@ impl App {
         if !self.is_document() {
             return None;
         }
-        let d = self.document.as_ref()?;
-        Some(if self.deck_picture_view() {
-            d.picture_markdown.as_str()
-        } else {
-            d.markdown.as_str()
-        })
+        Some(self.document.as_ref()?.markdown.as_str())
     }
 
-    /// The converted text of the document (what the raw `R` view of a Word document shows),
-    /// whatever view is on.
+    /// The converted text of the document (what the raw `R` view of a Word document shows).
     fn document_text_source(&self) -> Option<&str> {
-        if !self.is_document() {
-            return None;
-        }
-        self.document.as_ref().map(|d| d.markdown.as_str())
+        self.document_markdown()
     }
 
     /// Test-only: the converted Markdown.
@@ -358,11 +325,37 @@ impl App {
         self.document_markdown()
     }
 
-    /// Test-only: forgets why the document failed (the state of a worker whose job produced
-    /// neither a document nor a reason).
+    /// Test-only: the state of a plugin whose job produced neither a document nor a reason: the
+    /// show failed with the plugin's damaged-file reason.
     #[cfg(test)]
     pub fn forget_document_error_for_test(&mut self) {
-        self.document_error = None;
+        if let Some(show) = self.plugin.as_mut() {
+            show.phase = super::plugin_host::PluginPhase::Failed(konoma_office::doc_failure(
+                &crate::preview::office::OfficeError::Corrupt("x".into()),
+                konoma_office::DocKind::Word,
+            ));
+        }
+    }
+
+    /// Test-only: the plugin's layout says the document has `count` pages (a document whose
+    /// headings are not exactly its slides).
+    #[cfg(test)]
+    pub fn set_anchored_count_for_test(&mut self, count: usize) {
+        if let Some(show) = self.plugin.as_mut() {
+            show.layout.pages = Some(PageLayout::Anchored {
+                heading_level: konoma_office::SLIDE_HEADING_LEVEL,
+                count,
+            });
+        }
+    }
+
+    /// Test-only: makes the open presentation stop being one in the host's eyes (its plugin
+    /// reports no anchored pages), the state of a document whose headings are not its slides.
+    #[cfg(test)]
+    pub fn forget_anchored_pages_for_test(&mut self) {
+        if let Some(show) = self.plugin.as_mut() {
+            show.layout.pages = None;
+        }
     }
 
     /// Test-only: the temp file the raw (`R`) view reads, while it exists.
@@ -515,10 +508,10 @@ impl App {
     /// Test-only: a weak handle on the bytes of picture `url` (alive while the document, or a
     /// decode of it, still holds them).
     #[cfg(test)]
-    pub fn document_picture_weak_for_test(&self, url: &str) -> Option<std::sync::Weak<Vec<u8>>> {
+    pub fn document_picture_weak_for_test(&self, url: &str) -> Option<std::sync::Weak<[u8]>> {
         match self.document_picture_source(url)? {
             PictureSource::Bytes(b) => Some(Arc::downgrade(&b)),
-            PictureSource::Slide { .. } => None,
+            PictureSource::Lazy { .. } => None,
         }
     }
 
@@ -547,29 +540,44 @@ impl App {
     }
 
     /// The cap on the raster size of slide picture `url` found when it was last drawn (see
-    /// `PictureSource::Slide::raster_cap`); `None` for anything else or before the first draw.
+    /// `PictureSource::Lazy::raster_cap`); `None` for anything else or before the first draw.
     pub(super) fn slide_raster_cap(&self, url: &str) -> Option<u32> {
         match &self.document.as_ref()?.pictures.get(url)?.source {
-            PictureSource::Slide { raster_cap, .. } => raster_cap.get(std::time::Instant::now()),
+            PictureSource::Lazy { raster_cap, .. } => raster_cap.get(std::time::Instant::now()),
             PictureSource::Bytes(_) => None,
         }
     }
 
-    /// Whether picture `url` is the drawing of a slide (sized and drawn by the slide rules).
+    /// Whether picture `url` is made on demand (the drawing of a slide: sized and drawn by the
+    /// slide rules).
     pub(super) fn document_picture_is_slide(&self, url: &str) -> bool {
         self.document
             .as_ref()
             .and_then(|d| d.pictures.get(url))
-            .is_some_and(|p| matches!(p.source, PictureSource::Slide { .. }))
+            .is_some_and(|p| matches!(p.source, PictureSource::Lazy { .. }))
     }
 
-    /// What arrived from the worker for a Word document. Dropped (off the UI thread) if the preview
-    /// has since moved to something else.
-    pub(super) fn land_document(&mut self, doc: Box<LoadedDocument>) {
+    /// What arrived from the plugin for a Word document or a presentation. Dropped (off the UI
+    /// thread) if the preview has since moved to something else. `asked` is the representation
+    /// the request named (`None` = the plugin's default for the terminal).
+    pub(super) fn land_document(&mut self, mut doc: Box<LoadedDocument>, asked: Option<&str>) {
         if !self.is_document() {
             super::table_actions::discard_in_background(doc);
             return;
         }
+        let layout = self.plugin.as_ref().map(|p| p.layout.clone());
+        doc.repr = layout.as_ref().and_then(|l| self.effective_repr(l, asked));
+        // A switch of representation (`R`) keeps the page (the slide) the view was on: read it
+        // from the layout of the view being left, before anything of it is reset.
+        let switching = self
+            .document
+            .as_ref()
+            .is_some_and(|old| old.repr != doc.repr);
+        let keep = switching.then(|| {
+            self.anchored_position()
+                .map(|(n, _)| n - 1)
+                .or(self.tab.deck_pending_slide)
+        });
         // Pictures are filed under a hash of their bytes, so a reload cannot leave a *wrong* entry
         // behind, only unreferenced ones: reclaim those.
         self.md_image_cache.retain(|k, _| {
@@ -577,8 +585,16 @@ impl App {
             !crate::preview::markdown::is_office_image_url(&s) || doc.pictures.contains_key(&*s)
         });
         self.set_document(Some(doc));
-        self.document_error = None;
         self.md_cache = None;
+        if let Some(slide) = keep {
+            // The new view starts at the top and is laid out by the next draw (its width is the
+            // draw's); that draw puts the page's heading at the top (`apply_pending_slide`).
+            self.tab.preview_scroll = 0;
+            self.tab.preview_hscroll = 0;
+            self.tab.focused_item = None;
+            self.md_items.clear();
+            self.tab.deck_pending_slide = slide;
+        }
         // A search in force ran on the old text; its hits are re-scanned lazily by the next `n`.
         if self.tab.md_raw {
             // Raw view: the temp file holds the old text. Replace it and reopen the reader.
@@ -589,15 +605,123 @@ impl App {
         }
     }
 
-    // --- Slides of a presentation (`J`/`K`, the chip, the hints) -------------------------------
+    /// The plugin could not show the document (the reason is the show's failure): nothing of an
+    /// earlier document stays on screen.
+    pub(super) fn document_failed(&mut self) {
+        if !self.is_document() {
+            return;
+        }
+        self.set_document(None);
+        self.md_cache = None;
+        // A raw (`R`) view of the previous text must not outlive the document it came from: drop
+        // the temp file and the reader so the reason is what is shown.
+        self.clear_command_out();
+        self.tab.md_raw = false;
+        self.preview_win = None;
+        self.win_cache = None;
+        self.preview_total_lines = None;
+        self.preview_visual_anchor = None;
+    }
 
-    /// Logical lines of the slides' headings in the decorated view, or `None` when they are not
-    /// exactly the open presentation's slides (then nothing is offered).
-    fn slide_head_lines(&self, c: &MdCache) -> Option<Vec<usize>> {
-        let d = self.document.as_ref().filter(|_| self.is_document())?;
-        if d.slides.is_empty() {
+    /// The representation a view answered: the one asked for, else the layout's default for this
+    /// terminal.
+    fn effective_repr(&self, layout: &Layout, asked: Option<&str>) -> Option<String> {
+        asked.map(str::to_string).or_else(|| {
+            if self.terminal_draws_pixels() {
+                layout.default_repr.clone()
+            } else {
+                layout
+                    .default_repr_without_pixels
+                    .clone()
+                    .or_else(|| layout.default_repr.clone())
+            }
+        })
+    }
+
+    /// Test-only: a Word document or presentation put straight into the preview: the preview
+    /// kind is set to the plugin that shows `path`'s extension, and the converted `doc` goes
+    /// through the same road as a plugin's answer (a session over it, the host's container built
+    /// from its view).
+    #[cfg(test)]
+    pub fn show_document_for_test(
+        &mut self,
+        path: PathBuf,
+        doc: crate::preview::office::docx::Document,
+    ) {
+        self.tab.preview_kind = Some(PreviewKind::office_document(path.clone()));
+        self.tab.preview_path = Some(path);
+        self.land_document_for_test(doc);
+    }
+
+    /// Test-only: a converted presentation put straight into the open document: the same road a
+    /// plugin's answer takes (`PluginJob::View` over a session made from `doc`).
+    #[cfg(test)]
+    pub fn land_document_for_test(&mut self, doc: crate::preview::office::docx::Document) {
+        use super::plugin_host::{PluginJob, PluginPhase, PluginShow};
+        let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() else {
+            return;
+        };
+        let kind = if id == konoma_office::PRESENTATION_ID {
+            konoma_office::DocKind::Deck
+        } else {
+            konoma_office::DocKind::Word
+        };
+        let session = konoma_office::OfficeSession::from_converted(
+            kind,
+            path.clone(),
+            konoma_office::Converted::from_document(doc),
+        );
+        if !self
+            .plugin
+            .as_ref()
+            .is_some_and(|p| p.id == id && p.path == path)
+        {
+            self.drop_plugin();
+            self.plugin = Some(PluginShow {
+                id: id.clone(),
+                path: path.clone(),
+                phase: PluginPhase::Loading,
+                session: None,
+                layout: Layout::single(),
+                view: None,
+                req: konoma_plugin::ViewReq::default(),
+            });
+        }
+        let mut work = self.plugin_work(
+            id,
+            path,
+            PluginJob::View {
+                session: Box::new(session),
+            },
+            self.plugin_view_req(),
+        );
+        work.gen = self.media_gen;
+        let result = work.run_on_the_spot();
+        self.install_plugin_result(result);
+    }
+
+    // --- The pages of a presentation (`J`/`K`, the chip, the hints) ----------------------------
+
+    /// The anchored pages of the open document: `(heading level, page count)` when its plugin
+    /// reports one long document whose pages start at headings (the slides of a presentation),
+    /// and the document is on screen.
+    fn anchored_pages(&self) -> Option<(u8, usize)> {
+        if !self.document_ready() {
             return None;
         }
+        match self.plugin.as_ref()?.layout.pages {
+            Some(PageLayout::Anchored {
+                heading_level,
+                count,
+            }) if count > 0 => Some((heading_level, count)),
+            _ => None,
+        }
+    }
+
+    /// Logical lines of the pages' headings in the decorated view, or `None` when they are not
+    /// exactly the open document's pages (then nothing is offered).
+    fn anchored_head_lines(&self, c: &MdCache) -> Option<Vec<usize>> {
+        let (level, count) = self.anchored_pages()?;
         let heads: Vec<usize> = c
             .anchors
             .iter()
@@ -606,25 +730,22 @@ impl App {
                     crate::preview::markdown::heading_level_hint(
                         l,
                         crate::preview::markdown::row_after_heading(&c.lines, *line),
-                    ) == 2
+                    ) == level
                 })
             })
             .map(|(_, line)| *line)
             .collect();
-        (heads.len() == d.slides.len()).then_some(heads)
+        (heads.len() == count).then_some(heads)
     }
 
-    /// The slides' headings as the view shows them (display rows), with the view's top:
-    /// `(heads, top)`. `None` when this is not a presentation on screen, or its headings are not
-    /// exactly its slides.
-    fn slide_view(&self) -> Option<(Vec<usize>, usize)> {
-        let d = self.document.as_ref().filter(|_| self.is_document())?;
-        if d.slides.is_empty() {
-            return None;
-        }
+    /// The pages' headings as the view shows them (display rows), with the view's top:
+    /// `(heads, top)`. `None` when this is not a paged document on screen, or its headings are not
+    /// exactly its pages.
+    fn anchored_view(&self) -> Option<(Vec<usize>, usize)> {
+        self.anchored_pages()?;
         let c = self.md_cache.as_ref()?;
         let heads: Vec<usize> = self
-            .slide_head_lines(c)?
+            .anchored_head_lines(c)?
             .into_iter()
             .map(|line| self.md_visual_span(line).0)
             .collect();
@@ -632,8 +753,8 @@ impl App {
     }
 
     /// The furthest the decorated view of a document may scroll: `total_rows - viewport` as for any
-    /// text, but for a presentation at least the last slide's heading row, so every slide (the
-    /// last ones too) can be put at the top and `J`/`K` stop on each. Below the last slide is then
+    /// text, but for a paged document at least the last page's heading row, so every page (the
+    /// last ones too) can be put at the top and `J`/`K` stop on each. Below the last page is then
     /// blank, as below the last page of a PDF. The one limit `G`, `j`, `Space`, the outline, the
     /// search and a resize all end up clamped to (the draw path applies it).
     pub(crate) fn slide_scroll_limit(&self, total_rows: usize, viewport: usize) -> usize {
@@ -641,46 +762,57 @@ impl App {
         let last_head = self
             .md_cache
             .as_ref()
-            .and_then(|c| self.slide_head_lines(c))
+            .and_then(|c| self.anchored_head_lines(c))
             .and_then(|h| h.last().copied())
             .map(|line| self.md_visual_span(line).0);
         last_head.map_or(base, |h| base.max(h))
     }
 
-    /// `(n, total)`: the slide at the top of the view (1-based; hidden slides count) of an open
-    /// presentation. The chip in the status line.
-    pub fn slide_position(&self) -> Option<(usize, usize)> {
-        let (heads, top) = self.slide_view()?;
+    /// `(n, total)`: the page at the top of the view (1-based; hidden slides count) of an open
+    /// paged document. The slide chip in the status line.
+    pub fn anchored_position(&self) -> Option<(usize, usize)> {
+        let (heads, top) = self.anchored_view()?;
         let cur = slide_at(&heads, top)?;
         Some((cur + 1, heads.len()))
     }
 
-    /// Whether `J`/`K` can move between slides now: a presentation of 2+ slides whose text is on
-    /// screen. The one predicate the footer, the `?` help and `slide_turn` share
+    /// [`App::anchored_position`] under its old name (the slides of a presentation).
+    #[cfg(test)]
+    pub fn slide_position(&self) -> Option<(usize, usize)> {
+        self.anchored_position()
+    }
+
+    /// Whether `J`/`K` can turn between the pages of the document now: 2+ pages whose text is on
+    /// screen. The one predicate the footer, the `?` help and `anchored_turn` share
     /// ([[hint-shown-iff-key-acts]]).
-    pub fn slide_can_turn(&self) -> bool {
+    pub fn anchored_can_turn(&self) -> bool {
         if self.tab.deck_pending_slide.is_some() {
-            // The view is waiting to be laid out again: the slide to keep is the position, and
-            // the document says how many slides there are.
-            return self.is_deck() && self.document.as_ref().is_some_and(|d| d.slides.len() >= 2);
+            // The view is waiting to be laid out again: the page to keep is the position, and
+            // the layout says how many pages there are.
+            return self.anchored_pages().is_some_and(|(_, count)| count >= 2);
         }
-        self.slide_view()
+        self.anchored_view()
             .is_some_and(|(heads, ..)| heads.len() >= 2)
     }
 
-    /// `J`/`K` on a presentation: scrolls the view to the next / previous slide's heading.
-    pub(super) fn slide_turn(&mut self, dir: i32) {
-        if !self.slide_can_turn() {
+    /// [`App::anchored_can_turn`] under its old name (the slides of a presentation).
+    #[cfg(test)]
+    pub fn slide_can_turn(&self) -> bool {
+        self.anchored_can_turn()
+    }
+
+    /// `J`/`K` on a paged document: scrolls the view to the next / previous page's heading.
+    pub(super) fn anchored_turn(&mut self, dir: i32) {
+        if !self.anchored_can_turn() {
             return;
         }
         // Keys of one batch are all handled before the next draw: while the view waits to be laid
-        // out again (`R`, a resize) the slide to keep is the position, so a `J`/`K` that arrives
-        // first moves that slide instead of being lost.
+        // out again (`R`, a resize) the page to keep is the position, so a `J`/`K` that arrives
+        // first moves that page instead of being lost.
         if let Some(pending) = self.tab.deck_pending_slide {
             let last = self
-                .document
-                .as_ref()
-                .map_or(0, |d| d.slides.len())
+                .anchored_pages()
+                .map_or(0, |(_, count)| count)
                 .saturating_sub(1);
             self.tab.deck_pending_slide = Some(if dir >= 0 {
                 (pending + 1).min(last)
@@ -689,7 +821,7 @@ impl App {
             });
             return;
         }
-        let Some((heads, top)) = self.slide_view() else {
+        let Some((heads, top)) = self.anchored_view() else {
             return;
         };
         let Some(i) = slide_turn_target(&heads, top, dir) else {
@@ -698,25 +830,29 @@ impl App {
         self.tab.preview_scroll = heads[i].min(u16::MAX as usize) as u16;
     }
 
-    // --- The two views of a presentation (slide pictures / text) --------------------------------
+    // --- The representations of a document (slide pictures / text) -----------------------------
 
-    /// Whether the open document is a presentation (loaded).
+    /// Whether the open document is a presentation (loaded): its plugin reports anchored pages.
     pub fn is_deck(&self) -> bool {
-        self.is_document() && self.document.as_ref().is_some_and(|d| !d.slides.is_empty())
+        self.anchored_pages().is_some()
     }
 
-    /// Whether the open presentation has a picture view at all (its reader drew the slides).
+    /// Whether the open presentation has a picture representation at all (its reader drew the
+    /// slides).
     fn deck_has_pictures(&self) -> bool {
         self.is_deck()
-            && self
-                .document
-                .as_ref()
-                .is_some_and(|d| !d.picture_markdown.is_empty())
+            && self.plugin.as_ref().is_some_and(|p| {
+                p.layout
+                    .reprs
+                    .iter()
+                    .any(|r| r.id == konoma_office::REPR_PICTURE)
+            })
     }
 
     /// Whether this terminal draws real pixels (kitty, iTerm2 or sixel) rather than half-block
-    /// cells: the one question the default view of a presentation depends on. A picture of a
-    /// slide is unreadable in half blocks, and without an image backend nothing is drawn at all.
+    /// cells: the one question the default representation of a presentation depends on. A picture
+    /// of a slide is unreadable in half blocks, and without an image backend nothing is drawn at
+    /// all.
     pub(super) fn terminal_draws_pixels(&self) -> bool {
         self.picker.as_ref().is_some_and(|p| {
             !matches!(
@@ -727,18 +863,19 @@ impl App {
     }
 
     /// Whether the presentation on screen is shown as the pictures of its slides: it has them, and
-    /// the tab's choice (`R`) says so, else the terminal's default (pictures where it draws real
-    /// pixels). The one predicate the renderer, the keys and the hints share.
+    /// the representation that landed is the picture one (the tab's choice `R`, else the plugin's
+    /// default for the terminal). The one predicate the renderer, the keys and the hints share.
     pub fn deck_picture_view(&self) -> bool {
         self.deck_has_pictures()
             && self
-                .tab
-                .deck_text_view
-                .map_or(self.terminal_draws_pixels(), |text| !text)
+                .document
+                .as_ref()
+                .is_some_and(|d| d.repr.as_deref() == Some(konoma_office::REPR_PICTURE))
     }
 
-    /// What `R` does on a presentation, as the footer's label: `None` when it does nothing (no
-    /// picture view exists). The `?` help's row and the handler use the same predicate.
+    /// What `R` does on a presentation, as the footer's label: `None` when it does nothing (the
+    /// plugin offers one representation only). The `?` help's row and the handler use the same
+    /// predicate.
     pub fn deck_view_hint(&self) -> Option<crate::i18n::Msg> {
         use crate::i18n::Msg;
         self.deck_has_pictures().then(|| {
@@ -759,38 +896,33 @@ impl App {
         })
     }
 
-    /// `R` on a presentation: switches between the slide pictures and the text, keeping the
-    /// current slide (the one whose heading is at or above the top of the view). A no-op when the
-    /// deck has no picture view.
+    /// `R` on a presentation: asks the plugin for the next representation (slide pictures / text),
+    /// keeping the current slide (the one whose heading is at or above the top of the view; it is
+    /// read when the new view lands, `land_document`). A no-op when the plugin offers one.
     pub(super) fn toggle_deck_view(&mut self) {
         if !self.deck_has_pictures() {
             return;
         }
-        // Right after another `R` (or a resize) in the same batch of keys there is no layout to
-        // read the slide from: the one that was asked to be kept is still the current one.
-        let slide = self
-            .slide_position()
-            .map(|(n, _)| n - 1)
-            .or(self.tab.deck_pending_slide);
-        self.tab.deck_text_view = Some(self.deck_picture_view());
-        self.tab.preview_scroll = 0;
-        self.tab.preview_hscroll = 0;
-        self.tab.focused_item = None;
-        self.md_items.clear();
-        self.md_cache = None;
-        // The new view is laid out by the next draw (its width is the draw's); that draw puts the
-        // slide's heading at the top (`apply_pending_slide`).
-        self.tab.deck_pending_slide = slide;
+        let next = if self.deck_picture_view() {
+            konoma_office::REPR_TEXT
+        } else {
+            konoma_office::REPR_PICTURE
+        };
+        let before = self.tab.repr.replace(next.to_string());
+        if !self.plugin_view_now(self.plugin_view_req()) {
+            // The session is busy (a read is running): the key is ignored, the choice unchanged.
+            self.tab.repr = before;
+        }
     }
 
-    /// Scrolls to the heading of the slide `R` asked to keep, once the new view's cache exists
+    /// Scrolls to the page `R` or a resize asked to keep, once the new view's cache exists
     /// (its rows are only known then). Called by the draw path right after the layout.
     pub(crate) fn apply_pending_slide(&mut self) {
         let Some(slide) = self.tab.deck_pending_slide else {
             return;
         };
         // No layout to read the headings from yet: keep the wish for the draw that has one.
-        let Some((heads, _)) = self.slide_view() else {
+        let Some((heads, _)) = self.anchored_view() else {
             return;
         };
         self.tab.deck_pending_slide = None;
@@ -799,9 +931,9 @@ impl App {
         }
     }
 
-    /// Before a draw that lays the view out again at another size (a resize): remembers the slide
+    /// Before a draw that lays the view out again at another size (a resize): remembers the page
     /// at the top, so `apply_pending_slide` puts it back at the top of the new layout. The scroll
-    /// is a row number of the old layout and means another slide in the new one. `width` and
+    /// is a row number of the old layout and means another page in the new one. `width` and
     /// `slide_rows` are what the coming layout will use.
     pub(crate) fn keep_slide_across_relayout(&mut self, width: u16) {
         if self.tab.deck_pending_slide.is_some() || !self.deck_picture_view() {
@@ -813,13 +945,16 @@ impl App {
         if c.width == width && c.slide_rows == self.slide_fit_rows() {
             return;
         }
-        self.tab.deck_pending_slide = self.slide_position().map(|(n, _)| n - 1);
+        self.tab.deck_pending_slide = self.anchored_position().map(|(n, _)| n - 1);
     }
 
-    /// Test-only: the tab's own choice of view (`Some(true)` = text), `None` = the default.
+    /// Test-only: the tab's own choice of representation (`Some("text")`), `None` = the default.
     #[cfg(test)]
     pub fn deck_view_choice_for_test(&self) -> Option<bool> {
-        self.tab.deck_text_view
+        self.tab
+            .repr
+            .as_deref()
+            .map(|r| r == konoma_office::REPR_TEXT)
     }
 
     /// Test-only: the URL of slide `n`'s (1-based) picture, if the open deck has pictures.
@@ -829,14 +964,8 @@ impl App {
         let d = self.document.as_ref()?;
         d.pictures
             .iter()
-            .find(|(k, p)| k.ends_with(&suffix) && matches!(p.source, PictureSource::Slide { .. }))
+            .find(|(k, p)| k.ends_with(&suffix) && matches!(p.source, PictureSource::Lazy { .. }))
             .map(|(k, _)| k.clone())
-    }
-
-    /// Test-only: a converted presentation put straight into the open document.
-    #[cfg(test)]
-    pub fn land_document_for_test(&mut self, doc: crate::preview::office::docx::Document) {
-        self.land_document(Box::new(LoadedDocument::from_document(doc)));
     }
 
     /// Writes the converted Markdown to a private temp file and records it as the windowed reader's
@@ -977,13 +1106,14 @@ mod slide_state_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
         let path = dir.as_path().join("d.pptx");
-        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
-        app.tab.preview_path = Some(path);
-        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
-            markdown: deck_markdown(n),
-            slides: slides(n),
-            ..Document::default()
-        }))));
+        app.show_document_for_test(
+            path,
+            Document {
+                markdown: deck_markdown(n),
+                slides: slides(n),
+                ..Document::default()
+            },
+        );
         app.tab.preview_viewport = vh;
         Rig { app, _dir: dir }
     }
@@ -996,8 +1126,8 @@ mod slide_state_tests {
         r.app.ensure_md_cache(60);
         assert_eq!(r.app.slide_position(), Some((1, 1)));
         assert!(!r.app.slide_can_turn());
-        r.app.slide_turn(1);
-        r.app.slide_turn(-1);
+        r.app.anchored_turn(1);
+        r.app.anchored_turn(-1);
         assert_eq!(r.app.tab.preview_scroll, 0);
     }
 
@@ -1034,15 +1164,15 @@ mod slide_state_tests {
         r.app.ensure_md_cache(60);
         assert_eq!(r.app.slide_position(), None);
         assert!(!r.app.slide_can_turn());
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.tab.preview_scroll, 0);
-        r.app.slide_turn(-1);
+        r.app.anchored_turn(-1);
         assert_eq!(r.app.tab.preview_scroll, 0);
         // Not a deck at all: nothing happens either.
         let mut w = deck_rig(3, 30);
-        w.app.document.as_mut().unwrap().slides.clear();
+        w.app.forget_anchored_pages_for_test();
         w.app.ensure_md_cache(60);
-        w.app.slide_turn(1);
+        w.app.anchored_turn(1);
         assert_eq!(w.app.tab.preview_scroll, 0);
     }
 
@@ -1054,7 +1184,7 @@ mod slide_state_tests {
         assert_eq!(app.slide_position(), None);
         assert!(!app.slide_can_turn());
         assert_eq!(app.slide_scroll_limit(100, 30), 70);
-        app.slide_turn(1);
+        app.anchored_turn(1);
         // A deck that is held but is not what the tab shows.
         let mut r = deck_rig(3, 30);
         r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
@@ -1172,13 +1302,14 @@ mod slide_state_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
         let path = dir.as_path().join("d.pptx");
-        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
-        app.tab.preview_path = Some(path);
-        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
-            markdown: md,
-            slides: slides(n),
-            ..Document::default()
-        }))));
+        app.show_document_for_test(
+            path,
+            Document {
+                markdown: md,
+                slides: slides(n),
+                ..Document::default()
+            },
+        );
         app.tab.preview_viewport = vh;
         app.ensure_md_cache(w);
         assert!(app.md_cache.is_some());
@@ -1189,7 +1320,7 @@ mod slide_state_tests {
     fn head_rows(r: &Rig) -> Vec<usize> {
         let c = r.app.md_cache.as_ref().unwrap();
         r.app
-            .slide_head_lines(c)
+            .anchored_head_lines(c)
             .unwrap()
             .into_iter()
             .map(|line| r.app.md_visual_span(line).0)
@@ -1203,7 +1334,7 @@ mod slide_state_tests {
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0], 0);
         let c = r.app.md_cache.as_ref().unwrap();
-        let lines = r.app.slide_head_lines(c).unwrap();
+        let lines = r.app.anchored_head_lines(c).unwrap();
         // Wrapped text pushes every later heading further down than its line number.
         for k in 1..4 {
             assert!(
@@ -1214,7 +1345,7 @@ mod slide_state_tests {
             );
             assert!(rows[k] > rows[k - 1]);
         }
-        let (heads, top) = r.app.slide_view().unwrap();
+        let (heads, top) = r.app.anchored_view().unwrap();
         assert_eq!(heads, rows);
         assert_eq!(top, 0);
     }
@@ -1224,25 +1355,25 @@ mod slide_state_tests {
         let mut r = decorated_rig(4, 40, 10);
         let rows = head_rows(&r);
         for (k, row) in rows.iter().enumerate().skip(1) {
-            r.app.slide_turn(1);
+            r.app.anchored_turn(1);
             assert_eq!(r.app.tab.preview_scroll as usize, *row, "J to {k}");
             assert_eq!(r.app.slide_position(), Some((k + 1, 4)));
         }
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.tab.preview_scroll as usize, rows[3], "the last stays");
         for k in (0..3).rev() {
-            r.app.slide_turn(-1);
+            r.app.anchored_turn(-1);
             assert_eq!(r.app.tab.preview_scroll as usize, rows[k], "K to {k}");
         }
-        r.app.slide_turn(-1);
+        r.app.anchored_turn(-1);
         assert_eq!(r.app.tab.preview_scroll, 0);
         // A top that is not on a heading: K goes to the start of the slide it is in.
         r.app.tab.preview_scroll = (rows[2] + 1) as u16;
         assert_eq!(r.app.slide_position(), Some((3, 4)));
-        r.app.slide_turn(-1);
+        r.app.anchored_turn(-1);
         assert_eq!(r.app.tab.preview_scroll as usize, rows[2]);
         r.app.tab.preview_scroll = (rows[2] + 1) as u16;
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.tab.preview_scroll as usize, rows[3]);
     }
 
@@ -1275,7 +1406,7 @@ mod slide_state_tests {
     fn the_decorated_limit_is_the_ordinary_one_for_a_word_document() {
         let mut r = decorated_rig(4, 40, 10);
         // The same text as a Word document (no slides): no widening.
-        r.app.document.as_mut().unwrap().slides.clear();
+        r.app.forget_anchored_pages_for_test();
         let total = r
             .app
             .md_cache
@@ -1296,16 +1427,8 @@ mod slide_state_tests {
         // One slide more than headings, and one fewer.
         for delta in [1isize, -1] {
             let mut r = decorated_rig(4, 40, 10);
-            let d = r.app.document.as_mut().unwrap();
-            if delta > 0 {
-                d.slides.push(SlideInfo {
-                    number: 5,
-                    title: "T5".into(),
-                    hidden: false,
-                });
-            } else {
-                d.slides.pop();
-            }
+            r.app
+                .set_anchored_count_for_test(if delta > 0 { 5 } else { 3 });
             assert_eq!(r.app.slide_position(), None, "delta {delta}");
             assert!(!r.app.slide_can_turn(), "delta {delta}");
             let total = r
@@ -1322,7 +1445,7 @@ mod slide_state_tests {
                 0,
                 "delta {delta}"
             );
-            r.app.slide_turn(1);
+            r.app.anchored_turn(1);
             assert_eq!(r.app.tab.preview_scroll, 0, "delta {delta}");
         }
     }
@@ -1356,11 +1479,11 @@ mod slide_state_tests {
             "before the first heading: no slide yet"
         );
         assert!(r.app.slide_can_turn());
-        let (heads, _) = r.app.slide_view().unwrap();
+        let (heads, _) = r.app.anchored_view().unwrap();
         assert_eq!(heads.len(), 3);
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.slide_position(), Some((1, 3)));
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.slide_position(), Some((2, 3)));
     }
 
@@ -1372,7 +1495,7 @@ mod slide_state_tests {
         r.app.md_cache.as_mut().unwrap().row_prefix = (0..=lines).map(|i| i * 40_000).collect();
         let rows = head_rows(&r);
         assert!(rows[1] > u16::MAX as usize && rows[2] > rows[1]);
-        r.app.slide_turn(1);
+        r.app.anchored_turn(1);
         assert_eq!(r.app.tab.preview_scroll, u16::MAX);
     }
 
@@ -1384,20 +1507,21 @@ mod slide_state_tests {
         cfg.ui.wrap = false;
         let mut app = App::new(dir.as_path().to_path_buf(), cfg).unwrap();
         let path = dir.as_path().join("d.pptx");
-        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
-        app.tab.preview_path = Some(path);
         let md = deck_markdown(3);
-        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
-            markdown: md,
-            slides: slides(3),
-            ..Document::default()
-        }))));
+        app.show_document_for_test(
+            path,
+            Document {
+                markdown: md,
+                slides: slides(3),
+                ..Document::default()
+            },
+        );
         app.ensure_md_cache(60);
         let c = app.md_cache.as_ref().unwrap();
-        let lines = app.slide_head_lines(c).unwrap();
-        let (heads, _) = app.slide_view().unwrap();
+        let lines = app.anchored_head_lines(c).unwrap();
+        let (heads, _) = app.anchored_view().unwrap();
         assert_eq!(heads, lines, "one row per line");
-        app.slide_turn(1);
+        app.anchored_turn(1);
         assert_eq!(app.tab.preview_scroll as usize, lines[1]);
     }
 

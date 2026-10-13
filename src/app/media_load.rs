@@ -122,11 +122,6 @@ impl App {
             PreviewKind::Plugin { id, .. } if kind.is_media_plugin() => {
                 self.start_media_plugin(id, path)
             }
-            // A Word document: converted to Markdown on the Office worker (no graphics backend
-            // needed to read it; the pictures it holds are decoded later, when drawn).
-            PreviewKind::Document(_) => {
-                self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
-            }
             // Full-screen fence display: re-fetch the fence body from the md by ordinal (count-guard,
             // the same shape as code copy). The SVG comes from the plugin that takes the
             // `fence:mermaid` kind (`embed_plugin.rs`).
@@ -293,11 +288,7 @@ impl App {
                 })
             })
             .flatten();
-            let _ = tx.send(MediaResult {
-                gen,
-                wb_worker: false,
-                payload,
-            });
+            let _ = tx.send(MediaResult { gen, payload });
         });
     }
 
@@ -309,95 +300,29 @@ impl App {
             .store(self.media_gen, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The one entry of the Office worker slot for a Word document (`job` is `MediaJob::Document`),
-    /// **one load at a time, newest request only**: each load can take gigabytes, and a load that
-    /// is no longer wanted used to run to its end beside the next ones. A request made while a
-    /// load is running replaces the one waiting behind it (the same shape as the media diff's
-    /// worker, `kick_media_diff`, and as the work groups of the plugins, which spreadsheets use)
-    /// and the running one is told to stop (`Cancel` on the generation). With no channel attached
-    /// (tests), the load runs inline.
-    fn spawn_office_job(&mut self, job: MediaJob) {
-        let Some(_) = self.media_tx else {
-            if let Some(payload) = job.run() {
-                self.apply_payload(payload);
-            }
-            return;
-        };
-        self.bump_media_gen();
-        self.media_loading = true;
-        let req = WbRequest {
-            job,
-            gen: self.media_gen,
-        };
-        if self.wb_worker_busy {
-            self.wb_queued = Some(req);
-        } else {
-            self.dispatch_workbook(req);
-        }
-    }
-
-    /// Test-only: Office loads started on a thread so far (a Word document, and the jobs of the
-    /// Office plugins' work group: a workbook's sheets).
+    /// Test-only: Office loads started on a thread so far (the jobs of the Office plugins' work
+    /// group: a workbook's sheets, a Word document, a presentation).
     #[cfg(test)]
     pub fn workbook_loads_started(&self) -> u32 {
-        self.wb_dispatches + self.plugin_group_dispatches
-    }
-
-    /// Starts `req` on the one Office thread.
-    fn dispatch_workbook(&mut self, req: WbRequest) {
-        let Some(tx) = self.media_tx.clone() else {
-            return;
-        };
-        self.wb_worker_busy = true;
-        #[cfg(test)]
-        {
-            self.wb_dispatches += 1;
-        }
-        let cancel =
-            crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), req.gen);
-        let WbRequest { job, gen } = req;
-        std::thread::spawn(move || {
-            // Always answers (even a panic): the slot is only freed by the answer.
-            let payload =
-                crate::preview::markdown::catch_silent(move || job.run_cancellable(Some(cancel)))
-                    .flatten();
-            let _ = tx.send(MediaResult {
-                gen,
-                wb_worker: true,
-                payload,
-            });
-        });
+        self.plugin_group_dispatches
     }
 
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
-        // The Office thread is free again, current result or not; what was asked for meanwhile
-        // starts now (and is dropped if the preview moved on since). The same for the work group
-        // of a plugin whose job just answered.
+        // The work group of a plugin whose job just answered (the Office plugins share one) is
+        // free again, current result or not; what was asked for meanwhile starts now (and is
+        // dropped if the preview moved on since).
         if let Some(MediaPayload::Plugin(res)) = &result.payload {
             if let Some(group) = res.group.clone() {
                 self.release_plugin_group(&group);
             }
         }
-        if result.wb_worker {
-            self.wb_worker_busy = false;
-            if let Some(next) = self.wb_queued.take() {
-                if next.gen == self.media_gen {
-                    self.dispatch_workbook(next);
-                }
-            }
-        }
         if result.gen != self.media_gen {
-            // Stale: we've already moved on to another file. A document nobody wants is freed off
-            // the UI thread like any other.
-            match result.payload {
-                Some(MediaPayload::Document(doc)) => {
-                    super::table_actions::discard_in_background(doc)
-                }
-                // A plugin's session is dropped off the UI thread too.
-                Some(MediaPayload::Plugin(res)) => super::table_actions::discard_in_background(res),
-                _ => {}
+            // Stale: we've already moved on to another file. A plugin's session (and a document
+            // nobody wants) is dropped off the UI thread like any other.
+            if let Some(MediaPayload::Plugin(res)) = result.payload {
+                super::table_actions::discard_in_background(res);
             }
             return false;
         }
@@ -457,22 +382,6 @@ impl App {
             }
             MediaPayload::PluginLayout(msg) => {
                 self.apply_plugin_layout(*msg);
-            }
-            MediaPayload::Document(doc) => self.land_document(doc),
-            MediaPayload::DocumentFailed(e) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
-                    self.set_document(None);
-                    self.document_error = Some(e);
-                    self.md_cache = None;
-                    // A raw (`R`) view of the previous text must not outlive the document it came
-                    // from: drop the temp file and the reader so the reason is what is shown.
-                    self.clear_command_out();
-                    self.tab.md_raw = false;
-                    self.preview_win = None;
-                    self.win_cache = None;
-                    self.preview_total_lines = None;
-                    self.preview_visual_anchor = None;
-                }
             }
         }
     }
@@ -679,6 +588,11 @@ impl App {
     /// or the plugin does not know how many (the file could not be parsed at all — single-page
     /// fallback, navigation disabled). Used for the footer/status indicator.
     pub fn page_indicator(&self) -> Option<(u32, u32)> {
+        // The pages of a paged document (the slides of a presentation): the one at the top of the
+        // view.
+        if let Some((cur, total)) = self.anchored_position() {
+            return Some((cur as u32, total as u32));
+        }
         let total = self.tab.page_count?;
         Some((self.tab.page.min(total), total))
     }
@@ -689,7 +603,7 @@ impl App {
     /// left (macOS `qlmanage`/`sips`) is first-page-only, so navigating past page 1 depends on
     /// `hayro` alone, never on an installed tool.
     pub fn can_turn_pages(&self) -> bool {
-        matches!(self.tab.page_count, Some(n) if n > 1)
+        matches!(self.tab.page_count, Some(n) if n > 1) || self.anchored_can_turn()
     }
 
     /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
@@ -700,8 +614,9 @@ impl App {
         match self.tab.preview_kind {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
-            // The slides of a presentation (a Word document ignores the keys).
-            Some(PreviewKind::Document(_)) => self.slide_turn(dir),
+            // The pages of a paged document (the slides of a presentation); a Word document has
+            // none and ignores the keys.
+            _ if self.is_document() => self.anchored_turn(dir),
             _ => {
                 if dir >= 0 {
                     self.next_page()

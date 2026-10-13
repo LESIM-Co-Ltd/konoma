@@ -1,4 +1,4 @@
-//! End-to-end tests of the Word document preview (`PreviewKind::Document`): `testdata/office/word.docx`
+//! End-to-end tests of the Word document preview (the `document` plugin): `testdata/office/word.docx`
 //! and `word-ja.docx` opened through the real key path.
 
 use super::*;

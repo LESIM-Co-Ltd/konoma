@@ -30,15 +30,17 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     // PDF also shows the page position (e.g. 2/5), only when the total page count is known. A
     // table's pages (a workbook's sheets) say their position in the table's own frame title
     // (`Sales (2/3)`), so the status bar does not repeat it.
+    // A presentation shows the slide at the top of the view (hidden slides count) in the host's
+    // words for a slide ("slide 3/12").
     if let Some((cur, total)) = app.page_indicator().filter(|_| !app.is_table_preview()) {
-        spans.push(Span::from(format!("  {cur}/{total}")).bold());
-    }
-    // A presentation shows the slide at the top of the view (hidden slides count).
-    if let Some((cur, total)) = app.slide_position() {
-        let t = tr(app.lang, crate::i18n::Msg::SlideChip)
-            .replace("{cur}", &cur.to_string())
-            .replace("{total}", &total.to_string());
-        spans.push(Span::from(format!("  {t}")).bold());
+        if app.is_deck() {
+            let t = tr(app.lang, crate::i18n::Msg::SlideChip)
+                .replace("{cur}", &cur.to_string())
+                .replace("{total}", &total.to_string());
+            spans.push(Span::from(format!("  {t}")).bold());
+        } else {
+            spans.push(Span::from(format!("  {cur}/{total}")).bold());
+        }
     }
     spans
 }
@@ -331,6 +333,31 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
+        // A Word document or presentation that did not load: say why (encrypted / too large /
+        // corrupt / not a format konoma reads), with the file name. Principle #3: never a crash,
+        // never raw bytes. The words are the plugin's.
+        Some(PreviewKind::Plugin { path, .. }) if app.is_document() => {
+            let lang = match app.lang {
+                crate::i18n::Lang::Jp => "ja",
+                crate::i18n::Lang::En => "en",
+            };
+            let failure = app.document_error();
+            let mut body = failure.map_or_else(
+                || "[can not preview]".to_string(),
+                |f| f.message.get(lang).to_string(),
+            );
+            // "Press `e` to open it in an Office app" only while `e` really does that
+            // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
+            // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
+            if failure.is_some_and(|f| f.kind == konoma_plugin::FailureKind::Unsupported)
+                && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+                    == Some(crate::i18n::Msg::HintOpen)
+            {
+                body.push('\n');
+                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
+            }
+            (format!("{body}\n{}", path.display()), false)
+        }
         Some(PreviewKind::Plugin { path, .. }) => (
             format!(
                 "{}\n{}",
@@ -348,28 +375,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
-        // A Word document that did not load: say why (encrypted / too large / corrupt / not a
-        // Word format), with the file name. Principle #3: never a crash, never raw bytes.
-        Some(PreviewKind::Document(path)) => {
-            let mut body = doc_error_text(
-                app.lang,
-                app.document_error(),
-                crate::app::is_presentation_path(path),
-            );
-            // "Press `e` to open it in an Office app" only while `e` really does that
-            // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
-            // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
-            if matches!(
-                app.document_error(),
-                Some(crate::preview::office::OfficeError::Unsupported)
-            ) && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
-                == Some(crate::i18n::Msg::HintOpen)
-            {
-                body.push('\n');
-                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
-            }
-            (format!("{body}\n{}", path.display()), false)
-        }
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
         // GitDiff is already drawn via the dedicated path above (unreachable here). Kept safe for exhaustiveness.
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),
@@ -385,8 +390,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // A reason a workbook/document could not be shown is a sentence the user has to read to the
     // end (it can name the `e` key): it wraps whatever `[ui] wrap` says and the width.
-    let reason_screen = app.is_spreadsheet_preview()
-        || matches!(app.tab.preview_kind, Some(PreviewKind::Document(_)));
+    let reason_screen = app.is_spreadsheet_preview() || app.is_document();
     let wrap = (is_text && app.cfg.ui.wrap) || reason_screen;
 
     // Compute the clamp baselines for vertical/horizontal before moving `body`.
@@ -1532,79 +1536,6 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
     frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), line_area);
 }
 
-/// The limit a Word "too large" message names, read from the limits the readers actually enforce
-/// (so a changed limit can never leave the sentence stating an old number). `{n}` in the catalog
-/// text is replaced by it. (A workbook's own messages are the `spreadsheet` plugin's.)
-fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
-    use crate::i18n::Msg;
-    use crate::preview::office::container::Limits;
-    let l = Limits::default();
-    let bytes = |b: u64| {
-        const MIB: u64 = 1024 * 1024;
-        if b.is_multiple_of(1024 * MIB) {
-            format!("{} GiB", b / (1024 * MIB))
-        } else {
-            format!("{} MiB", b / MIB)
-        }
-    };
-    match msg {
-        Msg::DocErrTooLargeFile | Msg::DocErrTooLargeFileSlides => bytes(l.max_file_bytes),
-        Msg::DocErrTooLargeEntries | Msg::DocErrTooLargeEntriesSlides => {
-            group_thousands(l.max_entries as u64)
-        }
-        Msg::DocErrTooLargeEntry | Msg::DocErrTooLargeEntrySlides => bytes(l.max_part_bytes),
-        Msg::DocErrTooLargePackage | Msg::DocErrTooLargePackageSlides => bytes(l.max_total_bytes),
-        _ => String::new(),
-    }
-}
-
-/// `8000000` -> `8,000,000`.
-fn group_thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// The translated, fully formed reason a Word document could not be shown. `None` (no error was
-/// recorded: the worker's job itself failed) reads as a damaged file.
-fn doc_error_text(
-    lang: crate::i18n::Lang,
-    err: Option<&crate::preview::office::OfficeError>,
-    presentation: bool,
-) -> String {
-    use crate::i18n::Msg;
-    use crate::preview::office::OfficeError;
-    let msg = match err {
-        None | Some(OfficeError::Corrupt(_)) if presentation => Msg::DocErrCorruptSlides,
-        None | Some(OfficeError::Corrupt(_)) => Msg::DocErrCorrupt,
-        Some(OfficeError::Encrypted) if presentation => Msg::DocErrEncryptedSlides,
-        Some(OfficeError::Encrypted) => Msg::DocErrEncrypted,
-        Some(OfficeError::TooLarge { what }) => match (*what, presentation) {
-            ("file", false) => Msg::DocErrTooLargeFile,
-            ("file", true) => Msg::DocErrTooLargeFileSlides,
-            ("entries", false) => Msg::DocErrTooLargeEntries,
-            ("entries", true) => Msg::DocErrTooLargeEntriesSlides,
-            ("entry", false) => Msg::DocErrTooLargeEntry,
-            ("entry", true) => Msg::DocErrTooLargeEntrySlides,
-            ("package", false) => Msg::DocErrTooLargePackage,
-            ("package", true) => Msg::DocErrTooLargePackageSlides,
-            (_, false) => Msg::DocErrTooLargeOther,
-            (_, true) => Msg::DocErrTooLargeOtherSlides,
-        },
-        Some(OfficeError::Unsupported) if presentation => Msg::DocErrUnsupportedSlides,
-        Some(OfficeError::Unsupported) => Msg::DocErrUnsupported,
-        Some(OfficeError::Io(_)) if presentation => Msg::DocErrIoSlides,
-        Some(OfficeError::Io(_)) => Msg::DocErrIo,
-    };
-    tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
-}
-
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = app
@@ -2293,174 +2224,5 @@ mod gitdiff_tests {
             crate::i18n::tr(app.lang, crate::i18n::Msg::DiffViewCycleHelp),
             "3 表現の R 行は source → rendered → preview のはず"
         );
-    }
-}
-
-#[cfg(test)]
-mod group_thousands_tests {
-    use super::group_thousands;
-
-    #[test]
-    fn group_thousands_groups_by_three() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(999), "999");
-        assert_eq!(group_thousands(1_000), "1,000");
-        assert_eq!(group_thousands(8_000_000), "8,000,000");
-        assert_eq!(group_thousands(10_000), "10,000");
-    }
-}
-
-#[cfg(test)]
-mod doc_error_tests {
-    use super::doc_error_text;
-    use crate::i18n::{tr, Lang, Msg};
-    use crate::preview::office::OfficeError;
-
-    fn every_error() -> Vec<Option<OfficeError>> {
-        let mut v = vec![
-            None,
-            Some(OfficeError::Encrypted),
-            Some(OfficeError::Corrupt("x".into())),
-            Some(OfficeError::Unsupported),
-            Some(OfficeError::Io("x".into())),
-        ];
-        for what in ["file", "entries", "entry", "package", "other"] {
-            v.push(Some(OfficeError::TooLarge { what }));
-        }
-        v
-    }
-
-    /// The tag follows the kind of file: a presentation never reads "[document]" (and the other
-    /// way round), whichever way it failed.
-    #[test]
-    fn the_tag_of_every_failure_follows_the_file_kind() {
-        for (lang, doc, slide) in [
-            (Lang::En, "[document]", "[presentation]"),
-            (Lang::Jp, "[文書]", "[プレゼン]"),
-        ] {
-            for e in every_error() {
-                let d = doc_error_text(lang, e.as_ref(), false);
-                let p = doc_error_text(lang, e.as_ref(), true);
-                assert!(d.starts_with(doc), "{e:?}: {d}");
-                assert!(p.starts_with(slide), "{e:?}: {p}");
-                assert!(!p.contains("{n}") && !d.contains("{n}"), "{e:?}");
-            }
-        }
-    }
-
-    /// `(error, presentation text, document text, the limit the text names)` for every failure.
-    fn expected() -> Vec<(Option<OfficeError>, Msg, Msg, String)> {
-        use crate::preview::office::container::Limits;
-        let l = Limits::default();
-        const MIB: u64 = 1024 * 1024;
-        const GIB: u64 = 1024 * MIB;
-        let size = |b: u64| {
-            if b.is_multiple_of(GIB) {
-                format!("{} GiB", b / GIB)
-            } else {
-                format!("{} MiB", b / MIB)
-            }
-        };
-        let thousands = |n: u64| format!("{},{:03}", n / 1000, n % 1000);
-        let none = String::new;
-        vec![
-            (None, Msg::DocErrCorruptSlides, Msg::DocErrCorrupt, none()),
-            (
-                Some(OfficeError::Corrupt("x".into())),
-                Msg::DocErrCorruptSlides,
-                Msg::DocErrCorrupt,
-                none(),
-            ),
-            (
-                Some(OfficeError::Encrypted),
-                Msg::DocErrEncryptedSlides,
-                Msg::DocErrEncrypted,
-                none(),
-            ),
-            (
-                Some(OfficeError::Unsupported),
-                Msg::DocErrUnsupportedSlides,
-                Msg::DocErrUnsupported,
-                none(),
-            ),
-            (
-                Some(OfficeError::Io("x".into())),
-                Msg::DocErrIoSlides,
-                Msg::DocErrIo,
-                none(),
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "file" }),
-                Msg::DocErrTooLargeFileSlides,
-                Msg::DocErrTooLargeFile,
-                size(l.max_file_bytes),
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "entries" }),
-                Msg::DocErrTooLargeEntriesSlides,
-                Msg::DocErrTooLargeEntries,
-                thousands(l.max_entries as u64),
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "entry" }),
-                Msg::DocErrTooLargeEntrySlides,
-                Msg::DocErrTooLargeEntry,
-                size(l.max_part_bytes),
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "package" }),
-                Msg::DocErrTooLargePackageSlides,
-                Msg::DocErrTooLargePackage,
-                size(l.max_total_bytes),
-            ),
-            (
-                Some(OfficeError::TooLarge { what: "other" }),
-                Msg::DocErrTooLargeOtherSlides,
-                Msg::DocErrTooLargeOther,
-                none(),
-            ),
-            (
-                Some(OfficeError::TooLarge {
-                    what: "something new",
-                }),
-                Msg::DocErrTooLargeOtherSlides,
-                Msg::DocErrTooLargeOther,
-                none(),
-            ),
-        ]
-    }
-
-    /// Each failure has its own words, with its own limit filled in, in both languages and for
-    /// both kinds of file; and no two different failures read alike.
-    #[test]
-    fn every_failure_reads_as_its_own_text_with_its_own_limit() {
-        for lang in [Lang::En, Lang::Jp] {
-            let mut seen_p: Vec<(Msg, String)> = Vec::new();
-            let mut seen_d: Vec<(Msg, String)> = Vec::new();
-            for (e, ps, ds, limit) in expected() {
-                let p = doc_error_text(lang, e.as_ref(), true);
-                let d = doc_error_text(lang, e.as_ref(), false);
-                assert_eq!(p, tr(lang, ps).replace("{n}", &limit), "{e:?} slides");
-                assert_eq!(d, tr(lang, ds).replace("{n}", &limit), "{e:?} document");
-                if !limit.is_empty() {
-                    assert!(p.contains(&limit) && d.contains(&limit), "{e:?}: {limit}");
-                }
-                if !seen_p.iter().any(|(m, _)| *m == ps) {
-                    seen_p.push((ps, p));
-                }
-                if !seen_d.iter().any(|(m, _)| *m == ds) {
-                    seen_d.push((ds, d));
-                }
-            }
-            // 9 distinct reasons, 9 distinct texts, either kind.
-            for seen in [&seen_p, &seen_d] {
-                assert_eq!(seen.len(), 9);
-                for (i, (_, a)) in seen.iter().enumerate() {
-                    for (_, b) in &seen[i + 1..] {
-                        assert_ne!(a, b);
-                    }
-                }
-            }
-        }
     }
 }

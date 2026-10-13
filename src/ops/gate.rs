@@ -13,6 +13,7 @@
 use crate::app::{App, MdFocus, Mode};
 use crate::i18n::Msg;
 use crate::keymap::{Action, Context};
+#[cfg(feature = "git")]
 use crate::preview::PreviewKind;
 
 /// The answer of [`gate`].
@@ -57,7 +58,6 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
-            Some(PreviewKind::Document(_)) => app.slide_can_turn(),
             _ => app.can_turn_pages(),
         }),
 

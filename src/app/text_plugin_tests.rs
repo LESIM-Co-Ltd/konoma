@@ -286,6 +286,7 @@ fn a_result_landing_colors_the_window_and_leaves_the_text_search_alone() {
         failure: None,
         req: ViewReq::default(),
         picture: Picture::None,
+        document: None,
         group: None,
     });
     assert!(landed);

@@ -2384,7 +2384,7 @@ fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_
     let cfg = Config::default();
     let is_doc = |name: &str| {
         let p = std::path::PathBuf::from(format!("/nonexistent/{name}"));
-        matches!(cfg.resolve_preview_with(&p, &[]), PreviewKind::Document(_))
+        cfg.resolve_preview_with(&p, &[]).is_office_document()
     };
     for ext in [
         "docx", "docm", "dotx", "dotm", "odt", "ott", "pptx", "pptm", "ppsx", "ppsm", "potx",

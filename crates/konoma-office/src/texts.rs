@@ -5,6 +5,8 @@ use konoma_office_core::container::Limits;
 use konoma_office_core::OfficeError;
 use konoma_plugin::{t, Failure, Tr};
 
+use crate::documents::DocKind;
+
 /// `8000000` -> `8,000,000`.
 fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -90,6 +92,107 @@ pub(crate) fn error_text(err: &OfficeError) -> Tr {
                 ja: "[表計算] 大きすぎて表示できません — 安全のための上限を超えました",
             ),
         },
+    }
+}
+
+/// The explanation of a Word document or a presentation that could not be shown.
+pub(crate) fn doc_error_text(err: &OfficeError, kind: DocKind) -> Tr {
+    let l = Limits::default();
+    let (en_tag, ja_tag) = match kind {
+        DocKind::Word => ("[document]", "[文書]"),
+        DocKind::Deck => ("[presentation]", "[プレゼン]"),
+    };
+    let both = |en: &str, ja: &str| Tr::new(format!("{en_tag} {en}")).ja(format!("{ja_tag} {ja}"));
+    let limited = |en: &str, ja: &str, limit: String| {
+        Tr::new(format!("{en_tag} {}", en.replace("{n}", &limit)))
+            .ja(format!("{ja_tag} {}", ja.replace("{n}", &limit)))
+    };
+    match err {
+        OfficeError::Encrypted => both(
+            "cannot preview — the file is password-protected (encrypted)",
+            "表示不可 — パスワードで保護(暗号化)されています",
+        ),
+        OfficeError::Corrupt(_) => match kind {
+            DocKind::Word => both(
+                "cannot preview — the file is damaged or not a valid Word document",
+                "表示不可 — ファイルが壊れているか、正しい Word 文書ではありません",
+            ),
+            DocKind::Deck => both(
+                "cannot preview — the file is damaged or not a valid presentation",
+                "表示不可 — ファイルが壊れているか、正しいプレゼンテーションではありません",
+            ),
+        },
+        OfficeError::Unsupported => match kind {
+            DocKind::Word => both(
+                "cannot preview — not a Word format konoma reads (an old .doc, for one)",
+                "表示不可 — konoma が読めない形式です(古い .doc など)",
+            ),
+            DocKind::Deck => both(
+                "cannot preview — not a presentation format konoma reads (an old .ppt, for one)",
+                "表示不可 — konoma が読めない形式です(古い .ppt など)",
+            ),
+        },
+        OfficeError::Io(_) => both(
+            "cannot preview — the file could not be read",
+            "表示不可 — ファイルを読み込めませんでした",
+        ),
+        OfficeError::TooLarge { what } => match *what {
+            "file" => limited(
+                "too large to preview — the file is over the {n} limit",
+                "大きすぎて表示できません — ファイルが上限 {n} を超えています",
+                bytes(l.max_file_bytes),
+            ),
+            "entries" => limited(
+                "too large to preview — the package holds more than {n} parts",
+                "大きすぎて表示できません — パッケージ内の部品数が上限 {n} を超えています",
+                group_thousands(l.max_entries as u64),
+            ),
+            "entry" => limited(
+                "too large to preview — one part expands beyond the {n} limit",
+                "大きすぎて表示できません — 1 つの部品の展開サイズが上限 {n} を超えています",
+                bytes(l.max_part_bytes),
+            ),
+            "package" => limited(
+                "too large to preview — the package expands beyond the {n} limit",
+                "大きすぎて表示できません — パッケージの展開サイズが上限 {n} を超えています",
+                bytes(l.max_total_bytes),
+            ),
+            _ => both(
+                "too large to preview — a safety limit was exceeded",
+                "大きすぎて表示できません — 安全のための上限を超えました",
+            ),
+        },
+    }
+}
+
+/// The failure for a Word document or presentation that could not be read (the kind tells the
+/// host what sort of problem it was; `Unsupported` is the only one the host offers `e` for).
+pub(crate) fn doc_failure_of(err: &OfficeError, kind: DocKind) -> Failure {
+    let message = doc_error_text(err, kind);
+    let failure = match err {
+        OfficeError::Encrypted => Failure::encrypted(message),
+        OfficeError::Unsupported => Failure::unsupported(message),
+        OfficeError::TooLarge { .. } => Failure::too_large(message),
+        OfficeError::Corrupt(_) => Failure::corrupt(message),
+        OfficeError::Io(_) => Failure::io(message),
+    };
+    match err {
+        OfficeError::Corrupt(d) | OfficeError::Io(d) => failure.with_detail(d.clone()),
+        other => failure.with_detail(other.to_string()),
+    }
+}
+
+/// The words of a converted presentation's headings in `lang`: the word before a slide's number,
+/// what follows the heading of a hidden slide, and the label of the notes.
+pub(crate) fn slide_labels(lang: &str) -> konoma_office_core::docx::SlideLabels {
+    if lang == "ja" {
+        konoma_office_core::docx::SlideLabels {
+            heading: "スライド".to_string(),
+            hidden_suffix: " (非表示)".to_string(),
+            notes: "ノート".to_string(),
+        }
+    } else {
+        konoma_office_core::docx::SlideLabels::default()
     }
 }
 
@@ -308,5 +411,190 @@ mod tests {
         }
         assert_eq!(hidden_word("en"), "hidden");
         assert_eq!(hidden_word("ja"), "非表示");
+    }
+
+    // --- Word documents and presentations ---------------------------------------------------
+
+    fn every_doc_error() -> Vec<OfficeError> {
+        let mut v = vec![
+            OfficeError::Encrypted,
+            OfficeError::Corrupt("x".into()),
+            OfficeError::Unsupported,
+            OfficeError::Io("x".into()),
+        ];
+        for what in [
+            "file",
+            "entries",
+            "entry",
+            "package",
+            "other",
+            "something new",
+        ] {
+            v.push(OfficeError::TooLarge { what });
+        }
+        v
+    }
+
+    /// The tag follows the kind of file: a presentation never reads "[document]" (and the other
+    /// way round), whichever way it failed.
+    #[test]
+    fn the_tag_of_every_failure_follows_the_file_kind() {
+        for (lang, doc, slide) in [
+            ("en", "[document]", "[presentation]"),
+            ("ja", "[文書]", "[プレゼン]"),
+        ] {
+            for e in every_doc_error() {
+                let d = doc_error_text(&e, DocKind::Word).get(lang).to_string();
+                let p = doc_error_text(&e, DocKind::Deck).get(lang).to_string();
+                assert!(d.starts_with(doc), "{e:?}: {d}");
+                assert!(p.starts_with(slide), "{e:?}: {p}");
+                assert!(!p.contains("{n}") && !d.contains("{n}"), "{e:?}");
+            }
+        }
+    }
+
+    /// `(error, document text, presentation text, the limit the text names)` in English, for every
+    /// failure.
+    fn expected_doc_texts() -> Vec<(OfficeError, String, String, String)> {
+        let l = Limits::default();
+        let big = |what: &'static str| OfficeError::TooLarge { what };
+        let line =
+            |tag: &str, rest: &str, limit: &str| format!("[{tag}] {}", rest.replace("{n}", limit));
+        let both = |rest: &str, limit: &str| {
+            (
+                line("document", rest, limit),
+                line("presentation", rest, limit),
+            )
+        };
+        let mut v = Vec::new();
+        let mut push = |e: OfficeError, d: String, p: String, limit: String| {
+            v.push((e, d, p, limit));
+        };
+        let (d, p) = both(
+            "cannot preview — the file is password-protected (encrypted)",
+            "",
+        );
+        push(OfficeError::Encrypted, d, p, String::new());
+        push(
+            OfficeError::Corrupt("x".into()),
+            "[document] cannot preview — the file is damaged or not a valid Word document".into(),
+            "[presentation] cannot preview — the file is damaged or not a valid presentation"
+                .into(),
+            String::new(),
+        );
+        push(
+            OfficeError::Unsupported,
+            "[document] cannot preview — not a Word format konoma reads (an old .doc, for one)"
+                .into(),
+            "[presentation] cannot preview — not a presentation format konoma reads (an old .ppt, for one)"
+                .into(),
+            String::new(),
+        );
+        let (d, p) = both("cannot preview — the file could not be read", "");
+        push(OfficeError::Io("x".into()), d, p, String::new());
+        for (what, rest, limit) in [
+            (
+                "file",
+                "too large to preview — the file is over the {n} limit",
+                bytes(l.max_file_bytes),
+            ),
+            (
+                "entries",
+                "too large to preview — the package holds more than {n} parts",
+                group_thousands(l.max_entries as u64),
+            ),
+            (
+                "entry",
+                "too large to preview — one part expands beyond the {n} limit",
+                bytes(l.max_part_bytes),
+            ),
+            (
+                "package",
+                "too large to preview — the package expands beyond the {n} limit",
+                bytes(l.max_total_bytes),
+            ),
+            (
+                "other",
+                "too large to preview — a safety limit was exceeded",
+                String::new(),
+            ),
+            (
+                "something new",
+                "too large to preview — a safety limit was exceeded",
+                String::new(),
+            ),
+        ] {
+            let (d, p) = both(rest, &limit);
+            push(big(what), d, p, limit);
+        }
+        v
+    }
+
+    /// Each failure has its own words, with its own limit filled in, in both languages and for
+    /// both kinds of file; and no two different failures read alike.
+    #[test]
+    fn every_failure_reads_as_its_own_text_with_its_own_limit() {
+        let mut seen_d: Vec<String> = Vec::new();
+        let mut seen_p: Vec<String> = Vec::new();
+        for (e, d, p, limit) in expected_doc_texts() {
+            assert_eq!(doc_error_text(&e, DocKind::Word).en(), d, "{e:?} document");
+            assert_eq!(doc_error_text(&e, DocKind::Deck).en(), p, "{e:?} slides");
+            for lang in ["en", "ja"] {
+                let dt = doc_error_text(&e, DocKind::Word).get(lang).to_string();
+                let pt = doc_error_text(&e, DocKind::Deck).get(lang).to_string();
+                if !limit.is_empty() {
+                    assert!(dt.contains(&limit) && pt.contains(&limit), "{e:?}: {limit}");
+                }
+            }
+            if !seen_d.contains(&d) {
+                seen_d.push(d);
+            }
+            if !seen_p.contains(&p) {
+                seen_p.push(p);
+            }
+        }
+        // 9 distinct reasons, 9 distinct texts, either kind (the two "other" limits read alike).
+        assert_eq!(seen_d.len(), 9);
+        assert_eq!(seen_p.len(), 9);
+        // And in Japanese: every reason has its own sentence.
+        for kind in [DocKind::Word, DocKind::Deck] {
+            let mut ja: Vec<String> = Vec::new();
+            for (e, ..) in expected_doc_texts() {
+                let t = doc_error_text(&e, kind).get("ja").to_string();
+                if !ja.contains(&t) {
+                    ja.push(t);
+                }
+            }
+            assert_eq!(ja.len(), 9, "{kind:?}");
+        }
+    }
+
+    /// The kind tells the host what sort of problem it was; `Unsupported` is the one `e` is offered
+    /// for, so a password-protected file is a kind of its own.
+    #[test]
+    fn a_doc_failure_carries_its_own_kind() {
+        use konoma_plugin::FailureKind as K;
+        for (e, kind) in [
+            (OfficeError::Encrypted, K::Encrypted),
+            (OfficeError::Unsupported, K::Unsupported),
+            (OfficeError::Corrupt("x".into()), K::Corrupt),
+            (OfficeError::Io("x".into()), K::Io),
+            (OfficeError::TooLarge { what: "file" }, K::TooLarge),
+        ] {
+            assert_eq!(doc_failure_of(&e, DocKind::Word).kind, kind, "{e:?}");
+            assert_eq!(doc_failure_of(&e, DocKind::Deck).kind, kind, "{e:?}");
+        }
+    }
+
+    /// The slide words the plugin hands the reader are the ones the core's own tests spell out,
+    /// and the core's default is the English set.
+    #[test]
+    fn the_slide_words_the_plugin_hands_in_are_the_ones_the_cores_tests_spell_out() {
+        use konoma_office_core::docx::{DocOptions, SlideLabels};
+        use konoma_office_core::test_labels::Lang as CoreLang;
+        assert_eq!(slide_labels("en"), CoreLang::En.labels());
+        assert_eq!(slide_labels("ja"), CoreLang::Jp.labels());
+        assert_eq!(SlideLabels::default(), slide_labels("en"));
+        assert_eq!(DocOptions::default().labels, slide_labels("en"));
     }
 }

@@ -37,10 +37,6 @@ use std::path::{Path, PathBuf};
 pub enum PreviewKind {
     /// Built-in Markdown renderer (decorated by konoma's own block-model renderer; mermaid fences inside the md are composited via mermaid-text).
     Markdown(PathBuf),
-    /// Built-in Word document preview (docx / docm / dotx / dotm, and OpenDocument text odt / ott): the document is converted to
-    /// Markdown on a worker thread (`MediaJob::Document`) and drawn by the Markdown renderer. The
-    /// converted text lives on `App`, never in the file on disk.
-    Document(PathBuf),
     /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
     /// plugin's `Session` returns a display type and the host draws it. The plugins wired so far
     /// are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old `builtin` name) and
@@ -135,6 +131,40 @@ impl PreviewKind {
     #[cfg(test)]
     pub fn spreadsheet(path: PathBuf) -> Self {
         Self::plugin(konoma_office::SPREADSHEET_ID, path)
+    }
+
+    /// A Word document shown by the `document` plugin.
+    #[cfg(test)]
+    pub fn document(path: PathBuf) -> Self {
+        Self::plugin(konoma_office::DOCUMENT_ID, path)
+    }
+
+    /// A presentation shown by the `presentation` plugin.
+    #[cfg(test)]
+    pub fn presentation(path: PathBuf) -> Self {
+        Self::plugin(konoma_office::PRESENTATION_ID, path)
+    }
+
+    /// The Word or presentation plugin's kind for `path`, by its extension (what the registry
+    /// settles for the default rules).
+    #[cfg(test)]
+    pub fn office_document(path: PathBuf) -> Self {
+        if crate::app::is_presentation_path(&path) {
+            Self::presentation(path)
+        } else {
+            Self::document(path)
+        }
+    }
+
+    /// Whether this is a file the `document` (Word) or `presentation` plugin shows: the ones whose
+    /// result is a converted Markdown document with pictures (`app/office_doc.rs`).
+    pub fn is_office_document(&self) -> bool {
+        matches!(self, PreviewKind::Plugin { id, .. } if Self::is_office_document_id(id))
+    }
+
+    /// Whether `id` names the Word or the presentation plugin.
+    pub fn is_office_document_id(id: &str) -> bool {
+        id == konoma_office::DOCUMENT_ID || id == konoma_office::PRESENTATION_ID
     }
 
     /// Whether this is a workbook the `spreadsheet` plugin shows.

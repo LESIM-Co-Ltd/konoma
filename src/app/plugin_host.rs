@@ -1,6 +1,7 @@
 //! The host side of the plugin API: opening a plugin, keeping its `Session`, and handing the
 //! display type it returns to the host's own widgets. **Every plugin goes through this one road**:
-//! the tables (`csv`, `archive`) and the pictures (`image`, `svg`, `pdf`, `video`) alike.
+//! the tables (`csv`, `archive`, `spreadsheet`), the pictures (`image`, `svg`, `pdf`, `video`) and
+//! the converted documents (`document`, `presentation`) alike.
 //!
 //! The plugin's work (`open` with its first `view`, later `view`s and `act`s) runs on a worker
 //! thread; this module owns the one **plugin show** the app has (`App::plugin`, like the
@@ -32,6 +33,14 @@
 //!   one at a time; a job asked for meanwhile waits in the group's slot, a newer one replaces it,
 //!   and the running one is cancelled the usual way (the generation moved). Holding `J` over a big
 //!   workbook therefore starts one read and one waiting request, whatever the key repeat does.
+//! - **Documents.** The Word and presentation plugins answer with a `Reopen` / `Document` view;
+//!   the worker turns it into the host's `LoadedDocument` (`office_doc.rs`) in the same job, so the
+//!   sizes of the pictures are read off the UI thread and the view itself is not kept. Their other
+//!   representation (`R`) is asked for on the spot ([`App::plugin_view_now`]).
+//! - **Documents.** The Word and presentation plugins answer with a `Reopen` / `Document` view;
+//!   the worker turns it into the host's `LoadedDocument` (`office_doc.rs`) in the same job, so the
+//!   sizes of the pictures are read off the UI thread and the view itself is not kept. Their other
+//!   representation (`R`) is asked for on the spot (`App::plugin_view_now`).
 //! - **Pages.** A table plugin with pages (a workbook's sheets) is turned with
 //!   [`App::plugin_turn_page`]: the grid of the page being left is released off the UI thread and
 //!   the show is "Loading..." until the page lands.
@@ -102,8 +111,8 @@ pub(super) type LayoutAnnounce = Box<dyn Fn(&Layout) + Send>;
 /// running, and the newest job asked for since.
 #[derive(Default)]
 pub(crate) struct GroupSlot {
-    busy: bool,
-    queued: Option<PluginWork>,
+    pub(super) busy: bool,
+    pub(super) queued: Option<PluginWork>,
 }
 
 /// One job with everything it needs, owned (it moves to a thread).
@@ -124,6 +133,10 @@ pub(crate) struct PluginWork {
     /// Whether the plugin is one of the picture plugins: its `view` must be a picture, and the
     /// picture is decoded here, on the worker.
     pub(super) expects_picture: bool,
+    /// Whether the plugin is the Word or the presentation plugin: its `view` is a document
+    /// (`Reopen` / `Document`), turned into the host's [`LoadedDocument`] here, on the worker
+    /// (sizes of the pictures are read here, never on the UI thread).
+    pub(super) expects_document: bool,
     /// What stops the drawing of an untrusted SVG (the generation moved on).
     pub(super) decode_cancel: Option<crate::preview::office::Cancel>,
     /// Called with the layout as soon as `open` returns, before the first `view`.
@@ -156,6 +169,8 @@ pub struct PluginResult {
     pub(super) req: ViewReq,
     /// The picture the view held, decoded on the worker.
     pub(super) picture: Picture,
+    /// The document the view held (the Word and presentation plugins), made on the worker.
+    pub(super) document: Option<Box<super::office_doc::LoadedDocument>>,
     /// The work group the job ran in: it is free again once this result has arrived.
     pub(super) group: Option<String>,
 }
@@ -179,6 +194,7 @@ impl PluginResult {
             failure: Some(failure),
             req,
             picture: Picture::None,
+            document: None,
             group: None,
         }
     }
@@ -205,6 +221,7 @@ impl PluginResult {
             failure,
             req,
             picture: Picture::None,
+            document: None,
             group: None,
         }
     }
@@ -260,6 +277,7 @@ impl PluginWork {
             external,
             default_raster_px,
             expects_picture,
+            expects_document,
             decode_cancel,
             on_layout,
             group: _,
@@ -271,6 +289,7 @@ impl PluginWork {
                 .with_term(term)
                 .with_external(external);
             let mut picture = Picture::None;
+            let mut document = None;
             let (view, failure) = match session.view(&req, &cx) {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(
@@ -282,6 +301,24 @@ impl PluginWork {
                         Some(p) => Picture::Decoded(Box::new(p)),
                         None => Picture::Failed,
                     };
+                    (None, None)
+                }
+                // A converted document: the Markdown, its pictures (sized here) and whether it
+                // was cut short become the host's container; the view itself is not kept.
+                Ok(View::Reopen(r)) if expects_document && r.content_type == "markdown" => {
+                    document = Some(Box::new(super::office_doc::LoadedDocument::from_parts(
+                        r.text,
+                        r.truncated,
+                        r.resources,
+                    )));
+                    (None, None)
+                }
+                Ok(View::Document(d)) if expects_document => {
+                    document = Some(Box::new(super::office_doc::LoadedDocument::from_parts(
+                        d.markdown,
+                        d.truncated,
+                        d.resources,
+                    )));
                     (None, None)
                 }
                 Ok(_) if expects_picture => (
@@ -306,6 +343,7 @@ impl PluginWork {
                 failure,
                 req,
                 picture,
+                document,
                 group: None,
             }
         };
@@ -350,6 +388,7 @@ impl PluginWork {
                     failure,
                     req,
                     picture: Picture::None,
+                    document: None,
                     group: None,
                 }
             }
@@ -361,7 +400,6 @@ impl PluginWork {
 fn media_result(result: PluginResult) -> MediaResult {
     MediaResult {
         gen: result.gen,
-        wb_worker: false,
         payload: Some(MediaPayload::Plugin(Box::new(result))),
     }
 }
@@ -615,6 +653,7 @@ impl App {
     pub(super) fn plugin_view_req(&self) -> ViewReq {
         let rows = self.tab.preview_viewport.max(1);
         ViewReq {
+            repr: self.tab.repr.clone(),
             page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
             ..ViewReq::new(80, rows)
         }
@@ -643,6 +682,7 @@ impl App {
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
+            expects_document: crate::preview::PreviewKind::is_office_document_id(&id),
             id,
             path,
             external,
@@ -668,10 +708,13 @@ impl App {
             Input::File { path, .. } => path.clone(),
             _ => self.tab.preview_path.clone().unwrap_or_default(),
         };
-        let same = self
-            .plugin
-            .as_ref()
-            .is_some_and(|p| p.id == id && p.path == path && p.view.is_some());
+        let same = self.plugin.as_ref().is_some_and(|p| {
+            p.id == id
+                    && p.path == path
+                    // A document plugin's view is the host's `document`, not `view`: it is shown
+                    // once the show is `Ready`.
+                    && (p.view.is_some() || matches!(p.phase, PluginPhase::Ready))
+        });
         if !(keep_previous && same) {
             self.drop_plugin();
             self.plugin = Some(PluginShow {
@@ -765,7 +808,6 @@ impl App {
                 if let Some(layout) = gate.publish(layout.clone()) {
                     let _ = tx.send(MediaResult {
                         gen,
-                        wb_worker: false,
                         payload: Some(MediaPayload::PluginLayout(Box::new(PluginLayoutMsg {
                             id: id.clone(),
                             layout,
@@ -879,7 +921,7 @@ impl App {
 
     /// Ask the open session for another `view` (a new page, a new size...). Returns false when
     /// there is no session to ask (none open, or a job still holds it).
-    #[allow(dead_code)] // The plugins wired in the next steps (pages, representations) ask this way.
+    #[allow(dead_code)] // The plugins whose other representations are real reads ask this way.
     pub(super) fn plugin_request_view(&mut self, mut req: ViewReq) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
@@ -893,6 +935,28 @@ impl App {
         }
         let work = self.plugin_work(id, path, PluginJob::View { session }, req);
         self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        true
+    }
+
+    /// Ask the open session for another representation (`R`) and apply the answer **at once, on
+    /// this thread**, under the generation in force (nothing else in flight is cancelled by it).
+    /// For the sessions that hold what the other representation is made of (the Word and
+    /// presentation plugins: it is a copy of the text and a handful of `Arc`s), so the key is
+    /// answered the way it always was, without a round trip through a worker; a plugin whose other
+    /// representation is a real read asks with [`App::plugin_request_view`]. Returns false when
+    /// there is no session to ask (none open, or a job holds it).
+    pub(super) fn plugin_view_now(&mut self, req: ViewReq) -> bool {
+        let Some(show) = self.plugin.as_mut() else {
+            return false;
+        };
+        let Some(session) = show.session.take() else {
+            return false;
+        };
+        let (id, path) = (show.id.clone(), show.path.clone());
+        let mut work = self.plugin_work(id, path, PluginJob::View { session }, req);
+        work.gen = self.media_gen;
+        let result = work.run(Cancel::from_fn(|| false));
+        self.install_plugin_result(result);
         true
     }
 
@@ -1024,10 +1088,15 @@ impl App {
             return false;
         }
         let outcome = res.outcome.clone();
+        let asked = res.req.repr.clone();
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
-        show.session = res.session;
+        // The session being replaced (a read again) holds the pictures of a document: it is
+        // freed off the UI thread.
+        if let Some(old) = std::mem::replace(&mut show.session, res.session) {
+            super::table_actions::discard_in_background(old);
+        }
         if let Some(layout) = &res.layout {
             show.layout = layout.clone();
         }
@@ -1049,16 +1118,24 @@ impl App {
                 image_failure = image_failure_of(&id, &failure);
                 show.phase = PluginPhase::Failed(failure);
             }
-            // A picture was drawn from the view, or an action's result: the view is what it was.
+            // A picture was drawn from the view, a document was made from it, or an action's
+            // result: the view is what it was.
             (None, None) => {
-                if !matches!(res.picture, Picture::None) {
-                    show.req = res.req;
+                if !matches!(res.picture, Picture::None) || res.document.is_some() {
+                    show.req = res.req.clone();
                     show.phase = PluginPhase::Ready;
                 }
             }
         }
         if let Some(layout) = &res.layout {
             self.adopt_layout(layout);
+        }
+        // The Word and presentation plugins: the document lands in the host's container (or the
+        // earlier one goes when the file could not be shown).
+        if let Some(doc) = res.document {
+            self.land_document(doc, asked.as_deref());
+        } else if self.plugin_failure().is_some() {
+            self.document_failed();
         }
         // A picture plugin's failure shows its reason where the picture has one.
         if self.shows_media_plugin() {
@@ -1097,8 +1174,9 @@ impl App {
             return false;
         }
         // Only a table has a cursor and a search of its own to settle; a text view is searched
-        // by the host's window reader, which a plugin landing does not touch.
-        if self.shows_code_plugin() {
+        // by the host's window reader, which a plugin landing does not touch, and a document by
+        // the Markdown pipeline.
+        if self.shows_code_plugin() || self.is_document() {
             return true;
         }
         // A read that failed ends the wait of a search confirmed meanwhile: a later successful

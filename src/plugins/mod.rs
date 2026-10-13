@@ -82,25 +82,6 @@ fn default_verbs(m: Manifest) -> Manifest {
     )
 }
 
-/// The chain `e` follows today for Office documents: the Microsoft app, then LibreOffice, then the
-/// OS default. Both verbs use it (`e` keeps its behavior; `o` is the same chain).
-fn office_verbs(m: Manifest, kind: crate::app::office_open::OfficeKind) -> Manifest {
-    let chain = |verb: Verb| {
-        VerbDecl::new(verb)
-            .launcher(Launcher::MacApp {
-                bundle_id: crate::app::office_open::microsoft_bundle_id(kind).to_string(),
-            })
-            .launcher(Launcher::MacApp {
-                bundle_id: crate::app::office_open::LIBREOFFICE_BUNDLE_ID.to_string(),
-            })
-            .launcher(Launcher::Command(vec!["libreoffice".to_string()]))
-            .launcher(Launcher::Command(vec!["soffice".to_string()]))
-            .launcher(Launcher::OsDefault)
-            .mode(LaunchMode::Gui)
-    };
-    m.verb(chain(Verb::Edit)).verb(chain(Verb::Open))
-}
-
 fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
     Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
 }
@@ -109,7 +90,6 @@ fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
 /// default `[[preview.rules]]` konoma had before plugins (svg before `image/*`, the mime rules for
 /// images and videos in their old places), so a file is decided exactly as it was.
 pub(crate) fn standard_manifests() -> Vec<Manifest> {
-    use crate::app::office_open::OfficeKind;
     let md = standard("markdown", t!(en: "Markdown", ja: "Markdown"))
         .bind(Bind::files(["*.md"]))
         .bind(Bind::content("markdown"))
@@ -169,19 +149,8 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     let image = konoma_media::image_manifest();
     let csv = konoma_table::csv_manifest();
     let spreadsheet = konoma_office::spreadsheet_manifest();
-    let document = office(
-        standard("document", t!(en: "Word document", ja: "Word 文書")),
-        OfficeKind::Word,
-        "*.{docx,docm,dotx,dotm,odt,ott}",
-    );
-    let presentation = office(
-        standard(
-            "presentation",
-            t!(en: "Presentation", ja: "プレゼンテーション"),
-        ),
-        OfficeKind::PowerPoint,
-        "*.{pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}",
-    );
+    let document = konoma_office::document_manifest();
+    let presentation = konoma_office::presentation_manifest();
     let archive = konoma_table::archive_manifest();
     let code = konoma_code::code_manifest();
     let video = konoma_media::video_manifest();
@@ -216,10 +185,6 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     out
 }
 
-fn office(m: Manifest, kind: crate::app::office_open::OfficeKind, glob: &str) -> Manifest {
-    office_verbs(m.bind(Bind::files([glob])), kind)
-}
-
 /// The host-internal pseudo plugins (see [`TEXT_ID`]).
 fn internal_manifests() -> Vec<Manifest> {
     vec![
@@ -241,6 +206,8 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
         konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
         konoma_office::SPREADSHEET_ID => Arc::new(konoma_office::SpreadsheetPlugin),
+        konoma_office::DOCUMENT_ID => Arc::new(konoma_office::DocumentPlugin),
+        konoma_office::PRESENTATION_ID => Arc::new(konoma_office::PresentationPlugin),
         konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
         konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
         _ => Arc::new(Declared(m)),

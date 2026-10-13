@@ -1,4 +1,5 @@
-//! The `spreadsheet` plugin on the host's plugin road: the exclusive work group (one read at a
+//! The `spreadsheet` plugin on the host's plugin road (and the work group the Word and
+//! presentation plugins share with it): the exclusive work group (one read at a
 //! time, only the newest waiting request kept), the sheets as pages, the settings it receives and
 //! the switch that turns it off. The reading and the words are tested in `crates/konoma-office`;
 //! the keys, the cursor and the search over real workbooks in `e2e_tests`.
@@ -387,4 +388,81 @@ fn the_rainbow_of_a_sheet_follows_its_own_setting_then_csv_then_the_old_ui_one()
     cfg.plugins.insert("csv".into(), table(false));
     cfg.plugins.insert("spreadsheet".into(), table(true));
     assert!(rainbow(&cfg));
+}
+
+/// The Word, presentation and spreadsheet plugins are one work group: whatever mix of them is
+/// asked for, one read runs at a time and only the newest request waits behind it.
+#[test]
+fn a_word_a_deck_and_a_workbook_share_one_read_at_a_time() {
+    let (mut app, _dir, file, rx) = app_with_worker();
+    let (plugin, seen) = heavy(false);
+    let office = [
+        konoma_office::DOCUMENT_ID,
+        konoma_office::PRESENTATION_ID,
+        konoma_office::SPREADSHEET_ID,
+        konoma_office::DOCUMENT_ID,
+        konoma_office::PRESENTATION_ID,
+    ];
+    for id in office {
+        let job = PluginJob::Open {
+            plugin: Arc::clone(&plugin),
+            input: Input::File {
+                path: file.clone(),
+                hint: None,
+            },
+        };
+        let work = app.plugin_work(id.into(), file.clone(), job, ViewReq::default());
+        assert_eq!(
+            work.group.as_deref(),
+            Some(konoma_office::OFFICE_WORK_GROUP),
+            "{id}"
+        );
+        app.dispatch_plugin_work(work, Wait::Nothing);
+    }
+    // The first one runs; the four others wait as one request.
+    assert_eq!(app.plugin_group_dispatches, 1, "ONE read was started");
+    // Answers arrive until the group has nothing running and nothing waiting.
+    while app.plugin_groups[konoma_office::OFFICE_WORK_GROUP].busy {
+        let res = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker always answers");
+        app.apply_media(res);
+    }
+    assert_eq!(app.plugin_group_dispatches, 2, "the first and the last");
+    assert_eq!(seen.views.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        seen.most_at_once.load(Ordering::SeqCst),
+        1,
+        "never two reads at the same time"
+    );
+    assert!(
+        seen.cancelled.load(Ordering::SeqCst),
+        "the running read was told to stop"
+    );
+}
+
+/// The old per-kind Office slot is gone: a Word document goes through the plugin road, so it
+/// counts in the same dispatch tally as a sheet.
+#[test]
+fn the_word_plugin_takes_its_reads_from_the_plugin_road() {
+    let dir = unique_tmp("konoma_word_group");
+    std::fs::create_dir_all(&dir).unwrap();
+    let docx = dir.join("w.docx");
+    std::fs::write(&docx, b"broken").unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = channel();
+    app.attach_media_loader(tx);
+    app.enter_preview(&docx);
+    assert!(app.is_document());
+    assert_eq!(app.workbook_loads_started(), 1, "one read for the document");
+    while app.is_document_loading() {
+        let res = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker answers");
+        app.apply_media(res);
+    }
+    // A broken file says why, in the plugin's words.
+    assert!(app
+        .document_error()
+        .is_some_and(|f| f.message.en().starts_with("[document] ")));
 }

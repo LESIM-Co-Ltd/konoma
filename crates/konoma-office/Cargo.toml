@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "konoma's Office plugins: spreadsheets (xlsx, xlsb, xls, ods) shown as a sheet-by-sheet table"
+description = "konoma's Office plugins: spreadsheets as tables, Word documents and slides as converted Markdown"
 
 [dependencies]
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
@@ -13,4 +13,5 @@ konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 konoma-office-core = { path = "../konoma-office-core", version = "0.1.0" }
 
 [dev-dependencies]
+konoma-office-core = { path = "../konoma-office-core", version = "0.1.0", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }

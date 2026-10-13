@@ -1336,25 +1336,33 @@ impl App {
                         // A slide has no bytes yet: draw its scene to an SVG here (off the UI
                         // thread, under the decode gate) and let the supervised drawing process
                         // rasterize it like any other untrusted SVG of a document.
-                        let bytes = match source {
+                        let bytes: Arc<[u8]> = match source {
                             PictureSource::Bytes(b) => b,
-                            PictureSource::Slide {
-                                scene,
-                                media,
+                            PictureSource::Lazy {
+                                lazy,
                                 render_truncated,
                                 raster_cap,
                             } => {
-                                let drawn =
-                                    crate::preview::office::slide_draw::render_svg_cancellable(
-                                        &scene,
-                                        &|k| media.get(k).cloned(),
-                                        &moved_on,
-                                    );
-                                // The preview moved on: nothing to show, nothing to remember.
-                                if drawn.cancelled {
-                                    return (Err(ImageFailure::Cancelled), None);
-                                }
-                                if drawn.truncated {
+                                use konoma_plugin::view::ImageData;
+                                let cancel = konoma_plugin::Cancel::from_fn({
+                                    let (latest, stale) = (latest.clone(), stale.clone());
+                                    move || {
+                                        latest.load(std::sync::atomic::Ordering::Relaxed) != gen
+                                            || stale.is_stale()
+                                    }
+                                });
+                                let req = konoma_plugin::ResourceReq { max_px: svg_px };
+                                let drawn = match lazy.render(&req, &cancel) {
+                                    Ok(ImageData::Svg { data, .. } | ImageData::Encoded(data)) => {
+                                        data
+                                    }
+                                    // The preview moved on: nothing to show, nothing to remember.
+                                    Err(f) if f.kind == konoma_plugin::FailureKind::Cancelled => {
+                                        return (Err(ImageFailure::Cancelled), None);
+                                    }
+                                    Ok(_) | Err(_) => return (Err(ImageFailure::Corrupt), None),
+                                };
+                                if lazy.truncated() {
                                     render_truncated
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
@@ -1363,12 +1371,14 @@ impl App {
                                 // square of the scale): effects stay, the slide is just drawn
                                 // smaller. A size an earlier attempt found too heavy stays out
                                 // (see below), and one that only timed out stays out for a while.
-                                raster_cap.lower_permanent(drawn.max_raster_px());
+                                if let Some(px) = lazy.max_raster_px() {
+                                    raster_cap.lower_permanent(px);
+                                }
                                 if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
                                     svg_px = svg_px.min(cap);
                                 }
                                 slide_cap = Some(raster_cap);
-                                Arc::new(drawn.svg.into_bytes())
+                                drawn
                             }
                         };
                         if bytes.starts_with(b"GIF8") {

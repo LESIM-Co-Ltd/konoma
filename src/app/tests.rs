@@ -1569,7 +1569,6 @@ fn stale_media_result_is_ignored() {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
     let stale = MediaResult {
         gen: app.media_gen.wrapping_sub(1),
-        wb_worker: false,
         payload: Some(MediaPayload::Static(img)),
     };
     assert!(!app.apply_media(stale), "古い世代は反映しない");
@@ -24896,7 +24895,6 @@ fn sheet_result(app: &App, wb: Workbook) -> MediaResult {
     let view = View::Table(konoma_office::table_view(wb, 0, "en", true));
     MediaResult {
         gen: app.media_gen,
-        wb_worker: false,
         payload: Some(MediaPayload::Plugin(Box::new(
             plugin_host::PluginResult::answer(
                 app.media_gen,
@@ -24914,7 +24912,6 @@ fn sheet_result(app: &App, wb: Workbook) -> MediaResult {
 fn sheet_failure_result(app: &App, failure: konoma_plugin::Failure) -> MediaResult {
     MediaResult {
         gen: app.media_gen,
-        wb_worker: false,
         payload: Some(MediaPayload::Plugin(Box::new(
             plugin_host::PluginResult::answer(
                 app.media_gen,

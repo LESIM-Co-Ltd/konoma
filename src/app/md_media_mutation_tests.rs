@@ -76,12 +76,7 @@ fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
     pictures.insert(
         slide.to_string(),
         DocPicture {
-            source: PictureSource::Slide {
-                scene: Arc::new(Default::default()),
-                media: Arc::new(HashMap::new()),
-                render_truncated: Arc::new(AtomicBool::new(false)),
-                raster_cap: Arc::new(Default::default()),
-            },
+            source: crate::app::office_doc::stub_slide_source(Arc::new(Default::default())),
             dims: Some((1280, 720)),
             raster: false,
         },
@@ -89,18 +84,17 @@ fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
     pictures.insert(
         "office-img://deck/photo.png".to_string(),
         DocPicture {
-            source: PictureSource::Bytes(Arc::new(vec![1, 2, 3])),
+            source: PictureSource::Bytes(Arc::from(vec![1u8, 2, 3])),
             dims: None,
             raster: true,
         },
     );
     app.document = Some(Box::new(LoadedDocument {
         markdown: String::new(),
-        picture_markdown: String::new(),
         truncated: false,
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
-        slides: Vec::new(),
+        repr: None,
     }));
     // no image backend yet: the cell size is unknown
     assert_eq!(app.slide_raster_px(slide, 10, 10), None);
@@ -151,12 +145,7 @@ fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
     pictures.insert(
         "office-img://deck/slide-1".to_string(),
         DocPicture {
-            source: PictureSource::Slide {
-                scene: Arc::new(Default::default()),
-                media: Arc::new(HashMap::new()),
-                render_truncated: Arc::new(AtomicBool::new(false)),
-                raster_cap: cap.clone(),
-            },
+            source: crate::app::office_doc::stub_slide_source(cap.clone()),
             dims: Some((1280, 720)),
             raster: false,
         },
@@ -164,7 +153,7 @@ fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
     pictures.insert(
         "office-img://deck/photo.png".to_string(),
         DocPicture {
-            source: PictureSource::Bytes(Arc::new(vec![1])),
+            source: PictureSource::Bytes(Arc::from(vec![1u8])),
             dims: None,
             raster: true,
         },
@@ -176,11 +165,10 @@ fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
     );
     app.document = Some(Box::new(LoadedDocument {
         markdown: String::new(),
-        picture_markdown: String::new(),
         truncated: false,
         render_truncated: Arc::new(AtomicBool::new(false)),
         pictures,
-        slides: Vec::new(),
+        repr: None,
     }));
     let url = "office-img://deck/slide-1";
     assert_eq!(app.slide_raster_cap(url), None, "0 = not drawn yet");
@@ -200,7 +188,7 @@ fn a_reloaded_document_keeps_only_the_pictures_it_still_has() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let path = dir.join("d.docx");
-    app.tab.preview_kind = Some(crate::app::PreviewKind::Document(path.clone()));
+    app.tab.preview_kind = Some(crate::app::PreviewKind::document(path.clone()));
     app.tab.preview_path = Some(path);
     let key = |s: &str| PathBuf::from(s);
     for k in [
@@ -214,19 +202,21 @@ fn a_reloaded_document_keeps_only_the_pictures_it_still_has() {
     pictures.insert(
         "office-img://d/keep".to_string(),
         DocPicture {
-            source: PictureSource::Bytes(Arc::new(vec![1])),
+            source: PictureSource::Bytes(Arc::from(vec![1u8])),
             dims: None,
             raster: true,
         },
     );
-    app.land_document(Box::new(LoadedDocument {
-        markdown: "x\n".into(),
-        picture_markdown: String::new(),
-        truncated: false,
-        render_truncated: Arc::new(AtomicBool::new(false)),
-        pictures,
-        slides: Vec::new(),
-    }));
+    app.land_document(
+        Box::new(LoadedDocument {
+            markdown: "x\n".into(),
+            truncated: false,
+            render_truncated: Arc::new(AtomicBool::new(false)),
+            pictures,
+            repr: None,
+        }),
+        None,
+    );
     assert!(
         app.md_image_cache.contains_key(&key("/some/file.png")),
         "not a document picture"

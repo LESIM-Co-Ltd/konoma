@@ -741,13 +741,6 @@ pub enum MediaPayload {
     /// unsupported format) — carried as a payload so the reason travels through the same
     /// generation-checked channel as success. Goes to `App::image_failure`.
     ImageFailed(crate::preview::image::ImageFailure),
-    /// An opened Word document (`PreviewKind::Document`): its Markdown and pictures → goes to
-    /// `App::document`.
-    Document(Box<office_doc::LoadedDocument>),
-    /// A Word document that could not be loaded (the reason maps to a translated message on the
-    /// render side), carried as a payload (not the plain `None` failure) so the *reason* travels
-    /// through the same generation-checked channel as success.
-    DocumentFailed(crate::preview::office::OfficeError),
     /// A plugin's result (`PreviewKind::Plugin`): the session, its layout, the view it returned
     /// and, when that was a picture, the picture decoded on the same worker
     /// (`app/plugin_host.rs`).
@@ -760,9 +753,6 @@ pub enum MediaPayload {
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
-    /// The result of the (single) Office load thread (a Word document): its slot is free again,
-    /// whatever `gen` is.
-    wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
 }
@@ -774,14 +764,6 @@ impl MediaResult {
     pub fn is_layout_only(&self) -> bool {
         matches!(self.payload, Some(MediaPayload::PluginLayout(_)))
     }
-}
-
-/// An Office load (a Word document) waiting for the running one to end (`App::wb_queued`).
-struct WbRequest {
-    /// `MediaJob::Document`.
-    job: MediaJob,
-    /// The `media_gen` it was asked under; stale (dropped) if that moved on.
-    gen: u64,
 }
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
@@ -806,10 +788,6 @@ enum MediaJob {
     /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
     /// than from konoma's own mermaid renderer.
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
-    /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
-    /// the document, or the reason it could not be opened. Runs on the Office worker slot (one at
-    /// a time, newest request only) and stops when its generation is superseded.
-    Document(PathBuf, crate::i18n::Lang),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -857,32 +835,6 @@ impl MediaJob {
                     crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
                 };
                 Some(MediaPayload::Vector { img, svg })
-            }
-            MediaJob::Document(p, lang) => {
-                use crate::preview::office::docx::pptx::load_presentation_cancellable;
-                use crate::preview::office::docx::{load_document_cancellable, DocOptions};
-                use crate::preview::office::OfficeError;
-                let opts = DocOptions {
-                    labels: crate::i18n::slide_labels(lang),
-                    ..DocOptions::default()
-                };
-                let slides = office_doc::is_presentation_path(&p);
-                // The reader sits on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    if slides {
-                        load_presentation_cancellable(&p, &opts, cancel.as_ref())
-                    } else {
-                        load_document_cancellable(&p, &opts, cancel.as_ref())
-                    }
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(doc) => MediaPayload::Document(Box::new(
-                        office_doc::LoadedDocument::from_document(doc),
-                    )),
-                    Err(e) => MediaPayload::DocumentFailed(office_doc::legacy_binary_reason(&p, e)),
-                })
             }
             MediaJob::Command {
                 argv,
@@ -1617,13 +1569,13 @@ pub struct App {
     /// Assigned only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind`
     /// whenever the preview is not a plugin's and by `clear_image`.
     plugin: Option<plugin_host::PluginShow>,
-    /// The opened Word document while a `PreviewKind::Document` preview is active and its worker
-    /// finished: the converted Markdown and the pictures it refers to. App-level (not `PerTab`) for
-    /// the same reason as the plugin show; a tab switch re-reads it on the worker. Assigned only through
-    /// `set_document`, which frees the old one off the UI thread.
+    /// The converted Word document or presentation while the `document` / `presentation` plugin
+    /// shows the preview and its job finished: the Markdown to draw (of the representation on
+    /// screen) and the pictures it refers to. The plugin's `View` is turned into this on the worker
+    /// (`office_doc.rs`). App-level (not `PerTab`) for the same reason as the plugin show; a tab
+    /// switch re-reads it on the worker. Assigned only through `set_document`, which frees the old
+    /// one off the UI thread. Why a file could not be shown is the plugin show's failure.
     document: Option<Box<office_doc::LoadedDocument>>,
-    /// Why the last Word document load failed (`Some` only while `document` is `None`).
-    document_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -1756,15 +1708,6 @@ pub struct App {
     media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
-    /// A Word load is running on its thread. **At most one at a time** (see `spawn_office_job`).
-    /// The Office plugins that went through the plugin road (`spreadsheet`) hold the same rule
-    /// through their work group instead (`plugin_groups`).
-    wb_worker_busy: bool,
-    /// The newest Word load asked for while one was running; it starts when that one ends.
-    wb_queued: Option<WbRequest>,
-    /// Test-only: Word loads started on a thread.
-    #[cfg(test)]
-    wb_dispatches: u32,
     /// The exclusive work groups of the plugins (`Manifest::work_group`): which have a job running
     /// and the newest one waiting behind it (`app/plugin_host.rs`).
     plugin_groups: std::collections::BTreeMap<String, plugin_host::GroupSlot>,
@@ -3141,11 +3084,13 @@ pub(crate) struct PerTab {
     page_count: Option<u32>,
     // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
     md_raw: bool,
-    /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
-    /// pictures, `None` = the terminal's default (`App::deck_picture_view`). Reset per file.
-    deck_text_view: Option<bool>,
-    /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
-    /// layout exists (`App::apply_pending_slide`).
+    /// The representation the user chose with `R` (an id of the plugin's `Layout.reprs`), or
+    /// `None` for the plugin's default for the terminal. Reset per file. A presentation's are
+    /// `picture` and `text` (`App::deck_picture_view`).
+    repr: Option<String>,
+    /// The page (0-based) of an anchored page list (the slides of a presentation) to keep: scrolled
+    /// to by the next draw, once the layout of the new representation or size exists
+    /// (`App::apply_pending_slide`).
     deck_pending_slide: Option<usize>,
     /// Whether the preview body has been drawn for this tab at least once, so `preview_viewport`
     /// is a measured height (possibly 0 on a tiny terminal) and not the initial "not drawn yet" 0.
@@ -3272,7 +3217,7 @@ impl Default for PerTab {
             page: 1,
             page_count: None,
             md_raw: false,
-            deck_text_view: None,
+            repr: None,
             deck_pending_slide: None,
             preview_viewport_drawn: false,
             focused_item: None,
@@ -3380,7 +3325,6 @@ impl App {
             media_cache: None,
             plugin: None,
             document: None,
-            document_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -3416,10 +3360,6 @@ impl App {
             media_gen: 0,
             media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
-            wb_worker_busy: false,
-            wb_queued: None,
-            #[cfg(test)]
-            wb_dispatches: 0,
             plugin_groups: std::collections::BTreeMap::new(),
             #[cfg(test)]
             plugin_group_dispatches: 0,
@@ -4397,7 +4337,6 @@ impl App {
         // page.) Must precede `start_media_load` below, whose synchronous fallback can land the
         // new document right away.
         self.set_document(None);
-        self.document_error = None;
         // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
         // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
@@ -4406,7 +4345,7 @@ impl App {
         // A new file starts decorated, and this must hold *before* the load: a Word document that
         // lands synchronously (no media_tx) decides there whether to build its raw view.
         self.tab.md_raw = false;
-        self.tab.deck_text_view = None;
+        self.tab.repr = None;
         self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
@@ -4590,7 +4529,7 @@ impl App {
         if self.media_loading && !self.shows_code_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
             v.push(match &self.tab.preview_kind {
-                Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
+                Some(k) if k.is_office_document() => crate::i18n::Msg::BusyDocument,
                 Some(k) if k.is_spreadsheet() => crate::i18n::Msg::BusySheet,
                 _ => crate::i18n::Msg::BusyMedia,
             });
@@ -4672,7 +4611,7 @@ impl App {
             return None;
         }
         // The converted Markdown of a Word document has no line in the .docx to open at.
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        if self.is_document() {
             return None;
         }
         if self.is_windowed() {
@@ -4936,18 +4875,16 @@ impl App {
     /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
         self.tab.md_raw
-            && (matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_))
-            ) || self.shows_plugin(konoma_mermaid::MERMAID_ID))
+            && (matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
+                || self.is_document()
+                || self.shows_plugin(konoma_mermaid::MERMAID_ID))
     }
 
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
-        matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_))
-        ) || self.shows_plugin(konoma_mermaid::MERMAID_ID)
+        matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
+            || self.is_document()
+            || self.shows_plugin(konoma_mermaid::MERMAID_ID)
     }
 
     /// Whether raw source view is currently on (for the footer/title indicator).
@@ -4972,7 +4909,7 @@ impl App {
             self.toggle_deck_view();
             return;
         }
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        if self.is_document() {
             if self.tab.md_raw {
                 // Leaving the raw view: the converted-Markdown temp file is done for.
                 self.clear_command_out();
@@ -5078,7 +5015,6 @@ impl App {
         self.tab.came_from_git_view = false;
         self.drop_plugin();
         self.set_document(None);
-        self.document_error = None;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -5191,10 +5127,8 @@ impl App {
         // A mermaid file loads a picture in image mode only (in text mode it draws via the
         // decorated path).
         (kind.is_media_plugin() && (!kind.is_mermaid_file() || self.mermaid_image_mode()))
-            // A Word document is converted on the media worker; a tab switch / mtime-changed
-            // reload re-reads it exactly like the picture plugins. (A spreadsheet is a plugin's
-            // table: it is opened again by `load_plugin`.)
-            || matches!(kind, PreviewKind::Document(_))
+            // (A Word document, a presentation and a spreadsheet are plugin shows: opened again
+            // by `load_plugin`.)
             || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
             // function of the source file, so a tab switch / mtime-changed reload must re-run it
@@ -5232,7 +5166,6 @@ impl App {
         self.drop_plugin();
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
-        self.wb_queued = None;
         self.drop_queued_plugin_work();
         self.media_loading = false;
         self.vector_reraster_inflight = false;
@@ -5273,10 +5206,8 @@ impl App {
         // A Word document's raw view is the converted Markdown, written to a private temp file
         // (`App::write_document_raw`) so the less-style reader can window it; the .docx itself is a
         // zip and never readable as text.
-        if matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Command { .. } | PreviewKind::Document(_))
-        ) {
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) || self.is_document()
+        {
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
@@ -5515,12 +5446,12 @@ impl App {
                 crate::preview::code::has_named_syntax(p)
             }
             // The converted Markdown of a Word document (`R`): colored as Markdown.
-            Some(PreviewKind::Document(_)) if self.tab.md_raw => true,
+            Some(k) if k.is_office_document() && self.tab.md_raw => true,
             _ => false,
         };
         // The grammar is picked from the path's name: a Word document's raw view is Markdown, but
         // its own name says .docx.
-        let hl_path = if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        let hl_path = if self.is_document() {
             PathBuf::from("document.md")
         } else {
             path.clone()
@@ -7521,6 +7452,11 @@ mod survivor_tests;
 // A presentation's slide pictures: their box, their size and how a converted deck becomes them.
 #[cfg(test)]
 mod deck_view_tests;
+
+// The Word and presentation plugins on the host: the representations (`R`) and the anchored pages
+// (`J`/`K`, the chip) their layout reports.
+#[cfg(test)]
+mod office_plugin_tests;
 
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]

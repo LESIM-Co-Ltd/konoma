@@ -499,10 +499,10 @@ impl App {
     /// App-level state, so whenever the preview is not theirs (a git diff, the tree, a diagram,
     /// another file) they are released here, instead of each caller remembering to reset them.
     pub(super) fn set_preview_kind(&mut self, kind: Option<PreviewKind>) {
-        // The converted Word document: App-level, only while the kind is `Document`.
-        if !matches!(kind, Some(PreviewKind::Document(_))) {
+        // The converted Word document or presentation: App-level, only while the kind is the
+        // `document` or `presentation` plugin's.
+        if !kind.as_ref().is_some_and(PreviewKind::is_office_document) {
             self.set_document(None);
-            self.document_error = None;
         }
         // Likewise a plugin's show: App-level, only while the kind is a plugin's.
         if !matches!(kind, Some(PreviewKind::Plugin { .. })) {

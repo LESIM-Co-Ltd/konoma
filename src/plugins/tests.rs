@@ -115,7 +115,8 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
                 None => PreviewKind::can_not_preview(path),
             },
             "spreadsheet" => PreviewKind::plugin("spreadsheet", p),
-            "document" => PreviewKind::Document(p),
+            // Word or a presentation by the extension, as the old single display told them apart.
+            "document" => PreviewKind::office_document(p),
             "text" => PreviewKind::Text(p),
             _ => PreviewKind::can_not_preview(path),
         };
@@ -408,7 +409,7 @@ fn old_builtin_names_read_as_plugins() {
     assert!(one("pdf", "").is_plugin("pdf"));
     assert!(one("code", "").is_code_plugin());
     assert!(one("spreadsheet", "").is_spreadsheet());
-    assert!(matches!(one("document", ""), PreviewKind::Document(_)));
+    assert!(one("document", "").is_plugin("document"));
     assert!(matches!(one("text", ""), PreviewKind::Text(_)));
     let separator = |kind: PreviewKind| match kind {
         PreviewKind::Plugin { id, hint, path } if id == "csv" => {
@@ -579,10 +580,52 @@ fn disabling_one_of_two_office_plugins_leaves_the_other() {
         kind_of_name(&cfg, "a.pptx"),
         PreviewKind::CanNotPreview { .. }
     ));
+    assert!(kind_of_name(&cfg, "a.docx").is_plugin("document"));
+}
+
+#[test]
+fn disabling_the_word_plugin_leaves_the_presentation_one() {
+    let cfg = cfg_from("[plugins.document]\nenabled = false\n");
     assert!(matches!(
         kind_of_name(&cfg, "a.docx"),
-        PreviewKind::Document(_)
+        PreviewKind::CanNotPreview { .. }
     ));
+    assert!(matches!(
+        kind_of_name(&cfg, "a.odt"),
+        PreviewKind::CanNotPreview { .. }
+    ));
+    assert!(kind_of_name(&cfg, "a.pptx").is_plugin("presentation"));
+    // A rule that aims a file at the switched-off plugin is skipped, as for any plugin.
+    let mut cfg = cfg;
+    cfg.preview.rules.push(Rule {
+        glob: Some("*.docx".into()),
+        builtin: Some("document".into()),
+        ..Rule::default()
+    });
+    assert!(matches!(
+        kind_of_name(&cfg, "a.docx"),
+        PreviewKind::CanNotPreview { .. }
+    ));
+}
+
+#[test]
+fn the_old_document_name_goes_to_the_presentation_plugin_for_a_presentation_extension() {
+    // `builtin = "document"` covered Word and presentations; the file decides which plugin now.
+    let mut cfg = cfg_from("");
+    cfg.preview.rules = vec![Rule {
+        glob: Some("*.zzz".into()),
+        builtin: Some("document".into()),
+        ..Rule::default()
+    }];
+    // The extension that is in the rule is not a presentation: Word.
+    assert!(kind_of_name(&cfg, "a.zzz").is_plugin("document"));
+    cfg.preview.rules = vec![Rule {
+        glob: Some("*.ppt".into()),
+        builtin: Some("document".into()),
+        ..Rule::default()
+    }];
+    // The old binary presentation is told apart as a presentation (and fails as one).
+    assert!(kind_of_name(&cfg, "a.ppt").is_plugin("presentation"));
 }
 
 #[test]
@@ -686,6 +729,8 @@ const WIRED: &[&str] = &[
     "csv",
     "archive",
     "spreadsheet",
+    "document",
+    "presentation",
     "code",
     "image",
     "svg",
