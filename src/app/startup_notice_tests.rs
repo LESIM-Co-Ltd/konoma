@@ -205,8 +205,17 @@ fn declared_settings_and_enabled_are_not_warned_about() {
         let manifest = registry.manifest(id).unwrap();
         let mut table = toml::Table::new();
         table.insert("enabled".into(), toml::Value::Boolean(true));
+        // A value of the declared type: only the name is under test here (the type has its own).
         for d in &manifest.settings {
-            table.insert(d.name.clone(), toml::Value::Boolean(true));
+            let value = match &d.default {
+                konoma_plugin::Value::Bool(_) => toml::Value::Boolean(true),
+                konoma_plugin::Value::Int(_) => toml::Value::Integer(1),
+                konoma_plugin::Value::Float(_) => toml::Value::Float(1.0),
+                konoma_plugin::Value::Str(_) => toml::Value::String("x".into()),
+                konoma_plugin::Value::List(_) => toml::Value::Array(Vec::new()),
+                konoma_plugin::Value::Table(_) => toml::Value::Table(toml::Table::new()),
+            };
+            table.insert(d.name.clone(), value);
         }
         let mut tables = crate::plugins::PluginTables::new();
         tables.insert(id.to_string(), table);
@@ -382,4 +391,64 @@ fn the_edges_of_fitting_the_message() {
     // Wide characters count by columns, not chars.
     let cjk = fit_notices(vec!["日本語".into(), "文字".into()], 10, Lang::En).unwrap();
     assert_eq!(cjk, "日本語 (+1 more)");
+}
+
+// ---- a setting of another type than the declared one ------------------------------------------
+
+/// A value of another type than the plugin declared is not read (the default stays): the start-up
+/// message says so, in both languages, naming the table, the key and the type that is needed.
+#[test]
+fn a_setting_of_the_wrong_type_is_named_and_the_default_is_said_to_stay() {
+    let cfg = cfg_from("[plugins.csv]\nrainbow = \"yes\"\n");
+    assert_eq!(
+        cfg.plugin_report(Lang::En).as_deref(),
+        Some("plugins: [plugins.csv] rainbow must be true or false (using the default)")
+    );
+    assert_eq!(
+        cfg.plugin_report(Lang::Jp).as_deref(),
+        Some("plugins: [plugins.csv] rainbow は真偽値(true か false)が必要(既定を使う)")
+    );
+    // The plugin does not read it: the default is what it gets.
+    assert!(effective_settings(&cfg, "csv").bool("rainbow", true));
+    let (_d, app) = app_with(cfg, Lang::En);
+    let flash = app.startup_flash(None, 400).unwrap();
+    assert!(
+        flash.contains("[plugins.csv] rainbow must be true or false"),
+        "{flash}"
+    );
+}
+
+/// Every declared type is judged: an integer where a string is declared, a string where an
+/// integer or a list is, a table where a boolean is. A fitting value says nothing, a whole number
+/// is a fine number.
+#[test]
+fn each_declared_type_is_checked_and_a_fitting_value_says_nothing() {
+    let report = |text: &str| cfg_from(text).plugin_report(Lang::En);
+    assert!(report("[plugins.mermaid]\nmode = 3\n")
+        .unwrap()
+        .contains("[plugins.mermaid] mode must be a string"));
+    assert!(report("[plugins.mermaid]\nrows = \"tall\"\n")
+        .unwrap()
+        .contains("[plugins.mermaid] rows must be an integer"));
+    assert!(report("[plugins.markdown]\ntask_states = \"x\"\n")
+        .unwrap()
+        .contains("[plugins.markdown] task_states must be a list"));
+    assert!(report("[plugins.csv]\nrainbow = { a = 1 }\n")
+        .unwrap()
+        .contains("[plugins.csv] rainbow must be true or false"));
+    for fine in [
+        "[plugins.csv]\nrainbow = false\n",
+        "[plugins.mermaid]\nmode = \"text\"\nrows = 12\n",
+        "[plugins.markdown]\ntask_states = [\" \", \"x\"]\nalerts = false\n",
+    ] {
+        assert_eq!(report(fine), None, "{fine}");
+    }
+}
+
+/// The number rule on its own (no standard plugin declares a float today).
+#[test]
+fn a_whole_number_fits_a_declared_number_but_not_the_other_way() {
+    use konoma_plugin::Value;
+    assert!(crate::plugins::value_type_mismatch(&Value::Float(1.5), &Value::Int(2)).is_none());
+    assert!(crate::plugins::value_type_mismatch(&Value::Int(1), &Value::Float(2.5)).is_some());
 }

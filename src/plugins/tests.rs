@@ -968,6 +968,31 @@ fn the_plugins_table_shows_problems_with_the_plugin_tables() {
     );
 }
 
+/// The table is printed to the terminal and holds strings from the config: a rule's glob, the
+/// plugin a rule names, a plugin table's name and keys. A control character in any of them (ESC
+/// starts a terminal command) is dropped, not printed.
+#[test]
+fn the_plugins_table_prints_no_control_characters_from_the_config() {
+    let mut cfg = cfg_from(
+        "[plugins.\"bo\\u001b[2Jgus\"]\nx = 1\n[plugins.csv]\n\"ra\\u001b[31minbow\" = 1\n",
+    );
+    cfg.preview.rules = vec![Rule {
+        glob: Some("*.l\u{1b}[2Jog".into()),
+        builtin: Some("mark\u{1b}[31mdown".into()),
+        ..Rule::default()
+    }];
+    let out = plugins_table(&cfg);
+    assert!(
+        !out.chars().any(|c| c.is_control() && c != '\n'),
+        "no control character is printed: {out:?}"
+    );
+    assert!(out.contains("*.l[2Jog"), "the text around it stays: {out}");
+    assert!(
+        out.contains("warning: unknown plugin `bo[2Jgus` (ignored)"),
+        "{out}"
+    );
+}
+
 // ---- one resolution reads the file at most once ---------------------------------------------
 
 #[test]

@@ -289,6 +289,7 @@ fn a_result_landing_colors_the_window_and_leaves_the_text_search_alone() {
         document: None,
         group: None,
         enabled: Vec::new(),
+        made_text: None,
     });
     assert!(landed);
     assert!(!app.is_media_loading());
@@ -421,4 +422,74 @@ fn the_plugin_answering_is_not_shown_as_a_media_job() {
         !app.busy_jobs().contains(&crate::i18n::Msg::BusyMedia),
         "no media label for a text file"
     );
+}
+
+// ---- the text a plugin makes is written to its file on the worker, not on the UI thread -----------
+
+/// An app on a hex dump (a plugin that makes its text) opened without a worker.
+fn hexdump_app(name: &str) -> (App, crate::test_support::TmpDir) {
+    use crate::plugins::test_plugins::{marker_config, register, Hexdump, Variant};
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.bin");
+    std::fs::write(&file, (0u8..20).collect::<Vec<_>>()).unwrap();
+    let marker = register(name, Arc::new(Hexdump(Variant::default())));
+    let mut app = App::new(dir.to_path_buf(), marker_config(&marker)).unwrap();
+    app.enter_preview(&file);
+    (app, dir)
+}
+
+/// The temp file of a made text is written by the worker before the result is sent: the UI thread
+/// only takes the path. Landing a result that carries no file writes none (and says so), whatever
+/// the view holds; landing one that carries a file windows exactly that file.
+#[test]
+fn the_ui_thread_only_takes_the_path_of_the_text_the_worker_wrote() {
+    use super::plugin_host::MadeText;
+    let (mut app, _d) = hexdump_app("konoma_text_plugin_made_file");
+    let own = app.tab.command_out.clone().expect("the windowed file");
+    assert!(
+        std::fs::read_to_string(&own)
+            .unwrap()
+            .starts_with("00 01 02 03"),
+        "the file the worker wrote"
+    );
+    // A landing without a worker-written file does not write one itself.
+    app.clear_command_out();
+    assert!(!own.exists(), "the old file was removed");
+    app.made_text_landed(None);
+    assert!(app.tab.command_out.is_none(), "the UI thread wrote no file");
+    assert!(app.flash.is_some(), "and it says so");
+    // With a file, it is that file.
+    let made = MadeText::write("hello\nworld").unwrap();
+    let path = made.path_for_test().unwrap().to_path_buf();
+    app.made_text_landed(Some(Ok(made)));
+    assert_eq!(app.tab.command_out.as_deref(), Some(path.as_path()));
+    app.clear_command_out();
+    assert!(!path.exists(), "the tab removes the file it owns");
+}
+
+/// A result that is dropped unused (the preview moved on) takes its temp file with it.
+#[test]
+fn a_stale_result_leaves_no_temp_file_behind() {
+    use super::plugin_host::MadeText;
+    let (mut app, _d) = hexdump_app("konoma_text_plugin_stale_file");
+    let made = MadeText::write("never shown").unwrap();
+    let path = made.path_for_test().unwrap().to_path_buf();
+    assert!(path.exists());
+    let mut res = PluginResult::failed(
+        app.media_gen.wrapping_sub(1),
+        "hexdump".into(),
+        ViewReq::default(),
+        konoma_plugin::Failure::external(konoma_plugin::Tr::new("stale")),
+    );
+    res.made_text = Some(Ok(made));
+    assert!(!app.install_plugin_result(res), "a stale result is dropped");
+    // The drop happens off the UI thread: give it a moment.
+    for _ in 0..300 {
+        if !path.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!path.exists(), "its temp file is gone");
 }

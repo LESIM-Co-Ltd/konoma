@@ -218,6 +218,7 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Dyn(search_status),
         Foot::GroupOp(PAGE_TURN),
         Foot::Op(Action::ToggleOutline),
+        Foot::Op(Action::ToggleMarkdownRaw),
         Foot::Op(Action::SearchStart),
         Foot::Leader(LeaderId::TableCopy, Msg::CopyHint),
         Foot::Group(ENDS, Msg::HintEnds),
@@ -660,9 +661,18 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                 if !action_enabled(app, ctx, *a) {
                     continue;
                 }
-                match text(app, ctx, *a).label {
-                    Some(label) => tok(group_keys(app, ctx, &[*a]), label, &[*a]),
-                    None => None,
+                if let Some(label) = crate::ops::decl::repr_label(app, *a) {
+                    let keys = group_keys(app, ctx, &[*a]);
+                    (!keys.is_empty()).then(|| Token {
+                        text: format!("{}:{label}", write_keys(&keys, ctx)),
+                        keys,
+                        actions: vec![*a],
+                    })
+                } else {
+                    match text(app, ctx, *a).label {
+                        Some(label) => tok(group_keys(app, ctx, &[*a]), label, &[*a]),
+                        None => None,
+                    }
                 }
             }
             Foot::As(a, label) => {

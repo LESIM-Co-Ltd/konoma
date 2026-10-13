@@ -25,6 +25,7 @@
 use konoma_plugin::view::{DocOptions, TextSource, View};
 use konoma_plugin::{Plugin, Settings};
 
+use super::plugin_host::MadeText;
 use super::*;
 
 /// The name of the source representation.
@@ -179,25 +180,22 @@ impl App {
         }
     }
 
-    /// The source view landed (`R`, or a tab that came back in it): a string source is written
-    /// to a private temp file and the windowed reader is opened on the file (the file itself, or
-    /// the temp file).
-    pub(super) fn source_view_landed(&mut self) {
+    /// The source view landed (`R`, or a tab that came back in it): a string source was written to
+    /// a private temp file by the worker (`made`), and the windowed reader is opened on the file
+    /// (the file itself, or the temp file). Nothing is written here: the UI thread only takes the
+    /// path.
+    pub(super) fn source_view_landed(&mut self, made: Option<std::io::Result<MadeText>>) {
         if !self.is_md_raw() {
             return;
         }
-        let owned = match self.plugin.as_mut().and_then(|p| p.view.as_mut()) {
-            Some(View::Text(t)) => match &mut t.source {
-                // The string now lives in the temp file; the view keeps no second copy.
-                TextSource::Owned(text) => Some(std::mem::take(text)),
-                _ => None,
-            },
+        let owned = match self.plugin.as_ref().and_then(|p| p.view.as_ref()) {
+            Some(View::Text(t)) => matches!(t.source, TextSource::Owned(_)),
             _ => return,
         };
-        if let Some(text) = owned {
+        if owned {
             self.clear_command_out();
-            match crate::preview::command::write_private_temp(text.as_bytes()) {
-                Ok(p) => self.tab.command_out = Some(p),
+            match made.unwrap_or_else(|| Err(std::io::Error::other("no text was written"))) {
+                Ok(file) => self.tab.command_out = file.take(),
                 Err(e) => {
                     self.flash = Some(format!(
                         "{}{e}",

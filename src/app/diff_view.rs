@@ -385,6 +385,10 @@ impl App {
             self.return_to_diff_from_preview();
             return;
         }
+        // A plugin that declares several representations: the host walks them.
+        if self.cycle_repr() {
+            return;
+        }
         self.toggle_md_raw();
     }
 
@@ -400,13 +404,19 @@ impl App {
     /// what a *later* Markdown preview in the same tab would show, entirely outside any diff.
     /// [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the image
     /// surface's own hint is never shown outside the `preview_from_diff` case — so the handler must
-    /// not act outside it either.
+    /// not act outside it either. The one other thing `R` does here: a picture plugin that declares
+    /// several representations is walked by the host (`App::cycle_repr`); a diagram's picture
+    /// declares none for the host to walk, so it stays a no-op.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn image_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
+            return;
         }
+        // Not a diff's preview: a plugin that declares several representations is walked by the
+        // host (a standard picture plugin, and a diagram's picture, declare none to walk).
+        self.cycle_repr();
     }
 
     /// Enters the diff's `Preview` representation for `path` — an ordinary content preview

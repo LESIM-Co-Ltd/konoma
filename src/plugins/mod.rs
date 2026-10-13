@@ -467,6 +467,73 @@ pub(crate) fn syntax_highlight_on(cfg: &crate::config::Config) -> bool {
     }
 }
 
+/// The type a setting's declared default has, named for the message that says a value of another
+/// type is not used.
+#[derive(Clone, Copy)]
+pub(crate) enum ValueType {
+    Bool,
+    Int,
+    Float,
+    Str,
+    List,
+    Table,
+}
+
+impl ValueType {
+    fn of(v: &konoma_plugin::Value) -> ValueType {
+        use konoma_plugin::Value;
+        match v {
+            Value::Bool(_) => ValueType::Bool,
+            Value::Int(_) => ValueType::Int,
+            Value::Float(_) => ValueType::Float,
+            Value::Str(_) => ValueType::Str,
+            Value::List(_) => ValueType::List,
+            Value::Table(_) => ValueType::Table,
+        }
+    }
+
+    fn en(self) -> &'static str {
+        match self {
+            ValueType::Bool => "true or false",
+            ValueType::Int => "an integer",
+            ValueType::Float => "a number",
+            ValueType::Str => "a string",
+            ValueType::List => "a list",
+            ValueType::Table => "a table",
+        }
+    }
+
+    fn ja(self) -> &'static str {
+        match self {
+            ValueType::Bool => "真偽値(true か false)",
+            ValueType::Int => "整数",
+            ValueType::Float => "数値",
+            ValueType::Str => "文字列",
+            ValueType::List => "リスト",
+            ValueType::Table => "テーブル",
+        }
+    }
+}
+
+/// The type the declared default asks for when `given` is of another one (`None` = it fits). A
+/// whole number is accepted where a number is declared, as `Settings::float` does.
+pub(crate) fn value_type_mismatch(
+    default: &konoma_plugin::Value,
+    given: &konoma_plugin::Value,
+) -> Option<ValueType> {
+    use konoma_plugin::Value;
+    let fits = matches!(
+        (default, given),
+        (Value::Bool(_), Value::Bool(_))
+            | (Value::Int(_), Value::Int(_))
+            | (Value::Float(_), Value::Float(_) | Value::Int(_))
+            | (Value::Str(_), Value::Str(_))
+            | (Value::List(_), Value::List(_))
+            | (Value::Table(_), Value::Table(_))
+    );
+    (!fits).then(|| ValueType::of(default))
+}
+
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.
 pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> Vec<String> {
@@ -489,11 +556,28 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
         // A key the plugin did not declare is a typo or a name from another version: said once at
         // startup, and ignored (`enabled` is the host's own key).
         if let Some(manifest) = registry.manifest(id) {
-            for key in table.keys() {
-                if key != "enabled" && !manifest.settings.iter().any(|d| d.name == *key) {
+            for (key, value) in table {
+                if key == "enabled" {
+                    continue;
+                }
+                let Some(decl) = manifest.settings.iter().find(|d| d.name == *key) else {
                     out.push(match lang {
                         Lang::Jp => format!("[plugins.{id}] の未知の設定 `{key}`(無視)"),
                         Lang::En => format!("unknown setting `{key}` in [plugins.{id}] (ignored)"),
+                    });
+                    continue;
+                };
+                // A value of another type than the declared default is not read: the plugin
+                // falls back to the default. Said once at startup, not left silent.
+                if let Some(want) = value_type_mismatch(&decl.default, &value_of(value)) {
+                    out.push(match lang {
+                        Lang::Jp => {
+                            format!("[plugins.{id}] {key} は{}が必要(既定を使う)", want.ja())
+                        }
+                        Lang::En => format!(
+                            "[plugins.{id}] {key} must be {} (using the default)",
+                            want.en()
+                        ),
                     });
                 }
             }

@@ -87,18 +87,16 @@ impl EmbedRender {
         };
         // The retained copy is what the md entry keeps for the layout and for later rasters.
         let svg = Arc::new(data.to_vec());
-        let img = if self.trusted_origin {
-            // A plugin we trust that does not vouch for its own SVG is a bug in it: refuse, so an
-            // entry is never half trusted.
-            if !trusted {
-                return failed();
-            }
-            crate::preview::svg::rasterize_trusted(&svg, Path::new(base), max_px)
-                .ok_or_else(|| "rasterize failed".to_string())
-        } else {
-            crate::preview::svg::rasterize_embedded(&svg, max_px, &|| false)
-                .map_err(|_| "rasterize failed".to_string())
-        };
+        // A plugin we trust that does not vouch for its own SVG is a bug in it: refuse, so an
+        // entry is never half trusted.
+        if self.trusted_origin && !trusted {
+            return failed();
+        }
+        // The same function draws it again later (`SvgTrust::draw`).
+        let img = self
+            .svg_trust(base)
+            .draw(&svg, max_px, &|| false)
+            .ok_or_else(|| "rasterize failed".to_string());
         (img, Some(svg))
     }
 
@@ -106,6 +104,16 @@ impl EmbedRender {
     /// origin. Otherwise it is drawn in the child process every time.
     pub(super) fn trusts_svg(&self) -> bool {
         self.trusted_origin
+    }
+
+    /// How the SVG this plugin makes is drawn, every time: konoma's own in this process (`base`
+    /// names it), anything else by the child process that reads no file.
+    pub(super) fn svg_trust(&self, base: &str) -> crate::app::SvgTrust {
+        if self.trusted_origin {
+            crate::app::SvgTrust::Trusted(PathBuf::from(base))
+        } else {
+            crate::app::SvgTrust::Embedded
+        }
     }
 }
 

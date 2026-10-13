@@ -388,6 +388,7 @@ fn table_rows() -> Vec<Row> {
         r(LINE_ENDS).d(Msg::TableColsHelp),
         r(PAGE_TURN),
         r(&[Action::ToggleOutline]),
+        r(&[Action::ToggleMarkdownRaw]),
         r(SEARCH).then(SEARCH_MATCH).d(Msg::TableSearchHelp),
         r(&[Action::ToggleTableCell]),
         r(PAGE_KEYS),
@@ -695,8 +696,12 @@ fn render_row(app: &App, ctx: Context, row: &Row) -> Option<RowOut> {
         keys = format!("{keys} / {l}");
     }
     let desc = match row.desc {
-        Some(m) => m,
-        None => text(app, ctx, lead).help?,
+        Some(m) => tr(app.lang, m).to_string(),
+        // `R` on a plugin's own list of representations is named by the plugin.
+        None => match crate::ops::decl::repr_label(app, lead) {
+            Some(label) => label,
+            None => tr(app.lang, text(app, ctx, lead).help?).to_string(),
+        },
     };
     let sec = row.sec.unwrap_or_else(|| {
         if decl(lead).launch {
@@ -711,7 +716,7 @@ fn render_row(app: &App, ctx: Context, row: &Row) -> Option<RowOut> {
     });
     Some(RowOut {
         keys_text: keys,
-        desc: tr(app.lang, desc).to_string(),
+        desc,
         keys: all_keys,
         actions: all_acts,
         ungated: row.ungated,

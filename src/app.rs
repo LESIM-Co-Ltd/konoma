@@ -60,6 +60,7 @@ mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
 mod preview_visual;
+mod repr_cycle;
 mod search;
 mod session_actions;
 mod tab_lifecycle;
@@ -783,6 +784,42 @@ pub enum SvgTrust {
     Embedded,
 }
 
+impl Default for SvgTrust {
+    /// The safe answer for an entry whose origin was never stated: no file read, child process.
+    fn default() -> Self {
+        SvgTrust::Embedded
+    }
+}
+
+impl SvgTrust {
+    /// Whether this SVG is drawn by the supervised child process (anything but konoma's own).
+    #[cfg(test)]
+    pub(crate) fn is_untrusted(&self) -> bool {
+        !matches!(self, SvgTrust::Trusted(_))
+    }
+
+    /// Draw `svg` at `max_px` the way its origin allows. The one function the first drawing, the
+    /// drawing again (sharp zoom, evicted pixels) and the full-screen re-raster all go through, so
+    /// the same SVG never changes how it looks (a relative `<image href>` is read, or not, the
+    /// same each time). `None`: it could not be drawn (or `cancelled` turned true).
+    pub(crate) fn draw(
+        &self,
+        svg: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<image::DynamicImage> {
+        match self {
+            SvgTrust::Trusted(p) => crate::preview::svg::rasterize_trusted(svg, p, max_px),
+            SvgTrust::File(p) => {
+                crate::preview::svg::rasterize_untrusted(svg, p, max_px, cancelled).ok()
+            }
+            SvgTrust::Embedded => {
+                crate::preview::svg::rasterize_embedded(svg, max_px, cancelled).ok()
+            }
+        }
+    }
+}
+
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
@@ -905,18 +942,7 @@ impl MediaJob {
             }
             MediaJob::SvgReraster(svg, trust, max_px) => {
                 let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                let img = match &trust {
-                    SvgTrust::Trusted(p) => {
-                        crate::preview::svg::rasterize_trusted(&svg, p, max_px)?
-                    }
-                    SvgTrust::File(p) => {
-                        crate::preview::svg::rasterize_untrusted(&svg, p, max_px, &cancelled)
-                            .ok()?
-                    }
-                    SvgTrust::Embedded => {
-                        crate::preview::svg::rasterize_embedded(&svg, max_px, &cancelled).ok()?
-                    }
-                };
+                let img = trust.draw(&svg, max_px, &cancelled)?;
                 Some(MediaPayload::Vector { img, svg, trust })
             }
             MediaJob::Command {
@@ -1199,6 +1225,9 @@ pub(crate) struct MediaDiffPictureDecoded {
     image: image::DynamicImage,
     frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
     svg: Option<Arc<Vec<u8>>>,
+    /// The file an SVG side was drawn from (the base of its relative references); drawn again
+    /// from the same base. `None` for the kinds that keep no SVG.
+    svg_base: Option<PathBuf>,
     cache_key: PathBuf,
 }
 
@@ -2518,10 +2547,11 @@ struct MdImgEntry {
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// Whether `svg` is not konoma's own (a picture from git, or from a plugin that is not a
-    /// trusted one): it is drawn again, whenever it is, by the supervised child process that reads
-    /// no file, never in this process. Set where the entry is made.
-    svg_untrusted: bool,
+    /// Where `svg` came from, and so how it is drawn again (`SvgTrust`): konoma's own in this
+    /// process, a file's by the supervised child process with the file's directory as the base
+    /// for relative references (as the first drawing did), anything else by the child process
+    /// reading no file. Set where the entry is made.
+    svg_trust: SvgTrust,
     /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
     /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
     /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
@@ -5194,7 +5224,7 @@ impl App {
     /// What every change of representation resets: a view switch = start from the top, with no
     /// selection and no stale decoration. The windowed reader is rebuilt (source) or dropped
     /// (rendered) from the state the new representation left.
-    fn reset_view_for_repr_change(&mut self) {
+    pub(super) fn reset_view_for_repr_change(&mut self) {
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.tab.preview_scroll = 0;

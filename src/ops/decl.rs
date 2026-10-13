@@ -252,6 +252,16 @@ pub fn decl(a: Action) -> Decl {
     }
 }
 
+/// What `R` is called when it walks the representations a plugin declares (`App::repr_step`):
+/// the plugin's own label for the one it goes to. `None` for every other operation, and for the
+/// standard shapes whose `R` has a message of the catalog.
+pub fn repr_label(app: &App, a: Action) -> Option<String> {
+    match a {
+        Action::ToggleMarkdownRaw | Action::ImageReturnToDiff => app.repr_step().map(|s| s.label),
+        _ => None,
+    }
+}
+
 /// A label and a description as they read now in a context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpText {

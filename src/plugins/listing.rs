@@ -16,6 +16,13 @@ fn target_text(t: &Target) -> String {
     }
 }
 
+/// `text` without control characters. The table is printed straight to the terminal and holds
+/// strings that come from the config (a rule's glob, a plugin name, a key in a `[plugins.*]`
+/// table): an ESC in one must not reach the terminal as a control sequence.
+fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
 fn yes(b: bool) -> &'static str {
     if b {
         "yes"
@@ -66,6 +73,11 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
             "built-in".into(),
         ]);
     }
+    for row in &mut rows {
+        for cell in row.iter_mut() {
+            *cell = clean(cell);
+        }
+    }
     let head = ["ASSIGNMENT", "PLUGIN", "STANDARD", "ENABLED", "SOURCE"];
     let mut widths = head.map(str::len);
     for row in &rows {
@@ -100,7 +112,7 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
         "\nTurn a standard plugin off with `[plugins.<id>] enabled = false` in the config.\n",
     );
     for problem in table_problems(&cfg.plugins, crate::i18n::Lang::En) {
-        out.push_str(&format!("warning: {problem}\n"));
+        out.push_str(&format!("warning: {}\n", clean(&problem)));
     }
     out
 }

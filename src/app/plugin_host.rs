@@ -184,6 +184,64 @@ pub(super) enum Picture {
     Failed,
 }
 
+/// The text a plugin made, written by the worker to a private temp file the host's windowed reader
+/// opens. The file is removed when this is dropped, unless the host took it for the tab (which
+/// then owns it): a result that is dropped unused (a stale one, a representation the host did not
+/// need) leaves nothing behind.
+pub(super) struct MadeText {
+    path: Option<PathBuf>,
+}
+
+impl MadeText {
+    /// Write `text` to a new private temp file. Blocks: call from a worker.
+    pub(super) fn write(text: &str) -> std::io::Result<MadeText> {
+        let path = crate::preview::command::write_private_temp(text.as_bytes())?;
+        Ok(MadeText { path: Some(path) })
+    }
+
+    /// Take the file for the tab: it is no longer removed on drop.
+    pub(super) fn take(mut self) -> Option<PathBuf> {
+        self.path.take()
+    }
+
+    /// Test-only: where the file is.
+    #[cfg(test)]
+    pub(super) fn path_for_test(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+impl Drop for MadeText {
+    fn drop(&mut self) {
+        if let Some(p) = self.path.take() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// Write the text of a text view the host windows from a file of its own (a hex dump's lines, a
+/// document's source string) on the worker, so the UI thread never writes it. A string source is
+/// moved into the file (the view keeps no second copy); lines are kept for their colors.
+fn write_made_text(view: &mut View, plugin: &str) -> Option<std::io::Result<MadeText>> {
+    let profile = crate::plugins::profile_of(plugin);
+    if !(profile.document || (profile.text && !profile.file_text)) {
+        return None;
+    }
+    let View::Text(t) = view else {
+        return None;
+    };
+    let text = match &mut t.source {
+        konoma_plugin::view::TextSource::Lines(lines) => lines
+            .iter()
+            .map(|l| l.plain())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        konoma_plugin::view::TextSource::Owned(s) => std::mem::take(s),
+        konoma_plugin::view::TextSource::File(_) => return None,
+    };
+    Some(MadeText::write(&text))
+}
+
 /// What a worker reports back. Sent through the one worker channel, inside a [`MediaResult`].
 pub struct PluginResult {
     pub(super) gen: u64,
@@ -205,6 +263,8 @@ pub struct PluginResult {
     /// For each declared action, whether the returned session says it works now. Empty when no
     /// session came back.
     pub(super) enabled: Vec<(String, bool)>,
+    /// The text of a text view, written to a temp file on the worker (`write_made_text`).
+    pub(super) made_text: Option<std::io::Result<MadeText>>,
 }
 
 /// The layout a worker learned from `open`, sent ahead of the (slower) first picture when the UI
@@ -229,6 +289,7 @@ impl PluginResult {
             document: None,
             group: None,
             enabled: Vec::new(),
+            made_text: None,
         }
     }
 }
@@ -257,6 +318,7 @@ impl PluginResult {
             document: None,
             group: None,
             enabled: Vec::new(),
+            made_text: None,
         }
     }
 
@@ -396,6 +458,7 @@ impl PluginWork {
                 .with_external(external);
             let mut picture = Picture::None;
             let mut document = None;
+            let mut made_text = None;
             let (view, failure) = match session.view(&req, &cx) {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(
@@ -441,7 +504,10 @@ impl PluginWork {
                         ja: "プラグインが画像を返しませんでした",
                     ))),
                 ),
-                Ok(v) => (Some(v), None),
+                Ok(mut v) => {
+                    made_text = write_made_text(&mut v, &id);
+                    (Some(v), None)
+                }
                 Err(f) => (None, Some(f)),
             };
             // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
@@ -460,6 +526,7 @@ impl PluginWork {
                 document,
                 group: None,
                 enabled,
+                made_text,
             }
         };
         match job {
@@ -509,6 +576,7 @@ impl PluginWork {
                     document: None,
                     group: None,
                     enabled,
+                    made_text: None,
                 }
             }
         }
@@ -1355,6 +1423,8 @@ impl App {
         }
         let outcome = res.outcome.clone();
         let asked = res.req.repr.clone();
+        // The temp file of the text the worker wrote: used below, or removed when this is dropped.
+        let made_text = res.made_text;
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
@@ -1454,10 +1524,10 @@ impl App {
             self.text_view_landed();
             // The source of a Markdown file or a Word document: open the windowed reader on it.
             if text_landed && self.holds_document() {
-                self.source_view_landed();
+                self.source_view_landed(made_text);
             } else if text_landed && self.text_plugin_is_generated() {
                 // A plugin that makes its text (a hex dump): the reader windows what it made.
-                self.made_text_landed();
+                self.made_text_landed(made_text);
             }
         }
         match outcome {

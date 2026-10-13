@@ -295,6 +295,21 @@ impl App {
         }
     }
 
+    /// Test-only: the picture an entry holds, and the same SVG drawn again as the application
+    /// draws it again (sharp zoom, rebuilding evicted pixels) at the given size.
+    #[cfg(test)]
+    pub(crate) fn md_first_and_redrawn_for_test(
+        &self,
+        key: &Path,
+        max_px: u32,
+    ) -> Option<(image::DynamicImage, image::DynamicImage)> {
+        let entry = self.md_image_cache.get(key)?;
+        let first = (**entry.decoded.as_ref()?).clone();
+        let svg = entry.svg.clone()?;
+        let again = crate::app::redraw_svg(&svg, &entry.svg_trust, max_px).ok()?;
+        Some((first, again))
+    }
+
     /// One side's move-into-cache — a no-op for every non-`Picture` variant.
     fn materialize_side(&mut self, side: MediaDiffSideDecoded) -> MediaDiffSide {
         match side {
@@ -308,10 +323,14 @@ impl App {
                 // happen here, not inside it.
                 // The SVG it keeps is a file's (git's old version, the working file): drawn again
                 // only by the supervised child process.
+                // Drawn again from the same base as the first drawing (`decode_svg_side`).
                 self.md_image_cache
                     .entry(p.cache_key.clone())
                     .or_default()
-                    .svg_untrusted = true;
+                    .svg_trust = match &p.svg_base {
+                    Some(base) => SvgTrust::File(base.clone()),
+                    None => SvgTrust::Embedded,
+                };
                 let request = self.begin_md_request(&p.cache_key);
                 // No transparency handling here: each side draws with exactly the same pixels the
                 // ordinary preview would for that kind — a PDF's own renderer composites its pages
@@ -976,6 +995,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
             image: first_frame,
             frames: Some(frames),
             svg: None,
+            svg_base: None,
             cache_key: PathBuf::from(key),
         }));
     }
@@ -990,6 +1010,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
                 image: img,
                 frames: None,
                 svg: None,
+                svg_base: None,
                 cache_key: PathBuf::from(key),
             }))
         }
@@ -1042,6 +1063,7 @@ fn decode_svg_side(
         image: img,
         frames: None,
         svg: Some(Arc::new(bytes.to_vec())),
+        svg_base: Some(path.to_path_buf()),
         cache_key: PathBuf::from(key),
     }))
 }
@@ -1083,6 +1105,7 @@ fn decode_pdf_side(
         image: img,
         frames: None,
         svg: None,
+        svg_base: None,
         cache_key: PathBuf::from(key),
     }))
 }

@@ -23,6 +23,7 @@ use ratatui::style::{Modifier, Style};
 use konoma_plugin::view::{LineStyler, TextSource, TextView, View};
 use konoma_plugin::{Color as PColor, Line as PLine, Modifier as PModifier, Style as PStyle};
 
+use super::plugin_host::MadeText;
 use super::*;
 
 fn color_of(c: PColor) -> ratatui::style::Color {
@@ -149,26 +150,18 @@ impl App {
     /// A made text plugin's view landed: its text becomes the file the reader windows (a private
     /// temp file the tab owns; a file the plugin names is read in place), and the window is opened
     /// on it afresh. The colors stay with the view.
-    pub(super) fn made_text_landed(&mut self) {
-        let text = match self.plugin.as_mut().and_then(|p| p.view.as_mut()) {
-            Some(View::Text(t)) => match &mut t.source {
-                TextSource::Lines(lines) => Some(
-                    lines
-                        .iter()
-                        .map(|l| l.plain())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                // The string now lives in the temp file; the view keeps no second copy.
-                TextSource::Owned(s) => Some(std::mem::take(s)),
-                TextSource::File(_) => None,
-            },
+    ///
+    /// The worker wrote the text (`made`, `plugin_host::write_made_text`); the UI thread only takes
+    /// the path, so a plugin that returns a large string cannot stop the interface.
+    pub(super) fn made_text_landed(&mut self, made: Option<std::io::Result<MadeText>>) {
+        let has_text = match self.plugin.as_ref().and_then(|p| p.view.as_ref()) {
+            Some(View::Text(t)) => !matches!(t.source, TextSource::File(_)),
             _ => return,
         };
-        if let Some(text) = text {
+        if has_text {
             self.clear_command_out();
-            match crate::preview::command::write_private_temp(text.as_bytes()) {
-                Ok(p) => self.tab.command_out = Some(p),
+            match made.unwrap_or_else(|| Err(std::io::Error::other("no text was written"))) {
+                Ok(file) => self.tab.command_out = file.take(),
                 Err(e) => {
                     self.flash = Some(format!(
                         "{}{e}",

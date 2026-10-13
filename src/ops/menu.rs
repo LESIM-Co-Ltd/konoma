@@ -221,7 +221,10 @@ fn candidates(
             return;
         }
         // A plugin's operation is named by the plugin, not by a message of ours.
-        if !matches!(a, Action::Plugin(_)) && label_of(app, ctx, a, prio).is_none() {
+        if !matches!(a, Action::Plugin(_))
+            && decl::repr_label(app, a).is_none()
+            && label_of(app, ctx, a, prio).is_none()
+        {
             return;
         }
         match out.iter_mut().find(|(o, _)| *o == a) {
@@ -344,6 +347,7 @@ fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
             let key = key?;
             let label = match a {
                 Action::Plugin(p) => plugin_label(app, ctx, *p)?,
+                _ if decl::repr_label(app, *a).is_some() => decl::repr_label(app, *a)?,
                 _ => tr(app.lang, label_of(app, ctx, *a, &prio)?).to_string(),
             };
             Some(MenuItem {

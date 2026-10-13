@@ -885,7 +885,7 @@ impl App {
 
     /// Whether the open presentation has a picture representation at all (its reader drew the
     /// slides).
-    fn deck_has_pictures(&self) -> bool {
+    pub(super) fn deck_has_pictures(&self) -> bool {
         self.is_deck()
             && self.plugin.as_ref().is_some_and(|p| {
                 p.layout

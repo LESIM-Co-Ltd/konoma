@@ -740,6 +740,7 @@ table | N | search_prev
 table | O | toggle_outline
 table | P | paste_jump
 table | Q | quit
+table | R | toggle_markdown_raw
 table | T | toggle_tab_list
 table | [ | tab_prev
 table | ] | tab_next

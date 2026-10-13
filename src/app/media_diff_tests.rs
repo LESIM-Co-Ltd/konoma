@@ -1519,5 +1519,9 @@ fn an_svg_side_lands_as_an_entry_that_is_drawn_again_only_by_the_child() {
         .get(&p.cache_key)
         .expect("the side is in the cache");
     assert!(entry.svg.is_some(), "the SVG is kept");
-    assert!(entry.svg_untrusted, "and marked as not konoma's own");
+    assert_eq!(
+        entry.svg_trust,
+        SvgTrust::File(svg.clone()),
+        "and marked as a file's: drawn again relative to it"
+    );
 }

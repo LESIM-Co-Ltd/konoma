@@ -563,3 +563,146 @@ impl Session for NotifierSession {
         }))
     }
 }
+
+// ---- a plugin with several representations of what it shows (`R` walks them) ---------------------
+
+/// What a [`Multi`] plugin shows.
+#[derive(Clone, Copy)]
+pub(crate) enum Shape {
+    /// A document with three slide headings (pages that start at headings).
+    Doc,
+    /// A table; with pages when `pages > 1`.
+    Table,
+    /// A picture; with pages when `pages > 1`.
+    Image,
+    /// Lines of text the plugin makes.
+    Text,
+}
+
+/// The ids of the representations a [`Multi`] plugin declares, in order.
+pub(crate) const MULTI_REPRS: [&str; 3] = ["alpha", "beta", "gamma"];
+
+/// A plugin that declares `reprs` representations (`alpha`, `beta`, `gamma`; labels `Alpha`, ...)
+/// and answers each with a view of its shape that says which one it is, under an id of its own.
+pub(crate) struct Multi {
+    pub id: &'static str,
+    pub ext: &'static str,
+    pub shape: Shape,
+    pub reprs: usize,
+    pub pages: usize,
+}
+
+impl Plugin for Multi {
+    fn manifest(&self) -> Manifest {
+        let kind = match self.shape {
+            Shape::Doc => ViewKind::Document,
+            Shape::Table => ViewKind::Table,
+            Shape::Image => ViewKind::Image,
+            Shape::Text => ViewKind::Text,
+        };
+        let m = manifest(self.id, self.ext, kind);
+        // A document whose pages start at headings is converted from its file, like a deck.
+        if matches!(self.shape, Shape::Doc) {
+            m.converts()
+        } else {
+            m
+        }
+    }
+
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let path = match &input {
+            Input::File { path, .. } => path.clone(),
+            _ => PathBuf::new(),
+        };
+        Ok(Box::new(MultiSession {
+            shape: self.shape,
+            reprs: self.reprs,
+            pages: self.pages,
+            path,
+        }))
+    }
+}
+
+struct MultiSession {
+    shape: Shape,
+    reprs: usize,
+    pages: usize,
+    path: PathBuf,
+}
+
+impl Session for MultiSession {
+    fn layout(&self) -> Layout {
+        let labels = [Tr::new("Alpha"), Tr::new("Beta"), Tr::new("Gamma")];
+        let reprs: Vec<ReprDecl> = if self.reprs == 0 {
+            Vec::new()
+        } else {
+            (0..self.reprs.min(3))
+                .map(|i| ReprDecl::new(MULTI_REPRS[i], labels[i].clone()))
+                .collect()
+        };
+        let pages = match self.shape {
+            Shape::Doc => Some(PageLayout::Anchored {
+                heading_level: 1,
+                count: self.pages.max(1),
+            }),
+            Shape::Table | Shape::Image if self.pages > 1 => Some(PageLayout::Separate {
+                count: Some(self.pages),
+                titles: Vec::new(),
+            }),
+            _ => None,
+        };
+        Layout {
+            reprs,
+            default_repr: Some("alpha".into()),
+            default_repr_without_pixels: Some("alpha".into()),
+            pages,
+        }
+    }
+
+    fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        let repr = req.repr.clone().unwrap_or_else(|| "alpha".into());
+        let idx = MULTI_REPRS.iter().position(|r| *r == repr).unwrap_or(0);
+        let page = req.page.unwrap_or(0).min(self.pages.max(1) - 1);
+        Ok(match self.shape {
+            Shape::Doc => View::Document(DocumentView {
+                markdown: (1..=self.pages.max(1))
+                    .map(|n| {
+                        format!(
+                            "# Slide {n}\n\nthis is {repr}\n\n{}",
+                            "filler\n\n".repeat(40)
+                        )
+                    })
+                    .collect(),
+                origin: Origin::File(self.path.clone()),
+                resources: Resources::new(),
+                options: DocOptions::default(),
+                title: None,
+                truncated: false,
+            }),
+            Shape::Table => View::Table(TableView {
+                grid: Arc::new(Cells {
+                    rows: vec![
+                        vec!["shown".into(), "page".into()],
+                        vec![repr, format!("p{}", page + 1)],
+                    ],
+                    ncols: 2,
+                    first_row_is_header: true,
+                }),
+                title: None,
+                rainbow: true,
+                addressed: false,
+            }),
+            Shape::Image => {
+                // Red says the representation, green says the page.
+                let color = [(idx * 100 + 55) as u8, (page * 80) as u8, 0, 255];
+                let pixels: Vec<u8> = color.iter().copied().cycle().take(4 * 8 * 8).collect();
+                View::Image(ImageView::new(ImageData::Rgba {
+                    width: 8,
+                    height: 8,
+                    pixels: Arc::new(pixels),
+                }))
+            }
+            Shape::Text => View::text([format!("this is {repr}")]),
+        })
+    }
+}

@@ -125,6 +125,7 @@ All notable changes to konoma are documented in this file. The format is based o
   text per standard id. What you see with the standard plugins does not change.
 
 ### Fixed
+- **A picture drawn again no longer changes how it looks.** An SVG in an image diff was drawn the first time with its folder as the base for relative references (a `<image href="dot.png">` showed), but sharpened on zoom or rebuilt after being dropped from memory by a process that reads no file, so the referenced picture vanished. Every drawing of the same SVG (the first, the sharper one, the rebuilt one) now goes through one function with the same base.
 - Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
   restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
   page first and then opens the file, so the picture is the page the indicator names.

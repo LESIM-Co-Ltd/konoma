@@ -103,9 +103,12 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         },
         A::ToggleMarkdownRaw => when(
             app.preview_is_diff_representation()
-                || (app.is_decorated_kind() && !app.document_text_missing()),
+                || (app.is_decorated_kind() && !app.document_text_missing())
+                || app.repr_step().is_some(),
         ),
-        A::ImageReturnToDiff => when(app.preview_is_diff_representation()),
+        A::ImageReturnToDiff => {
+            when(app.preview_is_diff_representation() || app.repr_step().is_some())
+        }
         // The outline lists the headings of a decorated document; anywhere else the handler
         // answers "no headings". Closing an open outline always acts.
         // On a preview of pages (a deck, a PDF, a workbook) it lists the pages instead, and only

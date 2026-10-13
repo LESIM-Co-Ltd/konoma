@@ -664,7 +664,7 @@ fn the_entries_of_a_plugin_the_user_added_are_marked_untrusted_and_the_standard_
         .collect();
     assert!(!kept.is_empty(), "the standard plugin drew the fence");
     assert!(
-        kept.iter().all(|e| !e.svg_untrusted),
+        kept.iter().all(|e| !e.svg_trust.is_untrusted()),
         "konoma's own diagram"
     );
 
@@ -684,5 +684,8 @@ fn the_entries_of_a_plugin_the_user_added_are_marked_untrusted_and_the_standard_
         .filter(|e| e.svg.is_some())
         .collect();
     assert!(!kept.is_empty(), "the user's plugin drew the fence");
-    assert!(kept.iter().all(|e| e.svg_untrusted), "never believed");
+    assert!(
+        kept.iter().all(|e| e.svg_trust.is_untrusted()),
+        "never believed"
+    );
 }

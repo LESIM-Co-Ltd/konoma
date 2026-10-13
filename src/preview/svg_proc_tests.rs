@@ -2315,6 +2315,67 @@ fn a_plugins_trusted_claim_is_believed_only_for_a_standard_plugin_that_draws_its
     kill_live();
 }
 
+/// An SVG in an image diff is drawn the same way the first time and every time after (sharp zoom,
+/// pixels rebuilt after eviction): a relative `<image href>` is read from the file's directory by
+/// the child process each time. Embedded kinds (a fence, a formula from a plugin the user added)
+/// never read a file.
+#[test]
+fn a_diff_svg_drawn_again_matches_its_first_drawing_and_an_embedded_one_reads_no_file() {
+    use crate::app::{App, MediaDiffOutcome, MediaDiffSide};
+    use image::GenericImageView;
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-redraw-match");
+    std::fs::create_dir_all(&dir).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]))
+        .save(dir.join("dot.png"))
+        .unwrap();
+    let svg = dir.join("icon.svg");
+    std::fs::write(
+        &svg,
+        br##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="40"><rect width="40" height="40" fill="#fff"/><image xlink:href="dot.png" href="dot.png" x="10" y="10" width="20" height="20"/></svg>"##,
+    )
+    .unwrap();
+    super::svg_proc::with_real_child(bin(), || {
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+        let MediaDiffOutcome::Ready {
+            new: MediaDiffSide::Picture(p),
+            ..
+        } = app.poll_media_diff(&svg, 1, (400, 300)).expect("sync")
+        else {
+            panic!("a picture was expected");
+        };
+        let key = p.cache_key.clone();
+        let max_px = {
+            let (first, _) = app.md_first_and_redrawn_for_test(&key, 100).unwrap();
+            let (w, h) = first.dimensions();
+            w.max(h)
+        };
+        let (first, again) = app.md_first_and_redrawn_for_test(&key, max_px).unwrap();
+        assert_eq!(first.dimensions(), again.dimensions());
+        assert_eq!(
+            first.to_rgba8().as_raw(),
+            again.to_rgba8().as_raw(),
+            "drawn again, the same pixels"
+        );
+        let (w, h) = first.dimensions();
+        let centre = first.get_pixel(w / 2, h / 2).0;
+        assert!(
+            centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
+            "the relative image is there: {centre:?}"
+        );
+        // An embedded SVG reads no file: the same bytes, no dot.
+        let bare =
+            crate::preview::svg::rasterize_embedded(&std::fs::read(&svg).unwrap(), max_px, &|| {
+                false
+            })
+            .unwrap();
+        let c = bare.get_pixel(w / 2, h / 2).0;
+        assert!(c[1] > 200, "the embedded drawing reads no file: {c:?}");
+    });
+    kill_live();
+}
+
 /// An embedded kind (a fence) drawn by a plugin the user added is drawn by the child process every
 /// time; the standard plugin's picture stays in this process.
 #[test]
@@ -2355,10 +2416,17 @@ fn a_kept_svg_is_drawn_again_in_the_child_unless_konoma_made_it() {
     no_children_left();
     let red = crate::plugins::test_views::RED_SQUARE.as_bytes();
     super::svg_proc::with_real_child(bin(), || {
-        assert!(crate::app::redraw_svg(red, "rebuild.svg", 100, false).is_ok());
+        let own = crate::app::SvgTrust::Trusted("rebuild.svg".into());
+        assert!(crate::app::redraw_svg(red, &own, 100).is_ok());
         assert_eq!(live_children(), 0, "konoma's own SVG: this process");
-        assert!(crate::app::redraw_svg(red, "rebuild.svg", 100, true).is_ok());
+        let embedded = crate::app::SvgTrust::Embedded;
+        assert!(crate::app::redraw_svg(red, &embedded, 100).is_ok());
         assert_eq!(live_children(), 1, "anything else: the child");
+        kill_live();
+        assert_eq!(live_children(), 0);
+        let file = crate::app::SvgTrust::File("/nowhere/x.svg".into());
+        assert!(crate::app::redraw_svg(red, &file, 100).is_ok());
+        assert_eq!(live_children(), 1, "a file's: the child too");
     });
     kill_live();
 }

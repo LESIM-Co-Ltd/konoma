@@ -1486,6 +1486,9 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
         // `O` = the list of the sheets of a workbook (2+ visible sheets; the gate refuses elsewhere).
         ptbl.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
+        // R = the next representation of a table plugin that declares several (the host walks
+        // them; nothing happens, and no hint shows, for a table with one).
+        ptbl.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
         ptbl.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptbl.insert(KeyPress::ch('o'), run(Action::OpenExternal));
