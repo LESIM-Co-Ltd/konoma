@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # `plugins` is the integration branch for the plugin architecture: stage PRs merge there, and it
+    # merges into `main` when it is ready to release, so its tip needs the same checks as `main`.
+    branches: [main, master, plugins]
   pull_request:
 
 env:
