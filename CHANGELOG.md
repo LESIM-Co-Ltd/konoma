@@ -140,6 +140,8 @@ All notable changes to konoma are documented in this file. The format is based o
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
 
 ### Fixed
+- The reason a file could not be read (a Markdown file, or a diagram file drawn as text) was always shown in Japanese,
+  whatever `[ui] lang` said (`[can not preview: 読み込み失敗] …`). It now follows the language setting.
 - A picture that was drawn again sharper (an inline mermaid diagram or formula that grew past its first
   drawing, a GIF frame) could keep showing the encoding made from its old pixels: an encode that was already running
   when the new pixels landed cleared the "needs encoding again" mark when it finished. Which pixels stayed depended only

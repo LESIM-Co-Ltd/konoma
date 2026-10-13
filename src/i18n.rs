@@ -831,6 +831,9 @@ pub enum Msg {
     DocErrUnsupportedOpen,
     DocTruncatedTitle,
     MermaidUnavailable,
+    /// Prefix before the I/O error when a text-drawn preview (e.g. a `.mmd` file shown as text)
+    /// cannot read its file. Same words as the Markdown plugin's own read failure.
+    DecoratedReadFailed,
     DiagramOpenFailed,
     /// Preview body for a `detached=true` `[[preview.rules]] command = "..."` delegation, once launched.
     CommandOpenedExternally,
@@ -1559,6 +1562,7 @@ fn en(msg: Msg) -> &'static str {
         DocErrUnsupportedOpen => "Press `e` to open it in an Office app",
         DocTruncatedTitle => "· truncated (too large to show in full) ",
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
+        DecoratedReadFailed => "[can not preview: could not read it]",
         DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
         CommandOpenedExternally => "opened externally: ",
         CommandPreviewFailed => "delegated command failed: ",
@@ -2195,6 +2199,7 @@ fn jp(msg: Msg) -> &'static str {
         DocErrUnsupportedOpen => "Office アプリで開くには `e` を押してください",
         DocTruncatedTitle => "· 打ち切り(大きすぎて全部は表示していません) ",
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
+        DecoratedReadFailed => "[can not preview: 読み込み失敗]",
         DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
         CommandOpenedExternally => "外部プログラムで開きました: ",
         CommandPreviewFailed => "外部コマンド委譲に失敗: ",
@@ -2907,6 +2912,7 @@ mod tests {
         Msg::DocErrUnsupportedOpen,
         Msg::DocTruncatedTitle,
         Msg::MermaidUnavailable,
+        Msg::DecoratedReadFailed,
         Msg::DiagramOpenFailed,
         Msg::CommandOpenedExternally,
         Msg::CommandPreviewFailed,

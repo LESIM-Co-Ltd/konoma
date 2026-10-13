@@ -1027,7 +1027,10 @@ impl App {
             Ok(src) => src,
             Err(e) => {
                 return DecoratedMarkdown {
-                    lines: vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    lines: vec![Line::from(format!(
+                        "{} {e}",
+                        tr(self.lang, crate::i18n::Msg::DecoratedReadFailed)
+                    ))],
                     images: Vec::new(),
                     remote_urls: Vec::new(),
                     mermaid_fences: Vec::new(),

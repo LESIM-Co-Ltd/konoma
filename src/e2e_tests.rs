@@ -3774,6 +3774,43 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
     );
 }
 
+/// A `.mmd` file that cannot be read, shown as text (no picker, so `build_decorated_file`'s
+/// non-document road): the reason follows `[ui] lang` instead of a fixed Japanese string.
+#[cfg(unix)]
+fn unreadable_mmd_screen(lang: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox(&format!("mmd_unreadable_{lang}"));
+    let f = dir.join("locked.mmd");
+    std::fs::write(&f, "flowchart TD\nA-->B\n").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&f).is_ok() {
+        // Running as root: permission bits do not apply, the file cannot be made unreadable.
+        return None;
+    }
+    let mut cfg = Config::default();
+    cfg.ui.lang = lang.into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("locked.mmd");
+    s.enter();
+    let screen = s.screen();
+    let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+    Some(screen)
+}
+
+#[cfg(unix)]
+#[test]
+fn e2e_unreadable_text_drawn_mmd_reason_follows_ui_lang() {
+    if let Some(en) = unreadable_mmd_screen("en") {
+        assert!(en.contains("[can not preview: could not read it]"), "{en}");
+        assert!(!en.contains("読み込み失敗"), "{en}");
+    }
+    if let Some(jp) = unreadable_mmd_screen("jp") {
+        // The dump pads wide characters with spaces, so compare without them.
+        let squeezed: String = jp.chars().filter(|c| *c != ' ').collect();
+        assert!(squeezed.contains("[cannotpreview:読み込み失敗]"), "{jp}");
+    }
+}
+
 /// A follow-opened diff's `Rendered` presentation compares against the **follow-start baseline**,
 /// not simply the file's committed HEAD — constructed so the two would disagree: the file is
 /// already dirty (an extra section) when `F` is pressed, and after `F` that section is removed
