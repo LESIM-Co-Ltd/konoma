@@ -319,23 +319,10 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
     }
-    // While branch-filter input is active, show the query prompt (takes priority over the mode
-    // footer).
-    if app.git_branch_filtering() {
-        let q = app.git_branch_query();
-        return vec![
-            Span::from(format!("/{q}")).bold(),
-            Span::from("▏").dim(),
-            Span::from(format!(
-                "  {}",
-                tr(lang, crate::i18n::Msg::StApplyClearHint)
-            ))
-            .dim(),
-        ];
-    }
-    // Same treatment for the worktree list's own filter input.
-    if app.git_worktree_filtering() {
-        let q = app.git_worktree_query();
+    // While a list's `/` filter input is active (branches, worktrees, changes, log, graph), show
+    // the query prompt (takes priority over the mode footer).
+    if let Some(l) = app.filtering_list() {
+        let q = app.list_filter_query(l);
         return vec![
             Span::from(format!("/{q}")).bold(),
             Span::from("▏").dim(),
@@ -1038,14 +1025,17 @@ mod tests {
                 .map(|s| s.content.as_ref())
                 .collect();
             // The hub footer is generated from the operations that act on a read-only backend:
-            // the diff (`l` opens it like `Enter`), bookmarks, `s:sync` and the tool, then
-            // `h/q:close`. The log and the graph have no default key.
+            // the diff (`l` opens it like `Enter`), bookmarks, `s:sync` and the tool, the `/`
+            // filter and the `Tab` cycle of screens, then `h/q:close`. The log and the graph have
+            // no default key.
             let expected = [
                 format!("l/Enter:{}", tr(lang, Msg::HintDiff)),
                 format!("d:{}", tr(lang, Msg::FtDiffAll)),
                 format!("b:{}", tr(lang, Msg::HintBookmarks)),
                 format!("s:{}", tr(lang, Msg::FtSync)),
                 format!("!:{}", tr(lang, Msg::FtTool)),
+                format!("/:{}", tr(lang, Msg::HintSearch)),
+                format!("Tab/⇧Tab:{}", tr(lang, Msg::FtScreens)),
                 format!("h/q:{}", tr(lang, Msg::FtClose)),
             ]
             .join("  ");
@@ -1080,7 +1070,7 @@ mod tests {
         assert_eq!(
             footer,
             "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  \
-             b:branch  w:worktrees  !:tool  h/q:close"
+             b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
         );
         for word in ["stage", "unstage", "commit", "worktree"] {
             assert!(
@@ -1114,7 +1104,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  h/q/Esc:back"
+            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
         );
         assert!(
             !footer.contains("base"),
@@ -1138,7 +1128,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  h/q/Esc:back"
+            "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
         );
         assert!(
             !footer.contains("all revisions"),
@@ -1166,7 +1156,7 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, "j/k:nav  /:search  h/q/Esc:back");
+        assert_eq!(footer, "j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back");
         for word in ["checkout", "new", "delete"] {
             assert!(
                 !footer.contains(word),
@@ -1192,7 +1182,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  h/q/Esc:back"
+            "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
         );
     }
 
@@ -1338,7 +1328,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "j/k:scroll  C-n/C-p:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}  ,:view",
+                "j/k:scroll  C-n/C-p:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}  ,:view  e:edit  o:open in app",
                 tr(Lang::En, Msg::DiffViewPreview)
             )
         );
@@ -1373,7 +1363,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "C-n/C-p:{}  x:discard  q/Esc:back  ,:view",
+                "C-n/C-p:{}  x:discard  q/Esc:back  ,:view  e:edit  o:open in app",
                 tr(Lang::En, Msg::HintNextPrevFile),
             )
         );

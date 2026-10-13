@@ -23,12 +23,14 @@ use crate::i18n::tr;
 use crate::preview::PreviewKind;
 
 mod bookmark_actions;
+mod change_jump;
 mod copy_actions;
 mod dialog_actions;
 mod diff_view;
 mod file_actions;
 mod follow;
 mod git_view;
+pub(crate) mod list_filter;
 mod md_diff;
 mod md_items;
 mod md_media;
@@ -41,6 +43,7 @@ mod media_plugin;
 #[cfg(test)]
 pub(crate) use media_plugin::svg_file_payload;
 mod office_doc;
+pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
@@ -191,8 +194,12 @@ pub enum UiLayer {
 
     // --- The git views (detail sits over log; the branch panel sits over the graph) ---
     GitDetail,
+    /// The log with its `/` filter input active.
+    GitLogFilter,
     GitLog,
     GitGraphPicker,
+    /// The graph with its `/` filter input active.
+    GitGraphFilter,
     GitGraph,
     /// The branch list with its `/` filter input active.
     GitBranchFilter,
@@ -200,6 +207,8 @@ pub enum UiLayer {
     /// The worktree list with its `/` filter input active.
     GitWorktreeFilter,
     GitWorktrees,
+    /// The changes list with its `/` filter input active.
+    GitChangesFilter,
     GitChanges,
     GitDiff,
 
@@ -274,6 +283,8 @@ impl UiLayer {
             #[cfg(feature = "git")]
             Self::GitDetail => S::GitDetail,
             #[cfg(feature = "git")]
+            Self::GitLogFilter | Self::GitGraphFilter | Self::GitChangesFilter => S::ListFilter,
+            #[cfg(feature = "git")]
             Self::GitLog => S::GitLog,
             #[cfg(feature = "git")]
             Self::GitGraphPicker => S::GitGraphPicker,
@@ -293,9 +304,12 @@ impl UiLayer {
             Self::GitDiff => S::PreviewGitDiff,
             #[cfg(not(feature = "git"))]
             Self::GitDetail
+            | Self::GitLogFilter
             | Self::GitLog
             | Self::GitGraphPicker
+            | Self::GitGraphFilter
             | Self::GitGraph
+            | Self::GitChangesFilter
             | Self::GitBranchFilter
             | Self::GitBranches
             | Self::GitWorktreeFilter
@@ -336,9 +350,9 @@ impl UiLayer {
             Self::InputRename => InternalMode::Rename,
             Self::Help => InternalMode::Help,
             Self::GitDetail => InternalMode::GitDetail,
-            Self::GitLog => InternalMode::GitLog,
+            Self::GitLogFilter | Self::GitLog => InternalMode::GitLog,
             Self::GitGraphPicker => InternalMode::GitGraphPicker,
-            Self::GitGraph => InternalMode::GitGraph,
+            Self::GitGraphFilter | Self::GitGraph => InternalMode::GitGraph,
             // A list's `/` filter deliberately keeps the list's own chip, so there is no
             // `InternalMode::BranchFilter`/`WorktreeFilter` to map to. The three consumers each
             // want something different and that is on purpose: the keymap needs a separate surface
@@ -349,7 +363,7 @@ impl UiLayer {
             // `a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip`.
             Self::GitBranchFilter | Self::GitBranches => InternalMode::GitBranch,
             Self::GitWorktreeFilter | Self::GitWorktrees => InternalMode::GitWorktrees,
-            Self::GitChanges => InternalMode::GitChanges,
+            Self::GitChangesFilter | Self::GitChanges => InternalMode::GitChanges,
             Self::GitDiff => InternalMode::GitDiff,
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
@@ -396,6 +410,8 @@ impl crate::keymap::Surface {
             S::BranchFilter => UiLayer::GitBranchFilter,
             #[cfg(feature = "git")]
             S::WorktreeFilter => UiLayer::GitWorktreeFilter,
+            #[cfg(feature = "git")]
+            S::ListFilter => UiLayer::GitChangesFilter,
             S::DialogConfirmDelete => UiLayer::ConfirmDelete,
             S::DialogConfirmDrop => UiLayer::ConfirmDrop,
             S::DialogRenamePreview => UiLayer::RenamePreview,
@@ -1971,6 +1987,14 @@ pub struct App {
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
+    /// Whether the last drawn source diff was laid out side by side (the width the layout was
+    /// resolved at is only known while drawing). `n` / `N` and `e` read it to turn a diff line
+    /// into the scroll row it is at.
+    pub(crate) diff_split_drawn: bool,
+    /// The change block (an index into the blocks of the file shown) the last `n` / `N` of a
+    /// document or a diff landed on, with the file: lets the next step and `e` know which block
+    /// the view is on when the scroll alone cannot say (see `current_block`).
+    change_at: Option<(PathBuf, usize)>,
     /// The image/PDF/SVG side-by-side "diff"'s layout (auto/side/stack). Initialized from
     /// `[git] media_diff` and cycled with `s` while that view is active
     /// (`App::cycle_media_diff_layout`). App-level (not per-tab), like `diff_layout` — kept across
@@ -3133,6 +3157,14 @@ pub(crate) struct PerTab {
     git_branch_sel: usize,
     git_branch_filter: String,
     git_branch_filtering: bool,
+    // The `/` filter of the other lists: the changes list, the log and the graph (the branch and
+    // worktree lists have theirs right above and below). One shape for all five, see `list_filter`.
+    git_view_filter: String,
+    git_view_filtering: bool,
+    git_log_filter: String,
+    git_log_filtering: bool,
+    git_graph_filter: String,
+    git_graph_filtering: bool,
     // The linked-worktree list (`w` from the changes hub). Same shape as the branch-list fields
     // right above (list / cursor / filter query / filter-input-active).
     git_worktrees: Option<Vec<crate::git::WorktreeInfo>>,
@@ -3289,6 +3321,12 @@ impl Default for PerTab {
             git_branch_sel: 0,
             git_branch_filter: String::new(),
             git_branch_filtering: false,
+            git_view_filter: String::new(),
+            git_view_filtering: false,
+            git_log_filter: String::new(),
+            git_log_filtering: false,
+            git_graph_filter: String::new(),
+            git_graph_filtering: false,
             git_worktrees: None,
             git_worktree_sel: 0,
             git_worktree_filter: String::new(),
@@ -3510,6 +3548,8 @@ impl App {
             filter_pool_dirty: false,
             pool_tx: None,
             diff_layout,
+            diff_split_drawn: false,
+            change_at: None,
             media_diff_layout,
             git_branch: None,
             git_worktree_origin: None,
@@ -3882,9 +3922,19 @@ impl App {
         // --- The git views. The commit detail sits over the log, and the branch panel sits over
         // the graph (`is_git_graph` is still true underneath it), so each goes before what it covers. ---
         layer!(self.is_git_detail(), UiLayer::GitDetail);
-        layer!(self.is_git_log(), UiLayer::GitLog);
+        let log = self.is_git_log();
+        layer!(
+            log && self.list_filtering(list_filter::ListId::Log),
+            UiLayer::GitLogFilter
+        );
+        layer!(log, UiLayer::GitLog);
         layer!(self.is_git_graph_picker(), UiLayer::GitGraphPicker);
-        layer!(self.is_git_graph(), UiLayer::GitGraph);
+        let graph = self.is_git_graph();
+        layer!(
+            graph && self.list_filtering(list_filter::ListId::Graph),
+            UiLayer::GitGraphFilter
+        );
+        layer!(graph, UiLayer::GitGraph);
         let branches = self.is_git_branches();
         layer!(
             branches && self.git_branch_filtering(),
@@ -3897,7 +3947,12 @@ impl App {
             UiLayer::GitWorktreeFilter
         );
         layer!(worktrees, UiLayer::GitWorktrees);
-        layer!(self.is_git_view(), UiLayer::GitChanges);
+        let changes = self.is_git_view();
+        layer!(
+            changes && self.list_filtering(list_filter::ListId::Changes),
+            UiLayer::GitChangesFilter
+        );
+        layer!(changes, UiLayer::GitChanges);
         layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
 
         // --- Input surfaces / menus / lists / popups ---
@@ -4685,16 +4740,13 @@ impl App {
     /// For a directory or no target, notify via flash and do nothing (only files can be edited).
     /// In Preview the editor is asked to open at the on-screen position (see `preview_edit_line`).
     pub fn request_edit(&mut self) {
-        let target = match self.tab.mode {
-            Mode::Tree => match self.tab.entries.get(self.tab.selected) {
-                Some(e) if e.is_dir => {
-                    self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
-                    return;
-                }
-                Some(e) => Some(e.path.clone()),
-                None => None,
-            },
-            Mode::Preview => self.tab.preview_path.clone(),
+        let target = match self.verb_target() {
+            open_app::VerbTarget::File(p) => Some(p),
+            open_app::VerbTarget::Dir => {
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
+                return;
+            }
+            open_app::VerbTarget::None => None,
         };
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
@@ -4714,6 +4766,15 @@ impl App {
     fn preview_edit_line(&self) -> Option<usize> {
         if self.tab.mode != Mode::Preview {
             return None;
+        }
+        // The version-control list over a preview: the file is the list's row, not the preview's.
+        if self.is_git_view() {
+            return None;
+        }
+        // A diff opens the editor at the change block on screen (new-file line number).
+        #[cfg(feature = "git")]
+        if self.is_git_diff_preview() {
+            return self.diff_edit_line();
         }
         // The converted Markdown of a Word document has no line in the .docx to open at.
         if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {

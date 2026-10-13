@@ -401,6 +401,74 @@ pub fn unified_max_hscroll(diff: &[DiffLine], width: usize) -> usize {
     max_content.saturating_sub(width)
 }
 
+// ---- change blocks (n / N, and the line `e` opens at) --------------
+
+/// The indexes of the lines that start a change block: the first line of each maximal run of
+/// Added / Removed lines (a Context line, a file header included, ends a run).
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn change_block_starts(diff: &[DiffLine]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut in_run = false;
+    for (i, dl) in diff.iter().enumerate() {
+        let changed = dl.kind != DiffLineKind::Context;
+        if changed && !in_run {
+            out.push(i);
+        }
+        in_run = changed;
+    }
+    out
+}
+
+/// The line of the **new** file the change block starting at `idx` stands at: its first added
+/// line, or for a pure deletion the line below the removed ones (the last line above when the
+/// deletion is at the end of the file). `None` for a block of an empty new file.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn block_new_line(diff: &[DiffLine], idx: usize) -> Option<u32> {
+    let mut end = idx;
+    while end < diff.len() && diff[end].kind != DiffLineKind::Context {
+        if diff[end].kind == DiffLineKind::Added {
+            if let Some(n) = diff[end].new_no {
+                return Some(n);
+            }
+        }
+        end += 1;
+    }
+    diff.get(end)
+        .and_then(|d| d.new_no)
+        .or_else(|| diff[..idx].iter().rev().find_map(|d| d.new_no))
+}
+
+/// The scroll row diff line `idx` is drawn at: the line index itself in the unified layout, and
+/// the line's index minus the lines the side-by-side layout folds into one row (an unequal
+/// Removed / Added block takes `max(removed, added)` rows, see `build_side_rows`) in the split
+/// layout.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn scroll_row_of_line(diff: &[DiffLine], idx: usize, split: bool) -> usize {
+    if !split {
+        return idx;
+    }
+    let (mut rows, mut rem, mut add) = (0usize, 0usize, 0usize);
+    for dl in diff.iter().take(idx) {
+        match dl.kind {
+            DiffLineKind::Removed => {
+                if add > 0 {
+                    rows += rem.max(add);
+                    rem = 0;
+                    add = 0;
+                }
+                rem += 1;
+            }
+            DiffLineKind::Added => add += 1,
+            DiffLineKind::Context => {
+                rows += rem.max(add) + 1;
+                rem = 0;
+                add = 0;
+            }
+        }
+    }
+    rows + rem.max(add)
+}
+
 // ---- side-by-side -------------------------------------------------
 
 /// One side cell of a side-by-side diff. `no` = line number, `bg`/`bar` = kind color (None = Context), `hl` = changed-char range,

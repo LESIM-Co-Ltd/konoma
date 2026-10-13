@@ -6,6 +6,32 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **`o` opens the file in another app** (the `open` verb; `e` edits). In the tree, in every preview and diff, and on a row of the
+  changes list: an Office file goes to the Office apps (Microsoft's, then LibreOffice, then the OS default, the same chain `e`
+  already used for Office files), anything else to the OS default (`open` / `xdg-open`). It runs on a worker, so the screen
+  never waits. `[external] office_apps` and `[external] open_links` stop it (the hint disappears with them); `[editor] ext` is
+  `e`'s and does not reach `o`. A directory is not opened. Action name: `open_external`.
+- **The project's screen and tool from everywhere**: `p` (the Git / jj hub) and `!` (lazygit / lazyjj, `[git] tool` / `[jj] tool`)
+  now work in the tree and in every kind of preview and diff, not only in the hub. Outside a repository, with
+  `[external] git_tool = false` for `!`, they are not offered and say why.
+- **`Tab` / `Shift-Tab` walk the version-control screens**: changes, log, graph, branches, worktrees (jj has no worktree screen,
+  so its cycle skips it), listed in the footer and the `?` help. `b` and `w` still go straight there. Action names:
+  `git_screen_next`, `git_screen_prev`.
+- **`/` filters the changes list, the log and the graph** by the text each row shows (case-insensitive), the way it already filtered
+  the branch and worktree lists, with the same input line in the footer, `Enter` to keep the query and `Esc` to drop it (a second
+  `Esc` leaves the screen). All five lists now share one filter, so a pasted text also reaches the worktree list's query.
+  Action name: `list_filter_start`.
+- **`n` / `N` step through the changes when nothing is being searched**: in a code or text preview to the next / previous block of
+  the git change gutter, in a rendered document to the next / previous changed block, in a diff to the next / previous change
+  block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files stays on `Ctrl-n` / `Ctrl-p`). While a
+  search is active they step through its matches as before. The footer offers `n/N:change` only when the file has a change.
+- **`r` reads again everywhere** (it was the tree's only): a preview, a diff, and the changes list, the log, the graph, the branch
+  and worktree lists.
+- **`e` works in a diff and on the changes list**: in a diff it opens the editor at the line of the change block on screen (the
+  block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
+  that file in a new tab.
+
 ### Changed
 - **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
   modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
@@ -20,7 +46,7 @@ All notable changes to konoma are documented in this file. The format is based o
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
   new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches
-  the changed file with `Ctrl-n` / `Ctrl-p` (it was `n` / `N`, which are free there); an image's `0` is gone (`=` resets the
+  the changed file with `Ctrl-n` / `Ctrl-p` (it was `n` / `N`, which step through the change blocks of the file now); an image's `0` is gone (`=` resets the
   fit); in the tree's range selection `q` cancels the selection like `Esc` (it quit the app; `Q` still quits); in a jj changes
   screen `s` syncs (it was `R`, and git's `s` still stages); the branch list's `y` opens a menu whose item copies the
   branch name; `Space` is no longer the key that toggles a checkbox or `<details>` (`Enter` does, as it already did) or pages
@@ -28,8 +54,8 @@ All notable changes to konoma are documented in this file. The format is based o
   the graph's base is cleared by `x` only (`0` is the line start); the graph's branch panel shows the current branch only
   with `c` (it was `n`) and applies with `l`; in every list of the Git screens `l` opens (what `Enter` does) and `h` goes
   back. The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
-  have no default key for now: they move to the `,` menu and the hub's `Tab` cycle in the next steps, and meanwhile
-  `[keys]` can bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
+  have no default key: the first three are in the `,` menu and the log and the graph are reached with `Tab`, and `[keys]`
+  can still bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
   The footer and the `?` help show the new keys by themselves.
 - **Key tables are now per context, not per screen** (the default keys are unchanged). `[keys.<context>]` is keyed by what you
   are looking at: `text` (source and plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are

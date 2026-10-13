@@ -1182,6 +1182,7 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_gitdiff_source(frame: &mut Frame, app: &mut App, area: Rect) {
     // Auto is resolved by the inner width. Estimate the frame's inner width first.
     let split = app.diff_is_split(Block::bordered().inner(area).width);
+    app.diff_split_drawn = split;
     let mode_tag = if split { " ⇆" } else { "" };
     // The position `(2/5)` within the set of changed files (the current spot for n/N cycling; not shown if outside the set).
     let pos = app

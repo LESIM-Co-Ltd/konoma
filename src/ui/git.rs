@@ -11,11 +11,13 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
+/// How the hub names the system answering it. git calls its pointer a branch and marks it with a
+/// glyph; jj's label already opens with `@`, so it needs no marker of its own.
+use crate::app::list_filter::ListId;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::ui::icons;
-/// How the hub names the system answering it. git calls its pointer a branch and marks it with a
-/// glyph; jj's label already opens with `@`, so it needs no marker of its own.
+
 fn repo_label(app: &App, icons_on: bool) -> Option<String> {
     let name = match app.git_vcs {
         crate::vcs::VcsKind::Git => "Git",
@@ -44,12 +46,22 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
     let icons_on = app.cfg.ui.icons;
     let entries = app.git_view_entries();
     let sel = app.git_view_sel();
+    // The `/` filter narrows the rows that are drawn; `shown` indexes all of `entries`.
+    let shown = app.list_visible(ListId::Changes);
+    let is_shown = |i: usize| shown.as_ref().is_none_or(|v| v.binary_search(&i).is_ok());
+    let count = shown.as_ref().map_or(entries.len(), Vec::len);
+    let q = app.list_filter_query(ListId::Changes);
 
     // Title: " Git ⎇ <branch>  (N) " (icons=false: " Git br: <branch>  (N) "). Just the glyph/label
-    // when there's no branch.
+    // when there's no branch. A query shows as " /<query>" before the count.
+    let q_tag = if q.is_empty() {
+        String::new()
+    } else {
+        format!(" /{q}")
+    };
     let title = match repo_label(app, icons_on) {
-        Some(l) => format!(" {l}  ({}) ", entries.len()),
-        None => format!(" {}  ({}) ", repo_name(app), entries.len()),
+        Some(l) => format!(" {l}{q_tag}  ({count}) "),
+        None => format!(" {}{q_tag}  ({count}) ", repo_name(app)),
     };
 
     let lines: Vec<Line> = if entries.is_empty() {
@@ -60,6 +72,7 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
         entries
             .iter()
             .enumerate()
+            .filter(|(i, _)| is_shown(*i))
             .map(|(i, e)| {
                 let st = e.status;
                 // Staged indicator: ●=staged / blank=unstaged.
@@ -84,6 +97,7 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
 
     // Decide the vertical scroll amount so the selected row is always visible (same naive follow as tree).
     let visible = area.height.saturating_sub(2) as usize;
+    let sel = position_among(&shown, sel);
     let offset = if visible > 0 && sel >= visible {
         (sel - visible + 1) as u16
     } else {
@@ -94,6 +108,15 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::bordered().title(title))
         .scroll((offset, 0));
     frame.render_widget(widget, area);
+}
+
+/// The position of row `sel` among the rows a filter leaves shown (`None` = no filter: the row
+/// itself), for scrolling the cursor into view.
+fn position_among(shown: &Option<Vec<usize>>, sel: usize) -> usize {
+    match shown {
+        Some(v) => v.iter().position(|&i| i == sel).unwrap_or(0),
+        None => sel,
+    }
 }
 
 /// Truncate styled spans to display width `max` (drop the tail and append `…` when over). Colors/decorations are preserved.
@@ -167,13 +190,22 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
     let icons_on = app.cfg.ui.icons;
     let entries = app.git_log_entries();
     let sel = app.git_log_sel();
+    let shown = app.list_visible(ListId::Log);
+    let is_shown = |i: usize| shown.as_ref().is_none_or(|v| v.binary_search(&i).is_ok());
+    let count = shown.as_ref().map_or(entries.len(), Vec::len);
+    let q = app.list_filter_query(ListId::Log);
+    let q_tag = if q.is_empty() {
+        String::new()
+    } else {
+        format!(" /{q}")
+    };
 
     let title = match app.git_branch() {
         Some(b) => match icons::chip_marker(app.git_vcs, icons_on) {
-            "" => format!(" {} log {b}  ({}) ", repo_name(app), entries.len()),
-            m => format!(" {} log {m} {b}  ({}) ", repo_name(app), entries.len()),
+            "" => format!(" {} log {b}{q_tag}  ({count}) ", repo_name(app)),
+            m => format!(" {} log {m} {b}{q_tag}  ({count}) ", repo_name(app)),
         },
-        None => format!(" {} log  ({}) ", repo_name(app), entries.len()),
+        None => format!(" {} log{q_tag}  ({count}) ", repo_name(app)),
     };
 
     // How meta (author, date) is aligned. "inline"=right after the subject / anything else (default)=a right-aligned column.
@@ -188,6 +220,7 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
         entries
             .iter()
             .enumerate()
+            .filter(|(i, _)| is_shown(*i))
             .map(|(i, c)| {
                 // time_epoch is i64. Negative (before 1970) is clamped to 0 before passing to the u64 formatter.
                 let date = crate::fileops::format_epoch_short(c.time_epoch.max(0) as u64);
@@ -216,6 +249,7 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let visible = area.height.saturating_sub(2) as usize;
+    let sel = position_among(&shown, sel);
     let offset = if visible > 0 && sel >= visible {
         (sel - visible + 1) as u16
     } else {
@@ -381,7 +415,19 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     let icons_on = app.cfg.ui.icons;
     let rows = app.git_graph_rows();
     let sel = app.git_graph_sel();
-    let n = rows.iter().filter(|r| r.commit.is_some()).count();
+    let shown = app.list_visible(ListId::Graph);
+    let is_shown = |i: usize| shown.as_ref().is_none_or(|v| v.binary_search(&i).is_ok());
+    let q = app.list_filter_query(ListId::Graph);
+    let q_tag = if q.is_empty() {
+        String::new()
+    } else {
+        format!(" /{q}")
+    };
+    let n = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| r.commit.is_some() && is_shown(*i))
+        .count();
     // While a base branch is pinned (Phase 2), also show base: <name> in the title. The "base:"
     // word is always spelled out (already self-descriptive in English); only the leading glyph is
     // gated by `ui.icons`, so icons=false never duplicates the wording ("⌖ base:" → "base:", not
@@ -395,9 +441,9 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 String::new()
             };
-            format!(" {} graph  ({n})  {icon}base: {b} ", repo_name(app))
+            format!(" {} graph{q_tag}  ({n})  {icon}base: {b} ", repo_name(app))
         }
-        _ => format!(" {} graph  ({n}) ", repo_name(app)),
+        _ => format!(" {} graph{q_tag}  ({n}) ", repo_name(app)),
     };
 
     // Draw the border first, then split inner into the "commit column" and the "legend (bottom edge)".
@@ -438,6 +484,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         rows.iter()
             .enumerate()
+            .filter(|(i, _)| is_shown(*i))
             .map(|(i, r)| {
                 // The colored graph part (lanes) becomes the starting point on the left.
                 let mut left: Vec<Span> = r
@@ -498,6 +545,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             .collect()
     };
     let visible = commit_area.height as usize;
+    let sel = position_among(&shown, sel);
     let offset = if visible > 0 && sel >= visible {
         (sel - visible + 1) as u16
     } else {

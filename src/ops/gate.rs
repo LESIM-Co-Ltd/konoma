@@ -10,7 +10,8 @@
 // and the handler stays authoritative: the gate may say `On` for a key the handler then declines,
 // but never `Off` for a key that would have acted.
 
-use crate::app::{App, MdFocus, Mode};
+use crate::app::open_app::VerbTarget;
+use crate::app::{App, MdFocus};
 use crate::i18n::Msg;
 use crate::keymap::{Action, Context};
 use crate::preview::PreviewKind;
@@ -119,8 +120,26 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // Wrapping is a property of the text and the decorated document.
         A::ToggleWrap => when(matches!(ctx, Context::Text | Context::Document)),
 
-        // --- `e` ---
+        // --- `e` and `o` ---
         A::RequestEdit => gate_edit(app),
+        A::OpenExternal => gate_open_external(app),
+        // `Ctrl-t` on the changes list opens the row's file; in the tree it has always acted.
+        #[cfg(feature = "git")]
+        A::OpenInNewTab if matches!(ctx, Context::Screen(..)) => {
+            when(matches!(app.verb_target(), VerbTarget::File(_)))
+        }
+
+        // --- `!`: the project's tool. The version-control screens always have a repository. ---
+        #[cfg(feature = "git")]
+        A::GitLaunchTool if !matches!(ctx, Context::Screen(..)) => {
+            if !app.cfg.external.git_tool {
+                Gate::Off(Some(Msg::ExternalGitToolDisabled))
+            } else if app.git_state_known() && app.git_branch().is_none() {
+                Gate::Off(Some(Msg::NotAGitRepo))
+            } else {
+                Gate::On
+            }
+        }
 
         // --- The tree's version-control keys: refuse where the handler would just flash ---
         A::OpenGitView => gate_open_git_view(app),
@@ -151,6 +170,9 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- The diff screen ---
+        // `n` / `N` step through the change blocks of the file: only while it has some.
+        #[cfg(feature = "git")]
+        A::DiffNextChange | A::DiffPrevChange => when(app.diff_has_change_blocks()),
         #[cfg(feature = "git")]
         A::CycleDiffView => when(app.diff_view_cycle_hint().is_some()),
         #[cfg(feature = "git")]
@@ -203,16 +225,10 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).
 fn gate_edit(app: &App) -> Gate {
-    let target = match app.tab.mode {
-        Mode::Tree => match app.tab.entries.get(app.tab.selected) {
-            Some(e) if e.is_dir => return Gate::Off(Some(Msg::CannotEditDirectory)),
-            Some(_) => true,
-            None => false,
-        },
-        Mode::Preview => app.tab.preview_path.is_some(),
-    };
-    if !target {
-        return Gate::Off(Some(Msg::NoFileToEdit));
+    match app.verb_target() {
+        VerbTarget::File(_) => {}
+        VerbTarget::Dir => return Gate::Off(Some(Msg::CannotEditDirectory)),
+        VerbTarget::None => return Gate::Off(Some(Msg::NoFileToEdit)),
     }
     // `edit_label` is `None` exactly when the target is an Office document and opening those is
     // switched off: `e` then only explains that.
@@ -220,6 +236,30 @@ fn gate_edit(app: &App) -> Gate {
         return Gate::Off(Some(Msg::OfficeAppsDisabled));
     }
     Gate::On
+}
+
+/// `o`: there is a file under the cursor and the way to open it is not switched off (mirrors
+/// `App::open_in_other_app`). An Office document needs `[external] office_apps`, anything else
+/// `[external] open_links`. A directory is not opened (no hint, a flash if the key is pressed).
+/// Decided from the extension and the cached target only: the footer asks every frame.
+fn gate_open_external(app: &App) -> Gate {
+    match app.verb_target() {
+        VerbTarget::File(p) => {
+            if crate::app::office_open::office_kind(&p).is_some() {
+                if app.cfg.external.office_apps {
+                    Gate::On
+                } else {
+                    Gate::Off(Some(Msg::OfficeAppsDisabled))
+                }
+            } else if app.cfg.external.open_links {
+                Gate::On
+            } else {
+                Gate::Off(Some(Msg::ExternalOpenLinksDisabled))
+            }
+        }
+        VerbTarget::Dir => Gate::Off(Some(Msg::NotAFile)),
+        VerbTarget::None => Gate::Off(Some(Msg::NoFileToOpenApp)),
+    }
 }
 
 /// `o`: the hub opens only in a repository the backend can show (mirrors `App::open_git_view`).

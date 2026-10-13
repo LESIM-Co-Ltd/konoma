@@ -1430,9 +1430,12 @@ fn footer_text(s: &Sim) -> String {
 fn e2e_word_a_failed_document_footer_offers_no_dead_keys() {
     let (s, _d) = open_bad("w_fail_footer", |p| std::fs::write(p, b"nope").unwrap());
     let f = footer_text(&s);
-    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:"] {
+    // (`O:` is the outline. The lower-case `o` is "open in another app" now, which acts here: the
+    // file exists, only its text is missing.)
+    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:"] {
         assert!(!f.contains(dead), "{dead} must not be offered: {f}");
     }
+    assert!(f.contains("o:open in app"), "{f}");
     assert!(f.contains("q:") && f.contains("?:"), "{f}");
 }
 
@@ -2092,10 +2095,17 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
         assert!(s.app.document_text_missing(), "{label}");
         let f = footer_text(&s);
         for dead in [
-            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:", "Y:", "Tab:", "jk:",
+            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:", "Y:", "Tab:", "jk:",
         ] {
             assert!(!f.contains(dead), "[{label}] footer offers {dead}: {f}");
         }
+        // `o` opens the file in another app: offered exactly while opening Office documents in
+        // an app is switched on.
+        assert_eq!(
+            f.contains("o:open in app"),
+            label != "office_apps = false",
+            "[{label}] {f}"
+        );
         s.key('?');
         let help = s.screen();
         for dead in [

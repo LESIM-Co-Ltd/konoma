@@ -856,6 +856,31 @@ pub enum Msg {
     OfficeOpenedDefault,
     /// Prefix of the reason an Office document could not be opened.
     OfficeOpenFailed,
+    /// Footer label of `o`: open the file in another app.
+    HintOpenApp,
+    /// Help row of `o`.
+    OpenAppHelp,
+    /// `o` with no file under it.
+    NoFileToOpenApp,
+    /// Footer label of `n`/`N` as the next / previous change.
+    HintChange,
+    /// Help row of `n`/`N` in a diff.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    DiffChangeJumpHelp,
+    /// `n`/`N` where the file has no change block.
+    NoChangesInFile,
+    /// Footer label of `Tab`/`Shift-Tab` on the version-control screens.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtScreens,
+    /// Help row of `Tab` on the version-control screens.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    GitScreensHelp,
+    /// Help row of `Tab` on jj's screens (no worktrees; jj calls branches bookmarks).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjScreensHelp,
+    /// Help row of `/` on the changes, log and graph screens.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    ListFilterHelp,
     // --- fileops error translation (`App::describe_error`/`build_rename_plan`) ---
     /// A create/rename target already exists. Shared by `fileops::FileOpError::AlreadyExists`
     /// (create/rename) and `build_rename_plan`'s own final-collision check (same condition, one
@@ -1219,7 +1244,7 @@ fn en(msg: Msg) -> &'static str {
         Root => "root",
         Scroll => "scroll",
         Scroll10Lines => "scroll 10 lines",
-        SearchHint => "search (code/text); next / prev match",
+        SearchHint => "search (code/text); next / prev match, or change while not searching",
         SearchCodeTextOnly => "search: code/text and table previews only",
         TableSearchHelp => "search cells; n / N jump to the next / previous match",
         SelLabel => "sel",
@@ -1549,6 +1574,16 @@ fn en(msg: Msg) -> &'static str {
         OfficeOpenedIn => "opened in {app}",
         OfficeOpenedDefault => "opened with the default app",
         OfficeOpenFailed => "could not open: ",
+        HintOpenApp => "open in app",
+        OpenAppHelp => "open the file in another app (Office apps for Office files, else the OS default)",
+        NoFileToOpenApp => "no file to open in an app",
+        HintChange => "change",
+        DiffChangeJumpHelp => "jump to the next / previous change block of the file",
+        NoChangesInFile => "no changes in this file",
+        FtScreens => "screens",
+        GitScreensHelp => "switch between the changes, log, graph, branches and worktrees screens",
+        JjScreensHelp => "switch between the changes, log, graph and bookmarks screens",
+        ListFilterHelp => "filter the rows by the text they show",
         AlreadyExists => "already exists: ",
         TrashFailed => "failed to move to Trash",
         RenameTempExists => "temporary rename name already exists: ",
@@ -1857,7 +1892,7 @@ fn jp(msg: Msg) -> &'static str {
         Root => "ルート",
         Scroll => "スクロール",
         Scroll10Lines => "10 行スクロール",
-        SearchHint => "検索(コード/テキスト); 次 / 前の一致",
+        SearchHint => "検索(コード/テキスト); 次 / 前の一致(検索していないときは変更箇所)",
         SearchCodeTextOnly => "検索はコード/テキストと表のみ対応",
         TableSearchHelp => "セルを検索(n / N で次/前の一致へ)",
         SelLabel => "選択",
@@ -2177,6 +2212,16 @@ fn jp(msg: Msg) -> &'static str {
         OfficeOpenedIn => "{app} で開きました",
         OfficeOpenedDefault => "既定のアプリで開きました",
         OfficeOpenFailed => "開けませんでした: ",
+        HintOpenApp => "アプリで開く",
+        OpenAppHelp => "ファイルを他のアプリで開く(Office 文書は Office アプリ、それ以外は OS の既定)",
+        NoFileToOpenApp => "アプリで開く対象がありません",
+        HintChange => "変更箇所",
+        DiffChangeJumpHelp => "ファイル内の次 / 前の変更のかたまりへジャンプ",
+        NoChangesInFile => "このファイルに変更はありません",
+        FtScreens => "画面",
+        GitScreensHelp => "変更・ログ・グラフ・ブランチ・worktree の画面を切り替え",
+        JjScreensHelp => "変更・ログ・グラフ・ブックマークの画面を切り替え",
+        ListFilterHelp => "行の表示文字列で絞り込み",
         AlreadyExists => "既に存在します: ",
         TrashFailed => "ゴミ箱への移動に失敗しました",
         RenameTempExists => "一時ファイル名が既存: ",
@@ -2899,6 +2944,16 @@ mod tests {
         Msg::OfficeOpenedIn,
         Msg::OfficeOpenedDefault,
         Msg::OfficeOpenFailed,
+        Msg::HintOpenApp,
+        Msg::OpenAppHelp,
+        Msg::NoFileToOpenApp,
+        Msg::HintChange,
+        Msg::DiffChangeJumpHelp,
+        Msg::NoChangesInFile,
+        Msg::FtScreens,
+        Msg::GitScreensHelp,
+        Msg::JjScreensHelp,
+        Msg::ListFilterHelp,
         Msg::AlreadyExists,
         Msg::TrashFailed,
         Msg::RenameTempExists,

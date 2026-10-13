@@ -360,6 +360,12 @@ impl App {
         self.tab.git_branch_sel = 0;
         self.tab.git_branch_filter.clear();
         self.tab.git_branch_filtering = false;
+        self.tab.git_view_filter.clear();
+        self.tab.git_view_filtering = false;
+        self.tab.git_log_filter.clear();
+        self.tab.git_log_filtering = false;
+        self.tab.git_graph_filter.clear();
+        self.tab.git_graph_filtering = false;
         self.tab.git_worktrees = None;
         self.tab.git_worktree_sel = 0;
         self.tab.git_worktree_filter.clear();
