@@ -1848,6 +1848,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-plugin"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "konoma-test-support",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
