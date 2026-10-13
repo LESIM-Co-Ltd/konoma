@@ -351,7 +351,7 @@ impl App {
         let kind = self.cfg.resolve_preview(path);
         kind.profile().image
             && super::media_diff::classify_kind(&kind).is_none()
-            && super::media_diff::is_binary_file(path)
+            && super::media_diff::is_video_file(path)
     }
 
     /// After a follow jump, scroll the (windowed) preview to the **first changed hunk** instead of the

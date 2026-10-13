@@ -922,6 +922,7 @@ fn stale_answer_with_session(
     app.bump_media_gen();
     let mut res = answer_of(app.media_gen - 1, 9);
     res.session = session;
+    res.path = file.to_path_buf();
     res.outcome = outcome;
     let result = MediaResult {
         gen: res.gen,

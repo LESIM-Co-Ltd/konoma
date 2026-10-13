@@ -70,6 +70,9 @@ pub(crate) struct Variant {
     /// at the screen while the job is out does not race the worker (the host takes an answer that
     /// is already there, so a job that finishes at once is not "running" for long enough to see).
     pub hold: Option<Arc<Latch>>,
+    /// Like `hold`, but for a session on a file shorter than 10 bytes (`small.bin`): a test that
+    /// has two actions out at once, on two files, lets them end in the order it chooses.
+    pub hold_small: Option<Arc<Latch>>,
 }
 
 /// A gate a test opens by hand: [`Latch::wait`] returns once [`Latch::open`] was called (or after a
@@ -181,7 +184,12 @@ impl Session for Dump {
         self.v.calls.fetch_add(1, Ordering::SeqCst);
         match action {
             "width" => {
-                if let Some(latch) = &self.v.hold {
+                let held = if self.bytes.len() < 10 {
+                    self.v.hold_small.as_ref()
+                } else {
+                    self.v.hold.as_ref()
+                };
+                if let Some(latch) = held {
                     latch.wait();
                 }
                 self.width = if self.width == 16 { 8 } else { 16 };

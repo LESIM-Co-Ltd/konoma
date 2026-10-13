@@ -289,6 +289,9 @@ fn write_made_text(view: &mut View, plugin: &str) -> Option<std::io::Result<Made
 pub struct PluginResult {
     pub(super) gen: u64,
     pub(super) id: String,
+    /// The file the job's show was opened for. Stamped by [`PluginWork::run`] from the job, so a
+    /// late answer is only given back to the show of the same file (`reclaim_plugin_session`).
+    pub(super) path: PathBuf,
     /// The session, handed back (`None` when the plugin failed to open or panicked).
     pub(super) session: Option<Box<dyn Session>>,
     pub(super) layout: Option<Layout>,
@@ -322,6 +325,7 @@ impl PluginResult {
         PluginResult {
             gen,
             id,
+            path: PathBuf::new(),
             session: None,
             layout: None,
             view: None,
@@ -351,6 +355,7 @@ impl PluginResult {
         PluginResult {
             gen,
             id: id.to_string(),
+            path: PathBuf::new(),
             session: None,
             layout,
             view,
@@ -452,17 +457,21 @@ impl PluginWork {
     /// Run the job. Always returns a result, even when the plugin panics.
     fn run(self, cancel: Cancel) -> PluginResult {
         let (id, gen, req) = (self.id.clone(), self.gen, self.req.clone());
-        konoma_base::panic::catch_silent(move || self.run_inner(cancel)).unwrap_or_else(|| {
-            PluginResult::failed(
-                gen,
-                id,
-                req,
-                Failure::external(t!(
-                    en: "the plugin stopped unexpectedly",
-                    ja: "プラグインが予期せず停止しました",
-                )),
-            )
-        })
+        let path = self.path.clone();
+        let mut res = konoma_base::panic::catch_silent(move || self.run_inner(cancel))
+            .unwrap_or_else(|| {
+                PluginResult::failed(
+                    gen,
+                    id,
+                    req,
+                    Failure::external(t!(
+                        en: "the plugin stopped unexpectedly",
+                        ja: "プラグインが予期せず停止しました",
+                    )),
+                )
+            });
+        res.path = path;
+        res
     }
 
     fn run_inner(self, cancel: Cancel) -> PluginResult {
@@ -564,6 +573,7 @@ impl PluginWork {
             PluginResult {
                 gen,
                 id: id.clone(),
+                path: PathBuf::new(),
                 session: Some(session),
                 layout: Some(layout),
                 view,
@@ -614,6 +624,7 @@ impl PluginWork {
                 PluginResult {
                     gen,
                     id,
+                    path: PathBuf::new(),
                     layout: Some(session.layout()),
                     session: Some(session),
                     view: None,

@@ -279,6 +279,7 @@ fn a_result_landing_colors_the_window_and_leaves_the_text_search_alone() {
     let landed = app.land_plugin_result(PluginResult {
         gen,
         id: "code".into(),
+        path: PathBuf::new(),
         session: None,
         layout: None,
         view: Some(counting_view(&lines, &calls)),

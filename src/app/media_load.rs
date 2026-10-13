@@ -333,7 +333,8 @@ impl App {
 
     /// A stale plugin answer still carries the session the job took from the show. If that show is
     /// still the open one, has answered before and holds no session (nothing else took it), the
-    /// session goes back, with what it said works now: otherwise the show would stay on screen
+    /// session goes back (the answer must be of the file the show was opened for), with what it
+    /// said works now: otherwise the show would stay on screen
     /// with its keys shown and dead. The view, the picture and the document of the stale job are not
     /// applied; its outcome is.
     fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
@@ -342,6 +343,7 @@ impl App {
         };
         if res.session.is_none()
             || show.id != res.id
+            || show.path != res.path
             || show.session.is_some()
             || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
             || !self.shows_plugin_file(show)

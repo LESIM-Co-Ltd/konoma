@@ -1667,3 +1667,76 @@ fn follow_opens_the_plain_preview_for_a_video_whatever_the_plugin_is_called() {
     assert!(!app.follow_previews_instead_of_diff(&png));
     assert!(!app.follow_previews_instead_of_diff(&mmd));
 }
+
+#[test]
+fn a_diagram_whose_label_says_svg_is_still_a_text_diff() {
+    let p = |s: &str| PathBuf::from(s);
+    let src: &[u8] = b"graph TD\n A[\"<svg> icons\"] --> B\n";
+    // The name decides first: neither the bytes at hand nor the file's head are looked at.
+    assert_eq!(media_format(&p("d.mmd"), Some(src)), None);
+    assert_eq!(media_format(&p("d.MERMAID"), Some(src)), None);
+    // Through the host's own classification of a file: the standard mermaid plugin is a picture
+    // plugin, and the file still gets the text diff.
+    let dir = unique_tmp("konoma_media_diff_diagram_svg_label");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mmd = dir.join("d.mmd");
+    std::fs::write(&mmd, src).unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(!app.diff_media_capable(&mmd));
+    let cfg = Config::default();
+    assert_eq!(classify_kind(&cfg.resolve_preview(&mmd)), None);
+}
+
+#[test]
+fn a_file_without_an_extension_is_an_svg_only_when_it_starts_like_one() {
+    let p = |s: &str| PathBuf::from(s);
+    let svg = Some(MediaDiffKind::Svg);
+    // With and without the XML declaration, a BOM, a comment, a DOCTYPE (with a subset).
+    assert_eq!(
+        media_format(&p("blob"), Some(b"<svg xmlns=\"x\"></svg>")),
+        svg
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"<?xml version=\"1.0\"?>\n<svg></svg>")),
+        svg
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"\xef\xbb\xbf  <svg></svg>")),
+        svg
+    );
+    assert_eq!(
+        media_format(
+            &p("blob"),
+            Some(b"<?xml version=\"1.0\"?>\n<!-- a <b> -->\n<!DOCTYPE svg [ <!ENTITY a \"b\"> ]>\n<svg/>")
+        ),
+        svg
+    );
+    // A text that only mentions the element is not a picture.
+    assert_eq!(
+        media_format(&p("blob"), Some(b"use <svg> for icons\n")),
+        None
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"# notes\n<svg></svg>\n")),
+        None
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"<html><body><svg></svg></body></html>")),
+        None
+    );
+    // An unterminated prolog (cut off by the head) reaches no `<svg`.
+    assert_eq!(
+        media_format(&p("blob"), Some(b"<?xml version=\"1.0\"")),
+        None
+    );
+    assert_eq!(media_format(&p("blob"), Some(b"<!-- <svg>")), None);
+    // The same through a file on disk (the head is read).
+    let dir = unique_tmp("konoma_media_diff_noext_svg");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("with-decl"), "<?xml version=\"1.0\"?><svg/>").unwrap();
+    std::fs::write(dir.join("plain"), "<svg/>").unwrap();
+    std::fs::write(dir.join("prose"), "the <svg> element").unwrap();
+    assert_eq!(media_format(&dir.join("with-decl"), None), svg);
+    assert_eq!(media_format(&dir.join("plain"), None), svg);
+    assert_eq!(media_format(&dir.join("prose"), None), None);
+}

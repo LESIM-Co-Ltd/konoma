@@ -732,15 +732,14 @@ fn classify_kind_with(kind: &PreviewKind, bytes: Option<&[u8]>) -> Option<MediaD
     }
 }
 
-/// Whether the head of the file holds a NUL byte (not text). A file that cannot be read is not.
-pub(super) fn is_binary_file(path: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = vec![0u8; FORMAT_HEAD];
-    let n = f.read(&mut buf).unwrap_or(0);
-    buf[..n].contains(&0)
+/// Whether the file's content is a video (`video/*`), judged from the file itself with the same
+/// sniffer the host's `mime = "video/*"` rule uses. A file that cannot be read (a deleted one) has
+/// no content to judge and is not one.
+pub(super) fn is_video_file(path: &Path) -> bool {
+    infer::get_from_path(path)
+        .ok()
+        .flatten()
+        .is_some_and(|t| t.mime_type().starts_with("video/"))
 }
 
 /// How many bytes of a file are read to tell its format when the name does not.
@@ -761,6 +760,9 @@ pub(crate) fn media_format(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDif
     match ext.as_str() {
         "svg" => return Some(MediaDiffKind::Svg),
         "pdf" => return Some(MediaDiffKind::Pdf),
+        // A diagram's source is text whatever it contains (a label may well say `<svg`): decided
+        // by the name, before the content is looked at.
+        "mmd" | "mermaid" => return None,
         e if image::ImageFormat::from_extension(e).is_some() => return Some(MediaDiffKind::Image),
         _ => {}
     }
@@ -788,10 +790,50 @@ pub(crate) fn media_format(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDif
         Some(m) if m != "text/xml" => None,
         _ => {
             let text = String::from_utf8_lossy(bytes);
-            (text.trim_start().starts_with("<svg") || text.contains("<svg"))
-                .then_some(MediaDiffKind::Svg)
+            starts_with_svg_element(&text).then_some(MediaDiffKind::Svg)
         }
     }
+}
+
+/// Whether the document's first element is `<svg`: what comes before it may only be a BOM,
+/// whitespace, an XML declaration or processing instruction, comments and a DOCTYPE. A text that
+/// merely mentions `<svg` somewhere is not an SVG.
+fn starts_with_svg_element(text: &str) -> bool {
+    let mut rest = text.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        let skipped = if let Some(r) = rest.strip_prefix("<?") {
+            r.split_once("?>").map(|(_, after)| after)
+        } else if let Some(r) = rest.strip_prefix("<!--") {
+            r.split_once("-->").map(|(_, after)| after)
+        } else if rest.len() >= 9
+            && rest.is_char_boundary(9)
+            && rest[..9].eq_ignore_ascii_case("<!doctype")
+        {
+            // A DOCTYPE may hold an internal subset in `[ ... ]`.
+            skip_doctype(&rest[9..])
+        } else {
+            return rest.starts_with("<svg");
+        };
+        match skipped {
+            Some(after) => rest = after.trim_start(),
+            // Cut off inside the prolog (the head is short): no `<svg` was reached.
+            None => return false,
+        }
+    }
+}
+
+/// The text after the `>` that closes a DOCTYPE whose body (after `<!DOCTYPE`) is `body`.
+fn skip_doctype(body: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in body.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '>' if depth == 0 => return Some(&body[i + 1..]),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Which base to read the old side from, and what it actually resolved to. Whether git or jj answers

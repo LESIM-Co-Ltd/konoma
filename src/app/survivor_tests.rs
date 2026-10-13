@@ -560,14 +560,14 @@ fn following_a_deleted_video_or_picture_opens_the_diff_not_the_preview() {
     let dir = unique_tmp("konoma_surv_follow_binary");
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    // The reader of "binary": missing is not, a NUL in the head is, text is not.
-    assert!(!media_diff::is_binary_file(&dir.join("gone.mp4")));
+    // The reader of "a video": missing is not, a video's content is, text is not.
+    assert!(!media_diff::is_video_file(&dir.join("gone.mp4")));
     let video = dir.join("clip.mp4");
     std::fs::write(&video, b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom\0\0").unwrap();
-    assert!(media_diff::is_binary_file(&video));
+    assert!(media_diff::is_video_file(&video));
     let text = dir.join("notes.mp4");
     std::fs::write(&text, "not binary at all\n").unwrap();
-    assert!(!media_diff::is_binary_file(&text));
+    assert!(!media_diff::is_video_file(&text));
     // And what follow does with them.
     assert!(
         app.follow_previews_instead_of_diff(&video),
@@ -583,4 +583,59 @@ fn following_a_deleted_video_or_picture_opens_the_diff_not_the_preview() {
     std::fs::write(&png, [0x89u8, b'P', b'N', b'G', 0, 0, 0, 0]).unwrap();
     assert!(!app.follow_previews_instead_of_diff(&png));
     assert!(!app.follow_previews_instead_of_diff(&dir.join("gone.png")));
+}
+
+/// Why a deleted video is followed with the diff, as in v0.31.0: the standard rule takes a video
+/// by its content (`mime = "video/*"`), and a file that is gone has no content to sniff, so it is
+/// not a video (nor a picture plugin's file at all) by the time follow asks. v0.31.0 asked
+/// `matches!(resolve_preview(path), PreviewKind::Video(_))`, which is false for the same reason.
+#[test]
+fn a_deleted_video_is_not_resolved_as_a_video_so_follow_opens_the_diff() {
+    let dir = unique_tmp("konoma_surv_follow_deleted_video_kind");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let gone = dir.join("gone.mp4");
+    let kind = app.cfg.resolve_preview(&gone);
+    assert!(
+        !kind.is_plugin(konoma_media::VIDEO_ID) && !kind.profile().image,
+        "a file with no content to sniff is not taken by the video rule"
+    );
+    assert!(!app.follow_previews_instead_of_diff(&gone));
+    // The same file with its content on disk is a video, and is previewed.
+    std::fs::write(&gone, b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom\0\0").unwrap();
+    let kind = app.cfg.resolve_preview(&gone);
+    assert!(kind.is_plugin(konoma_media::VIDEO_ID));
+    assert!(app.follow_previews_instead_of_diff(&gone));
+}
+
+/// Follow previews a file whose **content** is a video, as v0.31.0's `mime = "video/*"` rule did,
+/// not one that merely has a NUL in its head: a video format with no NUL in its first bytes is
+/// previewed, and text or binary data of no known type gets the diff.
+#[test]
+fn follow_previews_by_the_content_being_a_video() {
+    let dir = unique_tmp("konoma_surv_follow_video_content");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    // Videos whose first 512 bytes hold no NUL at all (Matroska/WebM, AVI).
+    let mut webm = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\xf7\x81\x01\x42\xf2\x81\x04\x42\xf3\x81\x08\x42\x82\x84webm".to_vec();
+    webm.resize(600, 0x55);
+    let mut avi = b"RIFF\x24\x10\x20\x01AVI LIST".to_vec();
+    avi.resize(600, 0x55);
+    for (name, bytes) in [("a.webm", webm), ("b.avi", avi)] {
+        let f = dir.join(name);
+        assert!(!bytes[..512].contains(&0));
+        std::fs::write(&f, bytes).unwrap();
+        assert!(media_diff::is_video_file(&f), "{name}");
+        assert!(app.follow_previews_instead_of_diff(&f), "{name}");
+    }
+    // Not a video: binary data of no known type (NULs, no signature), and text.
+    let blob = dir.join("blob.mp4");
+    std::fs::write(&blob, [0u8, 1, 2, 3, 0, 0, 9, 9]).unwrap();
+    assert!(!media_diff::is_video_file(&blob));
+    assert!(!app.follow_previews_instead_of_diff(&blob));
+    let text = dir.join("t.mp4");
+    std::fs::write(&text, "plain text\n").unwrap();
+    assert!(!app.follow_previews_instead_of_diff(&text));
+    // A deleted video: nothing to judge, the diff (as in v0.31.0).
+    assert!(!app.follow_previews_instead_of_diff(&dir.join("gone.webm")));
 }

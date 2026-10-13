@@ -558,3 +558,73 @@ fn e2e_hexdump_a_stale_answer_gives_the_session_back() {
     s.see("00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f");
     assert!(s.app.plugin_act_enabled(width()));
 }
+
+/// An answer that comes late from a job on one file must not give its session to the show of
+/// another file of the same plugin. The action on `a.bin` is held on the worker; the preview moves
+/// to `small.bin`, whose own action is held too (its show has no session); then the answer of
+/// `a.bin` arrives first. Its session is not `small.bin`'s: the show of `small.bin` stays without
+/// one until its own answer comes, and its keys then act on its own bytes.
+#[test]
+fn e2e_hexdump_a_late_answer_of_another_file_does_not_give_its_session_to_this_show() {
+    let dir = files("e2e_hexdump_late_other_file");
+    let latch_a = Arc::new(test_plugins::Latch::default());
+    let latch_small = Arc::new(test_plugins::Latch::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let marker = test_plugins::register(
+        "e2e_hexdump_late_other_file",
+        Arc::new(Hexdump(Variant {
+            hold: Some(Arc::clone(&latch_a)),
+            hold_small: Some(Arc::clone(&latch_small)),
+            calls: Arc::clone(&calls),
+            ..Variant::default()
+        })),
+    );
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_plugins();
+    s.select("a.bin");
+    s.enter();
+    for _ in 0..5 {
+        if s.screen().contains("00 01 02 03") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    // The action on a.bin is out on the worker, held.
+    s.key('w');
+    assert!(!s.app.plugin_act_enabled(width()));
+    // The preview moves to small.bin, which opens and is ready.
+    s.esc();
+    s.select("small.bin");
+    s.enter();
+    for _ in 0..5 {
+        if s.screen().contains("01 02 03 04") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    s.see("01 02 03 04");
+    assert!(s.app.plugin_act_enabled(width()), "small.bin is ready");
+    // Its own action is out on the worker too: its show holds no session.
+    s.key('w');
+    assert!(!s.app.plugin_act_enabled(width()));
+    // The answer of a.bin comes first.
+    latch_a.open();
+    s.drain_plugin();
+    assert!(
+        !s.app.plugin_act_enabled(width()),
+        "the session of a.bin was put into the show of small.bin"
+    );
+    // small.bin's own answer ends the wait; its keys act on its own bytes (4 bytes at width 8
+    // after the held toggle, redrawn).
+    latch_small.open();
+    for _ in 0..5 {
+        if s.app.plugin_act_enabled(width()) {
+            break;
+        }
+        s.drain_plugin();
+    }
+    assert!(s.app.plugin_act_enabled(width()));
+    s.see("01 02 03 04");
+    s.dont_see("00 01 02 03 04 05 06 07");
+}
