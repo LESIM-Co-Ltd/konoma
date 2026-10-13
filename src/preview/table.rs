@@ -13,7 +13,7 @@ use konoma_plugin::view::{CellDetail, Grid as PluginGrid};
 /// What the host's tests read a CSV with: the parser, its row cap, the parsed table, and the
 /// (thread-local) counter of full-file parses.
 #[cfg(test)]
-pub use konoma_table::table::{parse, TableData, MAX_ROWS, PARSE_CALLS};
+pub use konoma_table::table::{parse, TableData, MAX_ROWS, PARSE_CALLS, PARSE_LOG};
 
 /// A read-only view of the table the renderer is showing: a table a plugin returned (a parsed
 /// CSV/TSV, an archive listing, one sheet of a workbook), read cell by cell through [`PluginGrid`].

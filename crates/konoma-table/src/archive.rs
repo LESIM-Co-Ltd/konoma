@@ -61,7 +61,18 @@ use anyhow::{bail, Context, Result};
 use konoma_base::epoch::format_epoch_utc;
 use konoma_base::size::human_size;
 
-use crate::table::TableData;
+use crate::table::{Cancelled, TableData};
+use konoma_plugin::Cancel;
+
+/// Entries between two looks at the [`Cancel`].
+const CANCEL_CHECK_ENTRIES: usize = 1024;
+
+fn check(cancel: &Cancel, n: usize) -> Result<()> {
+    if n.is_multiple_of(CANCEL_CHECK_ENTRIES) && cancel.is_cancelled() {
+        return Err(Cancelled.into());
+    }
+    Ok(())
+}
 
 /// Cap on the number of entries listed. Mirrors CSV's `MAX_ROWS` (same rationale: bound
 /// memory/parse time on an arbitrarily large input and mark the table `truncated` so the UI can
@@ -131,6 +142,11 @@ struct Entry {
 /// boundary this stays inside. Returns `Err` on any read/parse failure (missing file, wrong
 /// format, corrupt archive, empty file) rather than panicking.
 pub fn list(path: &Path, kind: ArchiveKind) -> Result<TableData> {
+    list_cancellable(path, kind, &Cancel::never())
+}
+
+/// [`list`], looking at `cancel` every 1024 entries (an error that `is::<Cancelled>()`).
+pub fn list_cancellable(path: &Path, kind: ArchiveKind, cancel: &Cancel) -> Result<TableData> {
     // A literal empty file is never a valid archive of any of the three formats. zip already
     // errors on this naturally (no end-of-central-directory record to find); tar's reader is
     // permissive about a zero-byte stream (it reads as "zero entries" rather than erroring), so
@@ -142,19 +158,19 @@ pub fn list(path: &Path, kind: ArchiveKind) -> Result<TableData> {
         bail!("empty file: {}", path.display());
     }
     let (entries, truncated) = match kind {
-        ArchiveKind::Zip => list_zip(path)?,
+        ArchiveKind::Zip => list_zip(path, cancel)?,
         ArchiveKind::Tar => {
             // `File` is `Seek`, so a plain `.tar` walks its entries via `entries_with_seek` —
             // getting from one header to the next is a single `seek()` past the declared body
             // size, never a read of the body itself. See `list_tar_seek`'s doc comment.
             let f = File::open(path).with_context(|| format!("open: {}", path.display()))?;
-            list_tar_seek(f)?
+            list_tar_seek(f, cancel)?
         }
         ArchiveKind::TarGz => {
             // A gzip stream can't `Seek`, so this instead bounds the walk by total bytes read.
             // See `list_tar_gz`'s doc comment.
             let f = File::open(path).with_context(|| format!("open: {}", path.display()))?;
-            list_tar_gz(flate2::read::GzDecoder::new(f))?
+            list_tar_gz(flate2::read::GzDecoder::new(f), cancel)?
         }
     };
     let rows: Vec<Vec<String>> = entries
@@ -181,13 +197,14 @@ pub fn list(path: &Path, kind: ArchiveKind) -> Result<TableData> {
     })
 }
 
-fn list_zip(path: &Path) -> Result<(Vec<Entry>, bool)> {
+fn list_zip(path: &Path, cancel: &Cancel) -> Result<(Vec<Entry>, bool)> {
     let f = File::open(path).with_context(|| format!("open: {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(f).context("parse zip central directory")?;
     let total = archive.len();
     let n = total.min(MAX_ENTRIES);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
+        check(cancel, i)?;
         // `by_index_raw`: metadata via a **non-decompressing** reader (see module docs) — content
         // is never read regardless of the entry's declared compression method, and we only call
         // metadata accessors on the result below, never `.read()`.
@@ -245,12 +262,13 @@ fn entry_from_tar<R: Read>(entry: &tar::Entry<'_, R>) -> Entry {
 /// this way — see that function's `if let Some(seekable_archive) = ...` branch), never a read of
 /// N's body: unlike `list_tar_gz` below, this needs no separate byte cap, since walking past even
 /// an enormous entry costs the same as walking past a tiny one.
-fn list_tar_seek<R: Read + Seek>(reader: R) -> Result<(Vec<Entry>, bool)> {
+fn list_tar_seek<R: Read + Seek>(reader: R, cancel: &Cancel) -> Result<(Vec<Entry>, bool)> {
     let mut archive = tar::Archive::new(reader);
     let mut out = Vec::new();
     let mut truncated = false;
     for entry in archive.entries_with_seek().context("read tar entries")? {
         let entry = entry.context("read tar entry")?;
+        check(cancel, out.len())?;
         if out.len() >= MAX_ENTRIES {
             truncated = true;
             break;
@@ -288,7 +306,7 @@ impl<R: Read> Read for CountingRead<R> {
 /// already in hand (mirroring how the `MAX_ENTRIES` check above always has), so the walk may
 /// overshoot the byte cap by up to one entry's worth of skip cost — the point is bounding the total
 /// to a small multiple of the cap, not hitting it exactly.
-fn list_tar_gz<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
+fn list_tar_gz<R: Read>(reader: R, cancel: &Cancel) -> Result<(Vec<Entry>, bool)> {
     let total = Rc::new(Cell::new(0u64));
     let counted = CountingRead {
         inner: reader,
@@ -299,6 +317,7 @@ fn list_tar_gz<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
     let mut truncated = false;
     for entry in archive.entries().context("read tar entries")? {
         let entry = entry.context("read tar entry")?;
+        check(cancel, out.len())?;
         if out.len() >= MAX_ENTRIES || total.get() >= MAX_TAR_GZ_READ_BYTES {
             truncated = true;
             break;
@@ -502,6 +521,35 @@ mod tests {
         );
         assert_eq!(ArchiveKind::from_path(Path::new("a.txt")), None);
         assert_eq!(ArchiveKind::from_path(Path::new("Makefile")), None);
+    }
+
+    #[test]
+    fn a_cancelled_listing_stops_and_says_so() {
+        let dir = tmp_dir("cancel");
+        let names: Vec<String> = (0..3000).map(|i| format!("f{i}.txt")).collect();
+        let entries: Vec<(&str, &[u8], bool)> = names
+            .iter()
+            .map(|n| (n.as_str(), &b"x"[..], false))
+            .collect();
+        let zip = dir.join("many.zip");
+        write_zip(&zip, &entries);
+        let tar_entries: Vec<(&str, &[u8])> =
+            names.iter().map(|n| (n.as_str(), &b"x"[..])).collect();
+        let tar = dir.join("many.tar");
+        write_tar(&tar, &tar_entries);
+        let tgz = dir.join("many.tar.gz");
+        write_tar_gz(&tgz, &tar_entries);
+        for (path, kind) in [
+            (&zip, ArchiveKind::Zip),
+            (&tar, ArchiveKind::Tar),
+            (&tgz, ArchiveKind::TarGz),
+        ] {
+            let err = list_cancellable(path, kind, &Cancel::from_fn(|| true)).unwrap_err();
+            assert!(err.is::<Cancelled>(), "{kind:?}: {err:#}");
+            // Never cancelled: the whole listing.
+            let all = list_cancellable(path, kind, &Cancel::never()).unwrap();
+            assert_eq!(all.rows.len(), 3000, "{kind:?}");
+        }
     }
 
     #[test]

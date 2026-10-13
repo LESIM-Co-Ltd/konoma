@@ -344,3 +344,27 @@ fn the_default_options_are_the_documented_defaults() {
     assert_eq!(d.image_align, "center");
     assert!(d.front_matter && d.footnotes && d.inline_html && d.autolink && d.emoji && d.alerts);
 }
+
+#[test]
+fn a_cancelled_open_or_view_is_a_cancel() {
+    use konoma_plugin::{Cancel, FailureKind};
+    let cancelled = || Cancel::from_fn(|| true);
+    let (_dir, path) = tmp_file("a.md", b"# hi\n");
+    let input = || Input::File {
+        path: path.clone(),
+        hint: None,
+    };
+    let err = MarkdownPlugin
+        .open(input(), &OpenCx::bare().with_cancel(cancelled()))
+        .err()
+        .expect("a cancelled open");
+    assert_eq!(err.kind, FailureKind::Cancelled);
+    let mut session = MarkdownPlugin.open(input(), &OpenCx::bare()).unwrap();
+    let err = session
+        .view(
+            &ViewReq::default(),
+            &ViewCx::bare().with_cancel(cancelled()),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, FailureKind::Cancelled);
+}

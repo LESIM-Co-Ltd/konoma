@@ -97,3 +97,23 @@ fn it_opens_only_a_formula() {
         .open(embed("fence:mermaid", "x", false), &OpenCx::bare())
         .is_err());
 }
+
+#[test]
+fn a_cancelled_open_or_view_is_a_cancel() {
+    use konoma_plugin::{Cancel, FailureKind};
+    let cancelled = || Cancel::from_fn(|| true);
+    let input = || embed(MATH_KIND, "x^2", false);
+    let err = MathPlugin
+        .open(input(), &OpenCx::bare().with_cancel(cancelled()))
+        .err()
+        .expect("a cancelled open");
+    assert_eq!(err.kind, FailureKind::Cancelled);
+    let mut session = MathPlugin.open(input(), &OpenCx::bare()).unwrap();
+    let err = session
+        .view(
+            &ViewReq::default(),
+            &ViewCx::bare().with_cancel(cancelled()),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, FailureKind::Cancelled);
+}

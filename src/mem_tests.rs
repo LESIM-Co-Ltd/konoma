@@ -328,3 +328,76 @@ fn table_rows_are_capped() {
     );
     assert!(td.truncated, "上限超過は truncated=true で通知");
 }
+
+/// Resident set size of this process in KiB (`ps`), for the printed numbers of the guard below.
+fn rss_kib() -> u64 {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0)
+}
+
+// GUARDS: on the **worker path** (`attach_media_loader`, as `main` has it) opening big CSV files in a
+// burst does not leave every old read running to the end. A plugin with no exclusive work group
+// starts one thread per open; each one looks at its `Cancel` while it reads, so the reads the user
+// has already left stop after a block of rows instead of each holding a whole 100,000-row grid (the
+// speed and memory tests above only ever measure the on-the-spot path).
+#[test]
+fn a_burst_of_big_csv_opens_cancels_the_stale_reads() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    const FILES: usize = 16;
+    let dir = unique_tmp("konoma_mem_csv_burst");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut body = String::from("a,b,c,d,e,f,g,h\n");
+    for i in 0..(crate::preview::table::MAX_ROWS + 1_000) {
+        body.push_str(&format!("{i},xxxxxxxx,yyyyyyyy,zzzzzzzz,{i},{i},{i},{i}\n"));
+    }
+    let files: Vec<_> = (0..FILES)
+        .map(|i| {
+            let f = dir.join(format!("big{i:02}.csv"));
+            std::fs::write(&f, &body).unwrap();
+            f
+        })
+        .collect();
+
+    let mut app =
+        crate::app::App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+    let (tx, rx) = channel();
+    app.attach_media_loader(tx);
+    let rss_before = rss_kib();
+    let mut peak = rss_before;
+    for f in &files {
+        // Select the file in the tree and open it, as Enter does; back to the tree for the next.
+        app.tab.mode = crate::app::Mode::Tree;
+        app.tab.selected = app.tab.entries.iter().position(|e| &e.path == f).unwrap();
+        app.tree_activate().unwrap();
+        peak = peak.max(rss_kib());
+    }
+    // Apply whatever lands until the workers are quiet.
+    while let Ok(res) = rx.recv_timeout(Duration::from_secs(3)) {
+        app.apply_media(res);
+        peak = peak.max(rss_kib());
+    }
+    let log = crate::preview::table::PARSE_LOG.lock().unwrap();
+    let ours: Vec<_> = log.iter().filter(|(p, _, _)| p.starts_with(&dir)).collect();
+    let finished = ours.iter().filter(|(_, _, cancelled)| !cancelled).count();
+    let rows: usize = ours.iter().map(|(_, n, _)| *n).sum();
+    eprintln!(
+        "csv burst: {} parses, {finished} ran to the end, {rows} rows read in all; \
+         RSS {rss_before} KiB -> peak {peak} KiB",
+        ours.len()
+    );
+    assert_eq!(ours.len(), FILES, "every open started a read");
+    assert!(
+        finished <= FILES / 2,
+        "old reads kept running to the end: {finished} of {FILES} finished"
+    );
+    assert!(
+        rows < FILES * crate::preview::table::MAX_ROWS * 3 / 4,
+        "too many rows were read for files the user had left: {rows}"
+    );
+}

@@ -200,3 +200,22 @@ fn an_empty_line_of_the_text_diagram_has_no_span() {
         .iter()
         .all(|l| !l.spans.iter().any(|s| s.text.is_empty())));
 }
+
+#[test]
+fn a_cancelled_open_or_view_is_a_cancel() {
+    use konoma_plugin::{Cancel, FailureKind};
+    let cancelled = || Cancel::from_fn(|| true);
+    let err = MermaidPlugin
+        .open(embed(FLOW), &OpenCx::bare().with_cancel(cancelled()))
+        .err()
+        .expect("a cancelled open");
+    assert_eq!(err.kind, FailureKind::Cancelled);
+    let mut session = MermaidPlugin.open(embed(FLOW), &OpenCx::bare()).unwrap();
+    let err = session
+        .view(
+            &ViewReq::default(),
+            &ViewCx::bare().with_cancel(cancelled()),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, FailureKind::Cancelled);
+}

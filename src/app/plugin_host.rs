@@ -63,7 +63,7 @@ pub(crate) const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(30);
 /// others: what it does is read a file of at most 1 MiB, which the preview always did on the UI
 /// thread, so a small file is on the first frame exactly as it always was. The wait is only a
 /// ceiling: past it the screen says "Loading..." and the document lands when the worker is done.
-pub(crate) const MARKDOWN_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(1000);
+pub(crate) const MARKDOWN_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(150);
 
 /// Where the plugin show stands.
 pub(crate) enum PluginPhase {

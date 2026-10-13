@@ -94,6 +94,10 @@ fn file_of(input: &Input) -> Result<(&Path, Option<&str>), Failure> {
     }
 }
 
+fn cancelled() -> Failure {
+    Failure::cancelled(t!(en: "cancelled", ja: "中止しました"))
+}
+
 /// An opened table: the grid is shared with every view it returns.
 struct TableSession {
     grid: Arc<dyn Grid>,
@@ -123,12 +127,16 @@ impl Plugin for CsvPlugin {
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
         let (path, hint) = file_of(&input)?;
         if cx.cancel.is_cancelled() {
-            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+            return Err(cancelled());
         }
-        let data = table::parse(path, delimiter(hint, path)).map_err(|e| {
-            Failure::corrupt(t!(en: "cannot read the table", ja: "表を読めません"))
-                .with_detail(format!("{e:#}"))
-        })?;
+        let data =
+            table::parse_cancellable(path, delimiter(hint, path), &cx.cancel).map_err(|e| {
+                if e.is::<table::Cancelled>() {
+                    return cancelled();
+                }
+                Failure::corrupt(t!(en: "cannot read the table", ja: "表を読めません"))
+                    .with_detail(format!("{e:#}"))
+            })?;
         Ok(Box::new(TableSession {
             grid: Arc::new(data),
         }))
@@ -153,15 +161,18 @@ impl Plugin for ArchivePlugin {
             )));
         };
         if cx.cancel.is_cancelled() {
-            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+            return Err(cancelled());
         }
         // Listing relies on third-party crates (zip, tar). Even an unlikely panic inside them is
         // swallowed here and becomes a failure, which the host shows as "cannot list".
-        let listed = konoma_base::panic::catch_silent(|| archive::list(path, kind));
+        let cancel = cx.cancel.clone();
+        let listed =
+            konoma_base::panic::catch_silent(|| archive::list_cancellable(path, kind, &cancel));
         match listed {
             Some(Ok(data)) => Ok(Box::new(TableSession {
                 grid: Arc::new(data),
             })),
+            Some(Err(e)) if e.is::<table::Cancelled>() => Err(cancelled()),
             Some(Err(e)) => Err(Failure::corrupt(
                 t!(en: "cannot list the archive", ja: "アーカイブを一覧できません"),
             )
@@ -273,6 +284,31 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.kind, konoma_plugin::FailureKind::Unsupported);
+    }
+
+    #[test]
+    fn a_read_cancelled_midway_stops_within_one_block_of_rows() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = unique_tmp("konoma_table_cancel_mid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.csv");
+        let mut body = String::from("a,b\n");
+        for i in 0..20_000 {
+            body.push_str(&format!("{i},x\n"));
+        }
+        std::fs::write(&path, body).unwrap();
+        // True from the third look on.
+        let looks = Arc::new(AtomicUsize::new(0));
+        let l = Arc::clone(&looks);
+        let cancel = konoma_plugin::Cancel::from_fn(move || l.fetch_add(1, Ordering::SeqCst) >= 2);
+        let err = table::parse_cancellable(&path, b',', &cancel).unwrap_err();
+        assert!(err.is::<table::Cancelled>());
+        // Looks at rows 0, 1024 and 2048: it stopped at the third, not at the end.
+        assert_eq!(looks.load(Ordering::SeqCst), 3);
+        let log = table::PARSE_LOG.lock().unwrap();
+        let (_, rows, cancelled) = log.iter().rev().find(|(p, _, _)| p == &path).unwrap();
+        assert!(*cancelled);
+        assert_eq!(*rows, 2 * table::CANCEL_CHECK_ROWS);
     }
 
     #[test]

@@ -103,7 +103,10 @@ impl Plugin for CodePlugin {
         code_manifest()
     }
 
-    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         match input {
             Input::File { path, .. } => Ok(Box::new(CodeSession { path })),
             _ => Err(Failure::unsupported(t!(
@@ -121,6 +124,9 @@ struct CodeSession {
 
 impl Session for CodeSession {
     fn view(&mut self, _req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         let styler: Option<Box<dyn LineStyler>> = if cx.settings.bool("syntax_highlight", true) {
             Some(Box::new(CodeStyler::new(
                 self.path.clone(),

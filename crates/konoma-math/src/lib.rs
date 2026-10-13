@@ -61,7 +61,10 @@ impl Plugin for MathPlugin {
         math_manifest()
     }
 
-    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         match input {
             Input::Embed {
                 kind,
@@ -87,6 +90,9 @@ struct MathSession {
 
 impl Session for MathSession {
     fn view(&mut self, _req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         if cx.settings.str("mode", DEFAULT_MODE) == "text" {
             return Ok(View::Text(TextView {
                 source: TextSource::Lines(self.latex.lines().map(Line::raw).collect()),
@@ -94,6 +100,9 @@ impl Session for MathSession {
                 file_lines: false,
                 syntax_name: None,
             }));
+        }
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
         }
         let svg = konoma_math_core::latex_to_svg(
             &self.latex,

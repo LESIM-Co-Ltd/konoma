@@ -160,8 +160,7 @@ fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
 }
 
 impl LoadedDocument {
-    /// Builds the App-side form on the worker thread (sizes are read here, so the UI thread never
-    /// parses an image header).
+    /// A container from parts, for the tests.
     #[cfg(test)]
     pub(super) fn from_parts(markdown: String, truncated: bool, resources: Resources) -> Self {
         Self::from_view(
@@ -179,7 +178,10 @@ impl LoadedDocument {
         )
     }
 
-    /// The container for a plugin's document view.
+    /// The container for a plugin's document view. Builds the App-side form. Pixel sizes are read here (image headers only, one per picture,
+    /// never a decode). It normally runs on the worker, but `R` asks for the other representation
+    /// on the spot (`App::plugin_view_now`), so for a Word document's `Reopen` it can also run on
+    /// the UI thread.
     pub(super) fn from_view(
         markdown: String,
         truncated: bool,
