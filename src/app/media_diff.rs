@@ -478,7 +478,14 @@ impl App {
                 let kind = self.cfg.resolve_preview(&path);
                 Some((path, kind))
             }
-            _ => None,
+            Some(
+                PreviewKind::Plugin { .. }
+                | PreviewKind::Text(_)
+                | PreviewKind::MermaidFence(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => None,
         };
     }
 
@@ -687,7 +694,11 @@ fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
             konoma_media::PDF_ID => Some(MediaDiffKind::Pdf),
             _ => None,
         },
-        _ => None,
+        PreviewKind::Text(_)
+        | PreviewKind::GitDiff(_)
+        | PreviewKind::MermaidFence(_)
+        | PreviewKind::Command { .. }
+        | PreviewKind::CanNotPreview { .. } => None,
     }
 }
 

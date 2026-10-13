@@ -480,7 +480,14 @@ impl App {
                 self.plugin_table().is_some()
                     || (!self.shows_media_plugin() && self.plugin_is_paged())
             }
-            _ => false,
+            Some(
+                PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::MermaidFence(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => false,
         }
     }
 
@@ -530,7 +537,14 @@ impl App {
             Some(PreviewKind::Plugin { path, hint, .. }) => {
                 konoma_table::delimiter(hint.as_deref(), path)
             }
-            _ => b',',
+            Some(
+                PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::MermaidFence(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => b',',
         }
     }
 

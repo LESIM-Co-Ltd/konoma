@@ -299,12 +299,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     false,
                 )
             }
+            // The message the `command` plugin answered with; before it has (and for a kind set
+            // without a plugin show) the same words are made here.
             None if *detached => (
-                format!(
-                    "{}{}",
-                    tr(app.lang, crate::i18n::Msg::CommandOpenedExternally),
-                    template
-                ),
+                app.command_message().unwrap_or_else(|| {
+                    format!(
+                        "{}{}",
+                        tr(app.lang, crate::i18n::Msg::CommandOpenedExternally),
+                        template
+                    )
+                }),
                 false,
             ),
             // Defensive fallback (should be unreachable — a non-detached, non-failed Command with

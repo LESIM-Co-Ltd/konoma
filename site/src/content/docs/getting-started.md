@@ -119,6 +119,7 @@ konoma with image previews.
    ```sh
    konoma            # the current directory
    konoma ~/work     # or any directory · press ? for help
+   konoma notes.md   # or a file: its folder is the tree and the file is previewed
    ```
 
 ### Linux (x86_64 · beta)
@@ -169,7 +170,14 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
 ```sh
 konoma            # browse the current directory
 konoma ~/work     # or any directory
+konoma notes.md   # a file: its folder is the tree, the file is already previewed
 ```
+
+Given a file, konoma starts on the **Preview** screen: the file's folder is the tree
+behind it with the file selected, and `q` goes back to that tree like for any preview.
+With [saved tabs](/reference/configuration/) (`restore_tabs`), the tabs come back first and
+the file opens in the tab that is on screen. A path that is neither a directory nor a regular file
+(a pipe, a device) is refused, as before.
 
 konoma has exactly two main screens and no split panes:
 

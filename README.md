@@ -34,6 +34,7 @@ peering through the gaps between the trees to look into the contents of the file
 cargo binstall konoma   # prebuilt binary, no compilation
 cargo install konoma    # or compile from crates.io
 konoma [DIR]            # opens DIR (defaults to the current directory)
+konoma FILE             # opens FILE's folder, with FILE already previewed
 ```
 
 **There is nothing else to install.** Images, PDF, SVG, Mermaid diagrams, LaTeX math, CSV,
@@ -241,6 +242,7 @@ cargo build --release
 
 ```bash
 konoma [DIR]     # opens DIR (defaults to the current directory)
+konoma FILE      # opens FILE's folder with FILE selected and previewed (q goes back to the tree)
 konoma --help    # -h — print usage and exit
 konoma --version # -V — print the version and exit
 konoma --plugins # list which plugin shows which files, then exit

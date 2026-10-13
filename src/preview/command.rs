@@ -1,17 +1,18 @@
 // External command delegation renderer.
 //
-// Policy (`PreviewKind::Command { path, template, render_as, detached }`):
+// The built-in `command` plugin (`plugins/command.rs`) calls this module on a worker; the host opens
+// it like any other plugin (`App::start_command_plugin`). Policy for a rule
+// (`PreviewKind::Command { path, template, render_as, detached }`):
 //   - `detached = true`: spawn the child process and don't wait (a video player, etc.) — never
-//     blocks the TUI. `run_detached` (this module) is called synchronously from
-//     `App::start_media_load`, since `Command::spawn` returning is fast (it doesn't wait for the
-//     child), unlike `run_capture` below.
-//   - `render_as = Some("image")`: run on the media worker thread (`App`'s existing
-//     SVG/GIF/video/PDF pipeline — see `MediaJob::Command`), then decode the produced artifact and
-//     display it full-screen like any other image.
-//   - anything else (`None`, `"text"`, or an unrecognized string): run on the media worker thread,
-//     write the captured output to a temp file, and show it through the existing windowed
-//     (less-style) text reader (`App::windowed_src` points the reader at that temp file while the
-//     preview title still shows the original `path`).
+//     blocks the TUI. `run_detached` (this module) returns as soon as `Command::spawn` does. The
+//     plugin does it once, when the preview is entered; a tab switch, an outside change to the file
+//     or `r` never starts it again (`App::kind_loads_media` leaves a detached rule out).
+//   - `render_as = Some("image")`: run `run_capture`, decode the produced artifact and show it
+//     full-screen like any other image.
+//   - anything else (`None`, `"text"`, or an unrecognized string): run `run_capture`, write the
+//     captured output to a temp file, and show it through the existing windowed (less-style) text
+//     reader (`App::windowed_src` points the reader at that temp file while the preview title
+//     still shows the original `path`).
 // A missing/failing command never crashes konoma — it degrades to the same `[can not preview: <ext>]`
 // display as an unmatched rule, with the failure reason appended (design principle #3).
 //

@@ -233,7 +233,13 @@ rainbow = false      # monochrome CSV / TSV columns
   and a plugin that cannot be switched off are reported at startup.
 - Every other key of the table is that plugin's own setting. They **replace the matching `[ui]` keys**: the old
   `[ui]` name is still read and is used when the plugin table does not set the value; if both are set, the plugin
-  table wins.
+  table wins. A key the plugin does not have (`[plugins.markdown] foo = 1`) is reported at startup and ignored.
+- **Old names are announced once, at start.** When the config still uses one of the `[ui]` names in the table
+  below and the plugin's own key is not set, the footer says `config: [ui] md_alerts is an old name — write
+  [plugins.markdown] alerts instead` (and `(+n more)` for the rest). The old name keeps working; the message goes
+  away when you move the value. What is wrong (an unreadable config, key conflicts, a bad `[plugins.*]` table) is
+  listed first and these hints last; if they do not all fit the width of the terminal, the footer ends with
+  `(+n more)` instead of cutting a message off.
 
 | Plugin | Setting | Default | Replaces |
 |---|---|---|---|

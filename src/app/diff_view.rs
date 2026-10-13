@@ -178,21 +178,37 @@ impl App {
             PreviewKind::Plugin { ref id, .. } if id == konoma_media::SVG_ID => {
                 vec![Source, Rendered, Preview]
             }
-            _ if !path.exists() => match self.media_landed_outcome_for(path) {
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
-                    ..
-                }) => vec![Rendered],
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Svg,
-                    ..
-                }) => vec![Source, Rendered],
-                Some(MediaDiffOutcome::Summary { .. }) | Some(MediaDiffOutcome::Unavailable) => {
-                    vec![Source]
+            // Everything else (named one by one, so a new kind has to say what its diff offers):
+            // a plugin that is not a picture, an image-mode command, the host's own modes and an
+            // unsupported file. A **deleted** one is judged by the media-diff worker.
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Command { .. }
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::MermaidFence(_)
+            | PreviewKind::CanNotPreview { .. }
+                if !path.exists() =>
+            {
+                match self.media_landed_outcome_for(path) {
+                    Some(MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
+                        ..
+                    }) => vec![Rendered],
+                    Some(MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Svg,
+                        ..
+                    }) => vec![Source, Rendered],
+                    Some(MediaDiffOutcome::Summary { .. })
+                    | Some(MediaDiffOutcome::Unavailable) => {
+                        vec![Source]
+                    }
+                    None => vec![Rendered], // not landed yet — the "computing" body either way.
                 }
-                None => vec![Rendered], // not landed yet — the "computing" body either way.
-            },
-            _ => vec![Source],
+            }
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Command { .. }
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::MermaidFence(_)
+            | PreviewKind::CanNotPreview { .. } => vec![Source],
         };
         if !path.exists() {
             reps.retain(|v| *v != Preview);

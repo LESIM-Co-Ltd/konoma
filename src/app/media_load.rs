@@ -133,42 +133,25 @@ impl App {
                     self.spawn_or_sync_media(MediaJob::MermaidSrc(code, self.mermaid_px(), embed));
                 }
             }
-            // External command delegation. `detached` spawns-and-forgets right here, synchronously
-            // (Command::spawn returns immediately — it doesn't wait for the child — so this can't
-            // block the UI either); it is reached **only from `enter_preview`**, since
-            // `kind_loads_media` deliberately excludes `detached=true` so a tab switch / an
-            // unrelated fs-triggered reload never relaunches it (opening mpv again every time you
-            // flip back to that tab). A non-detached command (image or text `render_as`) runs on
-            // the worker like every other media kind above.
+            // External command delegation, by the built-in `command` plugin
+            // (`plugins/command.rs`): opened on the worker like every other plugin. A `detached`
+            // rule starts its program once and answers with a message; it is reached **only from
+            // `enter_preview`**, since `kind_loads_media` deliberately excludes `detached=true` so
+            // a tab switch / an unrelated fs-triggered reload never relaunches it (opening mpv
+            // again every time you flip back to that tab). A non-detached command (image or text
+            // `render_as`) runs like every other media kind above.
             PreviewKind::Command {
                 template,
                 render_as,
                 detached,
                 ..
-            } => {
-                let out = crate::preview::command::temp_out_path();
-                let argv = crate::preview::command::build_argv(template, path, &out);
-                if *detached {
-                    if let Err(e) = crate::preview::command::run_detached(&argv) {
-                        self.command_err = Some(e.to_string());
-                    }
-                } else {
-                    let as_image = render_as.as_deref() == Some("image");
-                    let uses_out = template.contains("{out}");
-                    self.spawn_or_sync_media_gated(
-                        MediaJob::Command {
-                            argv,
-                            out,
-                            uses_out,
-                            as_image,
-                        },
-                        // Only image mode needs a graphics backend — text mode shows through the
-                        // ordinary windowed reader, same as Code/Text, and must work on any terminal.
-                        as_image,
-                    );
-                }
-            }
-            _ => {}
+            } => self.start_command_plugin(path, template, render_as.as_deref(), *detached),
+            // Not loaded as media: a plugin's file that is not a picture is opened by
+            // `load_plugin`; the others have nothing to load.
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Text(_)
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::CanNotPreview { .. } => {}
         }
     }
 
@@ -245,18 +228,10 @@ impl App {
     }
 
     /// Run a media-load job on a separate thread (when media_tx is present). Otherwise run it synchronously.
-    /// If there is no backend (picker), do nothing (the render side falls back).
+    /// If there is no backend (picker), do nothing (the render side falls back). Every job kind
+    /// here only exists to feed the image pipeline, so a picker is required.
     pub(super) fn spawn_or_sync_media(&mut self, job: MediaJob) {
-        self.spawn_or_sync_media_gated(job, true);
-    }
-
-    /// Same as `spawn_or_sync_media`, but the picker requirement is a parameter instead of always
-    /// on. Every existing job kind (SVG/GIF/video/PDF/mermaid) only exists to feed the image
-    /// pipeline, so needing a picker is correct for them — but a **text-mode** delegated command
-    /// (`MediaJob::Command` with `as_image=false`) shows through the ordinary windowed text reader,
-    /// exactly like Code/Text, and must run on any terminal, image backend or not.
-    fn spawn_or_sync_media_gated(&mut self, job: MediaJob, requires_picker: bool) {
-        if requires_picker && self.picker.is_none() {
+        if self.picker.is_none() {
             return; // terminal doesn't support it: the render side falls back to text/a message
         }
         let Some(tx) = self.media_tx.clone() else {

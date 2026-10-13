@@ -513,7 +513,9 @@ code_theme = "TwoDark"
 #                      text, otherwise [can not preview]). Unknown ids are reported at startup.
 # The other keys of the table are the plugin's own settings. They REPLACE the matching [ui] keys: the old
 # [ui] name is still read (used when the plugin table does not set the value); if both are set, the plugin
-# table wins.
+# table wins. A key a plugin does not have is reported at startup and ignored.
+# While a setting is still under its old [ui] name, the footer says so once at start ("[ui] md_alerts is an old
+# name — write [plugins.markdown] alerts instead"); move the value and the message goes away.
 #   csv          rainbow          (was [ui] csv_rainbow)
 #   spreadsheet  rainbow          (follows [plugins.csv] rainbow until set here)
 #   code         syntax_highlight (was [ui] syntax_highlight)

@@ -20565,6 +20565,9 @@ mod pagelist;
 #[cfg(test)]
 mod math_ctx;
 
+#[cfg(test)]
+mod startup_file;
+
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 
 /// Opening an SVG that nests 1000 levels deep: the real media worker refuses it, and the screen

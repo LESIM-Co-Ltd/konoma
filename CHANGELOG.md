@@ -8,6 +8,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ### Added
 - **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
+- **`konoma <file>`** opens the file's folder as the tree with the file selected and previewed at once (`q` goes back to the
+  tree, as for any preview). With saved tabs (`restore_tabs`) the tabs come back first and the file opens in the tab that is on
+  screen. A pipe or a device is refused as before.
+- **The startup message tells you about old setting names**, once: a `[ui]` setting that moved into `[plugins.<id>]`
+  (`md_*`, `mermaid*`, `math`, `math_color`, `csv_rainbow`, `syntax_highlight`, `svg_max_px`) is still read, and the footer says
+  `config: [ui] md_alerts is an old name — write [plugins.markdown] alerts instead` until you move it. A key a plugin does not
+  have (`[plugins.markdown] foo = 1`) is reported and ignored. What is wrong comes first on the footer and the hints last; what
+  does not fit the terminal width is counted as `(+n more)` instead of being cut off.
 - **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
   `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
   What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,

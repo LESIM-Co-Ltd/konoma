@@ -724,6 +724,32 @@ pub fn sizeof_app() -> usize {
     std::mem::size_of::<App>()
 }
 
+/// Join the startup `notices` (most important first) with " / " so that they fit `width` columns:
+/// as many as fit from the front, then a "(+n more)" for the rest. The first notice is always
+/// shown (the footer clips it at the edge); the count goes right after the last one that fits.
+pub(crate) fn fit_notices(
+    notices: Vec<String>,
+    width: usize,
+    lang: crate::i18n::Lang,
+) -> Option<String> {
+    use unicode_width::UnicodeWidthStr;
+    let total = notices.len();
+    for shown in (1..=total).rev() {
+        let mut text = notices[..shown].join(" / ");
+        let hidden = total - shown;
+        if hidden > 0 {
+            text.push(' ');
+            text.push_str(
+                &tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", &hidden.to_string()),
+            );
+        }
+        if shown == 1 || text.width() <= width {
+            return Some(text);
+        }
+    }
+    None
+}
+
 /// Size of one `PerTab` in bytes. `PerTab` is cloned per tab (snapshot / restore), so a regression
 /// that inlines a large buffer into it multiplies memory by the tab count — this guards against that.
 #[cfg(test)]
@@ -883,6 +909,24 @@ impl MediaJob {
             },
         }
     }
+}
+
+/// Run one delegated command to completion and report what it produced (`MediaPayload::CommandText`,
+/// `MediaPayload::Static` for an image, or `MediaPayload::CommandFailed`). The `command` plugin's
+/// `view` calls this on a worker; the job itself is the one the delegation always ran.
+pub(crate) fn run_command_job(
+    argv: Vec<String>,
+    out: PathBuf,
+    uses_out: bool,
+    as_image: bool,
+) -> Option<MediaPayload> {
+    MediaJob::Command {
+        argv,
+        out,
+        uses_out,
+        as_image,
+    }
+    .run()
 }
 
 /// Decode a still image for the full-screen preview: the picture, or why there is none.
@@ -3488,14 +3532,28 @@ impl App {
     /// Summarize startup keymap conflicts / ignored settings / old table names into one line (for
     /// the startup flash; i18n). Conflicts have already safely fallen back to defaults (#17/FR-8).
     /// Each kind gets its count and its first instance (so the flash says *which* key or table, not
-    /// just how many), followed by "(+n more)". None if there is nothing.
+    /// just how many), followed by "(+n more)". None if there is nothing. The footer's own message
+    /// is [`App::startup_flash`], which orders and fits the pieces; this is the whole in one line.
+    #[cfg(test)]
     pub fn keymap_report(&self) -> Option<String> {
+        let (problems, guidance) = self.keymap_report_parts();
+        let parts: Vec<String> = problems.into_iter().chain(guidance).collect();
+        if parts.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}: {}",
+            tr(self.lang, crate::i18n::Msg::Keymap),
+            parts.join(" / ")
+        ))
+    }
+
+    /// The pieces of [`App::keymap_report`]: what is wrong (conflicts, ignored settings) and what
+    /// only guides (old table names), each already carrying its "(+n more)".
+    fn keymap_report_parts(&self) -> (Vec<String>, Vec<String>) {
         use crate::i18n::Msg;
         let k = &self.keymaps;
         let (nc, nw, nr) = (k.conflicts.len(), k.warnings.len(), k.renames.len());
-        if nc == 0 && nw == 0 && nr == 0 {
-            return None;
-        }
         let lang = self.lang;
         let more = |total: usize| -> String {
             if total > 1 {
@@ -3507,7 +3565,8 @@ impl App {
                 String::new()
             }
         };
-        let mut parts: Vec<String> = Vec::new();
+        let mut problems: Vec<String> = Vec::new();
+        let mut guidance: Vec<String> = Vec::new();
         if let Some(c) = k.conflicts.first() {
             let count = match lang {
                 crate::i18n::Lang::Jp => format!("キー衝突{nc}件(既定で継続)"),
@@ -3517,23 +3576,68 @@ impl App {
                 .replace("{key}", &c.key.label())
                 .replace("{kept}", &c.kept)
                 .replace("{dropped}", &c.dropped);
-            parts.push(format!("{count}: {detail}{}", more(nc)));
+            problems.push(format!("{count}: {detail}{}", more(nc)));
         }
         if let Some(w) = k.warnings.first() {
             let count = match lang {
                 crate::i18n::Lang::Jp => format!("無効な設定{nw}件を無視"),
                 crate::i18n::Lang::En => format!("{nw} invalid key setting(s) ignored"),
             };
-            parts.push(format!("{count}: {w}{}", more(nw)));
+            problems.push(format!("{count}: {w}{}", more(nw)));
         }
         if let Some((old, new)) = k.renames.first() {
             let note = tr(lang, Msg::KeymapOldName)
                 .replace("{old}", old)
                 .replace("{new}", new);
-            parts.push(format!("{note}{}", more(nr)));
+            guidance.push(format!("{note}{}", more(nr)));
         }
-        let head = tr(lang, Msg::Keymap);
-        Some(format!("{head}: {}", parts.join(" / ")))
+        (problems, guidance)
+    }
+
+    /// The old `[ui]` names the config still uses, in one piece of guidance ("write ... instead",
+    /// the first one named and "(+n more)"), or `None` when it uses none.
+    fn settings_guidance(&self) -> Option<String> {
+        use crate::i18n::Msg;
+        let (old, new) = self.cfg.renamed_settings.first()?;
+        let more = if self.cfg.renamed_settings.len() > 1 {
+            format!(
+                " {}",
+                tr(self.lang, Msg::KeymapMore)
+                    .replace("{n}", &(self.cfg.renamed_settings.len() - 1).to_string())
+            )
+        } else {
+            String::new()
+        };
+        let head = match self.lang {
+            crate::i18n::Lang::Jp => "設定",
+            crate::i18n::Lang::En => "config",
+        };
+        let note = tr(self.lang, Msg::KeymapOldName)
+            .replace("{old}", old)
+            .replace("{new}", new);
+        Some(format!("{head}: {note}{more}"))
+    }
+
+    /// The message on the footer when konoma starts, from everything that has something to say:
+    /// a config that could not be read (`cfg_err`), key conflicts and ignored key settings,
+    /// `[plugins.*]` mistakes, then the guidance about old names (keys and settings). What is
+    /// wrong comes first and the guidance last; when they do not all fit `width` columns, what
+    /// does not fit is counted ("(+n more)") instead of being cut off mid-word.
+    pub fn startup_flash(&self, cfg_err: Option<String>, width: usize) -> Option<String> {
+        use crate::i18n::Msg;
+        let (key_problems, key_guidance) = self.keymap_report_parts();
+        let head = tr(self.lang, Msg::Keymap);
+        let mut notices: Vec<String> = Vec::new();
+        notices.extend(cfg_err);
+        if !key_problems.is_empty() {
+            notices.push(format!("{head}: {}", key_problems.join(" / ")));
+        }
+        notices.extend(self.cfg.plugin_report(self.lang));
+        if !key_guidance.is_empty() {
+            notices.push(format!("{head}: {}", key_guidance.join(" / ")));
+        }
+        notices.extend(self.settings_guidance());
+        fit_notices(notices, width, self.lang)
     }
 
     /// Starting from directly under root, recursively expand the expanded directories and flatten them.
@@ -5163,7 +5267,14 @@ impl App {
     fn preview_fence_ord(&self) -> Option<usize> {
         match &self.tab.preview_kind {
             Some(PreviewKind::MermaidFence(ord)) => Some(*ord),
-            _ => None,
+            Some(
+                PreviewKind::Plugin { .. }
+                | PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => None,
         }
     }
 
@@ -7502,6 +7613,14 @@ mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+// The built-in `command` plugin: a delegated command through the plugin road.
+#[cfg(test)]
+mod command_plugin_tests;
+
+// The message on the footer at start: old setting names, unknown plugin keys, order and fit.
+#[cfg(test)]
+mod startup_notice_tests;
 
 #[cfg(test)]
 mod text_plugin_tests;

@@ -8,6 +8,7 @@
 //! the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
+mod command;
 mod listing;
 mod resolve;
 #[cfg(test)]
@@ -22,6 +23,7 @@ use konoma_plugin::{
     Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Settings, Verb, VerbDecl,
 };
 
+pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 
@@ -158,7 +160,7 @@ pub(crate) fn open_verb(
 fn internal_manifests() -> Vec<Manifest> {
     vec![
         standard(TEXT_ID, t!(en: "Plain text", ja: "テキスト")),
-        standard(COMMAND_ID, t!(en: "External command", ja: "外部コマンド")),
+        command::manifest(),
         standard(UNSUPPORTED_ID, t!(en: "Not supported", ja: "未対応")),
     ]
 }
@@ -180,6 +182,7 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
         konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
         konoma_markdown::MARKDOWN_ID => Arc::new(konoma_markdown::MarkdownPlugin),
+        COMMAND_ID => Arc::new(CommandPlugin::unbound()),
         _ => Arc::new(Declared(m)),
     }
 }
@@ -265,6 +268,67 @@ fn value_of(v: &toml::Value) -> konoma_plugin::Value {
                 .collect::<BTreeMap<_, _>>(),
         ),
     }
+}
+
+/// The `[ui]` settings that moved to `[plugins.<id>]` (S2-12 of the design): the old `[ui]` key, the
+/// plugin that owns it now, and its new name. [`effective_settings`] still reads the old keys; this
+/// list is what the startup message names, so a user learns where to write them. A key that was
+/// only renamed inside its plugin's table does not appear: the display settings (`wrap`,
+/// `line_numbers`, `git_gutter`, `tab_width`, `image_render_scale`) stay in `[ui]`.
+pub(crate) const MOVED_UI_SETTINGS: &[(&str, &str, &str)] = &[
+    (
+        "md_task_states",
+        konoma_markdown::MARKDOWN_ID,
+        "task_states",
+    ),
+    ("md_autolink", konoma_markdown::MARKDOWN_ID, "autolink"),
+    ("md_alerts", konoma_markdown::MARKDOWN_ID, "alerts"),
+    ("md_emoji", konoma_markdown::MARKDOWN_ID, "emoji"),
+    (
+        "md_frontmatter",
+        konoma_markdown::MARKDOWN_ID,
+        "frontmatter",
+    ),
+    ("md_footnotes", konoma_markdown::MARKDOWN_ID, "footnotes"),
+    (
+        "md_inline_html",
+        konoma_markdown::MARKDOWN_ID,
+        "inline_html",
+    ),
+    ("md_details", konoma_markdown::MARKDOWN_ID, "details"),
+    (
+        "md_table_align",
+        konoma_markdown::MARKDOWN_ID,
+        "table_align",
+    ),
+    (
+        "md_image_align",
+        konoma_markdown::MARKDOWN_ID,
+        "image_align",
+    ),
+    ("mermaid", konoma_mermaid::MERMAID_ID, "mode"),
+    ("mermaid_theme", konoma_mermaid::MERMAID_ID, "theme"),
+    ("mermaid_curve", konoma_mermaid::MERMAID_ID, "curve"),
+    ("mermaid_routing", konoma_mermaid::MERMAID_ID, "routing"),
+    ("mermaid_rows", konoma_mermaid::MERMAID_ID, "rows"),
+    ("math", konoma_math::MATH_ID, "mode"),
+    ("math_color", konoma_math::MATH_ID, "color"),
+    ("csv_rainbow", konoma_table::CSV_ID, "rainbow"),
+    ("syntax_highlight", konoma_code::CODE_ID, "syntax_highlight"),
+    ("svg_max_px", konoma_media::SVG_ID, "max_px"),
+];
+
+/// The old `[ui]` names a config still uses, as `(what is written, what to write instead)`. `ui`
+/// is the config's raw `[ui]` table. A name is not reported once the new one is also set (the new
+/// one wins; the user has moved on).
+pub(crate) fn moved_settings(ui: &toml::Table, plugins: &PluginTables) -> Vec<(String, String)> {
+    MOVED_UI_SETTINGS
+        .iter()
+        .filter(|(old, id, new)| {
+            ui.contains_key(*old) && !plugins.get(*id).is_some_and(|t| t.contains_key(*new))
+        })
+        .map(|(old, id, new)| (format!("[ui] {old}"), format!("[plugins.{id}] {new}")))
+        .collect()
 }
 
 /// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, with the old `[ui]`
@@ -400,6 +464,18 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
                 Lang::En => format!("unknown plugin `{id}` (ignored)"),
             });
             continue;
+        }
+        // A key the plugin did not declare is a typo or a name from another version: said once at
+        // startup, and ignored (`enabled` is the host's own key).
+        if let Some(manifest) = registry.manifest(id) {
+            for key in table.keys() {
+                if key != "enabled" && !manifest.settings.iter().any(|d| d.name == *key) {
+                    out.push(match lang {
+                        Lang::Jp => format!("[plugins.{id}] の未知の設定 `{key}`(無視)"),
+                        Lang::En => format!("unknown setting `{key}` in [plugins.{id}] (ignored)"),
+                    });
+                }
+            }
         }
         match table.get("enabled") {
             None | Some(toml::Value::Boolean(_)) => {}

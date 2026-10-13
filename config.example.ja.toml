@@ -476,7 +476,9 @@ code_theme = "TwoDark"
 #   enabled = false    そのプラグインを止める — 担当のファイルは次の段(テキストとして読めればテキスト、
 #                      そうでなければ [can not preview])へ進む。未知の id は起動時に知らせる。
 # 表のほかのキーはそのプラグイン自身の設定で、対応する [ui] のキーを「置き換える」: 古い [ui] の名前も読まれ
-# (プラグインの表に値が無いときに使われる)、両方あればプラグインの表が勝つ。
+# (プラグインの表に値が無いときに使われる)、両方あればプラグインの表が勝つ。そのプラグインに無いキーは起動時に
+# 知らせて無視する。設定がまだ古い [ui] の名前のままのときは、起動時に 1 回だけフッターで案内する
+# (「[ui] md_alerts は古い名前です — [plugins.markdown] alerts に書き換えてください」)。値を移せば案内は消える。
 #   csv          rainbow          ([ui] csv_rainbow だったもの)
 #   spreadsheet  rainbow          ([plugins.csv] rainbow に従う。ここで指定すればそちらが優先)
 #   code         syntax_highlight ([ui] syntax_highlight だったもの)

@@ -26,6 +26,10 @@ pub struct Config {
     /// `[plugins.<id>]`: `enabled = false` switches a plugin off; the other keys are the plugin's
     /// own settings.
     pub plugins: crate::plugins::PluginTables,
+    /// The old `[ui]` names the loaded file still uses, with what to write instead (not part of
+    /// the file: filled in by `Config::load_reporting`, named once in the startup message).
+    #[serde(skip)]
+    pub renamed_settings: Vec<(String, String)>,
 }
 
 /// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
@@ -868,7 +872,10 @@ impl Config {
             return (Config::default(), None);
         };
         match toml::from_str::<Config>(&text) {
-            Ok(cfg) => (cfg, None),
+            Ok(mut cfg) => {
+                cfg.renamed_settings = Config::old_setting_names(&text, &cfg);
+                (cfg, None)
+            }
             Err(e) => {
                 let msg = format_config_load_error(&e);
                 // The config is broken = even the language setting can't be read, so notify in the
@@ -878,6 +885,18 @@ impl Config {
                     Some(format!("config error (using defaults): {msg}")),
                 )
             }
+        }
+    }
+
+    /// The old `[ui]` names `text` (the config file) still uses, with what to write instead
+    /// (`plugins::MOVED_UI_SETTINGS`). Empty when the file does not parse as a table.
+    pub(crate) fn old_setting_names(text: &str, cfg: &Config) -> Vec<(String, String)> {
+        let Ok(table) = text.parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        match table.get("ui") {
+            Some(toml::Value::Table(ui)) => crate::plugins::moved_settings(ui, &cfg.plugins),
+            _ => Vec::new(),
         }
     }
 

@@ -1,7 +1,7 @@
-// Resolution of preview kind and renderer selection.
-// Config rules are resolved into a PreviewKind and dispatched to each renderer (builtin / external
-// delegation). M0 implements only the kind resolution. Actual rendering is added incrementally in
-// each submodule (M2: image / M3: markdown / later: code, command).
+// Resolution of the preview kind: which display a file gets.
+// The config's `[[preview.rules]]` and the standard plugins settle the *who* (`crate::plugins`); the
+// answer is a `PreviewKind`, which says how the host draws it. Rendering itself lives in each
+// submodule.
 
 pub mod archive;
 pub mod code;
@@ -32,43 +32,52 @@ pub mod window;
 
 use std::path::{Path, PathBuf};
 
-/// A resolved preview kind. Determined from the config rule (the first one that matched).
+/// What the preview shows, as the host sees it. Four of the variants are chosen for a file by the
+/// rules (`Plugin`, `Text`, `Command`, `CanNotPreview`: `Config::resolve_preview`); the other two
+/// (`GitDiff`, `MermaidFence`) are modes the host enters by itself. Every `match` that tells the variants apart names all of them (no `_`
+/// arm), so a new one cannot be added without the compiler pointing at each decision it changes.
+///
+/// What a *file* is, beyond this, is the plugin's: a Markdown file, a picture, a workbook and a
+/// Word document are all `Plugin`, told apart by the plugin id and by what the plugin's session
+/// answered (its display type and layout), never by a variant of their own.
 #[derive(Debug, Clone)]
 pub enum PreviewKind {
     /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
-    /// plugin's `Session` returns a display type and the host draws it. The plugins wired so far
-    /// are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old `builtin` name) and
-    /// `archive` (zip / tar / tar.gz listing as a grid), both opened by `app/plugin_host.rs`,
-    /// `code` (source and config files as colored text: the host reads the file in windows and the
-    /// plugin's styler colors the visible lines), and
-    /// the picture plugins `image`, `svg`, `pdf`, `video` and `mermaid`, whose `ImageView` goes
-    /// through the host's image pipeline (`app/media_plugin.rs`; a `.mmd` file shown as text is
-    /// drawn by the host's decorated path from the plugin's text view). Transitional: it grows as the other kinds
-    /// move onto plugins, and the enum goes when the last one has.
+    /// plugin's `Session` returns a display type and the host draws it. The standard plugins
+    /// (`markdown`, `mermaid`, `code`, `image`, `svg`, `pdf`, `video`, `csv`, `archive`,
+    /// `spreadsheet`, `document`, `presentation`) are all opened this way by
+    /// `app/plugin_host.rs`; a picture goes through the host's image pipeline
+    /// (`app/media_plugin.rs`) and a document through the host's document container.
     Plugin {
         path: PathBuf,
         /// The plugin id.
         id: String,
-        /// The note the binding rule handed over.
+        /// The note the binding rule handed over (`"csv"` / `"tsv"` for the table plugin).
         hint: Option<String>,
     },
-    /// Built-in plain-text display (extension not registered but judged to be text).
+    /// Built-in plain-text display (extension not registered but judged to be text). Read in
+    /// windows by the host; colored by the `code` plugin's styler when the file name gives a
+    /// grammar.
     Text(PathBuf),
     /// Git diff preview (opened with Enter in the Git view; unified display, Zed-style coloring).
-    /// Not produced from config rules; `open_git_diff` sets it directly.
+    /// A mode of the host: not produced from config rules; `open_git_diff` sets it directly.
     GitDiff(PathBuf),
     /// Full-screen view of the Nth ```mermaid fence of the current Markdown preview (Enter on a
-    /// Tab-focused inline diagram). Not produced from config rules; `open_mermaid_fence` sets it.
-    /// The fence source is re-extracted by ordinal on load (count-guarded like code-block copy).
+    /// Tab-focused inline diagram). A mode of the host: not produced from config rules;
+    /// `open_mermaid_fence` sets it. The fence source is re-extracted by ordinal on load
+    /// (count-guarded like code-block copy).
     MermaidFence(usize),
-    /// External command delegation. Expands {path}/{out} and runs a child process.
+    /// External command delegation (`[[preview.rules]] command = "..."`): the built-in `command`
+    /// plugin (`plugins/command.rs`) runs it on a worker, bound to this rule. The fields are the
+    /// rule's.
     Command {
         path: PathBuf,
         /// Command string with the template not yet expanded (e.g. "mpv {path}").
         template: String,
         /// How to treat the output: if Some("image"), display the produced file full-screen as an image.
         render_as: Option<String>,
-        /// If true, open in a separate process and do not block the TUI (videos, etc.).
+        /// If true, open in a separate process and do not block the TUI (videos, etc.). Opened
+        /// once, when the preview is entered; never again by a tab switch or a change to the file.
         detached: bool,
     },
     /// Matches no rule / unsupported. Displays `[can not preview: <ext>]` full-screen.
@@ -257,6 +266,84 @@ mod raster_limits_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kinds are these six, and nothing about a *file type* is among them: a Markdown file, a
+    /// picture, a workbook and a Word document are all `Plugin`, told apart by the plugin id. The
+    /// `match` has no `_` arm, so a variant added (or one removed) stops this from compiling and
+    /// the author has to decide what it means here and at every other exhaustive `match`.
+    #[test]
+    fn the_kinds_are_the_plugin_the_text_the_command_and_the_hosts_modes() {
+        let p = PathBuf::from("/x/f");
+        let all = [
+            PreviewKind::plugin("markdown", p.clone()),
+            PreviewKind::Text(p.clone()),
+            PreviewKind::GitDiff(p.clone()),
+            PreviewKind::MermaidFence(0),
+            PreviewKind::Command {
+                path: p.clone(),
+                template: "t".into(),
+                render_as: None,
+                detached: false,
+            },
+            PreviewKind::can_not_preview(&p),
+        ];
+        let mut names = Vec::new();
+        for k in &all {
+            names.push(match k {
+                PreviewKind::Plugin { .. } => "plugin",
+                PreviewKind::Text(_) => "text",
+                PreviewKind::GitDiff(_) => "git-diff",
+                PreviewKind::MermaidFence(_) => "mermaid-fence",
+                PreviewKind::Command { .. } => "command",
+                PreviewKind::CanNotPreview { .. } => "can-not-preview",
+            });
+        }
+        assert_eq!(
+            names,
+            [
+                "plugin",
+                "text",
+                "git-diff",
+                "mermaid-fence",
+                "command",
+                "can-not-preview"
+            ]
+        );
+    }
+
+    /// What rules can hand out are the four; the two modes never come out of `resolve_preview`.
+    #[test]
+    fn rules_only_hand_out_the_four_kinds_never_a_mode() {
+        let dir = crate::test_support::unique_tmp("konoma_kinds_of_rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.preview.rules = vec![crate::config::Rule {
+            glob: Some("*.cmd".into()),
+            command: Some("true".into()),
+            ..Default::default()
+        }];
+        for (name, body) in [
+            ("a.md", "# x\n"),
+            ("a.png", "not really"),
+            ("a.txt", "text\n"),
+            ("a.cmd", "x"),
+            ("a.bin", "\0\0\0\0"),
+        ] {
+            let f = dir.join(name);
+            std::fs::write(&f, body).unwrap();
+            let kind = cfg.resolve_preview(&f);
+            assert!(
+                matches!(
+                    kind,
+                    PreviewKind::Plugin { .. }
+                        | PreviewKind::Text(_)
+                        | PreviewKind::Command { .. }
+                        | PreviewKind::CanNotPreview { .. }
+                ),
+                "{name}: {kind:?}"
+            );
+        }
+    }
 
     #[test]
     fn default_rules_send_every_spreadsheet_extension_to_the_spreadsheet_viewer() {

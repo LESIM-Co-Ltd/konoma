@@ -730,6 +730,8 @@ const WIRED: &[&str] = &[
     "mermaid",
     "math",
     "markdown",
+    // The host's own `command` plugin (a `[[preview.rules]] command`): opened like the others.
+    "command",
 ];
 
 #[test]

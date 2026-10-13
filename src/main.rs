@@ -94,6 +94,11 @@ enum Startup {
     Help,
     Plugins,
     Open(PathBuf),
+    /// `konoma <file>`: browse the file's directory with the file selected and previewed.
+    OpenFile {
+        dir: PathBuf,
+        file: PathBuf,
+    },
 }
 
 /// Resolve process arguments into a `Startup`, **validating that an `Open` target is actually an
@@ -120,6 +125,18 @@ fn resolve_startup(args: &[String]) -> Result<Startup> {
                     .map(|cwd| cwd.join(&dir))
                     .unwrap_or(dir)
             });
+            // A regular file (what a preview can open; symlinks followed) is `konoma <file>`: its
+            // directory is the root and the file is opened in it. Anything else that is not a
+            // directory (a FIFO, a device, a missing path) is refused exactly as it always was.
+            if preview::is_previewable(&dir) {
+                if let Some(parent) = dir.parent().map(Path::to_path_buf) {
+                    validate_root(&parent)?;
+                    return Ok(Startup::OpenFile {
+                        dir: parent,
+                        file: dir,
+                    });
+                }
+            }
             validate_root(&dir)?;
             Startup::Open(dir)
         }
@@ -160,8 +177,11 @@ fn help_text() -> String {
         "konoma {version} — a full-screen preview-focused terminal file browser\n\
          \n\
          Usage: konoma [DIR]\n\
+         \x20\x20\x20\x20\x20\x20 konoma FILE\n\
          \n\
          Opens DIR in the tree view (defaults to the current directory).\n\
+         Given a FILE, opens its directory in the tree with FILE selected and previewed;\n\
+         q goes back to the tree.\n\
          \n\
          Options:\n\
          \x20\x20    --plugins   List which plugin shows which files and exit\n\
@@ -278,7 +298,7 @@ fn main() -> Result<()> {
     // since a non-interactive shell (a script, plain `sh`, etc.) doesn't reset terminal modes per
     // prompt the way an interactive zsh/bash does, leaving the terminal stuck (no echo, no newline
     // translation) until the user manually ran `reset`.
-    let dir = match resolve_startup(&args)? {
+    let (dir, startup_file) = match resolve_startup(&args)? {
         Startup::Version => {
             print!("{}", version_text());
             return Ok(());
@@ -293,7 +313,8 @@ fn main() -> Result<()> {
             print!("{}", plugins::plugins_table(&cfg));
             return Ok(());
         }
-        Startup::Open(dir) => dir,
+        Startup::Open(dir) => (dir, None),
+        Startup::OpenFile { dir, file } => (dir, Some(file)),
     };
 
     let (cfg, cfg_err) = config::Config::load_reporting();
@@ -424,15 +445,15 @@ fn main() -> Result<()> {
     app.attach_office_opener(office_tx);
     app.attach_gitop_runner(gitop_tx);
     app.attach_filter_pool_loader(pool_tx);
-    // Report a config load error + keymap conflicts/ignored settings via a startup message
-    // (silently falling back to the default would go unnoticed). If both are present, combine
-    // them into one line.
-    let km_report = app.keymap_report();
-    let plugin_report = app.cfg.plugin_report(app.lang);
-    app.flash = [cfg_err, km_report, plugin_report]
-        .into_iter()
-        .flatten()
-        .reduce(|a, b| format!("{a} / {b}"));
+    // Report a config load error, keymap conflicts/ignored settings, `[plugins.*]` mistakes and
+    // old names via a startup message (silently falling back to the default would go unnoticed).
+    // What is wrong comes first, the guidance about old names last, and what does not fit the
+    // footer is counted instead of cut off (`App::startup_flash`).
+    let footer_width = crossterm::terminal::size()
+        .map(|(cols, _)| usize::from(cols))
+        .unwrap_or(80)
+        .saturating_sub(2);
+    app.flash = app.startup_flash(cfg_err, footer_width);
     // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
     // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.
     if let Some(pk) = picker.clone() {
@@ -452,6 +473,10 @@ fn main() -> Result<()> {
     // media jobs).
     app.attach_session_store(session::SessionStore::load(&start_dir));
     app.restore_session();
+    // `konoma <file>`: after the saved tabs are back, the file opens in the tab that is on screen.
+    if let Some(file) = &startup_file {
+        app.open_startup_file(file);
+    }
 
     let result = run(
         &mut terminal,
@@ -2611,6 +2636,96 @@ mod tests {
             Startup::Open(got) => assert_eq!(got, std::fs::canonicalize(&dir).unwrap()),
             other => panic!("Open を期待したが: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_startup_opens_a_file_in_its_own_directory() {
+        let dir = unique_tmp("konoma_resolve_startup_file_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("note.txt");
+        std::fs::write(&file, "x").unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        match resolve_startup(&argv(&[file.to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file: f } => {
+                assert_eq!(root, canon, "the file's directory is the root");
+                assert_eq!(f, canon.join("note.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_normalizes_a_file_path_with_dotdot_components() {
+        let dir = unique_tmp("konoma_resolve_startup_relfile_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rel.txt"), "x").unwrap();
+        // The path is normalized the way a directory argument is. (The test does not change the
+        // process cwd: other tests run in parallel; `<dir>/sub/../rel.txt` stands in.)
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let odd = dir.join("sub").join("..").join("rel.txt");
+        match resolve_startup(&argv(&[odd.to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file } => {
+                assert_eq!(root, std::fs::canonicalize(&dir).unwrap());
+                assert_eq!(file, std::fs::canonicalize(&dir).unwrap().join("rel.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_follows_a_symlink_to_a_file() {
+        let dir = unique_tmp("konoma_resolve_startup_symlink_test");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::create_dir_all(dir.join("links")).unwrap();
+        std::fs::write(dir.join("real/target.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("real/target.txt"), dir.join("links/alias.txt"))
+            .unwrap();
+        match resolve_startup(&argv(&[dir.join("links/alias.txt").to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file } => {
+                // The link is resolved like a directory argument is: the real file's directory.
+                let canon = std::fs::canonicalize(&dir).unwrap();
+                assert_eq!(root, canon.join("real"));
+                assert_eq!(file, canon.join("real/target.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_refuses_a_fifo_as_it_always_did() {
+        let dir = unique_tmp("konoma_resolve_startup_fifo_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("resolve_startup_refuses_a_fifo: mkfifo が使えないためスキップ");
+            return;
+        }
+        let err = resolve_startup(&argv(&[fifo.to_str().unwrap()])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not a directory"), "{msg}");
+        assert!(msg.contains(&fifo.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn resolve_startup_still_names_a_missing_path() {
+        let dir = unique_tmp("konoma_resolve_startup_missing_file_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("nope.txt");
+        let err = resolve_startup(&argv(&[missing.to_str().unwrap()])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&missing.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn help_text_documents_the_file_form() {
+        let t = help_text();
+        assert!(t.contains("konoma FILE"), "the file form is in --help: {t}");
+        assert!(t.contains("konoma [DIR]"));
     }
 
     // --- --version / --help text -----------------------------------------------------------

@@ -640,6 +640,25 @@ impl App {
         )
     }
 
+    /// The message a delegated command's plugin answered with (a detached launch: "opened
+    /// externally"), if it has answered.
+    pub fn command_message(&self) -> Option<String> {
+        let show = self.plugin.as_ref()?;
+        if show.id != crate::plugins::COMMAND_ID {
+            return None;
+        }
+        match show.view.as_ref()? {
+            View::Message(m) => Some(
+                m.lines
+                    .iter()
+                    .map(|l| l.plain())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            _ => None,
+        }
+    }
+
     /// The table the plugin returned, if the show has one on screen.
     pub(super) fn plugin_table(&self) -> Option<&TableView> {
         match self.plugin.as_ref()?.view.as_ref()? {
@@ -689,6 +708,11 @@ impl App {
     }
 
     fn open_plugin(&mut self, keep_previous: bool) {
+        // A delegated command's show is started with the media load (`start_command_plugin`),
+        // which owns it; this is not the place to drop it.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {
+            return;
+        }
         let Some(PreviewKind::Plugin { path, id, hint }) = self.tab.preview_kind.clone() else {
             self.drop_plugin();
             return;
@@ -848,6 +872,55 @@ impl App {
         };
         let work = self.plugin_work(id, path, PluginJob::Open { plugin, input }, req);
         self.dispatch_plugin_work(work, Wait::Result(budget));
+    }
+
+    /// Start a delegated command (`PreviewKind::Command`) through the built-in `command` plugin,
+    /// bound to the rule's template. An image result needs a graphics backend (without one the
+    /// render side falls back, as it always did); a text result needs nothing. A detached rule is
+    /// waited for within the first-frame budget (it only starts a program); any other runs
+    /// for as long as it takes and its result comes through the channel.
+    pub(super) fn start_command_plugin(
+        &mut self,
+        path: &Path,
+        template: &str,
+        render_as: Option<&str>,
+        detached: bool,
+    ) {
+        let as_image = render_as == Some("image");
+        if !detached && as_image && self.picker.is_none() {
+            return;
+        }
+        let plugin: Arc<dyn Plugin> = Arc::new(crate::plugins::CommandPlugin::new(
+            template, render_as, detached,
+        ));
+        let id = crate::plugins::COMMAND_ID.to_string();
+        self.drop_plugin();
+        self.plugin = Some(PluginShow {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            phase: PluginPhase::Loading,
+            session: None,
+            layout: Layout::single(),
+            view: None,
+            req: ViewReq::default(),
+        });
+        let input = Input::File {
+            path: path.to_path_buf(),
+            hint: None,
+        };
+        let req = self.plugin_view_req();
+        let work = self.plugin_work(
+            id,
+            path.to_path_buf(),
+            PluginJob::Open { plugin, input },
+            req,
+        );
+        let wait = if detached {
+            Wait::Result(FIRST_FRAME_BUDGET)
+        } else {
+            Wait::Nothing
+        };
+        self.dispatch_plugin_work(work, wait);
     }
 
     /// The user's language as the plugins name it.
@@ -1215,6 +1288,18 @@ impl App {
             show.layout = layout.clone();
         }
         let id = show.id.clone();
+        // A delegated command's text result is a file the host reads in windows: it becomes the
+        // tab's generated output (`tab.command_out`), which the windowed reader opens.
+        let command_text = match (&res.view, id == crate::plugins::COMMAND_ID) {
+            (
+                Some(View::Text(konoma_plugin::view::TextView {
+                    source: konoma_plugin::view::TextSource::File(p),
+                    ..
+                })),
+                true,
+            ) => Some(p.clone()),
+            _ => None,
+        };
         let mut image_failure = None;
         // Whether this very result carried a text view (the source of a document): a text view
         // that was already there, kept while a document landed, is not "landed" again.
@@ -1271,6 +1356,15 @@ impl App {
         if let Picture::Decoded(payload) = res.picture {
             self.apply_payload(*payload);
         }
+        // The delegated command: its text output opens the windowed reader, a failure is the reason
+        // the `[can not preview]` screen gives.
+        if id == crate::plugins::COMMAND_ID {
+            if let Some(p) = command_text {
+                self.apply_payload(MediaPayload::CommandText(p));
+            } else if let Some(f) = self.plugin_failure() {
+                self.command_err = Some(f.message.en().to_string());
+            }
+        }
         if self.plugin_view_is_text() {
             self.text_view_landed();
             // The source of a Markdown file or a Word document: open the windowed reader on it.
@@ -1290,10 +1384,20 @@ impl App {
 
     /// Whether the preview on screen is the file `show` was opened for.
     fn shows_plugin_file(&self, show: &PluginShow) -> bool {
-        matches!(
-            &self.tab.preview_kind,
-            Some(PreviewKind::Plugin { id, path, .. }) if *id == show.id && *path == show.path
-        )
+        match &self.tab.preview_kind {
+            Some(PreviewKind::Plugin { id, path, .. }) => *id == show.id && *path == show.path,
+            // A delegated command: the host's `command` plugin, on the file the rule matched.
+            Some(PreviewKind::Command { path, .. }) => {
+                show.id == crate::plugins::COMMAND_ID && *path == show.path
+            }
+            Some(
+                PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::MermaidFence(_)
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => false,
+        }
     }
 
     /// Apply a plugin result that came through the worker channel (the run loop, via
@@ -1301,6 +1405,11 @@ impl App {
     pub(super) fn land_plugin_result(&mut self, res: PluginResult) -> bool {
         if !self.install_plugin_result(res) {
             return false;
+        }
+        // A delegated command has no table cursor or search of its own to settle: its text is
+        // searched by the host's window reader.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {
+            return true;
         }
         // Only a table has a cursor and a search of its own to settle; a text view is searched
         // by the host's window reader, which a plugin landing does not touch, and a document by
