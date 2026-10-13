@@ -641,7 +641,7 @@ impl App {
     /// is already there. Asks the plugin for the new page on the media worker; a picture's view
     /// is reset to fit (each page shows whole), a table (a workbook's sheets) goes back to its
     /// top left (`turn_table_page`).
-    fn goto_page(&mut self, page: u32) {
+    pub(super) fn goto_page(&mut self, page: u32) {
         if !self.can_turn_pages() {
             return;
         }

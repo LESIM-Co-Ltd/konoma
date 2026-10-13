@@ -419,6 +419,7 @@ image | ? | toggle_help
 image | F | toggle_follow
 image | J | page_next
 image | K | page_prev
+image | O | toggle_outline
 image | P | paste_jump
 image | Q | quit
 image | R | image_return_to_diff
@@ -755,6 +756,7 @@ table | G | navigate:bottom
 table | J | page_next
 table | K | page_prev
 table | N | search_prev
+table | O | toggle_outline
 table | P | paste_jump
 table | Q | quit
 table | T | toggle_tab_list

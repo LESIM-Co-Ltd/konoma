@@ -332,7 +332,7 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
     v.push(r(&[Action::PreviewCopySelectionRef]));
     v.push(r(PAGE_TURN));
     v.push(r(&[Action::ToggleMarkdownRaw]));
-    v.push(r(&[Action::ToggleOutline]).d(Msg::HintOutline));
+    v.push(r(&[Action::ToggleOutline]));
     // The keys of the focused Markdown item are the reference for "press Tab, then ...": listed
     // for every decorated document, whether or not an item is focused right now.
     if ctx == Context::Document {
@@ -367,6 +367,7 @@ fn image_rows() -> Vec<Row> {
         r(&[Action::ImageZoomReset]),
         r(HJKL).lit("arrows").d(Msg::PanHint),
         r(PAGE_TURN),
+        r(&[Action::ToggleOutline]),
         r(&[Action::ImageReturnToDiff]),
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
@@ -387,6 +388,7 @@ fn table_rows() -> Vec<Row> {
         r(ENDS),
         r(LINE_ENDS).d(Msg::TableColsHelp),
         r(PAGE_TURN),
+        r(&[Action::ToggleOutline]),
         r(SEARCH).then(SEARCH_MATCH).d(Msg::TableSearchHelp),
         r(&[Action::ToggleTableCell]),
         r(PAGE_KEYS),

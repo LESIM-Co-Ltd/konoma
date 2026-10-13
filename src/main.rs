@@ -1630,7 +1630,7 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
                 app.outline_move(d);
             }
             Motion::Bottom => {
-                let d = (app.md_outline().len() as i32 - 1) - app.outline_sel() as i32;
+                let d = (app.outline_len() as i32 - 1) - app.outline_sel() as i32;
                 app.outline_move(d);
             }
             _ => {}

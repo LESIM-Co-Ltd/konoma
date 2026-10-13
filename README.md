@@ -135,12 +135,12 @@ you came from, since a worktree's directory rarely does.
 ## Features
 
 - **Full-screen preview**: images, Markdown, Mermaid, code, SVG, video thumbnails, and
-  **PDF** (multi-page, navigate with `J`/`K`) rendered to fill the screen.
+  **PDF** (multi-page, navigate with `J`/`K`; `O` lists the pages) rendered to fill the screen.
 - **Table preview**: CSV/TSV render as an aligned, rainbow-column table with a cell cursor;
   **archives** (`.zip`/`.tar`/`.tar.gz`) list their entries — name, size, modified date — in the
   same grid, without extracting anything. **Spreadsheets** (`.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/
   `.xls`/`.ods`) open in the same grid with every cell shown in its Excel number format (thousands
-  separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets.
+  separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets (`O` lists them).
   Rows and columns hidden in Excel are still shown (hidden sheets are not); Excel 365 error values and
   pivot-table totals appear as saved, and formulas are never recalculated.
 - **Word / OpenDocument documents** (`.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott`) are converted to Markdown by
@@ -157,7 +157,7 @@ you came from, since a worktree's directory rarely does.
 - **PowerPoint / OpenDocument presentations** (`.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp`) open as
   **pictures of the slides**, drawn by konoma itself (no external tool): shapes, text, pictures (including EMF / WMF),
   gradients, groups, tables, charts and SmartArt, with the speaker notes under each slide and hidden slides marked.
-  `J`/`K` jump to the next / previous slide (status line `slide 3/12`); `R` switches to a **text view** of the slides
+  `J`/`K` jump to the next / previous slide (status line `slide 3/12`; `O` lists the slides); `R` switches to a **text view** of the slides
   (the default on half-block terminals without a graphics protocol). Office fonts are substituted, so line breaks can differ
   from PowerPoint; 3-D charts are drawn with depth but without perspective. The old binary `.ppt` is not previewed (`e` opens it). Compared against
   LibreOffice's renderings, not against PowerPoint itself.

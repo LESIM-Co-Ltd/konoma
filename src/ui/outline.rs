@@ -13,14 +13,17 @@ use crate::i18n::tr;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let sel = app.outline_sel();
-    let items = app.md_outline();
+    let items = app.outline_rows();
+    let current = app.outline_current_row();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut sel_line: u16 = 0;
 
-    for (i, (level, text, _)) in items.iter().enumerate() {
+    for (i, (level, text)) in items.iter().enumerate() {
         // Indent by level (H1 flush-left); a bullet marks the heading.
         let indent = "  ".repeat((*level).saturating_sub(1) as usize);
-        let row = format!(" {indent}• {text}");
+        // The page list marks the page the preview is on.
+        let mark = if current == Some(i) { '▶' } else { '•' };
+        let row = format!(" {indent}{mark} {text}");
         if i == sel {
             sel_line = lines.len() as u16;
             lines.push(Line::from(row).reversed());
@@ -29,7 +32,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(tr(app.lang, crate::i18n::Msg::OutlineActions)).dim());
+    let (title, actions) = if current.is_some() {
+        (
+            crate::i18n::Msg::PageListTitle,
+            crate::i18n::Msg::PageListActions,
+        )
+    } else {
+        (
+            crate::i18n::Msg::OutlineTitle,
+            crate::i18n::Msg::OutlineActions,
+        )
+    };
+    lines.push(Line::from(tr(app.lang, actions)).dim());
 
     // Width = the longest line (border included), capped at 70. Height = content + border. Fits within the screen.
     let content_w = lines.iter().map(Line::width).max().unwrap_or(20) as u16;
@@ -56,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .min(max_scroll);
 
     let block = Block::bordered()
-        .title(tr(app.lang, crate::i18n::Msg::OutlineTitle))
+        .title(tr(app.lang, title))
         .border_style(Style::new().fg(Color::Cyan));
     let para = Paragraph::new(lines)
         .block(block)

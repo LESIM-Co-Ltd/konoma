@@ -105,9 +105,20 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::ImageReturnToDiff => when(app.preview_is_diff_representation()),
         // The outline lists the headings of a decorated document; anywhere else the handler
         // answers "no headings". Closing an open outline always acts.
+        // On a preview of pages (a deck, a PDF, a workbook) it lists the pages instead, and only
+        // when there is more than one to go to.
         A::ToggleOutline => {
-            if app.is_outline()
-                || (app.is_decorated_kind() && !app.is_raw_source() && !app.document_text_missing())
+            if app.is_outline() {
+                Gate::On
+            } else if app.is_page_list_preview() {
+                if app.page_list_usable() {
+                    Gate::On
+                } else {
+                    Gate::Off(Some(Msg::PageListEmpty))
+                }
+            } else if app.is_decorated_kind()
+                && !app.is_raw_source()
+                && !app.document_text_missing()
             {
                 Gate::On
             } else {

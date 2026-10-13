@@ -1290,6 +1290,8 @@ impl KeyMap {
         image.insert(KeyPress::ch('K'), run(Action::PagePrev));
         image.insert(KeyPress::key(KeyCode::PageDown), run(Action::PageNext));
         image.insert(KeyPress::key(KeyCode::PageUp), run(Action::PagePrev));
+        // `O` = the list of the pages (a PDF with 2+ pages; the gate refuses elsewhere).
+        image.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         types.insert(ViewType::Image, image);
 
         #[cfg(feature = "git")]
@@ -1477,6 +1479,8 @@ impl KeyMap {
         // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
         ptbl.insert(KeyPress::ch('J'), run(Action::PageNext));
         ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
+        // `O` = the list of the sheets of a workbook (2+ visible sheets; the gate refuses elsewhere).
+        ptbl.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         ptbl.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptbl.insert(KeyPress::ch('o'), run(Action::OpenExternal));

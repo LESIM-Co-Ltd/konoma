@@ -1380,3 +1380,34 @@ fn e2e_slides_a_very_tall_deck_scrolls_to_the_u16_limit_and_not_half_of_it() {
     // The second heading is beyond the cap: J goes as far as the position can say.
     assert_eq!(s.app.tab.preview_scroll, u16::MAX);
 }
+
+#[test]
+fn e2e_slides_o_lists_the_slides_marks_the_current_one_and_goes_there() {
+    let Some((mut s, _d)) = open_deck("sl_pagelist", EN, (100, 40)) else {
+        return;
+    };
+    s.key('J');
+    s.key('J');
+    at_slide(&s, 3);
+    s.key('O');
+    assert!(s.app.is_outline());
+    // The list is the slides, "Slide n: title", the current one marked and selected.
+    s.see("Pages");
+    s.see("▶ Slide 3");
+    assert_eq!(s.app.outline_sel(), 2);
+    s.key('j');
+    s.enter();
+    at_slide(&s, 4);
+    assert!(top_row(&s).starts_with("Slide 4"), "{}", s.screen());
+}
+
+#[test]
+fn e2e_slides_a_deck_of_one_slide_has_no_page_list() {
+    let Some((mut s, _d)) = open_deck_of("sl_pagelist1", 1, (100, 40)) else {
+        return;
+    };
+    assert!(!footer_text(&s).contains("O:pages"), "{}", footer_text(&s));
+    s.key('O');
+    assert!(!s.app.is_outline());
+    s.see("no other page to go to");
+}
