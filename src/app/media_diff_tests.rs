@@ -1526,6 +1526,50 @@ fn an_svg_side_lands_as_an_entry_that_is_drawn_again_only_by_the_child() {
     );
 }
 
+/// An SVG side materialized through the real media-diff path (`compute_media_diff` ->
+/// `materialize_side` -> `apply_md_image`) is an untrusted file SVG: after the cache budget evicts
+/// its pixels the rebuild must draw it through the supervised path again, never in this process.
+#[test]
+fn an_svg_side_of_the_media_diff_is_rebuilt_on_the_untrusted_path() {
+    use crate::preview::svg::seen_for_tests::untrusted_count;
+    let dir = unique_tmp("konoma_media_diff_svg_trust_real");
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg_path = dir.join("icon.svg");
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><!-- md-diff-trust-real --><rect width="40" height="20" fill="#08f"/></svg>"##.to_vec();
+    std::fs::write(&svg_path, &svg).unwrap();
+
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (img_tx, img_rx) = std::sync::mpsc::channel();
+    app.attach_md_image_loader(img_tx);
+
+    let r = req(svg_path, dir.to_path_buf(), DiffBaseline::Empty);
+    let MediaDiffComputed::Ready { new, .. } = App::compute_media_diff(&r) else {
+        panic!("Ready expected");
+    };
+    let MediaDiffSide::Picture(pic) = app.materialize_side(new) else {
+        panic!("the SVG side must materialize as a picture");
+    };
+    let key = PathBuf::from(&pic.cache_key);
+    assert!(
+        matches!(app.md_image_cache[&key].svg_trust, SvgTrust::File(_)),
+        "the entry records the file origin"
+    );
+    let untrusted0 = untrusted_count(&svg);
+    assert!(untrusted0 >= 1, "setup: the first draw was supervised");
+
+    app.md_frame = 5;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
+    let res = img_rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the rebuild must answer");
+    assert!(res.reraster && res.image.is_ok());
+    assert_eq!(untrusted_count(&svg), untrusted0 + 1, "child path again");
+}
+
 // ---- the side-by-side view follows the declaration and the format, not the plugin's id ----
 
 /// A config in which the plugin `plugin` (registered under `name`) is present, and the standard

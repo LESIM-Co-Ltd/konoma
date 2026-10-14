@@ -16701,6 +16701,55 @@ fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
     );
 }
 
+/// A tab on page 3 of a PDF, left while the file is rewritten to a single page: coming back must
+/// clamp the page to the last page of the file as it is now (and refresh the page count), then draw
+/// that page. Otherwise the saved page is out of range, nothing is shown, and the indicator keeps
+/// saying 3/3 because the mtime was already recorded and no reload follows.
+#[test]
+fn e2e_returning_to_a_pdf_tab_whose_file_lost_pages_clamps_the_page() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("pdf_tab_return_shrunk");
+    let doc = dir.join("doc.pdf");
+    std::fs::copy(&pdf, &doc).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+        .save(dir.join("pic.png"))
+        .unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_media();
+
+    s.select("doc.pdf");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    assert_eq!(s.app.page_indicator(), Some((3, 3)), "premise: 3/3");
+
+    // Another tab shows a picture, which takes the one slot of the picture cache.
+    s.key('t');
+    s.select("pic.png");
+    s.enter();
+    s.drain_media();
+
+    // Rewritten to one page while this tab is in the background.
+    let one =
+        konoma_test_support::build_minimal_one_page_pdf(200, 200, b"0 0 0 rg 20 20 100 100 re f");
+    std::fs::write(&doc, &one).unwrap();
+    let expect = pdf_page_rgba(&doc, 0);
+
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.drain_media();
+    assert_eq!(
+        s.app.page_indicator(),
+        Some((1, 1)),
+        "the page is clamped to the file as it is now"
+    );
+    assert_eq!(s.app.shown_picture_rgba(), Some(expect));
+}
+
 /// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a
 /// multi-page PDF.
 #[cfg(feature = "git")]

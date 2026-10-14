@@ -26,6 +26,8 @@ fn run_in_child(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RasterError> {
     #[cfg(test)]
+    seen_for_tests::note(data);
+    #[cfg(test)]
     if svg_proc::child_exe().is_none() {
         // Unit tests of the callers run the same guarded drawing in this process; the tests of
         // the child itself start the real binary through `svg_proc::run_with`.
@@ -87,6 +89,32 @@ pub fn rasterize_embedded(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RasterError> {
     rasterize_embedded_via(data, max_px, cancelled, &run_in_child)
+}
+
+/// Test-only record of which SVG documents went through the supervised (child process) path,
+/// keyed by a hash of the bytes so parallel tests do not collide. A document drawn in this
+/// process (konoma's own) never shows up here.
+#[cfg(test)]
+pub(crate) mod seen_for_tests {
+    use std::hash::{Hash, Hasher};
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    fn key(data: &[u8]) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut h);
+        h.finish()
+    }
+    pub(super) fn note(data: &[u8]) {
+        if let Ok(mut v) = SEEN.lock() {
+            v.push(key(data));
+        }
+    }
+    /// How many times `data` was drawn on the supervised (child process) path.
+    pub(crate) fn untrusted_count(data: &[u8]) -> usize {
+        SEEN.lock()
+            .map(|v| v.iter().filter(|e| **e == key(data)).count())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

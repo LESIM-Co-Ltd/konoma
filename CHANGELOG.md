@@ -138,9 +138,6 @@ All notable changes to konoma are documented in this file. The format is based o
   `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
   transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
-- PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
-  same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
-  is faster.
 
 ### Fixed
 - The reason a file could not be read (a Markdown file, or a diagram file drawn as text) was always shown in Japanese,
@@ -150,15 +147,27 @@ All notable changes to konoma are documented in this file. The format is based o
   when the new pixels landed cleared the "needs encoding again" mark when it finished. Which pixels stayed depended only
   on which thread finished first. An encode of replaced pixels is now shown but left marked, and the next pass encodes the
   current pixels.
-- Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
-  restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
-  page first and then opens the file, so the picture is the page the indicator names.
-- An SVG of a Git image diff (a changed `.svg`) that was dropped from memory to stay within the picture budget was drawn
-  again in konoma's own process, without the limits a file's SVG gets and without its folder as the base for relative
-  references (an `<image href="dot.png">` in it vanished). It is now drawn again the way it was drawn the first time: by the
-  supervised child process, with the same base.
 - A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
   and when it is not a regular file, with the reason shown.
+
+## [0.31.1] - 2026-10-14
+
+### Fixed
+- In a jj repository, pressing `Enter` on the bookmark list ran a git checkout, bypassing the read-only guard that refuses every
+  other write. `Enter` now goes through the same guard as `l` and shows the usual "konoma only reads a jj repository" notice;
+  git repositories still check out on `Enter`.
+- Returning to a tab that showed page 3 of a PDF drew page 1 under a "3/3" page indicator whenever the tab's picture
+  was no longer kept (for example after the other tab showed an image). The tab now loads the page it was on (or the last
+  page, if the file was rewritten to fewer pages meanwhile).
+- An untrusted SVG (for example the old side of an image diff) whose pixels were dropped by the picture-memory budget was
+  redrawn in konoma's own process when it came back on screen, outside the guarded child process that draws every SVG from
+  a file. Each kept SVG now remembers whether konoma made it (mermaid, math) or it came from a file or git object, and every
+  redraw (rebuild after eviction, sharper redraw, zoom) uses the child process for the latter.
+
+### Changed
+- PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
+  same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
+  is faster.
 
 ## [0.31.0] - 2026-10-12
 
@@ -1445,7 +1454,6 @@ All notable changes to konoma are documented in this file. The format is based o
   that happens on every filesystem event while a filter is open, which is every time an agent touches
   a file, no longer has a synchronous part at all.
 
-
 ## [0.23.6] - 2026-08-07
 
 ### Fixed
@@ -1472,7 +1480,6 @@ All notable changes to konoma are documented in this file. The format is based o
   below it leaking out as raw text, and a table row split in two with an empty cell. Across a
   populated registry this corrects 29 files, including feature tables in `image` and
   `portable-atomic` that had collapsed to a single row.
-
 
 ## [0.23.5] - 2026-08-06
 
@@ -2858,7 +2865,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...v0.29.0
