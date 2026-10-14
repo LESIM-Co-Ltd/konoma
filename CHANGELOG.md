@@ -11,7 +11,8 @@ All notable changes to konoma are documented in this file. The format is based o
   other write. `Enter` now goes through the same guard as `l` and shows the usual "konoma only reads a jj repository" notice;
   git repositories still check out on `Enter`.
 - Returning to a tab that showed page 3 of a PDF drew page 1 under a "3/3" page indicator whenever the tab's picture
-  was no longer kept (for example after the other tab showed an image). The tab now loads the page it was on.
+  was no longer kept (for example after the other tab showed an image). The tab now loads the page it was on (or the last
+  page, if the file was rewritten to fewer pages meanwhile).
 - An untrusted SVG (for example the old side of an image diff) whose pixels were dropped by the picture-memory budget was
   redrawn in konoma's own process when it came back on screen, outside the guarded child process that draws every SVG from
   a file. Each kept SVG now remembers whether konoma made it (mermaid, math) or it came from a file or git object, and every

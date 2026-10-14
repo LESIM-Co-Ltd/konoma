@@ -1587,3 +1587,37 @@ fn a_file_svg_redraws_with_its_relative_image_after_eviction() {
     let rebuilt = res.image.expect("rebuilt");
     assert_eq!(first.to_rgba8().as_raw(), rebuilt.to_rgba8().as_raw());
 }
+
+/// The mermaid fence goes through the real `ensure_mermaid_fence_render`; its result must carry
+/// `Trusted`, so that after eviction the rebuild still draws in this process (and never asks the
+/// child). Without `entry.svg_trust = res.svg_trust` in `apply_md_image` the entry would fall back
+/// to the untrusted default and this fails.
+#[test]
+fn a_mermaid_fence_stays_trusted_through_eviction_and_rebuild() {
+    use crate::preview::svg::seen_for_tests::count;
+    let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_fence_trust_real");
+    let code = "graph TD\nTrust-->Real";
+    let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
+    assert!(!app.ensure_mermaid_fence_render(code.to_string()));
+    let first = img_rx.recv_timeout(WAIT).expect("the first render answers");
+    assert!(first.image.is_ok());
+    app.apply_md_image(first);
+    let svg = app.md_image_cache[&key]
+        .svg
+        .clone()
+        .expect("the fence keeps its SVG");
+    assert!(
+        matches!(app.md_image_cache[&key].svg_trust, SvgTrust::Trusted(_)),
+        "the entry records that konoma made this SVG"
+    );
+    let (trusted0, untrusted0) = (count(&svg, false), count(&svg, true));
+    app.md_frame = 5;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
+    let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
+    assert!(res.reraster && res.image.is_ok());
+    assert_eq!(count(&svg, false), trusted0 + 1, "rebuilt in this process");
+    assert_eq!(count(&svg, true), untrusted0, "never through the child");
+}

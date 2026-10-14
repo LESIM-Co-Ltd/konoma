@@ -4871,12 +4871,23 @@ impl App {
             // See the comment on the enter_preview side for the gating rationale (page_count has
             // no external process, and hayro can draw any page, so there's no navigation
             // suppression via arbitrary_page_renderer_available).
-            self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
-            self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
+            let (pages, page) = Self::pdf_page_state_for(&path, page);
+            self.tab.pdf_pages = pages;
+            self.tab.pdf_page = page;
         }
         self.start_media_load(&kind, &path); // also updates preview_media_mtime
         self.tab.image_zoom = zoom;
         self.tab.image_center = center;
+    }
+
+    /// The page count of the PDF at `path` as it is on disk now, and `page` clamped into it. The one
+    /// place that decides the page a PDF is (re)loaded at when its file may have changed: used by
+    /// `reload_media_if_changed` and by `load_active` (a tab switched back to after the file was
+    /// rewritten). `page_count` runs no external process, so this is cheap.
+    pub(super) fn pdf_page_state_for(path: &Path, page: u32) -> (Option<u32>, u32) {
+        let pages = crate::preview::pdf::page_count(path);
+        let page = page.clamp(1, pages.unwrap_or(1).max(1));
+        (pages, page)
     }
 
     /// The directory to watch **in addition** to the tree root so external (agent) edits to the
