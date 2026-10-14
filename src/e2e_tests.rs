@@ -16424,6 +16424,59 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
     );
 }
 
+/// Returning to a tab that showed page 3 of a PDF must rasterize page 3, not page 1 under a "3/3"
+/// chip: `load_active`'s `clear_image` resets the live page to 1 and the PDF job reads the live
+/// page when it starts, so the saved page has to be put back before the load starts. Another tab
+/// showing an image takes the one-slot tab media cache, so the PDF is really reloaded.
+#[test]
+fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("tab_return_pdf_page3");
+    std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
+    crate::test_support::write_solid_png(&dir.join("pic.png"), 8, 8, [10, 200, 30]);
+    let root = canon(&dir);
+
+    let p1 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 1, false).expect("page 1");
+    let p3 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 3, false).expect("page 3");
+    assert_ne!(
+        p1.to_rgba8().as_raw(),
+        p3.to_rgba8().as_raw(),
+        "premise: page 1 and page 3 rasterize differently"
+    );
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("doc.pdf");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    assert_eq!(
+        s.app.pdf_page_indicator(),
+        Some((3, 3)),
+        "premise: on page 3"
+    );
+
+    s.key('t'); // second tab
+    s.select("pic.png");
+    s.enter();
+    s.drain_media(); // the image takes the tab media cache slot
+    s.key('1'); // back to the PDF tab
+    assert_eq!(s.app.active_tab_index(), 0);
+    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
+    s.drain_media();
+    let shown = s.app.image_src_for_test().expect("a page is loaded");
+    assert_eq!(
+        shown.to_rgba8().as_raw(),
+        p3.to_rgba8().as_raw(),
+        "the loaded raster must be page 3"
+    );
+    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
+}
+
 /// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a
 /// multi-page PDF.
 #[cfg(feature = "git")]

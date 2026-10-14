@@ -10,6 +10,8 @@ All notable changes to konoma are documented in this file. The format is based o
 - In a jj repository, pressing `Enter` on the bookmark list ran a git checkout, bypassing the read-only guard that refuses every
   other write. `Enter` now goes through the same guard as `l` and shows the usual "konoma only reads a jj repository" notice;
   git repositories still check out on `Enter`.
+- Returning to a tab that showed page 3 of a PDF drew page 1 under a "3/3" page indicator whenever the tab's picture
+  was no longer kept (for example after the other tab showed an image). The tab now loads the page it was on.
 
 ### Changed
 - PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the

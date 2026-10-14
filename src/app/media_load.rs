@@ -751,6 +751,12 @@ impl App {
         }
     }
 
+    /// The decoded picture currently held for display (test hook).
+    #[cfg(test)]
+    pub fn image_src_for_test(&self) -> Option<std::sync::Arc<image::DynamicImage>> {
+        self.image_src.clone()
+    }
+
     /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).
     pub fn pdf_next_page(&mut self) {
         self.pdf_goto(self.tab.pdf_page.saturating_add(1));
