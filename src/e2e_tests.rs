@@ -5223,6 +5223,62 @@ fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
     );
 }
 
+/// `Enter` on the branch list is a fixed key (not in the keymap), so it used to reach the checkout
+/// without passing `dispatch_action`'s read-only gate. It must be refused in a jj repository exactly
+/// like `l` (`BranchCheckout`), and must still check out in a git repository.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_enter_on_the_bookmark_list_is_refused_like_other_writes() {
+    let Some(dir) = jj_seed_repo("jj_enter_branches") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir));
+    assert!(
+        !crate::vcs::caps(&s.app.tab.root).write,
+        "sanity: read-only jj backend"
+    );
+    s.key('o');
+    s.key('b');
+    assert!(
+        s.app.is_git_branches(),
+        "the bookmark fixture must open the list"
+    );
+    s.enter();
+    assert!(
+        s.app.flash.as_deref().is_some_and(
+            |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
+        ),
+        "Enter on a bookmark: expected the VcsReadOnly flash, got {:?}",
+        s.app.flash
+    );
+    assert!(
+        s.app.is_git_branches(),
+        "a refused checkout must not leave the list"
+    );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_enter_on_the_branch_list_still_checks_out() {
+    let dir = sandbox("git_enter_branches");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('b');
+    s.key('g');
+    assert_eq!(
+        s.app.git_branch_view()[s.app.git_branch_sel()].name,
+        "feature-x"
+    );
+    s.enter();
+    assert!(
+        crate::git::branches(&s.app.tab.root)
+            .iter()
+            .any(|b| b.name == "feature-x" && b.is_current),
+        "Enter must check out the selected branch in a git repository"
+    );
+}
+
 /// Pins `[external] vcs = "jj"` for **this thread only**.
 ///
 /// The real preference is process-wide, because the background status scan has to detect the same

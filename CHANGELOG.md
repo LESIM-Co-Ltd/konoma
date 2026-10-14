@@ -6,6 +6,11 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- In a jj repository, pressing `Enter` on the bookmark list ran a git checkout, bypassing the read-only guard that refuses every
+  other write. `Enter` now goes through the same guard as `l` and shows the usual "konoma only reads a jj repository" notice;
+  git repositories still check out on `Enter`.
+
 ### Changed
 - PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
   same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
