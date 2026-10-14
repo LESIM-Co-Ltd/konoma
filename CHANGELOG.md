@@ -18,6 +18,12 @@ All notable changes to konoma are documented in this file. The format is based o
   same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
   is faster.
 
+### Fixed
+- An untrusted SVG (for example the old side of an image diff) whose pixels were dropped by the picture-memory budget was
+  redrawn in konoma's own process when it came back on screen, outside the guarded child process that draws every SVG from
+  a file. Each kept SVG now remembers whether konoma made it (mermaid, math) or it came from a file or git object, and every
+  redraw (rebuild after eviction, sharper redraw, zoom) uses the child process for the latter.
+
 ## [0.31.0] - 2026-10-12
 
 ### Added

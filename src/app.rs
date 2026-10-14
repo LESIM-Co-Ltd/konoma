@@ -1222,6 +1222,8 @@ pub(crate) struct MediaDiffPictureDecoded {
     natural_px: (u32, u32),
     bytes: u64,
     page_count: Option<u32>,
+    /// How the SVG kept in `svg` was drawn the first time (see `MdImgEntry::svg_trust`).
+    svg_trust: crate::preview::svg::SvgTrust,
     image: image::DynamicImage,
     frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
     svg: Option<Arc<Vec<u8>>>,
@@ -2527,6 +2529,9 @@ struct MdImgEntry {
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Where the kept `svg` came from, and so how every redraw of it is done (the same way as its
+    /// first draw). The default never draws in this process.
+    svg_trust: crate::preview::svg::SvgTrust,
     /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
     /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
     /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
@@ -2957,6 +2962,8 @@ pub struct MdImageResult {
     image: Result<image::DynamicImage, String>,
     /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
     svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Origin of `svg` (see `MdImgEntry::svg_trust`); only meaningful when `svg` is `Some`.
+    svg_trust: crate::preview::svg::SvgTrust,
     /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
     /// replaced — the layout size and the decoration cache stay untouched.
     reraster: bool,
