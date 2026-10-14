@@ -248,6 +248,7 @@ fn a_panicked_rebuild_stops_the_loading_state() {
         path: key.clone(),
         image: Err("re-raster panicked".to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: true,
         frames: None,
         request: app.md_request_for_test(&key),
@@ -663,6 +664,7 @@ fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
         path: fresh.clone(),
         image: Ok((*frame_img(256, 256, 7)).clone()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&fresh),
@@ -1208,6 +1210,7 @@ fn a_cancelled_file_picture_result_for_a_removed_entry_is_ignored() {
             .code()
             .to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&PathBuf::from("/nonexistent/a.png")),
@@ -1438,4 +1441,183 @@ mod smaller_retry {
         let (w, h) = img.dimensions();
         assert!(w.max(h) <= used && w.max(h) > 0, "{w}x{h} at {used}");
     }
+}
+
+use crate::preview::svg::SvgTrust;
+
+// ---- a kept SVG is redrawn on the path its origin demands ---------------------------------
+
+/// A file/git-object SVG kept in the cache, with unique bytes so the observation is parallel-safe.
+fn unique_svg(tag: &str) -> Vec<u8> {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><!-- {tag} --><rect width="40" height="20" fill="#08f"/></svg>"##
+    )
+    .into_bytes()
+}
+
+fn evicted_with_svg(app: &mut App, key: PathBuf, svg: &[u8], trust: SvgTrust) {
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(frame_img(80, 40, 9)),
+            layout_px: Some((40, 20)),
+            svg: Some(Arc::new(svg.to_vec())),
+            svg_trust: trust,
+            ..Default::default()
+        },
+    );
+    app.md_frame = 5;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+}
+
+/// **The bug.** Rebuilding the pixels of an evicted, untrusted SVG (the old side of an image diff)
+/// drew it in the app's own process, outside the child's guard.
+#[test]
+fn an_evicted_untrusted_svg_is_rebuilt_in_the_child_process_path() {
+    use crate::preview::svg::seen_for_tests::count;
+    let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_untrusted_rebuild");
+    let svg = unique_svg("untrusted-rebuild");
+    let key = PathBuf::from("media-diff://old/1234/0");
+    evicted_with_svg(&mut app, key.clone(), &svg, SvgTrust::Embedded);
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
+    let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
+    assert!(res.reraster && res.image.is_ok());
+    assert_eq!(count(&svg, true), 1, "drawn on the untrusted (child) path");
+    assert_eq!(count(&svg, false), 0, "never drawn in this process");
+}
+
+/// An entry whose origin was never recorded is untrusted (the default).
+#[test]
+fn a_kept_svg_of_unknown_origin_is_untrusted() {
+    assert_eq!(MdImgEntry::default().svg_trust, SvgTrust::Embedded);
+}
+
+/// Mermaid and math are konoma's own output: they stay in-process, on rebuild and on sharpening.
+#[test]
+fn an_evicted_trusted_svg_is_rebuilt_in_process() {
+    use crate::preview::svg::seen_for_tests::count;
+    let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_trusted_rebuild");
+    let svg = unique_svg("trusted-rebuild");
+    let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
+        "graph TD\nT-->R",
+    ));
+    evicted_with_svg(
+        &mut app,
+        key.clone(),
+        &svg,
+        SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
+    );
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
+    let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
+    assert!(res.reraster && res.image.is_ok());
+    assert_eq!(count(&svg, false), 1, "drawn in this process");
+    assert_eq!(count(&svg, true), 0, "no child for konoma's own SVG");
+}
+
+/// The sharpening redraw of a kept SVG follows the same rule.
+#[test]
+fn sharpening_a_kept_svg_follows_its_origin() {
+    use crate::preview::svg::seen_for_tests::count;
+    for trusted in [false, true] {
+        let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_sharpen_origin");
+        let svg = unique_svg(if trusted { "sharp-t" } else { "sharp-u" });
+        let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
+            "graph TD\nS-->H",
+        ));
+        app.md_image_cache.insert(
+            key.clone(),
+            MdImgEntry {
+                decoded: Some(frame_img(80, 40, 9)),
+                layout_px: Some((40, 20)),
+                svg: Some(Arc::new(svg.clone())),
+                svg_trust: if trusted {
+                    SvgTrust::Trusted(PathBuf::from("mermaid.svg"))
+                } else {
+                    SvgTrust::File(PathBuf::from("/nonexistent/x.svg"))
+                },
+                ..Default::default()
+            },
+        );
+        app.md_frame = 6;
+        app.ensure_md_fence_density(
+            &crate::preview::markdown::mermaid_fence_url("graph TD\nS-->H"),
+            400,
+            200,
+        );
+        let res = img_rx
+            .recv_timeout(WAIT)
+            .expect("the sharpening must answer");
+        assert!(res.reraster && res.image.is_ok());
+        assert_eq!(count(&svg, true), usize::from(!trusted));
+        assert_eq!(count(&svg, false), usize::from(trusted));
+    }
+}
+
+/// A redraw paints exactly what the first draw did: a `File` SVG keeps resolving its relative
+/// `<image href>` against its own directory after eviction, and an `Embedded` one reads no file.
+#[test]
+fn a_file_svg_redraws_with_its_relative_image_after_eviction() {
+    let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_file_base");
+    // A solid red 8x8 PNG next to the SVG.
+    let png = dir.join("red.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]))
+        .save(&png)
+        .unwrap();
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="20"><image href="red.png" width="40" height="20"/></svg>"#.to_vec();
+    let path = dir.join("pic.svg");
+    std::fs::write(&path, &svg).unwrap();
+    // The rebuild draws at the app's own raster size; the first draw is made at that size too.
+    let px = app.mermaid_px();
+    let first = crate::preview::svg::rasterize_untrusted(&svg, &path, px, &|| false).unwrap();
+    let embedded = crate::preview::svg::rasterize_embedded(&svg, px, &|| false).unwrap();
+    assert_ne!(
+        first.to_rgba8().as_raw(),
+        embedded.to_rgba8().as_raw(),
+        "setup: the base matters"
+    );
+
+    let key = PathBuf::from("media-diff://new/1/0");
+    evicted_with_svg(&mut app, key.clone(), &svg, SvgTrust::File(path));
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key));
+    let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
+    let rebuilt = res.image.expect("rebuilt");
+    assert_eq!(first.to_rgba8().as_raw(), rebuilt.to_rgba8().as_raw());
+}
+
+/// The mermaid fence goes through the real `ensure_mermaid_fence_render`; its result must carry
+/// `Trusted`, so that after eviction the rebuild still draws in this process (and never asks the
+/// child). Without `entry.svg_trust = res.svg_trust` in `apply_md_image` the entry would fall back
+/// to the untrusted default and this fails.
+#[test]
+fn a_mermaid_fence_stays_trusted_through_eviction_and_rebuild() {
+    use crate::preview::svg::seen_for_tests::count;
+    let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_fence_trust_real");
+    let code = "graph TD\nTrust-->Real";
+    let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
+    assert!(!app.ensure_mermaid_fence_render(code.to_string()));
+    let first = img_rx.recv_timeout(WAIT).expect("the first render answers");
+    assert!(first.image.is_ok());
+    app.apply_md_image(first);
+    let svg = app.md_image_cache[&key]
+        .svg
+        .clone()
+        .expect("the fence keeps its SVG");
+    assert!(
+        matches!(app.md_image_cache[&key].svg_trust, SvgTrust::Trusted(_)),
+        "the entry records that konoma made this SVG"
+    );
+    let (trusted0, untrusted0) = (count(&svg, false), count(&svg, true));
+    app.md_frame = 5;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+    app.md_frame = 6;
+    assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
+    let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
+    assert!(res.reraster && res.image.is_ok());
+    assert_eq!(count(&svg, false), trusted0 + 1, "rebuilt in this process");
+    assert_eq!(count(&svg, true), untrusted0, "never through the child");
 }

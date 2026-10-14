@@ -15342,6 +15342,7 @@ fn stale_md_image_result_is_dropped() {
         path: stale.clone(),
         image: Ok(image::DynamicImage::new_rgba8(4, 4)),
         svg: None,
+        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&stale),
@@ -15390,6 +15391,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
         path: key.clone(),
         image: Err("re-raster panicked".to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: true,
         frames: None,
         request: app.md_request_for_test(&key),
@@ -25285,6 +25287,7 @@ fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
                 .code()
                 .to_string()),
             svg: None,
+            svg_trust: Default::default(),
             reraster: false,
             frames: None,
             request: app.md_request_for_test(&path),
@@ -25373,6 +25376,7 @@ fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
             .code()
             .to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&p),

@@ -669,6 +669,7 @@ fn a_cancelled_result_for_a_removed_entry_is_ignored() {
         path: key.clone(),
         image: Err(ImageFailure::Cancelled.code().to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&key),

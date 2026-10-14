@@ -317,6 +317,7 @@ impl App {
                     path: p.cache_key.clone(),
                     image: Ok(p.image),
                     svg: p.svg,
+                    svg_trust: p.svg_trust,
                     reraster: false,
                     frames: p.frames,
                     request,
@@ -945,6 +946,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
         let first_frame = first.clone();
         let key = crate::preview::media_diff::media_diff_url(side, hash, page, None);
         return MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
+            svg_trust: Default::default(),
             // The GIF's own logical-screen size (read from the header) — not `first.dimensions()`,
             // which the inline decode budget may have downscaled for memory.
             natural_px: canvas_px,
@@ -961,6 +963,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
             let (w, h) = img.dimensions();
             let key = crate::preview::media_diff::media_diff_url(side, hash, page, None);
             MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
+                svg_trust: Default::default(),
                 natural_px: (w, h),
                 bytes: bytes.len() as u64,
                 page_count: None,
@@ -1016,6 +1019,8 @@ fn decode_svg_side(
         natural_px,
         bytes: bytes.len() as u64,
         page_count: None,
+        // Drawn above with `rasterize_untrusted(bytes, path, ..)`: redrawn the same way.
+        svg_trust: crate::preview::svg::SvgTrust::File(path.to_path_buf()),
         image: img,
         frames: None,
         svg: Some(Arc::new(bytes.to_vec())),
@@ -1054,6 +1059,7 @@ fn decode_pdf_side(
     };
     let key = crate::preview::media_diff::media_diff_url(side, hash, page, Some(raster_px));
     MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
+        svg_trust: Default::default(),
         natural_px: (pw.ceil().max(1.0) as u32, ph.ceil().max(1.0) as u32),
         bytes: bytes.len() as u64,
         page_count: Some(page_count),

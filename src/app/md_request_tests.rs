@@ -27,6 +27,7 @@ fn result(
             .map(|()| image::DynamicImage::new_rgba8(8, 4))
             .map_err(|f| f.code().to_string()),
         svg: None,
+        svg_trust: Default::default(),
         reraster,
         frames: None,
         request,

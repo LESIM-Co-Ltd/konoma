@@ -244,6 +244,7 @@ impl App {
                 entry.fail = None;
                 if let Some(svg) = res.svg {
                     entry.svg = Some(svg);
+                    entry.svg_trust = res.svg_trust;
                 }
                 entry.evicted = false;
                 if res.reraster {
@@ -376,6 +377,7 @@ impl App {
         let (Some(img), Some(svg)) = (entry.decoded.as_ref(), entry.svg.clone()) else {
             return FenceSharpen::NotNeeded;
         };
+        let trust = entry.svg_trust.clone();
         let (sw, sh) = img.dimensions();
         let cur = sw.max(sh);
         if needed_px <= cur + cur / 8 || cur >= 4096 || entry.reraster_inflight {
@@ -389,13 +391,13 @@ impl App {
         // of `kp` into the `MdImageResult` it builds on success, so the failure path needs its own.
         let kp_on_panic = kp.clone();
         let job = move || {
-            let image =
-                crate::preview::svg::rasterize_trusted(&svg, Path::new("mermaid.svg"), target)
-                    .ok_or_else(|| "rasterize failed".to_string());
+            let image = crate::preview::svg::rasterize_kept(&svg, &trust, target)
+                .ok_or_else(|| "rasterize failed".to_string());
             MdImageResult {
                 path: kp,
                 image,
                 svg: None,
+                svg_trust: Default::default(),
                 reraster: true,
                 frames: None,
                 request,
@@ -417,6 +419,7 @@ impl App {
                     path: kp_on_panic,
                     image: Err("re-raster panicked".to_string()),
                     svg: None,
+                    svg_trust: Default::default(),
                     reraster: true,
                     frames: None,
                     request,
@@ -553,6 +556,7 @@ impl App {
                     path: key,
                     image,
                     svg,
+                    svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
                     reraster: false,
                     frames: None,
                     request,
@@ -568,6 +572,7 @@ impl App {
                 path: key,
                 image,
                 svg,
+                svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
                 reraster: false,
                 frames: None,
                 request,
@@ -617,6 +622,7 @@ impl App {
                     path: key,
                     image,
                     svg,
+                    svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("math.svg")),
                     reraster: false,
                     frames: None,
                     request,
@@ -632,6 +638,7 @@ impl App {
                 path: key,
                 image,
                 svg,
+                svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("math.svg")),
                 reraster: false,
                 frames: None,
                 request,
@@ -825,6 +832,7 @@ impl App {
                     path: p,
                     image,
                     svg: None,
+                    svg_trust: Default::default(),
                     reraster: false,
                     frames,
                     request,
@@ -894,6 +902,7 @@ impl App {
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return true;
         };
+        let trust = entry.svg_trust.clone();
         let Some(svg) = entry.svg.clone() else {
             // A picture of the open document: decoded again from the bytes it keeps, through the
             // same entry as the first decode (the defences of the first decode apply again).
@@ -924,13 +933,10 @@ impl App {
                     let kp = kp.clone();
                     move || MdImageResult {
                         path: kp,
-                        image: crate::preview::svg::rasterize_trusted(
-                            &svg,
-                            Path::new("rebuild.svg"),
-                            max_px,
-                        )
-                        .ok_or_else(|| "rasterize failed".to_string()),
+                        image: crate::preview::svg::rasterize_kept(&svg, &trust, max_px)
+                            .ok_or_else(|| "rasterize failed".to_string()),
                         svg: None,
+                        svg_trust: Default::default(),
                         reraster: true,
                         frames: None,
                         request,
@@ -940,6 +946,7 @@ impl App {
                     path: kp,
                     image: Err("re-raster panicked".to_string()),
                     svg: None,
+                    svg_trust: Default::default(),
                     reraster: true,
                     frames: None,
                     request,
@@ -1401,6 +1408,7 @@ impl App {
                     path: key,
                     image: still.map_err(|f| f.code().to_string()),
                     svg: None,
+                    svg_trust: Default::default(),
                     reraster,
                     frames,
                     request,

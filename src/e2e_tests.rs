@@ -5223,6 +5223,62 @@ fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
     );
 }
 
+/// `Enter` on the branch list is a fixed key (not in the keymap), so it used to reach the checkout
+/// without passing `dispatch_action`'s read-only gate. It must be refused in a jj repository exactly
+/// like `l` (`BranchCheckout`), and must still check out in a git repository.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_enter_on_the_bookmark_list_is_refused_like_other_writes() {
+    let Some(dir) = jj_seed_repo("jj_enter_branches") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir));
+    assert!(
+        !crate::vcs::caps(&s.app.tab.root).write,
+        "sanity: read-only jj backend"
+    );
+    s.key('o');
+    s.key('b');
+    assert!(
+        s.app.is_git_branches(),
+        "the bookmark fixture must open the list"
+    );
+    s.enter();
+    assert!(
+        s.app.flash.as_deref().is_some_and(
+            |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
+        ),
+        "Enter on a bookmark: expected the VcsReadOnly flash, got {:?}",
+        s.app.flash
+    );
+    assert!(
+        s.app.is_git_branches(),
+        "a refused checkout must not leave the list"
+    );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_enter_on_the_branch_list_still_checks_out() {
+    let dir = sandbox("git_enter_branches");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('b');
+    s.key('g');
+    assert_eq!(
+        s.app.git_branch_view()[s.app.git_branch_sel()].name,
+        "feature-x"
+    );
+    s.enter();
+    assert!(
+        crate::git::branches(&s.app.tab.root)
+            .iter()
+            .any(|b| b.name == "feature-x" && b.is_current),
+        "Enter must check out the selected branch in a git repository"
+    );
+}
+
 /// Pins `[external] vcs = "jj"` for **this thread only**.
 ///
 /// The real preference is process-wide, because the background status scan has to detect the same
@@ -16366,6 +16422,112 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
         distinct.len() > 1,
         "白地と黒インクが両方描かれるはずなので、描画セルの色は一色だけではないはず: {distinct:?}"
     );
+}
+
+/// Returning to a tab that showed page 3 of a PDF must rasterize page 3, not page 1 under a "3/3"
+/// chip: `load_active`'s `clear_image` resets the live page to 1 and the PDF job reads the live
+/// page when it starts, so the saved page has to be put back before the load starts. Another tab
+/// showing an image takes the one-slot tab media cache, so the PDF is really reloaded.
+#[test]
+fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("tab_return_pdf_page3");
+    std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
+    crate::test_support::write_solid_png(&dir.join("pic.png"), 8, 8, [10, 200, 30]);
+    let root = canon(&dir);
+
+    let p1 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 1, false).expect("page 1");
+    let p3 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 3, false).expect("page 3");
+    assert_ne!(
+        p1.to_rgba8().as_raw(),
+        p3.to_rgba8().as_raw(),
+        "premise: page 1 and page 3 rasterize differently"
+    );
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("doc.pdf");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    assert_eq!(
+        s.app.pdf_page_indicator(),
+        Some((3, 3)),
+        "premise: on page 3"
+    );
+
+    s.key('t'); // second tab
+    s.select("pic.png");
+    s.enter();
+    s.drain_media(); // the image takes the tab media cache slot
+    s.key('1'); // back to the PDF tab
+    assert_eq!(s.app.active_tab_index(), 0);
+    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
+    s.drain_media();
+    let shown = s.app.image_src_for_test().expect("a page is loaded");
+    assert_eq!(
+        shown.to_rgba8().as_raw(),
+        p3.to_rgba8().as_raw(),
+        "the loaded raster must be page 3"
+    );
+    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
+}
+
+/// A tab on page 3 of a PDF, left while the file is rewritten to a single page: coming back must
+/// clamp the page to the last page of the file as it is now (and refresh the page count), then draw
+/// that page. Otherwise the render of page 3 fails (out of range), nothing is shown, and the chip
+/// keeps saying 3/3 because the mtime was already recorded and no reload follows.
+#[test]
+fn e2e_returning_to_a_pdf_tab_whose_file_lost_pages_clamps_the_page() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("tab_return_pdf_shrunk");
+    let doc = dir.join("doc.pdf");
+    std::fs::copy(&pdf, &doc).unwrap();
+    crate::test_support::write_solid_png(&dir.join("pic.png"), 8, 8, [10, 200, 30]);
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("doc.pdf");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    s.key('J');
+    s.drain_media();
+    assert_eq!(
+        s.app.pdf_page_indicator(),
+        Some((3, 3)),
+        "premise: on page 3"
+    );
+
+    s.key('t');
+    s.select("pic.png");
+    s.enter();
+    s.drain_media(); // the image takes the tab media cache slot
+
+    // Rewritten externally to one page while this tab is in the background.
+    let one =
+        crate::test_support::build_minimal_one_page_pdf(200, 200, b"0 0 0 rg 20 20 100 100 re f");
+    std::fs::write(root.join("doc.pdf"), &one).unwrap();
+    let expect = crate::preview::pdf::render_page(&root.join("doc.pdf"), 1, false)
+        .expect("the one-page PDF renders");
+
+    s.key('1'); // back to the PDF tab
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.drain_media();
+    assert_eq!(
+        s.app.pdf_page_indicator(),
+        Some((1, 1)),
+        "the page is clamped to the file as it is now"
+    );
+    let shown = s.app.image_src_for_test().expect("a page is loaded");
+    assert_eq!(shown.to_rgba8().as_raw(), expect.to_rgba8().as_raw());
 }
 
 /// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a

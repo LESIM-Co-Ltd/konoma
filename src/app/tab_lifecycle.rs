@@ -118,6 +118,11 @@ impl App {
                 // Clamp `t.pdf_page` right here: use the same clamped value both as the argument
                 // to restore_media_cache below and as the final value carried by `self.tab = t` at the end.
                 t.pdf_page = t.pdf_page.max(1);
+                // `clear_image` above reset the live page to 1 and `MediaJob::Pdf` reads the live
+                // page when the load starts, so put the saved page back *before* starting it (the
+                // bulk restore at the end comes too late: the worker would rasterize page 1 under
+                // a chip that says page N).
+                self.tab.pdf_page = t.pdf_page;
                 // pdf_pages: a plain copy with no transformation. Not read here, so leave it to the
                 // bulk restore at the end.
                 // If it's the same file, same mtime, same page — e.g. returning to a tab you just
@@ -125,6 +130,16 @@ impl App {
                 // tools/re-rasterizing for PDF/video).
                 let reused = self.restore_media_cache(&path, t.pdf_page);
                 if !reused {
+                    if matches!(kind, PreviewKind::Pdf(_)) {
+                        // The kept picture did not match, so the file may have been rewritten
+                        // while this tab sat in the background (fewer pages): clamp the saved
+                        // page and refresh the count the same way a reload does, before the
+                        // worker reads the live page.
+                        let (pages, page) = Self::pdf_page_state_for(&path, t.pdf_page);
+                        t.pdf_pages = pages;
+                        t.pdf_page = page;
+                        self.tab.pdf_page = page;
+                    }
                     self.start_media_load(&kind, &path);
                 }
                 self.tab.image_zoom = t.image_zoom;

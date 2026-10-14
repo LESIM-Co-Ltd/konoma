@@ -303,6 +303,8 @@ fn rasterize_untrusted_in(
 ) -> Result<DynamicImage, RasterError> {
     svg_guard::precheck(data)?;
     #[cfg(test)]
+    seen_for_tests::note(data, true);
+    #[cfg(test)]
     if svg_proc::child_exe().is_none() {
         // Unit tests of the callers run the same guarded drawing in this process; the tests of
         // the child itself start the real binary through `svg_proc::run_with`.
@@ -386,7 +388,59 @@ fn size_of_head(head: &[u8]) -> Result<(u32, u32), SvgFail> {
 /// Rasterize SVG that konoma generated (a mermaid diagram, a formula), in this process. `path` is
 /// the base for relative references. Never for a file or a document's picture: see the note above.
 pub fn rasterize_trusted(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
+    #[cfg(test)]
+    seen_for_tests::note(data, false);
     rasterize_guarded(data, path.parent(), max_px).ok()
+}
+
+/// Test-only record of which SVG documents went through the in-process (trusted) and the
+/// supervised (untrusted) path, keyed by a hash of the bytes so parallel tests do not collide.
+#[cfg(test)]
+pub(crate) mod seen_for_tests {
+    use std::hash::{Hash, Hasher};
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<(u64, bool)>> = Mutex::new(Vec::new());
+    fn key(data: &[u8]) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut h);
+        h.finish()
+    }
+    pub(super) fn note(data: &[u8], untrusted: bool) {
+        if let Ok(mut v) = SEEN.lock() {
+            v.push((key(data), untrusted));
+        }
+    }
+    /// How many times `data` was drawn on the untrusted (`true`) or trusted (`false`) path.
+    pub(crate) fn count(data: &[u8], untrusted: bool) -> usize {
+        SEEN.lock()
+            .map(|v| v.iter().filter(|e| **e == (key(data), untrusted)).count())
+            .unwrap_or(0)
+    }
+}
+
+/// Who vouches for a retained SVG, and so how it is drawn again. Each variant records exactly how
+/// the first draw was done, so a redraw (rebuild after eviction, sharper redraw) paints the same
+/// picture.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum SvgTrust {
+    /// Made by konoma (mermaid, math): drawn in this process; the path is the base for references.
+    Trusted(PathBuf),
+    /// From a file: drawn by the supervised child process, reading files relative to this path.
+    File(PathBuf),
+    /// From a document or git, with no file to be relative to: child process, reads no file.
+    /// The default: an SVG of unknown origin is never drawn in this process.
+    #[default]
+    Embedded,
+}
+
+/// Redraw an SVG that the app kept, the way its first draw was done (see [`SvgTrust`]).
+/// Blocks: call from a worker thread.
+pub fn rasterize_kept(data: &[u8], trust: &SvgTrust, max_px: u32) -> Option<DynamicImage> {
+    match trust {
+        SvgTrust::Trusted(path) => rasterize_trusted(data, path, max_px),
+        SvgTrust::File(path) => rasterize_untrusted(data, path, max_px, &|| false).ok(),
+        SvgTrust::Embedded => rasterize_embedded(data, max_px, &|| false).ok(),
+    }
 }
 
 /// Bytes a drawing of `pw` x `ph` px claims from the shared decode budget: the pixmap and the

@@ -2104,7 +2104,9 @@ fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
         #[cfg(feature = "git")]
         Surface::GitGraphPicker => app.git_graph_picker_apply(),
         #[cfg(feature = "git")]
-        Surface::GitBranches => app.checkout_selected_branch()?,
+        // Enter is a fixed key, so it never reaches the keymap; route it through the same action
+        // (and therefore the same read-only gate) as `l`, or a jj repository would be checked out.
+        Surface::GitBranches => return dispatch_action(app, Action::BranchCheckout, sfc),
         #[cfg(feature = "git")]
         Surface::GitWorktrees => app.worktree_goto(),
         _ => {}
