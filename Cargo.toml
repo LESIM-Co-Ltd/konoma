@@ -87,7 +87,7 @@ skrifa = "0.44"
 # (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページのラスタライズ本体も
 # 今は hayro(下記)が担うので、「数えられる ⟹ そのページを描ける」がほぼ常に成立し、複数ページの
 # ナビゲーションを外部ツールの有無でゲートする必要はもう無い(preview/pdf.rs 参照)。
-hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
+hayro-syntax = { version = "0.8", default-features = false, features = ["std"] }
 
 # PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。フォールバックは macOS 同梱の
 # qlmanage/sips のみ(1ページ目専用・preview/pdf.rs)で、hayro が失敗した時だけ使う。poppler は
@@ -100,7 +100,7 @@ hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
 # 非埋め込み CJK CID フォント(HeiseiMin-W3 等)が、エラーも警告も無く**無言で白紙**になる
 # (embed-cmaps 無しだとフォールバックフォントを font_resolver で渡してもグリフ→コード変換自体が
 # 失敗する)。バイナリ +0.7MB 程度の増分より、ありふれた PDF が理由も分からず白紙表示になる方を避ける。
-hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+hayro = { version = "0.8", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 
 # 動画サムネイルの純 Rust 経路(preview/video.rs)。PDF と同じ形＝**内蔵で描けるものは何も入れずに描き、
 # 描けないものだけ ffmpegthumbnailer/ffmpeg へ降格**する。**コンテナ 2 種 × コーデック 2 種**:

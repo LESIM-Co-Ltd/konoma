@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (368)
+- MIT License (369)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -3068,7 +3068,8 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- fearless_simd 0.4.1
+- fearless_simd 0.7.0
+- fearless_simd 1.1.0
 - kurbo 0.13.1
 - peniko 0.6.1
 - polycool 0.4.0
@@ -3340,45 +3341,11 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- font-types 0.11.3
-- read-fonts 0.39.2
-- skrifa 0.42.1
-
-```
-Copyright (c) 2019 Colin Rothfels
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
 - font-types 0.12.4
 - read-fonts 0.41.0
+- read-fonts 0.43.3
 - skrifa 0.44.0
+- skrifa 0.46.2
 
 ```
 Copyright (c) 2019 Fontations Developers
@@ -4252,11 +4219,11 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- serde_spanned 1.1.1
-- toml 1.1.6+spec-1.1.0
-- toml_datetime 1.1.1+spec-1.1.0
-- toml_parser 1.1.3+spec-1.1.0
-- toml_writer 1.1.2+spec-1.1.0
+- serde_spanned 1.1.2
+- toml 1.1.8+spec-1.1.0
+- toml_datetime 1.1.2+spec-1.1.0
+- toml_parser 1.1.5+spec-1.1.0
+- toml_writer 1.1.3+spec-1.1.0
 
 ```
 Copyright (c) Individual contributors
@@ -4341,14 +4308,14 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- hayro-ccitt 0.3.0
+- hayro-ccitt 0.4.0
 - hayro-cmap 0.1.0
-- hayro-interpret 0.7.0
-- hayro-jbig2 0.3.0
-- hayro-jpeg2000 0.3.5
+- hayro-interpret 0.8.0
+- hayro-jbig2 0.3.1
+- hayro-jpeg2000 0.4.1
 - hayro-postscript 0.1.0
-- hayro-syntax 0.7.2
-- hayro 0.7.1
+- hayro-syntax 0.8.0
+- hayro 0.8.0
 
 ```
 Copyright (c) The Hayro Authors
@@ -4614,8 +4581,8 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- vello_common 0.0.8
-- vello_cpu 0.0.8
+- vello_common 0.3.0
+- vello_cpu 0.3.0
 
 ```
 Copyright 2020 the Vello Authors
@@ -4873,6 +4840,7 @@ SOFTWARE.
 
 Used by:
 - cfb 0.14.0
+- cfb 0.15.0
 
 ```
 MIT License
@@ -5965,7 +5933,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.30.0
+- konoma 0.31.0
 
 ```
 MIT License
@@ -6050,7 +6018,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- tokio 1.53.1
+- tokio 1.53.2
 
 ```
 MIT License

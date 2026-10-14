@@ -6,6 +6,11 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
+  same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
+  is faster.
+
 ## [0.31.0] - 2026-10-12
 
 ### Added
