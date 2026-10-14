@@ -72,8 +72,8 @@ base64 = "0.23"
 resvg = "0.48"
 svgtypes = "0.16"
 skrifa = "0.44"
-hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
-hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+hayro-syntax = { version = "0.8", default-features = false, features = ["std"] }
+hayro = { version = "0.8", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 rust_h264 = "0.4"
 rust_h265 = "0.1"
 re_mp4 = "0.5"

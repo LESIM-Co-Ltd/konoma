@@ -57,6 +57,7 @@ use hayro::hayro_interpret::font::{FontData, FontQuery};
 use hayro::hayro_interpret::hayro_cmap::{CharacterCollection, CidFamily};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::vello_cpu::color::palette::css::TRANSPARENT;
+use hayro::vello_cpu::peniko::ImageAlphaType;
 use hayro::vello_cpu::Pixmap;
 use image::DynamicImage;
 
@@ -152,7 +153,8 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
     }
     let scale = PAGE_MAX_PX as f32 / w.max(h);
     let settings = pdf_interpreter_settings();
-    let render_settings = hayro::RenderSettings {
+    let render_settings = hayro::RenderSettings::default();
+    let pixmap_settings = hayro::PixmapSettings {
         x_scale: scale,
         y_scale: scale,
         // Transparent here is an **internal signal, not the final pixel format**: it is what lets
@@ -163,7 +165,6 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
         // transparent all the way to the screen, a PDF page is a document printed on paper, not a
         // themed diagram, so it should look like one regardless of the terminal's own background.
         bg_color: TRANSPARENT,
-        ..Default::default()
     };
     // A fresh cache per call. Measured: reusing a `RenderCache` across page turns (or even across
     // two renders of the *same* page) made no measurable difference for realistic PDFs — a 15-page
@@ -175,7 +176,13 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
     // `unsafe`/extra-dependency complexity for a gain that doesn't show up in practice. See the
     // report for the full numbers; re-measure if this ever shows up as a bottleneck.
     let cache = hayro::RenderCache::new();
-    let pixmap = hayro::render(page_ref, &cache, &settings, &render_settings);
+    let pixmap = hayro::render(
+        page_ref,
+        &cache,
+        &settings,
+        &render_settings,
+        &pixmap_settings,
+    );
     pixmap_to_dynamic_image(pixmap)
 }
 
@@ -212,11 +219,8 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     if w == 0 || h == 0 {
         return None;
     }
-    let straight = pixmap.take_unpremultiplied();
-    let mut rgba = Vec::with_capacity(straight.len() * 4);
-    for px in straight {
-        rgba.extend_from_slice(&px.to_u8_array());
-    }
+    // Straight (unpremultiplied) RGBA8 bytes, which is what `image::RgbaImage` expects.
+    let mut rgba = pixmap.take_rgba8(ImageAlphaType::Alpha);
     // Checked on the raw bytes (before `RgbaImage::from_raw` below), so a normal, ink-bearing page
     // pays nothing extra: `.all()` short-circuits at the first non-transparent pixel, which real
     // content reaches almost immediately. Only a genuinely all-transparent buffer forces the full

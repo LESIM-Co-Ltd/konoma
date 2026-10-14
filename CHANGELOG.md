@@ -138,6 +138,9 @@ All notable changes to konoma are documented in this file. The format is based o
   `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
   transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
+- PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
+  same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
+  is faster.
 
 ### Fixed
 - The reason a file could not be read (a Markdown file, or a diagram file drawn as text) was always shown in Japanese,
