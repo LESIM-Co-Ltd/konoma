@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (368)
+- MIT License (369)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -4219,11 +4219,11 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- serde_spanned 1.1.1
-- toml 1.1.6+spec-1.1.0
-- toml_datetime 1.1.1+spec-1.1.0
-- toml_parser 1.1.3+spec-1.1.0
-- toml_writer 1.1.2+spec-1.1.0
+- serde_spanned 1.1.2
+- toml 1.1.8+spec-1.1.0
+- toml_datetime 1.1.2+spec-1.1.0
+- toml_parser 1.1.5+spec-1.1.0
+- toml_writer 1.1.3+spec-1.1.0
 
 ```
 Copyright (c) Individual contributors
@@ -4840,6 +4840,7 @@ SOFTWARE.
 
 Used by:
 - cfb 0.14.0
+- cfb 0.15.0
 
 ```
 MIT License
@@ -6017,7 +6018,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- tokio 1.53.1
+- tokio 1.53.2
 
 ```
 MIT License
