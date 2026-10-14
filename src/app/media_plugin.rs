@@ -17,7 +17,7 @@
 use konoma_plugin::view::{ImageData, ImageView, ViewReq};
 use konoma_plugin::{Failure, FailureKind, Input, Plugin};
 
-use super::plugin_host::{PluginJob, PluginPhase, PluginShow, Wait, FIRST_FRAME_BUDGET};
+use super::plugin_host::{PluginJob, PluginPhase, PluginShow, Wait};
 use super::*;
 
 /// The reason an image failure shows for a plugin's `Failure`. The pictures that have a fixed
@@ -221,7 +221,7 @@ impl App {
                         hint: None,
                     },
                 },
-                Wait::Layout(FIRST_FRAME_BUDGET),
+                Wait::Layout(super::plugin_host::first_frame_budget()),
             ),
         };
         let work = self.plugin_work(id.to_string(), path.to_path_buf(), job, req);

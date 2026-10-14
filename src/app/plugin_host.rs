@@ -65,6 +65,52 @@ pub(crate) const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(30);
 /// ceiling: past it the screen says "Loading..." and the document lands when the worker is done.
 pub(crate) const MARKDOWN_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(150);
 
+/// The first-frame budget in force: the constant, except in the tests that set a longer one with
+/// [`LongFirstFrame`] (a thread-local, so parallel tests do not see each other's).
+pub(crate) fn first_frame_budget() -> Duration {
+    #[cfg(test)]
+    if let Some(d) = BUDGET_OVERRIDE.with(|c| c.get()) {
+        return d;
+    }
+    FIRST_FRAME_BUDGET
+}
+
+/// [`first_frame_budget`] for the Markdown plugin.
+pub(crate) fn markdown_first_frame_budget() -> Duration {
+    #[cfg(test)]
+    if let Some(d) = BUDGET_OVERRIDE.with(|c| c.get()) {
+        return d;
+    }
+    MARKDOWN_FIRST_FRAME_BUDGET
+}
+
+#[cfg(test)]
+thread_local! {
+    static BUDGET_OVERRIDE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: while it lives, the UI thread of this test waits `budget` (not 30ms / 150ms) for a
+/// fresh `open`. For a test that checks "an answer that lands inside the budget is on the first
+/// frame": the answer comes at once, so the wait ends then, and a slow machine cannot make the
+/// plugin late. A test of the short budget itself does not use it.
+#[cfg(test)]
+pub(crate) struct LongFirstFrame;
+
+#[cfg(test)]
+impl LongFirstFrame {
+    pub(crate) fn of(budget: Duration) -> LongFirstFrame {
+        BUDGET_OVERRIDE.with(|c| c.set(Some(budget)));
+        LongFirstFrame
+    }
+}
+
+#[cfg(test)]
+impl Drop for LongFirstFrame {
+    fn drop(&mut self) {
+        BUDGET_OVERRIDE.with(|c| c.set(None));
+    }
+}
+
 /// Where the plugin show stands.
 pub(crate) enum PluginPhase {
     /// The first `open` has not come back.
@@ -1075,9 +1121,9 @@ impl App {
         let budget = if crate::plugins::profile_of(&id).document
             && !crate::plugins::profile_of(&id).converts
         {
-            MARKDOWN_FIRST_FRAME_BUDGET
+            markdown_first_frame_budget()
         } else {
-            FIRST_FRAME_BUDGET
+            first_frame_budget()
         };
         let work = self.plugin_work(id, path, PluginJob::Open { plugin, input }, req);
         self.dispatch_plugin_work(work, Wait::Result(budget));
@@ -1126,7 +1172,7 @@ impl App {
             req,
         );
         let wait = if detached {
-            Wait::Result(FIRST_FRAME_BUDGET)
+            Wait::Result(first_frame_budget())
         } else {
             Wait::Nothing
         };

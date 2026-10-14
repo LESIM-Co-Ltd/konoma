@@ -78,6 +78,68 @@ fn log_parse(path: &Path, rows: usize, cancelled: bool) {
     }
 }
 
+/// Test-only pause point: a parse of a file under `dir` stops once it has read `at_row` rows (before
+/// it looks at its [`Cancel`] there) and waits until the gate is opened. A test that must see how a
+/// cancel ends a read can then hold every read at the same row, instead of racing the reader with
+/// the clock. Nothing outside tests ever sets it, so a normal parse never waits.
+#[cfg(any(test, feature = "test-hooks"))]
+pub struct PauseGate {
+    dir: std::path::PathBuf,
+    at_row: usize,
+    opened: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+static PAUSE: std::sync::Mutex<Vec<std::sync::Arc<PauseGate>>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl PauseGate {
+    /// Holds every parse of a file under `dir` at row `at_row` (a multiple of
+    /// [`CANCEL_CHECK_ROWS`], so that the cancel look is made there) until [`PauseGate::open`].
+    pub fn install(dir: &Path, at_row: usize) -> std::sync::Arc<PauseGate> {
+        let gate = std::sync::Arc::new(PauseGate {
+            dir: dir.to_path_buf(),
+            at_row,
+            opened: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        });
+        PAUSE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(gate.clone());
+        gate
+    }
+
+    /// Lets the held parses go on (and any later one pass).
+    pub fn open(&self) {
+        *self.opened.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    fn hold(&self) {
+        let guard = self.opened.lock().unwrap_or_else(|e| e.into_inner());
+        // A long bound, so that a test that forgets to open the gate fails instead of hanging.
+        let _ = self
+            .cv
+            .wait_timeout_while(guard, std::time::Duration::from_secs(120), |open| !*open);
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn pause_point(path: &Path, rows: usize) {
+    let gates: Vec<_> = PAUSE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|g| g.at_row == rows && path.starts_with(&g.dir))
+        .cloned()
+        .collect();
+    for g in gates {
+        g.hold();
+    }
+}
+
 /// How many rows are read between two looks at the [`Cancel`].
 pub const CANCEL_CHECK_ROWS: usize = 1024;
 
@@ -130,6 +192,8 @@ pub fn parse_cancellable(path: &Path, delimiter: u8, cancel: &Cancel) -> Result<
             truncated = true;
             break;
         }
+        #[cfg(any(test, feature = "test-hooks"))]
+        pause_point(path, rows.len());
         if rows.len().is_multiple_of(CANCEL_CHECK_ROWS) && cancel.is_cancelled() {
             #[cfg(any(test, feature = "test-hooks"))]
             log_parse(path, rows.len(), true);

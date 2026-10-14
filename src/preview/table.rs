@@ -14,6 +14,8 @@ use konoma_plugin::view::{CellDetail, Grid as PluginGrid};
 /// (thread-local) counter of full-file parses.
 #[cfg(test)]
 pub use konoma_table::table::{parse, TableData, MAX_ROWS, PARSE_CALLS, PARSE_LOG};
+#[cfg(test)]
+pub use konoma_table::table::{PauseGate, CANCEL_CHECK_ROWS};
 
 /// A read-only view of the table the renderer is showing: a table a plugin returned (a parsed
 /// CSV/TSV, an archive listing, one sheet of a workbook), read cell by cell through [`PluginGrid`].

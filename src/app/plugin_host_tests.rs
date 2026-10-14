@@ -14,7 +14,7 @@ use konoma_plugin::{
     t, ActCx, Failure, Input, Manifest, OpenCx, Outcome, Plugin, Session, Settings, Value, ViewCx,
 };
 
-use super::plugin_host::{Handoff, PluginResult, FIRST_FRAME_BUDGET};
+use super::plugin_host::{Handoff, LongFirstFrame, PluginResult, FIRST_FRAME_BUDGET};
 use super::*;
 use crate::plugins::test_plugins::Latch;
 use crate::test_support::unique_tmp;
@@ -208,6 +208,8 @@ fn sandbox(name: &str) -> (crate::test_support::TmpDir, PathBuf) {
 #[test]
 fn a_quick_open_is_on_screen_in_the_first_frame() {
     let (dir, file) = sandbox("konoma_plugin_host_quick");
+    // The answer is immediate; the budget is long so that a loaded machine cannot make it late.
+    let _budget = LongFirstFrame::of(Duration::from_secs(5));
     let mut app = app_on(&dir, &file);
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
@@ -433,6 +435,7 @@ fn a_panic_in_open_becomes_a_failure_not_a_stuck_loading() {
 /// The same inside the first-frame budget, and a panic in `view` too.
 #[test]
 fn a_panic_is_a_failure_in_the_first_frame_and_without_a_worker_channel() {
+    let _budget = LongFirstFrame::of(Duration::from_secs(5));
     for (panic_in_open, panic_in_view) in [(true, false), (false, true)] {
         // With a channel (first frame).
         let (dir, file) = sandbox("konoma_plugin_host_panic_quick");
