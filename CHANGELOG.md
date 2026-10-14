@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-10-14
+
 ### Fixed
 - In a jj repository, pressing `Enter` on the bookmark list ran a git checkout, bypassing the read-only guard that refuses every
   other write. `Enter` now goes through the same guard as `l` and shows the usual "konoma only reads a jj repository" notice;
@@ -2721,7 +2723,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...v0.29.0
