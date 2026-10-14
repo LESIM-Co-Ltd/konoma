@@ -245,7 +245,7 @@ encoding_rs = "0.8"
 # Compound File Binary reader: used to detect a password-protected OOXML package (an
 # `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
 # Already in the graph through `infer`; named here because konoma reads it directly.
-cfb = "0.14"
+cfb = "0.15"
 # XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
 # billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
