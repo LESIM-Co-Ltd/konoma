@@ -12,17 +12,15 @@ All notable changes to konoma are documented in this file. The format is based o
   git repositories still check out on `Enter`.
 - Returning to a tab that showed page 3 of a PDF drew page 1 under a "3/3" page indicator whenever the tab's picture
   was no longer kept (for example after the other tab showed an image). The tab now loads the page it was on.
+- An untrusted SVG (for example the old side of an image diff) whose pixels were dropped by the picture-memory budget was
+  redrawn in konoma's own process when it came back on screen, outside the guarded child process that draws every SVG from
+  a file. Each kept SVG now remembers whether konoma made it (mermaid, math) or it came from a file or git object, and every
+  redraw (rebuild after eviction, sharper redraw, zoom) uses the child process for the latter.
 
 ### Changed
 - PDF pages are drawn with `hayro` 0.8 (and `hayro-syntax` 0.8 for the page count; the two move together). Pages look the
   same; a picture embedded in a page is resampled slightly differently, which is not visible at normal size. Drawing a page
   is faster.
-
-### Fixed
-- An untrusted SVG (for example the old side of an image diff) whose pixels were dropped by the picture-memory budget was
-  redrawn in konoma's own process when it came back on screen, outside the guarded child process that draws every SVG from
-  a file. Each kept SVG now remembers whether konoma made it (mermaid, math) or it came from a file or git object, and every
-  redraw (rebuild after eviction, sharper redraw, zoom) uses the child process for the latter.
 
 ## [0.31.0] - 2026-10-12
 
