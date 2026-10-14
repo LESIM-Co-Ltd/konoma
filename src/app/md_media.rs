@@ -376,6 +376,7 @@ impl App {
         let (Some(img), Some(svg)) = (entry.decoded.as_ref(), entry.svg.clone()) else {
             return FenceSharpen::NotNeeded;
         };
+        let trust = entry.svg_trust.clone();
         let (sw, sh) = img.dimensions();
         let cur = sw.max(sh);
         if needed_px <= cur + cur / 8 || cur >= 4096 || entry.reraster_inflight {
@@ -389,9 +390,7 @@ impl App {
         // of `kp` into the `MdImageResult` it builds on success, so the failure path needs its own.
         let kp_on_panic = kp.clone();
         let job = move || {
-            let image =
-                crate::preview::svg::rasterize_trusted(&svg, Path::new("mermaid.svg"), target)
-                    .ok_or_else(|| "rasterize failed".to_string());
+            let image = redraw_svg(&svg, &trust, target);
             MdImageResult {
                 path: kp,
                 image,
@@ -512,20 +511,24 @@ impl App {
             return false;
         }
         let max_px = self.mermaid_px();
-        let theme = self.cfg.ui.mermaid_theme.clone();
-        let curve = self.cfg.ui.mermaid_curve.clone();
-        let routing = self.cfg.ui.mermaid_routing.clone();
-        let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-            let Some(svg) =
-                crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)
-            else {
-                return (Err("mermaid render failed".to_string()), None);
-            };
-            let data = std::sync::Arc::new(svg.into_bytes());
-            let img =
-                crate::preview::svg::rasterize_trusted(&data, Path::new("mermaid.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-            (img, Some(data))
+        // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`); none
+        // (switched off) is the same "cannot be drawn" as a failed render.
+        let embed = self.embed_render(crate::app::embed_plugin::FENCE_MERMAID);
+        let svg_trust = embed
+            .as_ref()
+            .map_or(SvgTrust::Embedded, |e| e.svg_trust("mermaid.svg"));
+        let render = move || -> crate::app::embed_plugin::EmbedPicture {
+            match &embed {
+                Some(e) => e.picture(
+                    crate::app::embed_plugin::FENCE_MERMAID,
+                    &code,
+                    false,
+                    max_px,
+                    "mermaid",
+                    "mermaid.svg",
+                ),
+                None => (Err("mermaid render failed".to_string()), None),
+            }
         };
         if let Some(tx) = self.md_img_tx.clone() {
             // Bounded concurrency (MAX_SYNTHETIC_RENDERS_IN_FLIGHT): at capacity, skip this pass
@@ -540,8 +543,13 @@ impl App {
             if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return false;
             }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_trust: svg_trust.clone(),
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
@@ -560,8 +568,13 @@ impl App {
             });
             false
         } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_trust: svg_trust.clone(),
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
@@ -587,28 +600,39 @@ impl App {
             return false;
         }
         let max_px = self.math_px();
-        // Move the glyph color (already sanitized) into the worker. RaTeX's default is pure black,
-        // which is invisible on a dark terminal, so paint it a color that stands out against the
-        // terminal background (config `[ui] math_color`, default a light gray).
-        let color = self.cfg.ui.math_color().to_string();
-        let render =
-            move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display, &color) else {
-                    return (Err("math render failed".to_string()), None);
-                };
-                let data = std::sync::Arc::new(svg.into_bytes());
-                let img = crate::preview::svg::rasterize_trusted(&data, Path::new("math.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-                (img, Some(data))
-            };
+        // The plugin that takes the `math` kind draws the SVG (`embed_plugin.rs`). Its `color`
+        // setting is the glyph color (RaTeX paints pure black, invisible on a dark terminal; the
+        // default is a light gray, from `[plugins.math] color` or the old `[ui] math_color`).
+        let embed = self.embed_render(crate::app::embed_plugin::MATH);
+        let svg_trust = embed
+            .as_ref()
+            .map_or(SvgTrust::Embedded, |e| e.svg_trust("math.svg"));
+        let render = move || -> crate::app::embed_plugin::EmbedPicture {
+            match &embed {
+                Some(e) => e.picture(
+                    crate::app::embed_plugin::MATH,
+                    &latex,
+                    display,
+                    max_px,
+                    "math",
+                    "math.svg",
+                ),
+                None => (Err("math render failed".to_string()), None),
+            }
+        };
         if let Some(tx) = self.md_img_tx.clone() {
             // See the identical guard in ensure_mermaid_fence_render for why skipping here (without
             // inserting a placeholder) is safe and self-corrects on the next rebuild.
             if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return false;
             }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_trust: svg_trust.clone(),
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
@@ -624,8 +648,13 @@ impl App {
             });
             false
         } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
+            self.md_image_cache.insert(
+                key.clone(),
+                MdImgEntry {
+                    svg_trust: svg_trust.clone(),
+                    ..MdImgEntry::default()
+                },
+            );
             let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
@@ -659,10 +688,14 @@ impl App {
             return false;
         }
         entry.enc_inflight = false;
+        // An encode cut from pixels that have been replaced since it was requested still shows
+        // (the old picture keeps drawing until the new one lands) but is not final: its slot stays
+        // stale, so the next pass encodes it again from the current pixels.
+        let outdated = std::mem::take(&mut entry.outdated_encode_in_flight);
         let key = res.key;
         let mut stored = false;
         if let Some(slot) = entry.slots_mut(&key).iter_mut().find(|s| s.key == key) {
-            slot.stale = false;
+            slot.stale = outdated;
             if let Some(p) = res.image {
                 slot.image = Some(p);
                 stored = true;
@@ -894,6 +927,7 @@ impl App {
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return true;
         };
+        let trust = entry.svg_trust.clone();
         let Some(svg) = entry.svg.clone() else {
             // A picture of the open document: decoded again from the bytes it keeps, through the
             // same entry as the first decode (the defences of the first decode apply again).
@@ -924,12 +958,7 @@ impl App {
                     let kp = kp.clone();
                     move || MdImageResult {
                         path: kp,
-                        image: crate::preview::svg::rasterize_trusted(
-                            &svg,
-                            Path::new("rebuild.svg"),
-                            max_px,
-                        )
-                        .ok_or_else(|| "rasterize failed".to_string()),
+                        image: redraw_svg(&svg, &trust, max_px),
                         svg: None,
                         reraster: true,
                         frames: None,
@@ -1332,25 +1361,33 @@ impl App {
                         // A slide has no bytes yet: draw its scene to an SVG here (off the UI
                         // thread, under the decode gate) and let the supervised drawing process
                         // rasterize it like any other untrusted SVG of a document.
-                        let bytes = match source {
+                        let bytes: Arc<[u8]> = match source {
                             PictureSource::Bytes(b) => b,
-                            PictureSource::Slide {
-                                scene,
-                                media,
+                            PictureSource::Lazy {
+                                lazy,
                                 render_truncated,
                                 raster_cap,
                             } => {
-                                let drawn =
-                                    crate::preview::office::slide_draw::render_svg_cancellable(
-                                        &scene,
-                                        &|k| media.get(k).cloned(),
-                                        &moved_on,
-                                    );
-                                // The preview moved on: nothing to show, nothing to remember.
-                                if drawn.cancelled {
-                                    return (Err(ImageFailure::Cancelled), None);
-                                }
-                                if drawn.truncated {
+                                use konoma_plugin::view::ImageData;
+                                let cancel = konoma_plugin::Cancel::from_fn({
+                                    let (latest, stale) = (latest.clone(), stale.clone());
+                                    move || {
+                                        latest.load(std::sync::atomic::Ordering::Relaxed) != gen
+                                            || stale.is_stale()
+                                    }
+                                });
+                                let req = konoma_plugin::ResourceReq { max_px: svg_px };
+                                let drawn = match lazy.render(&req, &cancel) {
+                                    Ok(ImageData::Svg { data, .. } | ImageData::Encoded(data)) => {
+                                        data
+                                    }
+                                    // The preview moved on: nothing to show, nothing to remember.
+                                    Err(f) if f.kind == konoma_plugin::FailureKind::Cancelled => {
+                                        return (Err(ImageFailure::Cancelled), None);
+                                    }
+                                    Ok(_) | Err(_) => return (Err(ImageFailure::Corrupt), None),
+                                };
+                                if lazy.truncated() {
                                     render_truncated
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
@@ -1359,12 +1396,14 @@ impl App {
                                 // square of the scale): effects stay, the slide is just drawn
                                 // smaller. A size an earlier attempt found too heavy stays out
                                 // (see below), and one that only timed out stays out for a while.
-                                raster_cap.lower_permanent(drawn.max_raster_px());
+                                if let Some(px) = lazy.max_raster_px() {
+                                    raster_cap.lower_permanent(px);
+                                }
                                 if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
                                     svg_px = svg_px.min(cap);
                                 }
                                 slide_cap = Some(raster_cap);
-                                Arc::new(drawn.svg.into_bytes())
+                                drawn
                             }
                         };
                         if bytes.starts_with(b"GIF8") {
@@ -1641,6 +1680,19 @@ impl App {
         }
         min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
     }
+}
+
+/// Draw a retained SVG again at `max_px`, the way its origin drew it the first time
+/// (`MdImgEntry::svg_trust`): konoma's own in this process, a file's by the supervised child
+/// process relative to the file, anything else by the child process reading no file.
+pub(crate) fn redraw_svg(
+    svg: &[u8],
+    trust: &SvgTrust,
+    max_px: u32,
+) -> Result<image::DynamicImage, String> {
+    trust
+        .draw(svg, max_px, &|| false)
+        .ok_or_else(|| "rasterize failed".to_string())
 }
 
 #[cfg(test)]

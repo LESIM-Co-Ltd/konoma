@@ -227,6 +227,7 @@ impl App {
     pub fn open_bookmark_list(&mut self) {
         self.bookmark_list = true;
         self.bookmark_list_sel = 0;
+        self.list_filter_reset(super::list_filter::ListId::Bookmarks);
     }
     pub fn close_bookmark_list(&mut self) {
         self.bookmark_list = false;
@@ -246,16 +247,29 @@ impl App {
         }
         v
     }
+    /// Move the selection `delta` rows among the rows the `/` query leaves shown (all of them
+    /// without one), wrapping at the ends.
     pub fn bookmark_list_move(&mut self, delta: i32) {
         let n = self.bookmark_list_items().len();
-        if n == 0 {
-            return;
-        }
-        self.bookmark_list_sel =
-            (self.bookmark_list_sel as i32 + delta).rem_euclid(n as i32) as usize;
+        self.bookmark_list_sel = self.overlay_step(
+            super::list_filter::ListId::Bookmarks,
+            self.bookmark_list_sel,
+            n,
+            delta,
+        );
+    }
+    /// Whether the selected bookmark is a row the `/` query shows (what acts on it asks first).
+    fn bookmark_sel_shown(&self) -> bool {
+        self.list_row_shown(
+            super::list_filter::ListId::Bookmarks,
+            self.bookmark_list_sel,
+        )
     }
     /// Jump to the selected bookmark (closes the list).
     pub fn bookmark_list_jump(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             self.bookmark_list = false;
@@ -275,6 +289,9 @@ impl App {
     /// If the selected list item is a file, **open it directly in the editor** without going through the preview
     /// (closes the list and sets pending_edit; the run loop launches run_editor). Directories cannot be edited and flash.
     pub fn bookmark_list_edit(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             if p.is_file() {
@@ -296,6 +313,9 @@ impl App {
     }
     /// Delete the selected bookmark (the list stays open; the selection is clamped).
     pub fn bookmark_list_delete(&mut self) {
+        if !self.bookmark_sel_shown() {
+            return;
+        }
         let items = self.bookmark_list_items();
         if let Some((_, key, _)) = items.get(self.bookmark_list_sel) {
             let key = *key;
@@ -309,6 +329,8 @@ impl App {
             if self.bookmark_list_sel >= n {
                 self.bookmark_list_sel = n.saturating_sub(1);
             }
+            // Keep the cursor on a row the query still shows.
+            self.list_filter_changed(super::list_filter::ListId::Bookmarks);
         }
     }
 
@@ -1435,6 +1457,16 @@ impl App {
             && changed.iter().all(|p| self.is_ignored(p))
     }
 
+    /// Whether the background scan has answered for this root: until then `git_branch()` /
+    /// `git_has_changes()` are "not known yet", not "no repository / no changes". The gate of the
+    /// tree's version-control keys (`ops::gate`) uses this so it never refuses on a cache that is
+    /// merely empty because the first scan has not landed.
+    pub fn git_state_known(&self) -> bool {
+        self.git_status_pending.is_none()
+            && !self.git_status_dirty
+            && self.git_status_for.as_ref() == Some(&self.tab.root)
+    }
+
     /// The current branch name (None if not a repo). Used for the tree's title display.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
@@ -1501,7 +1533,7 @@ impl App {
 
     /// The tab-switch variant: refresh the tree / git status / derived views, but **do not reload the
     /// preview**. `load_active` has just rebuilt it from disk itself (`setup_windowed` reopens the file,
-    /// `load_table` re-parses it, `md_cache = None` makes the next draw re-read the source, and
+    /// `load_plugin` reads it again, `md_cache = None` makes the next draw re-read the source, and
     /// `start_media_load` re-reads the media), so going through `reload_preview` here only repeated the
     /// same work — a second full CSV parse for a table tab, a second window open for a text tab.
     /// Returns nothing on purpose: the caller (`load_active`) has nowhere to propagate a failure

@@ -258,7 +258,7 @@ pub(crate) struct TestWorker(Worker);
 #[cfg(test)]
 impl TestWorker {
     pub(crate) fn start(exe: &Path) -> Option<TestWorker> {
-        Worker::start(exe, 1 << 30).ok().map(TestWorker)
+        Worker::start(exe, 1 << 30, WALL_LIMIT).ok().map(TestWorker)
     }
 
     /// Whether the child has ended (reaped when it has).
@@ -389,14 +389,19 @@ struct Worker {
     served: u32,
     /// Since when it has been waiting in the idle pool (None while it is serving a drawing).
     idle_since: Option<Instant>,
+    /// The drawing limit this child's own backstop clock was built from (see `child_main`). An idle
+    /// child is only reused for a request with the same limit.
+    wall: Duration,
 }
 
 impl Worker {
-    /// Start a child for `exe` whose heap may not pass `heap_limit` bytes.
-    fn start(exe: &Path, heap_limit: u64) -> Result<Worker, SvgFail> {
+    /// Start a child for `exe` whose heap may not pass `heap_limit` bytes and whose own backstop
+    /// clock follows `wall` (the drawing limit the parent supervises with).
+    fn start(exe: &Path, heap_limit: u64, wall: Duration) -> Result<Worker, SvgFail> {
         let mut child = Command::new(exe)
             .arg(CHILD_FLAG)
             .arg(heap_limit.to_string())
+            .arg(wall.as_millis().to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // A crash message or a panic report has nowhere to go and nothing to say.
@@ -458,6 +463,7 @@ impl Worker {
             link,
             served: 0,
             idle_since: None,
+            wall,
         })
     }
 
@@ -492,10 +498,14 @@ impl Drop for Worker {
 }
 
 /// An idle child for `exe`, if one is still alive.
-fn take_idle(exe: &Path) -> Option<Worker> {
+fn take_idle(exe: &Path, wall: Duration) -> Option<Worker> {
     let mut guard = IDLE.lock().ok()?;
     let list = guard.as_mut()?.get_mut(exe)?;
-    while let Some(mut w) = list.pop() {
+    // Only a child built for the same drawing limit: its backstop clock follows that limit, so a
+    // child of another limit would stop a long drawing early (or outlive a short one's limit).
+    // The others stay in the pool for their own limit (or are retired by the reaper).
+    while let Some(i) = list.iter().rposition(|w| w.wall == wall) {
+        let mut w = list.remove(i);
         if w.alive() {
             w.idle_since = None;
             return Some(w);
@@ -821,9 +831,9 @@ pub fn run_with(
     }
     let _slot = acquire_slot(cancelled)?;
     loop {
-        let (mut worker, reused) = match take_idle(exe) {
+        let (mut worker, reused) = match take_idle(exe, limits.wall) {
             Some(w) => (w, true),
-            None => (Worker::start(exe, limits.rss)?, false),
+            None => (Worker::start(exe, limits.rss, limits.wall)?, false),
         };
         let mut peak_rss = 0u64;
         let ended = supervise(&mut worker, limits, req, cancelled, &mut peak_rss);
@@ -979,7 +989,7 @@ fn parse_response(b: &[u8]) -> Option<Result<DynamicImage, SvgFail>> {
 
 // ---- child: the drawing process ----------------------------------------------------------------
 
-/// Entry point of the child (`konoma --internal-svg-render <heap limit>`): read requests from stdin
+/// Entry point of the child (`konoma --internal-svg-render <heap limit> [<wall limit in ms>]`): read requests from stdin
 /// one after another, draw each with the guarded in-process renderer, write each answer to stdout.
 /// Ends when stdin does. The exit code is 0 after a clean end, 2 on a malformed request. `args` are
 /// the arguments after the flag.
@@ -991,6 +1001,13 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
         .and_then(|a| a.to_str())
         .and_then(|a| a.parse::<usize>().ok())
         .unwrap_or(RSS_LIMIT as usize);
+    // The drawing limit the parent supervises with (milliseconds). Without it (an older form of the
+    // arguments) the default applies.
+    let wall = args
+        .get(1)
+        .and_then(|a| a.to_str())
+        .and_then(|a| a.parse::<u64>().ok())
+        .map_or(WALL_LIMIT, Duration::from_millis);
     arm_heap_guard(heap_limit);
     #[cfg(unix)]
     watch_parent();
@@ -1012,7 +1029,7 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
         };
         // A drawing that runs on after the supervisor is gone ends here.
         #[cfg(unix)]
-        set_alarm(WALL_LIMIT + Duration::from_secs(3));
+        set_alarm(wall + Duration::from_secs(3));
         let answer = answer_to(&request);
         drop(request);
         if out.write_all(&answer).and_then(|_| out.flush()).is_err() {

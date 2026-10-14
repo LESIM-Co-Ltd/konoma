@@ -34,6 +34,7 @@ peering through the gaps between the trees to look into the contents of the file
 cargo binstall konoma   # prebuilt binary, no compilation
 cargo install konoma    # or compile from crates.io
 konoma [DIR]            # opens DIR (defaults to the current directory)
+konoma FILE             # opens FILE's folder, with FILE already previewed
 ```
 
 **There is nothing else to install.** Images, PDF, SVG, Mermaid diagrams, LaTeX math, CSV,
@@ -101,22 +102,23 @@ Press `F` and konoma stops being a browser you drive: whenever a file changes on
 disk, it jumps there by itself and shows a diff of **what changed since you pressed
 `F`** — not the full `git diff`. That distinction is the point. A working tree you
 hand to an agent usually already has your own edits in it; follow mode hides those
-and shows you only what the agent just did. Press `f` to swap between the two views,
-`n`/`N` to cycle the files touched in this session, and `q` to stop.
+and shows you only what the agent just did. Open the `,` menu and press `f` to swap between the two views,
+`Ctrl-n`/`Ctrl-p` to cycle the files touched in this session (`n`/`N` step through the changes inside one file),
+and `q` to stop.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and f reveals the full git diff" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and , then f reveals the full git diff" width="860">
 </p>
 <p align="center">
   <b>Follow mode</b> — the file already has an uncommitted line (<code>// TODO: handle retries</code>).
-  After <code>F</code>, the agent's new function is the only thing highlighted; <code>f</code> switches to
+  After <code>F</code>, the agent's new function is the only thing highlighted; <code>,</code> then <code>f</code> switches to
   the full <code>git diff</code>, where both show up.
 </p>
 
 ## Worktrees — one checkout per agent
 
 Agents work best with a checkout of their own, so `git worktree` has become the way
-to run several at once. `o` then `w` lists the repository's worktrees; `d` shows what
+to run several at once. `p` (the project screen) then `w` lists the repository's worktrees; `d` shows what
 one of them has added since its base branch — **committed and uncommitted together**,
 because an agent that commits mid-task would otherwise show you an empty diff. `Enter`
 moves in, `Ctrl-t` opens it in a new tab, and the `WT` chip keeps naming the repository
@@ -134,12 +136,12 @@ you came from, since a worktree's directory rarely does.
 ## Features
 
 - **Full-screen preview**: images, Markdown, Mermaid, code, SVG, video thumbnails, and
-  **PDF** (multi-page, navigate with `J`/`K`) rendered to fill the screen.
+  **PDF** (multi-page, navigate with `J`/`K`; `O` lists the pages) rendered to fill the screen.
 - **Table preview**: CSV/TSV render as an aligned, rainbow-column table with a cell cursor;
   **archives** (`.zip`/`.tar`/`.tar.gz`) list their entries — name, size, modified date — in the
   same grid, without extracting anything. **Spreadsheets** (`.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/
   `.xls`/`.ods`) open in the same grid with every cell shown in its Excel number format (thousands
-  separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets.
+  separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets (`O` lists them).
   Rows and columns hidden in Excel are still shown (hidden sheets are not); Excel 365 error values and
   pivot-table totals appear as saved, and formulas are never recalculated.
 - **Word / OpenDocument documents** (`.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott`) are converted to Markdown by
@@ -156,16 +158,27 @@ you came from, since a worktree's directory rarely does.
 - **PowerPoint / OpenDocument presentations** (`.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp`) open as
   **pictures of the slides**, drawn by konoma itself (no external tool): shapes, text, pictures (including EMF / WMF),
   gradients, groups, tables, charts and SmartArt, with the speaker notes under each slide and hidden slides marked.
-  `J`/`K` jump to the next / previous slide (status line `slide 3/12`); `R` switches to a **text view** of the slides
+  `J`/`K` jump to the next / previous slide (status line `slide 3/12`; `O` lists the slides); `R` switches to a **text view** of the slides
   (the default on half-block terminals without a graphics protocol). Office fonts are substituted, so line breaks can differ
   from PowerPoint; 3-D charts are drawn with depth but without perspective. The old binary `.ppt` is not previewed (`e` opens it). Compared against
   LibreOffice's renderings, not against PowerPoint itself.
-- **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
-  in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
+- **Open files in their own app**: `o` opens the file in the app made for it — a Word / Excel / PowerPoint /
+  OpenDocument file in Microsoft Office, LibreOffice or the OS default, anything else in the OS default.
+  `e` edits: in `$EDITOR`, except on an Office file, where it opens the Office app instead of handing the zip to the editor.
   (Word, spreadsheets, presentations and OpenDocument have an in-terminal preview — see above; only the old binary `.doc` / `.ppt` have none.)
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
+- **Features are plugins**: every viewer (Markdown, Mermaid, math, images, SVG, PDF, video, CSV, archives, spreadsheets,
+  Word, presentations, code) is a standard plugin built into konoma. `konoma --plugins` lists which plugin shows which
+  files, and `[plugins.<id>] enabled = false` switches one off. Your `[[preview.rules]]` are tried first and the standard
+  plugins decide the rest. The keys of a plugin's own actions can be rebound in `[keys.<plugin id>]`. (Swapping in a plugin
+  of your own is not available yet.) The Git / jj screens are not plugins yet — they are still part of konoma itself and
+  move later — but they follow the same key design.
+- **One key design**: the same key means the same thing everywhere — `/` search, `n`/`N` next match or change, `r` reload,
+  `y` copy menu, `e` edit, `o` open in another app, `p` the project screen, `,` sort and display options, `Space` the menu of
+  every operation on the screen you are looking at. Every default can be changed in `[keys]`; the `?` help and the
+  footer always show the keys as they are set.
 - **kitty graphics**: on a kitty-graphics terminal konoma transmits images itself, zlib-compressed, so
   a full-screen image or a zoom step appears immediately instead of streaming megabytes of escape
   codes. Other terminals (sixel, iTerm2, half-blocks) fall back to ratatui-image.
@@ -173,6 +186,7 @@ you came from, since a worktree's directory rarely does.
   the diff *since you pressed `F`*, so pre-existing changes stay out of the way.
 - **Git suite**: status, diff, log, a custom commit-graph renderer, branches, commits, and
   **worktrees** — list them, diff one against its base branch, and switch or open it in a tab.
+  `p` opens it from anywhere; `Tab` walks its screens.
 - **jj (Jujutsu) — preview**: a repository jj created without a colocated `.git`, and every
   `jj workspace`, gets the same views. Off by default where git can already answer; set
   `[external] vcs = "jj"` to use it in a colocated repository too. **konoma only reads a jj
@@ -183,7 +197,7 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` on Office files, and the
+  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` / `o` on Office files, and the
   Carlito/Caladea fonts for PowerPoint's line breaks — are each optional, and a missing one costs you that one feature, never the app.
 
 ## Status
@@ -229,8 +243,10 @@ cargo build --release
 
 ```bash
 konoma [DIR]     # opens DIR (defaults to the current directory)
+konoma FILE      # opens FILE's folder with FILE selected and previewed (q goes back to the tree)
 konoma --help    # -h — print usage and exit
 konoma --version # -V — print the version and exit
+konoma --plugins # list which plugin shows which files, then exit
 ```
 
 Press `?` in the app for the full, context-sensitive key reference.
@@ -302,9 +318,9 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
   lines where PowerPoint breaks them; without them konoma draws it in Helvetica Neue / Arial / Georgia,
   which are about 10% wider, so a line can break elsewhere. konoma finds them by itself — nothing to configure.
 
-- **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
+- **Microsoft Office / LibreOffice** — what `e` and `o` launch on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
-  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet, Word and presentation previews themselves need no Office app.
+  `soffice`, then `xdg-open`). Optional and only for `e` / `o`: the spreadsheet, Word and presentation previews themselves need no Office app.
 
 Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the

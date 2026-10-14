@@ -1332,31 +1332,6 @@ fn git_view_move_extremes_no_panic() {
     assert_eq!(app.tab.git_view_sel, 0, "先頭へ");
 }
 
-#[test]
-fn centered_fit_centers_and_downscales() {
-    let inner = Rect {
-        x: 0,
-        y: 0,
-        width: 80,
-        height: 24,
-    };
-    // A small image: centered at native (40x15) without upscaling (allow_upscale=false).
-    let r = centered_rect((40, 15), inner, false);
-    assert_eq!((r.width, r.height), (40, 15));
-    assert_eq!((r.x, r.y), (20, 4));
-
-    // A large image: downscaled preserving aspect ratio and centered (200x100 → scale 0.24).
-    let r = centered_rect((200, 100), inner, false);
-    assert_eq!((r.width, r.height), (48, 24));
-    assert_eq!((r.x, r.y), (16, 0));
-
-    // When zoomed (allow_upscale=true): even a small image is upscaled to fill the area and centered.
-    let r = centered_rect((40, 15), inner, true);
-    // scale = min(80/40, 24/15)=min(2.0,1.6)=1.6 → 64x24, x=(80-64)/2=8.
-    assert_eq!((r.width, r.height), (64, 24));
-    assert_eq!((r.x, r.y), (8, 0));
-}
-
 /// A test App with image state. Provides a source image (400x300=4:3), the image kind, a halfblocks picker
 /// (font 10x20, no terminal needed), and a dummy tx so that prepare_image can run.
 fn app_with_image() -> (App, crate::test_support::TmpDir) {
@@ -1364,7 +1339,7 @@ fn app_with_image() -> (App, crate::test_support::TmpDir) {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     // Leak tx so it isn't dropped (keeps it alive until the test ends).
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1408,7 +1383,7 @@ fn media_load_is_async_then_applied() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Svg(p.clone());
+    let kind = PreviewKind::svg(p.clone());
     app.tab.preview_kind = Some(kind.clone());
 
     app.start_media_load(&kind, &p);
@@ -1436,7 +1411,7 @@ fn media_loading_renders_shared_spinner() {
     Box::leak(Box::new(rx)); // don't drain the result → stays loading
     app.attach_media_loader(tx);
     let path = PathBuf::from("/does-not-exist.svg");
-    let kind = PreviewKind::Svg(path.clone());
+    let kind = PreviewKind::svg(path.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(path.clone());
     app.tab.mode = Mode::Preview;
@@ -1472,45 +1447,45 @@ fn pdf_page_navigation_clamps_and_indicates() {
     let dir = unique_tmp("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::pdf(PathBuf::from("/x/doc.pdf")));
     app.tab.mode = Mode::Preview;
 
     // Unknown total: cannot navigate, no indicator.
-    app.tab.pdf_pages = None;
-    app.tab.pdf_page = 1;
-    assert!(!app.pdf_can_navigate());
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1, "総数不明では動かない");
-    assert_eq!(app.pdf_page_indicator(), None);
+    app.tab.page_count = None;
+    app.tab.page = 1;
+    assert!(!app.can_turn_pages());
+    app.next_page();
+    assert_eq!(app.tab.page, 1, "総数不明では動かない");
+    assert_eq!(app.page_indicator(), None);
 
     // Single page: cannot navigate.
-    app.tab.pdf_pages = Some(1);
-    assert!(!app.pdf_can_navigate(), "単ページは移動不可");
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1);
+    app.tab.page_count = Some(1);
+    assert!(!app.can_turn_pages(), "単ページは移動不可");
+    app.next_page();
+    assert_eq!(app.tab.page, 1);
 
     // Three pages: forward/backward navigation, edge clamping, and the indicator.
-    app.tab.pdf_pages = Some(3);
-    app.tab.pdf_page = 1;
-    assert!(app.pdf_can_navigate());
-    assert_eq!(app.pdf_page_indicator(), Some((1, 3)));
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3, "末尾でクランプ");
-    assert_eq!(app.pdf_page_indicator(), Some((3, 3)));
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_prev_page();
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
+    app.tab.page_count = Some(3);
+    app.tab.page = 1;
+    assert!(app.can_turn_pages());
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 3);
+    app.next_page();
+    assert_eq!(app.tab.page, 3, "末尾でクランプ");
+    assert_eq!(app.page_indicator(), Some((3, 3)));
+    app.prev_page();
+    assert_eq!(app.tab.page, 2);
+    app.prev_page();
+    app.prev_page();
+    assert_eq!(app.tab.page, 1, "先頭でクランプ");
 
     // A page move resets zoom back to fit (1.0).
     app.tab.image_zoom = 4.0;
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
     assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
 }
 
@@ -1533,12 +1508,12 @@ fn pdf_next_page_renders_off_thread() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Pdf(p.clone());
+    let kind = PreviewKind::pdf(p.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
-    app.tab.pdf_pages = Some(pages);
-    app.tab.pdf_page = 1;
+    app.tab.page_count = Some(pages);
+    app.tab.page = 1;
 
     // Load page 1 and apply it.
     app.start_media_load(&kind, &p);
@@ -1549,8 +1524,8 @@ fn pdf_next_page_renders_off_thread() {
     assert!(app.is_image_preview(), "page1 が image_src に載る");
 
     // To page 2: kicks off re-rasterization on another thread → apply it.
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
     let r2 = rx
         .recv_timeout(std::time::Duration::from_secs(15))
@@ -1563,13 +1538,12 @@ fn pdf_next_page_renders_off_thread() {
 #[test]
 fn stale_media_result_is_ignored() {
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
+    app.tab.preview_kind = Some(PreviewKind::svg(PathBuf::from("x.svg")));
     // Build a result that doesn't match the current generation (a stale generation).
     let img =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
     let stale = MediaResult {
         gen: app.media_gen.wrapping_sub(1),
-        wb_worker: false,
         payload: Some(MediaPayload::Static(img)),
     };
     assert!(!app.apply_media(stale), "古い世代は反映しない");
@@ -1586,7 +1560,7 @@ fn gif_emits_kitty_image_data_per_frame() {
     use ratatui_image::Image;
 
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     // Set two different frames (solid red/green) directly, verifying only the render path
     // without going through decode.
     let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
@@ -2620,14 +2594,16 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(toks.iter().any(|t| t == "↵:full screen"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "+/-:zoom"), "{toks:?}");
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "1x なのに pan/fit が出ている: {toks:?}"
     );
 
     // Zoomed and on screen: hjkl:pan + 0:fit appear.
     app.image_zoom_by(2.0);
     let toks = hint_tokens(&app);
-    assert!(toks.iter().any(|t| t == "hjkl:pan"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "h/j/k/l:pan"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "0:fit"), "{toks:?}");
 
     // Scrolled off screen while still zoomed: pan/fit hints disappear again (mirrors
@@ -2637,7 +2613,9 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(app.tab.fence_zoom > 1.9, "前提: ズーム状態は保持");
     let toks = hint_tokens(&app);
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "画面外なのに pan/fit が出ている: {toks:?}"
     );
     assert!(
@@ -2979,7 +2957,10 @@ fn code_file_decorates_with_colored_syntax() {
     app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Code(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_code_plugin),
         "Code 種別に解決されない"
     );
     let lines = app.decorated_lines(80);
@@ -4036,10 +4017,10 @@ fn media_preview_reloads_only_when_file_changes() {
     app.tab.selected = idx;
     app.tree_activate().unwrap(); // opens in image preview
     assert!(
-        matches!(
-            app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "画像として開く"
     );
     assert!(
@@ -4091,25 +4072,20 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     assert_eq!(names(&app), vec!["zdir", "a.md", "b.txt", "c.log"]);
 
     // Size ascending (directories still pinned first): files are 10<30<50 = b,a,c.
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap();
     assert_eq!(names(&app), vec!["zdir", "b.txt", "a.md", "c.log"]);
-    assert!(!app.is_sort_menu(), "基準選択(n/s/m/e)でメニューは閉じる");
 
-    // Reversed (size descending): large→small = c,a,b. Toggling keeps the menu open.
-    app.open_sort_menu();
+    // Reversed (size descending): large→small = c,a,b.
     app.sort_menu_key('r').unwrap();
-    assert!(app.is_sort_menu(), "トグル(r/.)はメニューを開いたまま");
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 
     // Turn off directories-first and go back to name ascending → dirs get mixed in by name too.
     app.sort_menu_key('.').unwrap(); // dirs_first off
     app.sort_menu_key('r').unwrap(); // reverse off (back to normal)
-    app.sort_menu_key('n').unwrap(); // name (closes the menu on selection)
+    app.sort_menu_key('n').unwrap(); // name
     assert_eq!(names(&app), vec!["a.md", "b.txt", "c.log", "zdir"]);
 
     // Extension ascending (dirs_first off): "" < log < md < txt = zdir, c.log, a.md, b.txt.
-    app.open_sort_menu();
     app.sort_menu_key('e').unwrap();
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 }
@@ -6439,17 +6415,20 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     assert!(!app.tab.show_hidden && !has_dot(&app), "もう一度で隠れる");
 }
 
+/// The sort overlay is gone: sorting never puts a layer in front of the tree (the `,` menu is a
+/// leader, which is not a surface), whichever sort operation runs.
 #[test]
-fn sort_menu_open_and_close_toggles_flag() {
+fn sorting_never_opens_an_overlay() {
     let dir = unique_tmp("konoma_sortmenu_close_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    assert!(!app.is_sort_menu());
-    app.open_sort_menu();
-    assert!(app.is_sort_menu());
-    app.close_sort_menu();
-    assert!(!app.is_sort_menu(), "close_sort_menu でフラグが下りる");
+    assert_eq!(app.surface(), crate::keymap::Surface::Tree);
+    for c in ['s', 'r', '.', 'n'] {
+        app.sort_menu_key(c).unwrap();
+        assert_eq!(app.surface(), crate::keymap::Surface::Tree, "after {c}");
+        assert_eq!(app.internal_mode(), None, "after {c}");
+    }
 }
 
 #[test]
@@ -8098,9 +8077,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     app.rebuild_tree().unwrap();
 
     // Pretend an md is open, with a.md as the relative link base.
-    app.tab.preview_path = Some(base.join("a.md"));
-    app.tab.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(base.join("a.md"));
 
     // For an anchor (#), if there's no matching heading, flash a "not found" notice (this isn't
     // "unsupported"). Here md_cache hasn't been built (nothing has rendered), so anchors is
@@ -11036,7 +11013,7 @@ fn ui_preview_renders_image_via_kitty_path() {
     // (the kitty transfer sequence _G) even with a workerless TestBackend. A still image is
     // asynchronous (app.image arrives later).
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
     };
@@ -11068,7 +11045,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     // A still image, but app.image (the already-encoded protocol) hasn't arrived → falls back
     // to ImageUnsupported. Exercises render_image's still-image fallback branch.
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
     app.tab.mode = Mode::Preview;
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -11115,7 +11092,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     );
 
     // A video with no thumbnail (no image_src) → falls back to the hint text.
-    app.tab.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
+    app.tab.preview_kind = Some(PreviewKind::video(dir.join("v.mp4")));
     let video = dump(&mut app);
     assert!(
         video.contains("video") || video.contains("動画"),
@@ -12038,10 +12015,11 @@ fn preview_survives_target_file_overwrite_and_delete() {
         .unwrap();
     app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Image(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("image")));
     // Overwrite with different valid bytes, force the reload path — no panic.
     RgbImage::new(8, 6).save(&pic).unwrap();
     app.preview_media_mtime = None;
@@ -12181,13 +12159,11 @@ fn csv_resolves_to_table_preview() {
     let (app, _dir) = app_with_table();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Table {
-                delimiter: b',',
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, hint, .. })
+                if id == "csv" && hint.as_deref() == Some("csv")
         ),
-        "*.csv は Table(カンマ区切り)に解決される"
+        "*.csv は csv プラグイン(カンマ区切り)に解決される"
     );
     assert!(app.is_table_preview(), "パース成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -12225,13 +12201,13 @@ fn zip_resolves_to_archive_table_preview() {
     let (app, _dir) = app_with_archive_zip();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Archive {
-                kind: crate::preview::archive::ArchiveKind::Zip,
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, path, .. })
+                if id == "archive"
+                    && crate::preview::archive::ArchiveKind::from_path(path)
+                        == Some(crate::preview::archive::ArchiveKind::Zip)
         ),
-        "*.zip は Archive(Zip) に解決される"
+        "*.zip は archive プラグイン(Zip) に解決される"
     );
     assert!(app.is_table_preview(), "一覧化成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -13821,7 +13797,10 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     // q (back_to_tree) = returns to the md, restoring scroll/focus.
     app.back_to_tree();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "ツリーでなく md プレビューへ戻る"
     );
     assert!(matches!(app.tab.mode, Mode::Preview));
@@ -14351,25 +14330,6 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     // + while focused on the link is a no-op (the diagram isn't focused).
     app.image_zoom_by(2.0);
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
-}
-
-/// fence_crop: pure-function verification of the visible fraction and clamping (ratio-based =
-/// maps to the same window even after re-rasterizing).
-#[test]
-fn fence_crop_clamps_and_scales() {
-    // 2x zoom (f=0.5), centered: a half-size window at the center.
-    let ((x, y, w, h), c) = fence_crop((800, 400), 0.5, (0.5, 0.5));
-    assert_eq!((w, h), (400, 200));
-    assert_eq!((x, y), (200, 100));
-    assert_eq!(c, (0.5, 0.5));
-    // Pan to the edge: the center is clamped and the window stays within the image.
-    let ((x, _y, w, _h), c) = fence_crop((800, 400), 0.5, (1.0, 0.5));
-    assert_eq!(x + w, 800, "右端で止まる");
-    assert!((c.0 - 0.75).abs() < 1e-9, "中心は f/2 でクランプ");
-    // A raster at 4x density (f=0.25): the same ratio window maps to 2x the pixels.
-    let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
-    let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
-    assert_eq!((x2, w2), (x1 * 2, w1 * 2));
 }
 
 /// A math expression's cell dimensions (pure function): the SVG's em unit (40/em) → rows,
@@ -15043,7 +15003,10 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     app.md_activate_focused().unwrap(); // Enter -> full screen
     app.back_to_tree(); // q -> return to md
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "md ビューへ戻る"
     );
     let arc1 = app
@@ -15621,9 +15584,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let md = dir.canonicalize().unwrap().join("doc.md");
-    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
-    app.tab.preview_path = Some(md);
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(md);
     app.tab.preview_viewport = 10;
     let _ = app.md_layout(80); // populate the decoration cache (same path as the real render)
 
@@ -15690,7 +15651,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15821,7 +15782,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15882,7 +15843,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("doc.pdf")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15922,7 +15883,7 @@ fn kitty_failed_build_clears_pending() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -16067,7 +16028,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("a.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -17278,9 +17239,7 @@ fn diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap()
 
     let mut ordinary = App::new(dir.clone(), Config::default()).unwrap();
     ordinary.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    ordinary.tab.preview_path = Some(doc.clone());
-    ordinary.tab.preview_kind = Some(PreviewKind::Markdown(doc.clone()));
-    ordinary.tab.mode = Mode::Preview;
+    ordinary.show_markdown_for_test(doc.clone());
     let ordinary_lines = ordinary.decorated_lines(width);
 
     let mut diffed = App::new(dir.clone(), Config::default()).unwrap();
@@ -17995,17 +17954,21 @@ fn tab_switch_parses_a_table_preview_only_once() {
         .position(|e| e.path.ends_with("data.csv"))
         .unwrap();
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Table { .. })
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("csv")));
     app.tab_new().unwrap();
 
     // Switch back to tab 1 (the table) = load_active runs.
     crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
     app.tab_cycle(1);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Table { .. })),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("csv")),
         "表タブへ戻っている"
     );
     assert_eq!(
@@ -18013,7 +17976,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
         1,
         "タブ切替での CSV 全行パースは1回だけ(旧実装は load_active と reload_preview で2回)"
     );
-    assert!(app.table_data.is_some(), "表の中身は復元されている");
+    assert!(app.table_data().is_some(), "表の中身は復元されている");
 }
 
 /// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it
@@ -18038,7 +18001,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
         .unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     let decoded = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(decoded.clone());
     app.preview_media_mtime = crate::app::file_mtime(&img);
@@ -18083,7 +18046,7 @@ fn oversized_media_is_not_cached() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     // 17M pixels = looking only at the pixel count it would slip under a "32MP cap", but at
     // 16-bit (8B/px) that's 136MB. Squeeze the buffer into 1 row to keep the memory at its true
@@ -18159,7 +18122,7 @@ fn closing_a_media_tab_releases_its_cached_image() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -18188,7 +18151,7 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -19331,7 +19294,7 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
 
 /// `[external] pdf = false` means "never spawn macOS's bundled qlmanage/sips" — it does **not**
 /// disable PDF preview, because `hayro` (the primary renderer) and `page_count` (`hayro-syntax`) are
-/// both pure Rust and never touch an external process. `tab.pdf_pages` must resolve identically
+/// both pure Rust and never touch an external process. `tab.page_count` must resolve identically
 /// (`Some(3)`, the bundled sample's known page count) whether the flag is on or off — unlike before
 /// `hayro` existed, when this flag (and `arbitrary_page_renderer_available`) gated whether page
 /// navigation was exposed at all.
@@ -19346,18 +19309,22 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     let mut cfg = Config::default();
     cfg.external.pdf = false;
     let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    // The page count is the PDF plugin's to report when the picture is made, which needs a
+    // graphics backend (a terminal without one shows no picture and has no page keys to serve).
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app.enter_preview(&p);
     assert_eq!(
-        app.tab.pdf_pages,
+        app.tab.page_count,
         Some(3),
         "pdf=false: page_count (hayro-syntax) still runs — it never touched an external process"
     );
 
-    // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
+    // Same with the flag enabled (default) — external.pdf must not change what page_count resolves to.
     let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app2.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app2.enter_preview(&p);
     assert_eq!(
-        app2.tab.pdf_pages,
+        app2.tab.page_count,
         Some(3),
         "external.pdf doesn't change the resolved page count"
     );
@@ -19391,7 +19358,10 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
         app.picker = Some(test_picker());
         app.enter_preview(&p);
         assert!(
-            matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+            app.tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(|k| k.is_plugin("video")),
             "{name}: 動画プレビューとして解決されていない(でなければ以下は何も検査していない)"
         );
         assert!(
@@ -19433,7 +19403,10 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
     app.picker = Some(test_picker());
     app.enter_preview(&p);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "sanity: このファイルは動画プレビューとして解決される(でなければ以下は何も検査していない)"
     );
     assert!(
@@ -20103,7 +20076,7 @@ fn lc_open_text(app: &mut App) {
 /// `preview_win` / visual anchor the case set up beforehand survives.
 fn lc_make_image(app: &mut App) {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.tab.mode = Mode::Preview;
 }
 /// Same idea for a parsed CSV table.
@@ -20264,12 +20237,6 @@ fn layer_cases() -> Vec<LayerCase> {
             setup: |a| a.mark_set_pending = true,
             surface: S::Mark,
             internal: Some(InternalMode::Mark),
-        },
-        LayerCase {
-            name: "Sort / Sort",
-            setup: |a| a.sort_menu = true,
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
         },
         LayerCase {
             name: "Search / Search",
@@ -20458,22 +20425,13 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::Filter),
         },
         LayerCase {
-            name: "order: search beats the sort menu",
+            name: "order: search beats mark",
             setup: |a| {
                 a.tab.search_input = Some(String::new());
-                a.sort_menu = true;
+                a.mark_set_pending = true;
             },
             surface: S::Search,
             internal: Some(InternalMode::Search),
-        },
-        LayerCase {
-            name: "order: sort beats mark",
-            setup: |a| {
-                a.sort_menu = true;
-                a.mark_set_pending = true;
-            },
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
         },
         LayerCase {
             name: "order: mark beats the bookmark list",
@@ -20491,6 +20449,49 @@ fn layer_cases() -> Vec<LayerCase> {
                 a.tab_list = true;
             },
             surface: S::Bookmarks,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the bookmark list's /query input",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the tab list's /query input",
+            setup: |a| {
+                a.tab_list = true;
+                a.tab_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Tabs),
+        },
+        LayerCase {
+            name: "overlay filter: the outline's /query input",
+            setup: |a| {
+                a.outline_open = true;
+                a.outline_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Outline),
+        },
+        LayerCase {
+            name: "overlay filter: typing into a closed overlay does not capture keys",
+            setup: |a| a.outline_filtering = true,
+            surface: S::Tree,
+            internal: None,
+        },
+        LayerCase {
+            name: "order: the bookmark filter beats the tab list",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+                a.tab_list = true;
+            },
+            surface: S::ListFilter,
             internal: Some(InternalMode::Bookmarks),
         },
         LayerCase {
@@ -20897,7 +20898,6 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::Filter,
         M::ChangedFilter,
         M::Search,
-        M::Sort,
         M::Mark,
         M::Bookmarks,
         M::Tabs,
@@ -20945,7 +20945,6 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::Filter => "Filter",
         M::ChangedFilter => "ChangedFilter",
         M::Search => "Search",
-        M::Sort => "Sort",
         M::Mark => "Mark",
         M::Bookmarks => "Bookmarks",
         M::Tabs => "Tabs",
@@ -20990,7 +20989,7 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::DialogConfirmQuit,
         S::DialogConfirmBookmark,
         S::Help,
-        S::Sort,
+        S::ListFilter,
         S::Bookmarks,
         S::Tabs,
         S::Outline,
@@ -21164,6 +21163,60 @@ fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
     }
 }
 
+/// The `/` filter of the overlay lists (bookmarks, tabs, outline) behaves like the git lists': its
+/// own text-input surface for the keys, the overlay's own chip, the `/query` prompt in the footer.
+#[test]
+fn an_overlay_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
+    let dir = layer_fixture();
+    for (name, list, filtering, mode) in [
+        (
+            "bookmarks",
+            (|a: &mut App| a.bookmark_list = true) as fn(&mut App),
+            (|a: &mut App| a.bookmark_list_filtering = true) as fn(&mut App),
+            InternalMode::Bookmarks,
+        ),
+        (
+            "tabs",
+            (|a: &mut App| a.tab_list = true) as fn(&mut App),
+            (|a: &mut App| a.tab_list_filtering = true) as fn(&mut App),
+            InternalMode::Tabs,
+        ),
+        (
+            "outline",
+            (|a: &mut App| a.outline_open = true) as fn(&mut App),
+            (|a: &mut App| a.outline_filtering = true) as fn(&mut App),
+            InternalMode::Outline,
+        ),
+    ] {
+        let mut app = layer_app(&dir);
+        list(&mut app);
+        let footer_before: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: chip before");
+        assert_ne!(app.surface(), crate::keymap::Surface::ListFilter, "{name}");
+
+        filtering(&mut app);
+        assert_eq!(
+            app.surface(),
+            crate::keymap::Surface::ListFilter,
+            "{name}: the keymap must switch to the text-input surface"
+        );
+        assert!(app.surface().is_text_input(), "{name}");
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: the chip stays");
+        assert_eq!(app.key_context(), None, "{name}: no keymap while typing");
+        let footer_after: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_after.starts_with('/') && footer_after != footer_before,
+            "{name}: the footer must show the /query prompt: {footer_after:?}"
+        );
+    }
+}
+
 /// The priority order is written down once — as the order of `UiLayer`'s variants, which
 /// `App::frontmost_layer` walks. This checks the two really do agree, so the enum can be read as
 /// the order: turn on everything that can be on at once, then repeatedly ask for the frontmost
@@ -21193,11 +21246,13 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
     }
     app.tab.filter_input = Some(String::new());
     app.tab.search_input = Some(String::new());
-    app.sort_menu = true;
     app.mark_set_pending = true;
     app.bookmark_list = true;
+    app.bookmark_list_filtering = true;
     app.tab_list = true;
+    app.tab_list_filtering = true;
     app.outline_open = true;
+    app.outline_filtering = true;
     app.show_info = true;
     app.table_cell_open = true;
     app.tab.visual_anchor = Some(0);
@@ -22903,7 +22958,6 @@ fn sort_menu_key_keeps_the_changed_filter_active() {
     let changed_before: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_eq!(changed_before.len(), 3, "土台: 変更3件");
 
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap(); // switch sort key to Size
 
     assert!(
@@ -23539,7 +23593,7 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
     let res = crate::handle_key(
         &mut app,
         crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::NONE,
         ),
     );
@@ -23947,10 +24001,11 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
         .expect("doc.md がツリーにあるはず");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
 
     let width: u16 = 40;
     let (total_rows, _) = app.md_layout(width);
@@ -24658,7 +24713,7 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
     ) {
         app.open_git_diff(path);
         let kind = app.diff_target_kind(path);
-        let ground_truth = !matches!(kind, PreviewKind::Markdown(_));
+        let ground_truth = !kind.is_markdown();
         assert_eq!(
             app.diff_media_active(),
             ground_truth,
@@ -24821,7 +24876,7 @@ fn table_search_highlight_is_exactly_the_matching_cells() {
 // Spreadsheet preview: what the App does with a worker's answer, and how the title reads
 // ---------------------------------------------------------------------------------------------
 
-use crate::preview::office::{OfficeError, Sheet, Workbook};
+use crate::preview::office::{Sheet, Workbook};
 
 /// A workbook of one sheet with the given shape (cells stay empty: the title and the cap marker
 /// only depend on the dimensions and the truncation flags).
@@ -24839,8 +24894,8 @@ fn shaped_workbook(nrows: usize, ncols: usize, rows_cut: bool, cols_cut: bool) -
     }
 }
 
-/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the workbook,
-/// when there is one, is put in by hand).
+/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the plugin's
+/// show, when there is one, is put in by hand).
 fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -24851,9 +24906,108 @@ fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     cfg.ui.lang = "en".into();
     let mut app = App::new(root, cfg).unwrap();
     app.tab.preview_path = Some(book.clone());
-    app.tab.preview_kind = Some(PreviewKind::Spreadsheet(book));
+    app.tab.preview_kind = Some(PreviewKind::spreadsheet(book));
     app.tab.mode = Mode::Preview;
     (app, dir)
+}
+
+/// The layout the spreadsheet plugin reports for a workbook of the given sheets.
+fn sheet_layout(wb: &Workbook) -> konoma_plugin::view::Layout {
+    use konoma_plugin::view::{Layout, PageLayout};
+    Layout {
+        pages: Some(PageLayout::Separate {
+            count: Some(wb.sheets.len()),
+            titles: wb.sheets.iter().map(|s| s.name.clone()).collect(),
+        }),
+        ..Layout::default()
+    }
+}
+
+/// What the spreadsheet plugin's worker answers with for `wb` (sheet 0 on screen), for the
+/// current generation.
+fn sheet_result(app: &App, wb: Workbook) -> MediaResult {
+    use konoma_plugin::view::{View, ViewReq};
+    let layout = sheet_layout(&wb);
+    let view = View::Table(konoma_office::table_view(wb, 0, "en", true));
+    MediaResult {
+        gen: app.media_gen,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(layout),
+                Some(view),
+                None,
+                ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// What the worker answers when the workbook could not be read.
+fn sheet_failure_result(app: &App, failure: konoma_plugin::Failure) -> MediaResult {
+    MediaResult {
+        gen: app.media_gen,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(konoma_plugin::view::Layout::single()),
+                None,
+                Some(failure),
+                konoma_plugin::view::ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// Puts the sheet of `wb` on screen the way a landed read does (a `Ready` show of the table).
+fn show_sheet(app: &mut App, wb: Workbook) {
+    let layout = sheet_layout(&wb);
+    let view = konoma_plugin::view::View::Table(konoma_office::table_view(wb, 0, "en", true));
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Ready,
+        session: None,
+        layout,
+        view: Some(view),
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+    });
+}
+
+/// A show that has asked for the workbook and is waiting for the answer.
+fn show_sheet_loading(app: &mut App) {
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Loading,
+        session: None,
+        layout: konoma_plugin::view::Layout::single(),
+        view: None,
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+    });
+}
+
+/// The failure the real spreadsheet plugin gives for the workbook at `path`.
+fn spreadsheet_failure(path: &std::path::Path) -> konoma_plugin::Failure {
+    use konoma_plugin::{Input, OpenCx, Plugin, ViewCx};
+    let mut session = konoma_office::SpreadsheetPlugin
+        .open(
+            Input::File {
+                path: path.to_path_buf(),
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    session
+        .view(&konoma_plugin::view::ViewReq::default(), &ViewCx::bare())
+        .expect_err("the workbook cannot be shown")
 }
 
 /// The text of a 90x26 frame drawn from `app`.
@@ -24889,7 +25043,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
         (true, true, true),
     ] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_capped");
-        app.workbook = Some(Box::new(shaped_workbook(5, 3, rows_cut, cols_cut)));
+        show_sheet(&mut app, shaped_workbook(5, 3, rows_cut, cols_cut));
         let title = title_row(&drawn_screen(&mut app));
         assert_eq!(
             title.contains("(capped)"),
@@ -24906,7 +25060,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
 fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
     for (nrows, ncols) in [(0, 0), (3, 0), (0, 3)] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_addr");
-        app.workbook = Some(Box::new(shaped_workbook(nrows, ncols, false, false)));
+        show_sheet(&mut app, shaped_workbook(nrows, ncols, false, false));
         let title = title_row(&drawn_screen(&mut app));
         assert!(
             title.contains(&format!("S (1/1)  {nrows}×{ncols}")),
@@ -24917,18 +25071,31 @@ fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
 }
 
 /// "Loading" is exactly: a spreadsheet is being previewed, nothing is loaded and no error is
-/// known **and a worker is still out** (`media_loading`). Without the worker it is the empty
-/// workbook, not a spinner that would never end.
+/// known **and a worker is still out** (`media_loading`). Without the worker it is the reason the
+/// workbook gave (here: every sheet is hidden), not a spinner that would never end.
 #[test]
 fn sheet_loading_needs_a_worker_that_is_still_out() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_wait_state");
+    // A workbook whose sheets are all hidden: the real plugin's reason for it.
+    let hidden = app
+        .tab
+        .preview_path
+        .clone()
+        .unwrap()
+        .with_file_name("h.xlsx");
+    konoma_test_support::build_xlsx(&hidden, &[("Secret", "hidden", "", "")]);
+    let reason = spreadsheet_failure(&hidden);
+
     app.media_loading = true;
     assert!(app.is_sheet_loading());
     let s = drawn_screen(&mut app);
     assert!(s.contains("loading"), "{s}");
     assert!(!s.contains("nothing to show"), "{s}");
 
-    app.media_loading = false;
+    // The worker answered with the reason: nothing is loading, and the reason is on screen.
+    show_sheet_loading(&mut app);
+    let r = sheet_failure_result(&app, reason);
+    app.apply_media(r);
     assert!(!app.is_sheet_loading(), "no worker out: not loading");
     let s = drawn_screen(&mut app);
     assert!(s.contains("nothing to show"), "{s}");
@@ -24936,28 +25103,18 @@ fn sheet_loading_needs_a_worker_that_is_still_out() {
 
     // A loaded workbook or a known error is never "loading", worker or not.
     app.media_loading = true;
-    app.workbook = Some(Box::new(shaped_workbook(1, 1, false, false)));
-    assert!(!app.is_sheet_loading());
-    app.workbook = None;
-    app.workbook_error = Some(OfficeError::Encrypted);
-    assert!(!app.is_sheet_loading());
+    assert!(!app.is_sheet_loading(), "a known error is not loading");
+    show_sheet(&mut app, shaped_workbook(1, 1, false, false));
+    assert!(!app.is_sheet_loading(), "a loaded workbook is not loading");
     // And never for a preview that is not a spreadsheet.
-    app.workbook_error = None;
+    app.drop_plugin();
     app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "x".into() });
     assert!(!app.is_sheet_loading());
 }
 
-fn workbook_result(app: &App, payload: MediaPayload) -> MediaResult {
-    MediaResult {
-        gen: app.media_gen,
-        wb_worker: false,
-        payload: Some(payload),
-    }
-}
-
 /// A worker's workbook that arrives for the *current* job but while the preview is something else
 /// (a CSV here — the job's generation is still current because a non-media preview starts no job
-/// of its own) is dropped: the kind check is what keeps a late workbook out of another preview.
+/// of its own) is dropped: the plugin check is what keeps a late workbook out of another preview.
 /// The same goes for a failure, which must not leave an error behind either.
 #[test]
 fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
@@ -24972,22 +25129,23 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
     app.load_table();
     assert!(app.is_table_preview() && !app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(2, 2, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(2, 2, false, false));
     app.apply_media(r);
     assert!(
-        app.workbook.is_none(),
+        app.loaded_sheet_count().is_none(),
         "the CSV preview did not take the workbook"
     );
     assert!(!app.is_sheet_preview());
     assert!(app.table_data().is_some());
     assert!(app.workbook_matches_preview());
 
-    let r = workbook_result(&app, MediaPayload::WorkbookFailed(OfficeError::Encrypted));
+    let r = sheet_failure_result(
+        &app,
+        konoma_plugin::Failure::unsupported(konoma_plugin::Tr::new("encrypted")),
+    );
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "nor did it take the failure");
+    assert!(app.plugin_failure().is_none());
     assert!(app.workbook_matches_preview());
     assert!(app.is_table_preview(), "the CSV is still shown");
 }
@@ -24997,26 +25155,45 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
 #[test]
 fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_error() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_swap");
-    app.workbook = Some(Box::new(shaped_workbook(2, 2, false, false)));
+    show_sheet(&mut app, shaped_workbook(2, 2, false, false));
     assert!(app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::WorkbookFailed(OfficeError::Corrupt("x".into())),
-    );
+    let broken = konoma_plugin::Failure::corrupt(konoma_plugin::Tr::new("damaged"));
+    let r = sheet_failure_result(&app, broken.clone());
     app.apply_media(r);
-    assert!(app.workbook.is_none(), "the old workbook is gone");
-    assert_eq!(app.sheet_error(), Some(&OfficeError::Corrupt("x".into())));
+    assert_eq!(
+        app.loaded_sheet_count(),
+        Some(0),
+        "the old workbook is gone"
+    );
+    assert_eq!(app.sheet_error(), Some(&broken));
     assert!(!app.is_sheet_preview() && !app.is_table_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(3, 1, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(3, 1, false, false));
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "a good load clears the error");
     assert!(app.is_sheet_preview());
     assert_eq!(app.grid().map(|g| g.nrows()), Some(3));
+}
+
+/// A workbook's sheets are pages (the page keys turn them), but their position is already in the
+/// table's frame title (`S (1/2)`): the status bar does not add the PDF-style `1/2` chip to it.
+#[test]
+fn a_sheets_position_is_in_the_title_and_not_a_status_chip() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_chip");
+    let mut wb = shaped_workbook(2, 2, false, false);
+    let mut second = Sheet::default();
+    second.name = "T".into();
+    wb.sheets.push(second);
+    show_sheet(&mut app, wb);
+    app.tab.page_count = Some(2);
+    assert!(app.can_turn_pages() && app.is_table_preview());
+    let chip: String = crate::ui::preview::context(&app)
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
+    assert!(!chip.contains("1/2"), "{chip:?}");
+    assert!(title_row(&drawn_screen(&mut app)).contains("S (1/2)"));
 }
 
 /// A result of an older job (a newer one has been started since) is ignored altogether.
@@ -25024,15 +25201,10 @@ fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_er
 fn a_workbook_result_of_a_superseded_job_is_ignored() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_stale");
     app.media_loading = true;
-    let stale = MediaResult {
-        gen: app.media_gen.wrapping_add(1),
-        wb_worker: false,
-        payload: Some(MediaPayload::Workbook(Box::new(shaped_workbook(
-            1, 1, false, false,
-        )))),
-    };
+    let mut stale = sheet_result(&app, shaped_workbook(1, 1, false, false));
+    stale.gen = app.media_gen.wrapping_add(1);
     assert!(!app.apply_media(stale));
-    assert!(app.workbook.is_none());
+    assert!(app.loaded_sheet_count().is_none());
     assert!(app.is_sheet_loading(), "still waiting for the current job");
 }
 
@@ -25393,7 +25565,7 @@ fn a_full_screen_svg_that_was_refused_records_why() {
     );
     let p = dir.join("deep.svg");
     std::fs::write(&p, deep).unwrap();
-    let payload = MediaJob::Svg(p.clone(), 800).run().expect("a payload");
+    let payload = svg_file_payload(&p, 800).expect("a payload");
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(matches!(
         payload,
@@ -25426,7 +25598,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         .unwrap();
     let t = std::time::Instant::now();
     assert!(matches!(
-        MediaJob::Svg(big, 800).run(),
+        svg_file_payload(&big, 800),
         Some(MediaPayload::ImageFailed(
             crate::preview::image::ImageFailure::Svg(crate::preview::svg_guard::SvgFail::TooLarge)
         ))
@@ -25438,7 +25610,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         // SAFETY: a valid NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         assert!(matches!(
-            MediaJob::Svg(fifo, 800).run(),
+            svg_file_payload(&fifo, 800),
             Some(MediaPayload::ImageFailed(
                 crate::preview::image::ImageFailure::Svg(
                     crate::preview::svg_guard::SvgFail::Invalid

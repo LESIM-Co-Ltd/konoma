@@ -1,0 +1,17 @@
+[package]
+name = "konoma-mermaid"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's mermaid plugin: diagrams drawn as pictures (or as Unicode text) for .mmd files and ```mermaid fences"
+
+[dependencies]
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+konoma-mermaid-core = { path = "../konoma-mermaid-core", version = "0.1.0" }
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+mermaid-text.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

@@ -46,13 +46,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let ncols = t.ncols();
     // A spreadsheet sheet gets a row-number gutter on the left (1-based, like Excel); it is not
     // data (never copied/searched) and stays put while the columns scroll sideways.
-    let gutter_w = if t.is_sheet() {
+    let addressed = app.table_addressed();
+    let gutter_w = if addressed {
         nrows.max(1).to_string().len() + COL_GAP
     } else {
         0
     };
 
-    let title = build_title(app, &t, cur_row, cur_col);
+    // Decided once per frame: it reads the plugin's view (or the csv plugin's setting for a sheet).
+    let rainbow = app.table_rainbow();
+    let title = build_title(app, &t, cur_row, cur_col, addressed);
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
 
@@ -106,7 +109,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(
             text,
             Style::default()
-                .fg(column_color(app, col))
+                .fg(column_color(rainbow, col))
                 .add_modifier(Modifier::BOLD),
         )
     });
@@ -128,8 +131,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // modifier rather than a background so as not to blot out the rainbow column color). The current match is at the cursor, so reversal makes it clear.
     for r in top..row_end {
         let mut line = compose_line(&cols, |col, w| {
-            let text = fit_to_width(t.cell(r, col), w);
-            let mut style = Style::default().fg(column_color(app, col));
+            let text = fit_to_width(&t.cell(r, col), w);
+            let mut style = Style::default().fg(column_color(rainbow, col));
             if app.table_cell_is_hit(r, col) {
                 style = style
                     .add_modifier(Modifier::UNDERLINED)
@@ -224,9 +227,11 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered()
         .title(title)
         .title_bottom(
-            Line::from(tr(app.lang, crate::i18n::Msg::TableCellActions))
-                .centered()
-                .dim(),
+            Line::from(
+                crate::ops::footer::tokens(app, crate::keymap::Context::TableCell).join("  "),
+            )
+            .centered()
+            .dim(),
         )
         .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(popup);
@@ -259,9 +264,9 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).
-/// A spreadsheet shows the sheet name and position, the hidden-sheet count and the cursor's cell
-/// address instead of the row/column counters.
-fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> String {
+/// A spreadsheet shows the sheet name and position, the hidden-sheet count (the note its plugin
+/// gives) and the cursor's cell address instead of the row/column counters.
+fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize, addressed: bool) -> String {
     let (nrows, ncols) = (t.nrows(), t.ncols());
     let path = app
         .tab
@@ -274,17 +279,9 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
     } else {
         String::new()
     };
-    if t.is_sheet() {
-        let (name, idx, count, hidden) = app.sheet_info().unwrap_or(("", 1, 1, 0));
-        let hidden = if hidden > 0 {
-            format!(
-                " +{hidden} {}",
-                tr(app.lang, crate::i18n::Msg::SheetHiddenWord)
-            )
-        } else {
-            String::new()
-        };
+    if addressed {
         // e.g. " book.xlsx  Sales (1/3) +1 hidden  B3  5×6  (capped) "
+        let note = app.table_title_note().unwrap_or_default();
         let addr = if nrows > 0 && ncols > 0 {
             format!(
                 "  {}",
@@ -293,7 +290,7 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
         } else {
             String::new()
         };
-        return format!(" {path}  {name} ({idx}/{count}){hidden}{addr}  {nrows}×{ncols}{cap} ");
+        return format!(" {path}  {note}{addr}  {nrows}×{ncols}{cap} ");
     }
     // e.g. " data.csv  r3/100 c2/5  100×5  (capped) "
     format!(
@@ -308,8 +305,8 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
 }
 
 /// Column color: rainbow when enabled, else the terminal default foreground.
-fn column_color(app: &App, col: usize) -> Color {
-    if app.cfg.ui.csv_rainbow {
+fn column_color(rainbow: bool, col: usize) -> Color {
+    if rainbow {
         RAINBOW[col % RAINBOW.len()]
     } else {
         Color::Reset
@@ -346,7 +343,7 @@ fn leftmost_visible(
 fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
     let mut w = head(&t.header(col)).width();
     for r in top..(top + visible_rows).min(t.nrows()) {
-        w = w.max(flat_width(t.cell(r, col)));
+        w = w.max(flat_width(&t.cell(r, col)));
     }
     w.clamp(MIN_COL_W, MAX_COL_W)
 }
@@ -519,7 +516,7 @@ mod tests {
             ncols,
             truncated: false,
         };
-        let g = Grid::Csv(&t);
+        let g = Grid::Plugin(&t);
         let mut checked = 0;
         for width in [1u16, 5, 20, 40, 80, 200, 1000] {
             for cur in (0..ncols).step_by(3).chain([ncols - 1]) {
@@ -544,10 +541,10 @@ mod tests {
             truncated: false,
         };
         // At least 1 column even when extremely narrow.
-        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 1);
+        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 1);
         assert!(!cols.is_empty());
         // Both columns when wide enough.
-        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 80);
+        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 80);
         assert_eq!(cols.len(), 2);
     }
 
@@ -782,7 +779,7 @@ mod survivor_tests {
             ncols,
             truncated: false,
         };
-        let g = Grid::Csv(&t);
+        let g = Grid::Plugin(&t);
         let cur = ncols - 1;
         for k in 1..=ncols {
             let exact = (5 * k + COL_GAP * (k - 1)) as u16;

@@ -68,6 +68,8 @@ pub(crate) enum Opener {
     Microsoft(OfficeKind),
     LibreOffice,
     SystemDefault,
+    /// An application a plugin's own `open` verb names (neither an Office app nor the OS default).
+    Declared,
 }
 
 /// One command line to try.
@@ -82,7 +84,7 @@ pub(crate) struct Attempt {
 /// `com.microsoft.Powerpoint` (note: lowercase "p" in `Powerpoint`) are the apps' preference
 /// domains = bundle ids, as used in Microsoft's own `defaults write` guidance, e.g. the Microsoft Q&A
 /// answer https://learn.microsoft.com/en-us/answers/questions/5004550/how-do-i-disable-dark-mode-in-365-for-mac
-fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
+pub(crate) fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
     match kind {
         OfficeKind::Word => "com.microsoft.Word",
         OfficeKind::Excel => "com.microsoft.Excel",
@@ -91,7 +93,7 @@ fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
 }
 
 /// LibreOffice's bundle id on macOS (read from `/Applications/LibreOffice.app/Contents/Info.plist`).
-const LIBREOFFICE_BUNDLE_ID: &str = "org.libreoffice.script";
+pub(crate) const LIBREOFFICE_BUNDLE_ID: &str = "org.libreoffice.script";
 
 /// The ordered attempts for opening `path`: macOS = `open -b <Microsoft id>`, `open -b <LibreOffice
 /// id>`, `open`; elsewhere = `libreoffice`, `soffice`, `xdg-open` (Microsoft Office has no Linux
@@ -123,6 +125,74 @@ pub(crate) fn plan(os: OfficeOs, kind: OfficeKind, path: &Path) -> Vec<Attempt> 
             mk(Opener::SystemDefault, "xdg-open", &[]),
         ],
     }
+}
+
+/// The attempts for a plugin's `open` verb on `path`, in the order the verb declares them. The
+/// launchers that belong to another platform are left out: a macOS bundle id is reached on macOS
+/// only, and where a chain names bundle ids the command names after them are the other
+/// platforms' way to the same apps. For the Office plugins' chain this is exactly [`plan`].
+/// `kind` names the Office family of `path` (it decides which bundle id is "Microsoft").
+pub(crate) fn attempts_for_verb(
+    os: OfficeOs,
+    verb: &konoma_plugin::VerbDecl,
+    kind: Option<OfficeKind>,
+    path: &Path,
+) -> Vec<Attempt> {
+    use konoma_plugin::Launcher;
+    let p = path.to_string_lossy().into_owned();
+    let has_bundle = verb
+        .chain
+        .iter()
+        .any(|l| matches!(l, Launcher::MacApp { .. }));
+    let mut out: Vec<Attempt> = Vec::new();
+    for l in &verb.chain {
+        match l {
+            Launcher::MacApp { bundle_id } if os == OfficeOs::MacOs => {
+                let opener = match kind {
+                    Some(k) if *bundle_id == microsoft_bundle_id(k) => Opener::Microsoft(k),
+                    _ if bundle_id == LIBREOFFICE_BUNDLE_ID => Opener::LibreOffice,
+                    _ => Opener::Declared,
+                };
+                out.push(Attempt {
+                    opener,
+                    prog: "open".to_string(),
+                    args: vec!["-b".to_string(), bundle_id.clone(), p.clone()],
+                });
+            }
+            Launcher::Command(argv) if !(os == OfficeOs::MacOs && has_bundle) => {
+                let Some((prog, rest)) = argv.split_first() else {
+                    continue;
+                };
+                let opener = if matches!(prog.as_str(), "libreoffice" | "soffice") {
+                    Opener::LibreOffice
+                } else {
+                    Opener::Declared
+                };
+                out.push(Attempt {
+                    opener,
+                    prog: prog.clone(),
+                    args: rest
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(p.clone()))
+                        .collect(),
+                });
+            }
+            Launcher::OsDefault => out.push(Attempt {
+                opener: Opener::SystemDefault,
+                prog: match os {
+                    OfficeOs::MacOs => "open",
+                    OfficeOs::Other => "xdg-open",
+                }
+                .to_string(),
+                args: vec![p.clone()],
+            }),
+            // The editor is `e`'s; a bundle id elsewhere than macOS and the other platform's
+            // commands are not for this platform.
+            _ => {}
+        }
+    }
+    out
 }
 
 /// How a launch went: `Ok(Some(code))` = the process exited with `code`; `Ok(None)` = still running
@@ -265,14 +335,9 @@ impl App {
     /// opens an editor, `office_label` when it opens an Office app, `None` when it only explains
     /// that Office documents are switched off.
     pub fn edit_label(&self, editor_label: Msg, office_label: Msg) -> Option<Msg> {
-        let path = match self.tab.mode {
-            crate::app::Mode::Tree => self
-                .tab
-                .entries
-                .get(self.tab.selected)
-                .filter(|e| !e.is_dir)
-                .map(|e| e.path.clone()),
-            crate::app::Mode::Preview => self.tab.preview_path.clone(),
+        let path = match self.verb_target() {
+            super::open_app::VerbTarget::File(p) => Some(p),
+            _ => None,
         };
         match path.map(|p| self.edit_target(&p)) {
             Some(EditTarget::OfficeApp(_)) => Some(office_label),
@@ -295,6 +360,14 @@ impl App {
         };
         let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let attempts = plan(OfficeOs::current(), kind, &abs);
+        self.start_chain(attempts);
+        true
+    }
+
+    /// Walk `attempts` on a worker (the chain waits on exit codes, which can take seconds; the UI
+    /// never blocks) and report the outcome through the channel `main` attached. Without a channel
+    /// (the tests) the chain runs inline through the installed [`Runner`].
+    pub(super) fn start_chain(&mut self, attempts: Vec<Attempt>) {
         let runner = self.office_runner.clone();
         match self.office_tx.clone() {
             Some(tx) => {
@@ -308,7 +381,6 @@ impl App {
                 self.apply_office_open(OfficeOpenResult { outcome });
             }
         }
-        true
     }
 
     /// Report a finished attempt via flash. Returns whether anything changed (redraw).
@@ -327,6 +399,9 @@ impl App {
                     tr(self.lang, Msg::OfficeOpenedIn).replace("{app}", "LibreOffice")
                 }
                 Opener::SystemDefault => tr(self.lang, Msg::OfficeOpenedDefault).to_string(),
+                Opener::Declared => tr(self.lang, Msg::Opened)
+                    .trim_end_matches([':', ' '])
+                    .to_string(),
             },
             Err(e) => format!("{}{e}", tr(self.lang, Msg::OfficeOpenFailed)),
         });

@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use crate::preview::PreviewKind;
 
-/// Default code background color for Markdown (dark slate). Used when `ui.theme.code_bg` is unspecified.
-pub const DEFAULT_CODE_BG: Color = Color::Rgb(43, 48, 59);
+// The default code background and the badge-brightening helper live in `konoma-widgets` (the
+// document renderer's tests use them); this path stays for the host.
+pub use konoma_widgets::colors::{lighten, DEFAULT_CODE_BG};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -23,13 +24,20 @@ pub struct Config {
     pub git: GitConfig,
     pub jj: JjConfig,
     pub external: ExternalConfig,
+    /// `[plugins.<id>]`: `enabled = false` switches a plugin off; the other keys are the plugin's
+    /// own settings.
+    pub plugins: crate::plugins::PluginTables,
+    /// The old `[ui]` names the loaded file still uses, with what to write instead (not part of
+    /// the file: filled in by `Config::load_reporting`, named once in the startup message).
+    #[serde(skip)]
+    pub renamed_settings: Vec<(String, String)>,
 }
 
 /// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
-/// `true`, so an absent section changes nothing. Unlike `[[preview.rules]]` (where writing one user rule
-/// **replaces** the whole builtin list — see `PreviewConfig::default`), these flags are independent
-/// toggles layered on top of whatever preview rules are in effect: they gate the specific mechanism, not
-/// the rule table. `[ui] lang` already has its own explicit/auto switch for OS-language lookup
+/// `true`, so an absent section changes nothing. Like `[[preview.rules]]` (user rules are tried before the standard
+/// plugins' assignments, see `PreviewConfig::default`), these flags are independent toggles layered
+/// on top of whatever preview rules are in effect: they gate the specific mechanism, not the rule
+/// table. `[ui] lang` already has its own explicit/auto switch for OS-language lookup
 /// (`Lang::resolve`), so there is deliberately no separate flag for it here.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -290,7 +298,7 @@ fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
 /// Keybinding settings (`[keys]`).
 ///
 /// Two systems coexist in the same `[keys]` table:
-/// - **New form (Run2)**: subtables under `[keys.<surface>]` (surface name -> (chord string -> action string)).
+/// - **New form (Run2)**: subtables under `[keys.<context>]` (context name -> (chord string -> action string)).
 ///   Interpreted by the `crate::keymap` layer. serde flatten collects only the subtables directly under `[keys]` into `surfaces`.
 /// - **Old form (backward-compat alias)**: the `copy_prefix`/`copy_*` scalars for path copy (FR-6). Kept for now.
 ///   The named fields consume them first, so they do not end up on the flatten side (`surfaces`).
@@ -304,7 +312,7 @@ pub struct KeysConfig {
     pub copy_full: String,     // full path
     pub copy_relative: String, // relative path
     pub copy_parent: String,   // parent directory
-    /// The raw new-form `[keys.<surface>]` table (surface name -> (chord string -> action string)).
+    /// The raw new-form `[keys.<context>]` table (context name -> (chord string -> action string)).
     /// Example: `surfaces["tree"]["space d"] = "file_delete"`. Interpreted by `crate::keymap::KeyMap::from_config`.
     #[serde(flatten)]
     pub surfaces: HashMap<String, HashMap<String, String>>,
@@ -325,7 +333,7 @@ impl Default for KeysConfig {
 
 impl KeysConfig {
     /// Builds the settings interpreted by the keymap layer (`crate::keymap`).
-    /// Passes the new-form `[keys.<surface>]` (`surfaces`) through as-is, while mapping the old `copy_*` aliases onto the `y` leader.
+    /// Passes the new-form `[keys.<context>]` (`surfaces`) through as-is, while mapping the old `copy_*` aliases onto the `y` leader.
     ///
     /// The old aliases add `"y <suffix>"` to the Copy leader **only for suffixes the user changed from the default**
     /// (when left at the default it respects the new defaults n/r/f/p and does not clobber them). Since leaders are surface-independent,
@@ -606,6 +614,9 @@ impl UiConfig {
 
     /// `md_task_states` resolved to chars: every entry must be exactly 1 char and there must be at
     /// least 2 states (a cycle needs somewhere to go) — otherwise fall back to the default (` `/`x`).
+    /// The reference for `DocOptions::from_settings` (the Markdown plugin's options, which the app
+    /// draws with): a test checks the two agree. Not used at run time.
+    #[cfg(test)]
     pub fn md_task_state_chars(&self) -> Vec<char> {
         let chars: Vec<char> = self
             .md_task_states
@@ -628,6 +639,7 @@ impl UiConfig {
     /// (`left` for tables, `center` for images), so a typo can never blank or mis-place a block —
     /// the same "unknown value = default" contract `md_details` / `follow_view` / `commit_meta_align`
     /// already have.
+    #[cfg(test)]
     pub fn md_block_aligns(&self) -> crate::preview::markdown::BlockAligns {
         use crate::preview::markdown::{BlockAlign, BlockAligns};
         let d = BlockAligns::default();
@@ -644,41 +656,27 @@ impl UiConfig {
     /// fully-transparent color falls back to the light-gray default. Returning the *original* string is
     /// safe because usvg re-parses it identically.
     pub fn math_color(&self) -> &str {
-        use std::str::FromStr;
-        let c = self.math_color.trim();
-        let visible = svgtypes::Color::from_str(c)
-            .map(|col| col.alpha != 0)
-            .unwrap_or(false);
-        if visible {
-            c
-        } else {
-            "#d0d0d0"
-        }
+        visible_math_color(&self.math_color)
     }
 }
 
-/// Clamps a configured tab-stop width to a value safe for `preview::code::expand_tabs`, which
-/// allocates a `String` of exactly `tab_width` bytes (plus loops that many times) for the marker
-/// of a tab at column 0. `0` keeps its documented special meaning ("expansion disabled, raw tabs
-/// kept") and passes through unchanged — it is not an error value. Any other value is clamped to a
-/// realistic tab-stop range (`1..=16`); outside that range (an accidental huge value such as a
-/// typo'd `1000000000`, or the reported `9223372036854775807`) it falls back to the default (`4`)
-/// instead of being used for the allocation, since an unclamped huge value can exhaust memory and
-/// abort the process via `handle_alloc_error` — a hard abort that `catch_unwind` cannot catch, not
-/// a normal panic.
-///
-/// Not a method on `UiConfig` (unlike e.g. `UiConfig::math_color`): this mirrors `svg_max_px`'s
-/// existing pattern in the same file (`preview/svg.rs::HARD_MAX_PX`) of clamping at the sole point
-/// of use rather than through an config-level accessor, since `expand_tabs` is `tab_width`'s only
-/// consumer. `pub(crate)` so `preview::code::expand_tabs` can apply the rule directly to whatever
-/// raw `[ui] tab_width` value it is handed.
-pub(crate) fn clamp_tab_width(raw: usize) -> usize {
-    match raw {
-        0 => 0,
-        1..=16 => raw,
-        _ => 4,
+/// [`UiConfig::math_color`]'s test, for any value (`[plugins.math] color` is held to it too).
+pub(crate) fn visible_math_color(value: &str) -> &str {
+    use std::str::FromStr;
+    let c = value.trim();
+    let visible = svgtypes::Color::from_str(c)
+        .map(|col| col.alpha != 0)
+        .unwrap_or(false);
+    if visible {
+        c
+    } else {
+        "#d0d0d0"
     }
 }
+
+// The rule lives with `expand_tabs`, its only consumer; the config tests pin it from here.
+#[cfg(test)]
+pub(crate) use konoma_code_core::clamp_tab_width;
 
 /// Default tree sort (`[ui.sort]`). Changeable at runtime via the `s` sort menu.
 #[derive(Debug, Clone, Deserialize)]
@@ -772,19 +770,10 @@ fn parse_color_opt(s: &str, fallback: Option<Color>) -> Option<Color> {
     }
 }
 
-/// Brightens a background color slightly (to distinguish the language badge from body code). Non-Rgb is left as-is.
-pub fn lighten(c: Color) -> Color {
-    match c {
-        Color::Rgb(r, g, b) => Color::Rgb(
-            r.saturating_add(27),
-            g.saturating_add(30),
-            b.saturating_add(40),
-        ),
-        other => other,
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
+/// `[[preview.rules]]`: the user's assignments, tried first. The default assignments (markdown,
+/// mermaid, svg, image, csv, ...) are not listed here; they come from the standard plugins'
+/// declarations (`crate::plugins`), so the default is no rules at all.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PreviewConfig {
     pub rules: Vec<Rule>,
@@ -859,117 +848,6 @@ impl Default for UiConfig {
     }
 }
 
-impl Default for PreviewConfig {
-    fn default() -> Self {
-        // Default delegation rules. External dependencies are always optional.
-        Self {
-            rules: vec![
-                Rule {
-                    glob: Some("*.md".into()),
-                    builtin: Some("markdown".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.{mmd,mermaid}".into()),
-                    builtin: Some("mermaid".into()), // a standalone mermaid file is rendered via mermaid-text
-                    ..Rule::empty()
-                },
-                Rule {
-                    // SVG is picked up before raster images (infer also classifies svg as image/*, so order matters).
-                    glob: Some("*.svg".into()),
-                    builtin: Some("svg".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    mime: Some("image/*".into()),
-                    builtin: Some("image".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // CSV/TSV are shown as an aligned table (column rainbow + cell cursor).
-                    glob: Some("*.csv".into()),
-                    builtin: Some("csv".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.tsv".into()),
-                    builtin: Some("tsv".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Spreadsheets (Excel / OpenDocument) are shown as a table with the cells formatted
-                    // the way the application shows them. A glob (not a mime) so a deleted file's diff
-                    // still resolves the kind by name.
-                    glob: Some("*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}".into()),
-                    builtin: Some("spreadsheet".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Word documents are converted to Markdown and drawn by the Markdown renderer.
-                    // A glob (not a mime) so a deleted file's diff still resolves the kind by name.
-                    // (`.doc` is never previewed.) Presentations (PowerPoint, OpenDocument) take the
-                    // same route: one `##` heading per slide, `J`/`K` between them.
-                    glob: Some(
-                        "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"
-                            .into(),
-                    ),
-                    builtin: Some("document".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Archive contents listing (name/size/modified date). Doesn't extract (doesn't read the contents — principle #3).
-                    glob: Some("*.{zip,tar,tgz}".into()),
-                    builtin: Some("archive".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // globset's `*.{...}` alternation can't catch a compound extension joined by
-                    // plain dots (.tar.gz), so it's a separate rule (registering 2 rules side by
-                    // side, as with csv/tsv, mirrors the existing svg/image shape).
-                    glob: Some("*.tar.gz".into()),
-                    builtin: Some("archive".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    glob: Some("*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}".into()),
-                    builtin: Some("code".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // Video shows a built-in thumbnail (one representative frame). It doesn't play
-                    // inside the terminal.
-                    // If playback is wanted, the user swaps in a rule like command="mpv {path}" (delegation).
-                    mime: Some("video/*".into()),
-                    builtin: Some("video".into()),
-                    ..Rule::empty()
-                },
-                Rule {
-                    // PDF is shown built-in by rasterizing the page in pure Rust (hayro) — no
-                    // external tool needed. Only when hayro can't render it (encrypted/corrupted,
-                    // etc.) does it degrade, on macOS and for page 1 only, to the bundled
-                    // qlmanage/sips; failing that it safely falls back to a hint display (principle #3).
-                    glob: Some("*.pdf".into()),
-                    builtin: Some("pdf".into()),
-                    ..Rule::empty()
-                },
-            ],
-        }
-    }
-}
-
-impl Rule {
-    fn empty() -> Self {
-        Self {
-            glob: None,
-            mime: None,
-            builtin: None,
-            command: None,
-            render_as: None,
-            detached: false,
-        }
-    }
-}
-
 impl Config {
     /// Loads the config and returns (config, load error). On parse failure it returns the defaults along with an error string.
     /// The TUI uses this to surface the error as a startup message (since silently falling back to defaults would go unnoticed).
@@ -983,7 +861,10 @@ impl Config {
             return (Config::default(), None);
         };
         match toml::from_str::<Config>(&text) {
-            Ok(cfg) => (cfg, None),
+            Ok(mut cfg) => {
+                cfg.renamed_settings = Config::old_setting_names(&text, &cfg);
+                (cfg, None)
+            }
             Err(e) => {
                 let msg = format_config_load_error(&e);
                 // The config is broken = even the language setting can't be read, so notify in the
@@ -996,13 +877,28 @@ impl Config {
         }
     }
 
-    /// Determines the PreviewKind for the given path from the first matching rule.
-    /// When no rule matches, it judges text vs. binary and falls back to
-    /// the built-in text display for text, or safely to CanNotPreview for binary
-    /// (design principle 3 "unsupported is handled safely"; picks up extensionless README/LICENSE/Makefile, etc.).
+    /// The old `[ui]` names `text` (the config file) still uses, with what to write instead
+    /// (`plugins::MOVED_UI_SETTINGS`). Empty when the file does not parse as a table.
+    pub(crate) fn old_setting_names(text: &str, cfg: &Config) -> Vec<(String, String)> {
+        let Ok(table) = text.parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        match table.get("ui") {
+            Some(toml::Value::Table(ui)) => crate::plugins::moved_settings(ui, &cfg.plugins),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Determines the PreviewKind for the given path. The user's `[[preview.rules]]` are tried
+    /// first, top to bottom; when none matches, the standard plugins take it in their
+    /// registration order (`crate::plugins`, `konoma_plugin::Registry::resolve_file`). When no
+    /// plugin matches, it judges text vs. binary and falls back to the built-in text display for
+    /// text, or safely to CanNotPreview for binary (design principle 3 "unsupported is handled
+    /// safely"; picks up extensionless README/LICENSE/Makefile, etc.).
     pub fn resolve_preview(&self, path: &Path) -> PreviewKind {
         resolve_preview_kind(
             &self.preview.rules,
+            &self.plugin_disabled(),
             self.external.preview_commands,
             path,
             None,
@@ -1032,91 +928,78 @@ impl Config {
     pub fn resolve_preview_with(&self, path: &Path, sniff: &[u8]) -> PreviewKind {
         resolve_preview_kind(
             &self.preview.rules,
+            &self.plugin_disabled(),
             self.external.preview_commands,
             path,
             Some(sniff),
         )
     }
+
+    /// The ids of the plugins `[plugins.<id>] enabled = false` switches off.
+    pub fn plugin_disabled(&self) -> Vec<String> {
+        crate::plugins::disabled_ids(&self.plugins)
+    }
+
+    /// The plugin's own settings from `[plugins.<id>]` (everything but `enabled`).
+    // Read by the plugins as they are wired to the display (later steps of stage 2).
+    #[allow(dead_code)]
+    pub fn plugin_settings(&self, id: &str) -> konoma_plugin::Settings {
+        self.plugins
+            .get(id)
+            .map(crate::plugins::settings_of)
+            .unwrap_or_default()
+    }
+
+    /// A one-line startup message about `[plugins.*]` mistakes (an unknown id, ...), if any.
+    pub fn plugin_report(&self, lang: crate::i18n::Lang) -> Option<String> {
+        let problems = crate::plugins::table_problems(&self.plugins, lang);
+        if problems.is_empty() {
+            None
+        } else {
+            Some(format!("plugins: {}", problems.join(" / ")))
+        }
+    }
 }
 
 /// The one implementation `Config::resolve_preview`/`resolve_preview_with` both call — see the
 /// latter's doc comment for why a deleted file needs this to be parameterized on an optional content
-/// sniff rather than always reading `path` itself. `rules`/`preview_commands` are passed as plain
-/// data (not `&Config`) so the media-diff worker (`app/media_diff.rs`) can call this from a thread
-/// with only a cloned snapshot of the two config fields it actually needs, mirroring how
-/// `MdDiffRequest` carries plain `md_frontmatter`/`md_footnotes`/`md_inline_html` booleans instead of
-/// a whole `&Config` (`app/md_diff.rs`'s module doc comment).
+/// sniff rather than always reading `path` itself. `rules`/`disabled`/`preview_commands` are passed
+/// as plain data (not `&Config`) so the media-diff worker (`app/media_diff.rs`) can call this from
+/// a thread with only a cloned snapshot of the config fields it actually needs, mirroring how
+/// `MdDiffRequest` carries plain `md_frontmatter`/`md_footnotes`/`md_inline_html` booleans instead
+/// of a whole `&Config` (`app/md_diff.rs`'s module doc comment).
 pub(crate) fn resolve_preview_kind(
     rules: &[Rule],
+    disabled: &[String],
     preview_commands: bool,
     path: &Path,
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
     #[cfg(test)]
     crate::test_support::note_resolve_preview_call();
-    for rule in rules {
-        if rule_matches(rule, path, sniff) {
-            let kind = PreviewKind::from_rule(rule, path);
-            // `[external] preview_commands = false`: a matching `command = "..."` rule behaves as
-            // if it hadn't matched at all (falls through to the safe CanNotPreview below), rather
-            // than launching the external tool. Builtin renderers are unaffected.
-            if matches!(kind, PreviewKind::Command { .. }) && !preview_commands {
-                return PreviewKind::can_not_preview(path);
-            }
-            return kind;
-        }
-    }
-    let is_text = match sniff {
-        Some(bytes) => crate::preview::text::is_probably_text_bytes(bytes),
-        None => crate::preview::text::is_probably_text(path),
-    };
-    if is_text {
-        PreviewKind::Text(path.to_path_buf())
-    } else {
-        PreviewKind::can_not_preview(path)
-    }
+    crate::plugins::resolve_kind(rules, disabled, preview_commands, path, sniff)
 }
 
+/// Test stand-in for the matcher that used to live here: whether `rule` takes `path`, judged by the
+/// plugin registry's own matching (`plugins::rule_hits`). The content sniff is the file's own, or
+/// the given bytes.
+#[cfg(test)]
 fn rule_matches(rule: &Rule, path: &Path, sniff: Option<&[u8]>) -> bool {
-    if let Some(glob) = &rule.glob {
-        // Match case-insensitively so uppercase extensions (README.MD / *.RS etc.) aren't missed.
-        // A lowercase pattern already matches lowercase names, so existing behavior is unchanged.
-        if let Ok(set) = globset::GlobBuilder::new(glob)
-            .case_insensitive(true)
-            .build()
-            .map(|g| g.compile_matcher())
-        {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if set.is_match(name) {
-                return true;
-            }
-        }
-    }
-    if let Some(mime_pat) = &rule.mime {
-        // `sniff` in means the file may not exist on disk at all (a deleted file's old bytes,
-        // `resolve_preview_with`) — sniff the given bytes with `infer::get` instead of asking
-        // `infer::get_from_path` to open a path that could fail to exist.
-        let kind = match sniff {
-            Some(bytes) => infer::get(bytes),
-            None => infer::get_from_path(path).ok().flatten(),
-        };
-        if let Some(kind) = kind {
-            let mime = kind.mime_type();
-            if mime_glob_match(mime_pat, mime) {
-                return true;
-            }
-        }
-    }
-    false
+    let kind = match sniff {
+        Some(bytes) => infer::get(bytes),
+        None => infer::get_from_path(path).ok().flatten(),
+    };
+    crate::plugins::rule_hits(rule, path, kind.map(|k| k.mime_type()))
 }
 
-/// Simple mime glob matching like "image/*".
+/// Test stand-in: does a rule with `mime = pattern` take content that reads as `mime`?
+#[cfg(test)]
 fn mime_glob_match(pattern: &str, mime: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        mime.starts_with(prefix)
-    } else {
-        pattern == mime
-    }
+    let rule = Rule {
+        mime: Some(pattern.to_string()),
+        ..Rule::default()
+    };
+    crate::plugins::rule_hits(&rule, Path::new("/x/file"), Some(mime))
 }
 
 /// Pure core of `dirs_config_path`: given the already-resolved config-scope base (whatever
@@ -1258,7 +1141,7 @@ mod tests {
     fn markdown_rule_still_wins() {
         let p = tmp("README.md", b"# title\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Markdown(_)), "got {kind:?}");
+        assert!(kind.is_markdown(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 
@@ -1267,12 +1150,12 @@ mod tests {
         // Uppercase extensions (README.MD / equivalent to *.RS) also hit the rule case-insensitively.
         let p = tmp("README.MD", b"# title\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Markdown(_)), "got {kind:?}");
+        assert!(kind.is_markdown(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
 
         let p = tmp("MAIN.RS", b"fn main() {}\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Code(_)), "got {kind:?}");
+        assert!(kind.is_code_plugin(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 
@@ -1518,7 +1401,7 @@ mod tests {
 
     #[test]
     fn keys_surfaces_parse_from_toml() {
-        // The new-form [keys.<surface>] subtables are picked up into surfaces and can coexist with
+        // The new-form [keys.<context>] subtables are picked up into surfaces and can coexist with
         // the old copy_* scalars.
         let p = tmp(
             "keys_surfaces.toml",
@@ -1562,20 +1445,73 @@ d = "refresh"
         std::fs::remove_file(&p).ok();
     }
 
+    /// A context name with a dot (`git.changes`) must be quoted in TOML: `[keys."git.changes"]` is
+    /// one table called `git.changes`, whereas `[keys.git.changes]` is a table `git` holding a table
+    /// `changes`, which is not a key table. The quoted form reaches the keymap; the unquoted one is
+    /// refused with the position in the file (the whole config falls back to defaults and says so,
+    /// like any other malformed `[keys]`).
+    #[test]
+    fn keys_context_names_with_a_dot_need_quotes() {
+        use crate::keymap::{Action, Context, KeyMap, KeyPress, KeyScheme, Resolution};
+        let ok: Config = toml::from_str(
+            "[keys.\"git.changes\"]\nZ = \"refresh\"\n\n[keys.\"jj.log\"]\nZ = \"tab_new\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.keys.surfaces["git.changes"]["Z"], "refresh");
+        assert_eq!(ok.keys.surfaces["jj.log"]["Z"], "tab_new");
+        let km = KeyMap::from_config(KeyScheme::Vim, &ok.keys.to_keymap_config());
+        #[cfg(feature = "git")]
+        {
+            use crate::keymap::{Backend, Screen};
+            assert!(km.warnings.is_empty(), "{:?}", km.warnings);
+            assert_eq!(
+                km.resolve(
+                    Context::Screen(Backend::Git, Screen::Changes),
+                    None,
+                    KeyPress::ch('Z')
+                ),
+                Resolution::Action(Action::Refresh)
+            );
+            assert_eq!(
+                km.resolve(
+                    Context::Screen(Backend::Jj, Screen::Log),
+                    None,
+                    KeyPress::ch('Z')
+                ),
+                Resolution::Action(Action::TabNew)
+            );
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = (
+                Context::Tree,
+                KeyPress::ch('Z'),
+                Action::Quit,
+                Resolution::Unbound,
+            );
+            assert!(!km.warnings.is_empty(), "no git: the names are unknown");
+        }
+
+        let bad = toml::from_str::<Config>("[keys.git.changes]\nZ = \"refresh\"\n")
+            .expect_err("a nested table is not a key table");
+        let msg = format_config_load_error(&bad);
+        assert!(msg.contains("line 1"), "{msg}");
+    }
+
     #[test]
     fn to_keymap_config_maps_changed_copy_alias_only() {
         use crate::app::CopyKind;
-        use crate::keymap::{Action, KeyMap, KeyPress, KeyScheme, LeaderId, Resolution, Surface};
+        use crate::keymap::{Action, Context, KeyMap, KeyPress, KeyScheme, LeaderId, Resolution};
         // A copy_* left at its default doesn't clobber the new defaults (n/r/f/p).
         let def = KeysConfig::default();
         let km = KeyMap::from_config(KeyScheme::Vim, &def.to_keymap_config());
         // f=Full / p=Parent (the new defaults) are preserved.
         assert_eq!(
-            km.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
+            km.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         assert_eq!(
-            km.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('p')),
+            km.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('p')),
             Resolution::Action(Action::CopyPath(CopyKind::Parent))
         );
 
@@ -1586,12 +1522,12 @@ d = "refresh"
         };
         let km2 = KeyMap::from_config(KeyScheme::Vim, &custom.to_keymap_config());
         assert_eq!(
-            km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('P')),
+            km2.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('P')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         // The new default f=Full also remains (additive).
         assert_eq!(
-            km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
+            km2.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
     }

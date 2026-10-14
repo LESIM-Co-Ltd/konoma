@@ -42,23 +42,24 @@ tab_width = 4
 #   true  = color with syntect (default). The first open of a language compiles its grammar (absorbed by
 #           preview_loading below).
 #   false = plain text, fastest (syntect is never used). Use false if highlighting feels heavy / is unwanted.
+# (Also settable as [plugins.code] syntax_highlight, which wins.)
 syntax_highlight = true
 # How the wait is shown for a heavy code preview (a language opened for the first time = grammar compile needed).
 # Note: an already-opened language is warm, so display is instant regardless of this setting.
 #   indicator   = show a loading indicator in the center, then render the colored body (default).
 #   progressive = show the body as plain text immediately, then swap to highlighted once ready (no freeze).
 preview_loading = "indicator"
-# Default path style in titles (tree/preview). The p key cycles relative → home → full.
+# Default path style in titles (tree/preview). The `,` menu (p) cycles relative → home → full.
 #   relative = relative to the launch directory name (e.g. konoma/src/main.rs). Default.
 #   home     = relative to HOME (e.g. ~/work/konoma).
 #   full     = full path (e.g. /Users/me/work/konoma).
 path_style = "relative"
 # Default page-turn key profile for previews. j/k line moves, arrows, and PageUp/Down are common to both.
 #   vim  = Ctrl-f/Ctrl-b page, Ctrl-d/Ctrl-u half-page (default).
-#   less = Space/b page, d/u half-page (preview surfaces only; the tree's Space is already the file-management
-#          leader, so even under less the tree keeps vim paging).
+#   less = f/b page, d/u half-page (preview contexts only; Space stays the menu of operations, and the tree
+#          keeps vim paging).
 # Note: this is the "default page-turn profile". Individual keys can be overridden under the top-level
-#   [keys.<surface>] sections below (those take precedence and are a separate thing).
+#   [keys.<context>] sections below (those take precedence and are a separate thing).
 keys = "vim"
 # Display-size scale for image previews (0.1–1.0). Shrinks the display rect by this factor.
 # At the default 1.0: "initial = image size (fit), + zooms in, pan with hjkl once it overflows the viewport".
@@ -70,6 +71,7 @@ image_render_scale = 1.0
 # Maximum edge (px) for SVG rasterization. Vectors are resolution-free, so they are rendered up to this many px
 # (small SVGs stay crisp). Larger is sharper but heavier to draw/transfer. Default 800.
 # SVG only: raster images / GIFs are unaffected (a GIF's transfer size is governed by image_render_scale).
+# (Also settable as [plugins.svg] max_px, which wins.)
 svg_max_px = 800
 
 # Detail-list columns: extra metadata shown to the right of each row. Empty [] (default) for a plain display.
@@ -80,10 +82,10 @@ svg_max_px = 800
 # All info for a single entry (symlink target, absolute path, …) is available in the `i` popup.
 details = []           # e.g. ["type", "size", "modified"]
 
-# Maximum number of local branches drawn at once in the commit graph (o→g). Default 12.
+# Maximum number of local branches drawn at once in the commit graph (p, then Tab to the graph). Default 12.
 # With many branches the lanes/colors/legend overflow, so at startup they are auto-selected up to this limit,
 # ordered by base/priority + HEAD + recent commits. The graph's `b` panel toggles visibility and reorders
-# priority (Space:toggle / J/K:reorder / a:all / n:current only / Enter:apply; HEAD is always shown). 0 = unlimited.
+# priority (x:toggle / J/K:reorder / a:all / c:current only / Enter:apply; HEAD is always shown). 0 = unlimited.
 graph_max_branches = 12
 
 # The graph's "base / priority branches" (ordered; default []). e.g. ["main", "develop"]
@@ -91,13 +93,13 @@ graph_max_branches = 12
 # 2. The first one that exists becomes the "base" = pinned to lane0 in a straight line.
 # 3. The order also drives the legend/panel display order (array → HEAD → recency).
 # The graph's `b` panel J/K reorders for the current session only (never written back to the config).
-# Also reused as the base for the worktree list's diff (`d`, in git_worktrees): the candidate pool is the
+# Also reused as the base for the worktree list's diff (`d`, in git.worktrees): the candidate pool is the
 # entries here that exist plus the main worktree's branch, and whichever candidate's merge-base (common
 # ancestor) with the diffed worktree's HEAD is newest becomes the base — i.e. the branch it actually
 # diverged from, not necessarily the first one listed here; ties fall back to this array's order.
 graph_base_branches = []
 
-# In the log (o→l) / graph (o→g) commit rows, how the right-side metadata (author, date; also short hash in the
+# In the log / graph (p, then Tab) commit rows, how the right-side metadata (author, date; also short hash in the
 # graph) is aligned.
 #   "right"  (default) … align to the panel's right edge as a "column". Dates/authors line up vertically so you
 #                        can scan new vs old at a glance (SourceTree / VS Code Git Graph style). When narrow, the
@@ -117,7 +119,7 @@ confirm_quit = true
 #   true  (default) … confirm before overwriting (y / Enter = overwrite, n / Esc = cancel).
 #   false           … overwrite immediately without confirmation.
 confirm_bookmark_overwrite = true
-confirm_jj_sync            = true   # Ask before `R` in the hub lets jj snapshot the working copy.
+confirm_jj_sync            = true   # Ask before `s` in a jj changes list lets jj snapshot the working copy.
                                     # That is the one thing konoma writes to a jj repository, and only
                                     # when asked: it exists for the case konoma cannot see on its own,
                                     # a file whose contents changed while its timestamp did not.
@@ -127,6 +129,7 @@ confirm_jj_sync            = true   # Ask before `R` in the hub lets jj snapshot
 #   true  (default) … color per column.
 #   false           … single color (alignment, cell moves, and copy are unchanged).
 # Keys: hjkl=move cell / g·G=first/last row / 0·$=first/last column / y→ c:cell r:row C:column f:full path / q:back.
+# (Also settable as [plugins.csv] rainbow — and [plugins.spreadsheet] rainbow — which win.)
 csv_rainbow = true
 
 # How `/` matches while filtering the tree.
@@ -141,9 +144,9 @@ filter_mode = "fuzzy"
 #                      all-added diff). q goes back, s cycles the layout.
 #   "file"           … a normal full-screen preview (auto-scrolls to the first changed hunk, gutter on changed lines).
 # Either way, files with no diff (unchanged / outside a repo) and images/SVG/video/PDF open as a normal preview.
-# The follow diff shows changes SINCE you pressed F (pre-existing uncommitted changes stay hidden); press f in
-# the diff to toggle the full git diff. Follow is sticky — only q / another F / entering text input stops it
-# (scrolling, n/N and f keep it on).
+# The follow diff shows changes SINCE you pressed F (pre-existing uncommitted changes stay hidden); open the
+# `,` menu in the diff and press f to toggle the full git diff. Follow is sticky — only q / another F / entering text
+# input stops it (scrolling and n/N keep it on).
 follow_view = "diff"
 
 # Which of the full-screen diff's 3 presentations it opens showing.
@@ -158,11 +161,11 @@ follow_view = "diff"
 # An unrecognized value falls back to "rendered".
 diff_view = "rendered"
 
-# The states Space cycles through in Markdown task lists (checkboxes), in cycle order.
+# The states Enter cycles through in Markdown task lists (checkboxes), in cycle order.
 # Each element is one character. Default [" ", "x"] = GFM-standard incomplete ⇄ done.
 # e.g. [" ", "/", "x"] inserts an Obsidian-style "in progress [/]". Standard states show the Nerd Font
 # checkbox icon (or [ ]/[x] when ui.icons=false); custom states are shown as [/].
-# Keys: in the decorated view, Tab/⇧Tab cycles links and checkboxes → Space (or Enter) toggles.
+# Keys: in the decorated view, Tab/⇧Tab cycles links and checkboxes → Enter toggles.
 # Toggling verifies the file before writing, and if it changed externally it reloads instead of writing (safe).
 # A box in a state not in the array is normalized to the first state. An invalid setting (2-char element,
 # ≤1 element) falls back to the default.
@@ -200,7 +203,7 @@ md_footnotes = true
 # kept either way.) false leaves all these tags to be stripped.
 md_inline_html = true
 
-# How <details> blocks start out. Either way Tab focuses the <summary> and Space/Enter toggle it.
+# How <details> blocks start out. Either way Tab focuses the <summary> and Enter toggles it.
 #   "auto"   (default) … honor the `open` attribute like GitHub (<details> collapsed, <details open> expanded)
 #   "open"             … always start expanded
 #   "closed"           … always start collapsed
@@ -240,6 +243,7 @@ busy_indicator = true
 #                       the zoom level, so it stays sharp. Non-graphics terminals, unsupported diagrams, and render
 #                       failures degrade to text automatically (safe).
 #   "text"            … the classic Unicode box-drawing text rendering only.
+# (Also settable as [plugins.mermaid] mode, which wins; the same for theme, curve, routing and rows below.)
 mermaid = "image"
 
 # Color theme for mermaid diagrams. The background is always transparent (blends with the terminal).
@@ -312,7 +316,7 @@ mermaid_routing = "splines"
 # re-rasterizes at the needed density and stays sharp (the display size itself doesn't change).
 # The initial view also fits the viewport: when the window is shorter than this cap, it shrinks
 # further so the whole block is visible.
-# A focused diagram can be zoomed in place with +/- (reserved area unchanged) and fit with 0.
+# A focused diagram can be zoomed in place with +/- (reserved area unchanged) and fit with =.
 # 0 or an invalid value falls back to the default 24.
 mermaid_rows = 24
 
@@ -323,6 +327,7 @@ mermaid_rows = 24
 #                       lifted onto its own line. Display math ($$...$$, \[...\]) is centered.
 #                       Non-graphics terminals and render failures degrade to the raw LaTeX text automatically.
 #   "text"            … leave the raw LaTeX ($...$) as plain text (no rendering).
+# (Also settable as [plugins.math] mode, which wins; the same for math_color as [plugins.math] color.)
 math = "image"
 
 # Glyph color for image-mode math. RaTeX paints equations pure black, invisible on a dark terminal;
@@ -353,7 +358,7 @@ restore_single_tab = true
 # descending into a directory (l) always starts at the top — there is no "came from" row there.
 tree_cursor = "origin"
 
-# Default tree sort (at startup). At runtime, switch with the `s` sort menu
+# Default tree sort (at startup). At runtime, switch in the tree's `,` menu
 # (key n/s/m/e, r=reverse, .=dirs first).
 [ui.sort]
 key        = "name"    # sort key: "name" (default) | "size" | "modified" | "ext"
@@ -388,7 +393,14 @@ code_label_bg = "auto"
 #                 "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon", etc.
 code_theme = "TwoDark"
 
-# Preview rules are evaluated top to bottom; the first match wins.
+# Preview rules are YOUR assignments: tried top to bottom, the first match wins. A file none of your
+# rules matches goes on to the standard plugins (markdown, mermaid, svg, image, csv, spreadsheet,
+# document, presentation, archive, code, video, pdf), which carry the default assignments listed
+# below. So writing a rule ADDS to the defaults; it no longer replaces them. Run `konoma --plugins`
+# to list every assignment (yours first, then the standard ones). To switch a standard plugin off,
+# use `[plugins.<id>] enabled = false` (see "Plugins" below). A file that nothing claims is shown as
+# plain text if it reads as text, otherwise as [can not preview: <ext>].
+# The rules below are the defaults, shown commented out; uncomment and edit one to take over its files.
 # builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "spreadsheet" | "document" | "code" | "text")
 #   markdown = decorated by konoma's own renderer (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
@@ -431,171 +443,280 @@ code_theme = "TwoDark"
 #            shows it as plain text through the ordinary windowed reader).
 # detached: open in a separate process without blocking the TUI (video, etc.).
 
-[[preview.rules]]
-glob = "*.md"
-builtin = "markdown"
+# [[preview.rules]]
+# glob = "*.md"
+# builtin = "markdown"
 
-[[preview.rules]]
-glob = "*.{mmd,mermaid}"
-builtin = "mermaid"        # Default = image rendering ([ui] mermaid). To delegate to an external tool, see the command example below.
+# [[preview.rules]]
+# glob = "*.{mmd,mermaid}"
+# builtin = "mermaid"        # Default = image rendering ([ui] mermaid). To delegate to an external tool, see the command example below.
 # command = "merman -i {path} -o {out}.png --scale 2"
 # render_as = "image"
 
-[[preview.rules]]
-glob = "*.svg"             # Before raster images (infer classifies svg as image/* too, so order matters).
-builtin = "svg"
+# [[preview.rules]]
+# glob = "*.svg"             # Before raster images (infer classifies svg as image/* too, so order matters).
+# builtin = "svg"
 
-[[preview.rules]]
-mime = "image/*"           # png/jpg/webp/bmp... and GIF (auto-animated).
-builtin = "image"
+# [[preview.rules]]
+# mime = "image/*"           # png/jpg/webp/bmp... and GIF (auto-animated).
+# builtin = "image"
 
-[[preview.rules]]
-glob = "*.csv"             # Aligned table (rainbow columns + cell cursor). Color via [ui] csv_rainbow.
-builtin = "csv"
+# [[preview.rules]]
+# glob = "*.csv"             # Aligned table (rainbow columns + cell cursor). Color via [ui] csv_rainbow.
+# builtin = "csv"
 
-[[preview.rules]]
-glob = "*.tsv"             # Tab-separated variant.
-builtin = "tsv"
+# [[preview.rules]]
+# glob = "*.tsv"             # Tab-separated variant.
+# builtin = "tsv"
 
-[[preview.rules]]
-glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
-builtin = "spreadsheet"
+# [[preview.rules]]
+# glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
+# builtin = "spreadsheet"
 
-[[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
-builtin = "document"
+# [[preview.rules]]
+# glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
+# builtin = "document"
 
-[[preview.rules]]
-glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.tar.gz"          # Compound extension needs its own rule (globset alternation can't express it).
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.tar.gz"          # Compound extension needs its own rule (globset alternation can't express it).
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
-builtin = "code"
+# [[preview.rules]]
+# glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
+# builtin = "code"
 
-[[preview.rules]]
-mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
+# [[preview.rules]]
+# mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
                            # H.264 and HEVC in mp4/m4v/mov and mkv/webm need no external tool; other codecs/containers use ffmpeg if installed.
-builtin = "video"
+# builtin = "video"
 # To "play" in an external player instead of in the terminal, drop the above and replace with (delegation):
 # command = "mpv {path}"
 # detached = true          # open in a separate process without blocking the TUI.
 
-[[preview.rules]]
-glob = "*.pdf"             # Default: rasterize each page to a full-screen image with hayro (pure Rust, no external tool; turn pages with J/K).
+# [[preview.rules]]
+# glob = "*.pdf"             # Default: rasterize each page to a full-screen image with hayro (pure Rust, no external tool; turn pages with J/K).
                            # On macOS only, a PDF hayro can't draw falls back to the bundled qlmanage/sips — first page only.
-builtin = "pdf"
+# builtin = "pdf"
 
-# A file matching no rule shows [can not preview: <ext>] full screen.
+# A file matching no rule and no plugin shows [can not preview: <ext>] full screen (or plain text if it reads as text).
+
+# ── Plugins ──────────────────────────────────────────────────────────────────
+# Each preview is made by a plugin built into konoma; the standard ones are: markdown, mermaid, math
+# (formulas inside Markdown), svg, image, csv (csv and tsv), spreadsheet, document (Word), presentation,
+# archive, code, video, pdf. `konoma --plugins` lists which plugin shows which files (yours first).
+# `[plugins.<id>]` is the table of one plugin:
+#   enabled = false    switch the plugin off — its files go to the next step (plain text if they read as
+#                      text, otherwise [can not preview]). Unknown ids are reported at startup.
+#   read_only = true   stop the writing actions of that plugin (the actions it declares as writing; such a key says why
+#                      and does nothing). The standard plugins declare no actions yet, so it has no effect on them today.
+# The other keys of the table are the plugin's own settings. They REPLACE the matching [ui] keys: the old
+# [ui] name is still read (used when the plugin table does not set the value); if both are set, the plugin
+# table wins. A key a plugin does not have is reported at startup and ignored; a value of another type than the plugin
+# declares (rainbow = "yes") is named at startup and the plugin's default is used.
+# While a setting is still under its old [ui] name, the footer says so once at start ("[ui] md_alerts is an old
+# name — write [plugins.markdown] alerts instead"); move the value and the message goes away.
+#   csv          rainbow          (was [ui] csv_rainbow)
+#   spreadsheet  rainbow          (follows [plugins.csv] rainbow until set here)
+#   code         syntax_highlight (was [ui] syntax_highlight)
+#   svg          max_px           (was [ui] svg_max_px)
+#   mermaid      mode theme curve routing rows   (were [ui] mermaid mermaid_theme mermaid_curve mermaid_routing mermaid_rows)
+#   math         mode color       (were [ui] math math_color)
+#   markdown     task_states autolink alerts emoji frontmatter footnotes inline_html details table_align image_align
+#                                 (were [ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
+#                                  md_inline_html md_details md_table_align md_image_align)
+# The values mean what they do under the [ui] keys above. A Word document is drawn with the markdown options too.
+# The keys of a plugin's own actions are rebound in [keys.<plugin id>] (W = "width" gives the action `width` the key W;
+# w = "noop" takes a key away). A key the host keeps for itself is refused and the startup message says so; the
+# action stays in the `Space` menu.
+# [plugins.markdown]
+# enabled = false
+# alerts = false
+# [plugins.video]
+# enabled = false
+# [plugins.csv]
+# rainbow = false
+# [plugins.mermaid]
+# theme = "forest"
+# rows = 30
 
 # ── Keybindings (FR-8) ───────────────────────────────────────────────────────
 # [Top-level sections] — write these at the outermost level of the file, NOT inside [ui].
 # (Distinct from the ui keys="vim" above — easy to confuse.)
 #
-# Model: "for each surface, map a key → a command (action)". There is a built-in default map, and here you can
+# Model: "for each context, map a key → a command (action)". There is a built-in default map, and here you can
 # override / add / disable (anything not written keeps its default). helix-style notation:
-#   [keys.<surface>]
+#   [keys.<context>]
 #   <key> = "<action>"
 #
-# ■ Surface names — a separate map per "which screen am I on". snake_case:
-#   global        : effective on any surface (tabs t/I/[/]/1-9, T=tab list, help ?). "tab_new" (t) always
-#                  appends a new tab at the end; "tab_new_after" (I) inserts it right after the current
-#                  tab instead. w is unbound by default
+# The default keys follow one design, so a key means the same thing wherever it works: the app keys
+# (? Q F P t T [ ] 1-9), the basic keys (j k g G / n N r y Y v V m ' Ctrl-t , Space Esc Enter q), the keys of
+# one kind of view (+ - = zoom for images, J K for pages, O for the outline, R for the representation) and
+# the verbs e (edit) / o (open in another app) / p (the project screen) / ! (the project tool). The complete
+# table of defaults is in the keymap reference of the docs site; `?` in the app shows the keys as they are set.
+#
+# ■ Context names — a separate map per "what am I looking at". A key is looked up in the context's own map,
+#   then in the keys shared by that kind of view, then in the basic keys (j/k/Space), then in global.
+#   Lowercase, snake_case:
+#   global        : effective in every context (tabs t/[/]/1-9, T=tab list, help ?, Q, F, P).
+#                  "tab_new_after" (t) puts a new tab right after the current one; "tab_new" (no default key)
+#                  appends it at the end. w is unbound by default
 #                  (it clashes with vim's word motion; close is the tree's q; restore with "w"="tab_close").
 #   tree          : the full-screen tree      tree_visual   : the tree's visual selection
-#   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff
-#   preview_table : CSV/TSV/archive tables    table_cell : the full-cell popup (Enter in preview_table)
-#   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
-#   git_graph_picker : the graph's branch-visibility panel (b)
-#   git_worktrees : the linked-worktree list (w, in the changes hub)
-#   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
+#   text          : source and plain text (also a preview that cannot be shown)
+#   document      : a decorated document — rendered Markdown, a Word file, slides, a mermaid diagram
+#   text_visual   : the text preview's visual selection (v / V)
+#   image         : images, SVG, PDF pages, video thumbnails      diff : a file's git/jj diff
+#   table         : CSV/TSV/archive/spreadsheet tables    table_cell : the full-cell popup (Enter in a table)
+#   git.changes   : the changes list (p)   git.log / git.graph / git.branches / git.detail
+#   git.graph_picker : the graph's branch-visibility panel (b)
+#   git.worktrees : the linked-worktree list (w, on the version-control screens)
+#   jj.changes ... : the same screens opened for a jj repository (jj.log jj.graph jj.graph_picker
+#                   jj.branches jj.worktrees jj.detail); they start out with the same keys as git.*,
+#                   except the few that differ (s syncs in jj.changes)
+#   sort  bookmarks  tabs (tab list: d=tab_list_close)  outline  info  help
+#   A name with a dot needs quotes in TOML: [keys."git.changes"].
+#   The names used before contexts existed are still read — preview_text (= text + document),
+#   preview_text_visual (= text_visual), preview_image (= image), preview_table (= table),
+#   preview_git_diff (= diff), git_changes / git_log / git_graph / git_graph_picker / git_branches /
+#   git_worktrees / git_detail (= the "git.…" and "jj.…" context of that name) — and konoma says at
+#   startup what to rename each to. If a context is written under both names, the new name wins.
 #
-# ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / '",
+# ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / ' ,",
 #   modifiers "ctrl-f" (alias "c-f"), named "tab enter esc up down left right home end pageup pagedown".
-#   A chord (leader) is two space-separated tokens: "y f" = y then f, "space d" = Space then d.
-#   Note: Esc/Enter/Backspace/Delete/Tab/arrows, and character keys during text input, are fixed (cannot rebind).
+#   A chord is two space-separated tokens: the key that opens a menu + a key in that menu —
+#   "y f" = y then f, ", s" = , then s, "space d" = Space then d. In [keys.<context>] a chord changes that
+#   context's menu only (the y of the tree, of a table and of the branch list are different menus); in
+#   [keys.global] it reaches every context. Outside the tree the Space menu is built from the operations that
+#   act on that screen, so bind the operation to a key instead of editing it.
+#   Note: Esc/Enter/Backspace/Delete/Tab/Shift-Tab/arrows, and character keys during text input, are fixed
+#   (cannot rebind) — but the operation each one runs has a name below and can get another key as well.
 #
-# ■ Main action names (snake_case):
+# ■ Main action names (snake_case; the default key in parentheses):
 #   Motion       : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
 #   Copy path    : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref" (@relative path) "copy_code_block" (md code block)
 #   File ops     : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
 #                  "file_duplicate" (Space→D: duplicate the cursor/selection in place = note copy.md)
-#   Tree         : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
-#                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
-#                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
-#                  "enter_visual" "toggle_select" "open_in_new_tab" (Ctrl-t: open the entry under the cursor in a new tab)
-#   Agent Watch  : "toggle_changed_filter" (C: show only changed files) "jump_next_change" (n) "jump_prev_change" (N)
+#   Tree         : "quit" (Q) "close_tab_or_quit" (q) "tree_descend" (l) "tree_leave" (h) "tree_activate" (Enter)
+#                  "filter_start" (/) "toggle_hidden" (.) "refresh" (r, in every context) "toggle_info" (i)
+#                  "mark_set" (m) "mark_jump" (') "set_anchor" (a) "reset_anchor" (A) "open_git_diff_cursor" (d)
+#                  "enter_visual" (v) "toggle_select" (V) "open_in_new_tab" (Ctrl-t: open the entry under the cursor in a new tab)
+#   Edit / open  : "request_edit" (e: the editor, at the line you are looking at; works in a preview, a diff and on a
+#                    row of the changes list; on an Office file it opens the Office app)
+#                  "open_external" (o: open the file in the app made for it — an Office file in Microsoft Office /
+#                    LibreOffice / the OS default, anything else in the OS default; runs in the background;
+#                    [external] office_apps and open_links switch it off)
+#   Sort/display : the `,` menu of the tree and previews. "open_sort_menu" "sort_name" "sort_size" "sort_modified" "sort_ext"
+#                  "sort_toggle_reverse" "sort_toggle_dirs_first" "cycle_path_style" "toggle_wrap"
+#                  (no default keys: the tree's old s and p are in the `,` menu; bind them if you want the keys back.
+#                    "open_sort_menu" opens the `,` menu of the screen you are on; the old sort overlay is gone)
+#   Agent Watch  : "toggle_changed_filter" (C: show only changed files) "jump_next_change" / "jump_prev_change"
+#                    (n / N in the tree; Ctrl-n / Ctrl-p in a diff: next / previous changed FILE)
+#                  "diff_next_change" / "diff_prev_change" (n / N in a diff: next / previous change block of the file)
 #                  "toggle_follow" (F, global: auto-jump to externally changed files = follow the AI's work.
 #                    The follow diff shows changes SINCE you pressed F — pre-existing uncommitted changes stay hidden.)
-#                  "toggle_follow_diff_scope" (f, in a follow diff: switch between "since follow start" and the full git diff)
+#                  "toggle_follow_diff_scope" (in a follow diff: switch between "since follow start" and the full git
+#                    diff — key f in the diff's `,` menu)
 #   Path jump    : "paste_jump" (P, global: read a path/GitHub link from the clipboard and go to it = reveal +
 #                  preview. Handles local absolute/relative paths, GitHub blob/raw URLs, #L123 / :123 line anchors.
 #                  Outside the current root, switches the target's repo to root. @path#L references paste as-is too.)
 #   Bookmarks    : m=register, '=list are bound on both tree and preview by default (in preview, register the shown file).
 #                  Inside the list ('), a bare letter jumps to that bookmark (a-z local / A-Z global).
-#                  "bookmark_edit" (default ctrl-e) "bookmark_delete" (default ctrl-d) "bookmark_close" (q / ')
+#                  "bookmark_edit" (default ctrl-e) "bookmark_delete" (no single key: d in the list's Space menu)
+#                  "bookmark_close" (q / ')
 #                  Note: j/k/q and global t/T/F/P/Q are taken by key actions, so a bookmark on those letters is opened
 #                    with j/k + Enter (or move the key elsewhere in the config).
-#   Preview      : "preview_back" "search_start" "search_next" "search_prev"
+#   Preview      : "preview_back" (q) "search_start" (/) "search_next" / "search_prev" (n / N: next / previous match —
+#                    or, while nothing is searched, the next / previous change of the file)
+#                  "preview_copy_selection" (y while selecting with v / V: copy the selected text)
 #                  "preview_copy_selection_ref" (Y: copy the @path#L reference of the selection/caret)
-#                  "link_open" (Enter: open the link in the same tab) "open_link_new_tab" (Ctrl-t: open a local link in a new
+#                  "link_open" (Enter: open the link in the same tab; toggles a focused checkbox / <details>)
+#                  "toggle_focused_item" (the same toggle as its own operation: no key; it is in the Space menu)
+#                  "link_focus_next" "link_focus_prev" (Tab / Shift-Tab)
+#                  "open_link_new_tab" (Ctrl-t: open a local link in a new
 #                    tab; a same-document #anchor link jumps in place instead, and a URL/mailto/tel link opens externally)
 #                  "preview_next_file" "preview_prev_file" (Ctrl-n/Ctrl-p: preview the next/prev file in tree order
 #                    = file paging. Directories are skipped; wraps at the ends.)
-#                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
-#                  "toggle_markdown_raw" (R: decorated ⇄ raw source; on a presentation, the slide pictures ⇄ the text view)
-#                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "toggle_outline" (O: open the heading outline of a Markdown preview, or the list of the pages of a PDF / workbook / presentation with 2+ pages; Enter jumps)
+#                  "cycle_representation" (R: cycles the representation — decorated ⇄ raw source; on a presentation,
+#                    the slide pictures ⇄ the text view; in a diff, its presentations; on a plugin that declares two or more
+#                    representations, those in the declared order — a table has one, so no R there. Was "toggle_markdown_raw", still read)
+#                  "image_zoom_in" (+) "image_zoom_out" (-) "image_zoom_reset" (=)
 #                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image and in an image/PDF/SVG diff, where they turn the page
 #                    instead of scrolling: next/previous PDF page, spreadsheet
 #                    sheet, presentation slide, or — on an image/PDF/SVG diff — PDF page on both sides together; does nothing where
 #                    there is nothing to turn. The former names "pdf_next_page" "pdf_prev_page" "sheet_next"
 #                    "sheet_prev" "media_diff_page_next" "media_diff_page_prev" still work as aliases.)
+#   Selection    : "visual_select_siblings" (a) "visual_select_all" (A) "visual_commit" (v) in the tree's range selection;
+#                  "preview_enter_visual" (v) "preview_enter_visual_line" (V) "preview_exit_visual" in a preview
+#   Overlays     : "image_return_to_diff" (R on the picture of a diff's preview representation) "bookmark_jump" (Enter in the
+#                  bookmark list) "info_close" (i / q) "outline_jump" (Enter in the outline)
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
-#                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Surface [keys.table_cell] covers the popup's keys.)
-#   Sort         : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
-#   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
-#                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
-#                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
-#                  "jj_sync" (R, in the hub: let jj snapshot the working copy — konoma's only
+#                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Context [keys.table_cell] covers the popup's keys.)
+#   Git          : "open_git_view" (p: the project screen, from the tree, a preview or a diff)
+#                  "git_launch_tool" (!: from the tree, a preview, a diff and the changes list)
+#                  "git_screen_next" "git_screen_prev" (Tab / Shift-Tab: walk the changes, log, graph, branches and
+#                    worktrees screens) "list_filter_start" (/ on the changes list, the log and the graph)
+#                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit" (c)
+#                  "git_worktree_diff" "git_open_selected_diff" (l / Enter) "git_open_branches" (b)
+#                  "git_open_log" "git_open_graph" (no default keys: reach them with Tab)
+#                  "cycle_diff_layout" (s) "cycle_diff_view" (R) "git_diff_discard"
+#                  "git_open_detail" (l / Enter on the log and graph) "git_close" (q / h) "git_diff_discard" (x in a diff)
+#                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"
+#                  "git_copy_date" (the commit's y menu) "copy_branch_name" (the branch list's y menu)
+#                  "branch_checkout" (l / Enter) "branch_create" (c) "branch_delete" (d) "branch_filter_start" (/)
+#                  "jj_sync" (s, in a jj changes list: let jj snapshot the working copy — konoma's only
 #                    write to a jj repository, and only after a confirmation. Does nothing in a
 #                    git repository.)
-#   Git graph    : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
+#   Git graph    : "git_graph_set_base" (s) "git_graph_clear_base" (x) "git_graph_open_picker" (b)
 #                  "git_graph_toggle_all" (a: show every revision instead of the range the
 #                    backend considers current — only jj has a narrower one)
-#                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
-#                  "git_graph_picker_move_up" "git_graph_picker_move_down"
-#   Git worktrees: "git_open_worktrees" (w, in the changes hub: open the linked-worktree list — a
+#                  "git_graph_picker_toggle" (x) "git_graph_picker_all" (a) "git_graph_picker_current_only" (c)
+#                  "git_graph_picker_move_up" (K) "git_graph_picker_move_down" (J) "git_graph_picker_apply" (l / Enter)
+#   Git worktrees: "git_open_worktrees" (w, on the version-control screens: open the linked-worktree list — a
 #                    *linked* working tree from `git worktree add`, not the "worktree" meant
 #                    everywhere else in this file, which is always the uncommitted working tree)
 #                  "worktree_filter_start" (/: filter by branch name / path)
-#                  "worktree_goto" (Enter: switch this tab's root — and open_dir — to the selected
+#                  "worktree_goto" (Enter / l: switch this tab's root — and open_dir — to the selected
 #                    worktree; Enter is a fixed key here, same as branch_checkout, but the action
 #                    name is still config-rebindable to another key)
 #                  "worktree_goto_new_tab" (Ctrl-t: open the selected worktree in a new tab,
-#                    leaving this tab as-is) "worktree_close" (q/Esc)
+#                    leaving this tab as-is) "worktree_close" (q / h)
 #                  "worktree_show_changes" (d: show the selected worktree's diff since the base
 #                    branch — committed AND uncommitted together, so it still shows something even
 #                    if the worktree already committed its work. The base is graph_base_branches
 #                    below, falling back to the main worktree's branch. Falls back further to an
 #                    uncommitted-only diff when there's no base or nothing has piled up yet.)
-#                  "worktree_create" (n: open an input dialog for a branch name — new vs. existing is
+#                  "worktree_create" (c: open an input dialog for a branch name — new vs. existing is
 #                    auto-detected, no separate prompt for it — then `git worktree add` it under
 #                    [git] worktree_dir next to the main worktree, and switch this tab into it)
+#   Tabs / app   : "tab_new_after" (t) "tab_new" (no default key) "toggle_tab_list" (T) "tab_list_close" (d in the list)
+#                  "tab_list_activate" (Enter in the list) "tab_prev" "tab_next" ([ ]) "toggle_help" (?) "cancel" (Esc)
 #   Disable      : "noop" (alias "disabled") = remove that key's default binding.
 #
-# ■ Leaders (two-stage keys / which-key): pressing one shows the candidates in the footer.
-#   y     → copy path      (n=name r=relative f=full p=parent @=AI-oriented @relative-path reference)
-#   Space → file ops       (n=create r=rename d=delete c=copy x=cut p=paste) — tree / visual.
+# ■ Menus (two-stage keys / which-key): pressing one shows the candidates in the footer.
+#   y     → copy           (the tree: n=name r=relative f=full p=parent @=AI-oriented @relative-path reference;
+#                           a table: c=cell r=row C=column f=path; a commit: s h t m a d; a branch: n=name)
+#   ,     → sort / display (the tree: n s m e r . p h; a text or document: p=path style w=wrap; a diff: f p)
+#   Space → operations     (the tree and its range selection: n=create r=rename d=delete c=copy x=cut p=paste D=duplicate;
+#                           everywhere else: every operation that acts on the screen, built automatically)
 #
-# ■ Conflict detection: a setting that steals an important default key on a surface (a single key clobbering a
-#   leader prefix, repurposing a global tab key, …) is detected at startup, notified in the footer, and reverted
-#   to the default (it will not silently break things).
+# ■ Conflict detection: a setting that steals an important default key in a context (a context binding a key that
+#   opens a menu (y , Space) to an operation, or taking a global key for something else, …) is detected at startup,
+#   notified in the footer, and reverted to the default (it will not silently break things).
+#
+# To get an old key back, bind the operation to it (every operation kept its name):
+# [keys.global]
+# "I" = "tab_new_after"        # the old "new tab right of this one" key (t does it now)
+# "t" = "tab_new"              # the old "append a tab at the end" key
+# [keys.tree]
+# o = "open_git_view"          # the old Git hub key (p now; o opens the file in another app)
+# s = "open_sort_menu"         # the old sort menu key (opens the `,` menu)
 #
 # Example (uncomment to use):
 # [keys.tree]
@@ -604,15 +725,15 @@ builtin = "pdf"
 # "y f" = "copy_full"          # y→f to copy the full path (default)
 # x = "noop"                   # disable x
 #
-# [keys.preview_text]
+# [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys.git_changes]
+# [keys."git.changes"]
 # g = "git_open_graph"
 #
 # (Backward compat) The old [keys] copy_name/copy_full/copy_relative/copy_parent (suffix) are still read for now
 # and mapped to the y copy leader. copy_prefix is ignored (the prefix is fixed to y in the new scheme).
-# All are deprecated — prefer the new [keys.<surface>] form.
+# All are deprecated — prefer the new [keys.<context>] form.
 
 # External editor (launched with the `e` key). Can be specified per extension.
 # Resolution order: [editor.ext] per-extension → command (overall default) → $VISUAL → $EDITOR → vim.
@@ -636,16 +757,16 @@ command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR 
 # txt = "nano"
 
 # ── Git integration ──────────────────────────────────────────────────────────
-# `o` opens the built-in Git view (changes hub). An external git tool is launched from within the hub with `!`.
+# `p` opens the built-in Git view (the changes list; Tab walks its screens). An external git tool is launched with `!`.
 [git]
-tool        = "lazygit"   # The external git tool launched with `!` in the hub (command + args, space-separated). e.g. "tig status"
+tool        = "lazygit"   # The external git tool launched with `!` (from the tree, a preview, a diff or the changes list; command + args, space-separated). e.g. "tig status"
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
 media_diff  = "auto"      # Initial layout for the image/PDF/SVG side-by-side "diff": "auto" (whichever of side-by-
                         # side/stacked lets the picture render larger) | "side" | "stack". Separate from `diff` above
                         # (they mean different things). `s` cycles auto→side→stack→auto while that view is showing.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
-worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved
+worktree_dir = "../"   # Where `c` (in the worktree list, [keys."git.worktrees"]) places a new linked worktree: resolved
                         # against the MAIN worktree's own path (not wherever this tab's root is), then joined with the
                         # branch name (its / replaced with -, since a slash would otherwise make git nest directories).
                         # Default = a sibling of the main worktree, e.g. ~/work/proj + branch feat -> ~/work/feat. An
@@ -654,17 +775,16 @@ worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) 
 
 # ── External process switches ────────────────────────────────────────────────
 # One on/off switch per external process konoma can launch. All default to `true` (unchanged
-# behavior). Prefer these over trying to disable a mechanism through `[[preview.rules]]`: writing
-# even one user rule there *replaces the entire builtin rule table*, so it isn't a targeted way to
-# turn off just PDF/video/etc. — it also breaks Markdown, images, CSV, and everything else.
+# behavior). To turn off one kind of preview (PDF, video, ...), use `[plugins.<id>] enabled = false` rather than
+# a `[[preview.rules]]` entry: these flags gate an external process, that table gates a standard plugin.
 # `[ui] lang` already has its own explicit-vs-auto switch for OS-language lookup, so there is no
 # separate flag for that here.
 [external]
 git              = true   # git integration (status colors, gutter, Git views, stage/commit/checkout — git CLI + embedded git2).
                            # false behaves exactly like building with `--no-default-features` (no `git` feature): reads return
-                           # empty/None, writes return an error. `o` flashes distinctly from "not a repo".
+                           # empty/None, writes return an error. `p` flashes distinctly from "not a repo".
                            # Whatever this says, git integration also turns itself off automatically when no `git`
-                           # executable is found on the machine (checked once, on first use), and `o` says so.
+                           # executable is found on the machine (checked once, on first use), and `p` says so.
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
 vcs              = "auto" # Which version-control system answers: "auto" | "git" | "jj".
                           # ** jj support is a preview. ** The surface is complete for the tree,
@@ -679,7 +799,7 @@ vcs              = "auto" # Which version-control system answers: "auto" | "git"
                           #     jj is the system you actually work in.
                           # konoma only READS a jj repository: every call carries
                           # --ignore-working-copy, so it never snapshots the working copy, and write
-                          # keys are hidden rather than offered. The one exception is `R` in the hub,
+                          # keys are hidden rather than offered. The one exception is `s` in a jj changes list,
                           # which asks for a snapshot after a confirmation ([ui] confirm_jj_sync).
                           # With no jj binary on the machine, konoma falls back to git.
 
@@ -695,14 +815,14 @@ video            = true   # The external fallback thumbnail extractors (ffmpegth
                            # `pdf` above has with hayro.
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.
-open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
-office_apps      = true   # `e` on an Office document (Word/Excel/PowerPoint/ODF: docx xlsx pptx odt ods odp ...) opens it in a GUI app —
+open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, `o` (open a file in another app), etc.
+office_apps      = true   # `e` or `o` on an Office document (Word/Excel/PowerPoint/ODF: docx xlsx pptx odt ods odp ...) opens it in a GUI app —
                            # Microsoft Office (macOS only), then LibreOffice, then the OS default (`open`/`xdg-open`) —
-                           # instead of handing the zip to $EDITOR. false opens nothing and says so. An explicit
+                           # instead of handing the zip to $EDITOR (e) or the OS default (o). false opens nothing and says so. An explicit
                            # `[editor.ext]` entry for the extension always wins.
 preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
                            # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.
 
 [jj]
-tool = "lazyjj"   # The external jj tool launched with `!` in the hub, the way [git] tool is for git.
+tool = "lazyjj"   # The external jj tool launched with `!`, the way [git] tool is for git.
                   # A missing binary flashes what could not be launched, exactly as a missing lazygit does.

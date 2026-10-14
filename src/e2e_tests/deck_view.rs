@@ -576,7 +576,7 @@ fn e2e_deck_the_outline_lists_the_slides_in_the_picture_view_and_jumps() {
     let Some((mut s, _d)) = open_kitty("dv_outline", 4, (100, 30)) else {
         return;
     };
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     for k in 1..=4 {
         s.see(&format!("Slide {k}: T{k}"));

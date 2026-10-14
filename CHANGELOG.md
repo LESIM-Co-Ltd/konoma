@@ -6,13 +6,156 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
+  `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
+  What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
+  then the standard plugins), and `[plugins.<id>] enabled = false` switches one off: its files go on to plain text if they
+  read as text, otherwise to `[can not preview]`. An unknown id in `[plugins.*]` is reported at startup. A plugin's own
+  settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
+  the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
+  `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
+  A value of another type than the plugin declares (`[plugins.csv] rainbow = "yes"`) is named at startup and the plugin's
+  default is used.
+- **A plugin's own actions are part of konoma's key system.** What a plugin declares (`Manifest::actions`: a key, a short label, a
+  help text, a footer priority, whether it writes) now gets its key, its `w:width`-style entry in the footer, a section of the
+  `?` help under the plugin's name and a place in the `Space` menu, with no code of the plugin's own. Whether an action works
+  now is the open session's word (`Session::enabled`), asked once when the session comes back from a job and used by the key
+  handler, the footer, the help and the menu alike, so a hint is shown only while its key acts. The action runs on the worker
+  and `Outcome::Redraw` asks for the view again. `[keys.<plugin id>]` rebinds an action's key (`W = "width"`) or takes it away
+  (`w = "noop"`). A plugin cannot take a key of the host's layers: the action is registered without the key, stays in the
+  `Space` menu, and the startup message says so. A plugin built for another plugin API version is switched off with a message.
+  `[plugins.<id>] read_only = true` stops the actions a plugin declares as writing (the standard plugins declare no actions yet,
+  so it does not touch them). The plugin API gained `Manifest::shows` (what the main
+  view shows, so a text-only plugin can use `s`), `Act::context`, function keys `F1` to `F12`, `&str` where a translated text is
+  expected, and test helpers (`view_table`, `view_document`, `view_image`, `open_bytes`, `check_hints`).
+  The host draws a plugin by what it declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and by the type of view
+  it returns, not by its id, so another plugin can stand in for a standard one (a text view a plugin makes is read in windows
+  like a file; what the host shows when a plugin cannot show a file is the plugin's own `Manifest::unavailable`); how to add a
+  plugin of your own comes in a later stage. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
+  plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
+  is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
+  its file changed (its modification time, size, inode or change time). A plugin that assigns files but declares no `shows` is
+  named at startup (and by `testing::check_manifest`), and a view of a type it did not declare is explained on screen. The
+  side-by-side image diff and follow's handling of videos go by what a plugin declares and the file's format, so they work for
+  a plugin that stands in for a standard one too. `R` cycles any representations a plugin declares, whatever they are called;
+  only a document whose two representations are `rendered` and `source` gets the host's own source view.
+- **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
+- **`konoma <file>`** opens the file's folder as the tree with the file selected and previewed at once (`q` goes back to the
+  tree, as for any preview). With saved tabs (`restore_tabs`) the tabs come back first and the file opens in the tab that is on
+  screen. A pipe or a device is refused as before.
+- **The startup message tells you about old setting names**, once: a `[ui]` setting that moved into `[plugins.<id>]`
+  (`md_*`, `mermaid*`, `math`, `math_color`, `csv_rainbow`, `syntax_highlight`, `svg_max_px`) is still read, and the footer says
+  `config: [ui] md_alerts is an old name — write [plugins.markdown] alerts instead` until you move it. A key a plugin does not
+  have (`[plugins.markdown] foo = 1`) is reported and ignored. What is wrong comes first on the footer and the hints last; what
+  does not fit the terminal width is counted as `(+n more)` instead of being cut off.
+- **`o` opens the file in another app** (the `open` verb; `e` edits). In the tree, in every preview and diff, and on a row of the
+  changes list: an Office file goes to the Office apps (Microsoft's, then LibreOffice, then the OS default, the same chain `e`
+  already used for Office files), anything else to the OS default (`open` / `xdg-open`). It runs on a worker, so the screen
+  never waits. `[external] office_apps` and `[external] open_links` stop it (the hint disappears with them); `[editor] ext` is
+  `e`'s and does not reach `o`. A directory is not opened. Action name: `open_external`.
+- **The project's screen and tool from everywhere**: `p` (the Git / jj hub) and `!` (lazygit / lazyjj, `[git] tool` / `[jj] tool`)
+  now work in the tree and in every kind of preview and diff, not only in the hub. Outside a repository, with
+  `[external] git_tool = false` for `!`, they are not offered and say why.
+- **`Tab` / `Shift-Tab` walk the version-control screens**: changes, log, graph, branches, worktrees (jj has no worktree screen,
+  so its cycle skips it), listed in the footer and the `?` help. `b` and `w` still go straight there. Action names:
+  `git_screen_next`, `git_screen_prev`.
+- **`/` filters the changes list, the log and the graph** by the text each row shows (case-insensitive), the way it already filtered
+  the branch and worktree lists, with the same input line in the footer, `Enter` to keep the query and `Esc` to drop it (a second
+  `Esc` leaves the screen). All five lists now share one filter, so a pasted text also reaches the worktree list's query.
+  **The outline / page list, the tab list and the bookmark list filter the same way** (the query shows in the title and starts
+  empty each time the list opens; in the bookmark list the letters are text while you type, and a hidden row cannot be deleted
+  or edited). Action name: `list_filter_start`.
+- **`n` / `N` step through the changes when nothing is being searched**: in a code or text preview to the next / previous block of
+  the git change gutter, in a rendered document to the next / previous changed block, in a diff to the next / previous change
+  block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files is on `Ctrl-n` / `Ctrl-p` now). While a
+  search is active they step through its matches as before. The footer offers `n/N:change` only when the file has a change.
+- **`r` reads again everywhere** (it was the tree's only): a preview, a diff, and the changes list, the log, the graph, the branch
+  and worktree lists.
+- **`e` works in a diff and on the changes list**: in a diff it opens the editor at the line of the change block on screen (the
+  block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
+  that file in a new tab.
+- **Line wrapping can be switched while running**: `,` then `w` in a text or document preview (action `toggle_wrap`).
+
 ### Changed
+- **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
+  name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
+  new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches
+  the changed file with `Ctrl-n` / `Ctrl-p` (it was `n` / `N`, which step through the change blocks of the file now); an image's `0` is gone (`=` resets the
+  fit); in the tree's range selection `q` cancels the selection like `Esc` (it quit the app; `Q` still quits); in a jj changes
+  screen `s` syncs (it was `R`, and git's `s` still stages); the branch list's `y` opens a menu whose item copies the
+  branch name; `Space` is no longer the key that toggles a checkbox or `<details>` (`Enter` does, as it already did) or pages
+  down under `ui.keys = "less"` (`f` does); the branch and worktree lists create with `c` (it was `n`, the next match);
+  the graph's base is cleared by `x` only (`0` is the line start); the graph's branch panel shows the current branch only
+  with `c` (it was `n`) and applies with `l`; in every list of the Git screens `l` opens (what `Enter` does) and `h` goes
+  back, and so it is in the outline / page list and the tab list (the bookmark list keeps `h` and `l` as bookmark names, like
+  every other letter). The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
+  have no default key: the first three are in the `,` menu and the log and the graph are reached with `Tab`, and `[keys]`
+  can still bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
+  The footer and the `?` help show the new keys by themselves, as they are set.
+- **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
+  modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
+  wrapping; a table or image: path style; a diff: the follow scope and path style), replacing the tree's `s` and the previews'
+  `p`. `Space` outside the tree opens a menu of every operation that acts on that screen, each under its own key where it has a
+  single one and a letter otherwise, so an operation whose key was moved or lost is still one keystroke away; in the tree it is
+  still the file menu. `y` opens the copy menu of the screen (paths, a table's cell / row / column, a commit's fields, a branch
+  name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes the menu of that context only; the old
+  `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as the tree's `,` menu. The `Space` menu lists its
+  operations in the order of the screen's footer (the ones used most first, then the rest in the help's order) and calls them by the
+  footer's short labels. The old sort overlay is gone: `open_sort_menu` opens the `,` menu of the screen you are on, which closes
+  after one choice (the overlay stayed open for reverse and folders-first). The bookmark list deletes
+  with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
+- **`R` is the operation `cycle_representation`** (it was `toggle_markdown_raw`): it cycles whatever the preview can be shown as — a
+  Markdown document's rendering and its source, a presentation's pictures and its text, a diff's presentations, and the representations a plugin declares when it declares two or more (the standard tables have one, so `R` is not offered there). `toggle_markdown_raw`
+  is still read in `[keys]` and does the same; the startup message says to write the new name.
+- **The `Space` menu names a pair of operations by direction.** Where the footer has room for only `[ ]:tab`, the menu says
+  `previous tab` / `next tab` / `tab list`, `previous page` / `next page` (`sheet`, `slide`), `next changed file`, `zoom in` /
+  `zoom out`, `stage the file` / `stage all` and so on; no two items of a menu read the same any more. The footer's short labels are unchanged.
+- **The `?` help names only what works now.** The copy section lists `y c` (copy the code block) only while a code block is focused,
+  the titles of the log and graph screens no longer carry the `l` / `g` keys they do not have, and the descriptions of `/ n N`, `o`
+  and the `Tab` screen cycle were shortened so they are not cut off at the popup's width.
+- **Key tables are per context, not per screen.** `[keys.<context>]` is keyed by what you are looking at: `text` (source and
+  plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are separate, and the version-control screens
+  exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot). A key is looked up in the context's own table,
+  then the keys shared by that kind of view, then `j`/`k`, then `global`. The old names (`preview_text`, `preview_text_visual`,
+  `preview_image`, `preview_table`, `preview_git_diff`, `git_changes` ...) are still read and apply to every context they now
+  cover; if both are written the new name wins. At startup the notice says *which* old name to rename to what, and shows the
+  first conflicting or ignored key setting instead of only a count.
+- **`[[preview.rules]]` now adds to the defaults instead of replacing them.** Which plugin shows a file is settled by
+  one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins, then plain text, then
+  `[can not preview]`. With no rules of your own every file is decided exactly as before. If your config wrote
+  `[[preview.rules]]`, the files you did not name used to fall to plain text and now keep their standard viewer; to
+  keep the old effect for one kind, switch the standard plugin off with `[plugins.<id>] enabled = false`.
+  `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
+  by extension.
+- A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn, so `J` / `K` work from the
+  first frame.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
   under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
-  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block
-  model), on top of `konoma-base`, plus `konoma-test-support` for tests. The `konoma` binary behaves exactly as before.
-  They are not published to crates.io yet. To check from source, use `cargo test --workspace` (a plain `cargo test` only
-  covers the `konoma` package).
+  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), `konoma-markdown-core` (the Markdown block model)
+  and `konoma-code-core` (syntax coloring), on top of `konoma-base`, plus `konoma-plugin` (the plugin API) and the plugin
+  crates `konoma-table`, `konoma-media`, `konoma-code`, `konoma-mermaid`, `konoma-math` and `konoma-office`, and
+  `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
+  transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
+  from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
+
+### Fixed
+- The reason a file could not be read (a Markdown file, or a diagram file drawn as text) was always shown in Japanese,
+  whatever `[ui] lang` said (`[can not preview: 読み込み失敗] …`). It now follows the language setting.
+- A picture that was drawn again sharper (an inline mermaid diagram or formula that grew past its first
+  drawing, a GIF frame) could keep showing the encoding made from its old pixels: an encode that was already running
+  when the new pixels landed cleared the "needs encoding again" mark when it finished. Which pixels stayed depended only
+  on which thread finished first. An encode of replaced pixels is now shown but left marked, and the next pass encodes the
+  current pixels.
+- Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
+  restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
+  page first and then opens the file, so the picture is the page the indicator names.
+- An SVG of a Git image diff (a changed `.svg`) that was dropped from memory to stay within the picture budget was drawn
+  again in konoma's own process, without the limits a file's SVG gets and without its folder as the base for relative
+  references (an `<image href="dot.png">` in it vanished). It is now drawn again the way it was drawn the first time: by the
+  supervised child process, with the same base.
+- A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
+  and when it is not a regular file, with the reason shown.
 
 ## [0.31.0] - 2026-10-12
 

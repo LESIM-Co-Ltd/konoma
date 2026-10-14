@@ -1717,21 +1717,30 @@ dependencies = [
  "base64 0.23.1",
  "cfb",
  "crossterm",
- "csv",
  "emojis",
  "flate2",
  "globset",
  "image",
  "infer",
  "konoma-base",
+ "konoma-code",
+ "konoma-code-core",
+ "konoma-markdown",
  "konoma-markdown-core",
+ "konoma-math",
  "konoma-math-core",
+ "konoma-media",
  "konoma-media-core",
+ "konoma-mermaid",
  "konoma-mermaid-core",
+ "konoma-office",
  "konoma-office-core",
+ "konoma-plugin",
  "konoma-svg",
+ "konoma-table",
  "konoma-test-support",
  "konoma-vcs-core",
+ "konoma-widgets",
  "libc",
  "mermaid-text",
  "notify",
@@ -1746,13 +1755,10 @@ dependencies = [
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "syntect",
  "sys-locale",
- "tar",
  "tokio",
  "toml",
  "trash",
- "two-face",
  "unicode-width",
  "ureq",
  "zip",
@@ -1767,6 +1773,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-code"
+version = "0.1.0"
+dependencies = [
+ "konoma-code-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-code-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "ratatui",
+ "syntect",
+ "two-face",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-markdown"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-test-support",
+]
+
+[[package]]
 name = "konoma-markdown-core"
 version = "0.1.0"
 dependencies = [
@@ -1774,6 +1810,15 @@ dependencies = [
  "konoma-test-support",
  "pulldown-cmark",
  "similar",
+]
+
+[[package]]
+name = "konoma-math"
+version = "0.1.0"
+dependencies = [
+ "konoma-math-core",
+ "konoma-plugin",
+ "svgtypes",
 ]
 
 [[package]]
@@ -1788,6 +1833,17 @@ dependencies = [
  "ratex-svg",
  "ratex-types",
  "resvg",
+]
+
+[[package]]
+name = "konoma-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-media-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-test-support",
 ]
 
 [[package]]
@@ -1809,6 +1865,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-mermaid"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-mermaid-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "mermaid-text",
+]
+
+[[package]]
 name = "konoma-mermaid-core"
 version = "0.1.0"
 dependencies = [
@@ -1821,6 +1888,16 @@ dependencies = [
  "serde",
  "serde_json",
  "svgtypes",
+]
+
+[[package]]
+name = "konoma-office"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-office-core",
+ "konoma-plugin",
+ "konoma-test-support",
 ]
 
 [[package]]
@@ -1848,6 +1925,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-plugin"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "konoma-test-support",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
@@ -1861,6 +1946,20 @@ dependencies = [
  "skrifa 0.44.0",
  "svgtypes",
  "unicode-width",
+]
+
+[[package]]
+name = "konoma-table"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "flate2",
+ "konoma-base",
+ "konoma-plugin",
+ "konoma-test-support",
+ "tar",
+ "zip",
 ]
 
 [[package]]
@@ -1882,6 +1981,27 @@ dependencies = [
  "konoma-test-support",
  "ratatui",
  "similar",
+]
+
+[[package]]
+name = "konoma-widgets"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-code-core",
+ "konoma-markdown-core",
+ "konoma-mermaid-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "konoma-vcs-core",
+ "mermaid-text",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-image",
+ "unicode-width",
 ]
 
 [[package]]

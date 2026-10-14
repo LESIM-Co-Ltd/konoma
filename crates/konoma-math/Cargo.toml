@@ -1,0 +1,13 @@
+[package]
+name = "konoma-math"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's math plugin: LaTeX formulas in Markdown drawn as pictures"
+
+[dependencies]
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+konoma-math-core = { path = "../konoma-math-core", version = "0.1.0" }
+svgtypes.workspace = true

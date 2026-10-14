@@ -1,5 +1,6 @@
 //! Git views: changes hub, branches, worktrees, commit graph, and commit detail — methods on `App`.
 
+use super::list_filter::{step_visible, ListId};
 use super::*;
 
 /// How a diff is being opened — the input `App::open_git_diff_with` needs *before* it decides
@@ -98,7 +99,98 @@ impl App {
         self.tab.git_view_entries = crate::vcs::changed_files(&self.tab.root);
         self.tab.git_view_sel = 0;
         self.tab.git_view = true;
+        self.tab.git_view_filter.clear();
+        self.tab.git_view_filtering = false;
     }
+    /// `Tab` / `Shift-Tab` on a version-control list screen: switch to the next / previous screen
+    /// of the cycle — changes, log, graph, branches, worktrees (jj lists no worktrees, so its
+    /// cycle skips them). A screen that cannot open (no commits yet, ...) flashes why and the
+    /// cycle goes on to the one after it; if none opens, the changes list stays.
+    #[cfg(feature = "git")]
+    pub fn git_screen_cycle(&mut self, dir: i32) {
+        let jj = crate::vcs::detect(&self.tab.root) == crate::vcs::VcsKind::Jj;
+        let mut order = vec![
+            ListId::Changes,
+            ListId::Log,
+            ListId::Graph,
+            ListId::Branches,
+        ];
+        if !jj {
+            order.push(ListId::Worktrees);
+        }
+        let Some(cur) = self
+            .front_list()
+            .and_then(|l| order.iter().position(|&o| o == l))
+        else {
+            return;
+        };
+        let n = order.len() as i32;
+        // Leave the current screen for the changes list (closing it opens that), then step
+        // through the cycle opening the next screen over it.
+        match order[cur] {
+            ListId::Log => self.close_git_log(),
+            ListId::Graph => self.close_git_graph(),
+            ListId::Branches => self.close_git_branches(),
+            ListId::Worktrees => self.close_git_worktrees(),
+            // Not stops of the cycle (`order` holds only the version-control screens).
+            ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline => {}
+        }
+        let mut at = cur as i32;
+        for _ in 1..n {
+            at = (at + dir.signum()).rem_euclid(n);
+            let target = order[at as usize];
+            match target {
+                ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline => return,
+                ListId::Log => self.open_git_log(),
+                ListId::Graph => self.open_git_graph(),
+                ListId::Branches => self.open_git_branches(),
+                ListId::Worktrees => self.open_git_worktrees(),
+            }
+            if self.front_list() == Some(target) {
+                return;
+            }
+        }
+    }
+
+    /// `r` on a list screen: read the front list again (the changes list is read by `refresh`
+    /// itself). The cursor stays on its row where it still exists, else it is clamped.
+    #[cfg(feature = "git")]
+    pub fn reload_front_list(&mut self) {
+        match self.front_list() {
+            Some(ListId::Log) => {
+                let commits = crate::vcs::log(&self.tab.root, 200);
+                if !commits.is_empty() {
+                    self.tab.git_log_sel = self.tab.git_log_sel.min(commits.len() - 1);
+                    self.tab.git_log = Some(commits);
+                    self.list_filter_changed(ListId::Log);
+                }
+            }
+            Some(ListId::Graph) => self.rebuild_git_graph_keep_sel(),
+            Some(ListId::Branches) => self.git_branches_reload(),
+            Some(ListId::Worktrees) => {
+                let list = crate::git::worktrees(&self.tab.root);
+                if !list.is_empty() {
+                    self.tab.git_worktrees = Some(list);
+                    self.clamp_git_worktree_sel();
+                }
+            }
+            // The overlay lists have nothing to read again.
+            Some(ListId::Changes | ListId::Bookmarks | ListId::Tabs | ListId::Outline) | None => {}
+        }
+    }
+
+    /// `Ctrl-t` on the changes list: open the file of the row in a new tab (the list stays as it
+    /// is in this one).
+    #[cfg(feature = "git")]
+    pub fn git_view_open_in_new_tab(&mut self) -> Result<()> {
+        let Some(p) = self.git_view_selected() else {
+            return Ok(());
+        };
+        self.tab_new()?;
+        self.paste_jump_to(&p, None);
+        Ok(())
+    }
+
     /// Close the Git view (q/Esc).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn close_git_view(&mut self) {
@@ -119,6 +211,10 @@ impl App {
     /// Move the cursor by delta rows, clamped to [0, last].
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_view_move(&mut self, delta: i32) {
+        if let Some(v) = self.list_visible(ListId::Changes) {
+            self.tab.git_view_sel = step_visible(&v, self.tab.git_view_sel, delta);
+            return;
+        }
         self.tab.git_view_sel = clamp_cursor(
             self.tab.git_view_sel,
             delta,
@@ -814,6 +910,8 @@ impl App {
         }
         self.tab.git_log = Some(commits);
         self.tab.git_log_sel = 0;
+        self.tab.git_log_filter.clear();
+        self.tab.git_log_filtering = false;
         // The log is a higher-level view than the Git view. Close the open Git view (the return target is restored on close).
         self.tab.git_view = false;
     }
@@ -836,6 +934,10 @@ impl App {
     /// Move the git log cursor by delta (clamped to range).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_log_move(&mut self, delta: i32) {
+        if let Some(v) = self.list_visible(ListId::Log) {
+            self.tab.git_log_sel = step_visible(&v, self.tab.git_log_sel, delta);
+            return;
+        }
         self.tab.git_log_sel =
             clamp_cursor(self.tab.git_log_sel, delta, self.git_log_entries().len());
     }
@@ -994,44 +1096,39 @@ impl App {
         });
     }
 
-    // --- Branch filtering (`/`) ----------------------------------------------
+    // --- Branch filtering (`/`): the shared list filter (`list_filter.rs`) ---------------
     /// Whether branch-filter input is active (while true, main captures keys as characters).
     pub fn git_branch_filtering(&self) -> bool {
-        self.tab.git_branch_filtering
+        self.list_filtering(ListId::Branches)
     }
     /// The current filter query (for the footer prompt).
     pub fn git_branch_query(&self) -> &str {
-        &self.tab.git_branch_filter
+        self.list_filter_query(ListId::Branches)
     }
     /// `/`: Start filter input (query starts empty).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_start_filter(&mut self) {
-        self.tab.git_branch_filtering = true;
-        self.tab.git_branch_filter.clear();
-        self.tab.git_branch_sel = 0;
+        self.list_filter_start(ListId::Branches);
     }
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_filter_push(&mut self, c: char) {
-        self.tab.git_branch_filter.push(c);
-        self.clamp_git_branch_sel();
+        self.list_filter_push(ListId::Branches, c);
     }
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_filter_backspace(&mut self) {
-        self.tab.git_branch_filter.pop();
-        self.clamp_git_branch_sel();
+        self.list_filter_backspace(ListId::Branches);
     }
     /// Enter: Commit the input (keeps the query; navigate with j/k afterwards).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_filter_commit(&mut self) {
-        self.tab.git_branch_filtering = false;
+        self.list_filter_commit(ListId::Branches);
     }
     /// Esc: Clear the filter (return to all entries).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_filter_clear(&mut self) {
-        self.tab.git_branch_filter.clear();
-        self.tab.git_branch_filtering = false;
-        self.clamp_git_branch_sel();
+        self.list_filter_clear(ListId::Branches);
     }
-    fn clamp_git_branch_sel(&mut self) {
+    pub(super) fn clamp_git_branch_sel(&mut self) {
         let len = self.git_branch_view().len();
         if self.tab.git_branch_sel >= len {
             self.tab.git_branch_sel = len.saturating_sub(1);
@@ -1410,46 +1507,40 @@ impl App {
         self.tab.git_detail_title = Some(title);
     }
 
-    // --- Worktree filtering (`/`) ----------------------------------------------
+    // --- Worktree filtering (`/`): the shared list filter (`list_filter.rs`) ------------
     /// Whether worktree-filter input is active (while true, main captures keys as characters).
     pub fn git_worktree_filtering(&self) -> bool {
-        self.tab.git_worktree_filtering
+        self.list_filtering(ListId::Worktrees)
     }
     /// The current filter query (for the footer prompt).
     pub fn git_worktree_query(&self) -> &str {
-        &self.tab.git_worktree_filter
+        self.list_filter_query(ListId::Worktrees)
     }
     /// `/`: Start filter input (query starts empty).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_start_filter(&mut self) {
-        self.tab.git_worktree_filtering = true;
-        self.tab.git_worktree_filter.clear();
-        self.tab.git_worktree_sel = 0;
+        self.list_filter_start(ListId::Worktrees);
     }
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_filter_push(&mut self, c: char) {
-        self.tab.git_worktree_filter.push(c);
-        self.clamp_git_worktree_sel();
+        self.list_filter_push(ListId::Worktrees, c);
     }
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_filter_backspace(&mut self) {
-        self.tab.git_worktree_filter.pop();
-        self.clamp_git_worktree_sel();
+        self.list_filter_backspace(ListId::Worktrees);
     }
     /// Enter: Commit the input (keeps the query; navigate with j/k afterwards).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_filter_commit(&mut self) {
-        self.tab.git_worktree_filtering = false;
+        self.list_filter_commit(ListId::Worktrees);
     }
     /// Esc: Clear the filter (return to all entries).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_filter_clear(&mut self) {
-        self.tab.git_worktree_filter.clear();
-        self.tab.git_worktree_filtering = false;
-        self.clamp_git_worktree_sel();
+        self.list_filter_clear(ListId::Worktrees);
     }
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    fn clamp_git_worktree_sel(&mut self) {
+    pub(super) fn clamp_git_worktree_sel(&mut self) {
         let len = self.git_worktree_view().len();
         if self.tab.git_worktree_sel >= len {
             self.tab.git_worktree_sel = len.saturating_sub(1);
@@ -1486,6 +1577,8 @@ impl App {
             rows.iter().position(|r| r.commit.is_some()).unwrap_or(0)
         };
         self.tab.git_graph = Some(rows);
+        self.tab.git_graph_filter.clear();
+        self.tab.git_graph_filtering = false;
         self.tab.git_graph_legend = legend;
         self.tab.git_graph_hidden = hidden;
         self.tab.git_view = false;
@@ -1763,6 +1856,7 @@ impl App {
         self.tab.git_graph = Some(rows);
         self.tab.git_graph_legend = legend;
         self.tab.git_graph_hidden = hidden;
+        self.list_filter_changed(ListId::Graph);
     }
 
     /// The base label (for the title `base: …`). None if unset.
@@ -1956,6 +2050,10 @@ impl App {
     /// Move the cursor by delta over **commit rows only** (skipping connector rows).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_graph_move(&mut self, delta: i32) {
+        if let Some(v) = self.list_visible(ListId::Graph) {
+            self.tab.git_graph_sel = step_visible(&v, self.tab.git_graph_sel, delta);
+            return;
+        }
         let Some(rows) = &self.tab.git_graph else {
             return;
         };

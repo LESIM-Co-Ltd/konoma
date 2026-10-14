@@ -157,6 +157,7 @@ impl App {
             page,
             raster_px,
             preview_rules: self.cfg.preview.rules.clone(),
+            plugin_disabled: self.cfg.plugin_disabled(),
             preview_commands: self.cfg.external.preview_commands,
         };
         self.spawn_or_sync_media_diff(req);
@@ -294,6 +295,21 @@ impl App {
         }
     }
 
+    /// Test-only: the picture an entry holds, and the same SVG drawn again as the application
+    /// draws it again (sharp zoom, rebuilding evicted pixels) at the given size.
+    #[cfg(test)]
+    pub(crate) fn md_first_and_redrawn_for_test(
+        &self,
+        key: &Path,
+        max_px: u32,
+    ) -> Option<(image::DynamicImage, image::DynamicImage)> {
+        let entry = self.md_image_cache.get(key)?;
+        let first = (**entry.decoded.as_ref()?).clone();
+        let svg = entry.svg.clone()?;
+        let again = crate::app::redraw_svg(&svg, &entry.svg_trust, max_px).ok()?;
+        Some((first, again))
+    }
+
     /// One side's move-into-cache — a no-op for every non-`Picture` variant.
     fn materialize_side(&mut self, side: MediaDiffSideDecoded) -> MediaDiffSide {
         match side {
@@ -305,7 +321,16 @@ impl App {
                 // its result to `apply_md_image` — that fn drops any result whose key isn't already
                 // present (its own guard against reviving an evicted entry), so the insert has to
                 // happen here, not inside it.
-                self.md_image_cache.entry(p.cache_key.clone()).or_default();
+                // The SVG it keeps is a file's (git's old version, the working file): drawn again
+                // only by the supervised child process.
+                // Drawn again from the same base as the first drawing (`decode_svg_side`).
+                self.md_image_cache
+                    .entry(p.cache_key.clone())
+                    .or_default()
+                    .svg_trust = match &p.svg_base {
+                    Some(base) => SvgTrust::File(base.clone()),
+                    None => SvgTrust::Embedded,
+                };
                 let request = self.begin_md_request(&p.cache_key);
                 // No transparency handling here: each side draws with exactly the same pixels the
                 // ordinary preview would for that kind — a PDF's own renderer composites its pages
@@ -451,7 +476,7 @@ impl App {
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.as_ref() else {
             return false;
         };
-        !matches!(self.diff_target_kind(path), PreviewKind::Markdown(_))
+        !self.diff_target_kind(path).is_markdown()
     }
 
     /// `Config::resolve_preview(path)`, memoized in `diff_target_kind_cache` — the single read side of
@@ -477,7 +502,14 @@ impl App {
                 let kind = self.cfg.resolve_preview(&path);
                 Some((path, kind))
             }
-            _ => None,
+            Some(
+                PreviewKind::Plugin { .. }
+                | PreviewKind::Text(_)
+                | PreviewKind::MermaidFence(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => None,
         };
     }
 
@@ -502,13 +534,11 @@ impl App {
     /// outcome rather than `Summary`, which the caller handles correctly either way.
     pub(crate) fn diff_binary_summary_eligible(&self, path: &Path) -> bool {
         let resolved = self.diff_target_kind(path);
-        let windowed_text = matches!(
-            resolved,
-            PreviewKind::Markdown(_)
-                | PreviewKind::Code(_)
-                | PreviewKind::Text(_)
-                | PreviewKind::Mermaid(_)
-        ) || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
+        let windowed_text = matches!(resolved, PreviewKind::Text(_))
+            || resolved.is_markdown()
+            || resolved.is_file_text()
+            || resolved.is_mermaid_file()
+            || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
         !windowed_text
     }
 
@@ -549,6 +579,7 @@ impl App {
 
     /// Whether the media diff currently on screen has a PDF side with ≥2 pages on either side — gates
     /// the `J`/`K` key and its footer/help hint.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_can_page(&self) -> bool {
         self.media_diff_max_page_count().is_some_and(|n| n > 1)
     }
@@ -603,6 +634,7 @@ impl App {
 
     /// The `Msg` naming what `s` would switch the media diff's layout **to** — the footer's dynamic
     /// `s:<next>` fragment, mirroring `R`'s own `diff_view_cycle_hint`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_layout_next_msg(&self) -> crate::i18n::Msg {
         media_layout_msg(self.media_diff_layout.next())
     }
@@ -615,6 +647,7 @@ impl App {
     /// latter's raw line diff is *always* empty (git/jj never line-diff a binary file), so — unlike
     /// `diff_rendered_active`'s own gate — this needs no per-frame "is the diff actually empty right
     /// now" check (which would need `&mut self`, unavailable to the footer) to be correct.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn diff_footer_is_media_or_summary(&self) -> bool {
         if self.diff_media_active() {
             return true;
@@ -677,13 +710,130 @@ fn live_cache_keys(outcome: &MediaDiffOutcome) -> HashSet<PathBuf> {
 /// The [`MediaDiffKind`] a resolved [`PreviewKind`] maps to, or `None` for anything that isn't
 /// picture-capable (video/archive/table/text/code/markdown/unsupported/…) — those degrade to
 /// [`MediaDiffComputed::Summary`] instead of being paired up.
-fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
+///
+/// Decided by what the plugin **declares** (it shows pictures: `Profile::image`) and by the
+/// **format** of the file ([`media_format`]), never by the plugin's id: a plugin installed in place
+/// of `image`, `svg` or `pdf` gets the side-by-side view for the same files.
+pub(super) fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
+    classify_kind_with(kind, None)
+}
+
+/// [`classify_kind`] with the bytes of the file at hand (the worker has them, also for a file that
+/// is gone and was read from the VCS).
+fn classify_kind_with(kind: &PreviewKind, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
     match kind {
-        PreviewKind::Image(_) => Some(MediaDiffKind::Image),
-        PreviewKind::Svg(_) => Some(MediaDiffKind::Svg),
-        PreviewKind::Pdf(_) => Some(MediaDiffKind::Pdf),
-        _ => None,
+        PreviewKind::Plugin { path, .. } if kind.profile().image => media_format(path, bytes),
+        PreviewKind::Plugin { .. }
+        | PreviewKind::Text(_)
+        | PreviewKind::GitDiff(_)
+        | PreviewKind::MermaidFence(_)
+        | PreviewKind::Command { .. }
+        | PreviewKind::CanNotPreview { .. } => None,
     }
+}
+
+/// Whether the file's content is a video (`video/*`), judged from the file itself with the same
+/// sniffer the host's `mime = "video/*"` rule uses. A file that cannot be read (a deleted one) has
+/// no content to judge and is not one.
+pub(super) fn is_video_file(path: &Path) -> bool {
+    infer::get_from_path(path)
+        .ok()
+        .flatten()
+        .is_some_and(|t| t.mime_type().starts_with("video/"))
+}
+
+/// How many bytes of a file are read to tell its format when the name does not.
+const FORMAT_HEAD: usize = 512;
+
+/// The format of a picture file as far as a media diff is concerned: an SVG, a PDF, or a raster
+/// image the host decodes; `None` for anything else (a video, a diagram's text, a file that is
+/// not a picture). The name decides when it can (the extension of an SVG, a PDF or a format the
+/// image decoder knows); otherwise the content does (`bytes`, or the head of the file at `path`).
+/// This is the one judgment both the host's classification of a file and its decoding of the old
+/// version from git share.
+pub(crate) fn media_format(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "svg" => return Some(MediaDiffKind::Svg),
+        "pdf" => return Some(MediaDiffKind::Pdf),
+        // A diagram's source is text whatever it contains (a label may well say `<svg`): decided
+        // by the name, before the content is looked at.
+        "mmd" | "mermaid" => return None,
+        e if image::ImageFormat::from_extension(e).is_some() => return Some(MediaDiffKind::Image),
+        _ => {}
+    }
+    let head: Vec<u8>;
+    let bytes = match bytes {
+        Some(b) => b,
+        None => {
+            use std::io::Read;
+            let Ok(mut f) = std::fs::File::open(path) else {
+                return None;
+            };
+            let mut buf = vec![0u8; FORMAT_HEAD];
+            let n = f.read(&mut buf).unwrap_or(0);
+            buf.truncate(n);
+            head = buf;
+            &head
+        }
+    };
+    let bytes = &bytes[..bytes.len().min(FORMAT_HEAD)];
+    match infer::get(bytes).map(|t| t.mime_type()) {
+        Some("application/pdf") => Some(MediaDiffKind::Pdf),
+        Some(m) if m.starts_with("image/") => Some(MediaDiffKind::Image),
+        // XML is how an SVG is detected when the name does not say; any other known type is not
+        // a picture.
+        Some(m) if m != "text/xml" => None,
+        _ => {
+            let text = String::from_utf8_lossy(bytes);
+            starts_with_svg_element(&text).then_some(MediaDiffKind::Svg)
+        }
+    }
+}
+
+/// Whether the document's first element is `<svg`: what comes before it may only be a BOM,
+/// whitespace, an XML declaration or processing instruction, comments and a DOCTYPE. A text that
+/// merely mentions `<svg` somewhere is not an SVG.
+fn starts_with_svg_element(text: &str) -> bool {
+    let mut rest = text.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        let skipped = if let Some(r) = rest.strip_prefix("<?") {
+            r.split_once("?>").map(|(_, after)| after)
+        } else if let Some(r) = rest.strip_prefix("<!--") {
+            r.split_once("-->").map(|(_, after)| after)
+        } else if rest.len() >= 9
+            && rest.is_char_boundary(9)
+            && rest[..9].eq_ignore_ascii_case("<!doctype")
+        {
+            // A DOCTYPE may hold an internal subset in `[ ... ]`.
+            skip_doctype(&rest[9..])
+        } else {
+            return rest.starts_with("<svg");
+        };
+        match skipped {
+            Some(after) => rest = after.trim_start(),
+            // Cut off inside the prolog (the head is short): no `<svg` was reached.
+            None => return false,
+        }
+    }
+}
+
+/// The text after the `>` that closes a DOCTYPE whose body (after `<!DOCTYPE`) is `body`.
+fn skip_doctype(body: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in body.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '>' if depth == 0 => return Some(&body[i + 1..]),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Which base to read the old side from, and what it actually resolved to. Whether git or jj answers
@@ -835,6 +985,7 @@ fn classify_and_decode_media_diff(
     let preview_kind = if new_exists {
         crate::config::resolve_preview_kind(
             &req.preview_rules,
+            &req.plugin_disabled,
             req.preview_commands,
             &req.path,
             None,
@@ -842,13 +993,19 @@ fn classify_and_decode_media_diff(
     } else {
         crate::config::resolve_preview_kind(
             &req.preview_rules,
+            &req.plugin_disabled,
             req.preview_commands,
             &req.path,
             old_bytes.as_deref(),
         )
     };
 
-    let Some(kind) = classify_kind(&preview_kind) else {
+    let sniffed = if new_exists {
+        new_bytes.as_deref()
+    } else {
+        old_bytes.as_deref()
+    };
+    let Some(kind) = classify_kind_with(&preview_kind, sniffed) else {
         return MediaDiffComputed::Summary {
             base,
             same_bytes,
@@ -953,6 +1110,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
             image: first_frame,
             frames: Some(frames),
             svg: None,
+            svg_base: None,
             cache_key: PathBuf::from(key),
         }));
     }
@@ -967,6 +1125,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
                 image: img,
                 frames: None,
                 svg: None,
+                svg_base: None,
                 cache_key: PathBuf::from(key),
             }))
         }
@@ -1019,6 +1178,7 @@ fn decode_svg_side(
         image: img,
         frames: None,
         svg: Some(Arc::new(bytes.to_vec())),
+        svg_base: Some(path.to_path_buf()),
         cache_key: PathBuf::from(key),
     }))
 }
@@ -1060,6 +1220,7 @@ fn decode_pdf_side(
         image: img,
         frames: None,
         svg: None,
+        svg_base: None,
         cache_key: PathBuf::from(key),
     }))
 }

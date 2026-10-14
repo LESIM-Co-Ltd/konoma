@@ -19,6 +19,8 @@ mod i18n;
 mod keymap;
 #[cfg(test)]
 mod mem_tests;
+mod ops;
+mod plugins;
 mod preview;
 mod session;
 #[cfg(test)]
@@ -58,6 +60,8 @@ enum ParsedArgs {
     Version,
     /// `--help` / `-h`.
     Help,
+    /// `--plugins`: list which plugin shows which files, then exit.
+    Plugins,
     /// The raw path argument, exactly as given (unresolved, uncanonicalized). `None` = no
     /// argument was given, which falls back to the current directory.
     Open(Option<PathBuf>),
@@ -76,6 +80,7 @@ fn parse_args(args: &[String]) -> ParsedArgs {
     match args.get(1).map(String::as_str) {
         Some("--version") | Some("-V") => ParsedArgs::Version,
         Some("--help") | Some("-h") => ParsedArgs::Help,
+        Some("--plugins") => ParsedArgs::Plugins,
         Some(arg) => ParsedArgs::Open(Some(PathBuf::from(arg))),
         None => ParsedArgs::Open(None),
     }
@@ -87,7 +92,13 @@ fn parse_args(args: &[String]) -> ParsedArgs {
 enum Startup {
     Version,
     Help,
+    Plugins,
     Open(PathBuf),
+    /// `konoma <file>`: browse the file's directory with the file selected and previewed.
+    OpenFile {
+        dir: PathBuf,
+        file: PathBuf,
+    },
 }
 
 /// Resolve process arguments into a `Startup`, **validating that an `Open` target is actually an
@@ -99,6 +110,7 @@ fn resolve_startup(args: &[String]) -> Result<Startup> {
     Ok(match parse_args(args) {
         ParsedArgs::Version => Startup::Version,
         ParsedArgs::Help => Startup::Help,
+        ParsedArgs::Plugins => Startup::Plugins,
         ParsedArgs::Open(path_arg) => {
             let dir = match path_arg {
                 Some(p) => p,
@@ -113,6 +125,18 @@ fn resolve_startup(args: &[String]) -> Result<Startup> {
                     .map(|cwd| cwd.join(&dir))
                     .unwrap_or(dir)
             });
+            // A regular file (what a preview can open; symlinks followed) is `konoma <file>`: its
+            // directory is the root and the file is opened in it. Anything else that is not a
+            // directory (a FIFO, a device, a missing path) is refused exactly as it always was.
+            if preview::is_previewable(&dir) {
+                if let Some(parent) = dir.parent().map(Path::to_path_buf) {
+                    validate_root(&parent)?;
+                    return Ok(Startup::OpenFile {
+                        dir: parent,
+                        file: dir,
+                    });
+                }
+            }
             validate_root(&dir)?;
             Startup::Open(dir)
         }
@@ -153,10 +177,14 @@ fn help_text() -> String {
         "konoma {version} — a full-screen preview-focused terminal file browser\n\
          \n\
          Usage: konoma [DIR]\n\
+         \x20\x20\x20\x20\x20\x20 konoma FILE\n\
          \n\
          Opens DIR in the tree view (defaults to the current directory).\n\
+         Given a FILE, opens its directory in the tree with FILE selected and previewed;\n\
+         q goes back to the tree.\n\
          \n\
          Options:\n\
+         \x20\x20    --plugins   List which plugin shows which files and exit\n\
          \x20\x20-h, --help      Print this help and exit\n\
          \x20\x20-V, --version   Print version and exit\n\
          \n\
@@ -270,7 +298,7 @@ fn main() -> Result<()> {
     // since a non-interactive shell (a script, plain `sh`, etc.) doesn't reset terminal modes per
     // prompt the way an interactive zsh/bash does, leaving the terminal stuck (no echo, no newline
     // translation) until the user manually ran `reset`.
-    let dir = match resolve_startup(&args)? {
+    let (dir, startup_file) = match resolve_startup(&args)? {
         Startup::Version => {
             print!("{}", version_text());
             return Ok(());
@@ -279,7 +307,14 @@ fn main() -> Result<()> {
             print!("{}", help_text());
             return Ok(());
         }
-        Startup::Open(dir) => dir,
+        Startup::Plugins => {
+            // Reading the config is all it needs; the terminal is never touched.
+            let (cfg, _) = config::Config::load_reporting();
+            print!("{}", plugins::plugins_table(&cfg));
+            return Ok(());
+        }
+        Startup::Open(dir) => (dir, None),
+        Startup::OpenFile { dir, file } => (dir, Some(file)),
     };
 
     let (cfg, cfg_err) = config::Config::load_reporting();
@@ -291,7 +326,7 @@ fn main() -> Result<()> {
     // single thread + yield so it doesn't get in the way of other work.
     // With highlighting off (ui.syntax_highlight=false), syntect is never used at all, so no
     // warm-up is needed.
-    if cfg.ui.syntax_highlight {
+    if plugins::syntax_highlight_on(&cfg) {
         let root = dir.clone();
         std::thread::spawn(move || preview::code::warm_dir(root));
     }
@@ -342,8 +377,8 @@ fn main() -> Result<()> {
     // tens-of-ms freeze on the first diagram display).
     if picker.is_some() {
         std::thread::spawn(preview::svg::warm_fontdb);
-        if cfg.ui.mermaid != "text" {
-            std::thread::spawn(preview::markdown::warm_mermaid);
+        if !plugins::mermaid_mode_is_text(&cfg) {
+            std::thread::spawn(konoma_mermaid::warm);
         }
     }
 
@@ -410,15 +445,15 @@ fn main() -> Result<()> {
     app.attach_office_opener(office_tx);
     app.attach_gitop_runner(gitop_tx);
     app.attach_filter_pool_loader(pool_tx);
-    // Report a config load error + keymap conflicts/ignored settings via a startup message
-    // (silently falling back to the default would go unnoticed). If both are present, combine
-    // them into one line.
-    let km_report = app.keymap_report();
-    app.flash = match (cfg_err, km_report) {
-        (Some(a), Some(b)) => Some(format!("{a} / {b}")),
-        (Some(a), None) => Some(a),
-        (None, b) => b,
-    };
+    // Report a config load error, keymap conflicts/ignored settings, `[plugins.*]` mistakes and
+    // old names via a startup message (silently falling back to the default would go unnoticed).
+    // What is wrong comes first, the guidance about old names last, and what does not fit the
+    // footer is counted instead of cut off (`App::startup_flash`).
+    let footer_width = crossterm::terminal::size()
+        .map(|(cols, _)| usize::from(cols))
+        .unwrap_or(80)
+        .saturating_sub(2);
+    app.flash = app.startup_flash(cfg_err, footer_width);
     // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
     // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.
     if let Some(pk) = picker.clone() {
@@ -438,6 +473,10 @@ fn main() -> Result<()> {
     // media jobs).
     app.attach_session_store(session::SessionStore::load(&start_dir));
     app.restore_session();
+    // `konoma <file>`: after the saved tabs are back, the file opens in the tab that is on screen.
+    if let Some(file) = &startup_file {
+        app.open_startup_file(file);
+    }
 
     let result = run(
         &mut terminal,
@@ -1611,14 +1650,8 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
         Surface::Outline => match m {
             Motion::Up => app.outline_move(-1),
             Motion::Down => app.outline_move(1),
-            Motion::Top => {
-                let d = -(app.outline_sel() as i32);
-                app.outline_move(d);
-            }
-            Motion::Bottom => {
-                let d = (app.md_outline().len() as i32 - 1) - app.outline_sel() as i32;
-                app.outline_move(d);
-            }
+            Motion::Top => app.outline_to_edge(false),
+            Motion::Bottom => app.outline_to_edge(true),
             _ => {}
         },
         // Table-cell full-text popup: it's likely wrapped long text, so up/down scroll + paging.
@@ -1647,15 +1680,40 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
 /// Central dispatch that runs a resolved `Action`. Only `Quit` requests exit, returning `Ok(true)`.
 /// Surface-dependent behavior (motion amount, the q/Esc return target) branches on `sfc` (§5).
 fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> {
-    // A backend that only reads gets asked politely and answers here, once, rather than each write
-    // discovering it separately and failing in its own way.
-    #[cfg(feature = "git")]
-    if action.writes_repository() && !crate::vcs::caps(&app.tab.root).write {
-        app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+    // The one place that says whether an operation acts now (`ops::gate`): the footer and the help
+    // ask it too, so a key that would refuse is not offered. A refusal answers here, once, with the
+    // reason the handler used to flash ("the backend only reads", "not a repository", ...), rather
+    // than each handler discovering it separately and failing in its own way.
+    let ctx = app
+        .key_context()
+        .or_else(|| keymap::Context::of_surface(sfc, false, false))
+        .unwrap_or(keymap::Context::Tree);
+    // These handlers always started by waiting for a fresh scan; the gate reads its answer.
+    if ctx == keymap::Context::Tree
+        && matches!(
+            action,
+            Action::OpenGitDiffCursor
+                | Action::JumpNextChange
+                | Action::JumpPrevChange
+                | Action::ToggleChangedFilter
+        )
+        && !app.changed_filter()
+    {
+        app.ensure_git_status_now();
+    }
+    if let ops::Gate::Off(reason) = ops::gate(app, ctx, action) {
+        if let Some(msg) = reason {
+            app.flash = Some(crate::i18n::tr(app.lang, msg).to_string());
+        }
         return Ok(false);
+    }
+    #[cfg(test)]
+    {
+        app.last_dispatched = Some(action);
     }
     match action {
         Action::Noop => {}
+        Action::Plugin(p) => app.run_plugin_action(p),
         Action::Navigate(m) => dispatch_navigate(app, sfc, m),
         Action::TabNew => app.tab_new()?,
         Action::TabNewAfter => app.tab_new_after()?,
@@ -1701,12 +1759,25 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::TreeActivate => app.tree_activate()?,
         Action::TreeLeave => app.tree_leave()?,
         Action::ToggleHidden => app.toggle_hidden()?,
+        Action::ToggleWrap => app.toggle_wrap(),
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
+        Action::OpenExternal => app.open_in_other_app(),
         Action::OpenGitView => app.open_git_view(),
-        Action::Refresh => app.refresh()?,
+        Action::Refresh => {
+            app.refresh()?;
+            // The log, the graph, the branch and worktree lists read again too.
+            #[cfg(feature = "git")]
+            app.reload_front_list();
+        }
         Action::CyclePathStyle => app.cycle_path_style(),
-        Action::OpenSortMenu => app.open_sort_menu(),
+        // The old sort overlay is gone: `open_sort_menu` is another name for the `,` menu of the
+        // frontmost context (the tree's holds the sort letters).
+        Action::OpenSortMenu => {
+            if ops::menu::opens(app, ctx, keymap::LeaderId::Options) {
+                app.pending_leader = Some(keymap::LeaderId::Options);
+            }
+        }
         Action::MarkSet => app.start_mark_set(),
         // `'`: instead of the old invisible "waiting to jump" state, open the bookmark list
         // immediately (which-key style).
@@ -1769,19 +1840,29 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
             }
         }
         Action::SearchStart => app.start_search(),
-        Action::SearchNext => app.search_next(1),
-        Action::SearchPrev => app.search_next(-1),
+        // `n` / `N` step through the matches of a search; with no search active a text or document
+        // preview steps through its changes instead (layer 1).
+        Action::SearchNext | Action::SearchPrev => {
+            let dir = if action == Action::SearchNext { 1 } else { -1 };
+            if sfc == Surface::PreviewText && app.preview_search_query().is_none() {
+                app.change_jump(dir);
+            } else {
+                app.search_next(dir);
+            }
+        }
         Action::PreviewEnterVisual => app.preview_enter_visual(false),
         Action::PreviewEnterVisualLine => app.preview_enter_visual(true),
         Action::PreviewCopySelection => app.preview_copy_selection(),
         Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
-        Action::ToggleMarkdownRaw => app.toggle_md_raw_or_return_to_diff(),
+        Action::CycleRepresentation => app.toggle_md_raw_or_return_to_diff(),
         Action::ImageReturnToDiff => app.image_return_to_diff(),
         Action::LinkFocusNext => app.md_focus_move(1),
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
         Action::OpenLinkNewTab => app.md_open_focused_link_new_tab()?,
+        #[cfg(feature = "git")]
+        Action::OpenInNewTab if sfc == Surface::GitChanges => app.git_view_open_in_new_tab()?,
         Action::OpenInNewTab => app.tab_new_from_selection()?,
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
@@ -1803,6 +1884,35 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::BookmarkClose => app.close_bookmark_list(),
         Action::InfoClose => app.toggle_info(),
         Action::ToggleTableCell => app.toggle_table_cell_view(),
+        // The default operations of the fixed keys.
+        Action::Cancel => {
+            handle_esc(app, sfc);
+        }
+        Action::TabListActivate => app.tab_list_activate(),
+        Action::OutlineJump => app.outline_jump(),
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerApply => app.git_graph_picker_apply(),
+        // A checkbox toggles, or a `<details>` summary expands/collapses (same as Enter).
+        Action::ToggleFocusedItem => {
+            if app.md_focused_task() {
+                app.md_toggle_focused_task();
+            } else if let Some(ord) = app.md_focused_details() {
+                app.toggle_details(ord);
+            }
+        }
+        #[cfg(feature = "git")]
+        Action::DiffNextChange => app.diff_change_jump(1),
+        #[cfg(feature = "git")]
+        Action::DiffPrevChange => app.diff_change_jump(-1),
+        #[cfg(feature = "git")]
+        Action::GitScreenNext => app.git_screen_cycle(1),
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev => app.git_screen_cycle(-1),
+        Action::ListFilterStart => {
+            if let Some(l) = app.front_list() {
+                app.list_filter_start(l);
+            }
+        }
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => app.git_diff_start_discard(),
         #[cfg(feature = "git")]
@@ -1905,6 +2015,31 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
     Ok(false)
 }
 
+/// The list screen a `/` filter belongs to, as the surface its movement keys are dispatched on.
+fn list_surface(l: app::list_filter::ListId) -> Surface {
+    use app::list_filter::ListId;
+    match l {
+        #[cfg(feature = "git")]
+        ListId::Changes => Surface::GitChanges,
+        #[cfg(feature = "git")]
+        ListId::Log => Surface::GitLog,
+        #[cfg(feature = "git")]
+        ListId::Graph => Surface::GitGraph,
+        #[cfg(feature = "git")]
+        ListId::Branches => Surface::GitBranches,
+        #[cfg(feature = "git")]
+        ListId::Worktrees => Surface::GitWorktrees,
+        // The version-control lists exist only in a build with `git`; there is nothing to move.
+        #[cfg(not(feature = "git"))]
+        ListId::Changes | ListId::Log | ListId::Graph | ListId::Branches | ListId::Worktrees => {
+            Surface::Tree
+        }
+        ListId::Bookmarks => Surface::Bookmarks,
+        ListId::Tabs => Surface::Tabs,
+        ListId::Outline => Surface::Outline,
+    }
+}
+
 /// Key handling for text-input surfaces (filter / search / mark / branch filter / dialog input).
 /// Intercepts character and editing keys and does not apply the keymap (requirement 4).
 fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool> {
@@ -1954,6 +2089,20 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.git_branch_filter_push(c),
             _ => {}
         },
+        Surface::ListFilter => {
+            let Some(l) = app.filtering_list() else {
+                return Ok(false);
+            };
+            match (code, ctrl) {
+                (KeyCode::Esc, _) => app.list_filter_clear(l),
+                (KeyCode::Enter, _) => app.list_filter_commit(l),
+                (KeyCode::Backspace, _) => app.list_filter_backspace(l),
+                (KeyCode::Down, _) => dispatch_navigate(app, list_surface(l), Motion::Down),
+                (KeyCode::Up, _) => dispatch_navigate(app, list_surface(l), Motion::Up),
+                (KeyCode::Char(c), false) => app.list_filter_push(l, c),
+                _ => {}
+            }
+        }
         #[cfg(feature = "git")]
         Surface::WorktreeFilter => match (code, ctrl) {
             (KeyCode::Esc, _) => app.git_worktree_filter_clear(),
@@ -2019,12 +2168,40 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     match sfc {
         Surface::Help => app.show_help = false,
         Surface::Visual => app.exit_visual_cancel(),
-        Surface::Sort => app.close_sort_menu(),
         Surface::Info => app.toggle_info(),
         Surface::TableCell => app.toggle_table_cell_view(),
-        Surface::Bookmarks => app.close_bookmark_list(),
-        Surface::Tabs => app.toggle_tab_list(),
-        Surface::Outline => app.toggle_outline(),
+        // With a query kept by `Enter`, `Esc` clears it first and a second one closes the list (as
+        // the version-control lists do); `q` and `h` close either way.
+        Surface::Bookmarks => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Bookmarks)
+                .is_empty()
+            {
+                app.close_bookmark_list();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Bookmarks);
+            }
+        }
+        Surface::Tabs => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Tabs)
+                .is_empty()
+            {
+                app.toggle_tab_list();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Tabs);
+            }
+        }
+        Surface::Outline => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Outline)
+                .is_empty()
+            {
+                app.toggle_outline();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Outline);
+            }
+        }
         Surface::Tree => {
             // Esc with a query clears the filter; without one, clears the selection (legacy tree behavior).
             if app.filter_query().is_some() {
@@ -2048,10 +2225,29 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::PreviewTextVisual => app.preview_exit_visual(),
         #[cfg(feature = "git")]
         Surface::GitDetail => app.close_git_detail(),
+        // Esc with a query clears the filter; without one, closes the list (as the branch list does).
         #[cfg(feature = "git")]
-        Surface::GitLog => app.close_git_log(),
+        Surface::GitLog => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Log)
+                .is_empty()
+            {
+                app.close_git_log();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Log);
+            }
+        }
         #[cfg(feature = "git")]
-        Surface::GitGraph => app.close_git_graph(),
+        Surface::GitGraph => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Graph)
+                .is_empty()
+            {
+                app.close_git_graph();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Graph);
+            }
+        }
         #[cfg(feature = "git")]
         Surface::GitGraphPicker => app.git_graph_picker_cancel(),
         #[cfg(feature = "git")]
@@ -2075,7 +2271,16 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
             }
         }
         #[cfg(feature = "git")]
-        Surface::GitChanges => app.close_git_view(),
+        Surface::GitChanges => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Changes)
+                .is_empty()
+            {
+                app.close_git_view();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Changes);
+            }
+        }
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => app.close_git_diff(),
         _ => {}
@@ -2083,99 +2288,28 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     false
 }
 
-/// Per-surface fixed handling of Enter (tree activate / preview link / confirm in each list).
-fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
-    match sfc {
-        Surface::Tree => app.tree_activate()?,
-        Surface::PreviewText => app.md_activate_focused()?,
-        Surface::Bookmarks => app.bookmark_list_jump(),
-        Surface::Tabs => app.tab_list_activate(),
-        Surface::Outline => app.outline_jump(),
-        // `Enter` opens the full-cell popup from the table grid, and (the same toggle) closes it
-        // again from inside the popup — mirrors `MermaidCaption`'s "Enter: full screen" idiom.
-        Surface::PreviewTable | Surface::TableCell => app.toggle_table_cell_view(),
-        #[cfg(feature = "git")]
-        Surface::GitChanges => {
-            if let Some(p) = app.git_view_selected() {
-                app.open_git_diff(&p);
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitLog => app.open_git_commit_detail(),
-        #[cfg(feature = "git")]
-        Surface::GitGraph => app.open_git_graph_detail(),
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => app.git_graph_picker_apply(),
-        #[cfg(feature = "git")]
-        Surface::GitBranches => app.checkout_selected_branch()?,
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => app.worktree_goto(),
-        _ => {}
-    }
-    Ok(false)
-}
-
-/// Keys with a fixed meaning regardless of surface (arrows = Navigate alias / Esc / Enter / Tab/BackTab = link ops).
+/// The fixed keys (arrows, `Home`/`End`, `Esc`, `Enter`, `Tab`/`Shift-Tab`). They cannot be rebound, but each has a
+/// default operation per context (`ops::keys::fixed_bindings`) and runs through `dispatch_action`
+/// like every other key, so the same guards apply (`ops::gate`, `writes_repository`): `Enter` on a
+/// jj bookmark list no longer reaches the checkout.
 /// Returns `Some(quit)` when handled, or `None` if not a fixed key (falls through to keymap resolution). Requirements 3/4.
-fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option<bool>> {
-    let done = match key.code {
-        KeyCode::Up => {
-            dispatch_navigate(app, sfc, Motion::Up);
-            false
-        }
-        KeyCode::Down => {
-            dispatch_navigate(app, sfc, Motion::Down);
-            false
-        }
-        KeyCode::Left => {
-            dispatch_navigate(app, sfc, Motion::Left);
-            false
-        }
-        KeyCode::Right => {
-            dispatch_navigate(app, sfc, Motion::Right);
-            false
-        }
-        KeyCode::Home => {
-            dispatch_navigate(app, sfc, Motion::Top);
-            false
-        }
-        KeyCode::End => {
-            dispatch_navigate(app, sfc, Motion::Bottom);
-            false
-        }
-        KeyCode::Esc => handle_esc(app, sfc),
-        KeyCode::Enter => handle_enter(app, sfc)?,
-        // Markdown link/checkbox: Tab = next / ⇧Tab = previous (decorated text preview only —
-        // while showing the raw source (R), the decorated view's items are stale, so don't move;
-        // on other surfaces, swallowed with no effect).
-        KeyCode::Tab => {
-            if sfc == Surface::PreviewText && !app.is_raw_source() {
-                app.md_focus_move(1);
-            }
-            false
-        }
-        KeyCode::BackTab => {
-            if sfc == Surface::PreviewText && !app.is_raw_source() {
-                app.md_focus_move(-1);
-            }
-            false
-        }
-        // Markdown checkbox: Space toggles only while focused. With no focus, fall through to
-        // the keymap (doesn't steal less's convention of Space = PageDown).
-        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_task() => {
-            app.md_toggle_focused_task();
-            false
-        }
-        // While focused on a <details> summary, Space toggles the collapse (same as Enter).
-        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_details().is_some() => {
-            if let Some(ord) = app.md_focused_details() {
-                app.toggle_details(ord);
-            }
-            false
-        }
-        _ => return Ok(None),
+fn handle_fixed_key(
+    app: &mut App,
+    sfc: Surface,
+    ctx: Option<keymap::Context>,
+    key: KeyEvent,
+) -> Result<Option<bool>> {
+    let Some(ctx) = ctx else {
+        return Ok(None);
     };
-    Ok(Some(done))
+    if !ops::keys::is_fixed_code(key.code) {
+        return Ok(None);
+    }
+    // A fixed key with no operation on this screen simply does nothing.
+    let Some(action) = ops::keys::fixed_action(ctx, key.code) else {
+        return Ok(Some(false));
+    };
+    dispatch_action(app, action, sfc).map(Some)
 }
 
 /// Key handling (Run2: keymap-driven). Returns `Ok(true)` to request exit. Kept thin, following the §5 flow:
@@ -2185,6 +2319,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // The previous transient message (flash) is cleared on the next key input.
     app.flash = None;
     let sfc = app.surface();
+    // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
+    // confirm modals), which are handled before any lookup below.
+    let ctx = app.key_context();
 
     if app.follow_enabled() {
         // User's choice (2026-07-23): follow is maximally sticky = within the follow diff, every
@@ -2193,10 +2330,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         // the follow view." F (ToggleFollow) already turns it off explicitly via dispatch's
         // toggle_follow, so follow_break isn't needed there (= treated as kept here).
         let leaves_follow_view = app.pending_leader.is_none()
-            && matches!(
-                app.keymaps.resolve(sfc, None, KeyPress::norm(&key)),
-                Resolution::Action(Action::PreviewBack)
-            );
+            && ctx.is_some_and(|c| {
+                matches!(
+                    app.keymaps.resolve(c, None, KeyPress::norm(&key)),
+                    Resolution::Action(Action::PreviewBack)
+                )
+            });
         if sfc.is_text_input() || sfc.is_modal_confirm() || leaves_follow_view {
             app.follow_break();
         }
@@ -2215,26 +2354,37 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
     // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
-        return match app.keymaps.resolve(sfc, Some(lead), kp) {
-            Resolution::Action(a) => dispatch_action(app, a, sfc),
-            _ => Ok(false),
+        // Any key that is not in the menu (`Esc` and `q` included) only closes it.
+        return match ctx.and_then(|c| ops::menu::find(app, c, lead, kp)) {
+            Some(a) => dispatch_action(app, a, sfc),
+            None => Ok(false),
         };
     }
 
     // 3) Pre-empt surface-independent fixed keys (arrows = Navigate / Esc / Enter / Tab·BackTab) (requirements 3/4).
-    if let Some(done) = handle_fixed_key(app, sfc, key)? {
+    if let Some(done) = handle_fixed_key(app, sfc, ctx, key)? {
         return Ok(done);
     }
 
-    // 4) Keymap resolution (1 input = 1-2 HashMap lookups — requirement 5).
-    match app.keymaps.resolve(sfc, None, kp) {
+    // 4) Keymap resolution (1 input = a few HashMap lookups — requirement 5).
+    let Some(ctx) = ctx else {
+        return Ok(false);
+    };
+    // The open plugin's own layer (layer 4): its keys cannot collide with the host's.
+    if let Some(a) = app.plugin_action_for_key(ctx, kp) {
+        return dispatch_action(app, a, sfc);
+    }
+    match app.keymaps.resolve(ctx, None, kp) {
         Resolution::EnterLeader(id) => {
             // The copy leader (default `y`) always opens the which-key menu. While focused on a
             // code block in decorated Markdown, `c:code block` appears in that menu and is
             // selectable
             // (whichkey_spans switches it in based on surface/focus). Coexists with the existing
             // path-copy n/r/f/p/@.
-            app.pending_leader = Some(id);
+            // A menu with nothing to offer here does not open.
+            if ops::menu::opens(app, ctx, id) {
+                app.pending_leader = Some(id);
+            }
             Ok(false)
         }
         Resolution::Action(a) => dispatch_action(app, a, sfc),
@@ -2360,6 +2510,24 @@ mod tests {
     fn parse_args_recognizes_help_flags() {
         assert_eq!(parse_args(&argv(&["--help"])), ParsedArgs::Help);
         assert_eq!(parse_args(&argv(&["-h"])), ParsedArgs::Help);
+    }
+
+    #[test]
+    fn parse_args_recognizes_the_plugins_listing() {
+        assert_eq!(parse_args(&argv(&["--plugins"])), ParsedArgs::Plugins);
+        // It is a flag only as the first argument, like the others; a directory of that name still opens.
+        assert_eq!(
+            parse_args(&argv(&["/some/dir", "--plugins"])),
+            ParsedArgs::Open(Some(PathBuf::from("/some/dir")))
+        );
+    }
+
+    #[test]
+    fn resolve_startup_reports_the_plugins_listing_without_touching_the_filesystem() {
+        assert!(matches!(
+            resolve_startup(&argv(&["--plugins"])).unwrap(),
+            Startup::Plugins
+        ));
     }
 
     #[test]
@@ -2513,6 +2681,96 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolve_startup_opens_a_file_in_its_own_directory() {
+        let dir = unique_tmp("konoma_resolve_startup_file_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("note.txt");
+        std::fs::write(&file, "x").unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        match resolve_startup(&argv(&[file.to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file: f } => {
+                assert_eq!(root, canon, "the file's directory is the root");
+                assert_eq!(f, canon.join("note.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_normalizes_a_file_path_with_dotdot_components() {
+        let dir = unique_tmp("konoma_resolve_startup_relfile_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rel.txt"), "x").unwrap();
+        // The path is normalized the way a directory argument is. (The test does not change the
+        // process cwd: other tests run in parallel; `<dir>/sub/../rel.txt` stands in.)
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let odd = dir.join("sub").join("..").join("rel.txt");
+        match resolve_startup(&argv(&[odd.to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file } => {
+                assert_eq!(root, std::fs::canonicalize(&dir).unwrap());
+                assert_eq!(file, std::fs::canonicalize(&dir).unwrap().join("rel.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_follows_a_symlink_to_a_file() {
+        let dir = unique_tmp("konoma_resolve_startup_symlink_test");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::create_dir_all(dir.join("links")).unwrap();
+        std::fs::write(dir.join("real/target.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("real/target.txt"), dir.join("links/alias.txt"))
+            .unwrap();
+        match resolve_startup(&argv(&[dir.join("links/alias.txt").to_str().unwrap()])).unwrap() {
+            Startup::OpenFile { dir: root, file } => {
+                // The link is resolved like a directory argument is: the real file's directory.
+                let canon = std::fs::canonicalize(&dir).unwrap();
+                assert_eq!(root, canon.join("real"));
+                assert_eq!(file, canon.join("real/target.txt"));
+            }
+            other => panic!("OpenFile を期待したが: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_refuses_a_fifo_as_it_always_did() {
+        let dir = unique_tmp("konoma_resolve_startup_fifo_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("resolve_startup_refuses_a_fifo: mkfifo が使えないためスキップ");
+            return;
+        }
+        let err = resolve_startup(&argv(&[fifo.to_str().unwrap()])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not a directory"), "{msg}");
+        assert!(msg.contains(&fifo.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn resolve_startup_still_names_a_missing_path() {
+        let dir = unique_tmp("konoma_resolve_startup_missing_file_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("nope.txt");
+        let err = resolve_startup(&argv(&[missing.to_str().unwrap()])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&missing.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn help_text_documents_the_file_form() {
+        let t = help_text();
+        assert!(t.contains("konoma FILE"), "the file form is in --help: {t}");
+        assert!(t.contains("konoma [DIR]"));
+    }
+
     // --- --version / --help text -----------------------------------------------------------
 
     #[test]
@@ -2531,6 +2789,10 @@ mod tests {
         );
         assert!(t.contains("--help"));
         assert!(t.contains("--version"));
+        assert!(
+            t.contains("--plugins"),
+            "the listing flag is in --help: {t}"
+        );
         assert!(t.contains('?'), "アプリ内ヘルプキー ? への言及: {t}");
         assert!(t.contains("https://lesim-co-ltd.github.io/konoma/"));
     }
@@ -3227,17 +3489,18 @@ mod tests {
         assert!(app.is_bookmark_list());
         handle_key(&mut app, key('\'')).unwrap();
         assert!(!app.is_bookmark_list(), "' 再押下で閉じる");
-        // Ctrl+D = delete the selected row (a plain d is reserved for jumping). Move down to e's
+        // Space d (the list's operation menu) = delete the selected row (a plain d is reserved for jumping). Move down to e's
         // row with j, then delete it.
         handle_key(&mut app, key('\'')).unwrap();
         let before = app.bookmark_list_items().len();
         handle_key(&mut app, key('j')).unwrap();
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-        )
-        .unwrap();
-        assert_eq!(app.bookmark_list_items().len(), before - 1, "Ctrl+D で削除");
+        handle_key(&mut app, key(' ')).unwrap();
+        handle_key(&mut app, key('d')).unwrap();
+        assert_eq!(
+            app.bookmark_list_items().len(),
+            before - 1,
+            "Space d で削除"
+        );
         assert!(app.bookmarks.get('e').is_none(), "消えたのは選択行の e");
         // A directory bookmark moves root.
         handle_key(&mut app, key('a')).unwrap();

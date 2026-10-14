@@ -31,17 +31,18 @@ Focus one with `Tab`, press `Enter` to open it, then `q` to come back here.
 
 ## 3. Toggle these checkboxes
 
-Checkboxes are interactive: `Tab` to focus, `Space` (or `Enter`) to toggle.
+Checkboxes are interactive: `Tab` to focus, `Enter` to toggle.
 The change is written back to this file — you are editing real state, safely
 (konoma verifies the file on disk before writing a single character).
 
 - [ ] I scrolled with `j`/`k`
 - [ ] I opened a link with `Tab` + `Enter` and came back with `q`
-- [ ] I toggled this checkbox with `Space`
+- [ ] I toggled this checkbox with `Enter`
 
 ## 4. Search and copy
 
-- `/` searches inside a text preview; `n`/`N` jump between matches.
+- `/` searches inside a text preview; `n`/`N` jump between matches (with nothing searched, they
+  jump between the file's changes).
 - `R` shows this file's raw Markdown source. In raw view (and any code/text file),
   `v` starts a character selection and `V` a line selection — move with `h j k l`,
   copy with `y`. `Y` copies an `@path#L12` reference for AI chats.
@@ -55,16 +56,17 @@ Back in the tree (`q`):
 - `/` filters entries as you type; `Esc` clears.
 - `Space` opens the file-management menu: create (`n`), rename (`r`), delete (`d` —
   to the trash, with confirmation), copy/cut/paste (`c`/`x`/`p`).
-- `.` shows dotfiles, `s` opens the sort menu, `i` shows file info.
+- `.` shows dotfiles, `,` opens the sort and display menu, `i` shows file info, `o` opens the file in
+  its own app.
 - `m` + a letter bookmarks the cursor item (lowercase = this project, uppercase =
   global). `'` opens the bookmark list — press the letter to jump. Both work from
   previews too, bookmarking the file you are viewing.
 
 ## 6. Git, live
 
-If this directory is inside a git repository: `o` opens the changes hub
+If this directory is inside a git repository: `p` opens the changes hub
 (stage/unstage/commit), `d` on a changed file shows its full-screen diff,
-and inside the hub `l` is the log and `g` the commit graph. Modified files
+and inside the hub `Tab` walks on to the log and the commit graph. Modified files
 are colored in the tree, and code previews get an editor-style change gutter.
 
 ## 7. Watch an AI agent work
@@ -74,7 +76,7 @@ layout:
 
 - `F` — follow mode: whenever a file changes on disk, konoma automatically shows
   the diff of **what changed since you pressed `F`** — not the whole uncommitted
-  diff, so your own earlier edits stay out of the way. `f` switches between the
+  diff, so your own earlier edits stay out of the way. Open the `,` menu and press `f` to switch between the
   two. Scrolling and `n`/`N` keep following; `q` stops.
 - `C` — flat list of every file with uncommitted changes; `n`/`N` jump through them.
 - `y` → `@` / `Y` — copy `@path` / `@path#L12-34` references to paste into the

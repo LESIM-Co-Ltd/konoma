@@ -41,8 +41,8 @@ impl App {
     fn load_active(&mut self) {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
-        // load_table) before the bulk `self.tab = t` restore at the end of this function, so they
-        // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
+        // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
+        // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
         // Same reason: `kind_loads_media`/`start_media_load` below may read/overwrite it
@@ -50,16 +50,11 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
-        // A spreadsheet's worker reads the sheet this tab was showing, so its sheet number is
-        // needed by `start_media_load` below (the bulk restore at the end comes too late).
-        self.tab.sheet_idx = t.sheet_idx;
-        // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
-        // previous tab's and let the media block below re-read this tab's on the worker. The sheet
-        // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
+        // the previous tab's and let the media block below re-read this tab's on the worker. (A
+        // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened
+        // again by `load_plugin`.)
         self.set_document(None);
-        self.document_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -97,7 +92,7 @@ impl App {
         self.diff_follow_scope = false;
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
         // image-type preview, restore it by reloading instead.
-        // (clear_image also resets tab.image_center/tab.pdf_page/tab.pdf_pages to their defaults,
+        // (clear_image also resets tab.image_center/tab.page/tab.page_count to their defaults,
         // but `self.tab = t` at the end of this function overwrites them with the restored values,
         // so this is harmless as long as nothing in between reads them.)
         self.clear_image();
@@ -115,17 +110,28 @@ impl App {
                 // A GIF plays from its first frame.
                 // For PDF, put the saved page back before start_media_load (that generation
                 // rasterizes that page).
-                // Clamp `t.pdf_page` right here: use the same clamped value both as the argument
+                // Clamp `t.page` right here: use the same clamped value both as the argument
                 // to restore_media_cache below and as the final value carried by `self.tab = t` at the end.
-                t.pdf_page = t.pdf_page.max(1);
-                // pdf_pages: a plain copy with no transformation. Not read here, so leave it to the
+                t.page = t.page.max(1);
+                // `clear_image` above reset `self.tab.page` to 1, and the load below asks the plugin
+                // for `self.tab.page`: put the tab's own page back **before** opening, or the
+                // picture is page 1 while the indicator (restored from `t` at the end) says
+                // page N. The display state comes first, then the plugin is opened.
+                self.tab.page = t.page;
+                // page_count: a plain copy with no transformation. Not read here, so leave it to the
                 // bulk restore at the end.
                 // If it's the same file, same mtime, same page — e.g. returning to a tab you just
                 // viewed — reuse the stashed decoded image as-is (skip re-launching external
                 // tools/re-rasterizing for PDF/video).
-                let reused = self.restore_media_cache(&path, t.pdf_page);
+                let reused = self.restore_media_cache(&path, t.page);
                 if !reused {
                     self.start_media_load(&kind, &path);
+                    // A load that landed on the spot (no worker) may have found fewer pages than
+                    // the tab remembered: what it clamped is what is shown.
+                    t.page = self.tab.page;
+                    if self.tab.page_count.is_some() {
+                        t.page_count = self.tab.page_count;
+                    }
                 }
                 self.tab.image_zoom = t.image_zoom;
                 // image_center: a plain copy with no transformation. Not read here, so leave it to
@@ -134,10 +140,8 @@ impl App {
                 // Carry a synchronously-regenerated command_out (the sync-fallback path used by
                 // tests without a media_tx) back into `t`, or the bulk `self.tab = t` below would
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the
-                // `t.pdf_page` clamp above.
+                // `t.page` clamp above.
                 t.command_out = self.tab.command_out.clone();
-                // Likewise a synchronously landed workbook may have clamped the sheet number.
-                t.sheet_idx = self.tab.sheet_idx;
                 if reused {
                     // Restore doesn't go through apply_payload, so the sharp reraster that would
                     // normally fire there doesn't run. This prevents an SVG/mermaid that left its
@@ -147,11 +151,12 @@ impl App {
                 }
             }
         }
-        // Restore the raw-source display state before re-arming windowed (order matters since raw
-        // md is windowed reading). setup_windowed reads it via is_raw_source, so copy it here
-        // without waiting for the bulk restore at the end
-        // (it's Copy, so `t` isn't consumed, and the same value still lands on `self.tab = t` at the end).
-        self.tab.md_raw = t.md_raw;
+        // Restore the chosen representation before re-arming windowed (order matters since the raw
+        // source of a Markdown file is windowed reading). setup_windowed reads it via
+        // is_raw_source, so copy it here without waiting for the bulk restore at the end (the same
+        // value still lands on `self.tab = t` at the end). The plugin is also opened with it
+        // below.
+        self.tab.repr = t.repr.clone();
         // Tab focus / the inline diagram's zoom / full-screen-return info go to this tab's saved
         // values (never apply the previous tab's values to a different document). md_items gets
         // rebuilt by the next render's ensure_md_cache for this tab's document, and focused_item is
@@ -167,8 +172,31 @@ impl App {
         // isn't carried over). The range is clamped on the next render/move.
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // For a CSV/TSV table, re-parse the body and restore the saved cursor/scroll, then clamp it.
-        self.load_table();
+        // For a plugin's file (CSV/TSV, an archive listing, a workbook), open it again, then
+        // restore the saved cursor/scroll and clamp it (a worker's result clamps again when it
+        // lands). A workbook is opened at the sheet this tab was showing: the tab's own page is
+        // put back **before** opening (the bulk restore at the end comes too late), and what a
+        // load that landed on the spot clamped (the file may have lost sheets) is what is kept.
+        if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
+        {
+            t.page = t.page.max(1);
+            self.tab.page = t.page;
+        }
+        // The representation this tab chose (`R`) is asked for when the plugin is opened (put
+        // back above, before the windowed reader), as the page is.
+        self.load_plugin();
+        // A source view that landed on the spot wrote its own temp file: keep that one, not the
+        // path the saved tab held (the bulk restore below would put the stale one back).
+        if self.holds_document() {
+            t.command_out = self.tab.command_out.clone();
+        }
+        if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
+        {
+            t.page = self.tab.page;
+            if self.tab.page_count.is_some() {
+                t.page_count = self.tab.page_count;
+            }
+        }
         self.tab = t;
         self.clamp_table_cursor();
 
@@ -320,13 +348,10 @@ impl App {
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
         self.tab.came_from_git_view = false;
-        // A new tab shows no spreadsheet (the source tab's was snapshotted by save_active; its
-        // workbook is re-read on the worker when that tab is activated again).
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // A new tab shows no Word document (the source tab's was snapshotted by save_active; it is
+        // re-read on the worker when that tab is activated again). Its page starts at the first.
         self.set_document(None);
-        self.document_error = None;
-        self.tab.sheet_idx = 0;
+        self.tab.page = 1;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened
         // from happened to be showing, despite having no diff of its own open at all yet.
@@ -348,6 +373,12 @@ impl App {
         self.tab.git_branch_sel = 0;
         self.tab.git_branch_filter.clear();
         self.tab.git_branch_filtering = false;
+        self.tab.git_view_filter.clear();
+        self.tab.git_view_filtering = false;
+        self.tab.git_log_filter.clear();
+        self.tab.git_log_filtering = false;
+        self.tab.git_graph_filter.clear();
+        self.tab.git_graph_filtering = false;
         self.tab.git_worktrees = None;
         self.tab.git_worktree_sel = 0;
         self.tab.git_worktree_filter.clear();
@@ -474,20 +505,29 @@ impl App {
         self.tab_list = !self.tab_list;
         if self.tab_list {
             self.tab_list_sel = self.active_tab;
+            self.list_filter_reset(super::list_filter::ListId::Tabs);
         }
     }
     pub fn tab_list_sel(&self) -> usize {
         self.tab_list_sel
     }
+    /// Move the selection `delta` rows among the rows the `/` query leaves shown (all of them
+    /// without one), wrapping at the ends.
     pub fn tab_list_move(&mut self, delta: i32) {
         let n = self.tabs.len();
-        if n == 0 {
-            return;
-        }
-        self.tab_list_sel = (self.tab_list_sel as i32 + delta).rem_euclid(n as i32) as usize;
+        self.tab_list_sel = self.overlay_step(
+            super::list_filter::ListId::Tabs,
+            self.tab_list_sel,
+            n,
+            delta,
+        );
     }
     /// Enter in the list: switch to the selected tab (closing the list; same tab = just close).
+    /// A query that hides the selected row (all of them) leaves nothing to switch to.
     pub fn tab_list_activate(&mut self) {
+        if !self.list_row_shown(super::list_filter::ListId::Tabs, self.tab_list_sel) {
+            return;
+        }
         let i = self.tab_list_sel;
         self.tab_list = false;
         self.tab_goto(i);
@@ -495,6 +535,9 @@ impl App {
     /// `w` in the list: close the **selected** tab (the list stays open, like the bookmark list).
     /// Closing the active tab switches to a neighbor; the last tab refuses with a flash.
     pub fn tab_list_close_selected(&mut self) {
+        if !self.list_row_shown(super::list_filter::ListId::Tabs, self.tab_list_sel) {
+            return;
+        }
         if self.tabs.len() <= 1 {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::CantCloseLastTab).into());
             return;
@@ -522,6 +565,8 @@ impl App {
             }
         }
         self.tab_list_sel = self.tab_list_sel.min(self.tabs.len() - 1);
+        // The rows moved up: put the cursor back on a row the query still shows.
+        self.list_filter_changed(super::list_filter::ListId::Tabs);
         self.save_session();
     }
     /// Root directory of tab `i` (for the tab list's path column).

@@ -848,16 +848,18 @@ fn a_refusal_made_by_the_child_leaves_the_child_fit_for_the_next_drawing() {
 fn a_child_that_had_to_be_stopped_is_never_asked_again() {
     let _g = serial();
     no_children_left();
-    assert!(draw(badge(1).as_bytes(), None, limits(), &never).is_ok());
+    // The same drawing limit as the slow one below: an idle child is only reused for the limit it
+    // was started with.
+    let lim = Limits {
+        wall: Duration::from_secs(2),
+        rss: 1 << 30,
+        ..Limits::default()
+    };
+    assert!(draw(badge(1).as_bytes(), None, lim, &never).is_ok());
     let first_pid = live_pids();
     assert_eq!(first_pid.len(), 1);
     // Taken over by a drawing that outlasts its limit: stopped.
     let slow = svg(&r#"<rect width="800" height="600"/>"#.repeat(100_000));
-    let lim = Limits {
-        wall: Duration::from_millis(800),
-        rss: 1 << 30,
-        ..Limits::default()
-    };
     let r = draw(slow.as_bytes(), None, lim, &never);
     assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Timeout)));
     assert_eq!(live_children(), 0, "the stopped child was reaped");
@@ -888,6 +890,41 @@ fn an_idle_child_that_died_is_replaced_without_the_caller_noticing() {
 }
 
 // ---- the production entry points -------------------------------------------------------------
+
+/// An SVG file shown through the `svg` picture plugin is still drawn by the supervised child
+/// process (the plugin hands the bytes back marked untrusted and the host's job draws them with
+/// `svg::rasterize_untrusted`), and one the guard refuses never starts a process.
+#[test]
+fn the_svg_plugin_path_still_draws_in_the_supervised_child() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-plugin");
+    let path = dir.join("x.svg");
+    std::fs::write(&path, badge(1)).unwrap();
+    super::svg_proc::with_real_child(bin(), || {
+        match crate::app::svg_file_payload(&path, 100) {
+            Some(crate::app::MediaPayload::Vector { img, .. }) => {
+                assert_eq!((img.width(), img.height()), (800, 600));
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1, "the picture was drawn by a child");
+        // The refusal of a file the flat scan rejects comes back with its reason, no process.
+        let deep = dir.join("deep.svg");
+        std::fs::write(
+            &deep,
+            svg(&format!("{}{}", "<g>".repeat(1000), "</g>".repeat(1000))),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::app::svg_file_payload(&deep, 100),
+            Some(crate::app::MediaPayload::ImageFailed(
+                crate::preview::image::ImageFailure::Svg(SvgFail::TooDeep)
+            ))
+        ));
+        assert_eq!(live_children(), 1);
+    });
+}
 
 /// `svg::rasterize_untrusted` and `svg::rasterize`, as the application calls them, with the real
 /// binary as the drawing process: the flat checks come first and cost no process, the rest goes to
@@ -2222,4 +2259,413 @@ fn the_bounded_readers_return_what_a_healthy_child_wrote() {
     let first = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "five");
     assert_eq!(first, b"KSRDY");
     wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok");
+}
+
+// ---- who vouches for an SVG: the host decides by where it came from ---------------------------
+
+/// A plugin's `trusted: true` is a claim. The host believes it only for a standard plugin that
+/// draws its own SVG (mermaid, math); anything else, whatever it says, is drawn by the supervised
+/// child process, and with no directory named it reads no file.
+#[test]
+fn a_plugins_trusted_claim_is_believed_only_for_a_standard_plugin_that_draws_its_own_svg() {
+    use crate::app::{MediaPayload, SvgTrust};
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-trust");
+    let shown = dir.join("x.xsvg");
+    let red = crate::plugins::test_views::RED_SQUARE.as_bytes();
+    super::svg_proc::with_real_child(bin(), || {
+        let draw = |dir_named: bool, claims: bool, believed: bool| {
+            crate::app::svg_view_payload(
+                red,
+                dir_named.then(|| dir.to_path_buf()),
+                claims,
+                believed,
+                &shown,
+            )
+        };
+        // Claims to be trusted, not believed, names its directory: the child, reading from there.
+        match draw(true, true, false) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::File(_)), "{trust:?}")
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1, "drawn by a child");
+        // Claims to be trusted, not believed, names no directory: the child, reading no file.
+        match draw(false, true, false) {
+            Some(MediaPayload::Vector { trust, .. }) => assert_eq!(trust, SvgTrust::Embedded),
+            _ => panic!("a Vector payload was expected"),
+        }
+        kill_live();
+        assert_eq!(live_children(), 0);
+        // Believed (a standard plugin that draws its own SVG) and vouching: this process.
+        match draw(false, true, true) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::Trusted(_)), "{trust:?}")
+            }
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 0, "no child for konoma's own SVG");
+        // Believed but not vouching: the child.
+        match draw(false, false, true) {
+            Some(MediaPayload::Vector { trust, .. }) => assert_eq!(trust, SvgTrust::Embedded),
+            _ => panic!("a Vector payload was expected"),
+        }
+        assert_eq!(live_children(), 1);
+    });
+    kill_live();
+}
+
+/// An SVG in an image diff is drawn the same way the first time and every time after (sharp zoom,
+/// pixels rebuilt after eviction): a relative `<image href>` is read from the file's directory by
+/// the child process each time. Embedded kinds (a fence, a formula from a plugin the user added)
+/// never read a file.
+#[test]
+fn a_diff_svg_drawn_again_matches_its_first_drawing_and_an_embedded_one_reads_no_file() {
+    use crate::app::{App, MediaDiffOutcome, MediaDiffSide};
+    use image::GenericImageView;
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-redraw-match");
+    std::fs::create_dir_all(&dir).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]))
+        .save(dir.join("dot.png"))
+        .unwrap();
+    let svg = dir.join("icon.svg");
+    std::fs::write(
+        &svg,
+        br##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="40"><rect width="40" height="40" fill="#fff"/><image xlink:href="dot.png" href="dot.png" x="10" y="10" width="20" height="20"/></svg>"##,
+    )
+    .unwrap();
+    super::svg_proc::with_real_child(bin(), || {
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+        let MediaDiffOutcome::Ready {
+            new: MediaDiffSide::Picture(p),
+            ..
+        } = app.poll_media_diff(&svg, 1, (400, 300)).expect("sync")
+        else {
+            panic!("a picture was expected");
+        };
+        let key = p.cache_key.clone();
+        let max_px = {
+            let (first, _) = app.md_first_and_redrawn_for_test(&key, 100).unwrap();
+            let (w, h) = first.dimensions();
+            w.max(h)
+        };
+        let (first, again) = app.md_first_and_redrawn_for_test(&key, max_px).unwrap();
+        assert_eq!(first.dimensions(), again.dimensions());
+        assert_eq!(
+            first.to_rgba8().as_raw(),
+            again.to_rgba8().as_raw(),
+            "drawn again, the same pixels"
+        );
+        let (w, h) = first.dimensions();
+        let centre = first.get_pixel(w / 2, h / 2).0;
+        assert!(
+            centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
+            "the relative image is there: {centre:?}"
+        );
+        // An embedded SVG reads no file: the same bytes, no dot.
+        let bare =
+            crate::preview::svg::rasterize_embedded(&std::fs::read(&svg).unwrap(), max_px, &|| {
+                false
+            })
+            .unwrap();
+        let c = bare.get_pixel(w / 2, h / 2).0;
+        assert!(c[1] > 200, "the embedded drawing reads no file: {c:?}");
+    });
+    kill_live();
+}
+
+/// An embedded kind (a fence) drawn by a plugin the user added is drawn by the child process every
+/// time; the standard plugin's picture stays in this process.
+#[test]
+fn an_embedded_svg_from_a_plugin_the_user_added_is_drawn_by_the_child() {
+    use crate::plugins::test_plugins;
+    let _g = serial();
+    no_children_left();
+    super::svg_proc::with_real_child(bin(), || {
+        // The standard plugin: believed, no child.
+        let (trusted, img, kept) =
+            crate::app::probe_fence_picture(crate::config::Config::default());
+        assert!(trusted && img.is_ok() && kept);
+        assert_eq!(
+            live_children(),
+            0,
+            "konoma's own diagram is drawn in this process"
+        );
+        // A plugin of the user's takes the fence: not believed, drawn by the child.
+        let marker = test_plugins::register(
+            "svg_proc_embed",
+            std::sync::Arc::new(crate::plugins::test_views::EmbedSvg),
+        );
+        let (trusted, img, kept) =
+            crate::app::probe_fence_picture(test_plugins::marker_config(&marker));
+        assert!(!trusted, "a plugin the user added is never believed");
+        assert!(img.is_ok(), "{:?}", img.err());
+        assert!(kept, "the SVG is kept for layout");
+        assert_eq!(live_children(), 1, "drawn by a child");
+    });
+    kill_live();
+}
+
+/// An SVG kept to be drawn again (sharp zoom, rebuilding evicted pixels) is drawn again the way it
+/// was drawn the first time.
+#[test]
+fn a_kept_svg_is_drawn_again_in_the_child_unless_konoma_made_it() {
+    let _g = serial();
+    no_children_left();
+    let red = crate::plugins::test_views::RED_SQUARE.as_bytes();
+    super::svg_proc::with_real_child(bin(), || {
+        let own = crate::app::SvgTrust::Trusted("rebuild.svg".into());
+        assert!(crate::app::redraw_svg(red, &own, 100).is_ok());
+        assert_eq!(live_children(), 0, "konoma's own SVG: this process");
+        let embedded = crate::app::SvgTrust::Embedded;
+        assert!(crate::app::redraw_svg(red, &embedded, 100).is_ok());
+        assert_eq!(live_children(), 1, "anything else: the child");
+        kill_live();
+        assert_eq!(live_children(), 0);
+        let file = crate::app::SvgTrust::File("/nowhere/x.svg".into());
+        assert!(crate::app::redraw_svg(red, &file, 100).is_ok());
+        assert_eq!(live_children(), 1, "a file's: the child too");
+    });
+    kill_live();
+}
+
+// ---- the child's own backstop clock follows the limit the parent supervises with ---------------
+
+/// A drawing that takes far longer than any limit used below (measured: over a minute in a debug
+/// build), so every run that ends early ends by a limit and not by finishing.
+fn endless_drawing() -> String {
+    svg(&r#"<rect width="800" height="600" fill-opacity="0.5"/>"#.repeat(100_000))
+}
+
+fn run_endless(wall: Duration) -> (Result<DynamicImage, RunError>, Duration) {
+    let data = endless_drawing();
+    let lim = Limits {
+        wall,
+        rss: 2 << 30,
+        ..Limits::default()
+    };
+    let t = Instant::now();
+    let r = run_with(
+        &bin(),
+        lim,
+        &Request {
+            data: data.as_bytes(),
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    (r, t.elapsed())
+}
+
+#[test]
+fn a_drawing_past_the_childs_old_fixed_backstop_ends_by_the_parents_limit_not_as_a_crash() {
+    let _g = serial();
+    no_children_left();
+    // The child used to arm a fixed 8 s clock whatever limit it was given, so a drawing allowed 12 s
+    // was ended by the child at 8 s and reported as a crash.
+    let (r, took) = run_endless(Duration::from_secs(12));
+    assert_eq!(
+        r.err(),
+        Some(RunError::Failed(SvgFail::Timeout)),
+        "{took:?}"
+    );
+    assert!(took >= Duration::from_secs(11), "{took:?}");
+    no_children_left();
+}
+
+#[test]
+fn a_short_drawing_limit_ends_as_a_timeout_not_a_crash() {
+    let _g = serial();
+    no_children_left();
+    let (r, took) = run_endless(Duration::from_secs(1));
+    assert_eq!(
+        r.err(),
+        Some(RunError::Failed(SvgFail::Timeout)),
+        "{took:?}"
+    );
+    assert!(took < Duration::from_secs(4), "{took:?}");
+    no_children_left();
+}
+
+#[test]
+fn the_real_child_arms_its_backstop_from_the_limit_it_is_given() {
+    let _g = serial();
+    no_children_left();
+    // Hand-driven, with a 1 s limit: the backstop is 1 s + 3 s. With the fixed 8 s one the child
+    // would still be drawing when the test gives up on it.
+    let mut child = std::process::Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("2147483648")
+        .arg("1000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let ready = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
+    assert_eq!(&ready, b"KSRDY");
+    let data = endless_drawing();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(&800u32.to_le_bytes());
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    wire.extend_from_slice(data.as_bytes());
+    std::io::Write::write_all(&mut stdin, &wire).unwrap();
+    let t = Instant::now();
+    let status = wait_bounded(
+        &mut child,
+        Duration::from_secs(7),
+        "the child on its backstop",
+    );
+    let took = t.elapsed();
+    assert!(!status.success(), "{status:?}");
+    assert!(took < Duration::from_secs(7), "{took:?}");
+    drop(stdin);
+}
+
+#[test]
+fn an_idle_child_is_only_reused_for_the_limit_it_was_started_with() {
+    let _g = serial();
+    no_children_left();
+    let with = |wall: u64| Limits {
+        wall: Duration::from_secs(wall),
+        rss: 700 << 20,
+        ..Limits::default()
+    };
+    assert!(draw(badge(1).as_bytes(), None, with(4), &never).is_ok());
+    let first = live_pids();
+    assert_eq!(first.len(), 1);
+    // Same limit: the same child.
+    assert!(draw(badge(2).as_bytes(), None, with(4), &never).is_ok());
+    assert_eq!(live_pids(), first);
+    // Another limit: its backstop clock would not match, so a new child is started.
+    assert!(draw(badge(3).as_bytes(), None, with(6), &never).is_ok());
+    let second = live_pids();
+    assert!(
+        second.iter().any(|p| !first.contains(p)),
+        "{first:?} {second:?}"
+    );
+    no_children_left();
+}
+
+/// The child's backstop is the limit it is given **plus a margin**: it rings after the parent's own
+/// supervision has had its chance to stop the drawing and say "timeout", never before it. A child
+/// told 1 s that ended itself at 1 s would be reported as a crash by a parent that stops it at 1 s.
+#[test]
+fn the_childs_backstop_rings_after_the_limit_it_is_given_not_with_it() {
+    let _g = serial();
+    no_children_left();
+    let mut child = std::process::Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("2147483648")
+        .arg("1000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let out = child.stdout.take().unwrap();
+    let ready = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
+    assert_eq!(&ready, b"KSRDY");
+    let data = endless_drawing();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(&800u32.to_le_bytes());
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    wire.extend_from_slice(data.as_bytes());
+    std::io::Write::write_all(&mut stdin, &wire).unwrap();
+    let t = Instant::now();
+    let status = wait_bounded(
+        &mut child,
+        Duration::from_secs(30),
+        "the child on its backstop",
+    );
+    let took = t.elapsed();
+    assert!(!status.success(), "{status:?}");
+    // 1 s + 3 s: well past the 1 s the parent would stop it at (a lower bound only: a loaded
+    // machine can make the child later, never earlier).
+    assert!(took >= Duration::from_millis(3500), "{took:?}");
+    drop(stdin);
+}
+
+// ---- the host's `SvgTrust` draws the way its origin allows --------------------------------
+
+/// A directory with a solid red PNG, and the SVG that paints it over a green page by `href`.
+fn red_picture_svg(dir: &Path, href: &str) -> String {
+    let _ = dir;
+    svg(&format!(
+        r##"<rect width="800" height="600" fill="#0a0"/><image width="800" height="600" href="{href}"/>"##
+    ))
+}
+
+fn red_png_in(dir: &Path) -> PathBuf {
+    let path = dir.join("red.png");
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 0, 255]))
+        .save(&path)
+        .unwrap();
+    path
+}
+
+#[test]
+fn an_embedded_svg_reads_no_file_but_a_file_svg_reads_the_ones_next_to_it() {
+    use crate::app::SvgTrust;
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-trust");
+    let png = red_png_in(&dir);
+    let green = [0, 170, 0, 255];
+    let red = [255, 0, 0, 255];
+    super::svg_proc::with_real_child(bin(), || {
+        // The control: the same picture drawn as a file's own SVG shows the red image, both by a
+        // relative and by an absolute reference (so the PNG is found and decodable here).
+        for href in ["red.png".to_string(), png.display().to_string()] {
+            let doc = red_picture_svg(&dir, &href);
+            let img = SvgTrust::File(dir.join("x.svg"))
+                .draw(doc.as_bytes(), 800, &never)
+                .expect("the file's SVG is drawn");
+            assert_eq!(img.to_rgba8().get_pixel(400, 300).0, red, "File: {href}");
+            // From a document (nothing to be relative to) the file is not read: the page behind
+            // it is all that shows.
+            let img = SvgTrust::Embedded
+                .draw(doc.as_bytes(), 800, &never)
+                .expect("the embedded SVG is drawn");
+            assert_eq!(
+                img.to_rgba8().get_pixel(400, 300).0,
+                green,
+                "Embedded read a file: {href}"
+            );
+        }
+        assert_eq!(live_children(), 1, "drawn by a child process");
+    });
+    no_children_left();
+}
+
+#[test]
+fn an_svg_of_unstated_origin_is_drawn_as_embedded_and_reads_no_file() {
+    use crate::app::SvgTrust;
+    let _g = serial();
+    no_children_left();
+    assert_eq!(SvgTrust::default(), SvgTrust::Embedded);
+    assert!(SvgTrust::default().is_untrusted());
+    let dir = unique_tmp("svg-proc-trust-default");
+    let png = red_png_in(&dir);
+    super::svg_proc::with_real_child(bin(), || {
+        let doc = red_picture_svg(&dir, &png.display().to_string());
+        let img = SvgTrust::default()
+            .draw(doc.as_bytes(), 800, &never)
+            .expect("drawn");
+        assert_eq!(img.to_rgba8().get_pixel(400, 300).0, [0, 170, 0, 255]);
+        assert_eq!(live_children(), 1, "drawn by a child process");
+    });
+    no_children_left();
 }

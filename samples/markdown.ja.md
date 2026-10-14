@@ -96,18 +96,18 @@ HTML の表では、README 自身が使っているスクリーンショット�
 - [ ] 未完了タスク（Nerd Font のチェックボックスアイコンで表示。`ui.icons = false` なら `[ ]`）
 - [x] 完了タスク（同・チェック済みアイコン。`ui.icons = false` なら `[x]`）
 
-チェックボックスは操作できる: `Tab` でフォーカス（リンクと同じ巡回）→ `Space` か `Enter` で
+チェックボックスは操作できる: `Tab` でフォーカス（リンクと同じ巡回）→ `Enter` で
 トグル＝このファイルに書き戻る。`[ui] md_task_states` で `[" ", "/", "x"]` のような
 カスタム状態の巡回もできる（`[/]` のままブラケット表示）。
 
 ## HTML ブロック
 
 `<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に
-フォーカス → `Space` か `Enter` で開閉。既定は GitHub と同じく `open` 属性を尊重
+フォーカス → `Enter` で開閉。既定は GitHub と同じく `open` 属性を尊重
 （`[ui] md_details` で常時開閉も選べる）。
 
 <details>
-<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>
+<summary>閉じた details（クリックで開く相当・Tab→Enter で開く）</summary>
 中身は Markdown として描画される。**太字**やリストも効く:
 
 - 折りたたみの中の項目

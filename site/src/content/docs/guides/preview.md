@@ -9,6 +9,21 @@ Select a file, press `Enter`, and konoma picks the right renderer from its
 rule table (see [Configuration](../../reference/configuration/)). `q` always
 goes back. `?` shows the keys for the current preview type.
 
+A few keys mean the same in every kind of preview:
+
+- `R` cycles the **representation** of what you are looking at — decorated ⇄ raw source for Markdown
+  and Word, slide pictures ⇄ text view for a presentation (the current slide is kept), the
+  preview ⇄ the diff it was opened from.
+- `J` / `K` turn the **page** — a PDF page, a spreadsheet sheet, a presentation slide.
+- `,` opens the display options of the preview: `p` cycles the path style and, in text and documents,
+  `w` switches line wrapping while it runs.
+- `e` edits the file in your editor, at the line you are looking at; `o` opens it in another app
+  (an Office file in Microsoft Office or LibreOffice, anything else in the OS default); `p` opens the
+  project screen (Git) and `!` the project tool.
+- `n` / `N` step through the matches of a search — or, when nothing is being searched, through the
+  file's changes (the git gutter's blocks in code and text, the changed blocks of a rendered document).
+- `Ctrl-n` / `Ctrl-p` move to the next / previous file in tree order, and `r` reads the file again.
+
 ## Markdown
 
 Rendered with headings, full-width rules, tables (with column alignment and
@@ -19,7 +34,7 @@ as real pixels).
 - **Links**: `Tab` / `Shift-Tab` walk every link and checkbox in the document;
   `Enter` opens the focused link — local paths open inside konoma, URLs open in
   the browser.
-- **Task checkboxes**: focus with `Tab`, toggle with `Space`. The state
+- **Task checkboxes**: focus with `Tab`, toggle with `Enter`. The state
   character is written back to the file — verified against the file on disk
   first, so it never clobbers a concurrent edit (e.g. by an AI agent). The
   states cycle through `ui.md_task_states` (default `[ ]` ⇄ `[x]`; add a
@@ -33,10 +48,11 @@ as real pixels).
   sets an upper limit on the height, not a target — the diagram only shrinks
   below that (aspect preserved) if its natural size exceeds it or the pane's
   width. `Tab` focuses a diagram; `+` / `-` zoom it in place (`h j k l` pan,
-  `0` fits), and `Enter` opens it full screen (`q` returns to the same spot).
+  `=` fits), and `Enter` opens it full screen (`q` returns to the same spot).
   Standalone `.mmd` files open full screen directly. `ui.mermaid = "text"`
   keeps the legacy Unicode rendering; unsupported diagrams fall back to it
-  automatically.
+  automatically. These options live in `[plugins.mermaid]` (`mode`, `theme`, `curve`,
+  `routing`, `rows`); the old `[ui] mermaid*` names are still read.
 - **Edge routing**: `ui.mermaid_routing` (default `"splines"`) picks how a
   flowchart's or state diagram's (`stateDiagram-v2`) edges are laid out; the
   default reproduces mermaid's own layout exactly, so nothing changes unless
@@ -56,7 +72,8 @@ as real pixels).
   also inside table cells, headings and quotes; one too wide for the line shrinks to fit instead of being lifted onto a line
   of its own. A display formula is centered. `$5` and anything inside code
   stays literal. Set `ui.math = "text"` to keep the raw LaTeX instead, and
-  `ui.math_color` to match your terminal's foreground.
+  `ui.math_color` to match your terminal's foreground (also `[plugins.math] mode` /
+  `color`).
 - **Block alignment**: `ui.md_table_align` (default `"left"`) and
   `ui.md_image_align` (default `"center"`) place a table's box and a block image
   — a standalone `![alt](url)`, a row of badges, a Mermaid diagram — at the
@@ -65,6 +82,7 @@ as real pixels).
   *within* a cell, which a column's `:---:` still decides.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
+- **Outline**: `O` opens the heading outline; `Enter` jumps to a heading. On a PDF, a workbook or a presentation with two or more pages, `O` opens the list of its pages instead (the current one marked); `Enter` goes to the chosen page.
 - **Change gutter**: a file with uncommitted changes shows the same
   editor-style git gutter (green added / blue modified / red deleted) as code
   and text previews, block-aware here — a changed paragraph or list item is
@@ -77,14 +95,15 @@ Syntax highlighting resolves the grammar by extension, then file name
 (`.bashrc`, `Makefile`, `Dockerfile`, …), then first line. Large files stream
 through a windowed reader, so multi-hundred-MB logs open instantly.
 
-- `/` searches; `n` / `N` jump between matches.
+- `/` searches; `n` / `N` jump between matches (with nothing searched, between the changed blocks of
+  the git gutter).
 - A 2D caret moves with `h j k l`; `v` selects by character, `V` by line;
   `y` copies the selection. `0` / `$` jump within the line, `g` / `G` to the
   ends.
 - `Y` copies an `@path#L12-34` reference for the caret or selection.
 - Files with uncommitted changes get an editor-style git gutter (green added /
   blue modified / red deleted).
-- Wrap is configurable (`ui.wrap`); with wrap off, long lines scroll
+- Wrap is configurable (`ui.wrap`, or `,` then `w` while running); with wrap off, long lines scroll
   horizontally.
 
 ## CSV / TSV tables
@@ -141,25 +160,26 @@ sheet you were on is not saved by session restore; `.xlsb` is supported but has
 not yet been checked against files made by the real application.
 
 Press `e` to open the file in an Office app instead — see
-[Open Office documents](#open-office-documents-with-e) below.
+[Open Office documents](#open-office-documents-in-their-app) below.
 
-### Open Office documents with `e`
+### Open Office documents in their app
 
 On a Word (`docx docm dotx dotm doc odt ott`), Excel (the seven spreadsheet types
-above) or PowerPoint (`pptx pptm ppsx ppsm potx potm ppt odp otp`) file, `e` opens it in a GUI
-app rather than handing the zip to `$EDITOR`: on macOS Microsoft Office, then
+above) or PowerPoint (`pptx pptm ppsx ppsm potx potm ppt odp otp`) file, `e` and `o` open it in a GUI
+app rather than handing the zip to `$EDITOR` (`e`) or the OS default (`o`): on macOS Microsoft Office, then
 LibreOffice, then the default app (`open`); on Linux `libreoffice`, then
 `soffice`, then `xdg-open`. The terminal is not blocked. An `[editor] ext` entry
 for the extension takes priority, and `[external] office_apps = false` turns this
 off (it does not fall back to `$EDITOR`). The old binary `.doc` and `.ppt`
-have no in-terminal preview — `e` is how you open them.
+have no in-terminal preview — `e` or `o` is how you open them. (`o` opens any other file in its OS
+default app too.)
 An Office app is optional; the spreadsheet, Word and presentation previews work without one.
 
 ## Word and OpenDocument documents
 
 `.docx`, `.docm`, `.dotx`, `.dotm`, `.odt` and `.ott` are converted to Markdown by
 konoma itself — no Word, LibreOffice or other tool needed — and drawn like any
-`.md`, so `o` (outline), `Tab` (links), `/` (search) and math all work:
+`.md`, so `O` (outline), `Tab` (links), `/` (search) and math all work:
 
 - Headings, **bold** / *italic* / ~~strikethrough~~, bullets and numbering **as the
   document shows them** (`(a)`, `ア`, `①`, `第1条` ...), tables (a merged cell
@@ -237,7 +257,7 @@ own compressed transfer for the kitty protocol, so those terminals are the
 fastest; anywhere else the picture degrades to a coarse but visible half-block
 approximation.
 
-- `+` / `-` zoom, `0`/`=` reset to fit, `h j k l` pan.
+- `+` / `-` zoom, `=` resets to fit, `h j k l` pan.
 - GIFs animate automatically. SVGs rasterize in-process (no external tools).
 - Videos show a representative frame. **H.264 and HEVC inside
   `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` are decoded natively in Rust —

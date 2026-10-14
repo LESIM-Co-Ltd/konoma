@@ -468,10 +468,11 @@ fn markdown_app(name: &str, md_body: &str, files: &[(&str, Vec<u8>)]) -> Setup {
         .expect("doc.md in the tree");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(PreviewKind::is_markdown));
     (app, dir, img_rx, enc_rx)
 }
 
@@ -944,7 +945,11 @@ fn a_still_image_is_decoded_on_the_worker_not_on_the_ui_thread() {
     let (media_tx, media_rx) = std::sync::mpsc::channel();
     app.attach_media_loader(media_tx);
     open_first_entry(&mut app);
-    assert!(matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("image")));
     assert!(app.is_media_loading(), "the load runs on the worker");
     assert!(
         app.image_src.is_none(),

@@ -38,22 +38,23 @@ tab_width = 4
 # コードのシンタックスハイライトを行うか。
 #   true  = syntect で着色 (既定)。初回に言語ごと文法コンパイルが入る(下記 preview_loading で吸収)。
 #   false = 素テキスト表示で最速 (syntect を一切使わない)。重さが気になる/不要なら false。
+# ([plugins.code] syntax_highlight でも設定でき、そちらが勝つ。)
 syntax_highlight = true
 # 重いコードプレビュー(初めて開く言語=文法コンパイルが要るとき)の待ちの見せ方。
 # ※ 一度開いた言語は温まるので即時表示=この設定に関係なく一瞬。
 #   indicator   = 画面中央にローディング表示を出してから本文を着色表示 (既定)。
 #   progressive = 本文を素テキストで即表示し、準備でき次第ハイライトへ差し替え (フリーズ無し)。
 preview_loading = "indicator"
-# タイトル(tree/preview)のパス表示の既定。p キーで relative→home→full を巡回。
+# タイトル(tree/preview)のパス表示の既定。`,` メニュー(p)で relative→home→full を巡回。
 #   relative = 起動ディレクトリ名からの相対 (例: konoma/src/main.rs)。既定。
 #   home     = HOME からの相対 (例: ~/work/konoma)。
 #   full     = フルパス (例: /Users/me/work/konoma)。
 path_style = "relative"
 # プレビューのページ送りキー流儀(既定プロファイル)。j/k 行移動・矢印・PageUp/Down は両流儀共通。
 #   vim  = Ctrl-f/Ctrl-b でページ、Ctrl-d/Ctrl-u でハーフページ (既定)。
-#   less = Space/b でページ、d/u でハーフページ (※プレビュー系の面のみ。ツリーの Space は
-#          ファイル管理リーダーに割り当て済みのため less でも vim ページのまま)。
-# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<面>] で
+#   less = f/b でページ、d/u でハーフページ (※プレビュー系の文脈のみ。Space は操作メニューのままで、
+#          ツリーは less でも vim ページのまま)。
+# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<文脈>] で
 #   上書きできる(そちらが優先・別物)。
 keys = "vim"
 # 画像プレビューの表示サイズスケール (0.1〜1.0)。表示矩形をこの倍率に縮めて表示する。
@@ -66,6 +67,7 @@ image_render_scale = 1.0
 # SVG ラスタライズの最大辺(px)。ベクタは無限解像度なので、この px まで拡大して描く
 # (小さい SVG もくっきり)。大きいほど鮮明だが描画・転送が重い。既定 800。
 # ★SVG 専用★: ラスタ画像/GIF はこの設定の影響を受けない(GIF の転送量は image_render_scale)。
+# ([plugins.svg] max_px でも設定でき、そちらが勝つ。)
 svg_max_px = 800
 
 # 詳細リスト表示: 各行の右に並べるメタ情報の列。空 [] (既定) で素の表示。
@@ -76,10 +78,10 @@ svg_max_px = 800
 # 単体の全情報(symlink 先・絶対パス含む)は `i` のポップアップで見られる。
 details = []           # 例: ["type", "size", "modified"]
 
-# コミットグラフ(o→g)で同時に描くローカルブランチの上限 (既定 12)。
+# コミットグラフ(p のあと Tab でグラフへ)で同時に描くローカルブランチの上限 (既定 12)。
 # ブランチが多いとレーン/色/凡例が溢れるため、起動時は 基準/優先＋HEAD＋最近コミット順で
 # 上限まで自動選択する。グラフ内 `b` のパネルで表示/非表示の切替＋優先順の並び替えができる
-# (Space:切替 / J/K:並替 / a:全部 / n:現在のみ / Enter:適用、HEAD は常に表示)。0 で無制限。
+# (x:切替 / J/K:並替 / a:全部 / c:現在のみ / Enter:適用、HEAD は常に表示)。0 で無制限。
 graph_max_branches = 12
 
 # コミットグラフの「基準/優先ブランチ」(順序つき・既定 [])。例: ["main", "develop"]
@@ -87,12 +89,12 @@ graph_max_branches = 12
 # ② 左から最初に存在するものを「基準」= lane0 に左一直線で固定する。
 # ③ 並び順が凡例/パネルの表示順にも反映される(配列→HEAD→最近順)。
 # グラフ内 `b` パネルの J/K で当セッション限り並び替え可(config への書き戻しはしない)。
-# ワークツリー一覧の diff(`d`・git_worktrees)の基準にも流用される＝候補はここに挙げた中で実在するもの＋
+# ワークツリー一覧の diff(`d`・git.worktrees)の基準にも流用される＝候補はここに挙げた中で実在するもの＋
 # メインワークツリーのブランチ。選択ワークツリーの HEAD との merge-base(共通祖先)が最も新しい候補を基準
 # に選ぶ＝実際に分岐した枝が優先される(先頭に挙げたものとは限らない)。同着はこの配列の並び順で決める。
 graph_base_branches = []
 
-# log(o→l)/グラフ(o→g)のコミット行で、右側メタ情報(author・日付、グラフは short も)の寄せ方。
+# log/グラフ(p のあと Tab)のコミット行で、右側メタ情報(author・日付、グラフは short も)の寄せ方。
 #   "right"  (既定) … パネル右端に揃えて「列」にする。日付/著者が縦に揃い、新旧を一目で追える
 #                      (SourceTree / VS Code Git Graph 流)。狭い時は subject を末尾省略し、
 #                      さらに狭ければメタ自体を省く(非本質列を落とす)。
@@ -109,7 +111,7 @@ confirm_quit = true
 #   true  (既定) … 上書き前に確認(y / Enter = 上書き, n / Esc = 取消)
 #   false        … 確認なしで即上書き
 confirm_bookmark_overwrite = true
-confirm_jj_sync            = true   # ハブで `R` を押して jj に作業コピーを取り込ませる前に確認する。
+confirm_jj_sync            = true   # jj の変更一覧で `s` を押して jj に作業コピーを取り込ませる前に確認する。
                                     # konoma が jj リポジトリに書き込むのはここだけで、しかも指示されたときのみ。
                                     # konoma 自身では気づけない「更新時刻が変わらないまま中身が変わった」
                                     # ファイルのための逃げ道。
@@ -118,6 +120,7 @@ confirm_jj_sync            = true   # ハブで `R` を押して jj に作業コ
 #   true  (既定) … 列ごとに色付け。
 #   false        … 単色(整列・セル移動・コピーはそのまま)。
 # 操作: hjkl=セル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / y→ c:セル r:行 C:列 f:フルパス / q:戻る。
+# ([plugins.csv] rainbow(と、それに従う [plugins.spreadsheet] rainbow)でも設定でき、そちらが勝つ。)
 csv_rainbow = true
 
 # `/` のツリー絞り込みの照合方法。
@@ -132,8 +135,8 @@ filter_mode = "fuzzy"
 #                    未追跡ファイルは全行追加の diff)。q で戻る・s でレイアウト切替。
 #   "file"        … 通常の全画面プレビュー(最初の変更ハンクの位置まで自動スクロール・変更行にガター)。
 # どちらでも、diff の無いファイル(変更なし/リポジトリ外)と画像/SVG/動画/PDF は通常プレビューで開く。
-# フォロー diff は「F を押して以降」の変更だけを出す(F 前の未コミット変更は隠れる)。diff 内 f でフル git
-# diff に切替。フォローは粘着的=q / もう一度 F / テキスト入力 でのみ解除(スクロール/n/N/f は維持)。
+# フォロー diff は「F を押して以降」の変更だけを出す(F 前の未コミット変更は隠れる)。diff 内で `,` メニューを開き f でフル git
+# diff に切替。フォローは粘着的=q / もう一度 F / テキスト入力 でのみ解除(スクロール/n/N は維持)。
 follow_view = "diff"
 
 # 全画面 diff の 3 表現のうち、開いた時にどれを見せるか。
@@ -147,11 +150,11 @@ follow_view = "diff"
 # 不明な値は "rendered" にフォールバック。
 diff_view = "rendered"
 
-# Markdown プレビューのタスクリスト(チェックボックス)で Space が巡回する状態の配列(巡回順)。
+# Markdown プレビューのタスクリスト(チェックボックス)で Enter が巡回する状態の配列(巡回順)。
 # 各要素は 1 文字。既定 [" ", "x"] = GFM 標準の 未完 ⇄ 完了。
 # 例: [" ", "/", "x"] で Obsidian 流の「作業中 [/]」を挟む。標準状態は Nerd Font の
 # チェックボックスアイコン(ui.icons=false なら [ ]/[x])・カスタム状態は [/] のまま表示。
-# 操作: 装飾表示で Tab/⇧Tab=リンクとチェックボックスを巡回 → Space(または Enter)=トグル。
+# 操作: 装飾表示で Tab/⇧Tab=リンクとチェックボックスを巡回 → Enter=トグル。
 # トグルは書込み前にファイルを照合し、外部で変わっていたら書かずに再読込する(安全側)。
 # 配列に無い状態のボックスは先頭状態へ正規化。不正な設定(2文字要素・1要素以下)は既定に戻る。
 md_task_states = [" ", "x"]
@@ -188,7 +191,7 @@ md_footnotes = true
 # false なら全てのタグが剥がされる。
 md_inline_html = true
 
-# <details> ブロックの初期表示。いずれも Tab で <summary> にフォーカス→Space/Enter でトグル。
+# <details> ブロックの初期表示。いずれも Tab で <summary> にフォーカス→Enter でトグル。
 #   "auto"   (既定) … GitHub と同じく open 属性を尊重(<details> は折りたたみ / <details open> は展開)
 #   "open"          … 常に展開で開始
 #   "closed"        … 常に折りたたみで開始
@@ -227,6 +230,7 @@ busy_indicator = true
 #                    ズームはズーム率に合わせて裏で再ラスタライズ=拡大してもシャープ。
 #                    画像非対応端末・未対応の図・描画失敗は自動でテキスト描画へ降格(安全)。
 #   "text"          … 従来の Unicode 罫線テキスト描画のみ。
+# ([plugins.mermaid] mode でも設定でき、そちらが勝つ。以下 theme・curve・routing・rows も同様。)
 mermaid = "image"
 
 # mermaid 図の配色テーマ。背景は常に透過(端末の背景に馴染む)。
@@ -286,7 +290,7 @@ mermaid_routing = "splines"
 # この上限や本文幅を超えるときだけ、縦横比を保って上限まで縮小する。図はベクタ由来なので、
 # ズームで密度を上げてもシャープなまま(表示サイズそのものは変わらない)。初期表示は
 # **ビューポートにもフィット**=窓がこの上限より低いときはブロック全体が見える高さへ縮む。
-# フォーカス中の図は表示エリアそのままに +/- でその場ズーム・0 でフィットできる。
+# フォーカス中の図は表示エリアそのままに +/- でその場ズーム・= でフィットできる。
 # 0 や不正値は既定 24 に戻る。
 mermaid_rows = 24
 
@@ -297,6 +301,7 @@ mermaid_rows = 24
 #                    $$...$$ / \[...\] は中央寄せ)。画像非対応端末や描画失敗時は自動で生 LaTeX
 #                    テキストへ降格。
 #   "text"         … 生の LaTeX($...$)を素のテキストのまま表示(描画しない)。
+# ([plugins.math] mode でも設定でき、そちらが勝つ。math_color は [plugins.math] color。)
 math = "image"
 
 # 画像モード数式のグリフ色。RaTeX は数式を純黒で塗るため、ダーク端末では不可視。konoma はダーク端末
@@ -326,7 +331,7 @@ restore_single_tab = true
 # (下りる先には「戻る場所」が無いため)、これは変わらない。
 tree_cursor = "origin"
 
-# ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
+# ツリーの既定の並び (起動時)。実行時はツリーの `,` メニューで切り替え可
 # (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
 [ui.sort]
 key        = "name"    # 並び替えの基準: "name"(既定) | "size" | "modified" | "ext"
@@ -360,7 +365,13 @@ code_label_bg = "auto"
 #               "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon" など。
 code_theme = "TwoDark"
 
-# プレビュールールは上から評価し、最初にマッチしたものを使う。
+# プレビュールールは「あなたの割り当て」: 上から評価し、最初にマッチしたものを使う。どれにもマッチしない
+# ファイルは標準プラグイン(markdown・mermaid・svg・image・csv・spreadsheet・document・presentation・archive・
+# code・video・pdf)へ進み、下に並べた既定の割り当てで決まる。つまりルールを書くと既定に**加わる**
+# (従来のように既定を丸ごと置き換えない)。`konoma --plugins` で全割り当て(自分のルール→標準の順)を
+# 一覧できる。標準プラグインを止めるには `[plugins.<id>] enabled = false`(下の「プラグイン」)。
+# 何にも割り当たらないファイルは、テキストとして読めればテキスト、そうでなければ [can not preview: <ext>]。
+# 以下のルールは既定の割り当てをコメントアウトして載せたもの。外して書き換えるとそのファイルを自分で引き取れる。
 # builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "spreadsheet" | "document" | "code" | "text")
 #   markdown=konoma 自前のレンダラで装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
@@ -396,166 +407,269 @@ code_theme = "TwoDark"
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
 # detached: 別プロセスで開きTUIをブロックしない(動画等)
 
-[[preview.rules]]
-glob = "*.md"
-builtin = "markdown"
+# [[preview.rules]]
+# glob = "*.md"
+# builtin = "markdown"
 
-[[preview.rules]]
-glob = "*.{mmd,mermaid}"
-builtin = "mermaid"        # 既定=画像描画([ui] mermaid)。外部ツールに委譲したい場合は下の command 例参照
+# [[preview.rules]]
+# glob = "*.{mmd,mermaid}"
+# builtin = "mermaid"        # 既定=画像描画([ui] mermaid)。外部ツールに委譲したい場合は下の command 例参照
 # command = "merman -i {path} -o {out}.png --scale 2"
 # render_as = "image"
 
-[[preview.rules]]
-glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
-builtin = "svg"
+# [[preview.rules]]
+# glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
+# builtin = "svg"
 
-[[preview.rules]]
-mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
-builtin = "image"
+# [[preview.rules]]
+# mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
+# builtin = "image"
 
-[[preview.rules]]
-glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
-builtin = "csv"
+# [[preview.rules]]
+# glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
+# builtin = "csv"
 
-[[preview.rules]]
-glob = "*.tsv"             # タブ区切り版
-builtin = "tsv"
+# [[preview.rules]]
+# glob = "*.tsv"             # タブ区切り版
+# builtin = "tsv"
 
-[[preview.rules]]
-glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
-builtin = "spreadsheet"
+# [[preview.rules]]
+# glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
+# builtin = "spreadsheet"
 
-[[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストを Markdown に変換して .md と同じに表示(R=変換後の Markdown)。プレゼンはスライドの絵で表示(J/K=スライド・R=文字表示)
-builtin = "document"
+# [[preview.rules]]
+# glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストを Markdown に変換して .md と同じに表示(R=変換後の Markdown)。プレゼンはスライドの絵で表示(J/K=スライド・R=文字表示)
+# builtin = "document"
 
-[[preview.rules]]
-glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.tar.gz"          # 複合拡張子は globset の alternation で拾えないため別ルール
-builtin = "archive"
+# [[preview.rules]]
+# glob = "*.tar.gz"          # 複合拡張子は globset の alternation で拾えないため別ルール
+# builtin = "archive"
 
-[[preview.rules]]
-glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
-builtin = "code"
+# [[preview.rules]]
+# glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
+# builtin = "code"
 
-[[preview.rules]]
-mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
+# [[preview.rules]]
+# mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
                            # mp4/m4v/mov と mkv/webm の H.264 と HEVC は外部ツール不要。他のコーデック/コンテナは ffmpeg があれば使う
-builtin = "video"
+# builtin = "video"
 # 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
 # command = "mpv {path}"
 # detached = true          # 別プロセスで開き TUI をブロックしない
 
-[[preview.rules]]
-glob = "*.pdf"             # 既定: ページを1枚ずつ hayro(純Rust・外部ツール不要)でラスタライズして全画面画像表示(J/K でページ送り)
+# [[preview.rules]]
+# glob = "*.pdf"             # 既定: ページを1枚ずつ hayro(純Rust・外部ツール不要)でラスタライズして全画面画像表示(J/K でページ送り)
                            # macOS に限り、hayro が描けない PDF は OS 同梱の qlmanage/sips へフォールバック(1ページ目のみ)
-builtin = "pdf"
+# builtin = "pdf"
 
-# どのルールにもマッチしないファイルは [can not preview: <ext>] を全画面表示。
+# どのルールにもプラグインにもマッチしないファイルは [can not preview: <ext>] を全画面表示(テキストとして読めればテキスト)。
+
+# ── プラグイン ───────────────────────────────────────────────────────────────
+# プレビューは konoma に組み込まれたプラグインが作る。標準で入っているのは markdown・mermaid・math(Markdown 中の
+# 数式)・svg・image・csv(csv と tsv)・spreadsheet・document(Word)・presentation・archive・code・video・pdf。
+# `konoma --plugins` でどのプラグインがどのファイルを表示するかを一覧できる(自分のルールが先)。
+# `[plugins.<id>]` が 1 つのプラグインの表:
+#   enabled = false    そのプラグインを止める — 担当のファイルは次の段(テキストとして読めればテキスト、
+#                      そうでなければ [can not preview])へ進む。未知の id は起動時に知らせる。
+#   read_only = true   そのプラグインの書き込む操作を止める(プラグインが「書き込む」と宣言した操作。そのキーは理由を
+#                      表示して何もしない)。標準プラグインはまだ操作を宣言していないので、標準には今は効かない。
+# 表のほかのキーはそのプラグイン自身の設定で、対応する [ui] のキーを「置き換える」: 古い [ui] の名前も読まれ
+# (プラグインの表に値が無いときに使われる)、両方あればプラグインの表が勝つ。そのプラグインに無いキーは起動時に
+# 知らせて無視する。宣言と違う型の値(rainbow = "yes" など)は起動時に名指しで知らせ、そのプラグインの既定を使う。設定がまだ古い [ui] の名前のままのときは、起動時に 1 回だけフッターで案内する
+# (「[ui] md_alerts は古い名前です — [plugins.markdown] alerts に書き換えてください」)。値を移せば案内は消える。
+#   csv          rainbow          ([ui] csv_rainbow だったもの)
+#   spreadsheet  rainbow          ([plugins.csv] rainbow に従う。ここで指定すればそちらが優先)
+#   code         syntax_highlight ([ui] syntax_highlight だったもの)
+#   svg          max_px           ([ui] svg_max_px だったもの)
+#   mermaid      mode theme curve routing rows   ([ui] mermaid mermaid_theme mermaid_curve mermaid_routing mermaid_rows だったもの)
+#   math         mode color       ([ui] math math_color だったもの)
+#   markdown     task_states autolink alerts emoji frontmatter footnotes inline_html details table_align image_align
+#                                 ([ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
+#                                  md_inline_html md_details md_table_align md_image_align だったもの)
+# 値の意味は上の [ui] の各キーと同じ。Word 文書も markdown のオプションで描かれる。
+# プラグイン自身の操作のキーは [keys.<プラグイン id>] で付け替えられる(W = "width" で操作 `width` のキーを W に、
+# w = "noop" でキーを外す)。ホストが使うキーは断られて起動時のメッセージで知らせる(操作は `Space` のメニューに残る)。
+# [plugins.markdown]
+# enabled = false
+# alerts = false
+# [plugins.video]
+# enabled = false
+# [plugins.csv]
+# rainbow = false
+# [plugins.mermaid]
+# theme = "forest"
+# rows = 30
 
 # ── キーバインド (FR-8) ──────────────────────────────────────────────────────
 # 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
 # (上の ui の keys="vim" とは別物。混同しやすいので注意)
 #
-# モデル: 「面(surface) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
+# モデル: 「文脈(今見ているもの) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
 # あり、ここで上書き/追加/無効化できる(書かなければ既定のまま)。helix 風の表記:
-#   [keys.<面>]
+#   [keys.<文脈>]
 #   <キー> = "<アクション>"
 #
-# ■ 面(surface)名 — 「今どの画面か」で別々のマップを持つ。snake_case:
-#   global        : どの面でも効く(タブ t/I/[/]/1-9・T=タブ一覧・ヘルプ ?)。"tab_new"(t)は常に末尾に
-#                  新規タブを追加、"tab_new_after"(I)は現在のタブの右隣に挿入する。w は既定未割当
+# 既定のキーは 1 つの設計に沿っていて、同じキーはどこでも同じ意味: アプリ全体のキー(? Q F P t T [ ] 1-9)・
+# 基本のキー(j k g G / n N r y Y v V m ' Ctrl-t , Space Esc Enter q)・表示の種類ごとのキー(画像の + - = ズーム・
+# ページ送りの J K・アウトラインの O・表現の巡回の R)・動詞の e(編集)/ o(他のアプリで開く)/
+# p(プロジェクトの画面)/ !(プロジェクトのツール)。既定の全表はドキュメントサイトのキーマップ一覧に、
+# 今の割当どおりのキーはアプリ内の ? ヘルプにある。
+#
+# ■ 文脈名 — 「今何を見ているか」で別々のマップを持つ。キーは、その文脈自身のマップ →
+#   同じ種類の表示で共通のキー → 基本のキー(j/k/Space) → global の順に探される。小文字の snake_case:
+#   global        : どの文脈でも効く(タブ t/[/]/1-9・T=タブ一覧・ヘルプ ?・Q・F・P)。"tab_new_after"(t)は
+#                  現在のタブの右隣に新規タブを挿入、"tab_new"(既定キー無し)は末尾に追加する。w は既定未割当
 #                  (vim の単語移動と誤爆するため。閉じるはツリーの q。"w"="tab_close" で復活可)
 #   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
-#   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
-#   preview_table : CSV/TSV/アーカイブ表   table_cell : セル全文ポップアップ(preview_table の Enter)
-#   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
-#   git_graph_picker : グラフのブランチ表示パネル(b)
-#   git_worktrees : リンクワークツリー一覧(w・変更ハブ内)
-#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
+#   text          : ソースとプレーンテキスト(表示できないプレビューもここ)
+#   document      : 装飾表示の文書 — 描画した Markdown・Word・スライド・mermaid 図
+#   text_visual   : テキストプレビューのビジュアル選択中(v / V)
+#   image         : 画像・SVG・PDF のページ・動画サムネイル       diff : 1 ファイルの git/jj 差分
+#   table         : CSV/TSV/アーカイブ/表計算の表   table_cell : セル全文ポップアップ(表の Enter)
+#   git.changes   : Git 変更一覧(p)        git.log / git.graph / git.branches / git.detail
+#   git.graph_picker : グラフのブランチ表示パネル(b)
+#   git.worktrees : リンクワークツリー一覧(w・バージョン管理の画面内)
+#   jj.changes ... : 同じ画面を jj リポジトリで開いたとき(jj.log jj.graph jj.graph_picker
+#                   jj.branches jj.worktrees jj.detail)。最初は git.* と同じキー
+#                   (違うのは少数。jj.changes の s は取り込み)
+#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  outline  info  help
+#   ドットを含む名前は TOML では引用符が要る: [keys."git.changes"]。
+#   文脈ができる前の名前も読む — preview_text(= text + document)・preview_text_visual(= text_visual)・
+#   preview_image(= image)・preview_table(= table)・preview_git_diff(= diff)・
+#   git_changes / git_log / git_graph / git_graph_picker / git_branches / git_worktrees / git_detail
+#   (= 同名の "git.…" と "jj.…")。起動時に何へ書き換えればよいかを知らせる。
+#   同じ文脈を新旧両方の名前で書いたときは新しい名前が勝つ。
 #
-# ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
+# ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / ' ,"・
 #   装飾 "ctrl-f"(別名 "c-f")・名前付き "tab enter esc up down left right home end pageup pagedown"。
-#   和音(リーダー)は空白区切り 2 トークン: "y f" = y の後に f、"space d" = Space の後に d。
-#   ※ Esc/Enter/Backspace/Delete/Tab/矢印・テキスト入力中の文字キーは固定(rebind 不可・無視)。
+#   和音は空白区切り 2 トークン: メニューを開くキー + そのメニューの中のキー —
+#   "y f" = y の後に f、", s" = , の後に s、"space d" = Space の後に d。[keys.<文脈>] の和音はその文脈の
+#   メニューだけを変える(ツリー・表・ブランチ一覧の y は別のメニュー)。[keys.global] の和音は全文脈に届く。
+#   ツリー以外の Space メニューは、その画面で動く操作から自動で作られるので、メニューを編集するのでなく
+#   操作のほうをキーに割り当てる。
+#   ※ Esc/Enter/Backspace/Delete/Tab/Shift-Tab/矢印・テキスト入力中の文字キーは固定(rebind 不可・無視)。
+#     ただし固定キーが実行する操作には下に名前があり、別のキーを足して割り当てられる。
 #
-# ■ アクション名(snake_case)の主なもの:
+# ■ アクション名(snake_case)の主なもの(括弧は既定のキー):
 #   移動         : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
 #   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref"(@相対パス) "copy_code_block"(md コードブロック)
 #   ファイル管理 : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
 #                  "file_duplicate"(Space→D: カーソル/選択をその場に複製＝note copy.md)
-#   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
-#                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
-#                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
-#                  "enter_visual" "toggle_select" "open_in_new_tab"(Ctrl-t: カーソル下を別タブで開く)
-#   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
+#   ツリー       : "quit"(Q) "close_tab_or_quit"(q) "tree_descend"(l) "tree_leave"(h) "tree_activate"(Enter)
+#                  "filter_start"(/) "toggle_hidden"(.) "refresh"(r・全文脈で効く) "toggle_info"(i)
+#                  "mark_set"(m) "mark_jump"(') "set_anchor"(a) "reset_anchor"(A) "open_git_diff_cursor"(d)
+#                  "enter_visual"(v) "toggle_select"(V) "open_in_new_tab"(Ctrl-t: カーソル下を別タブで開く)
+#   編集 / 開く  : "request_edit"(e: エディタを、見ている行で開く。プレビュー・diff・変更一覧の行でも効く。
+#                    Office ファイルでは Office アプリで開く)
+#                  "open_external"(o: ファイルをそれ用のアプリで開く — Office ファイルは Microsoft Office /
+#                    LibreOffice / OS の既定、それ以外は OS の既定。バックグラウンドで動く。
+#                    [external] office_apps と open_links で止められる)
+#   並べ替え/表示: ツリーとプレビューの `,` メニュー。"open_sort_menu" "sort_name" "sort_size" "sort_modified" "sort_ext"
+#                  "sort_toggle_reverse" "sort_toggle_dirs_first" "cycle_path_style" "toggle_wrap"
+#                  (既定キー無し: ツリーの旧 s と p は `,` メニューにある。キーを戻したければ割り当てる。
+#                    "open_sort_menu" は今いる画面の `,` メニューを開く。旧ソートの重ね物は無くなった)
+#   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change" / "jump_prev_change"
+#                    (ツリーの n / N、diff の Ctrl-n / Ctrl-p = 次/前の変更ファイル)
+#                  "diff_next_change" / "diff_prev_change"(diff の n / N = ファイル内の次/前の変更ブロック)
 #                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾。
 #                    フォロー diff は「F を押して以降」の変更だけを出す＝F 前の未コミット変更は隠れる)
-#                  "toggle_follow_diff_scope"(f・フォロー diff 内: 「開始以降」とフル git diff を切替)
+#                  "toggle_follow_diff_scope"(フォロー diff 内: 「開始以降」とフル git diff を切替 —
+#                    diff の `,` メニューのキー f)
 #   パス移動     : "paste_jump"(P・global: クリップボードのパス/GitHub リンクを読んでその位置へ移動＝
 #                  reveal + preview。ローカル絶対/相対・GitHub blob/raw URL・#L123 / :123 行指定に対応。
 #                  現在の root 外なら対象の repo を root に切替。@path#L 参照もそのまま貼れる)
 #   ブックマーク : m=登録・'=一覧はツリーとプレビュー両面に既定割当(プレビュー中は表示中ファイルを登録)。
 #                  一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
-#                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
+#                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(単キー無し: 一覧の Space メニューの d)
+#                  "bookmark_close"(q / ')
 #                  ※ j/k/q と global の t/T/F/P/Q はキー操作に取られるため、その文字のブックマークは
 #                    j/k + Enter で選んで開く(または当該キーを config で退避)。
-#   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
+#   プレビュー   : "preview_back"(q) "search_start"(/) "search_next" / "search_prev"(n / N: 次/前の一致 —
+#                    検索していないときは次/前の変更箇所)
+#                  "preview_copy_selection"(v / V で選択中の y: 選択したテキストをコピー)
 #                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
-#                  "link_open"(Enter: リンクを同タブで開く) "open_link_new_tab"(Ctrl-t: ローカルリンクを別タブで開く。
+#                  "link_open"(Enter: リンクを同タブで開く。フォーカス中のチェックボックス/<details> は切り替える)
+#                  "toggle_focused_item"(同じ切り替えを独立した操作にしたもの: キー無し、Space メニューにある)
+#                  "link_focus_next" "link_focus_prev"(Tab / Shift-Tab)
+#                  "open_link_new_tab"(Ctrl-t: ローカルリンクを別タブで開く。
 #                    同一文書内の #アンカーはその場で移動・URL/mailto/tel はブラウザ等で外部に開く)
 #                  "preview_next_file" "preview_prev_file"(Ctrl-n/Ctrl-p: ツリー表示順で次/前の
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
-#                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
-#                  "toggle_markdown_raw"(R: 装飾表示 ⇄ 生のソース。プレゼンではスライドの絵 ⇄ 文字の表示)
-#                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "toggle_outline"(O: Markdown プレビューの見出しアウトライン、または 2 ページ以上の PDF・ブック・プレゼンのページ一覧を開く。Enter でジャンプ)
+#                  "cycle_representation"(R: 表現の巡回 — 装飾表示 ⇄ 生のソース。プレゼンではスライドの絵 ⇄ 文字の表示。diff ではその表現の巡回。プラグインが 2 つ以上の表現を宣言しているときは宣言順に巡回(表の表現は 1 つなので R は出ない)。旧名 "toggle_markdown_raw" も読める)
+#                  "image_zoom_in"(+) "image_zoom_out"(-) "image_zoom_reset"(=)
 #                  "page_next" "page_prev"(J/K と、画像面・画像/PDF/SVG の diff 面の PageDown/PageUp(diff ではスクロールの代わりにページを送る): PDF の次/前のページ・表計算の次/前のシート・プレゼンの次/前のスライド・
 #                    画像/PDF/SVG の diff では複数ページの PDF の両側同時のページ送り。送るものが無い所では何もしない。
 #                    旧名 "pdf_next_page" "pdf_prev_page" "sheet_next" "sheet_prev" "media_diff_page_next"
 #                    "media_diff_page_prev" も別名として使える)
+#   選択         : ツリーの範囲選択の "visual_select_siblings"(a) "visual_select_all"(A) "visual_commit"(v)、
+#                  プレビューの "preview_enter_visual"(v) "preview_enter_visual_line"(V) "preview_exit_visual"
+#   オーバーレイ : "image_return_to_diff"(diff の preview 表現の画像で R) "bookmark_jump"(ブックマーク一覧の Enter)
+#                  "info_close"(i / q) "outline_jump"(アウトラインの Enter)
 #   テーブル     : "table_copy_cell" "table_copy_row" "table_copy_column"(y → c/r/C: CSV/TSV/アーカイブ表からコピー)
 #                  "toggle_table_cell"(テーブルプレビューの Enter: カーソルセルの全文ポップアップ。グリッドは
 #                    幅の広いセルを "…" で切り詰めるが、これは切り詰め無しの値を折返し表示し、
 #                    j/k/g/G/PageUp/PageDown でスクロールできる。q/Esc/Enter で閉じる。ポップアップ自身の
 #                    キーは [keys.table_cell] で変更可)
-#   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
-#   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
-#                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
-#                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
-#                  "jj_sync"(R= ハブで jj に作業コピーを取り込ませる。konoma が jj リポジトリに
+#   Git          : "open_git_view"(p: プロジェクトの画面。ツリー・プレビュー・diff から)
+#                  "git_launch_tool"(!: ツリー・プレビュー・diff・変更一覧から)
+#                  "git_screen_next" "git_screen_prev"(Tab / Shift-Tab: 変更・ログ・グラフ・ブランチ・
+#                    ワークツリーの画面を巡回) "list_filter_start"(変更一覧・ログ・グラフの /)
+#                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit"(c)
+#                  "git_worktree_diff" "git_open_selected_diff"(l / Enter) "git_open_branches"(b)
+#                  "git_open_log" "git_open_graph"(既定キー無し: Tab で届く)
+#                  "cycle_diff_layout"(s) "cycle_diff_view"(R) "git_diff_discard"
+#                  "git_open_detail"(ログとグラフの l / Enter) "git_close"(q / h) "git_diff_discard"(diff の x)
+#                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"
+#                  "git_copy_date"(コミットの y メニュー) "copy_branch_name"(ブランチ一覧の y メニュー)
+#                  "branch_checkout"(l / Enter) "branch_create"(c) "branch_delete"(d) "branch_filter_start"(/)
+#                  "jj_sync"(s= jj の変更一覧で jj に作業コピーを取り込ませる。konoma が jj リポジトリに
 #                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
-#   Git グラフ   : "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。
+#   Git グラフ   : "git_graph_set_base"(s) "git_graph_clear_base"(x) "git_graph_open_picker"(b)
+#                  "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。
 #                    狭い既定を持つのは jj だけ)
-#                  "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
-#                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
-#                  "git_graph_picker_move_up" "git_graph_picker_move_down"
-#   Git ワークツリー: "git_open_worktrees"(w・変更ハブ内: リンクワークツリー一覧を開く。
+#                  "git_graph_picker_toggle"(x) "git_graph_picker_all"(a) "git_graph_picker_current_only"(c)
+#                  "git_graph_picker_move_up"(K) "git_graph_picker_move_down"(J) "git_graph_picker_apply"(l / Enter)
+#   Git ワークツリー: "git_open_worktrees"(w・バージョン管理の画面内: リンクワークツリー一覧を開く。
 #                    「ワークツリー」は本設定の他の箇所で使う「未コミットの作業ツリー」とは別概念＝
 #                    git worktree add で作る「リンクワークツリー」のこと)
 #                  "worktree_filter_start"(/: ブランチ名/パスで絞り込み)
-#                  "worktree_goto"(Enter: このタブの root(と open_dir)を選択ワークツリーへ切替。
+#                  "worktree_goto"(Enter / l: このタブの root(と open_dir)を選択ワークツリーへ切替。
 #                    Enter は固定キーだが(branch_checkout と同様)、config で別キーにも割当可)
 #                  "worktree_goto_new_tab"(Ctrl-t: 選択ワークツリーを別タブで開く。現在のタブは不変)
-#                  "worktree_close"(q/Esc)
+#                  "worktree_close"(q / h)
 #                  "worktree_show_changes"(d: 選択ワークツリーの base ブランチからの diff を表示
 #                    ＝コミット済み＋未コミットの両方(ワークツリーが既にコミット済みでも何かは表示される)。
 #                    base は下の graph_base_branches・無ければメインワークツリーのブランチにフォールバック。
 #                    base が無い/積み上げが無い時はさらに未コミットのみの diff にフォールバック)
-#                  "worktree_create"(n: ブランチ名の入力ダイアログを開く。新規/既存は自動判別なので
+#                  "worktree_create"(c: ブランチ名の入力ダイアログを開く。新規/既存は自動判別なので
 #                    そのための質問は出ない → [git] worktree_dir の位置にメインワークツリーの隣として
 #                    `git worktree add` し、このタブをそこへ切り替える)
+#   タブ / アプリ: "tab_new_after"(t) "tab_new"(既定キー無し) "toggle_tab_list"(T) "tab_list_close"(一覧内の d)
+#                  "tab_list_activate"(一覧内の Enter) "tab_prev" "tab_next"([ ]) "toggle_help"(?) "cancel"(Esc)
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
-# ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。
-#   y     → パスコピー   (n=名前 r=相対 f=フル p=親 @=AI 向け @相対パス参照)
-#   Space → ファイル管理 (n=作成 r=改名 d=削除 c=コピー x=カット p=貼付) ※ツリー / ビジュアル
+# ■ メニュー(2 段キー / which-key): 押すと候補がフッターに出る。
+#   y     → コピー       (ツリー: n=名前 r=相対 f=フル p=親 @=AI 向け @相対パス参照。
+#                         表: c=セル r=行 C=列 f=パス / コミット: s h t m a d / ブランチ: n=名前)
+#   ,     → 並べ替え/表示 (ツリー: n s m e r . p h / テキスト・文書: p=パスの様式 w=折り返し / diff: f p)
+#   Space → 操作         (ツリーとその範囲選択: n=作成 r=改名 d=削除 c=コピー x=カット p=貼付 D=複製。
+#                         それ以外: その画面で動く操作すべて。自動で作られる)
 #
-# ■ 衝突検知: 同じ面で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の
-#   タブキーを別用途にする等)は起動時に検知し、フッターに通知して既定へ戻す(黙って壊さない)。
+# ■ 衝突検知: 同じ文脈で既定の重要キーを奪う設定(メニューを開くキー(y , Space)を操作に割り当てる・
+#   global のキーを別用途にする等)は起動時に検知し、フッターに通知して既定へ戻す(黙って壊さない)。
+#
+# 昔のキーを戻すには、その操作を割り当てる(操作の名前はどれも変わっていない):
+# [keys.global]
+# "I" = "tab_new_after"        # 旧「現在のタブの右隣に新規タブ」のキー(今は t)
+# "t" = "tab_new"              # 旧「末尾に新規タブ」のキー
+# [keys.tree]
+# o = "open_git_view"          # 旧 Git ハブのキー(今は p。o はファイルを他のアプリで開く)
+# s = "open_sort_menu"         # 旧ソートメニューのキー(`,` メニューを開く)
 #
 # 例(コメントを外して使う):
 # [keys.tree]
@@ -564,15 +678,15 @@ builtin = "pdf"
 # "y f" = "copy_full"          # y→f でフルパスコピー (既定)
 # x = "noop"                   # x を無効化
 #
-# [keys.preview_text]
+# [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys.git_changes]
+# [keys."git.changes"]
 # g = "git_open_graph"
 #
 # (後方互換) 旧 [keys] の copy_name/copy_full/copy_relative/copy_parent (suffix) は当面読み込み、
 # パスコピーの y リーダーへ反映する。**copy_prefix は無視** (新スキームでプレフィクスは y 固定)。
-# いずれも非推奨・新形式 [keys.<面>] を推奨。
+# いずれも非推奨・新形式 [keys.<文脈>] を推奨。
 
 # 外部エディタ(`e` キーで起動)。**拡張子ごとに指定可能**。
 # 解決順: [editor.ext] の拡張子別 → command(全体既定) → $VISUAL → $EDITOR → vim。
@@ -595,16 +709,16 @@ command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim �
 # txt = "nano"
 
 # ── Git 連携 ───────────────────────────────────────────────────────────────
-# `o` で内蔵 Git ビュー(変更ハブ)を開く。外部 git ツールは変更ハブの中で `!` から起動する。
+# `p` で内蔵 Git ビュー(変更一覧。Tab で各画面を巡回)を開く。外部 git ツールは `!` から起動する。
 [git]
-tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
+tool        = "lazygit"   # ツリー・プレビュー・diff・変更一覧の `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
 media_diff  = "auto"      # 画像/PDF/SVG の並べて表示「diff」の初期レイアウト: "auto"(絵が大きく映る方=左右/上下) |
                         # "side"(左右) | "stack"(上下)。上の `diff` とは別の設定(意味が違うため)。その表示中 `s` で
                         # auto→side→stack→auto を巡回。
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
-worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で新規リンクワークツリーを置く場所: **メイン**
+worktree_dir = "../"   # ワークツリー一覧(`c`・[keys."git.worktrees"])で新規リンクワークツリーを置く場所: **メイン**
                         # ワークツリー自身のパス(今いる root ではない)を基準に、ブランチ名(`/` は `-` に置換=そのまま
                         # だと git が入れ子ディレクトリを作る)を足す。既定=メインの隣(例: ~/work/proj + feat →
                         # ~/work/feat)。絶対パスはそのまま使う。**repo 内(例 ".worktrees/")は避ける**こと=そこに作った
@@ -613,16 +727,15 @@ worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で
 
 # ── 外部プロセスのスイッチ ───────────────────────────────────────────────────
 # konoma が起動する外部プロセスを1個ずつ on/off できる。既定は全て `true`(挙動は変わらない)。
-# `[[preview.rules]]` で個別に止めようとしないこと — ユーザー定義ルールを1つでも書くと**既定の
-# ルール一覧が丸ごと置き換わる**ため、PDF/動画だけを狙って止めることができず、Markdown・画像・
-# CSV 等も一緒に効かなくなる。`[ui] lang` は既に明示/自動の切替を持つので、ここには専用フラグを
+# PDF や動画など 1 種類のプレビューを止めたいときは `[[preview.rules]]` でなく
+# `[plugins.<id>] enabled = false` を使う(ここのスイッチは外部プロセスを、あちらは標準プラグインを止める)。`[ui] lang` は既に明示/自動の切替を持つので、ここには専用フラグを
 # 足していない(OS 言語取得は `lang` を明示すれば呼ばれない)。
 [external]
 git              = true   # git 連携(status 色/ガター/Git ビュー/stage・commit・checkout — git CLI + 組込み git2)。
                            # false は `--no-default-features`(git feature 無し)でビルドしたのと同じ挙動(読み取りは空/None、
-                           # 書き込みはエラー)。`o` は「repo でない」とは別文言で無効を知らせる。
+                           # 書き込みはエラー)。`p` は「repo でない」とは別文言で無効を知らせる。
                            # この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになる
-                           # (初回使用時に一度だけ判定)。`o` はその旨を知らせる。
+                           # (初回使用時に一度だけ判定)。`p` はその旨を知らせる。
 git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
 vcs              = "auto" # どのバージョン管理システムが答えるか: "auto" | "git" | "jj"。
                           # ** jj 対応はプレビュー版。** ツリー・diff・ハブは一通り揃っているが、
@@ -634,7 +747,7 @@ vcs              = "auto" # どのバージョン管理システムが答える�
                           #   "jj"   — .jj があれば colocated でも jj。実際に jj で作業しているならこれ。
                           # konoma は jj リポジトリを「読む」だけ。全呼び出しに --ignore-working-copy が
                           # 付くのでスナップショットを取らず、書き込み系のキーも提示しない。唯一の例外は
-                          # ハブの `R`(確認あり・[ui] confirm_jj_sync)。
+                          # jj の変更一覧の `s`(確認あり・[ui] confirm_jj_sync)。
                           # jj バイナリが無い環境では git に落ちる。
 
 pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage/sips)。第一候補のレンダラ
@@ -648,8 +761,8 @@ video            = true   # 外部フォールバックの抽出ツール(ffmpeg
                            # H.264/HEVC のサムネイルは出る(上の pdf と hayro の関係と同じ)。
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
-open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
-office_apps      = true   # Office 文書(docx xlsx pptx odt ods odp 等)で `e` を押すと、$EDITOR に zip を渡さず GUI アプリで開く。
+open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P`・`o`(ファイルを他のアプリで開く)等。
+office_apps      = true   # Office 文書(docx xlsx pptx odt ods odp 等)で `e` や `o` を押すと、$EDITOR(e)や OS の既定(o)に zip を渡さず GUI アプリで開く。
                            # Microsoft Office(macOS のみ)→ LibreOffice → OS の既定(`open`/`xdg-open`)の順。
                            # false なら何も起動せず理由を表示。`[editor.ext]` でその拡張子を指定していればそちらが優先。
 preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり

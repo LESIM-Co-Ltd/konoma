@@ -1437,7 +1437,7 @@ fn cfg_preview_default_mermaid_extensions() {
     for name in ["cfgp_a.mmd", "cfgp_b.mermaid"] {
         let p = tmp(name, b"graph TD; A-->B\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Mermaid(_)), "{name}: {kind:?}");
+        assert!(kind.is_mermaid_file(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }
@@ -1449,7 +1449,7 @@ fn cfg_preview_default_svg() {
         b"<svg xmlns='http://www.w3.org/2000/svg'/>\n",
     );
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Svg(_)), "got {kind:?}");
+    assert!(kind.is_plugin("svg"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1457,14 +1457,18 @@ fn cfg_preview_default_svg() {
 fn cfg_preview_default_csv_tsv_delimiters() {
     let c = tmp("cfgp_data.csv", b"a,b,c\n1,2,3\n");
     match Config::default().resolve_preview(&c) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b','),
-        other => panic!("expected Table for csv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b',')
+        }
+        other => panic!("expected the csv plugin for csv, got {other:?}"),
     }
     std::fs::remove_file(&c).ok();
     let t = tmp("cfgp_data.tsv", b"a\tb\tc\n1\t2\t3\n");
     match Config::default().resolve_preview(&t) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b'\t'),
-        other => panic!("expected Table for tsv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b'\t')
+        }
+        other => panic!("expected the csv plugin for tsv, got {other:?}"),
     }
     std::fs::remove_file(&t).ok();
 }
@@ -1473,7 +1477,7 @@ fn cfg_preview_default_csv_tsv_delimiters() {
 fn cfg_preview_default_pdf() {
     let p = tmp("cfgp_doc.pdf", b"%PDF-1.4\n");
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Pdf(_)), "got {kind:?}");
+    assert!(kind.is_plugin("pdf"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1481,7 +1485,7 @@ fn cfg_preview_default_pdf() {
 fn cfg_preview_default_image_png_by_content() {
     let p = tmp("cfgp_photo.png", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Image(_)), "got {kind:?}");
+    assert!(kind.is_plugin("image"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1489,7 +1493,7 @@ fn cfg_preview_default_image_png_by_content() {
 fn cfg_preview_default_video_mp4_by_content() {
     let p = tmp("cfgp_clip.mp4", MP4_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Video(_)), "got {kind:?}");
+    assert!(kind.is_plugin("video"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1502,7 +1506,7 @@ fn cfg_preview_default_code_lowercase_exts() {
     ] {
         let p = tmp(name, body);
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Code(_)), "{name}: {kind:?}");
+        assert!(kind.is_code_plugin(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }
@@ -1519,15 +1523,12 @@ fn cfg_preview_default_txt_falls_back_to_text() {
 fn cfg_preview_glob_svg_wins_over_png_content() {
     let p = tmp("cfgp_weird.svg", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(
-        matches!(kind, PreviewKind::Svg(_)),
-        "svg glob wins: {kind:?}"
-    );
+    assert!(kind.is_plugin("svg"), "svg glob wins: {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
 #[test]
-fn cfg_preview_user_rules_replace_defaults() {
+fn cfg_preview_user_rules_come_before_the_standard_plugins() {
     let toml = r#"
 [[preview.rules]]
 glob = "*.md"
@@ -1536,14 +1537,16 @@ builtin = "code"
     let cfg: Config = toml::from_str(toml).unwrap();
     let md = tmp("cfgp_ovr.md", b"# title\n");
     assert!(
-        matches!(cfg.resolve_preview(&md), PreviewKind::Code(_)),
+        cfg.resolve_preview(&md).is_code_plugin(),
         "user rule should win for .md"
     );
     std::fs::remove_file(&md).ok();
     let rs = tmp("cfgp_ovr.rs", b"fn main() {}\n");
+    // Writing a rule used to replace the whole default list (a `.rs` file then fell to plain
+    // text); the rules are now tried first and the standard plugins take what they do not name.
     assert!(
-        matches!(cfg.resolve_preview(&rs), PreviewKind::Text(_)),
-        "defaults must be replaced, not merged"
+        cfg.resolve_preview(&rs).is_code_plugin(),
+        "defaults must be merged (user rules first), not replaced"
     );
     std::fs::remove_file(&rs).ok();
 }
@@ -1552,10 +1555,7 @@ builtin = "code"
 fn cfg_preview_absent_preview_keeps_default_rules() {
     let cfg: Config = toml::from_str("[ui]\nwrap = false\n").unwrap();
     assert!(
-        matches!(
-            cfg.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "missing [preview] keeps builtins"
     );
 }
@@ -1607,10 +1607,7 @@ preview_commands = false
 "#;
     let cfg2: Config = toml::from_str(toml2).unwrap();
     assert!(
-        matches!(
-            cfg2.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg2.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "preview_commands=false leaves builtin rules intact"
     );
 }
@@ -1782,10 +1779,8 @@ fn cfg_resolve_preview_with_classifies_a_deleted_png_from_its_old_bytes() {
         "対照: 実在しないパスでは resolve_preview は判定できないはず"
     );
     assert!(
-        matches!(
-            cfg.resolve_preview_with(deleted_path, &bytes),
-            PreviewKind::Image(_)
-        ),
+        cfg.resolve_preview_with(deleted_path, &bytes)
+            .is_plugin("image"),
         "resolve_preview_with は旧バイト列から Image と判定できるはず"
     );
 }
@@ -1797,14 +1792,8 @@ fn cfg_resolve_preview_with_svg_and_pdf_match_by_glob_even_with_empty_sniff() {
     let cfg = Config::default();
     let svg = std::path::Path::new("/nonexistent/figure.svg");
     let pdf = std::path::Path::new("/nonexistent/doc.pdf");
-    assert!(matches!(
-        cfg.resolve_preview_with(svg, &[]),
-        PreviewKind::Svg(_)
-    ));
-    assert!(matches!(
-        cfg.resolve_preview_with(pdf, &[]),
-        PreviewKind::Pdf(_)
-    ));
+    assert!(cfg.resolve_preview_with(svg, &[]).is_plugin("svg"));
+    assert!(cfg.resolve_preview_with(pdf, &[]).is_plugin("pdf"));
 }
 
 /// A user rule placed ahead of the builtin defaults still wins for `resolve_preview_with`, exactly
@@ -2207,6 +2196,57 @@ fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The example configs' `[keys]` section names every key context, and the `[keys.<name>]` examples in
+/// them (commented out, so `toml::from_str` never sees them) use names konoma actually knows — so an
+/// example a user uncomments does not just produce an "unknown key surface" warning. Context names
+/// that were renamed (plugin stage 2 / B1) are the thing this guards: the lists are hand-written
+/// in two languages.
+#[test]
+fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
+    use crate::keymap::Context;
+    for name in ["config.example.toml", "config.example.ja.toml"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name} — not present (published-crate build?)");
+            continue;
+        };
+        for ctx in Context::all() {
+            assert!(
+                text.contains(&ctx.name()),
+                "{name}: the [keys] section does not mention the context {:?}",
+                ctx.name()
+            );
+        }
+        // Every `[keys.<name>]` / `[keys."<name>"]` header, commented out or not.
+        let mut headers = 0;
+        for line in text.lines() {
+            let l = line.trim_start_matches('#').trim();
+            let Some(rest) = l.strip_prefix("[keys.") else {
+                continue;
+            };
+            let Some(end) = rest.find(']') else { continue };
+            let n = rest[..end].trim_matches('"');
+            if n.starts_with('<') {
+                continue; // the `[keys.<context>]` placeholder
+            }
+            headers += 1;
+            // Without git the dotted version-control names are unknown by design.
+            let known = n == "global" || Context::from_name(n).is_some() || n.contains('.');
+            assert!(known, "{name}: `[keys.{n}]` is not a key context");
+            if cfg!(feature = "git") && n.contains('.') {
+                assert!(
+                    Context::from_name(n).is_some(),
+                    "{name}: `[keys.\"{n}\"]` is not a key context"
+                );
+            }
+        }
+        assert!(
+            headers >= 3,
+            "{name}: found only {headers} [keys.…] examples"
+        );
+    }
+}
+
 /// Looks up a dotted TOML path (e.g. `"ui.sort"`) from the root table, returning the sub-table only
 /// if every segment exists and is itself a table.
 fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Table> {
@@ -2228,7 +2268,7 @@ fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
     // field-name scan can't derive on its own, so it's named here.
     //
     // Deliberately NOT covered below, with reasons (do not add a path here without one):
-    //   - `[keys]` / `[keys.<surface>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
+    //   - `[keys]` / `[keys.<context>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
     //     key not matching a named field is legal there (captured as a keymap surface/chord) — there
     //     is no fixed field list a key could be "misplaced" against.
     //   - `[editor.ext]`: `EditorConfig::ext` is an open `HashMap<extension, command>` — any
@@ -2338,7 +2378,7 @@ fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_
     let cfg = Config::default();
     let is_doc = |name: &str| {
         let p = std::path::PathBuf::from(format!("/nonexistent/{name}"));
-        matches!(cfg.resolve_preview_with(&p, &[]), PreviewKind::Document(_))
+        cfg.resolve_preview_with(&p, &[]).is_office_document()
     };
     for ext in [
         "docx", "docm", "dotx", "dotm", "odt", "ott", "pptx", "pptm", "ppsx", "ppsm", "potx",

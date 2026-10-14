@@ -1,115 +1,105 @@
-//! CSV/TSV table preview: parse a delimited file into a header + rows grid.
+//! What the table renderer shows: a plugin's table (CSV/TSV, an archive listing, the sheet of a
+//! workbook) read through the same [`Grid`].
 //!
-//! The grid is rendered with rainbow (per-column) colors and a movable cell cursor
-//! (see `ui/table.rs`), and cells/rows/columns can be copied to the clipboard.
-//! Parsing goes through the `csv` crate so quoted commas, embedded newlines, and
-//! ragged (variable-column) rows are handled correctly instead of a naive split.
+//! The CSV/TSV and archive files are read by the `csv` and `archive` plugins
+//! (`crates/konoma-table`), the workbooks by the `spreadsheet` plugin (`crates/konoma-office`);
+//! this module only re-exports what the host's tests share, and holds the borrowed view over the
+//! table a plugin returned.
 
 use std::borrow::Cow;
-use std::path::Path;
 
-use anyhow::{Context, Result};
+use konoma_plugin::view::{CellDetail, Grid as PluginGrid};
 
-use crate::preview::office::Sheet;
+/// What the host's tests read a CSV with: the parser, its row cap, the parsed table, and the
+/// (thread-local) counter of full-file parses.
+#[cfg(test)]
+pub use konoma_table::table::{parse, TableData, MAX_ROWS, PARSE_CALLS, PARSE_LOG};
+#[cfg(test)]
+pub use konoma_table::table::{PauseGate, CANCEL_CHECK_ROWS};
 
-/// Cap on the number of data rows read for the preview. CSVs can be arbitrarily large;
-/// we bound memory/parse time and mark the table `truncated` so the UI can say so.
-/// 100k rows is far more than a person scrolls through in a preview.
-pub const MAX_ROWS: usize = 100_000;
-
-/// A parsed CSV/TSV table. The first record is treated as the header row.
-#[derive(Debug, Clone, Default)]
-pub struct TableData {
-    /// Header cells (the first record). Empty when the file is empty.
-    pub headers: Vec<String>,
-    /// Data rows. Each row may be shorter or longer than `headers` (ragged files are padded on display).
-    pub rows: Vec<Vec<String>>,
-    /// Column count = max width across the header and every row (short rows are padded when drawn).
-    pub ncols: usize,
-    /// True when the file had more than `MAX_ROWS` data rows and reading stopped early.
-    pub truncated: bool,
-}
-
-impl TableData {
-    /// The header cell at `col` (empty string when out of range).
-    pub fn header(&self, col: usize) -> &str {
-        self.headers.get(col).map(String::as_str).unwrap_or("")
-    }
-
-    /// The data cell at (`row`, `col`) (empty string for ragged/out-of-range access).
-    pub fn cell(&self, row: usize, col: usize) -> &str {
-        self.rows
-            .get(row)
-            .and_then(|r| r.get(col))
-            .map(String::as_str)
-            .unwrap_or("")
-    }
-
-    /// Number of data rows (excludes the header).
-    pub fn nrows(&self) -> usize {
-        self.rows.len()
-    }
-}
-
-/// A read-only view of whatever the table renderer is showing: a parsed CSV/TSV/archive listing
-/// ([`TableData`]) or one sheet of a workbook ([`Sheet`]). Both are borrowed, never converted into
-/// each other (a sheet can hold 4M cells — copying it into `TableData` would double that).
+/// A read-only view of the table the renderer is showing: a table a plugin returned (a parsed
+/// CSV/TSV, an archive listing, one sheet of a workbook), read cell by cell through [`PluginGrid`].
+/// It is borrowed, never converted (a sheet can hold 4M cells — copying it would double that).
 ///
 /// "Rows" always means data rows: a CSV's header record is exposed through [`Grid::header`], and a
-/// sheet has no header record (its header is the column letters, see [`column_letters`]).
-#[derive(Debug, Clone, Copy)]
+/// sheet has no header record (its header is the column letters).
+#[derive(Clone, Copy)]
 pub enum Grid<'a> {
-    /// CSV/TSV or an archive listing.
-    Csv(&'a TableData),
-    /// One sheet of a spreadsheet.
-    Sheet(&'a Sheet),
+    /// A table a plugin returned.
+    Plugin(&'a dyn PluginGrid),
+}
+
+impl std::fmt::Debug for Grid<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Grid::Plugin(g) => write!(f, "Grid::Plugin({}x{})", g.nrows(), g.ncols()),
+        }
+    }
 }
 
 impl<'a> Grid<'a> {
     /// Number of data rows.
     pub fn nrows(&self) -> usize {
         match self {
-            Grid::Csv(t) => t.nrows(),
-            Grid::Sheet(s) => s.nrows,
+            Grid::Plugin(g) => g.nrows(),
         }
     }
 
     /// Number of columns.
     pub fn ncols(&self) -> usize {
         match self {
-            Grid::Csv(t) => t.ncols,
-            Grid::Sheet(s) => s.ncols,
+            Grid::Plugin(g) => g.ncols(),
         }
     }
 
-    /// The header text of `col`: the CSV header cell, or the spreadsheet column letters (`A`, `B`, .. `AA`).
+    /// The header text of `col`: the plugin table's header cell (empty when it has none; a
+    /// sheet's are the column letters `A`, `B`, .. `AA`).
     pub fn header(&self, col: usize) -> Cow<'a, str> {
         match self {
-            Grid::Csv(t) => Cow::Borrowed(t.header(col)),
-            Grid::Sheet(_) => Cow::Owned(column_letters(col)),
+            Grid::Plugin(g) => Cow::Owned(g.header(col).unwrap_or_default()),
         }
     }
 
     /// The text shown in a data cell (`""` for an empty/out-of-range cell). For a sheet this is the
-    /// cell as Excel displays it (number format applied).
-    pub fn cell(&self, row: usize, col: usize) -> &'a str {
+    /// cell as Excel displays it (number format applied). A plugin table that keeps its cells as
+    /// text is borrowed, so reading every cell (the search does) copies nothing.
+    pub fn cell(&self, row: usize, col: usize) -> Cow<'a, str> {
         match self {
-            Grid::Csv(t) => t.cell(row, col),
-            Grid::Sheet(s) => s.display(row, col),
+            Grid::Plugin(g) => match g.cell_str(row, col) {
+                Some(s) => Cow::Borrowed(s),
+                None => Cow::Owned(g.cell(row, col)),
+            },
+        }
+    }
+
+    /// How many cells data row `row` really has (a ragged CSV row is shorter than `ncols`; a sheet
+    /// row ends at its last cell that shows something).
+    pub fn row_len(&self, row: usize) -> usize {
+        match self {
+            Grid::Plugin(g) => g.row_len(row),
         }
     }
 
     /// True when the source was cut off at a limit (CSV row cap; sheet row/column cap).
     pub fn truncated(&self) -> bool {
         match self {
-            Grid::Csv(t) => t.truncated,
-            Grid::Sheet(s) => s.rows_truncated || s.cols_truncated,
+            Grid::Plugin(g) => g.truncated(),
         }
     }
 
-    /// Whether this is a spreadsheet sheet (row-number gutter, cell addresses, no header record).
-    pub fn is_sheet(&self) -> bool {
-        matches!(self, Grid::Sheet(_))
+    /// Calls `f(col, text)` for each cell of `row` that has something to search (see
+    /// [`PluginGrid::visit_row`]).
+    pub fn visit_row(&self, row: usize, f: &mut dyn FnMut(usize, &str)) {
+        match self {
+            Grid::Plugin(g) => g.visit_row(row, f),
+        }
+    }
+
+    /// The labelled lines of the cell popup, if the table has them (a sheet's).
+    pub fn detail(&self, row: usize, col: usize) -> Option<CellDetail> {
+        match self {
+            Grid::Plugin(g) => g.detail(row, col),
+        }
     }
 }
 
@@ -131,68 +121,9 @@ pub fn cell_address(row: usize, col: usize) -> String {
     format!("{}{}", column_letters(col), row + 1)
 }
 
-// Test-only counter of full-file parses, **thread-local** so tests running in parallel don't see each
-// other's work (a process-wide counter proved flaky for exactly that reason).
-#[cfg(test)]
-thread_local! {
-    pub static PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Parse a CSV/TSV file with the given delimiter byte (`b','` for CSV, `b'\t'` for TSV).
-///
-/// Reads byte records and lossily decodes to UTF-8, so a stray non-UTF-8 byte degrades to `�`
-/// rather than failing the whole preview (principle #3). The first record becomes the header.
-pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
-    #[cfg(test)]
-    PARSE_CALLS.with(|c| c.set(c.get() + 1));
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(delimiter)
-        .flexible(true) // allow a variable column count (ragged rows); short rows are padded on display.
-        .has_headers(false) // we handle the "first row is the header" convention ourselves.
-        .from_path(path)
-        .with_context(|| format!("open csv/tsv: {}", path.display()))?;
-
-    let decode = |rec: &csv::ByteRecord| -> Vec<String> {
-        rec.iter()
-            .map(|f| String::from_utf8_lossy(f).into_owned())
-            .collect()
-    };
-
-    let mut rec = csv::ByteRecord::new();
-    // header = the first record. An empty file yields an empty table.
-    if !rdr
-        .read_byte_record(&mut rec)
-        .context("read csv/tsv header")?
-    {
-        return Ok(TableData::default());
-    }
-    let headers = decode(&rec);
-    let mut ncols = headers.len();
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut truncated = false;
-
-    while rdr.read_byte_record(&mut rec).context("read csv/tsv row")? {
-        if rows.len() >= MAX_ROWS {
-            truncated = true;
-            break;
-        }
-        let row = decode(&rec);
-        ncols = ncols.max(row.len());
-        rows.push(row);
-    }
-
-    Ok(TableData {
-        headers,
-        rows,
-        ncols,
-        truncated,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
 
     #[test]
     fn column_letters_follow_the_spreadsheet_scheme() {
@@ -228,84 +159,50 @@ mod tests {
             ncols: 2,
             truncated: true,
         };
-        let g = Grid::Csv(&t);
+        let g = Grid::Plugin(&t);
         assert_eq!((g.nrows(), g.ncols()), (1, 2));
         assert_eq!(g.header(1), "h2");
         assert_eq!(g.cell(0, 1), "b");
         assert_eq!(g.cell(5, 5), "");
         assert!(g.truncated());
-        assert!(!g.is_sheet());
     }
 
     #[test]
     fn grid_over_an_empty_sheet_is_empty_with_letter_headers() {
-        let s = Sheet::default();
-        let g = Grid::Sheet(&s);
+        let wb = crate::preview::office::Workbook {
+            sheets: vec![crate::preview::office::Sheet::default()],
+            ..Default::default()
+        };
+        let view = konoma_office::table_view(wb, 0, "en", true);
+        let g = Grid::Plugin(&*view.grid);
         assert_eq!((g.nrows(), g.ncols()), (0, 0));
         assert_eq!(g.header(0), "A");
         assert_eq!(g.cell(0, 0), "");
         assert!(!g.truncated());
-        assert!(g.is_sheet());
-    }
-    use std::io::Write;
-
-    /// Returns the sandbox guard alongside the file path — the directory must outlive the
-    /// `parse(&p, ...)` call every caller makes right after, not just this function's own return.
-    fn write_temp(name: &str, content: &str) -> (crate::test_support::TmpDir, std::path::PathBuf) {
-        let dir = unique_tmp("konoma_table_tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(name);
-        let mut f = std::fs::File::create(&p).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        (dir, p)
+        assert!(view.addressed);
     }
 
+    /// A plugin table that makes its cell text on demand (no borrowed string) reads the same.
     #[test]
-    fn parses_headers_and_rows() {
-        let (_dir, p) = write_temp("basic.csv", "a,b,c\n1,2,3\n4,5,6\n");
-        let t = parse(&p, b',').unwrap();
-        assert_eq!(t.headers, vec!["a", "b", "c"]);
-        assert_eq!(t.nrows(), 2);
-        assert_eq!(t.ncols, 3);
-        assert_eq!(t.cell(0, 0), "1");
-        assert_eq!(t.cell(1, 2), "6");
-        assert_eq!(t.header(1), "b");
-        assert!(!t.truncated);
-    }
-
-    #[test]
-    fn quoted_comma_stays_one_cell() {
-        // A comma inside quotes stays one cell (a naive split would break on it).
-        let (_dir, p) = write_temp("quoted.csv", "name,note\n\"Doe, John\",hi\n");
-        let t = parse(&p, b',').unwrap();
-        assert_eq!(t.cell(0, 0), "Doe, John");
-        assert_eq!(t.cell(0, 1), "hi");
-    }
-
-    #[test]
-    fn tab_delimiter_for_tsv() {
-        let (_dir, p) = write_temp("basic.tsv", "x\ty\n10\t20\n");
-        let t = parse(&p, b'\t').unwrap();
-        assert_eq!(t.headers, vec!["x", "y"]);
-        assert_eq!(t.cell(0, 1), "20");
-    }
-
-    #[test]
-    fn ragged_rows_report_max_columns() {
-        // A varying column count per row doesn't crash; ncols = the max. Short rows get empty cells.
-        let (_dir, p) = write_temp("ragged.csv", "a,b,c\n1\n4,5,6,7\n");
-        let t = parse(&p, b',').unwrap();
-        assert_eq!(t.ncols, 4);
-        assert_eq!(t.cell(0, 2), ""); // row 0 has only 1 cell
-        assert_eq!(t.cell(1, 3), "7");
-    }
-
-    #[test]
-    fn empty_file_is_empty_table() {
-        let (_dir, p) = write_temp("empty.csv", "");
-        let t = parse(&p, b',').unwrap();
-        assert!(t.headers.is_empty());
-        assert_eq!(t.nrows(), 0);
-        assert_eq!(t.ncols, 0);
+    fn grid_over_a_table_that_builds_its_cells_reads_through_cell() {
+        struct Made;
+        impl PluginGrid for Made {
+            fn nrows(&self) -> usize {
+                2
+            }
+            fn ncols(&self) -> usize {
+                1
+            }
+            fn header(&self, _col: usize) -> Option<String> {
+                None
+            }
+            fn cell(&self, row: usize, _col: usize) -> String {
+                format!("r{row}")
+            }
+        }
+        let made = Made;
+        let g = Grid::Plugin(&made);
+        assert_eq!(g.cell(1, 0), "r1");
+        assert_eq!(g.header(0), "", "a missing header reads as empty");
     }
 }

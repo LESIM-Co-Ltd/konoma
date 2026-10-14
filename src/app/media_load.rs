@@ -42,7 +42,9 @@ impl App {
     }
 
     /// Decode a still image and place it in image_src (the ThreadProtocol is built asynchronously at render time).
-    /// Still images (PNG/JPG) decode fast, so this stays synchronous. On decode failure / no backend, image_src=None.
+    /// On decode failure / no backend, image_src=None. Test seam only: the real path decodes on the
+    /// media worker (`app/media_plugin.rs`).
+    #[cfg(test)]
     pub(super) fn load_image(&mut self, path: &Path) {
         if self.picker.is_none() || self.img_tx.is_none() {
             return; // no backend: the render side falls back to text
@@ -101,122 +103,68 @@ impl App {
         // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
         match kind {
-            PreviewKind::Image(_) if Self::looks_like_gif(path) => {
-                self.spawn_or_sync_media(MediaJob::Gif(path.to_path_buf()))
-            }
-            // Still images: without a worker channel (tests) they decode inline, otherwise on the
-            // worker like every other media kind (the encode is made async at render time).
-            PreviewKind::Image(_) if self.media_tx.is_none() => self.load_image(path),
-            // A very large image decodes for seconds: never on the UI thread.
-            PreviewKind::Image(_) => {
-                if self.picker.is_some() && self.img_tx.is_some() {
-                    self.spawn_or_sync_media(MediaJob::Still(path.to_path_buf()))
-                }
-            }
-            PreviewKind::Svg(_) => {
-                self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
-            }
-            // Video: always spawn the job — H.264 in mp4/m4v/mov is decoded in pure Rust
-            // (`preview::video::thumbnail`'s first step) and never touches an external process, so
-            // it must work regardless of `[external] video`, exactly like PDF/hayro below. That flag
-            // only controls whether the job's *fallback* (ffmpegthumbnailer/ffmpeg, for HEVC/VP9/AV1
-            // and non-mp4 containers) may launch. With the flag off and a file the built-in decoder
-            // declines, `image_src` stays None and the render side shows the same
-            // `VideoThumbUnavailable` hint as a missing tool would — no new UI state needed.
-            PreviewKind::Video(_) => self
-                .spawn_or_sync_media(MediaJob::Video(path.to_path_buf(), self.cfg.external.video)),
-            // PDF: always spawn the job — `hayro` (the primary renderer, `preview::pdf::render_page`)
-            // is pure Rust and never touches an external process, so it must work regardless of
-            // `[external] pdf`. That flag now only controls whether the job's *fallback*
-            // (macOS's bundled qlmanage/sips, tried only if hayro itself fails on page 1) may run.
-            PreviewKind::Pdf(_) => self.spawn_or_sync_media(MediaJob::Pdf(
-                path.to_path_buf(),
-                self.tab.pdf_page,
-                self.cfg.external.pdf,
-            )),
-            // A spreadsheet: parsed on the worker (no graphics backend needed — the table is drawn
-            // with ordinary text). The display language picks the locale that decides what
-            // locale-dependent built-in number formats look like.
-            PreviewKind::Spreadsheet(_) => {
-                let locale = match self.lang {
-                    crate::i18n::Lang::Jp => crate::preview::office::Locale::Ja,
-                    crate::i18n::Lang::En => crate::preview::office::Locale::En,
-                };
-                self.spawn_workbook_job(path.to_path_buf(), locale, self.tab.sheet_idx);
-            }
-            // A Word document: converted to Markdown on the same worker (no graphics backend
-            // needed to read it; the pictures it holds are decoded later, when drawn).
-            PreviewKind::Document(_) => {
-                self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
-            }
-            // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
-            // (on a separate thread). In text mode / with no backend, do nothing — the decorated
-            // text path draws it instead (principle #3).
-            PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {
-                self.spawn_or_sync_media(MediaJob::Mermaid(
-                    path.to_path_buf(),
-                    self.mermaid_px(),
-                    self.cfg.ui.mermaid_theme.clone(),
-                    self.cfg.ui.mermaid_curve.clone(),
-                    self.cfg.ui.mermaid_routing.clone(),
-                ))
+            // The picture plugins (image, svg, pdf, video, mermaid): the plugin's view is asked for
+            // and decoded on the media worker (`app/media_plugin.rs`).
+            //
+            // - A standalone .mmd/.mermaid draws as a picture in image mode only (it is the
+            //   mermaid plugin's SVG, trusted, kept for sharp zoom); in text mode, with no image
+            //   backend, or when the diagram cannot be drawn, the host's decorated path shows the
+            //   plugin's text diagram instead (principle #3).
+            // - A still image decodes on the worker (never on the UI thread) and needs the decode
+            //   backend as well as a picker; a GIF's frames are expanded there too.
+            // - An SVG is drawn by a supervised child process and keeps its source for sharp zoom.
+            // - Video and PDF always run the job: `hayro` (PDF) and the H.264/H.265 decoders
+            //   (video) are pure Rust and never touch an external process, so they must work
+            //   regardless of `[external] pdf` / `video`. Those flags only decide whether the
+            //   fallback (qlmanage/sips for page 1, ffmpegthumbnailer/ffmpeg) may launch; with the
+            //   flag off and a file the built-in code declines, `image_src` stays None and the
+            //   render side shows the same unavailable hint as a missing tool would.
+            PreviewKind::Plugin { id, .. } if kind.is_media_plugin() => {
+                self.start_media_plugin(id, path)
             }
             // Full-screen fence display: re-fetch the fence body from the md by ordinal (count-guard,
-            // the same shape as code copy).
+            // the same shape as code copy). The SVG comes from the plugin that takes the
+            // `fence:mermaid` kind (`embed_plugin.rs`).
             PreviewKind::MermaidFence(ord) => {
-                if let Some(code) = self.mermaid_fence_code(path, *ord) {
-                    self.spawn_or_sync_media(MediaJob::MermaidSrc(
-                        code,
-                        self.mermaid_px(),
-                        self.cfg.ui.mermaid_theme.clone(),
-                        self.cfg.ui.mermaid_curve.clone(),
-                        self.cfg.ui.mermaid_routing.clone(),
-                    ));
+                if let (Some(code), Some(embed)) = (
+                    self.mermaid_fence_code(path, *ord),
+                    self.embed_render(embed_plugin::FENCE_MERMAID),
+                ) {
+                    self.spawn_or_sync_media(MediaJob::MermaidSrc(code, self.mermaid_px(), embed));
                 }
             }
-            // External command delegation. `detached` spawns-and-forgets right here, synchronously
-            // (Command::spawn returns immediately — it doesn't wait for the child — so this can't
-            // block the UI either); it is reached **only from `enter_preview`**, since
-            // `kind_loads_media` deliberately excludes `detached=true` so a tab switch / an
-            // unrelated fs-triggered reload never relaunches it (opening mpv again every time you
-            // flip back to that tab). A non-detached command (image or text `render_as`) runs on
-            // the worker like every other media kind above.
+            // External command delegation, by the built-in `command` plugin
+            // (`plugins/command.rs`): opened on the worker like every other plugin. A `detached`
+            // rule starts its program once and answers with a message; it is reached **only from
+            // `enter_preview`**, since `kind_loads_media` deliberately excludes `detached=true` so
+            // a tab switch / an unrelated fs-triggered reload never relaunches it (opening mpv
+            // again every time you flip back to that tab). A non-detached command (image or text
+            // `render_as`) runs like every other media kind above.
             PreviewKind::Command {
                 template,
                 render_as,
                 detached,
                 ..
-            } => {
-                let out = crate::preview::command::temp_out_path();
-                let argv = crate::preview::command::build_argv(template, path, &out);
-                if *detached {
-                    if let Err(e) = crate::preview::command::run_detached(&argv) {
-                        self.command_err = Some(e.to_string());
-                    }
-                } else {
-                    let as_image = render_as.as_deref() == Some("image");
-                    let uses_out = template.contains("{out}");
-                    self.spawn_or_sync_media_gated(
-                        MediaJob::Command {
-                            argv,
-                            out,
-                            uses_out,
-                            as_image,
-                        },
-                        // Only image mode needs a graphics backend — text mode shows through the
-                        // ordinary windowed reader, same as Code/Text, and must work on any terminal.
-                        as_image,
-                    );
-                }
-            }
-            _ => {}
+            } => self.start_command_plugin(path, template, render_as.as_deref(), *detached),
+            // Not loaded as media: a plugin's file that is not a picture is opened by
+            // `load_plugin`; the others have nothing to load.
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Text(_)
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::CanNotPreview { .. } => {}
         }
     }
 
     /// Whether mermaid renders as an image: config says so **and** the terminal has an image backend.
     /// Everything else (config `"text"`, no backend, render failure) degrades to the text diagram.
+    ///
+    /// "Config says so" is the mermaid plugin's `mode` (`[plugins.mermaid] mode`, or the old
+    /// `[ui] mermaid`), and the plugin has to be switched on: a switched-off plugin draws nothing, so
+    /// the fences and files fall back to the text diagram, the same as for a diagram it cannot draw.
     pub fn mermaid_image_mode(&self) -> bool {
-        self.cfg.ui.mermaid != "text" && self.picker.is_some()
+        !crate::plugins::mermaid_mode_is_text(&self.cfg)
+            && self.picker.is_some()
+            && self.embed_plugin_enabled(embed_plugin::FENCE_MERMAID)
     }
 
     /// Base raster target (max edge px) for mermaid diagrams — same knob as SVG previews.
@@ -227,7 +175,9 @@ impl App {
     /// Whether math ($…$ / $$…$$) renders as an image (`[ui] math` != "text" and a graphics backend).
     /// Off → math stays as raw LaTeX inline (the delimiters are left in the text).
     pub fn math_image_mode(&self) -> bool {
-        self.cfg.ui.math != "text" && self.picker.is_some()
+        !crate::plugins::math_mode_is_text(&self.cfg)
+            && self.picker.is_some()
+            && self.embed_plugin_enabled(embed_plugin::MATH)
     }
 
     /// Raster target (max edge px) for a math equation. Generous so the once-rendered raster stays
@@ -236,12 +186,10 @@ impl App {
         1024
     }
 
-    /// Validated `[ui] mermaid_rows`: max rows of an inline diagram (0/invalid → default 24).
+    /// Validated mermaid `rows` (`[plugins.mermaid] rows`, or the old `[ui] mermaid_rows`): max
+    /// rows of an inline diagram (0/invalid → default 24).
     fn mermaid_rows_cap(&self) -> u16 {
-        match self.cfg.ui.mermaid_rows {
-            0 => 24,
-            v => v,
-        }
+        crate::plugins::mermaid_rows(&self.cfg)
     }
 
     /// Rows a slide picture may be tall: what the viewport leaves after the slide's heading (and
@@ -280,18 +228,10 @@ impl App {
     }
 
     /// Run a media-load job on a separate thread (when media_tx is present). Otherwise run it synchronously.
-    /// If there is no backend (picker), do nothing (the render side falls back).
-    fn spawn_or_sync_media(&mut self, job: MediaJob) {
-        self.spawn_or_sync_media_gated(job, true);
-    }
-
-    /// Same as `spawn_or_sync_media`, but the picker requirement is a parameter instead of always
-    /// on. Every existing job kind (SVG/GIF/video/PDF/mermaid) only exists to feed the image
-    /// pipeline, so needing a picker is correct for them — but a **text-mode** delegated command
-    /// (`MediaJob::Command` with `as_image=false`) shows through the ordinary windowed text reader,
-    /// exactly like Code/Text, and must run on any terminal, image backend or not.
-    fn spawn_or_sync_media_gated(&mut self, job: MediaJob, requires_picker: bool) {
-        if requires_picker && self.picker.is_none() {
+    /// If there is no backend (picker), do nothing (the render side falls back). Every job kind
+    /// here only exists to feed the image pipeline, so a picker is required.
+    pub(super) fn spawn_or_sync_media(&mut self, job: MediaJob) {
+        if self.picker.is_none() {
             return; // terminal doesn't support it: the render side falls back to text/a message
         }
         let Some(tx) = self.media_tx.clone() else {
@@ -323,123 +263,66 @@ impl App {
                 })
             })
             .flatten();
-            let _ = tx.send(MediaResult {
-                gen,
-                wb_worker: false,
-                payload,
-            });
+            let _ = tx.send(MediaResult { gen, payload });
         });
     }
 
     /// Starts a new media generation: whatever is running for the old one is stale (its result is
-    /// dropped on arrival, and a workbook load sees it and stops).
+    /// dropped on arrival, and a plugin's or a Word load sees it and stops).
     pub(super) fn bump_media_gen(&mut self) {
         self.media_gen = self.media_gen.wrapping_add(1);
         self.media_gen_shared
             .store(self.media_gen, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Loads one sheet of a spreadsheet on a worker thread — **one load at a time, newest request
-    /// only**. Holding `J` asks for a sheet per key repeat; each load of a large workbook can take
-    /// gigabytes, and a load that is no longer wanted used to run to its end beside the next ones.
-    /// Now a request made while a load is running replaces the one waiting behind it (the same
-    /// shape as the media diff's worker, `kick_media_diff`) and the running one is told to stop
-    /// (`Cancel` on the generation: the sheet builder checks it at every row). With no channel
-    /// attached (tests), the load runs inline.
-    fn spawn_workbook_job(
-        &mut self,
-        path: PathBuf,
-        locale: crate::preview::office::Locale,
-        sheet: usize,
-    ) {
-        self.spawn_office_job(MediaJob::Workbook(path, locale, sheet));
-    }
-
-    /// The one entry of the Office worker slot: a workbook sheet or a Word document (`job` is
-    /// `MediaJob::Workbook` or `MediaJob::Document`), with the one-at-a-time / newest-only rule
-    /// described on [`Self::spawn_workbook_job`].
-    fn spawn_office_job(&mut self, job: MediaJob) {
-        let Some(_) = self.media_tx else {
-            if let Some(payload) = job.run() {
-                self.apply_payload(payload);
-            }
-            return;
-        };
+    /// Test-only: another media job (a sharper redraw of a vector picture, a Markdown image...)
+    /// starting moves the generation on; this is that effect alone.
+    #[cfg(test)]
+    pub fn another_media_job_starts_for_test(&mut self) {
         self.bump_media_gen();
-        self.media_loading = true;
-        let req = WbRequest {
-            job,
-            gen: self.media_gen,
-        };
-        if self.wb_worker_busy {
-            self.wb_queued = Some(req);
-        } else {
-            self.dispatch_workbook(req);
-        }
     }
 
-    /// Test-only: workbook loads started on a thread so far.
+    /// Test-only: Office loads started on a thread so far (the jobs of the Office plugins' work
+    /// group: a workbook's sheets, a Word document, a presentation).
     #[cfg(test)]
     pub fn workbook_loads_started(&self) -> u32 {
-        self.wb_dispatches
-    }
-
-    /// Starts `req` on the one workbook thread.
-    fn dispatch_workbook(&mut self, req: WbRequest) {
-        let Some(tx) = self.media_tx.clone() else {
-            return;
-        };
-        self.wb_worker_busy = true;
-        #[cfg(test)]
-        {
-            self.wb_dispatches += 1;
-        }
-        let cancel =
-            crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), req.gen);
-        let WbRequest { job, gen } = req;
-        std::thread::spawn(move || {
-            // Always answers (even a panic): the slot is only freed by the answer.
-            let payload =
-                crate::preview::markdown::catch_silent(move || job.run_cancellable(Some(cancel)))
-                    .flatten();
-            let _ = tx.send(MediaResult {
-                gen,
-                wb_worker: true,
-                payload,
-            });
-        });
+        self.plugin_group_dispatches
     }
 
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
-        // The workbook thread is free again, current result or not; what was asked for meanwhile
-        // starts now (and is dropped if the preview moved on since).
-        if result.wb_worker {
-            self.wb_worker_busy = false;
-            if let Some(next) = self.wb_queued.take() {
-                if next.gen == self.media_gen {
-                    self.dispatch_workbook(next);
-                }
+        // The work group of a plugin whose job just answered (the Office plugins share one) is
+        // free again, current result or not; what was asked for meanwhile starts now (and is
+        // dropped if the preview moved on since).
+        if let Some(MediaPayload::Plugin(res)) = &result.payload {
+            if let Some(group) = res.group.clone() {
+                self.release_plugin_group(&group);
             }
         }
         if result.gen != self.media_gen {
-            // Stale: we've already moved on to another file. A workbook nobody wants is freed off
-            // the UI thread like any other (see `set_workbook`).
-            match result.payload {
-                Some(MediaPayload::Workbook(wb)) => super::table_actions::discard_in_background(wb),
-                Some(MediaPayload::Document(doc)) => {
-                    super::table_actions::discard_in_background(doc)
-                }
-                _ => {}
+            // Stale: the preview moved on, or another media job started. A plugin's view (and a
+            // document nobody wants) is dropped off the UI thread like any other. **The session
+            // is not the answer's to throw away**: it belongs to the show, and a job that was
+            // out with it when the generation moved on hands it back (see `reclaim_plugin_session`).
+            if let Some(MediaPayload::Plugin(mut res)) = result.payload {
+                self.reclaim_plugin_session(&mut res);
+                super::table_actions::discard_in_background(res);
             }
             return false;
+        }
+        // What a plugin's `open` learned, sent ahead of its picture: not a final result, so the
+        // loading mark stays.
+        if let Some(MediaPayload::PluginLayout(msg)) = result.payload {
+            return self.apply_plugin_layout(*msg);
         }
         self.media_loading = false;
         // The current generation's result arrived = the reraster in-flight flag is resolved (clear
         // it even on a None failure so it doesn't get stuck).
         self.vector_reraster_inflight = false;
         match result.payload {
+            // A plugin's result changes the screen only when it still belongs to the preview.
+            Some(MediaPayload::Plugin(res)) => self.land_plugin_result(*res),
             Some(payload) => {
                 self.apply_payload(payload);
                 true
@@ -448,12 +331,51 @@ impl App {
         }
     }
 
+    /// A stale plugin answer still carries the session the job took from the show. If that show is
+    /// still the open one, has answered before and holds no session (nothing else took it), the
+    /// session goes back (the answer must be of the file the show was opened for), with what it
+    /// said works now: otherwise the show would stay on screen
+    /// with its keys shown and dead. The view, the picture and the document of the stale job are not
+    /// applied; its outcome is.
+    fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
+        let Some(show) = self.plugin.as_ref() else {
+            return;
+        };
+        if res.session.is_none()
+            || show.id != res.id
+            || show.path != res.path
+            || show.session.is_some()
+            || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
+            || !self.shows_plugin_file(show)
+        {
+            return;
+        }
+        if let Some(show) = self.plugin.as_mut() {
+            show.session = res.session.take();
+            show.enabled = std::mem::take(&mut res.enabled).into_iter().collect();
+        }
+        // What an action asked for is still true of the session it ran on (its state changed): a
+        // view that no longer matches is drawn again, a file to read again is read again.
+        match res.outcome.take() {
+            Some(konoma_plugin::Outcome::Flash(msg)) => {
+                self.flash = Some(msg.get(self.plugin_lang()).to_string());
+            }
+            Some(konoma_plugin::Outcome::Reload) => self.reload_plugin(),
+            Some(konoma_plugin::Outcome::Redraw) => {
+                if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
+                    self.plugin_request_view(req);
+                }
+            }
+            Some(konoma_plugin::Outcome::Unhandled) | None => {}
+        }
+    }
+
     pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
         match payload {
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::ImageFailed(why) => self.set_image_failure(why),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
-            MediaPayload::Vector { img, svg } => {
+            MediaPayload::Vector { img, svg, trust } => {
                 use image::GenericImageView;
                 // The first raster's arrival = this size becomes the logical (layout) size. Later
                 // sharp rerasters swap only the pixel density (clear_image clears `logical` = reset
@@ -462,6 +384,7 @@ impl App {
                     self.image_logical = Some(img.dimensions());
                 }
                 self.vector_svg = Some(svg);
+                self.vector_trust = Some(trust);
                 self.set_static_image(img);
                 // If the zoom advanced further while the job was running, fire off one more to
                 // converge (returns immediately on the not-needed side if it's already sufficient /
@@ -479,48 +402,11 @@ impl App {
             MediaPayload::CommandFailed(msg) => {
                 self.command_err = Some(msg);
             }
-            // A late result for a preview that has since been replaced by something else (the
-            // generation only guards against a *newer media job*, and a non-media preview starts
-            // none) must not be adopted by the new preview.
-            MediaPayload::Workbook(wb) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    // The worker clamps the requested sheet to the file as it is now (it may have
-                    // lost sheets since): what it loaded is what is shown.
-                    if let Some(i) = wb.loaded_index() {
-                        self.tab.sheet_idx = i;
-                    }
-                    self.workbook_error = wb.sheet_error.clone();
-                    self.set_workbook(Some(wb));
-                    self.clamp_table_cursor();
-                    // The search in force runs on what arrived (a reload after an outside edit, or
-                    // another sheet): hits recorded for the old cells are not hits any more.
-                    self.rescan_table_search();
-                } else {
-                    super::table_actions::discard_in_background(wb);
-                }
+            MediaPayload::Plugin(res) => {
+                self.install_plugin_result(*res);
             }
-            MediaPayload::WorkbookFailed(e) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    self.set_workbook(None);
-                    self.workbook_error = Some(e);
-                    self.tab.search_pending = false;
-                }
-            }
-            MediaPayload::Document(doc) => self.land_document(doc),
-            MediaPayload::DocumentFailed(e) => {
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
-                    self.set_document(None);
-                    self.document_error = Some(e);
-                    self.md_cache = None;
-                    // A raw (`R`) view of the previous text must not outlive the document it came
-                    // from: drop the temp file and the reader so the reason is what is shown.
-                    self.clear_command_out();
-                    self.tab.md_raw = false;
-                    self.preview_win = None;
-                    self.win_cache = None;
-                    self.preview_total_lines = None;
-                    self.preview_visual_anchor = None;
-                }
+            MediaPayload::PluginLayout(msg) => {
+                self.apply_plugin_layout(*msg);
             }
         }
     }
@@ -529,7 +415,7 @@ impl App {
     /// sheet was loading (`search_pending`) lands on its first hit like a search on a loaded
     /// sheet, and says so when there is none; otherwise the current hit stays current when it
     /// still is one (else the next hit after it) and the cursor does not move.
-    fn rescan_table_search(&mut self) {
+    pub(super) fn rescan_table_search(&mut self) {
         let Some(q) = self.tab.preview_search.clone() else {
             return;
         };
@@ -683,45 +569,85 @@ impl App {
     /// Still images are judged by image_src, GIFs by gif_frames (image_src is not used). SVGs are already rasterized.
     pub fn is_image_preview(&self) -> bool {
         (self.image_src.is_some() || self.is_gif_active())
-            && matches!(
-                self.tab.preview_kind,
-                Some(
-                    PreviewKind::Image(_)
-                        | PreviewKind::Svg(_)
-                        | PreviewKind::Video(_)
-                        | PreviewKind::Pdf(_)
-                        | PreviewKind::Mermaid(_)
-                        | PreviewKind::MermaidFence(_)
-                        // A delegated command counts only when it actually produced image_src —
-                        // text-mode ones never do (they never call set_static_image), so the
-                        // `image_src.is_some()` half of this && is what actually disambiguates them.
-                        | PreviewKind::Command { .. }
-                )
-            )
+            && (self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_media_plugin)
+                || matches!(
+                    self.tab.preview_kind,
+                    Some(
+                        PreviewKind::MermaidFence(_)
+                            // A delegated command counts only when it actually produced image_src —
+                            // text-mode ones never do (they never call set_static_image), so the
+                            // `image_src.is_some()` half of this && is what actually disambiguates them.
+                            | PreviewKind::Command { .. }
+                    )
+                ))
     }
 
-    /// Whether the current preview is a PDF (used to enable page-navigation keys / footer hints).
-    pub fn is_pdf_preview(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Pdf(_)))
+    /// Test-only: the pixels of the still picture on screen (width, height, RGBA bytes).
+    #[cfg(test)]
+    pub fn shown_picture_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let img = self.image_src.as_ref()?.to_rgba8();
+        Some((img.width(), img.height(), img.into_raw()))
     }
 
-    /// (current, total) page for the PDF preview, or None when not a PDF or the page count is
-    /// unknown (page_count/hayro-syntax failed to parse the file at all — single-page fallback,
-    /// navigation disabled). Used for the footer/status indicator.
-    pub fn pdf_page_indicator(&self) -> Option<(u32, u32)> {
-        if !self.is_pdf_preview() {
-            return None;
+    /// Whether the preview is a file the picture plugins (`image`, `svg`, `pdf`, `video`) show.
+    pub fn shows_media_plugin(&self) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_media_plugin)
+    }
+
+    /// Test-only: how the vector picture on screen is drawn again (`SvgTrust`).
+    #[cfg(test)]
+    pub fn vector_trust_for_test(&self) -> Option<&SvgTrust> {
+        self.vector_trust.as_ref()
+    }
+
+    /// Whether the preview is a picture plugin that names the host's picture frame as what to show
+    /// when it has no picture (`Unavailable::Picture`: the `image` plugin): the frame is drawn
+    /// even while there is nothing to show in it, with the reason or a general line.
+    pub fn shows_picture_frame_plugin(&self) -> bool {
+        match &self.tab.preview_kind {
+            Some(PreviewKind::Plugin { id, .. }) => {
+                crate::plugins::profile_of(id).image
+                    && crate::plugins::unavailable_of(id) == konoma_plugin::Unavailable::Picture
+            }
+            _ => false,
         }
-        let total = self.tab.pdf_pages?;
-        Some((self.tab.pdf_page.min(total), total))
     }
 
-    /// Whether PDF page navigation is possible (a known multi-page PDF). The page count comes from
-    /// `page_count` (`hayro-syntax`, pure Rust, nothing installed needed), and rendering any given
-    /// page is `hayro`'s job too — the only fallback left (macOS `qlmanage`/`sips`) is first-page-
-    /// only, so navigating past page 1 depends on `hayro` alone, never on an installed tool.
-    pub fn pdf_can_navigate(&self) -> bool {
-        matches!(self.tab.pdf_pages, Some(n) if n > 1)
+    /// Whether the preview is a file the plugin `id` shows.
+    pub fn shows_plugin(&self, id: &str) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin(id))
+    }
+
+    /// (current, total) page of a preview made of separate pages (a PDF), or None when it has none
+    /// or the plugin does not know how many (the file could not be parsed at all — single-page
+    /// fallback, navigation disabled). Used for the footer/status indicator.
+    pub fn page_indicator(&self) -> Option<(u32, u32)> {
+        // The pages of a paged document (the slides of a presentation): the one at the top of the
+        // view.
+        if let Some((cur, total)) = self.anchored_position() {
+            return Some((cur as u32, total as u32));
+        }
+        let total = self.tab.page_count?;
+        Some((self.tab.page.min(total), total))
+    }
+
+    /// Whether the page keys turn pages of the preview: a known multi-page one. The page count is
+    /// what the plugin reported in its layout (for a PDF, a pure-Rust read of the page tree; nothing
+    /// installed is needed), and rendering any given page is `hayro`'s job too — the only fallback
+    /// left (macOS `qlmanage`/`sips`) is first-page-only, so navigating past page 1 depends on
+    /// `hayro` alone, never on an installed tool.
+    pub fn can_turn_pages(&self) -> bool {
+        matches!(self.tab.page_count, Some(n) if n > 1) || self.anchored_can_turn()
     }
 
     /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
@@ -730,60 +656,60 @@ impl App {
     /// Extension point: a slide deck adds one arm here (its own `PreviewKind`).
     pub fn page_turn(&mut self, dir: i32) {
         match self.tab.preview_kind {
-            Some(PreviewKind::Spreadsheet(_)) => {
-                if dir >= 0 {
-                    self.sheet_next()
-                } else {
-                    self.sheet_prev()
-                }
-            }
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
-            // The slides of a presentation (a Word document ignores the keys).
-            Some(PreviewKind::Document(_)) => self.slide_turn(dir),
+            // The pages of a paged document (the slides of a presentation); a Word document has
+            // none and ignores the keys.
+            _ if self.is_document() => self.anchored_turn(dir),
             _ => {
                 if dir >= 0 {
-                    self.pdf_next_page()
+                    self.next_page()
                 } else {
-                    self.pdf_prev_page()
+                    self.prev_page()
                 }
             }
         }
     }
 
-    /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).
-    pub fn pdf_next_page(&mut self) {
-        self.pdf_goto(self.tab.pdf_page.saturating_add(1));
+    /// Go to the next page (clamped to the last page). The plugin draws that page on demand (one at a time).
+    pub fn next_page(&mut self) {
+        self.goto_page(self.tab.page.saturating_add(1));
     }
 
-    /// Go to the previous PDF page (clamped to page 1).
-    pub fn pdf_prev_page(&mut self) {
-        self.pdf_goto(self.tab.pdf_page.saturating_sub(1));
+    /// Go to the previous page (clamped to page 1).
+    pub fn prev_page(&mut self) {
+        self.goto_page(self.tab.page.saturating_sub(1));
     }
 
-    /// Jump to a 1-based page (clamped to [1, total]). No-op if not a navigable PDF or already there.
-    /// Kicks off an off-thread rasterization of the new page and resets the view to fit (each page shows whole).
-    fn pdf_goto(&mut self, page: u32) {
-        if !self.pdf_can_navigate() {
+    /// Jump to a 1-based page (clamped to [1, total]). No-op if the preview has no pages to turn or
+    /// is already there. Asks the plugin for the new page on the media worker; a picture's view
+    /// is reset to fit (each page shows whole), a table (a workbook's sheets) goes back to its
+    /// top left (`turn_table_page`).
+    pub(super) fn goto_page(&mut self, page: u32) {
+        if !self.can_turn_pages() {
             return;
         }
-        let Some(total) = self.tab.pdf_pages else {
+        let Some(total) = self.tab.page_count else {
             return;
         };
         let page = page.clamp(1, total);
-        if page == self.tab.pdf_page {
+        if page == self.tab.page {
             return;
         }
-        self.tab.pdf_page = page;
-        // Reset to fit so the whole new page is visible (set_static_image doesn't touch zoom/center,
-        // so reset it explicitly).
-        self.tab.image_zoom = 1.0;
-        self.tab.image_center = (0.5, 0.5);
-        self.image_crop = None;
-        if let Some(PreviewKind::Pdf(p)) = self.tab.preview_kind.clone() {
-            // Keep showing the old page's image until the new one arrives (staleness judged by
-            // media_gen; the spinner overlays on top).
-            self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page, self.cfg.external.pdf));
+        self.tab.page = page;
+        if self.shows_media_plugin() {
+            // Reset to fit so the whole new page is visible (set_static_image doesn't touch
+            // zoom/center, so reset it explicitly).
+            self.tab.image_zoom = 1.0;
+            self.tab.image_center = (0.5, 0.5);
+            self.image_crop = None;
+            if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
+                // Keep showing the old page's image until the new one arrives (staleness judged by
+                // media_gen; the spinner overlays on top).
+                self.start_media_plugin(&id, &path);
+            }
+        } else if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. })) {
+            self.turn_table_page();
         }
     }
 
@@ -816,9 +742,12 @@ impl App {
         if self.vector_reraster_inflight {
             return;
         }
-        let (Some(svg), Some(src), Some((lw, lh))) =
-            (&self.vector_svg, &self.image_src, self.image_logical)
-        else {
+        let (Some(svg), Some(trust), Some(src), Some((lw, lh))) = (
+            &self.vector_svg,
+            &self.vector_trust,
+            &self.image_src,
+            self.image_logical,
+        ) else {
             return;
         };
         let cur_side = src.dimensions().0.max(src.dimensions().1);
@@ -827,16 +756,15 @@ impl App {
         if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
             return;
         }
-        let base = self.tab.preview_path.clone().unwrap_or_default();
         // Don't spawn for the synchronous fallback (no media_tx = tests) — there's no room for
         // duplication there, so don't set the flag either.
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
         }
-        // A file's SVG is drawn by a supervised child process; a mermaid diagram (konoma's own
-        // output) in this one.
-        let untrusted = matches!(self.tab.preview_kind, Some(PreviewKind::Svg(_)));
-        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want, untrusted));
+        // Drawn again the way it was drawn the first time: an SVG konoma made itself in this
+        // process, any other in the supervised child process (`SvgTrust`).
+        let job = MediaJob::SvgReraster(svg.clone(), trust.clone(), want);
+        self.spawn_or_sync_media(job);
     }
 
     /// Reset to 1x (fit). Zoom=1 and recenter. Applies to the focused inline diagram when no

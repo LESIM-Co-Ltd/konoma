@@ -364,7 +364,7 @@ mod tests {
         assert!(row_text(&mut app, w, h, 0).contains("TREE"), "上にモード");
         assert!(row_text(&mut app, w, h, 0).contains("path:"), "上にパス");
         let bottom = row_text(&mut app, w, h, h - 1);
-        assert!(bottom.contains("jk:move"), "下にヒント: {bottom}");
+        assert!(bottom.contains("j/k:move"), "下にヒント: {bottom}");
         assert!(!bottom.contains("TREE"), "下にモードは出さない: {bottom}");
     }
 
@@ -379,7 +379,7 @@ mod tests {
         let (w, h) = (70, 6);
         let bottom = row_text(&mut app, w, h, h - 1);
         assert!(bottom.contains("TREE"), "下にモード: {bottom}");
-        assert!(bottom.contains("jk:move"), "下にヒント: {bottom}");
+        assert!(bottom.contains("j/k:move"), "下にヒント: {bottom}");
         // The top row shows no context (there's no tab bar either, since it's 1 tab).
         assert!(!row_text(&mut app, w, h, 0).contains("TREE"));
     }
@@ -409,7 +409,7 @@ mod tests {
         assert!(s.contains('ツ'), "日本語チップが無い");
         assert!(s.contains('移'), "日本語ヒントが無い");
         assert!(
-            !s.contains("TREE") && !s.contains("jk:move"),
+            !s.contains("TREE") && !s.contains("j/k:move"),
             "英語が残る: {s}"
         );
     }
@@ -556,11 +556,11 @@ mod tests {
             buf_text(&mut app).contains("sort:"),
             "context に並び表示が無い"
         );
-        // Opening the menu via the s-equivalent shows choices in the footer (en's "[n]ame" / jp's "名前").
-        app.open_sort_menu();
+        // Opening the `,` menu shows the choices in the footer (en "n:name" / jp "名前").
+        app.pending_leader = Some(crate::keymap::LeaderId::Options);
         let s = buf_text(&mut app);
         assert!(
-            s.contains("[n]ame") || s.contains("名前"),
+            s.contains("n:name") || s.contains("名前"),
             "ソートメニューが出ない"
         );
     }
@@ -805,7 +805,7 @@ mod tests {
         let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let footer = |app: &mut App| row_text(app, 72, 24, 23);
         // Normally: the tree's key hints.
-        assert!(footer(&mut app).contains("jk:move"), "通常フッター");
+        assert!(footer(&mut app).contains("j/k:move"), "通常フッター");
         // Visual: range-selection keys. Destructive operations go through the Space leader (the old direct D/R was removed).
         app.enter_visual();
         let f = footer(&mut app);

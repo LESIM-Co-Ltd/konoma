@@ -338,14 +338,20 @@ impl App {
         true
     }
 
-    /// Whether follow should show `path`'s ordinary content preview instead of the diff — true only
-    /// for video. Its git diff would be a useless "binary files differ" line, and unlike image/SVG/PDF
+    /// Whether follow should show `path`'s ordinary content preview instead of the diff — true for
+    /// a picture file in a format the host cannot lay side by side (a video; decided by what the
+    /// plugin declares and the file's format, never by the plugin's id: a plugin that replaced
+    /// `video` gets it too). A diagram's text file (`.mmd`) is a picture plugin's but is text, so
+    /// its text diff stays. Its git diff would be a useless "binary files differ" line, and unlike image/SVG/PDF
     /// it has no side-by-side `Rendered` presentation of its own (`App::diff_media_active`) for the
     /// diff view to fall back on, so the diff is skipped entirely rather than opened and immediately
     /// rounded down. Image/SVG/PDF's own empty-diff check is instead bypassed by `follow_jump`'s
     /// `media_side_by_side`, since their `Rendered` presentation is worth opening.
     pub(super) fn follow_previews_instead_of_diff(&self, path: &Path) -> bool {
-        matches!(self.cfg.resolve_preview(path), PreviewKind::Video(_))
+        let kind = self.cfg.resolve_preview(path);
+        kind.profile().image
+            && super::media_diff::classify_kind(&kind).is_none()
+            && super::media_diff::is_video_file(path)
     }
 
     /// After a follow jump, scroll the (windowed) preview to the **first changed hunk** instead of the

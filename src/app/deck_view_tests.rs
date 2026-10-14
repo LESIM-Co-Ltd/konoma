@@ -165,17 +165,53 @@ fn doc(n: usize, scenes: usize, keys: usize, picture_md: &str) -> Document {
     }
 }
 
+/// The host's container for the view a presentation plugin answers with (`PluginJob::View` on a
+/// session over `doc`): the picture view when `repr` is `picture`.
+fn loaded(doc: Document, repr: &str) -> (LoadedDocument, konoma_plugin::view::Layout) {
+    use konoma_plugin::view::{View, ViewReq};
+    use konoma_plugin::{Session, ViewCx};
+    let mut session = konoma_office::OfficeSession::from_converted(
+        konoma_office::DocKind::Deck,
+        PathBuf::from("d.pptx"),
+        konoma_office::Converted::from_document(doc),
+    );
+    let req = ViewReq {
+        repr: Some(repr.to_string()),
+        ..ViewReq::default()
+    };
+    let view = session.view(&req, &ViewCx::bare()).unwrap();
+    let View::Document(d) = view else {
+        panic!("a deck is a document view");
+    };
+    (
+        LoadedDocument::from_parts(d.markdown, d.truncated, d.resources),
+        session.layout(),
+    )
+}
+
 #[test]
 fn a_consistent_deck_gets_a_picture_per_slide_sized_from_its_scene() {
-    let d = LoadedDocument::from_document(doc(3, 3, 3, "## Slide 1: T1\n\n![a](x)\n"));
-    assert_eq!(d.picture_markdown, "## Slide 1: T1\n\n![a](x)\n");
+    let (d, layout) = loaded(
+        doc(3, 3, 3, "## Slide 1: T1\n\n![a](x)\n"),
+        konoma_office::REPR_PICTURE,
+    );
+    assert_eq!(d.markdown, "## Slide 1: T1\n\n![a](x)\n");
     assert_eq!(d.pictures.len(), 3);
     for k in 1..=3 {
         let p = &d.pictures[&format!("office-img://aaaaaaaaaaaa/slide-{k}.svg")];
-        assert!(matches!(p.source, PictureSource::Slide { .. }));
+        assert!(matches!(p.source, PictureSource::Lazy { .. }));
         assert_eq!(p.dims, Some((960, 540)));
         assert!(!p.raster, "a slide is a vector drawing");
     }
+    // The plugin offers both representations, and the slides as anchored pages.
+    assert_eq!(layout.reprs.len(), 2);
+    assert!(matches!(
+        layout.pages,
+        Some(konoma_plugin::view::PageLayout::Anchored {
+            heading_level: 2,
+            count: 3
+        })
+    ));
 }
 
 #[test]
@@ -188,49 +224,62 @@ fn a_deck_whose_reader_did_not_fill_everything_keeps_only_its_text() {
         (3, 0, 0, "x"), // nothing drawn yet
         (0, 3, 3, "x"), // not a deck at all
     ] {
-        let d = LoadedDocument::from_document(doc(n, scenes, keys, md));
-        assert_eq!(d.picture_markdown, "", "{n} {scenes} {keys} {md:?}");
+        // Even when the picture representation is asked for, the text is what comes back.
+        let (d, layout) = loaded(doc(n, scenes, keys, md), konoma_office::REPR_PICTURE);
         assert!(
             d.pictures
                 .values()
-                .all(|p| !matches!(p.source, PictureSource::Slide { .. })),
+                .all(|p| !matches!(p.source, PictureSource::Lazy { .. })),
             "{n} {scenes} {keys} {md:?}"
         );
         assert_eq!(d.markdown, "## Slide 1: T1\n", "the text view is untouched");
+        assert!(layout.reprs.is_empty(), "one representation only");
     }
 }
 
 #[test]
-fn slide_scenes_resolve_images_through_a_snapshot_of_the_documents_pictures() {
+fn a_picture_of_the_file_is_held_once_and_shared_with_the_document() {
     let mut document = doc(2, 2, 2, "## Slide 1: T1\n");
     document.images.push(DocImage {
         key: "office-img://aaaaaaaaaaaa/p.png".into(),
         bytes: vec![1, 2, 3],
         name: "p.png".into(),
     });
-    let d = LoadedDocument::from_document(document);
-    let bytes = match &d.pictures["office-img://aaaaaaaaaaaa/p.png"].source {
-        PictureSource::Bytes(b) => b.clone(),
-        PictureSource::Slide { .. } => panic!("a file is bytes"),
-    };
+    let (d, _) = loaded(document, konoma_office::REPR_PICTURE);
+    assert!(
+        matches!(
+            &d.pictures["office-img://aaaaaaaaaaaa/p.png"].source,
+            PictureSource::Bytes(b) if b[..] == [1, 2, 3]
+        ),
+        "a file of the package is bytes"
+    );
     for k in 1..=2 {
-        match &d.pictures[&format!("office-img://aaaaaaaaaaaa/slide-{k}.svg")].source {
-            PictureSource::Slide { media, .. } => {
-                let got = media.get("office-img://aaaaaaaaaaaa/p.png").unwrap();
-                // The snapshot shares the document's bytes, it does not copy them.
-                assert!(Arc::ptr_eq(got, &bytes), "slide {k}");
-                assert!(media.get("office-img://aaaaaaaaaaaa/slide-1.svg").is_none());
-            }
-            PictureSource::Bytes(_) => panic!("a slide has no bytes"),
-        }
+        assert!(matches!(
+            d.pictures[&format!("office-img://aaaaaaaaaaaa/slide-{k}.svg")].source,
+            PictureSource::Lazy { .. }
+        ));
     }
 }
 
 #[test]
 fn a_word_document_has_no_slide_pictures() {
-    let d = LoadedDocument::from_document(Document {
-        markdown: "Hello\n".into(),
-        ..Document::default()
-    });
-    assert!(d.picture_markdown.is_empty() && d.pictures.is_empty() && d.slides.is_empty());
+    use konoma_plugin::view::{View, ViewReq};
+    use konoma_plugin::{Session, ViewCx};
+    let mut session = konoma_office::OfficeSession::from_converted(
+        konoma_office::DocKind::Word,
+        PathBuf::from("d.docx"),
+        konoma_office::Converted::from_document(Document {
+            markdown: "Hello\n".into(),
+            ..Document::default()
+        }),
+    );
+    let View::Reopen(r) = session.view(&ViewReq::default(), &ViewCx::bare()).unwrap() else {
+        panic!("Word is a converted-Markdown reopen");
+    };
+    assert_eq!(r.content_type, "markdown");
+    assert!(matches!(r.origin, konoma_plugin::Origin::Converted { .. }));
+    let d = LoadedDocument::from_parts(r.text, r.truncated, r.resources);
+    assert!(d.pictures.is_empty());
+    assert_eq!(d.markdown, "Hello\n");
+    assert_eq!(session.layout(), konoma_plugin::view::Layout::single());
 }

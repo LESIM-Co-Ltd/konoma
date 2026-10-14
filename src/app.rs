@@ -16,6 +16,8 @@ use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{FilterType, Resize};
+
+use konoma_widgets::layout::{fence_crop, image_layout, ImageLayout, PxRect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
@@ -23,12 +25,16 @@ use crate::i18n::tr;
 use crate::preview::PreviewKind;
 
 mod bookmark_actions;
+mod change_jump;
 mod copy_actions;
 mod dialog_actions;
 mod diff_view;
+mod embed_plugin;
 mod file_actions;
 mod follow;
 mod git_view;
+pub(crate) mod list_filter;
+mod markdown_plugin;
 mod md_diff;
 mod md_items;
 mod md_media;
@@ -37,17 +43,29 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+mod media_plugin;
+#[cfg(test)]
+pub(crate) use embed_plugin::probe_fence_picture;
+#[cfg(test)]
+pub(crate) use md_media::redraw_svg;
+#[cfg(test)]
+pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
 mod office_doc;
+pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
-mod office_open;
+pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
 mod paste_jump;
+mod plugin_acts;
+mod plugin_host;
 mod preview_visual;
+mod repr_cycle;
 mod search;
 mod session_actions;
 mod tab_lifecycle;
 mod table_actions;
+mod text_plugin;
 
 use md_text::*;
 // Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
@@ -93,7 +111,6 @@ pub enum InternalMode {
     /// Changed-files-only tree view (`C`; Agent Watch).
     ChangedFilter,
     Search,
-    Sort,
     Mark,
     Bookmarks,
     Tabs,
@@ -186,8 +203,12 @@ pub enum UiLayer {
 
     // --- The git views (detail sits over log; the branch panel sits over the graph) ---
     GitDetail,
+    /// The log with its `/` filter input active.
+    GitLogFilter,
     GitLog,
     GitGraphPicker,
+    /// The graph with its `/` filter input active.
+    GitGraphFilter,
     GitGraph,
     /// The branch list with its `/` filter input active.
     GitBranchFilter,
@@ -195,16 +216,23 @@ pub enum UiLayer {
     /// The worktree list with its `/` filter input active.
     GitWorktreeFilter,
     GitWorktrees,
+    /// The changes list with its `/` filter input active.
+    GitChangesFilter,
     GitChanges,
     GitDiff,
 
     // --- Input surfaces / menus / lists / popups ---
     Filter,
     Search,
-    Sort,
     Mark,
+    /// The bookmark list with its `/` filter input active.
+    BookmarksFilter,
     Bookmarks,
+    /// The tab list with its `/` filter input active.
+    TabsFilter,
     Tabs,
+    /// The outline / page list with its `/` filter input active.
+    OutlineFilter,
     Outline,
     Info,
     TableCell,
@@ -269,6 +297,8 @@ impl UiLayer {
             #[cfg(feature = "git")]
             Self::GitDetail => S::GitDetail,
             #[cfg(feature = "git")]
+            Self::GitLogFilter | Self::GitGraphFilter | Self::GitChangesFilter => S::ListFilter,
+            #[cfg(feature = "git")]
             Self::GitLog => S::GitLog,
             #[cfg(feature = "git")]
             Self::GitGraphPicker => S::GitGraphPicker,
@@ -288,9 +318,12 @@ impl UiLayer {
             Self::GitDiff => S::PreviewGitDiff,
             #[cfg(not(feature = "git"))]
             Self::GitDetail
+            | Self::GitLogFilter
             | Self::GitLog
             | Self::GitGraphPicker
+            | Self::GitGraphFilter
             | Self::GitGraph
+            | Self::GitChangesFilter
             | Self::GitBranchFilter
             | Self::GitBranches
             | Self::GitWorktreeFilter
@@ -299,8 +332,8 @@ impl UiLayer {
             | Self::GitDiff => return None,
             Self::Filter => S::Filter,
             Self::Search => S::Search,
-            Self::Sort => S::Sort,
             Self::Mark => S::Mark,
+            Self::BookmarksFilter | Self::TabsFilter | Self::OutlineFilter => S::ListFilter,
             Self::Bookmarks => S::Bookmarks,
             Self::Tabs => S::Tabs,
             Self::Outline => S::Outline,
@@ -331,9 +364,9 @@ impl UiLayer {
             Self::InputRename => InternalMode::Rename,
             Self::Help => InternalMode::Help,
             Self::GitDetail => InternalMode::GitDetail,
-            Self::GitLog => InternalMode::GitLog,
+            Self::GitLogFilter | Self::GitLog => InternalMode::GitLog,
             Self::GitGraphPicker => InternalMode::GitGraphPicker,
-            Self::GitGraph => InternalMode::GitGraph,
+            Self::GitGraphFilter | Self::GitGraph => InternalMode::GitGraph,
             // A list's `/` filter deliberately keeps the list's own chip, so there is no
             // `InternalMode::BranchFilter`/`WorktreeFilter` to map to. The three consumers each
             // want something different and that is on purpose: the keymap needs a separate surface
@@ -344,15 +377,15 @@ impl UiLayer {
             // `a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip`.
             Self::GitBranchFilter | Self::GitBranches => InternalMode::GitBranch,
             Self::GitWorktreeFilter | Self::GitWorktrees => InternalMode::GitWorktrees,
-            Self::GitChanges => InternalMode::GitChanges,
+            Self::GitChangesFilter | Self::GitChanges => InternalMode::GitChanges,
             Self::GitDiff => InternalMode::GitDiff,
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
-            Self::Sort => InternalMode::Sort,
             Self::Mark => InternalMode::Mark,
-            Self::Bookmarks => InternalMode::Bookmarks,
-            Self::Tabs => InternalMode::Tabs,
-            Self::Outline => InternalMode::Outline,
+            // The overlay lists' `/` filter keeps the overlay's own chip (as the git lists do).
+            Self::BookmarksFilter | Self::Bookmarks => InternalMode::Bookmarks,
+            Self::TabsFilter | Self::Tabs => InternalMode::Tabs,
+            Self::OutlineFilter | Self::Outline => InternalMode::Outline,
             Self::Info => InternalMode::Info,
             Self::TableCell => InternalMode::TableCell,
             Self::Visual => InternalMode::Visual,
@@ -391,13 +424,16 @@ impl crate::keymap::Surface {
             S::BranchFilter => UiLayer::GitBranchFilter,
             #[cfg(feature = "git")]
             S::WorktreeFilter => UiLayer::GitWorktreeFilter,
+            #[cfg(feature = "git")]
+            S::ListFilter => UiLayer::GitChangesFilter,
+            #[cfg(not(feature = "git"))]
+            S::ListFilter => UiLayer::OutlineFilter,
             S::DialogConfirmDelete => UiLayer::ConfirmDelete,
             S::DialogConfirmDrop => UiLayer::ConfirmDrop,
             S::DialogRenamePreview => UiLayer::RenamePreview,
             S::DialogConfirmQuit => UiLayer::ConfirmQuit,
             S::DialogConfirmBookmark => UiLayer::ConfirmBookmark,
             S::Help => UiLayer::Help,
-            S::Sort => UiLayer::Sort,
             S::Bookmarks => UiLayer::Bookmarks,
             S::Tabs => UiLayer::Tabs,
             S::Outline => UiLayer::Outline,
@@ -425,25 +461,6 @@ impl crate::keymap::Surface {
             S::PreviewTextVisual => base(BaseKind::PreviewText, true),
             S::PreviewImage => base(BaseKind::PreviewImage, false),
             S::PreviewTable => base(BaseKind::PreviewTable, false),
-        }
-    }
-}
-
-/// Preview paging key style. Specified via the `ui.keys` setting (default vim).
-/// Diffs use only the page/half-page keys. j/k line movement, arrows, and PageUp/Down are common to both styles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyScheme {
-    /// vim style: Ctrl-f/Ctrl-b=page, Ctrl-d/Ctrl-u=half.
-    Vim,
-    /// less style: Space/b=page, d/u=half.
-    Less,
-}
-
-impl KeyScheme {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "less" => Self::Less,
-            _ => Self::Vim,
         }
     }
 }
@@ -720,11 +737,87 @@ pub fn sizeof_app() -> usize {
     std::mem::size_of::<App>()
 }
 
+/// Join the startup `notices` (most important first) with " / " so that they fit `width` columns:
+/// as many as fit from the front, then a "(+n more)" for the rest. The first notice is always
+/// shown (the footer clips it at the edge); the count goes right after the last one that fits.
+pub(crate) fn fit_notices(
+    notices: Vec<String>,
+    width: usize,
+    lang: crate::i18n::Lang,
+) -> Option<String> {
+    use unicode_width::UnicodeWidthStr;
+    let total = notices.len();
+    for shown in (1..=total).rev() {
+        let mut text = notices[..shown].join(" / ");
+        let hidden = total - shown;
+        if hidden > 0 {
+            text.push(' ');
+            text.push_str(
+                &tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", &hidden.to_string()),
+            );
+        }
+        if shown == 1 || text.width() <= width {
+            return Some(text);
+        }
+    }
+    None
+}
+
 /// Size of one `PerTab` in bytes. `PerTab` is cloned per tab (snapshot / restore), so a regression
 /// that inlines a large buffer into it multiplies memory by the tab count — this guards against that.
 #[cfg(test)]
 pub fn sizeof_pertab() -> usize {
     std::mem::size_of::<PerTab>()
+}
+
+/// Who vouches for a retained SVG, and so how it is drawn again (sharp zoom, rebuilding evicted
+/// pixels). Decided by the host from where the SVG came from, never by what a plugin claims.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SvgTrust {
+    /// Made by konoma's own code (a mermaid diagram, a formula): drawn in this process. The path is
+    /// the base for relative resources (the diagrams have none).
+    Trusted(PathBuf),
+    /// From a file: drawn by the supervised child process, reading files relative to this path.
+    File(PathBuf),
+    /// From a document, a plugin or git, with no file to be relative to: drawn by the supervised
+    /// child process, which reads no file.
+    Embedded,
+}
+
+impl Default for SvgTrust {
+    /// The safe answer for an entry whose origin was never stated: no file read, child process.
+    fn default() -> Self {
+        SvgTrust::Embedded
+    }
+}
+
+impl SvgTrust {
+    /// Whether this SVG is drawn by the supervised child process (anything but konoma's own).
+    #[cfg(test)]
+    pub(crate) fn is_untrusted(&self) -> bool {
+        !matches!(self, SvgTrust::Trusted(_))
+    }
+
+    /// Draw `svg` at `max_px` the way its origin allows. The one function the first drawing, the
+    /// drawing again (sharp zoom, evicted pixels) and the full-screen re-raster all go through, so
+    /// the same SVG never changes how it looks (a relative `<image href>` is read, or not, the
+    /// same each time). `None`: it could not be drawn (or `cancelled` turned true).
+    pub(crate) fn draw(
+        &self,
+        svg: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<image::DynamicImage> {
+        match self {
+            SvgTrust::Trusted(p) => crate::preview::svg::rasterize_trusted(svg, p, max_px),
+            SvgTrust::File(p) => {
+                crate::preview::svg::rasterize_untrusted(svg, p, max_px, cancelled).ok()
+            }
+            SvgTrust::Embedded => {
+                crate::preview::svg::rasterize_embedded(svg, max_px, cancelled).ok()
+            }
+        }
+    }
 }
 
 /// The media payload loaded on a separate thread (sent back to the UI thread).
@@ -738,6 +831,8 @@ pub enum MediaPayload {
     Vector {
         img: image::DynamicImage,
         svg: std::sync::Arc<Vec<u8>>,
+        /// How `svg` is drawn again.
+        trust: SvgTrust,
     },
     /// Text-mode `PreviewKind::Command` output: the temp file its captured stdout / `{out}`
     /// artifact was written to. Goes to `tab.command_out`, which the windowed (less-style) text
@@ -754,37 +849,29 @@ pub enum MediaPayload {
     /// unsupported format) — carried as a payload so the reason travels through the same
     /// generation-checked channel as success. Goes to `App::image_failure`.
     ImageFailed(crate::preview::image::ImageFailure),
-    /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
-    /// sheet that was asked for) → goes to `App::workbook`.
-    Workbook(Box<crate::preview::office::Workbook>),
-    /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
-    /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
-    /// through the same generation-checked channel as success.
-    WorkbookFailed(crate::preview::office::OfficeError),
-    /// An opened Word document (`PreviewKind::Document`): its Markdown and pictures → goes to
-    /// `App::document`.
-    Document(Box<office_doc::LoadedDocument>),
-    /// A Word document that could not be loaded (the reason maps to a translated message on the
-    /// render side), carried like [`MediaPayload::WorkbookFailed`].
-    DocumentFailed(crate::preview::office::OfficeError),
+    /// A plugin's result (`PreviewKind::Plugin`): the session, its layout, the view it returned
+    /// and, when that was a picture, the picture decoded on the same worker
+    /// (`app/plugin_host.rs`).
+    Plugin(Box<plugin_host::PluginResult>),
+    /// What a plugin's `open` learned (the page count of a PDF), sent ahead of the first picture.
+    /// Not a final result: the loading mark stays until the real one lands.
+    PluginLayout(Box<plugin_host::PluginLayoutMsg>),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
-    /// The result of the (single) workbook load thread: its slot is free again, whatever `gen` is.
-    wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
 }
 
-/// An Office load (a workbook or a Word document) waiting for the running one to end
-/// (`App::wb_queued`). Both kinds share the one Office worker slot.
-struct WbRequest {
-    /// `MediaJob::Workbook` or `MediaJob::Document`.
-    job: MediaJob,
-    /// The `media_gen` it was asked under; stale (dropped) if that moved on.
-    gen: u64,
+impl MediaResult {
+    /// Test-only: whether this is only the layout a plugin's `open` learned, sent ahead of its
+    /// picture (the loading is not over).
+    #[cfg(test)]
+    pub fn is_layout_only(&self) -> bool {
+        matches!(self.payload, Some(MediaPayload::PluginLayout(_)))
+    }
 }
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
@@ -799,41 +886,14 @@ pub struct KittyResult {
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
-    Svg(PathBuf, u32),
-    /// Decode a still image (PNG/JPEG/...). On a worker so that a very large image never stalls the UI.
-    Still(PathBuf),
-    /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
-    Gif(PathBuf),
-    /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
-    /// mp4/m4v/mov, with ffmpegthumbnailer/ffmpeg behind it for everything else and only when the
-    /// `bool` (`[external] video`) allows launching them. Thumbnail only; no playback.
-    Video(PathBuf, bool),
-    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, macOS's bundled
-    /// `qlmanage`/`sips` only as a page-1 fallback and only when the `bool` (`[external] pdf`)
-    /// allows it. Loaded one page at a time.
-    Pdf(PathBuf, u32, bool),
-    /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
-    /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
-    /// fallback shows.
-    Mermaid(PathBuf, u32, String, String, String),
     /// Render mermaid source text (a ```mermaid fence opened full-screen) and rasterize it
-    /// (source, max-edge px, theme, curve, routing).
-    MermaidSrc(String, u32, String, String, String),
-    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
-    /// the base for relative resources inside the SVG (mermaid output has none).
-    /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
-    /// than from konoma's own mermaid renderer.
-    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
-    /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
-    /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
-    /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
-    /// reason it could not be opened.
-    Workbook(PathBuf, crate::preview::office::Locale, usize),
-    /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
-    /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
-    /// is serialised with workbook loads and stops when its generation is superseded.
-    Document(PathBuf, crate::i18n::Lang),
+    /// (source, max-edge px, the plugin that takes `fence:mermaid` with its settings). None
+    /// (unsupported diagram / parse failure / the plugin switched off) → the caller's
+    /// "unavailable" screen shows.
+    MermaidSrc(String, u32, embed_plugin::EmbedRender),
+    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom), the way it was
+    /// drawn the first time (`SvgTrust`).
+    SvgReraster(std::sync::Arc<Vec<u8>>, SvgTrust, u32),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -853,116 +913,37 @@ impl MediaJob {
         self.run_cancellable(None)
     }
 
-    /// [`Self::run`]; `cancel` is honoured by the workbook load (the other kinds are short).
+    /// [`Self::run`]; `cancel` stops the drawing of an untrusted SVG (`SvgReraster`). The other jobs
+    /// are short, and the plugins' own work is cancelled by the generation (`plugin_host`).
     fn run_cancellable(
         self,
         cancel: Option<crate::preview::office::Cancel>,
     ) -> Option<MediaPayload> {
         match self {
-            MediaJob::Svg(p, max_px) => {
-                // A file the user opened: drawn by a supervised child process (`svg_proc`).
-                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                let data = match crate::preview::svg::read_limited(&p) {
-                    Ok(d) => d,
-                    Err(why) => {
-                        return Some(MediaPayload::ImageFailed(
-                            crate::preview::image::ImageFailure::Svg(why),
-                        ))
-                    }
-                };
-                let img =
-                    match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
-                        Ok(img) => img,
-                        Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
-                    };
-                Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
-                })
-            }
-            MediaJob::Still(p) => Some(still_payload(&p)),
-            MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
-                Some(frames) => Some(MediaPayload::Gif(frames)),
-                // A single-frame / non-animated GIF → display as a still image.
-                None => Some(still_payload(&p)),
-            },
-            MediaJob::Video(p, allow_external) => {
-                crate::preview::video::thumbnail(&p, allow_external).map(MediaPayload::Static)
-            }
-            MediaJob::Pdf(p, page, allow_external) => {
-                crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
-            }
-            MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
-                let code = std::fs::read_to_string(&p).ok()?;
-                MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
-            }
-            MediaJob::MermaidSrc(code, max_px, theme, curve, routing) => {
-                let svg =
-                    crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
-                let data = svg.into_bytes();
-                let img = crate::preview::svg::rasterize_trusted(
-                    &data,
-                    Path::new("mermaid.svg"),
+            MediaJob::MermaidSrc(code, max_px, embed) => {
+                let (img, svg) = embed.picture(
+                    embed_plugin::FENCE_MERMAID,
+                    &code,
+                    false,
                     max_px,
-                )?;
-                Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
-                })
-            }
-            MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
-                let img = if untrusted {
-                    let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                    crate::preview::svg::rasterize_untrusted(&svg, &p, max_px, &cancelled).ok()?
+                    "mermaid",
+                    "mermaid.svg",
+                );
+                let trust = if embed.trusts_svg() {
+                    SvgTrust::Trusted(PathBuf::from("mermaid.svg"))
                 } else {
-                    crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
+                    SvgTrust::Embedded
                 };
-                Some(MediaPayload::Vector { img, svg })
-            }
-            MediaJob::Workbook(p, locale, sheet) => {
-                use crate::preview::office::{
-                    load_workbook_sheet_cancellable, LoadOptions, OfficeError,
-                };
-                let opts = LoadOptions {
-                    locale,
-                    ..LoadOptions::default()
-                };
-                // The readers sit on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_workbook_sheet_cancellable(&p, &opts, sheet, cancel)
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
-                    Err(e) => MediaPayload::WorkbookFailed(e),
+                Some(MediaPayload::Vector {
+                    img: img.ok()?,
+                    svg: svg?,
+                    trust,
                 })
             }
-            MediaJob::Document(p, lang) => {
-                use crate::preview::office::docx::pptx::load_presentation_cancellable;
-                use crate::preview::office::docx::{load_document_cancellable, DocOptions};
-                use crate::preview::office::OfficeError;
-                let opts = DocOptions {
-                    labels: crate::i18n::slide_labels(lang),
-                    ..DocOptions::default()
-                };
-                let slides = office_doc::is_presentation_path(&p);
-                // The reader sits on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    if slides {
-                        load_presentation_cancellable(&p, &opts, cancel.as_ref())
-                    } else {
-                        load_document_cancellable(&p, &opts, cancel.as_ref())
-                    }
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(doc) => MediaPayload::Document(Box::new(
-                        office_doc::LoadedDocument::from_document(doc),
-                    )),
-                    Err(e) => MediaPayload::DocumentFailed(office_doc::legacy_binary_reason(&p, e)),
-                })
+            MediaJob::SvgReraster(svg, trust, max_px) => {
+                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                let img = trust.draw(&svg, max_px, &cancelled)?;
+                Some(MediaPayload::Vector { img, svg, trust })
             }
             MediaJob::Command {
                 argv,
@@ -994,6 +975,24 @@ impl MediaJob {
             },
         }
     }
+}
+
+/// Run one delegated command to completion and report what it produced (`MediaPayload::CommandText`,
+/// `MediaPayload::Static` for an image, or `MediaPayload::CommandFailed`). The `command` plugin's
+/// `view` calls this on a worker; the job itself is the one the delegation always ran.
+pub(crate) fn run_command_job(
+    argv: Vec<String>,
+    out: PathBuf,
+    uses_out: bool,
+    as_image: bool,
+) -> Option<MediaPayload> {
+    MediaJob::Command {
+        argv,
+        out,
+        uses_out,
+        as_image,
+    }
+    .run()
 }
 
 /// Decode a still image for the full-screen preview: the picture, or why there is none.
@@ -1054,6 +1053,7 @@ struct MediaCache {
     src: std::sync::Arc<image::DynamicImage>,
     logical: Option<(u32, u32)>,
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    vector_trust: Option<SvgTrust>,
 }
 
 /// Result of `git status` + branch computed on a separate thread. Staleness is judged by `gen` exactly like
@@ -1225,6 +1225,9 @@ pub(crate) struct MediaDiffPictureDecoded {
     image: image::DynamicImage,
     frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
     svg: Option<Arc<Vec<u8>>>,
+    /// The file an SVG side was drawn from (the base of its relative references); drawn again
+    /// from the same base. `None` for the kinds that keep no SVG.
+    svg_base: Option<PathBuf>,
     cache_key: PathBuf,
 }
 
@@ -1348,6 +1351,8 @@ pub(crate) struct MediaDiffRequest {
     /// raster image, whose decode doesn't depend on the display box at all.
     raster_px: (u32, u32),
     preview_rules: Vec<crate::config::Rule>,
+    /// Plugins `[plugins.<id>] enabled = false` switches off (they take part in the decision).
+    plugin_disabled: Vec<String>,
     preview_commands: bool,
     /// Set by the UI thread when nobody wants this computation any more (the want changed or the
     /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
@@ -1496,14 +1501,11 @@ pub struct App {
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
-    pub key_scheme: KeyScheme,
     pub lang: crate::i18n::Lang,
     pub cfg: Config,
 
-    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `s` menu.
+    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `,` menu.
     pub sort: Sort,
-    /// Whether the `s` sort-selection menu is showing (while true, main intercepts keys).
-    sort_menu: bool,
     /// Bookmarks (M7 auxiliary). Lowercase a-z=local (per launch dir) / uppercase A-Z=global.
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// Tab-session persistence (`[ui] restore_tabs`). Attached by main like the loader senders;
@@ -1520,6 +1522,14 @@ pub struct App {
     bookmark_list: bool,
     /// Selection position in the list (a flat index over local on top and global below, concatenated).
     bookmark_list_sel: usize,
+    /// The `/` filter of the overlay lists (bookmark list, tab list, outline / page list): the
+    /// query and whether it is being typed. App-global like the overlays; see `list_filter`.
+    bookmark_list_filter: String,
+    bookmark_list_filtering: bool,
+    tab_list_filter: String,
+    tab_list_filtering: bool,
+    outline_filter: String,
+    outline_filtering: bool,
     /// Confirmation/input dialog (create `a` / rename `R` / delete `D`). While showing, main intercepts keys.
     dialog: Option<Dialog>,
     /// File clipboard (M7 Phase B). Push with `Y`=copy/`X`=cut, apply with `P`=paste.
@@ -1645,6 +1655,8 @@ pub struct App {
     /// Zooming past the raster's density re-rasterizes this at the needed scale on a worker thread
     /// ("sharp zoom"); raster images leave it None (pixel zoom only).
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// How `vector_svg` is drawn again (`SvgTrust`): set with it.
+    vector_trust: Option<SvgTrust>,
     /// Logical (layout) pixel size of a vector-backed image = the dimensions of its **first** raster.
     /// `image_layout` sizes/zooms against this identity, so swapping in a sharper raster changes only
     /// pixel density, never the on-screen geometry (HiDPI-style backing store).
@@ -1666,6 +1678,11 @@ pub struct App {
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
+    /// The (mtime, size) of the file the open plugin show was last opened on. A plugin that reads
+    /// heavily (declares a work group: the Office ones) is opened again on an FS event only when
+    /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
+    /// not re-read a workbook of hundreds of megabytes.
+    plugin_stamp: Option<FileStamp>,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -1689,27 +1706,20 @@ pub struct App {
     /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
     /// externally edited file is always re-read.
     media_cache: Option<MediaCache>,
-
-    /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
-    /// None while not a table, or when parsing failed (then the preview degrades to raw text).
-    table_data: Option<crate::preview::table::TableData>,
-    /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
-    /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
-    /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
-    /// Lives on `App` (like `table_data`), not on `PerTab`: a sheet can hold up to 4M cells, so
-    /// cloning it into every tab snapshot is not an option — a tab switch re-reads it on the worker
-    /// instead (the sheet number and cursor are `PerTab` state and survive).
-    workbook: Option<Box<crate::preview::office::Workbook>>,
-    /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
-    /// reason shown on the "can not preview" screen.
-    workbook_error: Option<crate::preview::office::OfficeError>,
-    /// The opened Word document while a `PreviewKind::Document` preview is active and its worker
-    /// finished: the converted Markdown and the pictures it refers to. App-level (not `PerTab`) for
-    /// the same reason as `workbook`; a tab switch re-reads it on the worker. Assigned only through
-    /// `set_document`, which frees the old one off the UI thread.
+    /// The plugin display that is open (`PreviewKind::Plugin`, tables and pictures alike): the
+    /// plugin's `Session` (a PDF keeps it so a page turn does not open the file again), its layout
+    /// and the view it returned (`app/plugin_host.rs`). Lives on `App` (like `document`): the data
+    /// can be large, so a tab switch opens it again instead of cloning it into every tab snapshot.
+    /// Assigned only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind`
+    /// whenever the preview is not a plugin's and by `clear_image`.
+    plugin: Option<plugin_host::PluginShow>,
+    /// The converted Word document or presentation while the `document` / `presentation` plugin
+    /// shows the preview and its job finished: the Markdown to draw (of the representation on
+    /// screen) and the pictures it refers to. The plugin's `View` is turned into this on the worker
+    /// (`office_doc.rs`). App-level (not `PerTab`) for the same reason as the plugin show; a tab
+    /// switch re-reads it on the worker. Assigned only through `set_document`, which frees the old
+    /// one off the UI thread. Why a file could not be shown is the plugin show's failure.
     document: Option<Box<office_doc::LoadedDocument>>,
-    /// Why the last Word document load failed (`Some` only while `document` is `None`).
-    document_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -1837,26 +1847,28 @@ pub struct App {
     md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
-    /// `media_gen`, shared with the running workbook load so it can see that it was superseded
+    /// `media_gen`, shared with the running loads so they can see that they were superseded
     /// (every change of `media_gen` goes through `bump_media_gen`).
     media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
-    /// A workbook load is running on its thread. **At most one at a time**: a spreadsheet is read
-    /// in one pass of a parser that can hold gigabytes, so `J` held down must not start one per
-    /// press (see `spawn_workbook_job`).
-    wb_worker_busy: bool,
-    /// The newest workbook load asked for while one was running; it starts when that one ends.
-    wb_queued: Option<WbRequest>,
-    /// Test-only: workbook loads started on a thread.
+    /// The exclusive work groups of the plugins (`Manifest::work_group`): which have a job running
+    /// and the newest one waiting behind it (`app/plugin_host.rs`).
+    plugin_groups: std::collections::BTreeMap<String, plugin_host::GroupSlot>,
+    /// The actions the plugins declare, with their keys (`app/plugin_acts.rs`).
+    pub(crate) plugin_keys: crate::plugins::PluginKeys,
+    /// Test-only: plugin jobs of a work group started on a thread.
     #[cfg(test)]
-    wb_dispatches: u32,
+    plugin_group_dispatches: u32,
 
     /// Run2 keymap (Surface × key → Action). Built from the config at startup.
     pub keymaps: crate::keymap::KeyMap,
     /// which-key leader-pending state (`Space`=file management / `y`=path copy). After the press, a
     /// which-key menu is shown in the footer and the next keystroke confirms/cancels (a generalization of the old two-key pending_chord).
     pub pending_leader: Option<crate::keymap::LeaderId>,
+    /// The last operation `dispatch_action` let through the gate (tests: a menu item really ran).
+    #[cfg(test)]
+    pub last_dispatched: Option<crate::keymap::Action>,
 
     /// A transient message (copy result, etc.). Cleared on the next key input. Shown in the status line.
     pub flash: Option<String>,
@@ -2009,6 +2021,14 @@ pub struct App {
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
+    /// Whether the last drawn source diff was laid out side by side (the width the layout was
+    /// resolved at is only known while drawing). `n` / `N` and `e` read it to turn a diff line
+    /// into the scroll row it is at.
+    pub(crate) diff_split_drawn: bool,
+    /// The change block (an index into the blocks of the file shown) the last `n` / `N` of a
+    /// document or a diff landed on, with the file: lets the next step and `e` know which block
+    /// the view is on when the scroll alone cannot say (see `current_block`).
+    change_at: Option<(PathBuf, usize)>,
     /// The image/PDF/SVG side-by-side "diff"'s layout (auto/side/stack). Initialized from
     /// `[git] media_diff` and cycled with `s` while that view is active
     /// (`App::cycle_media_diff_layout`). App-level (not per-tab), like `diff_layout` — kept across
@@ -2527,6 +2547,11 @@ struct MdImgEntry {
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Where `svg` came from, and so how it is drawn again (`SvgTrust`): konoma's own in this
+    /// process, a file's by the supervised child process with the file's directory as the base
+    /// for relative references (as the first drawing did), anything else by the child process
+    /// reading no file. Set where the entry is made.
+    svg_trust: SvgTrust,
     /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
     /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
     /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
@@ -2536,6 +2561,12 @@ struct MdImgEntry {
     layout_px: Option<(u32, u32)>,
     /// A sharpening re-raster is in flight (at most one per diagram).
     reraster_inflight: bool,
+    /// The pixels changed (a re-raster landed, a GIF advanced) while an encode of the **previous**
+    /// pixels was still running. That encode holds the old picture, so when it lands its slot must
+    /// stay stale and be encoded again from the current pixels: clearing `stale` there froze the
+    /// picture at the old density for good (a bottom band cut from the 800 px raster instead of
+    /// the sharpened one, depending only on which thread finished first).
+    outdated_encode_in_flight: bool,
     /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
     /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
     /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
@@ -2694,6 +2725,10 @@ impl MdImgEntry {
     /// a blank), and re-encoding into the surviving slot reuses its kitty id, so the terminal
     /// replaces that picture instead of collecting one per frame.
     fn mark_stale(&mut self) {
+        // The single in-flight encode (if any) was cut from the pixels that just changed.
+        if self.enc_inflight {
+            self.outdated_encode_in_flight = true;
+        }
         for slot in self
             .full
             .iter_mut()
@@ -3055,7 +3090,7 @@ impl DiffView {
 /// inline-fence zoom state, and the tab-scoped selection/filter/search state.
 ///
 /// `Default` is implemented manually (not derived): a few fields have a non-zero "fresh tab" value
-/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `pdf_page` starts
+/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `page` starts
 /// at 1), matching what `App::new` used to initialize them to before this migration.
 #[derive(Clone)]
 pub(crate) struct PerTab {
@@ -3091,9 +3126,6 @@ pub(crate) struct PerTab {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
-    /// Which visible sheet (0-based) a spreadsheet preview shows. Clamped to the workbook's sheet
-    /// count whenever a (re)load lands.
-    sheet_idx: usize,
     // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
     git_view: bool,
     git_view_sel: usize,
@@ -3171,6 +3203,14 @@ pub(crate) struct PerTab {
     git_branch_sel: usize,
     git_branch_filter: String,
     git_branch_filtering: bool,
+    // The `/` filter of the other lists: the changes list, the log and the graph (the branch and
+    // worktree lists have theirs right above and below). One shape for all five, see `list_filter`.
+    git_view_filter: String,
+    git_view_filtering: bool,
+    git_log_filter: String,
+    git_log_filtering: bool,
+    git_graph_filter: String,
+    git_graph_filtering: bool,
     // The linked-worktree list (`w` from the changes hub). Same shape as the branch-list fields
     // right above (list / cursor / filter query / filter-input-active).
     git_worktrees: Option<Vec<crate::git::WorktreeInfo>>,
@@ -3212,15 +3252,22 @@ pub(crate) struct PerTab {
     /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
     pub(crate) image_zoom: f64,
     image_center: (f64, f64),
-    pdf_page: u32,
-    pdf_pages: Option<u32>,
-    // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
-    md_raw: bool,
-    /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
-    /// pictures, `None` = the terminal's default (`App::deck_picture_view`). Reset per file.
-    deck_text_view: Option<bool>,
-    /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
-    /// layout exists (`App::apply_pending_slide`).
+    /// The page on screen, counted from 1, of a preview made of separate pages (a PDF today; the
+    /// spreadsheet's sheets and the slides keep their own numbers until they move onto this).
+    /// 1 for anything else.
+    page: u32,
+    /// How many pages the plugin reported (`Layout.pages`), or `None` when it has none or does not
+    /// know (page keys do nothing then).
+    page_count: Option<u32>,
+    // --- Chosen representation (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
+    /// The representation the user chose with `R` (an id of the plugin's `Layout.reprs`), or
+    /// `None` for the plugin's default for the terminal. Reset per file. A presentation's are
+    /// `picture` and `text` (`App::deck_picture_view`); a Markdown file's and a Word document's
+    /// are `rendered` and `source` (`App::is_md_raw`: the source is shown in the windowed reader).
+    repr: Option<String>,
+    /// The page (0-based) of an anchored page list (the slides of a presentation) to keep: scrolled
+    /// to by the next draw, once the layout of the new representation or size exists
+    /// (`App::apply_pending_slide`).
     deck_pending_slide: Option<usize>,
     /// Whether the preview body has been drawn for this tab at least once, so `preview_viewport`
     /// is a measured height (possibly 0 on a tiny terminal) and not the initial "not drawn yet" 0.
@@ -3295,7 +3342,6 @@ impl Default for PerTab {
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
-            sheet_idx: 0,
             git_view: false,
             git_view_sel: 0,
             git_view_entries: Vec::new(),
@@ -3322,6 +3368,12 @@ impl Default for PerTab {
             git_branch_sel: 0,
             git_branch_filter: String::new(),
             git_branch_filtering: false,
+            git_view_filter: String::new(),
+            git_view_filtering: false,
+            git_log_filter: String::new(),
+            git_log_filtering: false,
+            git_graph_filter: String::new(),
+            git_graph_filtering: false,
             git_worktrees: None,
             git_worktree_sel: 0,
             git_worktree_filter: String::new(),
@@ -3345,10 +3397,9 @@ impl Default for PerTab {
             // The image/fence center's initial value is "centered" (same as App::new used to set it to (0.5, 0.5)).
             image_center: (0.5, 0.5),
             // PDF pages are 1-based (same as App::new used to set it to 1).
-            pdf_page: 1,
-            pdf_pages: None,
-            md_raw: false,
-            deck_text_view: None,
+            page: 1,
+            page_count: None,
+            repr: None,
             deck_pending_slide: None,
             preview_viewport_drawn: false,
             focused_item: None,
@@ -3376,7 +3427,6 @@ impl Default for PerTab {
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
-        let key_scheme = KeyScheme::parse(&cfg.ui.keys);
         let lang = crate::i18n::Lang::resolve(&cfg.ui.lang);
         let sort = Sort::from_config(&cfg.ui.sort);
         // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
@@ -3387,27 +3437,38 @@ impl App {
         let diff_layout = DiffLayout::parse(&cfg.git.diff);
         // The media diff's initial layout (config git.media_diff). At runtime, `s` cycles auto → side → stack → auto.
         let media_diff_layout = MediaDiffLayout::parse(&cfg.git.media_diff);
-        // Run2 keymap: merge the defaults + config (`[keys.<surface>]` + the old copy_* alias) and
+        // Run2 keymap: merge the defaults + config (`[keys.<context>]` + the old copy_* alias) and
         // validate for conflicts. The page/half profile follows ui.keys (vim/less). Stage 2 is
         // construction only (dispatch is not yet wired up).
+        // The `[keys.<plugin id>]` tables are the plugins', not the host's: they are taken out of
+        // the host's keymap config and applied to the plugins' declared actions.
+        let mut keys_config = cfg.keys.to_keymap_config();
+        let plugin_keys = crate::plugins::PluginKeys::build(
+            &crate::plugins::shared_registry(&cfg.plugin_disabled()),
+            &mut keys_config.surfaces,
+        );
         let keymaps = crate::keymap::KeyMap::from_config(
             crate::keymap::scheme_from_str(&cfg.ui.keys),
-            &cfg.keys.to_keymap_config(),
+            &keys_config,
         );
         let mut app = Self {
             launch_dir: root.clone(),
             path_style,
-            key_scheme,
             lang,
             cfg,
             sort,
-            sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
             session_store: None,
             session_restoring: false,
             mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
+            bookmark_list_filter: String::new(),
+            bookmark_list_filtering: false,
+            tab_list_filter: String::new(),
+            tab_list_filtering: false,
+            outline_filter: String::new(),
+            outline_filtering: false,
             dialog: None,
             clipboard: None,
             follow_mode: false,
@@ -3445,22 +3506,21 @@ impl App {
             image_crop: None,
             image_vis_frac: (1.0, 1.0),
             vector_svg: None,
+            vector_trust: None,
             image_logical: None,
             vector_reraster_inflight: false,
             md_overlay_last: None,
             md_overlay_seen: None,
             md_overlay_moved: false,
             preview_media_mtime: None,
+            plugin_stamp: None,
             command_err: None,
             image_failure: None,
             #[cfg(test)]
             md_cache_budget_for_test: None,
             media_cache: None,
-            table_data: None,
-            workbook: None,
-            workbook_error: None,
+            plugin: None,
             document: None,
-            document_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -3496,12 +3556,14 @@ impl App {
             media_gen: 0,
             media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
-            wb_worker_busy: false,
-            wb_queued: None,
+            plugin_groups: std::collections::BTreeMap::new(),
+            plugin_keys,
             #[cfg(test)]
-            wb_dispatches: 0,
+            plugin_group_dispatches: 0,
             keymaps,
             pending_leader: None,
+            #[cfg(test)]
+            last_dispatched: None,
             flash: None,
             show_help: false,
             show_info: false,
@@ -3543,6 +3605,8 @@ impl App {
             filter_pool_dirty: false,
             pool_tx: None,
             diff_layout,
+            diff_split_drawn: false,
+            change_at: None,
             media_diff_layout,
             git_branch: None,
             git_worktree_origin: None,
@@ -3580,29 +3644,123 @@ impl App {
         self.session_store = Some(store);
     }
 
-    /// Summarize startup keymap conflicts / ignored settings into one line (for the startup flash; i18n).
-    /// Conflicts have already safely fallen back to defaults (#17/FR-8). None if there is nothing.
+    /// Summarize startup keymap conflicts / ignored settings / old table names into one line (for
+    /// the startup flash; i18n). Conflicts have already safely fallen back to defaults (#17/FR-8).
+    /// Each kind gets its count and its first instance (so the flash says *which* key or table, not
+    /// just how many), followed by "(+n more)". None if there is nothing. The footer's own message
+    /// is [`App::startup_flash`], which orders and fits the pieces; this is the whole in one line.
+    #[cfg(test)]
     pub fn keymap_report(&self) -> Option<String> {
-        let nc = self.keymaps.conflicts.len();
-        let nw = self.keymaps.warnings.len();
-        if nc == 0 && nw == 0 {
+        let (problems, guidance) = self.keymap_report_parts();
+        let parts: Vec<String> = problems.into_iter().chain(guidance).collect();
+        if parts.is_empty() {
             return None;
         }
-        let mut parts: Vec<String> = Vec::new();
-        if nc > 0 {
-            parts.push(match self.lang {
+        Some(format!(
+            "{}: {}",
+            tr(self.lang, crate::i18n::Msg::Keymap),
+            parts.join(" / ")
+        ))
+    }
+
+    /// The pieces of [`App::keymap_report`]: what is wrong (conflicts, ignored settings) and what
+    /// only guides (old table names), each already carrying its "(+n more)".
+    fn keymap_report_parts(&self) -> (Vec<String>, Vec<String>) {
+        use crate::i18n::Msg;
+        let k = &self.keymaps;
+        let (nc, nw, nr) = (k.conflicts.len(), k.warnings.len(), k.renames.len());
+        let lang = self.lang;
+        let more = |total: usize| -> String {
+            if total > 1 {
+                format!(
+                    " {}",
+                    tr(lang, Msg::KeymapMore).replace("{n}", &(total - 1).to_string())
+                )
+            } else {
+                String::new()
+            }
+        };
+        let mut problems: Vec<String> = Vec::new();
+        let mut guidance: Vec<String> = Vec::new();
+        if let Some(c) = k.conflicts.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("キー衝突{nc}件(既定で継続)"),
                 crate::i18n::Lang::En => format!("{nc} key conflict(s) (using defaults)"),
-            });
+            };
+            let detail = tr(lang, Msg::KeymapConflictDetail)
+                .replace("{key}", &c.key.label())
+                .replace("{kept}", &c.kept)
+                .replace("{dropped}", &c.dropped);
+            problems.push(format!("{count}: {detail}{}", more(nc)));
         }
-        if nw > 0 {
-            parts.push(match self.lang {
+        if let Some(w) = k.warnings.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("無効な設定{nw}件を無視"),
                 crate::i18n::Lang::En => format!("{nw} invalid key setting(s) ignored"),
-            });
+            };
+            problems.push(format!("{count}: {w}{}", more(nw)));
         }
-        let head = tr(self.lang, crate::i18n::Msg::Keymap);
-        Some(format!("{head}: {}", parts.join(" / ")))
+        if let Some((old, new)) = k.renames.first() {
+            let note = tr(lang, Msg::KeymapOldName)
+                .replace("{old}", old)
+                .replace("{new}", new);
+            guidance.push(format!("{note}{}", more(nr)));
+        }
+        (problems, guidance)
+    }
+
+    /// The old `[ui]` names the config still uses, in one piece of guidance ("write ... instead",
+    /// the first one named and "(+n more)"), or `None` when it uses none.
+    fn settings_guidance(&self) -> Option<String> {
+        use crate::i18n::Msg;
+        let (old, new) = self.cfg.renamed_settings.first()?;
+        let more = if self.cfg.renamed_settings.len() > 1 {
+            format!(
+                " {}",
+                tr(self.lang, Msg::KeymapMore)
+                    .replace("{n}", &(self.cfg.renamed_settings.len() - 1).to_string())
+            )
+        } else {
+            String::new()
+        };
+        let head = match self.lang {
+            crate::i18n::Lang::Jp => "設定",
+            crate::i18n::Lang::En => "config",
+        };
+        let note = tr(self.lang, Msg::KeymapOldName)
+            .replace("{old}", old)
+            .replace("{new}", new);
+        Some(format!("{head}: {note}{more}"))
+    }
+
+    /// The message on the footer when konoma starts, from everything that has something to say:
+    /// a config that could not be read (`cfg_err`), key conflicts and ignored key settings,
+    /// `[plugins.*]` mistakes, then the guidance about old names (keys and settings). What is
+    /// wrong comes first and the guidance last; when they do not all fit `width` columns, what
+    /// does not fit is counted ("(+n more)") instead of being cut off mid-word.
+    pub fn startup_flash(&self, cfg_err: Option<String>, width: usize) -> Option<String> {
+        use crate::i18n::Msg;
+        let (key_problems, key_guidance) = self.keymap_report_parts();
+        let head = tr(self.lang, Msg::Keymap);
+        let mut notices: Vec<String> = Vec::new();
+        notices.extend(cfg_err);
+        if !key_problems.is_empty() {
+            notices.push(format!("{head}: {}", key_problems.join(" / ")));
+        }
+        notices.extend(self.cfg.plugin_report(self.lang));
+        let plugin_notes = self.plugin_keys.report(self.lang);
+        if !plugin_notes.is_empty() {
+            let head = match self.lang {
+                crate::i18n::Lang::Jp => "プラグイン",
+                crate::i18n::Lang::En => "plugins",
+            };
+            notices.push(format!("{head}: {}", plugin_notes.join(" / ")));
+        }
+        if !key_guidance.is_empty() {
+            notices.push(format!("{head}: {}", key_guidance.join(" / ")));
+        }
+        notices.extend(self.settings_guidance());
+        fit_notices(notices, width, self.lang)
     }
 
     /// Starting from directly under root, recursively expand the expanded directories and flatten them.
@@ -3731,51 +3889,19 @@ impl App {
     }
 
     // --- Sort (FR, M7 helper) -------------------------------------------------
-    /// Whether the `s` sort-selection menu is showing.
-    pub fn is_sort_menu(&self) -> bool {
-        self.sort_menu
-    }
-    /// Open the sort menu with `s`. main routes the next key here.
-    pub fn open_sort_menu(&mut self) {
-        self.sort_menu = true;
-    }
-    /// Close the sort menu (Esc or an out-of-scope key).
-    pub fn close_sort_menu(&mut self) {
-        self.sort_menu = false;
-    }
-    /// Key handling for the sort menu. n/s/m/e=select the key (closes after selecting), r=flip asc/desc, .=directories first
-    /// (toggles keep it open). Out-of-scope keys close it. If the order changes, rebuild (while filtering, applied after clearing).
+    /// Apply one sort operation of the tree's `,` menu (`SortSet`, `SortToggleReverse`,
+    /// `SortToggleDirsFirst`; `c` is the letter the old overlay used for each). The menu closes
+    /// after the one operation. If the order changes, rebuild (while filtering, applied after clearing).
     pub fn sort_menu_key(&mut self, c: char) -> Result<()> {
-        let keep_open = match c {
-            'n' => {
-                self.sort.key = SortKey::Name;
-                false
-            }
-            's' => {
-                self.sort.key = SortKey::Size;
-                false
-            }
-            'm' => {
-                self.sort.key = SortKey::Modified;
-                false
-            }
-            'e' => {
-                self.sort.key = SortKey::Ext;
-                false
-            }
-            'r' => {
-                self.sort.reverse = !self.sort.reverse;
-                true
-            }
-            '.' => {
-                self.sort.dirs_first = !self.sort.dirs_first;
-                true
-            }
-            _ => {
-                self.sort_menu = false;
-                return Ok(());
-            }
-        };
+        match c {
+            'n' => self.sort.key = SortKey::Name,
+            's' => self.sort.key = SortKey::Size,
+            'm' => self.sort.key = SortKey::Modified,
+            'e' => self.sort.key = SortKey::Ext,
+            'r' => self.sort.reverse = !self.sort.reverse,
+            '.' => self.sort.dirs_first = !self.sort.dirs_first,
+            _ => return Ok(()),
+        }
         // While filtering, don't change the result order (it takes effect on tree rebuild after clearing).
         if self.tab.tree_filter.is_none() {
             // Anchor captured before the rebuild below — same hazard as `toggle_hidden`/
@@ -3790,7 +3916,6 @@ impl App {
             // sort order itself never applies to `C`'s list, which stays a fixed path order).
             self.refilter_after_visibility_change(anchor);
         }
-        self.sort_menu = keep_open;
         Ok(())
     }
     /// Current sort display for the top context bar (e.g. `sort: mod ↑`).
@@ -3887,9 +4012,19 @@ impl App {
         // --- The git views. The commit detail sits over the log, and the branch panel sits over
         // the graph (`is_git_graph` is still true underneath it), so each goes before what it covers. ---
         layer!(self.is_git_detail(), UiLayer::GitDetail);
-        layer!(self.is_git_log(), UiLayer::GitLog);
+        let log = self.is_git_log();
+        layer!(
+            log && self.list_filtering(list_filter::ListId::Log),
+            UiLayer::GitLogFilter
+        );
+        layer!(log, UiLayer::GitLog);
         layer!(self.is_git_graph_picker(), UiLayer::GitGraphPicker);
-        layer!(self.is_git_graph(), UiLayer::GitGraph);
+        let graph = self.is_git_graph();
+        layer!(
+            graph && self.list_filtering(list_filter::ListId::Graph),
+            UiLayer::GitGraphFilter
+        );
+        layer!(graph, UiLayer::GitGraph);
         let branches = self.is_git_branches();
         layer!(
             branches && self.git_branch_filtering(),
@@ -3902,17 +4037,36 @@ impl App {
             UiLayer::GitWorktreeFilter
         );
         layer!(worktrees, UiLayer::GitWorktrees);
-        layer!(self.is_git_view(), UiLayer::GitChanges);
+        let changes = self.is_git_view();
+        layer!(
+            changes && self.list_filtering(list_filter::ListId::Changes),
+            UiLayer::GitChangesFilter
+        );
+        layer!(changes, UiLayer::GitChanges);
         layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
 
         // --- Input surfaces / menus / lists / popups ---
         layer!(self.is_filtering(), UiLayer::Filter);
         layer!(self.is_searching(), UiLayer::Search);
-        layer!(self.is_sort_menu(), UiLayer::Sort);
         layer!(self.is_marking(), UiLayer::Mark);
-        layer!(self.is_bookmark_list(), UiLayer::Bookmarks);
-        layer!(self.is_tab_list(), UiLayer::Tabs);
-        layer!(self.is_outline(), UiLayer::Outline);
+        let bookmarks = self.is_bookmark_list();
+        layer!(
+            bookmarks && self.list_filtering(list_filter::ListId::Bookmarks),
+            UiLayer::BookmarksFilter
+        );
+        layer!(bookmarks, UiLayer::Bookmarks);
+        let tabs = self.is_tab_list();
+        layer!(
+            tabs && self.list_filtering(list_filter::ListId::Tabs),
+            UiLayer::TabsFilter
+        );
+        layer!(tabs, UiLayer::Tabs);
+        let outline = self.is_outline();
+        layer!(
+            outline && self.list_filtering(list_filter::ListId::Outline),
+            UiLayer::OutlineFilter
+        );
+        layer!(outline, UiLayer::Outline);
         layer!(self.is_info(), UiLayer::Info);
         layer!(self.is_table_cell_open(), UiLayer::TableCell);
         layer!(self.is_visual(), UiLayer::Visual);
@@ -3937,6 +4091,51 @@ impl App {
             // base layer always has a surface. Degrade rather than panic (design principle #3).
             None => self.base_layer().surface(),
         }
+    }
+
+    /// Whether the text preview on screen is a decorated *document* (rendered Markdown, a Word
+    /// document, slides, a mermaid diagram) rather than source or plain text. A windowed preview
+    /// (code, plain text, a document's raw source after `R`) is text; so is a preview that cannot
+    /// be shown yet or at all (a Word file still converting, an unsupported type).
+    pub(crate) fn shows_document(&self) -> bool {
+        !self.is_windowed() && self.is_decorated_kind() && !self.document_text_missing()
+    }
+
+    /// The **key context** the next key is looked up in (`None` for text input and confirm
+    /// modals, which do not use the keymap). A projection of [`App::surface`] refined by what is on
+    /// screen: a decorated document vs source for the text preview, and git vs jj for the
+    /// version-control screens. The one place that decides the context; `handle_key` uses nothing
+    /// else.
+    pub fn key_context(&self) -> Option<crate::keymap::Context> {
+        let sfc = self.surface();
+        crate::keymap::Context::of_surface(sfc, self.shows_document(), self.screen_is_jj(sfc))
+    }
+
+    /// Whether the version-control screen `sfc` is open for a jj repository: the cached `git_vcs`
+    /// (settled by the background scan) or the root itself (so the screens name the right keys from
+    /// their first frame, before the scan lands).
+    fn screen_is_jj(&self, sfc: crate::keymap::Surface) -> bool {
+        #[cfg(feature = "git")]
+        {
+            sfc.is_vcs_screen() && crate::ops::backend(self) == crate::keymap::Backend::Jj
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = sfc;
+            false
+        }
+    }
+
+    /// The context of the screen at the bottom of the stack (the tree, or the preview underneath),
+    /// ignoring every overlay in front of it. The footer of the tree and of the previews is the
+    /// plan of this context (`ops::footer`).
+    pub fn base_context(&self) -> crate::keymap::Context {
+        crate::keymap::Context::of_surface(
+            self.base_layer().surface(),
+            self.shows_document(),
+            false,
+        )
+        .unwrap_or(crate::keymap::Context::Tree)
     }
 
     // --- Copy/cut & paste (M7 Phase B, default keys Y/X/P, changeable via keymap) ---
@@ -4240,8 +4439,8 @@ impl App {
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
-        // A spreadsheet's sheet number belongs to the file shown under the old root.
-        self.tab.sheet_idx = 0;
+        // A spreadsheet's sheet number (the page) belongs to the file shown under the old root.
+        self.tab.page = 1;
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
@@ -4394,51 +4593,34 @@ impl App {
         self.tab.diff_scroll_pending = None;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
-        // A new preview target: the previous spreadsheet (if any) and its sheet number are done
-        // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
-        // workbook right away.
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // A new preview target: the previous Word document (if any) is done for. (The previous
+        // spreadsheet and its sheet number went with `clear_image` above: the plugin show and the
+        // page.) Must precede `start_media_load` below, whose synchronous fallback can land the
+        // new document right away.
         self.set_document(None);
-        self.document_error = None;
-        self.tab.sheet_idx = 0;
-        // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
-        // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
-        // external tool, so "can count ⟹ can draw" holds almost universally (there is no
-        // "first-page-only" constraint like qlmanage/sips has) — the navigation suppression that
-        // used to live here via `arbitrary_page_renderer_available()` (whether poppler was present)
-        // has been removed, and poppler itself is no longer in the fallback chain at all.
-        // `[external] pdf` doesn't affect getting the page count either: `page_count` is a pure
-        // Rust read that never launches an external process, so it keeps working the same whether
-        // `pdf=false` (= never launch an external rendering tool) or not (an external tool is
-        // only involved when `render_page` degrades to its fallback).
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            self.tab.pdf_pages = crate::preview::pdf::page_count(path);
-        }
         // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
         // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
         // `setup_windowed`, which decides whether to open the windowed reader by reading
         // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        // A new file starts decorated, and this must hold *before* the load: a Word document that
-        // lands synchronously (no media_tx) decides there whether to build its raw view.
-        self.tab.md_raw = false;
-        self.tab.deck_text_view = None;
+        // A new file starts in the plugin's default representation (the rendered document for
+        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
+        // synchronously (no media_tx) decides there whether the source view is the one wanted.
+        self.tab.repr = None;
         self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
-        self.tab.md_raw = false; // A new file starts in decorated display (Markdown/Mermaid). `R` switches to raw.
-                                 // This preview is not the diff's own `Preview` representation unless the one caller that
-                                 // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
-                                 // immediately after this call returns — every *other* way of reaching a preview (a tree
-                                 // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
-                                 // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
-                                 // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
-                                 // having been on the diff's own `Preview` representation) kept routing back into a stale
-                                 // diff for the *original* file instead of behaving like an ordinary preview.
+        // This preview is not the diff's own `Preview` representation unless the one caller that
+        // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
+        // immediately after this call returns — every *other* way of reaching a preview (a tree
+        // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
+        // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
+        // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
+        // having been on the diff's own `Preview` representation) kept routing back into a stale
+        // diff for the *original* file instead of behaving like an ordinary preview.
         self.tab.preview_from_diff = false;
         self.md_cache = None; // Switching to a different file: invalidate the decoration cache
         self.md_items.clear();
@@ -4480,12 +4662,13 @@ impl App {
         if self.is_visual() {
             self.exit_visual_cancel();
         }
-        // CSV/TSV/archives are parsed into a table. Reset the cursor/scroll to the start before loading.
+        // A plugin's file (CSV/TSV, an archive listing) is opened on a worker. Reset the cursor/scroll
+        // to the start before loading.
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
-        self.load_table();
+        self.load_plugin();
         self.tab.mode = Mode::Preview;
     }
 
@@ -4500,8 +4683,8 @@ impl App {
         // Determine whether we're in the heavy-highlight-wait state: if it's Code, highlighting
         // is enabled, and the grammar isn't compiled yet (cold), a loading display / staged
         // display is needed just for the first time. If already warm, it colors instantly from the start.
-        self.hl_pending = self.cfg.ui.syntax_highlight
-            && matches!(self.tab.preview_kind, Some(PreviewKind::Code(_)))
+        self.hl_pending = crate::plugins::syntax_highlight_on(&self.cfg)
+            && self.shows_file_text_plugin()
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
         // Code/Text are always windowed. Markdown/Mermaid become windowed only in raw display
@@ -4517,10 +4700,9 @@ impl App {
                 self.tab.preview_kind,
                 Some(PreviewKind::Command { ref render_as, .. }) if render_as.as_deref() != Some("image")
             );
-        let windowed_kind = matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
-        ) || self.is_raw_source()
+        let windowed_kind = self.shows_text_plugin()
+            || matches!(self.tab.preview_kind, Some(PreviewKind::Text(_)))
+            || self.is_raw_source()
             || is_text_command;
         if !windowed_kind {
             return;
@@ -4603,11 +4785,12 @@ impl App {
         if self.filter_pool_scanning_current() {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
-        if self.media_loading {
+        // (The `code` plugin's answer is not media: the text is on screen before it lands.)
+        if self.media_loading && !self.shows_file_text_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
-            v.push(match self.tab.preview_kind {
-                Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
-                Some(PreviewKind::Spreadsheet(_)) => crate::i18n::Msg::BusySheet,
+            v.push(match &self.tab.preview_kind {
+                Some(k) if k.is_document_kind() => crate::i18n::Msg::BusyDocument,
+                Some(k) if k.is_spreadsheet() => crate::i18n::Msg::BusySheet,
                 _ => crate::i18n::Msg::BusyMedia,
             });
         }
@@ -4657,22 +4840,25 @@ impl App {
     /// For a directory or no target, notify via flash and do nothing (only files can be edited).
     /// In Preview the editor is asked to open at the on-screen position (see `preview_edit_line`).
     pub fn request_edit(&mut self) {
-        let target = match self.tab.mode {
-            Mode::Tree => match self.tab.entries.get(self.tab.selected) {
-                Some(e) if e.is_dir => {
-                    self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
-                    return;
-                }
-                Some(e) => Some(e.path.clone()),
-                None => None,
-            },
-            Mode::Preview => self.tab.preview_path.clone(),
+        let target = match self.verb_target() {
+            open_app::VerbTarget::File(p) => Some(p),
+            open_app::VerbTarget::Dir => {
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
+                return;
+            }
+            open_app::VerbTarget::None => None,
         };
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
             Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
+    }
+
+    /// Test-only: the line `e` would open the editor at.
+    #[cfg(test)]
+    pub fn preview_edit_line_for_test(&self) -> Option<usize> {
+        self.preview_edit_line()
     }
 
     /// The 1-based file line to open the external editor at, matching the on-screen position.
@@ -4687,8 +4873,21 @@ impl App {
         if self.tab.mode != Mode::Preview {
             return None;
         }
+        // The version-control list over a preview: the file is the list's row, not the preview's.
+        if self.is_git_view() {
+            return None;
+        }
+        // A diff opens the editor at the change block on screen (new-file line number).
+        #[cfg(feature = "git")]
+        if self.is_git_diff_preview() {
+            return self.diff_edit_line();
+        }
         // The converted Markdown of a Word document has no line in the .docx to open at.
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        if self.is_document() {
+            return None;
+        }
+        // Text a plugin made (a hex dump) has a line in the file only if the plugin says so.
+        if self.text_plugin_is_generated() && !self.text_plugin_lines_are_file_lines() {
             return None;
         }
         if self.is_windowed() {
@@ -4697,7 +4896,12 @@ impl App {
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
         // source line proportionally, then refine by content (see md_content_anchor_line).
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_))) {
+        if self
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
+        {
             if let Some(c) = &self.md_cache {
                 let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
                 if same && c.src_lines > 0 && self.md_view_rows > 0 {
@@ -4818,16 +5022,41 @@ impl App {
         if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
-            // CSV/TSV/archive content can change from an external edit. Re-parse and clamp the
+            // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
+            // it again (the old table stays on screen until the new one lands) and clamp the
             // cursor within range (preserving its position).
-            if matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
-            ) {
-                self.load_table();
+            // (The `code` plugin has nothing to read again: its styler works on the lines the
+            // window reader has just reopened.)
+            if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+                && !self.shows_file_text_plugin()
+            {
+                if !self.plugin_file_unchanged() {
+                    self.reload_plugin();
+                }
                 self.clamp_table_cursor();
             }
         }
+    }
+
+    /// Whether the open plugin show reads heavily (its manifest names a work group) and the file it
+    /// shows is the one it was opened on, unchanged since: reading it again would only repeat the
+    /// work (an FS event for `.git`, or for another file, reaches `reload_preview` as well).
+    /// A plugin that reads cheaply (a CSV, an archive listing) is opened again every time, as it
+    /// always was.
+    fn plugin_file_unchanged(&self) -> bool {
+        let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
+            return false;
+        };
+        let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
+            .manifest(id)
+            .is_some_and(|m| m.work_group.is_some());
+        heavy
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.id == *id && p.path == *path)
+            && self.plugin_stamp.is_some()
+            && file_stamp(path) == self.plugin_stamp
     }
 
     /// On an FS-driven reload, re-load media (image/svg/gif/video/pdf) **only when the previewed file
@@ -4853,20 +5082,12 @@ impl App {
         if file_mtime(&path) == self.preview_media_mtime {
             return; // the target file is unchanged → avoid a wasted re-decode / external-tool run
         }
-        // Preserve the display state (zoom/center/page) and reload.
-        let (zoom, center, page) = (
-            self.tab.image_zoom,
-            self.tab.image_center,
-            self.tab.pdf_page,
-        );
+        // Preserve the display state (zoom/center/page) and reload. The page count is the
+        // plugin's to report again (the file may have gained or lost pages); until it lands the
+        // page asked for is the one the user was on.
+        let (zoom, center, page) = (self.tab.image_zoom, self.tab.image_center, self.tab.page);
         self.clear_image(); // reset zoom/center/page/media generation
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            // See the comment on the enter_preview side for the gating rationale (page_count has
-            // no external process, and hayro can draw any page, so there's no navigation
-            // suppression via arbitrary_page_renderer_available).
-            self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
-            self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
-        }
+        self.tab.page = page.max(1);
         self.start_media_load(&kind, &path); // also updates preview_media_mtime
         self.tab.image_zoom = zoom;
         self.tab.image_center = center;
@@ -4941,6 +5162,12 @@ impl App {
         self.tab.preview_top_line
     }
 
+    /// The windowed preview's caret line (0-based). Test-only.
+    #[cfg(test)]
+    pub fn preview_caret_line(&self) -> usize {
+        self.tab.preview_cursor_line
+    }
+
     /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
     /// exactly which URLs became focusable links — e.g. that a URL inside code did NOT).
     #[cfg(test)]
@@ -4954,37 +5181,38 @@ impl App {
             .collect()
     }
 
-    /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
-    /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
+    /// Whether the current preview is a Markdown/Mermaid file (or a Word document) shown as its raw
+    /// source (`R` toggled on). Such a preview is windowed like a code file, so the 2D caret
+    /// selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
-        self.tab.md_raw
-            && matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Markdown(_))
-                    | Some(PreviewKind::Mermaid(_))
-                    | Some(PreviewKind::Document(_))
-            )
+        self.is_md_raw()
+            && (self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_markdown)
+                || self.is_document()
+                || self.shows_plugin(konoma_mermaid::MERMAID_ID))
     }
 
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
-        matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Markdown(_))
-                | Some(PreviewKind::Mermaid(_))
-                | Some(PreviewKind::Document(_))
-        )
-    }
-
-    /// Whether raw source view is currently on (for the footer/title indicator).
-    pub fn is_md_raw(&self) -> bool {
-        self.tab.md_raw
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
+            || self.is_document()
+            || self.shows_plugin(konoma_mermaid::MERMAID_ID)
     }
 
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source. No-op for other kinds.
-    /// Rebuilds the windowed reader and resets the caret/scroll/selection so the new view starts at the top.
+    /// Asks the plugin for the other representation (a Markdown file or a converted Word
+    /// document: `rendered` / `source`), then resets the caret/scroll/selection so the new view
+    /// starts at the top and rebuilds the windowed reader (source) / decoration (rendered).
     pub fn toggle_md_raw(&mut self) {
-        if !self.is_decorated_kind() {
+        // Only where the toggle is the host's own (a document that declares exactly `rendered` and
+        // `source`, a diagram file) or a presentation's.
+        if !(self.host_source_view() || self.is_deck()) {
             return;
         }
         // A document still converting (also in a saved raw view) or failed has no text to switch
@@ -4998,16 +5226,17 @@ impl App {
             self.toggle_deck_view();
             return;
         }
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
-            if self.tab.md_raw {
-                // Leaving the raw view: the converted-Markdown temp file is done for.
-                self.clear_command_out();
-            } else if !self.write_document_raw() {
-                return; // nothing converted yet (still loading / failed): there is no raw view
-            }
+        let want_source = !self.is_md_raw();
+        if !self.choose_source_repr(want_source) {
+            return;
         }
-        self.tab.md_raw = !self.tab.md_raw;
-        // A view switch = start from the top. Rebuild the windowed reader (raw) / decoration (rendered).
+        self.reset_view_for_repr_change();
+    }
+
+    /// What every change of representation resets: a view switch = start from the top, with no
+    /// selection and no stale decoration. The windowed reader is rebuilt (source) or dropped
+    /// (rendered) from the state the new representation left.
+    pub(super) fn reset_view_for_repr_change(&mut self) {
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.tab.preview_scroll = 0;
@@ -5086,7 +5315,7 @@ impl App {
                             // otherwise sit in `md_image_cache` orphaned forever (see that fn's own doc comment).
         self.prune_media_diff_picture_cache();
         self.md_cache = None;
-        self.tab.md_raw = false;
+        self.tab.repr = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -5102,12 +5331,8 @@ impl App {
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
-        self.table_data = None;
-        self.set_workbook(None);
-        self.workbook_error = None;
+        self.drop_plugin();
         self.set_document(None);
-        self.document_error = None;
-        self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -5156,11 +5381,12 @@ impl App {
             path,
             mtime: self.preview_media_mtime,
             len: meta.map(|m| m.len()),
-            page: self.tab.pdf_page.max(1),
+            page: self.tab.page.max(1),
             fence_ord: self.preview_fence_ord(),
             src,
             logical: self.image_logical,
             vector_svg: self.vector_svg.clone(),
+            vector_trust: self.vector_trust.clone(),
         });
     }
 
@@ -5185,7 +5411,14 @@ impl App {
     fn preview_fence_ord(&self) -> Option<usize> {
         match &self.tab.preview_kind {
             Some(PreviewKind::MermaidFence(ord)) => Some(*ord),
-            _ => None,
+            Some(
+                PreviewKind::Plugin { .. }
+                | PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => None,
         }
     }
 
@@ -5207,6 +5440,7 @@ impl App {
         let c = self.media_cache.as_ref().expect("checked above");
         self.image_logical = c.logical;
         self.vector_svg = c.vector_svg.clone();
+        self.vector_trust = c.vector_trust.clone();
         self.preview_media_mtime = c.mtime;
         // The Arc's contents are shared, so the image is not duplicated. protocol was already
         // dropped by the preceding `clear_image`, and `image_crop = None` is the signal to rebuild
@@ -5217,20 +5451,12 @@ impl App {
     }
 
     fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
-        matches!(
-            kind,
-            PreviewKind::Image(_)
-                | PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-                // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
-                // reload must re-read it exactly like the image kinds.
-                | PreviewKind::Spreadsheet(_)
-                // A Word document is converted on the same worker; a tab switch / mtime-changed
-                // reload re-reads it exactly like a spreadsheet.
-                | PreviewKind::Document(_)
-        ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
-            && self.mermaid_image_mode())
+        // A mermaid file loads a picture in image mode only (in text mode it draws via the
+        // decorated path).
+        (kind.is_media_plugin() && (!kind.is_mermaid_file() || self.mermaid_image_mode()))
+            // (A Word document, a presentation and a spreadsheet are plugin shows: opened again
+            // by `load_plugin`.)
+            || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
             // function of the source file, so a tab switch / mtime-changed reload must re-run it
             // exactly like every other media kind. `detached=true` is deliberately excluded — that
@@ -5254,17 +5480,21 @@ impl App {
         self.image_crop = None;
         self.image_vis_frac = (1.0, 1.0);
         self.vector_svg = None;
+        self.vector_trust = None;
         self.image_logical = None;
         self.gif_frames = Vec::new();
         self.gif_idx = 0;
         self.gif_shown_at = None;
         self.gif_protocol = None;
         self.gif_proto_key = None;
-        self.tab.pdf_page = 1;
-        self.tab.pdf_pages = None;
+        self.tab.page = 1;
+        self.tab.page_count = None;
+        // The plugin's show (its session and view) goes with the picture it made, and with a
+        // table: whatever is opened next opens its own.
+        self.drop_plugin();
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
-        self.wb_queued = None;
+        self.drop_queued_plugin_work();
         self.media_loading = false;
         self.vector_reraster_inflight = false;
         // When image state is discarded, also discard the mtime claim (an invariant). Leaving it
@@ -5302,12 +5532,18 @@ impl App {
     /// one), so the temp path never leaks into the UI.
     pub fn windowed_src(&self) -> Option<&Path> {
         // A Word document's raw view is the converted Markdown, written to a private temp file
-        // (`App::write_document_raw`) so the less-style reader can window it; the .docx itself is a
-        // zip and never readable as text.
-        if matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Command { .. } | PreviewKind::Document(_))
-        ) {
+        // (`App::source_view_landed`) so the less-style reader can window it; the .docx itself is a
+        // zip and never readable as text. The same for any source view a plugin hands over as a
+        // string (`TextSource::Owned`) rather than as a file.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. }))
+            || self.is_document()
+            || self.source_view_is_owned()
+            || self.text_plugin_is_generated()
+        {
+            // (A text plugin that names a file of its own is read in place: see below.)
+            if let Some(p) = self.text_plugin_own_file() {
+                return Some(p);
+            }
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
@@ -5529,75 +5765,91 @@ impl App {
         let top = self.tab.preview_byte_top;
         let path = self.tab.preview_path.clone().unwrap_or_default();
         // Whether to attach syntax: plain if highlighting is disabled (off-switch) / progressive is still waiting (hl_pending).
-        // Code is always a target. Text is a target only "when an existing grammar can be resolved
+        // The `code` plugin's files are always a target. Text is a target only "when an existing grammar can be resolved
         // from the extension/filename" = colors config files like .bashrc/Makefile/Dockerfile while
         // keeping truly plain text uncolored.
         // Only while progressive is waiting is it "plain text before the swap", so it isn't cached (it's replaced by the colored version later).
+        // A text plugin whose text is made (not the file itself) is colored by its own styler
+        // alone: the host never builds a grammar for it, and the grammar switch (`syntax_highlight`)
+        // is the `code` plugin's, not its.
+        let made_text = self.text_plugin_is_generated();
         let syntax_kind = match &self.tab.preview_kind {
-            Some(PreviewKind::Code(_)) => true,
+            Some(k) if k.is_text_plugin() => !made_text || self.text_plugin_has_styler(),
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
-            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
+            Some(k @ PreviewKind::Plugin { path: p, .. })
+                if (k.is_markdown() || k.is_mermaid_file()) && self.is_md_raw() =>
+            {
                 crate::preview::code::has_named_syntax(p)
             }
             // The converted Markdown of a Word document (`R`): colored as Markdown.
-            Some(PreviewKind::Document(_)) if self.tab.md_raw => true,
+            Some(k) if k.is_office_document() && self.is_md_raw() => true,
             _ => false,
         };
         // The grammar is picked from the path's name: a Word document's raw view is Markdown, but
         // its own name says .docx.
-        let hl_path = if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        let hl_path = if self.is_document() {
             PathBuf::from("document.md")
         } else {
             path.clone()
         };
-        let want_syntax = self.cfg.ui.syntax_highlight
+        let syntax_on = made_text || crate::plugins::syntax_highlight_on(&self.cfg);
+        // The `code` plugin colors through the styler it returned; until its first result lands
+        // the window is plain and uncached.
+        let want_syntax = syntax_on
             && syntax_kind
+            && !self.text_plugin_pending()
             && (!self.hl_pending || self.loading_is_indicator());
         // Only the plain text while progressive is waiting is left uncached (since it gets
         // replaced by the colored version later). Everything else is cached by (path, top, height)
         // even as plain text = never re-reads the file every frame. `styled` is part of the key so
         // the colored and plain versions are never confused.
-        let cacheable = want_syntax || !(self.cfg.ui.syntax_highlight && syntax_kind);
-        let mut content: Vec<Line<'static>> = if cacheable {
-            let hit = matches!(
-                &self.win_cache,
-                Some(c) if c.path == path && c.byte_top == top && c.height == height
-                    && c.styled == want_syntax
-            );
-            if !hit {
+        let cacheable = want_syntax || !(syntax_on && syntax_kind);
+        let mut content: Vec<Line<'static>> =
+            if let Some(lines) = self.made_text_window(self.tab.preview_top_line, h) {
+                // The plugin handed over its lines already colored: the window is a slice of them
+                // (the file the reader windows holds the same lines as plain text, for the caret, the
+                // search and the copy).
+                lines
+            } else if cacheable {
+                let hit = matches!(
+                    &self.win_cache,
+                    Some(c) if c.path == path && c.byte_top == top && c.height == height
+                        && c.styled == want_syntax
+                );
+                if !hit {
+                    let raw = self
+                        .preview_win
+                        .as_mut()
+                        .and_then(|w| w.read_lines(top, h).ok())
+                        .unwrap_or_default();
+                    let lines = if want_syntax {
+                        let src = raw.join("\n");
+                        self.style_text_window(&src, self.tab.preview_top_line, &hl_path)
+                    } else {
+                        raw.into_iter().map(Line::from).collect()
+                    };
+                    self.win_cache = Some(WinCache {
+                        path,
+                        byte_top: top,
+                        height,
+                        styled: want_syntax,
+                        lines,
+                    });
+                }
+                self.win_cache
+                    .as_ref()
+                    .map(|c| c.lines.clone())
+                    .unwrap_or_default()
+            } else {
+                // Plain text while progressive is waiting (not cached = replaced once coloring completes).
                 let raw = self
                     .preview_win
                     .as_mut()
                     .and_then(|w| w.read_lines(top, h).ok())
                     .unwrap_or_default();
-                let lines = if want_syntax {
-                    let src = raw.join("\n");
-                    crate::preview::code::highlight(&src, &hl_path, &self.cfg.ui.theme.code_theme)
-                } else {
-                    raw.into_iter().map(Line::from).collect()
-                };
-                self.win_cache = Some(WinCache {
-                    path,
-                    byte_top: top,
-                    height,
-                    styled: want_syntax,
-                    lines,
-                });
-            }
-            self.win_cache
-                .as_ref()
-                .map(|c| c.lines.clone())
-                .unwrap_or_default()
-        } else {
-            // Plain text while progressive is waiting (not cached = replaced once coloring completes).
-            let raw = self
-                .preview_win
-                .as_mut()
-                .and_then(|w| w.read_lines(top, h).ok())
-                .unwrap_or_default();
-            raw.into_iter().map(Line::from).collect()
-        };
+                raw.into_iter().map(Line::from).collect()
+            };
         // Expand tabs into a visible marker (→) + tab-stop spaces (since terminals don't align tabs to columns).
         // Done before the line-number gutter/search highlight = column tracking is based on the body's start (column 0). Only the window's visible lines = cheap.
         content = crate::preview::code::expand_tabs(content, self.cfg.ui.tab_width);
@@ -5730,6 +5982,17 @@ impl App {
 
     pub fn cycle_path_style(&mut self) {
         self.path_style = self.path_style.next();
+    }
+
+    /// Toggle line wrapping of the text and document preview for this session (`,` then `w`;
+    /// `[ui] wrap` is the value it starts with). The decorated document caches its line breaks,
+    /// so the cache is dropped; a horizontal offset means nothing once the lines wrap.
+    pub fn toggle_wrap(&mut self) {
+        self.cfg.ui.wrap = !self.cfg.ui.wrap;
+        self.md_cache = None;
+        if self.cfg.ui.wrap {
+            self.tab.preview_hscroll = 0;
+        }
     }
 
     /// Toggle the `?` help. When opening, reset scroll to the top.
@@ -6091,29 +6354,6 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
             Line::from(spans).style(style)
         })
         .collect()
-}
-
-/// The rectangle that centers an image of size `cells` (natural size) within `inner` while preserving the aspect ratio.
-/// With `allow_upscale=false`, downscale only (scale<=1=fit behavior); with `true`, it may upscale to fill the area.
-fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
-    let (cw, ch) = cells;
-    if cw == 0 || ch == 0 || inner.width == 0 || inner.height == 0 {
-        return inner;
-    }
-    let mut scale = (inner.width as f64 / cw as f64).min(inner.height as f64 / ch as f64);
-    if !allow_upscale {
-        scale = scale.min(1.0);
-    }
-    let w = ((cw as f64 * scale).round() as u16).clamp(1, inner.width);
-    let h = ((ch as f64 * scale).round() as u16).clamp(1, inner.height);
-    let x = inner.x + (inner.width - w) / 2;
-    let y = inner.y + (inner.height - h) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
 }
 
 /// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
@@ -6789,118 +7029,34 @@ fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> 
     (cols as u16, rows as u16)
 }
 
-/// Source-pixel crop rectangle (x, y, w, h).
-type PxRect = (u32, u32, u32, u32);
-
-/// Crop window for the in-place zoom of an inline diagram. `f` is the visible fraction, i.e.
-/// 1/zoom, of the source; `center` is clamped so the window stays inside the image. Returns the
-/// crop px rect plus the clamped center. Fractions are scale-free, so the same zoom and center
-/// map onto a sharper re-raster unchanged.
-fn fence_crop(dims: (u32, u32), f: f64, center: (f64, f64)) -> (PxRect, (f64, f64)) {
-    let (sw, sh) = dims;
-    let f = f.clamp(0.0, 1.0);
-    let cx = center.0.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cy = center.1.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cw = ((sw as f64 * f).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * f).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    ((x0, y0, cw, ch), (cx, cy))
-}
-
-/// Result of [`image_layout`]. `center` and `frac` are both `(f64, f64)` pairs with different
-/// meanings (image-space center vs. per-axis visible fraction), so this struct keeps them from
-/// being swapped at the call site.
-///
-/// - `target`  : the render-target rectangle (centered; z=1=fit, grows when zooming, clips when exceeding the viewport)
-/// - `crop_rect`: the source-image window of the visible portion (px: x,y,w,h)
-/// - `center`  : the center clamped to where the visible window fits within the image [0,1]
-/// - `frac`    : the visible fraction per axis (<1=clipped=pan possible)
-#[derive(Clone, Copy)]
-struct ImageLayout {
-    target: Rect,
-    crop_rect: PxRect,
-    center: (f64, f64),
-    frac: (f64, f64),
-}
-
-/// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
-/// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
-/// an [`ImageLayout`] (None if size 0).
-fn image_layout(
-    src: &image::DynamicImage,
-    font_size: ratatui_image::FontSize,
-    zoom: f64,
-    center: (f64, f64),
-    inner: Rect,
-    render_scale: f64,
-    logical: Option<(u32, u32)>,
-) -> Option<ImageLayout> {
-    use image::GenericImageView;
-    let (sw, sh) = src.dimensions();
-    if sw == 0 || sh == 0 || inner.width == 0 || inner.height == 0 {
-        return None;
-    }
-    // The z=1 fit display size (cells, never enlarged). A vector-derived preview is measured by its
-    // **logical size** (the initial raster's dimensions), so swapping in a sharper raster never
-    // moves the on-screen size or the crop window at all (the HiDPI backing-store approach — the
-    // crop itself is mapped to real pixels by ratio).
-    let (nw, nh) = match logical {
-        Some((lw, lh)) if lw > 0 && lh > 0 => (
-            (lw as u16).div_ceil(font_size.width.max(1)),
-            (lh as u16).div_ceil(font_size.height.max(1)),
-        ),
-        _ => {
-            let n = Resize::natural_size(src, font_size);
-            (n.width, n.height)
-        }
-    };
-    let base = centered_rect((nw, nh), inner, false);
-    // The logical display size after zoom.
-    let disp_w = (base.width as f64 * zoom).max(1.0);
-    let disp_h = (base.height as f64 * zoom).max(1.0);
-    // The on-screen size = min(display size, display area).
-    let tw = (disp_w.min(inner.width as f64).round() as u16).max(1);
-    let th = (disp_h.min(inner.height as f64).round() as u16).max(1);
-    // The visible fraction on each axis (<1 means it's clipped = pan is possible).
-    let fw = (tw as f64 / disp_w).min(1.0);
-    let fh = (th as f64 / disp_h).min(1.0);
-    // Clamp the center so the visible window stays within the image.
-    let cx = center.0.clamp(fw / 2.0, 1.0 - fw / 2.0);
-    let cy = center.1.clamp(fh / 2.0, 1.0 - fh / 2.0);
-    // Crop the visible window out of the original image (px).
-    let cw = ((sw as f64 * fw).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * fh).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    let crop_rect = (x0, y0, cw, ch);
-    // The display rect (centered). Optionally downscaled by render_scale (reduces transfer size = less render wait).
-    let scale = render_scale.clamp(0.1, 1.0);
-    let (tw, th) = if scale >= 0.999 {
-        (tw, th)
-    } else {
-        (
-            ((tw as f64 * scale).round() as u16).max(1),
-            ((th as f64 * scale).round() as u16).max(1),
-        )
-    };
-    let target = Rect {
-        x: inner.x + (inner.width - tw.min(inner.width)) / 2,
-        y: inner.y + (inner.height - th.min(inner.height)) / 2,
-        width: tw.min(inner.width),
-        height: th.min(inner.height),
-    };
-    Some(ImageLayout {
-        target,
-        crop_rect,
-        center: (cx, cy),
-        frac: (fw, fh),
-    })
-}
-
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.
 fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// What identifies the content of a file as far as the metadata can tell: the modification time,
+/// the size, the **inode and device** (a file replaced by a rename is another file) and the change
+/// time (`ctime`, which a program cannot set back: `touch -r` restores the modification time of
+/// a file whose content was rewritten, but not this).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    modified: std::time::SystemTime,
+    len: u64,
+    dev: u64,
+    ino: u64,
+    ctime: (i64, i64),
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: m.modified().ok()?,
+        len: m.len(),
+        dev: m.dev(),
+        ino: m.ino(),
+        ctime: (m.ctime(), m.ctime_nsec()),
+    })
 }
 
 /// Assemble the copy string (a pure function; does not touch the clipboard).
@@ -7504,6 +7660,28 @@ mod tests;
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
 mod md_snapshot_tests;
+
+#[cfg(test)]
+mod embed_plugin_tests;
+
+#[cfg(test)]
+mod plugin_host_tests;
+
+// The built-in `command` plugin: a delegated command through the plugin road.
+#[cfg(test)]
+mod command_plugin_tests;
+
+// The message on the footer at start: old setting names, unknown plugin keys, order and fit.
+#[cfg(test)]
+mod startup_notice_tests;
+
+#[cfg(test)]
+mod text_plugin_tests;
+
+// The Markdown plugin on the host: a file and a converted document as the document display type,
+// the options they are drawn with, and `R` as a request for the plugin's other representation.
+#[cfg(test)]
+mod markdown_plugin_tests;
 // The same kind of safety net, over the new Markdown block model instead of rendering — see its
 // own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
@@ -7515,11 +7693,19 @@ mod md_model_snapshot_tests;
 mod md_table_gap_tests;
 
 #[cfg(test)]
+mod spreadsheet_plugin_tests;
+
+#[cfg(test)]
 mod survivor_tests;
 
 // A presentation's slide pictures: their box, their size and how a converted deck becomes them.
 #[cfg(test)]
 mod deck_view_tests;
+
+// The Word and presentation plugins on the host: the representations (`R`) and the anchored pages
+// (`J`/`K`, the chip) their layout reports.
+#[cfg(test)]
+mod office_plugin_tests;
 
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]

@@ -164,30 +164,57 @@ impl App {
         use DiffView::{Preview, Rendered, Source};
         let resolved = self.diff_target_kind(path);
         let mut reps = match resolved {
-            PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
-            PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => {
-                vec![Source, Preview]
-            }
+            ref k if k.is_markdown() => vec![Source, Rendered, Preview],
+            PreviewKind::Text(_) => vec![Source, Preview],
+            ref k if k.is_file_text() || k.is_mermaid_file() => vec![Source, Preview],
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
                 vec![Source, Preview]
             }
-            PreviewKind::Image(_) | PreviewKind::Pdf(_) => vec![Rendered, Preview],
-            PreviewKind::Svg(_) => vec![Source, Rendered, Preview],
-            _ if !path.exists() => match self.media_landed_outcome_for(path) {
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
-                    ..
-                }) => vec![Rendered],
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Svg,
-                    ..
-                }) => vec![Source, Rendered],
-                Some(MediaDiffOutcome::Summary { .. }) | Some(MediaDiffOutcome::Unavailable) => {
-                    vec![Source]
+            // A plugin that shows pictures, by the format of the file (not by the plugin's id).
+            ref k @ PreviewKind::Plugin { .. }
+                if matches!(
+                    super::media_diff::classify_kind(k),
+                    Some(MediaDiffKind::Image | MediaDiffKind::Pdf)
+                ) =>
+            {
+                vec![Rendered, Preview]
+            }
+            ref k @ PreviewKind::Plugin { .. }
+                if super::media_diff::classify_kind(k) == Some(MediaDiffKind::Svg) =>
+            {
+                vec![Source, Rendered, Preview]
+            }
+            // Everything else (named one by one, so a new kind has to say what its diff offers):
+            // a plugin that is not a picture, an image-mode command, the host's own modes and an
+            // unsupported file. A **deleted** one is judged by the media-diff worker.
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Command { .. }
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::MermaidFence(_)
+            | PreviewKind::CanNotPreview { .. }
+                if !path.exists() =>
+            {
+                match self.media_landed_outcome_for(path) {
+                    Some(MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
+                        ..
+                    }) => vec![Rendered],
+                    Some(MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Svg,
+                        ..
+                    }) => vec![Source, Rendered],
+                    Some(MediaDiffOutcome::Summary { .. })
+                    | Some(MediaDiffOutcome::Unavailable) => {
+                        vec![Source]
+                    }
+                    None => vec![Rendered], // not landed yet — the "computing" body either way.
                 }
-                None => vec![Rendered], // not landed yet — the "computing" body either way.
-            },
-            _ => vec![Source],
+            }
+            PreviewKind::Plugin { .. }
+            | PreviewKind::Command { .. }
+            | PreviewKind::GitDiff(_)
+            | PreviewKind::MermaidFence(_)
+            | PreviewKind::CanNotPreview { .. } => vec![Source],
         };
         if !path.exists() {
             reps.retain(|v| *v != Preview);
@@ -311,6 +338,7 @@ impl App {
     /// ([[hint-shown-iff-key-acts]])", generalized to "only when it would actually change anything":
     /// `None` when the target has just one representation (mirrors `cycle_diff_view`'s own no-op
     /// gate exactly), otherwise the `Msg` naming whichever presentation `R` would switch *to*.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_cycle_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
@@ -338,6 +366,7 @@ impl App {
     /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two (also used
     /// for Image/PDF's `Rendered ⇄ Preview`), and `DiffViewCycleHelp` ("source → rendered →
     /// preview") for a target with three (Markdown, and SVG).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_help_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
@@ -355,11 +384,17 @@ impl App {
     /// `main.rs`'s `Action::PreviewBack` already routing `q` back through `close_git_diff` whenever
     /// this flag is set. Falls through to the ordinary `toggle_md_raw` for every other preview
     /// (including a plain non-diff Markdown one), so rebinding nothing and adding no new keymap
-    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::ToggleMarkdownRaw` arm.
+    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::CycleRepresentation` arm.
     pub fn toggle_md_raw_or_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
+            return;
+        }
+        // A plugin that declares several representations: the host walks them.
+        // (When the walk is the key's business but the session is busy, nothing happens: the
+        // host's own toggle must not answer for a plugin whose representations it does not own.)
+        if self.cycle_repr() || self.repr_step().is_some() {
             return;
         }
         self.toggle_md_raw();
@@ -373,29 +408,23 @@ impl App {
     /// to — `toggle_md_raw` only acts on a *decorated* kind, excluding every image preview, so
     /// falling through would have been a no-op regardless *except* for a standalone `.mmd`/`.mermaid`
     /// file's full-screen image preview (`[ui] mermaid = "image"`, still `is_decorated_kind`): pressing
-    /// `R` there, never advertised by any hint on that surface, silently flipped `md_raw` and changed
+    /// `R` there, never advertised by any hint on that surface, silently flipped the chosen representation (`tab.repr`) and changed
     /// what a *later* Markdown preview in the same tab would show, entirely outside any diff.
     /// [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the image
     /// surface's own hint is never shown outside the `preview_from_diff` case — so the handler must
-    /// not act outside it either.
+    /// not act outside it either. The one other thing `R` does here: a picture plugin that declares
+    /// several representations is walked by the host (`App::cycle_repr`); a diagram's picture
+    /// declares none for the host to walk, so it stays a no-op.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn image_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
+            return;
         }
-    }
-
-    /// `R`'s meaning in `Surface::PreviewText` right now — `Some(HintDiff)` while `preview_from_diff`
-    /// is set (this preview *is* the diff's `Preview` representation), otherwise the ordinary raw/
-    /// rendered toggle hint `ui/preview.rs::footer_hints` already computes for every other Markdown/
-    /// Mermaid preview. Kept here (rather than inlined at the one call site) so the "which case am I
-    /// in" logic lives next to `toggle_md_raw_or_return_to_diff`, the key handler it mirrors.
-    pub fn diff_preview_raw_hint(&self) -> Option<crate::i18n::Msg> {
-        if self.tab.preview_from_diff {
-            return Some(crate::i18n::Msg::HintReturnToDiff);
-        }
-        None
+        // Not a diff's preview: a plugin that declares several representations is walked by the
+        // host (a standard picture plugin, and a diagram's picture, declare none to walk).
+        self.cycle_repr();
     }
 
     /// Enters the diff's `Preview` representation for `path` — an ordinary content preview

@@ -1,4 +1,4 @@
-//! End-to-end tests of the Word document preview (`PreviewKind::Document`): `testdata/office/word.docx`
+//! End-to-end tests of the Word document preview (the `document` plugin): `testdata/office/word.docx`
 //! and `word-ja.docx` opened through the real key path.
 
 use super::*;
@@ -250,8 +250,8 @@ fn e2e_word_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    // The outline (`o`) lists the Japanese headings.
-    s.key('o');
+    // The outline (`O`) lists the Japanese headings.
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }
@@ -573,7 +573,7 @@ fn e2e_word_the_outline_lists_the_headings_and_jumps() {
     let Some((mut s, _d)) = open_doc_sized("w_outline", EN, (90, 26), cfg_en()) else {
         return;
     };
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     for h in [
         "Word reader sample",
@@ -810,7 +810,7 @@ fn e2e_word_the_raw_view_help_and_footer_are_the_text_ones() {
     s.see("e:open");
     s.key('?');
     let help = s.screen();
-    assert!(help.contains("v / V → y"), "{help}");
+    assert!(help.contains("v / V"), "{help}");
     // `Y` is the file reference only (the converted text has no lines in the .docx).
     assert!(help.contains("copy the @path reference"), "{help}");
     assert!(!help.contains("@path#L reference of caret"), "{help}");
@@ -1200,7 +1200,7 @@ fn e2e_odt_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }
@@ -1430,9 +1430,12 @@ fn footer_text(s: &Sim) -> String {
 fn e2e_word_a_failed_document_footer_offers_no_dead_keys() {
     let (s, _d) = open_bad("w_fail_footer", |p| std::fs::write(p, b"nope").unwrap());
     let f = footer_text(&s);
-    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:"] {
+    // (`O:` is the outline. The lower-case `o` is "open in another app" now, which acts here: the
+    // file exists, only its text is missing.)
+    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:"] {
         assert!(!f.contains(dead), "{dead} must not be offered: {f}");
     }
+    assert!(f.contains("o:open in app"), "{f}");
     assert!(f.contains("q:") && f.contains("?:"), "{f}");
 }
 
@@ -2092,10 +2095,17 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
         assert!(s.app.document_text_missing(), "{label}");
         let f = footer_text(&s);
         for dead in [
-            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:", "Y:", "Tab:", "jk:",
+            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:", "Y:", "Tab:", "jk:",
         ] {
             assert!(!f.contains(dead), "[{label}] footer offers {dead}: {f}");
         }
+        // `o` opens the file in another app: offered exactly while opening Office documents in
+        // an app is switched on.
+        assert_eq!(
+            f.contains("o:open in app"),
+            label != "office_apps = false",
+            "[{label}] {f}"
+        );
         s.key('?');
         let help = s.screen();
         for dead in [
@@ -2109,7 +2119,6 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
             "0 / $",
             "Ctrl-t",
             "outline",
-            "Space",
         ] {
             assert!(!help.contains(dead), "[{label}] help lists {dead}:\n{help}");
         }
@@ -2679,8 +2688,10 @@ fn e2e_word_the_picture_bytes_are_freed_when_the_document_is_left() {
     s.app.begin_md_image_frame();
     s.app.evict_md_images_to_for_test(0);
     settle_images(&mut s);
+    // The open document and the plugin's session (which serves the rendered view again after the
+    // source view) share the one allocation; the cache entry that was dropped keeps no third.
     assert!(
-        weak.strong_count() == 1,
+        weak.strong_count() == 2,
         "a dropped picture's entry keeps no copy of the bytes: {}",
         weak.strong_count()
     );
