@@ -16,6 +16,7 @@ use konoma_plugin::{
 
 use super::plugin_host::{Handoff, PluginResult, FIRST_FRAME_BUDGET};
 use super::*;
+use crate::plugins::test_plugins::Latch;
 use crate::test_support::unique_tmp;
 
 // ---- stand-in plugins -----------------------------------------------------------------------
@@ -43,6 +44,9 @@ impl Grid for Rows {
 struct Script {
     /// Sleep this long in `open` (checking the cancel flag every millisecond).
     open_delay: Duration,
+    /// Hold `open` until the test opens this gate (still checking the cancel flag), so "the answer
+    /// has not come yet" is a state the test makes, not a race against `open_delay`.
+    gate: Option<Arc<Latch>>,
     panic_in_open: bool,
     panic_in_view: bool,
     /// Rows of the table it returns.
@@ -82,6 +86,15 @@ impl Plugin for Stand {
         *self.seen.settings.lock().unwrap() = Some(cx.settings.clone());
         *self.seen.lang.lock().unwrap() = cx.lang.to_string();
         *self.seen.open_thread.lock().unwrap() = Some(std::thread::current().id());
+        if let Some(gate) = &self.script.gate {
+            while !gate.is_open() {
+                if cx.cancel.is_cancelled() {
+                    self.seen.cancelled.store(true, Ordering::SeqCst);
+                    return Err(Failure::cancelled(t!(en: "cancelled")));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         let until = Instant::now() + self.script.open_delay;
         while Instant::now() < until {
             if cx.cancel.is_cancelled() {
@@ -218,11 +231,12 @@ fn a_quick_open_is_on_screen_in_the_first_frame() {
 fn a_slow_open_does_not_block_the_ui_and_lands_later() {
     let (dir, file) = sandbox("konoma_plugin_host_slow");
     let mut app = app_on(&dir, &file);
+    let gate = Arc::new(Latch::default());
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     let (plugin, seen) = stand(Script {
         rows: 7,
-        open_delay: Duration::from_millis(400),
+        gate: Some(Arc::clone(&gate)),
         ..Script::default()
     });
     let t0 = Instant::now();
@@ -242,6 +256,7 @@ fn a_slow_open_does_not_block_the_ui_and_lands_later() {
         Some(std::thread::current().id()),
         "open ran on a worker"
     );
+    gate.open();
     assert!(land(&mut app, &rx), "the result is applied");
     assert!(!app.is_plugin_loading());
     assert!(!app.is_media_loading());
@@ -317,11 +332,12 @@ fn opening_a_big_csv_does_not_block_enter_preview() {
 fn a_result_from_an_older_generation_is_dropped() {
     let (dir, file) = sandbox("konoma_plugin_host_stale");
     let mut app = app_on(&dir, &file);
+    let gate = Arc::new(Latch::default());
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     let (plugin, seen) = stand(Script {
         rows: 5,
-        open_delay: Duration::from_millis(300),
+        gate: Some(Arc::clone(&gate)),
         ..Script::default()
     });
     open_stand(&mut app, plugin, &file);
@@ -342,11 +358,12 @@ fn a_result_from_an_older_generation_is_dropped() {
 fn only_the_newest_open_is_applied() {
     let (dir, file) = sandbox("konoma_plugin_host_newest");
     let mut app = app_on(&dir, &file);
+    let gate = Arc::new(Latch::default());
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     let (slow, _) = stand(Script {
         rows: 1,
-        open_delay: Duration::from_millis(200),
+        gate: Some(Arc::clone(&gate)),
         ..Script::default()
     });
     let (fast, _) = stand(Script {
@@ -357,6 +374,7 @@ fn only_the_newest_open_is_applied() {
     open_stand(&mut app, fast, &file);
     // The fast one was taken by its first frame; the slow one's result arrives and is dropped.
     assert_eq!(rows_of(&app), Some(9));
+    gate.open();
     assert!(!land(&mut app, &rx));
     assert_eq!(rows_of(&app), Some(9), "the newest stays");
 }
@@ -367,16 +385,18 @@ fn only_the_newest_open_is_applied() {
 fn a_result_after_the_kind_changed_is_dropped() {
     let (dir, file) = sandbox("konoma_plugin_host_kind");
     let mut app = app_on(&dir, &file);
+    let gate = Arc::new(Latch::default());
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     let (plugin, _) = stand(Script {
         rows: 2,
-        open_delay: Duration::from_millis(150),
+        gate: Some(Arc::clone(&gate)),
         ..Script::default()
     });
     open_stand(&mut app, plugin, &file);
     app.set_preview_kind(Some(PreviewKind::Text(file.clone())));
     assert!(app.plugin.is_none(), "the show is released with the kind");
+    gate.open();
     assert!(!land(&mut app, &rx));
     assert!(app.plugin.is_none());
     assert!(
@@ -392,15 +412,17 @@ fn a_result_after_the_kind_changed_is_dropped() {
 fn a_panic_in_open_becomes_a_failure_not_a_stuck_loading() {
     let (dir, file) = sandbox("konoma_plugin_host_panic_open");
     let mut app = app_on(&dir, &file);
+    let gate = Arc::new(Latch::default());
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     let (plugin, _) = stand(Script {
         panic_in_open: true,
-        open_delay: Duration::from_millis(120),
+        gate: Some(Arc::clone(&gate)),
         ..Script::default()
     });
     open_stand(&mut app, plugin, &file);
     assert!(app.is_plugin_loading());
+    gate.open();
     assert!(land(&mut app, &rx), "the failure is applied");
     assert!(!app.is_plugin_loading(), "Loading... is gone");
     assert!(!app.is_media_loading());

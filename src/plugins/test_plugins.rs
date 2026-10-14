@@ -89,6 +89,10 @@ impl Latch {
         self.cv.notify_all();
     }
 
+    pub(crate) fn is_open(&self) -> bool {
+        *self.opened.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn wait(&self) {
         let guard = self.opened.lock().unwrap_or_else(|e| e.into_inner());
         let _ = self
