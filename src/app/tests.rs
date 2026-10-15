@@ -20087,6 +20087,29 @@ fn lc_make_table(app: &mut App) {
     app.tab.mode = Mode::Preview;
     app.load_table();
 }
+/// A plugin's canvas on screen, asking for the typing or not.
+fn lc_make_canvas(app: &mut App, text_input: bool) {
+    let p = app.tab.root.join("c.typ");
+    app.tab.preview_kind = Some(PreviewKind::Plugin {
+        path: p.clone(),
+        id: "cv".into(),
+        hint: None,
+    });
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    app.plugin = Some(plugin_host::PluginShow {
+        id: "cv".into(),
+        path: p,
+        phase: plugin_host::PluginPhase::Ready,
+        session: None,
+        layout: konoma_plugin::view::Layout::single(),
+        view: Some(konoma_plugin::View::Canvas(
+            konoma_plugin::view::CanvasView::new(1, 1).text_input(text_input),
+        )),
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+    });
+}
 fn lc_confirm(app: &mut App, op: PendingOp) {
     app.dialog = Some(Dialog {
         op,
@@ -20159,6 +20182,38 @@ fn layer_cases() -> Vec<LayerCase> {
             setup: lc_make_table,
             surface: S::PreviewTable,
             internal: None,
+        },
+        LayerCase {
+            name: "PreviewCanvas / (none)",
+            setup: |a| lc_make_canvas(a, false),
+            surface: S::PreviewCanvas,
+            internal: None,
+        },
+        LayerCase {
+            name: "PluginInput / PluginInput",
+            setup: |a| lc_make_canvas(a, true),
+            surface: S::PluginInput,
+            internal: Some(InternalMode::PluginInput),
+        },
+        LayerCase {
+            // Esc left the plugin's text input: the canvas is a plain canvas again.
+            name: "PreviewCanvas / (none) — after Esc left the text input",
+            setup: |a| {
+                lc_make_canvas(a, true);
+                a.plugin_input_left = true;
+            },
+            surface: S::PreviewCanvas,
+            internal: None,
+        },
+        LayerCase {
+            // Every overlay is in front of the plugin's text input.
+            name: "Help / Help — in front of the plugin's text input",
+            setup: |a| {
+                lc_make_canvas(a, true);
+                a.show_help = true;
+            },
+            surface: S::Help,
+            internal: Some(InternalMode::Help),
         },
         // The next three are states the UI cannot actually produce (a visual anchor survives only
         // in a windowed preview). They are here because they pin the *exact* semantics of the two
@@ -20899,6 +20954,7 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::ChangedFilter,
         M::Search,
         M::Mark,
+        M::PluginInput,
         M::Bookmarks,
         M::Tabs,
         M::Outline,
@@ -20946,6 +21002,7 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::ChangedFilter => "ChangedFilter",
         M::Search => "Search",
         M::Mark => "Mark",
+        M::PluginInput => "PluginInput",
         M::Bookmarks => "Bookmarks",
         M::Tabs => "Tabs",
         M::Outline => "Outline",
@@ -21015,6 +21072,8 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::PreviewTextVisual,
         S::PreviewImage,
         S::PreviewTable,
+        S::PreviewCanvas,
+        S::PluginInput,
         #[cfg(feature = "git")]
         S::PreviewGitDiff,
     ]

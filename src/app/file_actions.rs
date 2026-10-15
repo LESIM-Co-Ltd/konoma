@@ -212,6 +212,11 @@ impl App {
     /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
     /// open a **copy/move dialog** (drop target = the cursor's base directory). Control characters are stripped.
     pub fn handle_paste(&mut self, text: String) {
+        // 0) A plugin's canvas that takes the typing gets the paste as one key.
+        if self.is_plugin_input() {
+            self.plugin_input_paste(text);
+            return;
+        }
         // 1) While text input is active: feed it straight into the input field (control
         // characters are dropped).
         if self.is_text_input_active() {

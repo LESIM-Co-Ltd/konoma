@@ -749,6 +749,7 @@ fn poll_timeout(app: &App) -> Duration {
     app.gif_poll_timeout()
         .into_iter()
         .chain(app.md_gif_poll_timeout())
+        .chain(app.canvas_poll_timeout(std::time::Instant::now()))
         .min()
         .unwrap_or(Duration::from_millis(100))
 }
@@ -1066,6 +1067,11 @@ fn run(
         // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
         // md_enc branch).
         if app.advance_md_gifs_if_due() {
+            needs_redraw = true;
+        }
+        // A plugin canvas that asked to be drawn again after a while (`redraw_after`): when the
+        // time has come, ask the plugin for the view (async; the answer is applied above).
+        if app.canvas_redraw_if_due(std::time::Instant::now()) {
             needs_redraw = true;
         }
 
@@ -1533,7 +1539,7 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
         },
         // A plugin's canvas has nothing the host scrolls or pans: no key is a motion there (the
         // keys are the plugin's).
-        Surface::PreviewCanvas => {}
+        Surface::PreviewCanvas | Surface::PluginInput => {}
         // Table (csv/tsv): hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last
         // column / paging.
         Surface::PreviewTable => match m {
@@ -2077,6 +2083,8 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.search_input_push(c),
             _ => {}
         },
+        // Every key but `Esc` is the plugin's (the layer-0 keys are text here); `Esc` leaves.
+        Surface::PluginInput => app.plugin_input_key(&key),
         Surface::Mark => match (code, ctrl) {
             (KeyCode::Esc, _) => app.cancel_mark(),
             (KeyCode::Char(c), false) => app.mark_input(c),

@@ -292,6 +292,14 @@ impl App {
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
+        let changed = self.apply_media_result(result);
+        // Whatever the result was (current, stale, another plugin's that freed a work group), keys
+        // typed while the session was out go now.
+        self.flush_plugin_keys();
+        changed
+    }
+
+    fn apply_media_result(&mut self, result: MediaResult) -> bool {
         // The work group of a plugin whose job just answered (the Office plugins share one) is
         // free again, current result or not; what was asked for meanwhile starts now (and is
         // dropped if the preview moved on since).

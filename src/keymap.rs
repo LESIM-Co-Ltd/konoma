@@ -487,6 +487,9 @@ pub enum Surface {
     PreviewTable,
     /// A plugin's free-drawing view (`View::Canvas`): the host keeps only a few keys here.
     PreviewCanvas,
+    /// A plugin's canvas that asked for text input (`CanvasView::text_input`): every key but
+    /// `Esc` (and every paste) goes to the plugin, none is looked up in the keymap.
+    PluginInput,
     #[cfg(feature = "git")]
     PreviewGitDiff,
 }
@@ -495,7 +498,11 @@ impl Surface {
     /// Whether this is a text-input surface (intercepts character/editing keys and does not apply the keymap).
     pub fn is_text_input(self) -> bool {
         match self {
-            Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
+            Surface::DialogInput
+            | Surface::Filter
+            | Surface::Search
+            | Surface::Mark
+            | Surface::PluginInput => true,
             #[cfg(feature = "git")]
             Surface::BranchFilter => true,
             Surface::ListFilter => true,
@@ -1161,6 +1168,7 @@ impl Context {
             | Surface::Filter
             | Surface::Search
             | Surface::Mark
+            | Surface::PluginInput
             | Surface::DialogConfirmDelete
             | Surface::DialogConfirmDrop
             | Surface::DialogRenamePreview

@@ -20775,6 +20775,9 @@ mod repr_cycle;
 #[cfg(test)]
 mod canvas;
 
+#[cfg(test)]
+mod canvas_input;
+
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 
 /// Opening an SVG that nests 1000 levels deep: the real media worker refuses it, and the screen

@@ -259,6 +259,14 @@ pub(crate) enum PluginJob {
         session: Box<dyn Session>,
         action: String,
     },
+    /// The keys typed into a canvas that asked for text input (`CanvasView::text_input`), in the
+    /// order they were pressed. Each goes to `Session::key`; when any answer asks for a redraw the
+    /// worker takes the new view in the same job. Never replaced by a newer job: keys are not
+    /// dropped (`App::flush_plugin_keys`).
+    Keys {
+        session: Box<dyn Session>,
+        keys: Vec<konoma_plugin::Key>,
+    },
 }
 
 /// What a worker needs to turn a plugin's document into the host's container. Given to every
@@ -744,6 +752,57 @@ impl PluginWork {
                     made_text: None,
                 }
             }
+            PluginJob::Keys { mut session, keys } => {
+                let cx = ActCx::new(&settings, &lang)
+                    .with_cancel(cancel.clone())
+                    .with_term(term);
+                // Every key is delivered, in order, even when the generation moved meanwhile (a
+                // typed key is not a request that a newer one replaces). What the answers ask for
+                // is merged: a reload beats everything, a redraw is one new view for all the keys,
+                // and a message is the last one said (a failed key is told like a failed action).
+                let (mut redraw, mut reload, mut flash) = (false, false, None);
+                for key in &keys {
+                    match session.key(key, &cx) {
+                        Ok(Outcome::Redraw) => redraw = true,
+                        Ok(Outcome::Reload) => reload = true,
+                        Ok(Outcome::Flash(msg)) => flash = Some(msg),
+                        Ok(Outcome::Unhandled) => {}
+                        Err(f) => flash = Some(f.message.clone()),
+                    }
+                }
+                if redraw && !reload {
+                    // The same request as the view on screen. The outcome tells the host whether
+                    // it still has to ask (a stale answer, whose view is dropped, does).
+                    let mut res = view_of(session, req);
+                    res.outcome = Some(match flash {
+                        Some(msg) => Outcome::Flash(msg),
+                        None => Outcome::Redraw,
+                    });
+                    return res;
+                }
+                let outcome = if reload {
+                    Outcome::Reload
+                } else {
+                    flash.map_or(Outcome::Unhandled, Outcome::Flash)
+                };
+                let enabled = enabled_of(session.as_ref());
+                PluginResult {
+                    gen,
+                    id,
+                    path: PathBuf::new(),
+                    layout: Some(session.layout()),
+                    session: Some(session),
+                    view: None,
+                    outcome: Some(outcome),
+                    failure: None,
+                    req,
+                    picture: Picture::None,
+                    document: None,
+                    group: None,
+                    enabled,
+                    made_text: None,
+                }
+            }
         }
     }
 }
@@ -990,6 +1049,9 @@ impl App {
 
     /// Release the plugin show (off the UI thread: a session can hold a large table).
     pub(super) fn drop_plugin(&mut self) {
+        // The keys, the `Esc` that left a text input and the redraw deadline belong to the show
+        // that is going: whatever opens next starts clean.
+        self.forget_canvas_state();
         if let Some(old) = self.plugin.take() {
             super::table_actions::discard_in_background(old);
         }
@@ -1658,6 +1720,12 @@ impl App {
             return false;
         }
         let outcome = res.outcome.clone();
+        // Whether this very result carries the answer of a `view` (a keys job takes the view in
+        // the same job when an answer asked for a redraw): an action's result carries none.
+        let viewed = res.view.is_some()
+            || res.failure.is_some()
+            || res.document.is_some()
+            || !matches!(res.picture, Picture::None);
         let asked = res.req.repr.clone();
         // The temp file of the text the worker wrote: used below, or removed when this is dropped.
         let made_text = res.made_text;
@@ -1695,9 +1763,16 @@ impl App {
         // Whether this very result carried a text view (the source of a document): a text view
         // that was already there, kept while a document landed, is not "landed" again.
         let mut text_landed = false;
+        // What the canvas state follows from this result: `Some(None)` = the view went (a failure,
+        // or a view that is not a canvas), `Some(Some((text_input, redraw_after)))` = a canvas.
+        let mut canvas_now: Option<Option<(bool, Option<Duration>)>> = None;
         match (res.view, res.failure) {
             (Some(view), _) => {
                 text_landed = matches!(view, View::Text(_));
+                canvas_now = Some(match &view {
+                    View::Canvas(c) => Some((c.text_input, c.redraw_after)),
+                    _ => None,
+                });
                 // The view replaced may hold a big grid: it is freed off the UI thread.
                 if let Some(old) = show.view.replace(view) {
                     super::table_actions::discard_in_background(old);
@@ -1711,6 +1786,7 @@ impl App {
                 }
                 image_failure = image_failure_of(&id, &failure);
                 show.phase = PluginPhase::Failed(failure);
+                canvas_now = Some(None);
             }
             // A picture was drawn from the view, a document was made from it, or an action's
             // result: the view is what it was.
@@ -1773,13 +1849,17 @@ impl App {
             Some(Outcome::Reload) => self.reload_plugin(),
             // The action changed what the session shows: ask it again with the same request.
             // (The result of this job is applied and the show holds the session again.)
-            Some(Outcome::Redraw) => {
+            Some(Outcome::Redraw) if !viewed => {
                 if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
                     self.plugin_request_view(req);
                 }
             }
-            Some(Outcome::Unhandled) | None => {}
+            Some(Outcome::Redraw) | Some(Outcome::Unhandled) | None => {}
         }
+        // The canvas this result left on screen: what text input and the redraw timer follow.
+        self.canvas_landed(canvas_now);
+        // Keys typed while the session was out go now (in order, in one job).
+        self.flush_plugin_keys();
         true
     }
 

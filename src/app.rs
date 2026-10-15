@@ -52,6 +52,8 @@ pub(crate) use md_media::redraw_svg;
 pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
 #[cfg(test)]
 pub(crate) use plugin_host::color_depth_from as color_depth_from_for_test;
+#[cfg(test)]
+pub(crate) use plugin_input::plugin_key_of;
 pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
@@ -62,6 +64,7 @@ mod outline;
 mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
+mod plugin_input;
 mod preview_visual;
 mod repr_cycle;
 mod search;
@@ -115,6 +118,8 @@ pub enum InternalMode {
     ChangedFilter,
     Search,
     Mark,
+    /// A plugin's canvas is taking the typing (`CanvasView::text_input`).
+    PluginInput,
     Bookmarks,
     Tabs,
     Outline,
@@ -242,6 +247,9 @@ pub enum UiLayer {
     Info,
     TableCell,
     Visual,
+    /// A plugin's canvas that asked for text input is on screen and has not been left with
+    /// `Esc`. Just above the base: every overlay and dialog sits in front of it.
+    PluginInput,
 
     /// The base full screen. Always active, so the walk ends here.
     Base(BaseLayer),
@@ -339,6 +347,7 @@ impl UiLayer {
             Self::Filter => S::Filter,
             Self::Search => S::Search,
             Self::Mark => S::Mark,
+            Self::PluginInput => S::PluginInput,
             Self::BookmarksFilter | Self::TabsFilter | Self::OutlineFilter => S::ListFilter,
             Self::Bookmarks => S::Bookmarks,
             Self::Tabs => S::Tabs,
@@ -388,6 +397,7 @@ impl UiLayer {
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
             Self::Mark => InternalMode::Mark,
+            Self::PluginInput => InternalMode::PluginInput,
             // The overlay lists' `/` filter keeps the overlay's own chip (as the git lists do).
             Self::BookmarksFilter | Self::Bookmarks => InternalMode::Bookmarks,
             Self::TabsFilter | Self::Tabs => InternalMode::Tabs,
@@ -426,6 +436,7 @@ impl crate::keymap::Surface {
             S::Filter => UiLayer::Filter,
             S::Search => UiLayer::Search,
             S::Mark => UiLayer::Mark,
+            S::PluginInput => UiLayer::PluginInput,
             #[cfg(feature = "git")]
             S::BranchFilter => UiLayer::GitBranchFilter,
             #[cfg(feature = "git")]
@@ -1629,6 +1640,15 @@ pub struct App {
     /// How many colors the terminal shows, read once from `COLORTERM` / `TERM` at startup and
     /// handed to the plugins (`TermCaps::colors`); the host never converts a plugin's colors.
     plugin_colors: konoma_plugin::ColorDepth,
+    /// Keys typed into a canvas that asked for text input and not yet handed to the plugin: they
+    /// wait here while a job holds the session and go, in order, in the next job
+    /// (`app/plugin_input.rs`).
+    plugin_key_queue: Vec<konoma_plugin::Key>,
+    /// `Esc` left the plugin's text input: the host does not take the typing again until the
+    /// plugin shows a canvas that does not ask for it (so a plugin cannot trap the user).
+    plugin_input_left: bool,
+    /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
+    canvas_redraw_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     pub image: Option<ThreadProtocol>,
     /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
@@ -3508,6 +3528,9 @@ impl App {
             details_open: std::collections::HashMap::new(),
             picker: None,
             plugin_colors: plugin_host::detect_color_depth(),
+            plugin_key_queue: Vec::new(),
+            plugin_input_left: false,
+            canvas_redraw_at: None,
             img_tx: None,
             image: None,
             use_kitty: false,
@@ -4086,6 +4109,7 @@ impl App {
         layer!(self.is_info(), UiLayer::Info);
         layer!(self.is_table_cell_open(), UiLayer::TableCell);
         layer!(self.is_visual(), UiLayer::Visual);
+        layer!(self.is_plugin_input(), UiLayer::PluginInput);
 
         UiLayer::Base(self.base_layer())
     }

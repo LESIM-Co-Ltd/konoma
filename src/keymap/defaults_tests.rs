@@ -36,6 +36,7 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::PreviewImage,
         Surface::PreviewTable,
         Surface::PreviewCanvas,
+        Surface::PluginInput,
         Surface::ListFilter,
     ];
     #[cfg(feature = "git")]
@@ -79,26 +80,27 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::PreviewTable => 20,
         Surface::ListFilter => 21,
         Surface::PreviewCanvas => 22,
+        Surface::PluginInput => 23,
         #[cfg(feature = "git")]
-        Surface::BranchFilter => 23,
+        Surface::BranchFilter => 24,
         #[cfg(feature = "git")]
-        Surface::WorktreeFilter => 24,
+        Surface::WorktreeFilter => 25,
         #[cfg(feature = "git")]
-        Surface::GitDetail => 25,
+        Surface::GitDetail => 26,
         #[cfg(feature = "git")]
-        Surface::GitLog => 26,
+        Surface::GitLog => 27,
         #[cfg(feature = "git")]
-        Surface::GitGraph => 27,
+        Surface::GitGraph => 28,
         #[cfg(feature = "git")]
-        Surface::GitGraphPicker => 28,
+        Surface::GitGraphPicker => 29,
         #[cfg(feature = "git")]
-        Surface::GitBranches => 29,
+        Surface::GitBranches => 30,
         #[cfg(feature = "git")]
-        Surface::GitChanges => 30,
+        Surface::GitChanges => 31,
         #[cfg(feature = "git")]
-        Surface::GitWorktrees => 31,
+        Surface::GitWorktrees => 32,
         #[cfg(feature = "git")]
-        Surface::PreviewGitDiff => 32,
+        Surface::PreviewGitDiff => 33,
     }
 }
 
@@ -108,9 +110,9 @@ fn the_surface_list_is_complete() {
     let mut ords: Vec<usize> = all.iter().map(|&s| surface_ordinal(s)).collect();
     ords.sort_unstable();
     let expected: Vec<usize> = if cfg!(feature = "git") {
-        (0..33).collect()
+        (0..34).collect()
     } else {
-        (0..23).collect()
+        (0..24).collect()
     };
     assert_eq!(ords, expected, "all_surfaces() misses or repeats a Surface");
 }

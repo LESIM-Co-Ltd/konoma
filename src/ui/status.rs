@@ -115,6 +115,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::ChangedFilter => (Msg::StChangedOnly, Color::Yellow, false),
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
+        InternalMode::PluginInput => (Msg::StPluginInput, Color::Cyan, false),
         InternalMode::Bookmarks => (Msg::StBookmarks, Color::Yellow, false),
         InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
         InternalMode::Outline => (Msg::StOutline, Color::Yellow, false),
@@ -257,6 +258,7 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
         InternalMode::BatchRename => Some(Msg::StRenamePreviewHint),
         InternalMode::Rename => Some(Msg::StRenameHint),
         InternalMode::Commit => Some(Msg::StCommitHint),
+        InternalMode::PluginInput => Some(Msg::StPluginInputHint),
         _ => None,
     };
     if let Some(msg) = fixed {
