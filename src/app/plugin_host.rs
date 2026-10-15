@@ -39,7 +39,9 @@
 //!   the worker turns the document into the host's `LoadedDocument` (`office_doc.rs`) in the same
 //!   job, so the sizes of the pictures are read off the UI thread and the view itself is not kept.
 //!   Their other representation (`R`: a presentation's text, a Markdown file's or Word document's
-//!   source) is asked for on the spot ([`App::plugin_view_now`]). The Markdown plugin is waited
+//!   source) is asked for on the spot ([`App::plugin_view_now`]) **for the host's own standard
+//!   plugins only** (`Profile::standard`); a plugin a user added is asked on a worker whatever
+//!   it declares. The Markdown plugin is waited
 //!   for longer on the first frame ([`MARKDOWN_FIRST_FRAME_BUDGET`]): it only reads a file.
 //! - **Pages.** A table plugin with pages (a workbook's sheets) is turned with
 //!   [`App::plugin_turn_page`]: the grid of the page being left is released off the UI thread and
@@ -1242,6 +1244,22 @@ impl App {
             })
     }
 
+    /// Whether the open plugin show is a canvas: its view is one, or it has no view yet (loading,
+    /// reading again) and the plugin declares a canvas and no table. Decides the surface, so a
+    /// canvas that reports pages is a canvas (its `j`/`Enter` are the plugin's) and never a table.
+    pub(super) fn plugin_is_canvas(&self) -> bool {
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        match show.view.as_ref() {
+            Some(v) => matches!(v, View::Canvas(_)),
+            None => {
+                let p = crate::plugins::profile_of(&show.id);
+                p.canvas && !p.table
+            }
+        }
+    }
+
     /// The canvas the plugin show holds, if it is the one on screen.
     pub(crate) fn canvas_view(&self) -> Option<&konoma_plugin::view::CanvasView> {
         if !self.is_canvas_preview() {
@@ -1701,6 +1719,17 @@ impl App {
         let work = self.plugin_work(id, path, PluginJob::Act { session, action }, req);
         self.plugin_user_act = true;
         self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.plugin_user_act_gen = self.media_gen;
+    }
+
+    /// A plugin answer was discarded as stale (it is not applied): if it is the answer to the
+    /// action the user pressed, or to something asked after it, the mark "this is the user's
+    /// doing" goes with it -- a later answer to something else (a file reloaded) must not be taken
+    /// for the answer to the action and take the typing back.
+    pub(super) fn discard_stale_answer(&mut self, gen: u64) {
+        if self.plugin_user_act && gen >= self.plugin_user_act_gen {
+            self.plugin_user_act = false;
+        }
     }
 
     /// Whether the show has its session at hand and nothing keeps a job from being sent now: the
@@ -1727,14 +1756,19 @@ impl App {
     /// presentation plugins: it is a copy of the text and a handful of `Arc`s), so the key is
     /// answered the way it always was, without a round trip through a worker; a plugin whose other
     /// representation is a real read asks with [`App::plugin_request_view`]. **Only the host's
-    /// own document sessions call this** (`R` of a document, the source view): a plugin's `view`
-    /// is arbitrary code, so every other plugin, a canvas above all, goes through a worker
-    /// ([`App::plugin_view_when_free`]). Returns false when there is no session to ask (none
-    /// open, or a job holds it).
+    /// own standard document plugins are called on the spot** (`R` of a document, the source
+    /// view; `Profile::standard`): a plugin's `view` is arbitrary code, so every other plugin --
+    /// a canvas above all, and a third-party plugin that declares `shows(Document)` too -- goes
+    /// through a worker ([`App::plugin_view_when_free`]; this returns true: the answer is on its
+    /// way). Returns false when there is no session to ask (none open, or a job holds it).
     pub(super) fn plugin_view_now(&mut self, req: ViewReq) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
+        if !crate::plugins::profile_of(&show.id).standard {
+            // Asked on a worker; false (the choice is taken back) when no session is at hand.
+            return self.plugin_request_view(self.plugin_view_req());
+        }
         let Some(session) = show.session.take() else {
             return false;
         };
@@ -1809,7 +1843,15 @@ impl App {
         // being read again): the press waits in line and goes, in order, when the session comes
         // back -- it is not dropped, and its hint did not flicker meanwhile
         // (`plugin_act_enabled`). Other displays keep ignoring the press while a job holds it.
-        if self.is_canvas_preview() && self.plugin.as_ref().is_some_and(|p| p.session.is_none()) {
+        // Also when the session is at hand but presses are already waiting, or the work group is
+        // busy: a press never overtakes the ones before it.
+        if self.is_canvas_preview()
+            && (self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| !p.flow.acts.is_empty())
+                || !self.plugin_session_is_free())
+        {
             let full = self
                 .plugin
                 .as_ref()
@@ -1822,6 +1864,8 @@ impl App {
             if let Some(show) = self.plugin.as_mut() {
                 show.flow.acts.push(action.to_string());
             }
+            // The session may be at hand (the presses before this one were waiting for a group).
+            self.flush_plugin_acts();
             return true;
         }
         let Some(show) = self.plugin.as_mut() else {
@@ -1842,6 +1886,7 @@ impl App {
         );
         self.plugin_user_act = true;
         self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.plugin_user_act_gen = self.media_gen;
         true
     }
 
@@ -1897,6 +1942,7 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.id == res.id && self.shows_plugin_file(p));
         if !current || !belongs {
+            self.discard_stale_answer(res.gen);
             super::table_actions::discard_in_background(res);
             return false;
         }
@@ -2044,14 +2090,11 @@ impl App {
         // The pictures of the canvas this result carried: decoded on the worker, now put into the
         // cache (the entries of pictures the canvas dropped go). A view that is not a canvas, or a
         // failure, leaves none.
+        let mut ask_more = false;
         match (&canvas_now, canvas_pictures) {
             (Some(Some(_)), Picture::Canvas(Some(pics))) => {
                 // Pictures waiting for a later answer (the work limits of one): ask for it.
-                if self.canvas_pictures_landed(*pics) {
-                    if let Some(show) = self.plugin.as_mut() {
-                        show.flow.wants_view = true;
-                    }
-                }
+                ask_more = self.canvas_pictures_landed(*pics);
             }
             (Some(_), _) => self.forget_canvas_pictures(),
             (None, _) => {}
@@ -2059,6 +2102,10 @@ impl App {
         // The canvas this result left on screen: what text input and the redraw timer follow.
         let by_user = self.settle_user_act(viewed, outcome_kind);
         self.canvas_landed(canvas_now, by_user);
+        if ask_more {
+            // After the deadline was set: the follow-up is throttled with the timer's floor.
+            self.canvas_ask_more(std::time::Instant::now());
+        }
         // What waited for the session goes now: the keys typed while it was out (in order, in one
         // job), the actions pressed meanwhile, a view asked for.
         self.plugin_session_returned();

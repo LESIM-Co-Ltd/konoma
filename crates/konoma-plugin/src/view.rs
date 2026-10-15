@@ -614,8 +614,12 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 ///
 /// **`image: None` means "unchanged"**: the picture the last answer named for this `id`, so a
 /// redraw that only moves a sprite need not send its pixels again. A `None` for an `id` the host
-/// does not hold (the first answer, one it dropped, one it refused) shows the cells instead. After
-/// a refusal, or whenever you are not sure, send `Some` again.
+/// does not hold (the first answer, or one the canvas stopped naming) shows the cells instead.
+/// You never have to send a picture again because of a limit: the host keeps what it has not
+/// decoded yet (left for a later answer by the per-answer limits, or refused for now by the
+/// memory bound) and decodes it on a later answer even when that answer says `None`. Only newer
+/// `Some` content for the `id` replaces what the host kept; it is released when the canvas stops
+/// naming the `id`.
 ///
 /// **How a picture is fitted.** It is scaled to fit inside the `cols` x `rows` cells with its
 /// aspect ratio kept, starting at the top-left of the rectangle, and it is not enlarged past its

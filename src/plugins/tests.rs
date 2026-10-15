@@ -1104,6 +1104,7 @@ fn the_standard_plugins_declare_the_display_type_the_host_draws_them_with() {
         p("math"),
         Profile {
             own_svg: true,
+            standard: true,
             ..Profile::default()
         }
     );

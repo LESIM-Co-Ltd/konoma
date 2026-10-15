@@ -16,9 +16,10 @@
 //! - Keys are never dropped. A key pressed while a job holds the session waits in a queue and
 //!   goes, in order, in the next job (`PluginJob::Keys`). The queue belongs to the show: opening
 //!   another file or tab drops it with the session. It is bounded ([`MAX_QUEUED_KEYS`], and a
-//!   paste is cut at [`MAX_PASTE_BYTES`]): a plugin that stops answering does not make the host
-//!   hold an unbounded backlog; past the bound new input is refused with a message, never
-//!   reordered.
+//!   paste is cut at [`MAX_PASTE_BYTES`], and the pastes together at [`MAX_QUEUED_PASTE_BYTES`]):
+//!   a plugin that stops answering does not make the host hold an unbounded backlog; past the
+//!   bound new input is refused with a message, never reordered. The last place of the queue is
+//!   kept for `Esc`, so the way out is always told to the plugin.
 //! - *Stage 3 (a plugin in a child process):* a `key` or `view` that never returns keeps its
 //!   worker thread (and the session) for good; in-process nothing can stop it. The child-process
 //!   transport must kill on a timeout and allow one outstanding job per plugin id.
@@ -53,6 +54,10 @@ pub const MAX_QUEUED_KEYS: usize = 4096;
 
 /// The longest paste handed to a plugin, in bytes; a longer one is cut (at a character boundary).
 pub const MAX_PASTE_BYTES: usize = 1 << 20;
+
+/// The most bytes of pasted text that wait in the queue together (while a job holds the session):
+/// the sum over the pastes, besides the cut of each one.
+pub const MAX_QUEUED_PASTE_BYTES: usize = 4 << 20;
 
 /// When a plugin that asked for `d` is asked again: `d` kept within the bounds, from now.
 fn redraw_deadline(d: Duration) -> Instant {
@@ -122,11 +127,13 @@ impl App {
         let Some(key) = plugin_key_of(key) else {
             return;
         };
-        // Leaving is the host's, whatever is waiting: the latch is set even when the queue is full.
-        if key.code == PKey::Esc {
+        // Leaving is the host's, whatever is waiting: the latch is set even when the queue is
+        // full, and the plugin is told: the last place of the queue is kept for `Esc`.
+        let esc = key.code == PKey::Esc;
+        if esc {
             self.plugin_input_left = true;
         }
-        if self.plugin_queue_is_full() {
+        if self.plugin_queue_is_full(esc) {
             return;
         }
         self.plugin_key_queue.push(key);
@@ -134,14 +141,28 @@ impl App {
     }
 
     /// A paste while the plugin takes the typing: one key holding all the text, cut at
-    /// [`MAX_PASTE_BYTES`] (with a message).
+    /// [`MAX_PASTE_BYTES`] and at what is left of [`MAX_QUEUED_PASTE_BYTES`] (with a message).
     pub fn plugin_input_paste(&mut self, mut text: String) {
         self.pending_leader = None;
-        if self.plugin_queue_is_full() {
+        if self.plugin_queue_is_full(false) {
             return;
         }
-        if text.len() > MAX_PASTE_BYTES {
-            let mut end = MAX_PASTE_BYTES;
+        let queued: usize = self
+            .plugin_key_queue
+            .iter()
+            .map(|k| match &k.code {
+                PKey::Paste(t) => t.len(),
+                _ => 0,
+            })
+            .sum();
+        let room = MAX_QUEUED_PASTE_BYTES.saturating_sub(queued);
+        if room == 0 {
+            self.flash = Some(tr(self.lang, Msg::PluginInputFull).to_string());
+            return;
+        }
+        let limit = MAX_PASTE_BYTES.min(room);
+        if text.len() > limit {
+            let mut end = limit;
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
@@ -154,8 +175,14 @@ impl App {
 
     /// Whether no more input is taken for the plugin: [`MAX_QUEUED_KEYS`] wait for a session that
     /// does not come back. The new input is refused with a message (the older is kept, in order).
-    fn plugin_queue_is_full(&mut self) -> bool {
-        if self.plugin_key_queue.len() < MAX_QUEUED_KEYS {
+    /// The last place is for `Esc` (`esc`): the user's way out is always told to the plugin.
+    fn plugin_queue_is_full(&mut self, esc: bool) -> bool {
+        let limit = if esc {
+            MAX_QUEUED_KEYS
+        } else {
+            MAX_QUEUED_KEYS - 1
+        };
+        if self.plugin_key_queue.len() < limit {
             return false;
         }
         self.flash = Some(tr(self.lang, Msg::PluginInputFull).to_string());
@@ -193,6 +220,7 @@ impl App {
         self.plugin_input_left = false;
         self.plugin_user_act = false;
         self.canvas_redraw_at = None;
+        self.canvas_more_at = None;
     }
 
     /// A result was installed. `now` is what it did to the canvas: `Some(None)` = the view is gone
@@ -229,6 +257,28 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Pictures of the canvas were left for later and the last answer made progress: ask the plugin
+    /// again (its answer decodes the next ones from the sources the host kept), **at most once per
+    /// [`MIN_REDRAW_AFTER`]** and only while the canvas is on screen. When the last ask is too
+    /// recent, or the canvas is hidden or covered, the redraw deadline is set to the first moment
+    /// an ask is allowed instead (the timer asks, and drops the deadline when the canvas is not
+    /// on screen). `now` is given so tests step the clock.
+    pub(super) fn canvas_ask_more(&mut self, now: Instant) {
+        let due = self
+            .canvas_more_at
+            .and_then(|t| t.checked_add(MIN_REDRAW_AFTER))
+            .unwrap_or(now);
+        if due <= now && self.canvas_redraw_visible() && !self.canvas_is_covered() {
+            self.canvas_more_at = Some(now);
+            if let Some(show) = self.plugin.as_mut() {
+                show.flow.wants_view = true;
+            }
+            return;
+        }
+        let at = due.max(now);
+        self.canvas_redraw_at = Some(self.canvas_redraw_at.map_or(at, |old| old.min(at)));
     }
 
     /// Whether the canvas that wants the timer is on screen: preview mode, and the plugin show is
@@ -271,6 +321,8 @@ impl App {
             return false;
         }
         self.canvas_redraw_at = None;
+        // Any ask counts for the floor between two asks (the follow-up for pictures included).
+        self.canvas_more_at = Some(now);
         let req = self.plugin_view_req();
         self.plugin_request_view(req)
     }
@@ -305,6 +357,39 @@ impl App {
     #[cfg(test)]
     pub(crate) fn plugin_session_is_out_for_test(&self) -> bool {
         self.plugin.as_ref().is_some_and(|p| p.session.is_none())
+    }
+
+    /// Test-only: the bytes of pasted text waiting for a free session.
+    #[cfg(test)]
+    pub(crate) fn plugin_queued_paste_bytes_for_test(&self) -> usize {
+        self.plugin_key_queue
+            .iter()
+            .map(|k| match &k.code {
+                PKey::Paste(t) => t.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Test-only: whether a view is wanted as soon as the session is at hand (the follow-up ask
+    /// for pictures, `R`, a page turn).
+    #[cfg(test)]
+    pub(crate) fn plugin_wants_view_for_test(&self) -> bool {
+        self.plugin.as_ref().is_some_and(|p| p.flow.wants_view)
+    }
+
+    /// Test-only: forget the wish for a view.
+    #[cfg(test)]
+    pub(crate) fn clear_plugin_wants_view_for_test(&mut self) {
+        if let Some(p) = self.plugin.as_mut() {
+            p.flow.wants_view = false;
+        }
+    }
+
+    /// Test-only: the follow-up ask for pictures left for later, at the given time.
+    #[cfg(test)]
+    pub(crate) fn canvas_ask_more_for_test(&mut self, now: Instant) {
+        self.canvas_ask_more(now);
     }
 
     /// Test-only: the keys waiting for a free session.

@@ -57,7 +57,9 @@ pub(crate) use plugin_host::MAX_QUEUED_ACTS;
 #[cfg(test)]
 pub(crate) use plugin_input::plugin_key_of;
 #[cfg(test)]
-pub(crate) use plugin_input::{MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_REDRAW_AFTER};
+pub(crate) use plugin_input::{
+    MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_QUEUED_PASTE_BYTES, MAX_REDRAW_AFTER, MIN_REDRAW_AFTER,
+};
 pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
@@ -1656,8 +1658,14 @@ pub struct App {
     /// answers it is "the user's" and may take the typing back after `Esc`
     /// (`App::canvas_landed`). Cleared as the answer lands, and with the show.
     plugin_user_act: bool,
+    /// The generation of the job `plugin_user_act` was set for: a stale answer of that job or of a
+    /// later one that is discarded takes the mark away (it is no longer the answer to the action).
+    plugin_user_act_gen: u64,
     /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
     canvas_redraw_at: Option<std::time::Instant>,
+    /// When the host last asked the plugin again because canvas pictures were left for later (the
+    /// follow-up asks are at most one per `MIN_REDRAW_AFTER`).
+    canvas_more_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     pub image: Option<ThreadProtocol>,
     /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
@@ -1844,6 +1852,9 @@ pub struct App {
     /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
     /// content of the id has no protocol yet, so a changing picture does not blink.
     canvas_front: std::collections::HashMap<u64, Arc<str>>,
+    /// The sources of the canvas pictures deferred or refused and not decoded yet, by id (kept
+    /// from the answer that sent them, so the plugin need not send them again).
+    canvas_kept: std::collections::HashMap<u64, canvas_images::KeptPicture>,
     /// Kitty image ids of canvas pictures that are gone, waiting to be deleted from the terminal
     /// (`App::take_kitty_deletes`).
     kitty_deletes: Vec<u32>,
@@ -3549,7 +3560,9 @@ impl App {
             plugin_key_queue: Vec::new(),
             plugin_input_left: false,
             plugin_user_act: false,
+            plugin_user_act_gen: 0,
             canvas_redraw_at: None,
+            canvas_more_at: None,
             img_tx: None,
             image: None,
             use_kitty: false,
@@ -3602,6 +3615,7 @@ impl App {
             md_kitty_ids: std::collections::HashMap::new(),
             canvas_places: Vec::new(),
             canvas_front: std::collections::HashMap::new(),
+            canvas_kept: std::collections::HashMap::new(),
             kitty_deletes: Vec::new(),
             md_frame: 0,
             md_request_seq: 0,

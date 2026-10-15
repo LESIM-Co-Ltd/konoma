@@ -25,6 +25,12 @@ use crate::test_support::unique_tmp;
 struct Seen {
     keys: Mutex<Vec<Key>>,
     views: AtomicUsize,
+    /// The declared actions that ran, in order.
+    acts: Mutex<Vec<String>>,
+    /// The thread each `view` ran on.
+    view_threads: Mutex<Vec<std::thread::ThreadId>>,
+    /// `CanvasView::redraw_after` of the next canvas.
+    after: Mutex<Option<std::time::Duration>>,
 }
 
 impl Seen {
@@ -53,7 +59,9 @@ impl Plugin for Mini {
     fn manifest(&self) -> Manifest {
         let m = Manifest::new(self.id.as_str(), "0.1.0")
             .bind(Bind::files(["*.mini"]))
-            .shows(ViewKind::Canvas);
+            .shows(ViewKind::Canvas)
+            .action(Act::new("one").key("x").label("one").help("The first"))
+            .action(Act::new("two").key("z").label("two").help("The second"));
         match &self.group {
             Some(g) => m.work_group(g.as_str()),
             None => m,
@@ -74,10 +82,21 @@ struct MiniSession {
 impl Session for MiniSession {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         self.seen.views.fetch_add(1, Ordering::SeqCst);
+        self.seen
+            .view_threads
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
         let mut c = CanvasView::new(req.cols, req.rows);
         c.set_string(0, 0, "mini", konoma_plugin::Style::new());
         c.text_input = true;
+        c.redraw_after = *self.seen.after.lock().unwrap();
         Ok(View::Canvas(c))
+    }
+
+    fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        self.seen.acts.lock().unwrap().push(action.to_string());
+        Ok(Outcome::Unhandled)
     }
 
     fn key(&mut self, key: &Key, _: &ActCx) -> Result<Outcome, Failure> {
@@ -385,4 +404,152 @@ fn the_text_input_surface_sits_on_the_text_input_layer() {
         h.app.frontmost_layer(|_| true),
         UiLayer::PluginInput
     ));
+}
+
+// ---- batch F: queued actions, the user mark, the paste backlog, the reclaimed timer --------------------
+
+impl Seen {
+    fn acts(&self) -> Vec<String> {
+        self.acts.lock().unwrap().clone()
+    }
+}
+
+/// A press never overtakes the ones before it: with presses waiting, a new press goes behind them
+/// even when the session is at hand. (Before: the new press ran at once and the older ones were
+/// run after it.)
+#[test]
+fn an_action_pressed_with_older_presses_waiting_goes_behind_them() {
+    let mut h = H::open("cs_acts_order", None, true);
+    assert!(h.show().session.is_some());
+    h.show_mut().flow.acts.push("one".to_string());
+    assert!(h.app.plugin_act("two"));
+    h.settle();
+    assert_eq!(h.seen.acts(), ["one", "two"], "in the order pressed");
+    assert!(h.show().flow.acts.is_empty());
+}
+
+/// Queued actions are flushed wherever queued keys are: when the plugin's work group is freed by
+/// the result of another job, `apply_media` gives them the session.
+#[test]
+fn queued_actions_go_when_a_work_group_is_freed_by_another_jobs_result() {
+    let mut h = H::open("cs_acts_group", Some("cs-acts-group"), true);
+    h.app
+        .plugin_groups
+        .entry("cs-acts-group".into())
+        .or_default()
+        .busy = true;
+    let dispatched = h.app.plugin_group_dispatches;
+    assert!(h.app.plugin_act("one"));
+    assert!(h.app.plugin_act("two"));
+    assert_eq!(h.show().flow.acts, ["one", "two"], "both wait");
+    assert_eq!(
+        h.app.plugin_group_dispatches, dispatched,
+        "nothing was sent"
+    );
+    assert!(h.seen.acts().is_empty());
+    // The group is free again, through a result that is not this plugin's own answer: any result
+    // reaches `apply_media`.
+    h.app.plugin_groups.get_mut("cs-acts-group").unwrap().busy = false;
+    let stale_gen = h.app.media_gen.wrapping_add(7);
+    h.app.apply_media(MediaResult {
+        gen: stale_gen,
+        payload: None,
+    });
+    h.settle();
+    assert_eq!(h.seen.acts(), ["one", "two"], "flushed, in order");
+}
+
+fn stale_result(h: &H, gen: u64) -> MediaResult {
+    let show = h.show();
+    let mut res = plugin_host::PluginResult::failed(
+        gen,
+        show.id.clone(),
+        show.req.clone(),
+        Failure::external("stale"),
+    );
+    res.path = show.path.clone();
+    MediaResult {
+        gen,
+        payload: Some(MediaPayload::Plugin(Box::new(res))),
+    }
+}
+
+/// The mark "this answer is the user's" goes with the answer that is discarded as stale, so a
+/// later answer to something else is not taken for the answer to the action.
+#[test]
+fn a_discarded_stale_answer_takes_the_user_mark_away() {
+    let mut h = H::open("cs_mark", None, true);
+    let mine = h.app.media_gen;
+    h.app.plugin_user_act = true;
+    h.app.plugin_user_act_gen = mine;
+    // An answer older than the action says nothing about it.
+    h.app.apply_media(stale_result(&h, mine.wrapping_sub(1)));
+    assert!(h.app.plugin_user_act, "an older answer keeps the mark");
+    // The action's own answer, or a later one, discarded: the mark goes.
+    h.app.apply_media(stale_result(&h, mine.wrapping_add(1)));
+    assert!(!h.app.plugin_user_act);
+    // The same through the direct path (a result that does not belong).
+    h.app.plugin_user_act = true;
+    h.app.plugin_user_act_gen = mine;
+    h.app.discard_stale_answer(mine);
+    assert!(!h.app.plugin_user_act);
+}
+
+/// A stale answer that gives the session back re-arms the redraw timer like a landed answer.
+#[test]
+fn a_session_given_back_by_a_stale_answer_arms_the_redraw_timer_again() {
+    let mut h = H::open("cs_reclaim_timer", None, true);
+    *h.seen.after.lock().unwrap() = Some(std::time::Duration::from_millis(500));
+    // Draw once more so the show holds a canvas that asks for the timer.
+    h.app.canvas_redraw_if_due(std::time::Instant::now());
+    h.app.plugin_request_view(h.app.plugin_view_req());
+    h.settle();
+    assert!(
+        h.app.canvas_redraw_deadline().is_some(),
+        "armed by the landing"
+    );
+    // A tick was skipped while a job was out: the deadline is gone, the session is out too.
+    h.app.set_canvas_redraw_at_for_test(None);
+    let session = h.show_mut().session.take().expect("a session");
+    let mut stale = stale_result(&h, h.app.media_gen.wrapping_add(1));
+    if let Some(MediaPayload::Plugin(res)) = stale.payload.as_mut() {
+        res.session = Some(session);
+    }
+    h.app.apply_media(stale);
+    assert!(h.show().session.is_some(), "the session is back");
+    assert!(
+        h.app.canvas_redraw_deadline().is_some(),
+        "the animation goes on"
+    );
+}
+
+/// The synchronous `view` (on the UI thread) is for the host's own standard document plugins only:
+/// a plugin a user added, even one that declares a document too, is asked on a worker.
+#[test]
+fn a_plugin_that_is_not_a_standard_one_is_never_asked_for_a_view_on_the_ui_thread() {
+    let mut h = H::open("cs_sync_view", None, true);
+    assert!(!crate::plugins::profile_of("cs_sync_view").standard);
+    let me = std::thread::current().id();
+    let before = h.seen.view_threads.lock().unwrap().len();
+    let req = h.app.plugin_view_req();
+    assert!(
+        h.app.plugin_view_now(req.clone()),
+        "the answer is on its way"
+    );
+    h.settle();
+    let threads = h.seen.view_threads.lock().unwrap()[before..].to_vec();
+    assert!(!threads.is_empty(), "the view was asked for");
+    assert!(threads.iter().all(|t| *t != me), "and not on this thread");
+    // With a job holding the session there is nothing to ask: false, as for a standard one.
+    let held = h.show_mut().session.take();
+    assert!(!h.app.plugin_view_now(req));
+    h.show_mut().session = held;
+}
+
+#[test]
+fn only_the_hosts_own_plugins_are_standard() {
+    for id in ["markdown", "document", "presentation", "code", "csv"] {
+        assert!(crate::plugins::profile_of(id).standard, "{id}");
+    }
+    assert!(!crate::plugins::profile_of("no-such-plugin").standard);
 }

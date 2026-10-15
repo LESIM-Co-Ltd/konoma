@@ -29,6 +29,12 @@ pub struct Profile {
     pub table: bool,
     /// Shows text (the host's windowed reader).
     pub text: bool,
+    /// Draws cells and pictures itself (a canvas).
+    pub canvas: bool,
+    /// One of the host's own standard plugins (not one a user added): the only ones whose `view`
+    /// the host may call on the UI thread (the cheap document representations; see
+    /// `App::plugin_view_now`).
+    pub standard: bool,
     /// Shows a converted form of the file (no file has the lines it shows).
     pub converts: bool,
     /// Its text view is the file itself.
@@ -51,6 +57,8 @@ impl Profile {
             document: has(ViewKind::Document),
             table: has(ViewKind::Table),
             text: has(ViewKind::Text),
+            canvas: has(ViewKind::Canvas),
+            standard,
             converts: m.converts,
             file_text: m.file_text,
             unscreened: m.assigns_files_without_shows(),

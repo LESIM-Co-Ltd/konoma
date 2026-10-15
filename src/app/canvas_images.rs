@@ -15,13 +15,20 @@
 //!   transmitted over the same terminal image, never added next to it) and the overlay signature
 //!   (so changing content never clears the screen).
 //! - **No blink**: while the new content has no protocol yet the previous entry of the id keeps
-//!   being drawn (`App::canvas_shown_key`); when the new one can be drawn it takes over and the
-//!   old entry goes. A new content that cannot be decoded ends the old picture (the cells show).
+//!   being drawn (`App::canvas_shown_key`); when the new one can be drawn it takes over. A frame
+//!   only moves that pointer: the entries nobody names or draws from go in the prune when an
+//!   answer lands (a job in flight holds a snapshot of the cache, and an entry dropped by a frame
+//!   meanwhile would be named by its answer without being there). A new content that cannot be decoded ends the old picture (the cells show).
 //! - **`image: None`** (`CanvasImage::unchanged`) means "the same picture as the previous answer
 //!   for this id": it resolves to the key the last answer named for the id, with no hashing and no
-//!   decoding. An id the host does not hold is a failed placement (the cells show), and so is one
-//!   whose picture the host dropped. A plugin should send `None` for pictures that did not change
-//!   (the content of a `Some` is hashed on every answer; that is linear in its size).
+//!   decoding. An id the host does not hold is a failed placement (the cells show). A plugin should
+//!   send `None` for pictures that did not change (the content of a `Some` is hashed on every
+//!   answer, each distinct buffer once; that is linear in its size).
+//! - **The host keeps what it has not decoded** ([`KeptPicture`], `App::canvas_kept`): a picture
+//!   the work limits of one answer left for later, or the memory bound refused for now, keeps its
+//!   `ImageData` (an `Arc` clone) per id, and a later job decodes it even when the later answer
+//!   says `None`. Newer `Some` content for the id replaces it; it is released when the canvas
+//!   stops naming the id or the show goes. The plugin never has to send a picture again.
 //! - **The worker decodes**, in the same job that ran the plugin's `view` ([`decode_canvas`],
 //!   called from `PluginWork::run_inner`), never the UI thread, and only what the cache does not
 //!   hold yet ([`CanvasHeld`]). A GIF decode observes the job's cancellation through the decode
@@ -31,7 +38,9 @@
 //!   an SVG the guard refused) gets a `failed` entry, so it is not asked for again on every frame
 //!   and the plugin's cells under it stay. A picture that is only **not decoded yet** (the work
 //!   limits of one answer) or **does not fit the memory bound for now** is not failed: it has no
-//!   entry and is decoded on a following answer (the host asks for one when work was left over).
+//!   entry and is decoded on a following answer (the host asks for one when work was left over,
+//!   at most once per `MIN_REDRAW_AFTER` and only while the canvas is on screen). One refused for
+//!   the memory bound is not decoded again until that much room is free.
 //! - **SVG from a plugin is untrusted**: it is drawn by the supervised child process
 //!   (`decode_image_view`), except where the host believes the plugin's `trusted` claim
 //!   (`plugins::draws_own_svg`).
@@ -145,6 +154,27 @@ pub(super) struct CanvasPictures {
     /// Another answer is worth asking for: pictures wait and this answer made progress (so the
     /// next one does too, and the asking ends).
     pub(super) more: bool,
+    /// The source of every picture this answer had to decode or defer, by id (`Arc` clones, no
+    /// copy of the data). The app keeps those that are still not in the cache after landing
+    /// ([`KeptPicture`]), so the plugin never has to send them again.
+    pub(super) sources: Vec<(u64, KeptPicture)>,
+}
+
+/// The source of a picture the host has not turned into a cache entry yet because the work limits
+/// of an answer left it for later, or the memory bound refused it for now. The host keeps it (per
+/// canvas id) and decodes it on a later job even when the later answer says `unchanged`.
+#[derive(Clone, Debug)]
+pub(super) struct KeptPicture {
+    /// The cache key of the content; `None` when it was not even hashed yet (the per-answer input
+    /// budget left it).
+    pub(super) key: Option<Arc<str>>,
+    /// The content hash (the part of the key), when it was made.
+    pub(super) hash: Option<u64>,
+    /// What the plugin sent.
+    pub(super) data: ImageData,
+    /// The decoded bytes it needs when the memory bound refused it: it is not decoded again until
+    /// that much room is free.
+    pub(super) needs: Option<u64>,
 }
 
 /// What the app tells the worker about the canvas pictures it holds.
@@ -156,6 +186,8 @@ pub(super) struct CanvasHeld {
     pub(super) by_id: HashMap<u64, Arc<str>>,
     /// The entry each id is drawn from now (it stays while a newer content has no protocol).
     pub(super) front: HashMap<u64, Arc<str>>,
+    /// The pictures deferred or refused earlier, by id (what `unchanged` resolves to for them).
+    pub(super) kept: HashMap<u64, KeptPicture>,
 }
 
 /// FNV-1a 64 over several pieces (the same constants as `media_diff_url`'s hash).
@@ -176,63 +208,164 @@ impl Fnv {
     }
 }
 
-/// A hash of what the picture is: its bytes or pixels, or for a file its path, size and
-/// modification time (a file that changed under the same id is another picture).
-pub(crate) fn content_hash(data: &ImageData) -> u64 {
-    let mut h = Fnv::new();
-    feed(&mut h, data);
-    h.0
+/// The identity of a buffer a plugin handed over: where its bytes are and how many.
+type BufId = (usize, usize);
+
+fn buf_id(b: &[u8]) -> BufId {
+    (b.as_ptr() as usize, b.len())
 }
 
-fn feed(h: &mut Fnv, data: &ImageData) {
-    match data {
-        ImageData::File(p) => {
-            h.num(1);
-            h.bytes(p.as_os_str().as_encoded_bytes());
-            if let Ok(m) = std::fs::metadata(p) {
-                h.num(m.len());
-                let t = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_nanos() as u64);
-                h.num(t);
+/// How many bytes are hashed between two looks at the cancellation.
+const HASH_CHUNK: usize = 1 << 20;
+
+/// The hashing of one answer: each distinct buffer (one `Arc` cloned into many places, as an
+/// animation of one frame repeated does) is hashed once, the cancellation is looked at while a
+/// large buffer is hashed, and the bytes hashed are counted (the per-answer input budget is
+/// applied before a picture is hashed).
+struct Hasher<'a> {
+    /// The hash of the bytes of each buffer hashed in this answer.
+    memo: HashMap<BufId, u64>,
+    /// The bytes of the distinct buffers hashed so far.
+    bytes: u64,
+    cancel: Option<&'a crate::preview::office::Cancel>,
+}
+
+impl<'a> Hasher<'a> {
+    fn new(cancel: Option<&'a crate::preview::office::Cancel>) -> Hasher<'a> {
+        Hasher {
+            memo: HashMap::new(),
+            bytes: 0,
+            cancel,
+        }
+    }
+
+    /// The hash of the bytes of `b`; `None` when the job was cancelled meanwhile.
+    fn buffer(&mut self, b: &[u8]) -> Option<u64> {
+        let id = buf_id(b);
+        if let Some(h) = self.memo.get(&id) {
+            return Some(*h);
+        }
+        let mut f = Fnv::new();
+        for chunk in b.chunks(HASH_CHUNK) {
+            if self.cancel.is_some_and(|c| c.is_cancelled()) {
+                return None;
             }
+            f.bytes(chunk);
         }
-        ImageData::Encoded(b) => {
-            h.num(2);
-            h.bytes(b);
-        }
-        ImageData::Svg {
-            data,
-            base_dir,
-            trusted,
-        } => {
-            h.num(3);
-            h.bytes(data);
-            h.num(*trusted as u64);
-            if let Some(d) = base_dir {
-                h.bytes(d.as_os_str().as_encoded_bytes());
+        self.memo.insert(id, f.0);
+        self.bytes += b.len() as u64;
+        Some(f.0)
+    }
+
+    /// A hash of what the picture is: its bytes or pixels, or for a file its path, size and
+    /// modification time (a file that changed under the same id is another picture). `None` when
+    /// the job was cancelled meanwhile.
+    fn content(&mut self, data: &ImageData) -> Option<u64> {
+        let mut h = Fnv::new();
+        self.feed(&mut h, data)?;
+        Some(h.0)
+    }
+
+    fn feed(&mut self, h: &mut Fnv, data: &ImageData) -> Option<()> {
+        match data {
+            ImageData::File(p) => {
+                h.num(1);
+                h.bytes(p.as_os_str().as_encoded_bytes());
+                if let Ok(m) = std::fs::metadata(p) {
+                    h.num(m.len());
+                    let t = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_nanos() as u64);
+                    h.num(t);
+                }
             }
-        }
-        ImageData::Rgba {
-            width,
-            height,
-            pixels,
-        } => {
-            h.num(4);
-            h.num(*width as u64);
-            h.num(*height as u64);
-            h.bytes(pixels);
-        }
-        ImageData::Frames(frames) => {
-            h.num(5);
-            for (f, d) in frames {
-                feed(h, f);
-                h.num(d.as_millis() as u64);
+            ImageData::Encoded(b) => {
+                h.num(2);
+                h.num(self.buffer(b)?);
+                h.num(b.len() as u64);
             }
+            ImageData::Svg {
+                data,
+                base_dir,
+                trusted,
+            } => {
+                h.num(3);
+                h.num(self.buffer(data)?);
+                h.num(data.len() as u64);
+                h.num(*trusted as u64);
+                if let Some(d) = base_dir {
+                    h.bytes(d.as_os_str().as_encoded_bytes());
+                }
+            }
+            ImageData::Rgba {
+                width,
+                height,
+                pixels,
+            } => {
+                h.num(4);
+                h.num(*width as u64);
+                h.num(*height as u64);
+                h.num(self.buffer(pixels)?);
+                h.num(pixels.len() as u64);
+            }
+            ImageData::Frames(frames) => {
+                h.num(5);
+                for (f, d) in frames {
+                    self.feed(h, f)?;
+                    h.num(d.as_millis() as u64);
+                }
+            }
+            ImageData::Lazy(_) => h.num(6),
         }
-        ImageData::Lazy(_) => h.num(6),
+        Some(())
+    }
+}
+
+/// A hash of what the picture is (see [`Hasher::content`]); every buffer is hashed in full.
+#[cfg(test)]
+pub(crate) fn content_hash(data: &ImageData) -> u64 {
+    Hasher::new(None).content(data).unwrap_or_default()
+}
+
+/// Whether `a` and `b` are the very same buffers (the same allocation, so the same bytes): a
+/// plugin that keeps one `Arc` and clones it into each answer is recognised without hashing. A
+/// file is never "the same" (it may have changed on disk).
+fn same_source(a: &ImageData, b: &ImageData) -> bool {
+    match (a, b) {
+        (ImageData::Encoded(x), ImageData::Encoded(y)) => buf_id(x) == buf_id(y),
+        (
+            ImageData::Svg {
+                data: x,
+                base_dir: bx,
+                trusted: tx,
+            },
+            ImageData::Svg {
+                data: y,
+                base_dir: by,
+                trusted: ty,
+            },
+        ) => buf_id(x) == buf_id(y) && bx == by && tx == ty,
+        (
+            ImageData::Rgba {
+                width: wx,
+                height: hx,
+                pixels: x,
+            },
+            ImageData::Rgba {
+                width: wy,
+                height: hy,
+                pixels: y,
+            },
+        ) => wx == wy && hx == hy && buf_id(x) == buf_id(y),
+        (ImageData::Frames(x), ImageData::Frames(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((fx, dx), (fy, dy))| dx == dy && same_source(fx, fy))
+        }
+        _ => false,
     }
 }
 
@@ -324,7 +457,7 @@ fn decode_one(
             }
             match decode_still(f, path, default_raster_px, cancel, trust_own_svg) {
                 Ok(img) => {
-                    bytes += img.width() as u64 * img.height() as u64 * 4;
+                    bytes += pixel_bytes_of(&img);
                     if bytes > crate::preview::image::MAX_GIF_BYTES_INLINE as u64 {
                         return CanvasDecoded::Failed(ImageFailure::TooLarge);
                     }
@@ -341,12 +474,20 @@ fn decode_one(
     }
 }
 
+/// The bytes of pixels a decoded image holds: in the image's own pixel format (3 bytes for an
+/// RGB8, 8 for an RGBA16, 16 for a float image), the measure of `MdImgEntry::pixel_bytes`, so the
+/// worker, the landing and the cache all count the same.
+fn pixel_bytes_of(i: &image::DynamicImage) -> u64 {
+    use image::GenericImageView;
+    let (w, h) = i.dimensions();
+    u64::from(w) * u64::from(h) * u64::from(i.color().bytes_per_pixel())
+}
+
 /// The pixel bytes a decoded picture holds in the cache.
 fn decoded_bytes(d: &CanvasDecoded) -> u64 {
-    let of = |i: &image::DynamicImage| i.width() as u64 * i.height() as u64 * 4;
     match d {
-        CanvasDecoded::Still(i) => of(i),
-        CanvasDecoded::Frames(f) => f.iter().map(|(i, _)| of(i)).sum(),
+        CanvasDecoded::Still(i) => pixel_bytes_of(i),
+        CanvasDecoded::Frames(f) => f.iter().map(|(i, _)| pixel_bytes_of(i)).sum(),
         CanvasDecoded::Failed(_) => 0,
     }
 }
@@ -412,45 +553,135 @@ pub(super) fn decode_canvas_within(
     limits: CanvasLimits,
 ) -> CanvasPictures {
     use crate::preview::image::ImageFailure;
+    let is_cancelled = || cancel.is_some_and(|c| c.is_cancelled());
     // Pass 1: the placements. The first placement of an id decides its key (an id is one picture).
-    let mut places = Vec::with_capacity(canvas.images.len());
-    let mut by_id: HashMap<u64, Arc<str>> = HashMap::new();
-    // The pictures to decode: (key, hash, data), each key once, in order of appearance.
-    let mut todo: Vec<(PathBuf, u64, &ImageData)> = Vec::new();
-    for im in &canvas.images {
-        let key = if let Some(k) = by_id.get(&im.id) {
-            Some(k.clone())
-        } else if by_id.len() >= MAX_CANVAS_IMAGES {
-            None // past the second line of defence: not looked at
-        } else {
-            let key = match &im.image {
-                None => held.by_id.get(&im.id).cloned(),
-                Some(data) => {
-                    let hash = content_hash(data);
-                    let key: Arc<str> =
-                        crate::preview::markdown::canvas_url(plugin_id, im.id, hash).into();
-                    if !held.keys.contains_key(Path::new(&*key)) {
-                        todo.push((PathBuf::from(&*key), hash, data));
-                    }
-                    Some(key)
-                }
-            };
-            if let Some(k) = &key {
-                by_id.insert(im.id, k.clone());
+    // Each id is resolved to a key without decoding anything: a picture the cache holds, one to
+    // decode (`todo`), or one left for later. The pictures the host kept from an earlier answer
+    // go first, so a picture deferred before is not starved by the new ones.
+    let mut hasher = Hasher::new(cancel);
+    // (order of appearance, id, the placement that decided it)
+    let mut ids: Vec<(usize, u64, &konoma_plugin::view::CanvasImage)> = Vec::new();
+    {
+        let mut seen: HashSet<u64> = HashSet::new();
+        for im in &canvas.images {
+            if seen.len() >= MAX_CANVAS_IMAGES && !seen.contains(&im.id) {
+                continue; // past the second line of defence: not looked at
             }
-            key
+            if seen.insert(im.id) {
+                ids.push((ids.len(), im.id, im));
+            }
+        }
+    }
+    ids.sort_by_key(|(order, id, _)| (!held.kept.contains_key(id), *order));
+    let mut key_of: HashMap<u64, Arc<str>> = HashMap::new();
+    // The pictures to decode, each key once: (order, id, key, hash, data, needs).
+    let mut todo: Vec<Todo> = Vec::new();
+    // The pictures not hashed because the input budget of this answer was used.
+    let mut unhashed = 0usize;
+    // The kept sources not turned into `todo` (not hashed yet).
+    let mut sources: Vec<(u64, KeptPicture)> = Vec::new();
+    let mut hashed_any = false;
+    for (order, id, im) in ids {
+        let kept = held.kept.get(&id);
+        // The data this id is about: what the plugin sent, or for `unchanged` what the host kept.
+        let data = match (&im.image, kept) {
+            (Some(d), _) => d,
+            (None, Some(k)) => &k.data,
+            (None, None) => {
+                // Nothing kept: the picture is in the cache or the id is not held.
+                if let Some(k) = held.by_id.get(&id) {
+                    key_of.insert(id, k.clone());
+                }
+                continue;
+            }
         };
-        places.push(CanvasPlace {
+        // A hash made earlier for the very same buffers is reused (no hashing).
+        let known = kept
+            .filter(|k| k.hash.is_some() && same_source(&k.data, data))
+            .and_then(|k| k.hash);
+        let hash = match known {
+            Some(h) => h,
+            None => {
+                // The input budget, before the hashing (as for the decode: a picture starts while
+                // less than the budget is used): the first picture is always hashed, so an answer
+                // makes progress; the others wait for the next answer (unhashed: the picture the
+                // id was drawn from stays on screen).
+                if hashed_any && hasher.bytes >= limits.input_bytes {
+                    unhashed += 1;
+                    if let Some(k) = held.by_id.get(&id) {
+                        key_of.insert(id, k.clone());
+                    }
+                    sources.push((
+                        id,
+                        KeptPicture {
+                            key: None,
+                            hash: None,
+                            data: data.clone(),
+                            needs: None,
+                        },
+                    ));
+                    continue;
+                }
+                match hasher.content(data) {
+                    Some(h) => {
+                        hashed_any = true;
+                        h
+                    }
+                    None => {
+                        // Cancelled while hashing: the answer is dropped on arrival.
+                        return CanvasPictures {
+                            places: canvas
+                                .images
+                                .iter()
+                                .map(|im| CanvasPlace {
+                                    id: im.id,
+                                    rect: im.rect(),
+                                    key: None,
+                                })
+                                .collect(),
+                            fresh: Vec::new(),
+                            waiting: 0,
+                            refused: 0,
+                            more: false,
+                            sources: Vec::new(),
+                        };
+                    }
+                }
+            }
+        };
+        let key: Arc<str> = crate::preview::markdown::canvas_url(plugin_id, id, hash).into();
+        key_of.insert(id, key.clone());
+        if !held.keys.contains_key(Path::new(&*key)) {
+            // The refusal of the memory bound is remembered with the picture, so it is not decoded
+            // again to be refused again.
+            let needs = kept
+                .filter(|k| k.key.as_deref() == Some(&*key))
+                .and_then(|k| k.needs);
+            todo.push(Todo {
+                order,
+                id,
+                key: key.clone(),
+                hash,
+                data: data.clone(),
+                needs,
+            });
+        }
+    }
+    todo.sort_by_key(|t| t.order);
+    let places: Vec<CanvasPlace> = canvas
+        .images
+        .iter()
+        .map(|im| CanvasPlace {
             id: im.id,
             rect: im.rect(),
-            key,
-        });
-    }
+            key: key_of.get(&im.id).cloned(),
+        })
+        .collect();
     // What the canvas keeps held whatever happens: the entries it names, and the entry each of
     // its ids is drawn from now (until the newer content can be drawn). The rest goes when the
     // answer lands, so only this counts against the memory bound.
-    let mut kept: HashSet<&str> = by_id.values().map(|k| &**k).collect();
-    for id in by_id.keys() {
+    let mut kept: HashSet<&str> = key_of.values().map(|k| &**k).collect();
+    for id in key_of.keys() {
         if let Some(f) = held.front.get(id) {
             kept.insert(&**f);
         }
@@ -467,32 +698,53 @@ pub(super) fn decode_canvas_within(
     let mut added = 0u64;
     let (mut decodes, mut input) = (0usize, 0u64);
     // Left for a following answer by the work limits / refused for the memory bound for now.
-    let (mut waiting, mut refused) = (0usize, 0usize);
-    for (key, hash, data) in todo {
-        let cancelled = cancel.is_some_and(|c| c.is_cancelled());
+    let (mut waiting, mut refused) = (unhashed, 0usize);
+    let keep = |t: Todo, needs: Option<u64>| {
+        (
+            t.id,
+            KeptPicture {
+                key: Some(t.key),
+                hash: Some(t.hash),
+                data: t.data,
+                needs,
+            },
+        )
+    };
+    for t in todo {
+        let cancelled = is_cancelled();
         let room = limits.held_bytes.saturating_sub(kept_bytes + added);
         let decoded = if cancelled {
             // The preview moved on: the answer is dropped on arrival; do not spend time on it.
             CanvasDecoded::Failed(ImageFailure::Cancelled)
-        } else if let Some(&i) = by_hash.get(&hash) {
+        } else if let Some(&i) = by_hash.get(&t.hash) {
             let d = copy_decoded(&fresh[i].1);
-            if decoded_bytes(&d) > room {
+            let bytes = decoded_bytes(&d);
+            if bytes > room {
                 refused += 1;
+                sources.push(keep(t, Some(bytes)));
                 continue;
             }
             d
+        } else if t.needs.is_some_and(|n| n > room) {
+            // Refused before, and the room has not grown to what it needs: nothing is decoded.
+            refused += 1;
+            let needs = t.needs;
+            sources.push(keep(t, needs));
+            continue;
         } else if decodes >= limits.decodes
             || input >= limits.input_bytes
             || added >= limits.answer_bytes
         {
             waiting += 1;
+            let needs = t.needs;
+            sources.push(keep(t, needs));
             continue;
         } else {
             #[cfg(test)]
-            seen_for_tests::note(hash);
+            seen_for_tests::note(t.hash);
             decodes += 1;
-            input += input_bytes(data);
-            let d = decode_one(data, path, default_raster_px, cancel, trust_own_svg);
+            input += input_bytes(&t.data);
+            let d = decode_one(&t.data, path, default_raster_px, cancel, trust_own_svg);
             let bytes = decoded_bytes(&d);
             if bytes > limits.held_bytes {
                 // It can never fit.
@@ -500,6 +752,7 @@ pub(super) fn decode_canvas_within(
             } else if bytes > room {
                 // It does not fit next to what the canvas keeps: not final, tried again later.
                 refused += 1;
+                sources.push(keep(t, Some(bytes)));
                 continue;
             } else {
                 d
@@ -507,8 +760,10 @@ pub(super) fn decode_canvas_within(
         };
         added += decoded_bytes(&decoded);
         if !matches!(decoded, CanvasDecoded::Failed(_)) {
-            by_hash.entry(hash).or_insert(fresh.len());
+            by_hash.entry(t.hash).or_insert(fresh.len());
         }
+        let key = PathBuf::from(&*t.key);
+        sources.push(keep(t, None));
         fresh.push((key, decoded));
     }
     let more = waiting > 0 && !fresh.is_empty();
@@ -520,7 +775,20 @@ pub(super) fn decode_canvas_within(
         more,
         waiting,
         refused,
+        sources,
     }
+}
+
+/// A picture to decode in pass 2.
+struct Todo {
+    /// Where the id first appears in the canvas (the order of decoding).
+    order: usize,
+    id: u64,
+    key: Arc<str>,
+    hash: u64,
+    data: ImageData,
+    /// The decoded bytes it needed when the memory bound refused it.
+    needs: Option<u64>,
 }
 
 /// Test-only record of which pictures the worker actually decoded (by content hash), so a test
@@ -565,6 +833,7 @@ impl App {
                 .filter_map(|p| p.key.clone().map(|k| (p.id, k)))
                 .collect(),
             front: self.canvas_front.clone(),
+            kept: self.canvas_kept.clone(),
         })
     }
 
@@ -607,6 +876,8 @@ impl App {
         self.prune_canvas_pictures(&live);
         let mut held = self.canvas_held_bytes();
         let mut added_any = false;
+        // The decoded bytes of the pictures this landing refused (for the bound), by key.
+        let mut refused_here: HashMap<PathBuf, u64> = HashMap::new();
         for (key, decoded) in pics.fresh {
             // Already held (a job that was out before the previous answer landed): keep the
             // entry, with its encodes and its kitty ids, as it is.
@@ -631,7 +902,9 @@ impl App {
                 }
             };
             if held + bytes > held_bytes {
-                // Refused for now, and not remembered as failed: the next answer decodes it again.
+                // Refused for now, and not remembered as failed: it is decoded again when there
+                // is room (the host keeps its source, `canvas_kept`).
+                refused_here.insert(key, bytes);
                 continue;
             }
             held += bytes;
@@ -649,6 +922,29 @@ impl App {
                 request,
             });
         }
+        // What is still not in the cache (deferred by the work limits or refused for the bound) is
+        // kept by its source, per id, so a later answer that says `unchanged` still gets it
+        // decoded. Replaced as a whole: an id the canvas no longer names, or a picture that landed,
+        // is released.
+        self.canvas_kept = pics
+            .sources
+            .into_iter()
+            .filter(|(_, k)| {
+                k.key
+                    .as_deref()
+                    .is_none_or(|key| !self.md_image_cache.contains_key(Path::new(key)))
+            })
+            .map(|(id, mut k)| {
+                if let Some(n) = k
+                    .key
+                    .as_deref()
+                    .and_then(|key| refused_here.get(Path::new(key)))
+                {
+                    k.needs = Some(*n);
+                }
+                (id, k)
+            })
+            .collect();
         self.canvas_places = pics.places;
         self.sweep_canvas_kitty_ids();
         pics.more && added_any
@@ -670,6 +966,7 @@ impl App {
     pub(super) fn forget_canvas_pictures(&mut self) {
         self.canvas_places.clear();
         self.canvas_front.clear();
+        self.canvas_kept.clear();
         self.prune_canvas_pictures(&HashSet::new());
         self.sweep_canvas_kitty_ids();
     }
@@ -726,9 +1023,14 @@ impl App {
     /// The key to draw picture `id` from, the content the plugin named (`wanted`) once it can be
     /// drawn, and until then the entry the id was drawn from before (so a picture whose content
     /// changes does not blink). The first time `wanted` can be drawn it becomes the entry of the
-    /// id and the previous one is dropped from the cache; a `wanted` that failed for good ends the
-    /// old picture (the cells show). Called by the frame for each placement, after
-    /// `ensure_md_image` asked for `wanted`.
+    /// id; a `wanted` that failed for good ends the old picture (the cells show). Called by the
+    /// frame for each placement, after `ensure_md_image` asked for `wanted`.
+    ///
+    /// **This only moves the pointer (`canvas_front`); it never removes a cache entry.** The
+    /// entries that are no longer named or drawn from go in one place, the prune when an answer
+    /// lands (`canvas_pictures_landed`): a job in flight holds a snapshot of what the cache has, and
+    /// an entry dropped by a frame meanwhile would be named by the answer without being there (a
+    /// picture that flips between two contents would show the old one).
     pub(crate) fn canvas_shown_key(
         &mut self,
         id: u64,
@@ -742,9 +1044,7 @@ impl App {
             .is_some()
         {
             if self.canvas_front.get(&id).map(|k| &**k) != Some(&**wanted) {
-                if let Some(old) = self.canvas_front.insert(id, wanted.clone()) {
-                    self.canvas_drop_entry(&old);
-                }
+                self.canvas_front.insert(id, wanted.clone());
             }
             return wanted.clone();
         }
@@ -753,11 +1053,7 @@ impl App {
             .get(Path::new(&**wanted))
             .is_some_and(|e| e.failed)
         {
-            if let Some(old) = self.canvas_front.remove(&id) {
-                if *old != **wanted {
-                    self.canvas_drop_entry(&old);
-                }
-            }
+            self.canvas_front.remove(&id);
             return wanted.clone();
         }
         match self.canvas_front.get(&id) {
@@ -768,19 +1064,6 @@ impl App {
             }
             _ => wanted.clone(),
         }
-    }
-
-    /// Remove the cache entry `key` of a canvas picture that was replaced, unless a placement of
-    /// the canvas still names it.
-    fn canvas_drop_entry(&mut self, key: &Arc<str>) {
-        if self
-            .canvas_places
-            .iter()
-            .any(|p| p.key.as_deref() == Some(&**key))
-        {
-            return;
-        }
-        self.md_image_cache.remove(Path::new(&**key));
     }
 
     /// Test-only: the wanted cache key and rectangle of each picture of the canvas on screen,
@@ -827,6 +1110,7 @@ impl App {
             keys: HashMap::new(),
             by_id: HashMap::new(),
             front: self.canvas_front.clone(),
+            kept: self.canvas_kept.clone(),
         };
         for (k, e) in &self.md_image_cache {
             if crate::preview::markdown::is_canvas_url(&k.to_string_lossy()) {

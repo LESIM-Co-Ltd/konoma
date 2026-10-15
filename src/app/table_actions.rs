@@ -477,8 +477,12 @@ impl App {
     pub fn is_table_preview(&self) -> bool {
         match self.tab.preview_kind {
             Some(PreviewKind::Plugin { .. }) => {
+                // A canvas with pages is a canvas, not a table: its keys, footer, help and chip
+                // are the canvas's, and `j`/`Enter` are the plugin's.
                 self.plugin_table().is_some()
-                    || (!self.shows_media_plugin() && self.plugin_is_paged())
+                    || (!self.shows_media_plugin()
+                        && !self.plugin_is_canvas()
+                        && self.plugin_is_paged())
             }
             Some(
                 PreviewKind::Text(_)

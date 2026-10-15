@@ -175,7 +175,7 @@ impl Opened {
     /// so a test can look at the screen between the steps and not only at the end.
     #[track_caller]
     fn pump_with(&mut self, mut each: impl FnMut(&mut Opened)) {
-        for _ in 0..60 {
+        for _ in 0..300 {
             if self.s.app.is_media_loading() {
                 self.s.drain_plugin();
                 self.transmits.extend(transmitted_kitty_ids(&self.s.term));
@@ -719,9 +719,15 @@ fn e2e_canvas_changed_content_under_the_same_id_replaces_the_picture_in_place() 
     assert_ne!(old, new, "another content, another entry");
     assert!(old.to_string_lossy().starts_with("canvas://cvi_change/1/"));
     assert!(new.to_string_lossy().starts_with("canvas://cvi_change/1/"));
+    // The frame that drew the new picture only moved the pointer: the old entry is dropped by
+    // the next answer that lands (the one place entries go), not by a frame.
+    assert!(o.s.app.md_image_cache_contains(&old));
+    assert!(o.s.app.md_image_cache_contains(&new));
+    assert_eq!(o.s.app.md_image_cache_len(), 2);
+    o.redraw();
     assert!(
         !o.s.app.md_image_cache_contains(&old),
-        "the old entry is dropped once the new one is drawn"
+        "the old entry is dropped when the next answer lands"
     );
     assert!(o.s.app.md_image_cache_contains(&new));
     assert_eq!(o.s.app.md_image_cache_len(), 1);
@@ -754,7 +760,11 @@ fn e2e_canvas_content_changing_over_and_over_never_adds_a_terminal_image() {
         "always over the one terminal image: {:?}",
         o.transmits
     );
-    assert_eq!(o.s.app.md_image_cache_len(), 1, "one entry at a time");
+    assert_eq!(
+        o.s.app.md_image_cache_len(),
+        2,
+        "the picture drawn from and the new one; the older go when an answer lands"
+    );
     assert!(o.deletes().is_empty());
     assert_eq!(o.rows().len(), 4);
 }
@@ -834,30 +844,49 @@ fn e2e_canvas_an_unchanged_picture_of_an_unknown_id_leaves_the_cells() {
 
 #[test]
 fn e2e_canvas_more_pictures_than_one_answer_decodes_all_arrive_without_another_key_press() {
-    // 40 distinct 1 x 1 cell pictures: one answer decodes 32, the host asks for the rest.
+    // 75 distinct 1 x 1 cell pictures: one answer decodes 32, the host asks for the rest. The
+    // second ask follows at once; a third within 33 ms of it waits for its deadline.
     let p = Sprites::new("cvi_many", |req, _| {
         let mut c = base(req);
         let (w, h) = fill_px(req, 1, 1);
-        for i in 0..40u16 {
+        for i in 0..75u16 {
             c.images.push(placed(
                 i as u64,
                 i,
                 6,
                 1,
                 1,
-                solid(w, h, [i as u8 * 5, 100, 200 - i as u8]),
+                solid(w, h, [i as u8 * 3, 100, 200 - i as u8]),
             ));
         }
         c
     });
     let mut o = open_kitty("cvi_many", p, 90, 26);
-    assert_eq!(o.rows().len(), 40, "all 40 are drawn");
+    // The follow-up asks are at most one per 33 ms: the third answer is not asked for at once.
+    assert_eq!(o.rows().len(), 64, "two answers of 32");
+    assert!(
+        o.s.app.canvas_redraw_deadline().is_some(),
+        "the next ask waits"
+    );
+    // The clock is stepped to the deadline the host set, as the run loop does (no sleeping).
+    for _ in 0..10 {
+        if o.rows().len() == 75 {
+            break;
+        }
+        let at =
+            o.s.app
+                .canvas_redraw_deadline()
+                .expect("the next ask is due");
+        assert!(o.s.app.canvas_redraw_if_due(at));
+        o.pump();
+    }
+    assert_eq!(o.rows().len(), 75, "all 75 are drawn");
     assert!(
         o.views() >= 3,
         "the plugin was asked again for the rest: {}",
         o.views()
     );
-    assert_eq!(o.s.app.md_image_cache_len(), 40);
+    assert_eq!(o.s.app.md_image_cache_len(), 75);
     assert!(o.deletes().is_empty(), "nothing was deleted on the way");
 }
 
@@ -1213,4 +1242,30 @@ fn e2e_canvas_resize_asks_again_and_keeps_the_picture_without_resending_it() {
     assert_eq!(o.canvas_keys(), vec![key], "same content: same key");
     assert_eq!(o.transmits, sent, "and not sent again");
     assert_eq!(o.rows().len(), 4);
+}
+
+#[test]
+fn e2e_canvas_pictures_sent_once_and_deferred_arrive_although_the_plugin_says_unchanged() {
+    // 40 pictures with pixels in the first real answer only, `unchanged` in every later one (what
+    // the API tells a plugin to do): the 8 the first answer left for later still arrive.
+    let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let p = Sprites::new("cvi_defer_unch", move |req, _| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 1, 1);
+        // (the first request has one row: the pictures would not fit it)
+        let with_pixels = req.rows > 6 && !sent.swap(true, Ordering::SeqCst);
+        for i in 0..40u16 {
+            let r = CellRect::new(i, 6, 1, 1);
+            c.images.push(if with_pixels {
+                CanvasImage::new(i as u64, r, solid(w, h, [i as u8 * 5, 90, 200 - i as u8]))
+            } else {
+                CanvasImage::unchanged(i as u64, r)
+            });
+        }
+        c
+    });
+    let o = open_kitty("cvi_defer_unch", p, 90, 26);
+    assert!(o.views() >= 3, "asked again: {}", o.views());
+    assert_eq!(o.rows().len(), 40, "every picture was drawn");
+    assert_eq!(o.s.app.md_image_cache_len(), 40);
 }

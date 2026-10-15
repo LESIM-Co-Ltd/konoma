@@ -270,11 +270,16 @@ mod repr {
     #[test]
     fn a_document_cycle_that_could_not_ask_the_session_leaves_the_choice_as_it_was() {
         let name = "f8b_repr_back_doc";
-        let (mut app, _d, _r) = open(name, "a.xdoc", Shape::Doc, 3, None, false);
+        let (mut app, _d, rx) = open(name, "a.xdoc", Shape::Doc, 3, None, false);
         assert_eq!(app.tab.repr, None, "{name}");
-        // A first cycle works: the choice is `beta`.
+        // A first cycle works: the choice is `beta`. (This stand-in is not one of the host's own
+        // plugins, so its answer comes from a worker, not on the spot.)
         assert!(app.cycle_repr(), "{name}");
         assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker answers");
+        app.apply_media(res);
         // A job holds the session now.
         let held = app.plugin.as_mut().unwrap().session.take();
         assert!(held.is_some());

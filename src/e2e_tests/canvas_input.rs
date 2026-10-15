@@ -63,6 +63,8 @@ struct Shared {
     key_gate: Latch,
     /// Whether the session declares three pages.
     pages: AtomicBool,
+    /// Whether the plugin declares actions on `j` and `Enter`.
+    moves: AtomicBool,
     /// Whether the canvas answered is bigger than the area asked for.
     oversize: AtomicBool,
     /// What `key` answers to the next keys, one reply per key, before `reply` is looked at (when
@@ -95,6 +97,7 @@ impl Shared {
             hold_key_gate: AtomicBool::new(false),
             key_gate: Latch::default(),
             pages: AtomicBool::new(false),
+            moves: AtomicBool::new(false),
             oversize: AtomicBool::new(false),
             script: Mutex::default(),
             fail_views: AtomicBool::new(false),
@@ -126,27 +129,45 @@ impl Shared {
 struct Typist {
     id: String,
     sh: Arc<Shared>,
+    /// Also declares actions on `j` and on `Enter` (keys a table binds, a canvas leaves to the
+    /// plugin).
+    moves: bool,
 }
 
 impl Plugin for Typist {
     fn manifest(&self) -> Manifest {
-        Manifest::new(self.id.as_str(), "0.1.0")
+        let mut m = Manifest::new(self.id.as_str(), "0.1.0")
             .bind(Bind::files(["*.typ"]))
-            .shows(ViewKind::Canvas)
-            .action(
-                Act::new("refresh")
-                    .key("x")
-                    .label(t!(en: "refresh", ja: "更新"))
-                    .help(t!(en: "Draw again", ja: "描き直す"))
-                    .footer(1),
-            )
-            .action(
-                Act::new("second")
-                    .key("z")
-                    .label(t!(en: "second", ja: "二つ目"))
-                    .help(t!(en: "Another action", ja: "別の操作"))
-                    .footer(2),
-            )
+            .shows(ViewKind::Canvas);
+        if self.moves {
+            m = m
+                .action(
+                    Act::new("down")
+                        .key("j")
+                        .label(t!(en: "down", ja: "下"))
+                        .help(t!(en: "Move down", ja: "下へ")),
+                )
+                .action(
+                    Act::new("pick")
+                        .key("Enter")
+                        .label(t!(en: "pick", ja: "選ぶ"))
+                        .help(t!(en: "Pick the item", ja: "選ぶ")),
+                );
+        }
+        m.action(
+            Act::new("refresh")
+                .key("x")
+                .label(t!(en: "refresh", ja: "更新"))
+                .help(t!(en: "Draw again", ja: "描き直す"))
+                .footer(1),
+        )
+        .action(
+            Act::new("second")
+                .key("z")
+                .label(t!(en: "second", ja: "二つ目"))
+                .help(t!(en: "Another action", ja: "別の操作"))
+                .footer(2),
+        )
     }
 
     fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -243,7 +264,7 @@ impl Session for TypistSession {
     fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
         self.sh.acts.lock().unwrap().push(action.to_string());
         match action {
-            "refresh" | "second" => Ok(Outcome::Redraw),
+            "refresh" | "second" | "down" | "pick" => Ok(Outcome::Redraw),
             _ => Ok(Outcome::Unhandled),
         }
     }
@@ -301,6 +322,7 @@ fn register(name: &str, sh: &Arc<Shared>) -> String {
         Arc::new(Typist {
             id: name.to_string(),
             sh: sh.clone(),
+            moves: sh.moves.load(Ordering::SeqCst),
         }),
     )
 }
@@ -1619,7 +1641,8 @@ fn e2e_canvas_input_the_queue_of_keys_is_bounded_and_keeps_its_order() {
     let mut o = open_with("cj_cap", "en", true, |_| {});
     o.sh.hold_keys.store(true, Ordering::SeqCst);
     o.s.key('a'); // goes out at once and is held
-    let cap = crate::app::MAX_QUEUED_KEYS;
+                  // The last place is kept for `Esc`: the others take this many.
+    let cap = crate::app::MAX_QUEUED_KEYS - 1;
     for i in 0..cap + 20 {
         o.s.key(char::from(b'a' + (i % 26) as u8));
     }
@@ -2180,12 +2203,9 @@ fn e2e_canvas_the_canvas_context_writes_enter_short_and_no_navigation_key_is_hos
     assert_eq!(fixed[0].action, crate::keymap::Action::Cancel);
 }
 
-/// FINDING: a canvas that reports pages is taken for a table by the host (`is_table_preview`
-/// answers `plugin_is_paged()` for any plugin that is not a picture's), so its footer, its `?` help
-/// and its keys are the table's (`h/j/k/l:cell`, "CSV / TSV / spreadsheet / archive") instead of
-/// the canvas's. Found while probing the footer of a paged canvas (2026-10-15).
+/// A canvas that reports pages is a canvas, not a table: its footer, its `?` help and its keys
+/// are the canvas's (a table binds `h/j/k/l`, `Enter` and `/` itself).
 #[test]
-#[ignore = "FINDING: a canvas with pages is taken for a table (is_table_preview)"]
 fn e2e_canvas_a_canvas_with_pages_is_still_a_canvas_context() {
     let o = paged("co_paged_ctx", "en");
     assert!(o.s.app.is_canvas_preview());
@@ -2196,4 +2216,175 @@ fn e2e_canvas_a_canvas_with_pages_is_still_a_canvas_context() {
         footer(&o.s)
     );
     assert!(!o.s.app.is_table_preview());
+}
+
+fn paged_with_moves(name: &str) -> Opened {
+    open_with(name, "en", false, |sh| {
+        sh.pages.store(true, Ordering::SeqCst);
+        sh.moves.store(true, Ordering::SeqCst);
+        sh.want_input.store(false, Ordering::SeqCst);
+    })
+}
+
+#[test]
+fn e2e_canvas_a_paged_canvas_runs_the_plugins_actions_on_j_and_enter() {
+    let mut o = paged_with_moves("co_paged_moves");
+    assert!(o.s.app.is_canvas_preview());
+    assert!(!o.s.app.is_table_preview(), "a paged canvas is no table");
+    assert_eq!(o.s.app.surface(), Surface::PreviewCanvas);
+    assert_eq!(o.s.app.key_context(), Some(crate::keymap::Context::Canvas));
+    o.s.key('j');
+    o.s.enter();
+    assert_eq!(
+        o.sh.acts(),
+        ["down", "pick"],
+        "both keys ran the plugin's action"
+    );
+    // The page keys are still the host's, on the same surface.
+    o.s.key('J');
+    assert!(o.s.app.is_canvas_preview());
+    assert_eq!(o.s.app.key_context(), Some(crate::keymap::Context::Canvas));
+}
+
+#[test]
+fn e2e_canvas_a_paged_canvas_shows_the_canvas_footer_help_and_no_table_chip() {
+    let o = paged_with_moves("co_paged_help");
+    let foot = footer(&o.s);
+    assert!(foot.contains("J/K:page"), "{foot}");
+    assert!(!foot.contains("cell"), "no table hints: {foot}");
+    assert_eq!(
+        crate::ops::help::help_context(&o.s.app),
+        crate::keymap::Context::Canvas
+    );
+    assert!(!o.s.app.is_table_preview());
+    assert!(o.s.app.page_indicator().is_some(), "the page chip is shown");
+}
+
+// ---- batch F: the paste backlog, the way out, the follow-up ask --------------------------------------
+
+#[test]
+fn e2e_canvas_input_esc_is_delivered_to_the_plugin_even_when_the_queue_is_full() {
+    let mut o = open_with("cj_esc_delivered", "en", true, |_| {});
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a'); // out, held
+    for _ in 0..crate::app::MAX_QUEUED_KEYS + 5 {
+        o.s.key('b');
+    }
+    assert_eq!(
+        o.s.app.plugin_key_queue_len_for_test(),
+        crate::app::MAX_QUEUED_KEYS - 1,
+        "the last place is kept"
+    );
+    o.s.esc();
+    assert!(!o.s.app.is_plugin_input(), "the user left");
+    assert_eq!(
+        o.s.app.plugin_key_queue_len_for_test(),
+        crate::app::MAX_QUEUED_KEYS,
+        "and the plugin is told: Esc took the reserved place"
+    );
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+    let log = o.sh.log();
+    assert_eq!(
+        log.last().map(|k| &k.code),
+        Some(&PK::Esc),
+        "Esc was delivered"
+    );
+    assert_eq!(log.len(), 1 + crate::app::MAX_QUEUED_KEYS);
+}
+
+#[test]
+fn e2e_canvas_input_the_pastes_waiting_for_the_session_are_bounded_in_total() {
+    let mut o = open_with("cj_paste_total", "en", true, |_| {});
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a'); // out, held
+    let big = "x".repeat(crate::app::MAX_PASTE_BYTES);
+    for _ in 0..6 {
+        o.s.app.plugin_input_paste(big.clone());
+    }
+    assert_eq!(
+        o.s.app.plugin_queued_paste_bytes_for_test(),
+        crate::app::MAX_QUEUED_PASTE_BYTES,
+        "4 MiB of 6 MiB"
+    );
+    assert!(o.s.app.flash.is_some(), "the refusal is told");
+    // A smaller paste is cut to what is left, never reordered or dropped silently.
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+    let log = o.sh.log();
+    let pastes = log
+        .iter()
+        .filter(|k| matches!(k.code, PK::Paste(_)))
+        .count();
+    assert_eq!(pastes, 4);
+}
+
+#[test]
+fn e2e_canvas_input_a_paste_is_cut_to_what_is_left_of_the_total() {
+    let mut o = open_with("cj_paste_left", "en", true, |_| {});
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a');
+    let max = crate::app::MAX_PASTE_BYTES;
+    for _ in 0..3 {
+        o.s.app.plugin_input_paste("y".repeat(max));
+    }
+    // 3 MiB are waiting; a 1 MiB + 10 paste is first cut to 1 MiB (its own limit) and fits.
+    o.s.app.plugin_input_paste("z".repeat(max + 10));
+    assert_eq!(
+        o.s.app.plugin_queued_paste_bytes_for_test(),
+        4 * max,
+        "cut at its own limit"
+    );
+    // Now 1 MiB is left in no case: the next paste is refused whole.
+    o.s.app.flash = None;
+    o.s.app.plugin_input_paste("w".to_string());
+    assert!(o.s.app.flash.is_some());
+    assert_eq!(o.s.app.plugin_queued_paste_bytes_for_test(), 4 * max);
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+}
+
+#[test]
+fn e2e_canvas_the_follow_up_ask_is_at_most_one_per_33_ms() {
+    let mut o = open_with("co_more_rate", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    let t0 = Instant::now();
+    let floor = crate::app::MIN_REDRAW_AFTER;
+    assert!(!o.s.app.plugin_wants_view_for_test());
+    // The first ask goes at once.
+    o.s.app.canvas_ask_more_for_test(t0);
+    assert!(o.s.app.plugin_wants_view_for_test());
+    o.s.app.clear_plugin_wants_view_for_test();
+    // One within the floor does not: the redraw timer is set to the first moment it may go.
+    o.s.app.canvas_ask_more_for_test(t0 + floor / 3);
+    assert!(!o.s.app.plugin_wants_view_for_test());
+    assert_eq!(o.s.app.canvas_redraw_deadline(), Some(t0 + floor));
+    // After the floor it goes again.
+    o.s.app
+        .canvas_ask_more_for_test(t0 + floor + Duration::from_millis(1));
+    assert!(o.s.app.plugin_wants_view_for_test());
+}
+
+#[test]
+fn e2e_canvas_the_follow_up_ask_waits_while_the_canvas_is_covered() {
+    let mut o = open_with("co_more_covered", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    o.s.key('?');
+    assert!(o.s.app.show_help);
+    let t0 = Instant::now();
+    o.s.app.canvas_ask_more_for_test(t0);
+    assert!(
+        !o.s.app.plugin_wants_view_for_test(),
+        "the plugin is not asked for a canvas nobody sees"
+    );
+    assert_eq!(
+        o.s.app.canvas_redraw_deadline(),
+        Some(t0),
+        "the timer asks when it is seen"
+    );
 }

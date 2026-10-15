@@ -1,6 +1,7 @@
 //! The worker side of canvas pictures: keys, hashes, what is decoded and what is skipped, limits;
 //! and the landing of an answer in the cache.
 
+use super::seen_for_tests::decoded_count;
 use super::*;
 use konoma_plugin::view::{CanvasImage, CanvasView};
 
@@ -709,20 +710,20 @@ fn a_cancelled_job_decodes_nothing() {
         Some(&cancel),
         false,
     );
-    assert!(matches!(
-        got.fresh[0].1,
-        CanvasDecoded::Failed(crate::preview::image::ImageFailure::Cancelled)
-    ));
+    // Cancelled while the content was hashed: nothing is decoded, nothing is named.
+    assert!(got.fresh.is_empty());
+    assert!(got.places.iter().all(|p| p.key.is_none()));
+    assert!(got.sources.is_empty() && !got.more);
 }
 
 #[test]
 fn a_cancel_between_frames_stops_an_animation() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c2 = count.clone();
-    // Cancelled from the third question on: before the job (1), before the first frame (2) the
-    // answer is "not yet", then it is.
+    // Cancelled once the content was hashed (six frames: six questions) and the job started: from
+    // the ninth question on, so it is the frames loop that stops.
     let cancel = crate::preview::office::Cancel::new(move || {
-        c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3
+        c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 9
     });
     let frames = ImageData::Frames(
         (0..6)
@@ -815,6 +816,7 @@ fn a_cancelled_picture_leaves_no_entry_behind() {
         waiting: 0,
         refused: 0,
         more: false,
+        sources: Vec::new(),
     });
     assert!(
         !app.md_image_cache.contains_key(&key),
@@ -911,12 +913,25 @@ fn the_entry_an_id_is_drawn_from_stays_while_its_new_content_waits() {
     );
     assert!(app.md_image_cache.contains_key(Path::new(&*new)));
     assert_eq!(app.md_image_cache.len(), 2);
-    // The new content failed for good: the old picture ends (the cells show), and its entry goes.
+    // The new content failed for good: the old picture ends (the cells show). The frame only
+    // moved the pointer: the entry itself goes when the next answer lands (the prune), never in a
+    // frame.
     app.md_image_cache.get_mut(Path::new(&*new)).unwrap().failed = true;
     let shown = app.canvas_shown_key(1, &new, 2, 2, 2);
     assert_eq!(&*shown, &*new);
     assert!(!app.canvas_front.contains_key(&1));
+    assert!(
+        app.md_image_cache.contains_key(Path::new(&*old)),
+        "a frame removes no entry"
+    );
+    let next = decode(
+        "pfr",
+        &canvas_of(vec![im(1, rgba(4, 4, 2))]),
+        &app.canvas_known_keys_for_test(),
+    );
+    app.canvas_pictures_landed(next);
     assert!(!app.md_image_cache.contains_key(Path::new(&*old)));
+    assert!(app.md_image_cache.contains_key(Path::new(&*new)));
 }
 
 #[test]
@@ -1159,4 +1174,332 @@ fn deletes_go_only_to_a_kitty_terminal_and_follow_the_tmux_wrapping() {
             crate::preview::kitty::build_delete(6, true)
         ]
     );
+}
+
+// ---- batch F: the host keeps what it deferred or refused ---------------------------------------------
+
+/// Land `got` the way the app does and return what the next job would be told.
+fn land(app: &mut App, got: CanvasPictures) -> CanvasHeld {
+    app.canvas_pictures_landed(got);
+    app.canvas_known_keys_for_test()
+}
+
+#[test]
+fn a_picture_deferred_by_the_work_limits_is_decoded_when_a_later_answer_says_unchanged() {
+    let (mut app, _dir) = new_app("cvi_kept");
+    let n = MAX_DECODES_PER_ANSWER as u64 + 8;
+    let sends = canvas_of(
+        (0..n)
+            .map(|i| im(i, rgba(1, 1, (i % 250) as u8 + 1)))
+            .collect(),
+    );
+    let held = land(&mut app, decode("pk", &sends, &nothing_held()));
+    assert_eq!(app.md_image_cache.len(), MAX_DECODES_PER_ANSWER);
+    assert_eq!(held.kept.len(), 8, "the host kept the 8 it deferred");
+    // The plugin does what the API tells it: pixels once, then `unchanged` for all.
+    let unchanged = canvas_of((0..n).map(none).collect());
+    let mut held = held;
+    for _ in 0..3 {
+        held = land(&mut app, decode("pk", &unchanged, &held));
+    }
+    assert_eq!(app.md_image_cache.len(), n as usize, "all arrived");
+    assert!(app.canvas_kept.is_empty(), "nothing is kept any more");
+    assert!(app.canvas_places.iter().all(|p| p.key.is_some()));
+}
+
+#[test]
+fn a_picture_refused_for_the_memory_bound_is_decoded_later_even_when_the_plugin_says_unchanged() {
+    let (mut app, _dir) = new_app("cvi_kept_mem");
+    let (a, b) = (rgba(100, 100, 231), rgba(100, 100, 232));
+    let hb = content_hash(&b);
+    let l = small(|l| l.held_bytes = 60_000);
+    let both = canvas_of(vec![im(1, a), im(2, b)]);
+    let got = decode_within(&both, &nothing_held(), l);
+    assert_eq!((got.fresh.len(), got.refused), (1, 1));
+    app.canvas_pictures_landed_within(got, 60_000);
+    assert_eq!(app.canvas_kept.len(), 1);
+    assert_eq!(app.canvas_kept[&2].needs, Some(40_000));
+    assert_eq!(decoded_count(hb), 1);
+    // Unchanged for both: still no room, and the picture is NOT decoded again to be refused.
+    for _ in 0..3 {
+        let held = app.canvas_known_keys_for_test();
+        let again = decode_within(&canvas_of(vec![none(1), none(2)]), &held, l);
+        assert!(again.fresh.is_empty());
+        assert_eq!(again.refused, 1);
+        app.canvas_pictures_landed_within(again, 60_000);
+    }
+    assert_eq!(
+        decoded_count(hb),
+        1,
+        "not decoded again while there is no room"
+    );
+    // Picture 1 goes: there is room, and picture 2 is decoded without being sent again.
+    let held = app.canvas_known_keys_for_test();
+    let later = decode_within(&canvas_of(vec![none(2)]), &held, l);
+    assert_eq!(later.fresh.len(), 1);
+    assert_eq!(decoded_count(hb), 2);
+    app.canvas_pictures_landed_within(later, 60_000);
+    assert!(app.canvas_kept.is_empty());
+    assert_eq!(app.md_image_cache.len(), 1);
+}
+
+#[test]
+fn a_refusal_at_landing_keeps_the_source_with_what_it_needs() {
+    let (mut app, _dir) = new_app("cvi_kept_land");
+    let c = canvas_of(vec![im(1, rgba(100, 100, 233)), im(2, rgba(100, 100, 234))]);
+    // The worker thought there was room (a race): the landing refuses the second.
+    let got = decode("pkl", &c, &nothing_held());
+    let k2 = got.places[1].key.clone().unwrap();
+    app.canvas_pictures_landed_within(got, 60_000);
+    assert_eq!(app.canvas_kept.len(), 1);
+    assert_eq!(app.canvas_kept[&2].key.as_deref(), Some(&*k2));
+    assert_eq!(app.canvas_kept[&2].needs, Some(40_000));
+    // With room (the bound raised in the test), the next answer, unchanged, brings it in.
+    let held = app.canvas_known_keys_for_test();
+    let next = decode("pkl", &canvas_of(vec![none(1), none(2)]), &held);
+    assert_eq!(next.fresh.len(), 1);
+    app.canvas_pictures_landed(next);
+    assert!(app.md_image_cache.contains_key(Path::new(&*k2)));
+    assert!(app.canvas_kept.is_empty());
+}
+
+#[test]
+fn newer_content_for_a_kept_id_replaces_the_kept_data() {
+    let (mut app, _dir) = new_app("cvi_kept_new");
+    let (old, new) = (rgba(7, 3, 235), rgba(7, 3, 236));
+    let (hold, hnew) = (content_hash(&old), content_hash(&new));
+    let l = small(|l| l.decodes = 1);
+    let first = canvas_of(vec![im(1, rgba(7, 3, 237)), im(2, old)]);
+    let got = decode_within(&first, &nothing_held(), l);
+    assert_eq!(got.waiting, 1);
+    app.canvas_pictures_landed(got);
+    assert_eq!(app.canvas_kept.len(), 1);
+    // Id 2 now has other content: the kept data is replaced, the old content is never decoded.
+    let held = app.canvas_known_keys_for_test();
+    let got = decode_within(&canvas_of(vec![none(1), im(2, new)]), &held, l);
+    app.canvas_pictures_landed(got);
+    assert_eq!(
+        decoded_count(hold),
+        0,
+        "the replaced content was never decoded"
+    );
+    assert_eq!(decoded_count(hnew), 1);
+    assert!(app.canvas_kept.is_empty());
+    assert_eq!(app.md_image_cache.len(), 2);
+}
+
+#[test]
+fn what_is_kept_goes_when_the_id_leaves_the_canvas_or_the_show_is_dropped() {
+    let (mut app, _dir) = new_app("cvi_kept_gone");
+    let l = small(|l| l.decodes = 1);
+    let two = canvas_of(vec![im(1, rgba(1, 1, 238)), im(2, rgba(1, 1, 239))]);
+    app.canvas_pictures_landed(decode_within(&two, &nothing_held(), l));
+    assert!(app.canvas_kept.contains_key(&2));
+    // The next canvas does not name id 2.
+    let held = app.canvas_known_keys_for_test();
+    app.canvas_pictures_landed(decode_within(&canvas_of(vec![none(1)]), &held, l));
+    assert!(app.canvas_kept.is_empty(), "released with the id");
+    // And with the show.
+    app.canvas_pictures_landed(decode_within(&two, &nothing_held(), l));
+    app.forget_canvas_pictures();
+    assert!(app.canvas_kept.is_empty());
+}
+
+#[test]
+fn a_front_entry_survives_until_an_answer_lands_so_a_flip_flop_never_shows_the_old_content() {
+    // The picture flips between A and B. A job holds a snapshot with both; a frame moves the
+    // pointer to B meanwhile; the answer names A. A must still be there.
+    let (mut app, _dir) = new_app("cvi_flip");
+    let a = canvas_of(vec![im(1, rgba(4, 4, 240))]);
+    let b = canvas_of(vec![im(1, rgba(4, 4, 241))]);
+    let ga = decode("pfl", &a, &nothing_held());
+    let ka = ga.places[0].key.clone().unwrap();
+    app.canvas_pictures_landed(ga);
+    app.canvas_front.insert(1, ka.clone());
+    let held = app.canvas_known_keys_for_test();
+    let gb = decode("pfl", &b, &held);
+    let kb = gb.places[0].key.clone().unwrap();
+    app.canvas_pictures_landed(gb);
+    let snapshot = app.canvas_known_keys_for_test();
+    assert!(snapshot.keys.contains_key(Path::new(&*ka)));
+    // The frame draws B (failed-path stand-in: the pointer moves, nothing is removed).
+    app.md_image_cache.get_mut(Path::new(&*kb)).unwrap().failed = true;
+    app.canvas_shown_key(1, &kb, 2, 2, 2);
+    assert!(
+        app.md_image_cache.contains_key(Path::new(&*ka)),
+        "no frame drops an entry"
+    );
+    // The answer of the job names A again.
+    let ga2 = decode("pfl", &a, &snapshot);
+    assert!(ga2.fresh.is_empty(), "A is held, so nothing is decoded");
+    app.canvas_pictures_landed(ga2);
+    assert!(
+        app.md_image_cache.contains_key(Path::new(&*ka)),
+        "the placement names an entry that is there"
+    );
+}
+
+// ---- batch F: hashing --------------------------------------------------------------------------------
+
+#[test]
+fn a_buffer_cloned_into_many_frames_is_hashed_once_and_the_hash_does_not_change() {
+    let shared = Arc::new(vec![7u8; 100_000]);
+    let frame = |p: &Arc<Vec<u8>>| ImageData::Rgba {
+        width: 100,
+        height: 250,
+        pixels: p.clone(),
+    };
+    let d = Duration::from_millis(40);
+    let same = ImageData::Frames((0..50).map(|_| (frame(&shared), d)).collect());
+    let apart = ImageData::Frames(
+        (0..50)
+            .map(|_| (frame(&Arc::new(vec![7u8; 100_000])), d))
+            .collect(),
+    );
+    let mut h = Hasher::new(None);
+    let hs = h.content(&same).unwrap();
+    assert_eq!(h.bytes, 100_000, "one buffer, hashed once");
+    let mut h2 = Hasher::new(None);
+    let ha = h2.content(&apart).unwrap();
+    assert_eq!(h2.bytes, 50 * 100_000, "distinct buffers are each hashed");
+    assert_eq!(hs, ha, "the identity of a buffer is not part of the hash");
+}
+
+#[test]
+fn hashing_looks_at_the_cancellation_while_a_large_buffer_is_read() {
+    let big = ImageData::Encoded(Arc::from(vec![1u8; HASH_CHUNK * 5 + 1]));
+    let questions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let q = questions.clone();
+    let cancel = crate::preview::office::Cancel::new(move || {
+        q.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2
+    });
+    let mut h = Hasher::new(Some(&cancel));
+    assert_eq!(
+        h.content(&big),
+        None,
+        "cancelled in the middle of the buffer"
+    );
+    assert_eq!(h.bytes, 0, "and nothing is counted as hashed");
+    assert!(questions.load(std::sync::atomic::Ordering::SeqCst) <= 4);
+    // A cancelled job answers with nothing named and nothing to decode.
+    let got = decode_canvas(
+        "phc",
+        &canvas_of(vec![im(1, big)]),
+        &nothing_held(),
+        Path::new("/x"),
+        800,
+        Some(&crate::preview::office::Cancel::new(|| true)),
+        false,
+    );
+    assert!(got.fresh.is_empty() && got.sources.is_empty());
+    assert!(got.places[0].key.is_none());
+}
+
+#[test]
+fn the_input_budget_is_applied_before_hashing_and_the_unhashed_picture_keeps_its_data() {
+    let (mut app, _dir) = new_app("cvi_prehash");
+    // 40,000 bytes each; the budget 70,000: the third starts after 80,000 were read.
+    let l = small(|l| l.input_bytes = 70_000);
+    let c = canvas_of(vec![
+        im(1, rgba(100, 100, 21)),
+        im(2, rgba(100, 100, 22)),
+        im(3, rgba(100, 100, 23)),
+    ]);
+    let got = decode_within(&c, &nothing_held(), l);
+    assert_eq!(got.fresh.len(), 2);
+    assert_eq!(got.waiting, 1);
+    assert!(got.places[2].key.is_none(), "not hashed: no key yet");
+    let unhashed: Vec<_> = got
+        .sources
+        .iter()
+        .filter(|(_, k)| k.key.is_none())
+        .collect();
+    assert_eq!(unhashed.len(), 1);
+    assert_eq!(unhashed[0].0, 3);
+    assert!(unhashed[0].1.hash.is_none());
+    assert!(got.more);
+    app.canvas_pictures_landed(got);
+    assert!(app.canvas_kept.contains_key(&3));
+    // Unchanged: the kept one goes first, is hashed and decoded.
+    let held = app.canvas_known_keys_for_test();
+    let next = decode_within(&canvas_of(vec![none(1), none(2), none(3)]), &held, l);
+    assert_eq!(next.fresh.len(), 1, "only the third");
+    assert!(next.places[2].key.is_some());
+    app.canvas_pictures_landed(next);
+    assert_eq!(app.md_image_cache.len(), 3);
+    assert!(app.canvas_kept.is_empty());
+}
+
+#[test]
+fn an_unhashed_picture_keeps_showing_the_previous_content_of_its_id() {
+    // Id 3 had content before; its new content is not hashed this time: the placement still names
+    // the old key (it is the same picture until the new one comes), not a failed placement.
+    let l = small(|l| l.input_bytes = 10);
+    let mut held = nothing_held();
+    let old: Arc<str> = Arc::from("canvas://pw/3/00000000000000aa");
+    held.keys.insert(PathBuf::from(&*old), 40_000);
+    held.by_id.insert(3, old.clone());
+    let c = canvas_of(vec![im(1, rgba(100, 100, 24)), im(3, rgba(100, 100, 25))]);
+    let got = decode_within(&c, &held, l);
+    assert_eq!(got.places[1].key.as_deref(), Some(&*old));
+    assert_eq!(got.waiting, 1);
+}
+
+#[test]
+fn the_same_buffer_sent_again_reuses_the_hash_of_the_kept_picture() {
+    let data = rgba(100, 100, 26);
+    assert!(same_source(&data, &data.clone()));
+    assert!(
+        !same_source(&data, &rgba(100, 100, 26)),
+        "equal bytes, another buffer"
+    );
+    assert!(
+        !same_source(
+            &ImageData::File(PathBuf::from("/a")),
+            &ImageData::File(PathBuf::from("/a"))
+        ),
+        "a file may have changed"
+    );
+}
+
+// ---- batch F: the bytes counted ----------------------------------------------------------------------
+
+fn png_of(img: image::DynamicImage) -> ImageData {
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    ImageData::Encoded(Arc::from(out))
+}
+
+#[test]
+fn the_memory_bound_counts_the_pixel_format_the_cache_keeps() {
+    let (mut app, _dir) = new_app("cvi_bpp");
+    let rgb8 = png_of(image::DynamicImage::ImageRgb8(image::RgbImage::new(
+        100, 100,
+    )));
+    let rgba16 = png_of(image::DynamicImage::ImageRgba16(image::ImageBuffer::new(
+        100, 100,
+    )));
+    let c = canvas_of(vec![im(1, rgb8), im(2, rgba16)]);
+    let got = decode("pbp", &c, &nothing_held());
+    assert_eq!(decoded_bytes(&got.fresh[0].1), 30_000, "3 bytes a pixel");
+    assert_eq!(decoded_bytes(&got.fresh[1].1), 80_000, "8 bytes a pixel");
+    app.canvas_pictures_landed(got);
+    // The worker, the landing and the cache count the same.
+    assert_eq!(app.canvas_held_bytes(), 110_000);
+    // A bound of 35,000 takes the RGB8 picture (30,000), which a 4-bytes count (40,000) refused.
+    let tight = decode_within(
+        &canvas_of(vec![im(
+            1,
+            png_of(image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                100,
+                100,
+                image::Rgb([9, 9, 9]),
+            ))),
+        )]),
+        &nothing_held(),
+        small(|l| l.held_bytes = 35_000),
+    );
+    assert_eq!(tight.fresh.len(), 1);
+    assert!(!matches!(tight.fresh[0].1, CanvasDecoded::Failed(_)));
 }

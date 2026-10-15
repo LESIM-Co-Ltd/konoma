@@ -293,9 +293,10 @@ impl App {
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
         let changed = self.apply_media_result(result);
-        // Whatever the result was (current, stale, another plugin's that freed a work group), keys
-        // typed while the session was out go now.
-        self.flush_plugin_keys();
+        // Whatever the result was (current, stale, another plugin's that freed a work group), what
+        // waited for the session -- the keys typed meanwhile, the actions pressed, a view asked
+        // for -- goes now.
+        self.plugin_session_returned();
         changed
     }
 
@@ -347,6 +348,7 @@ impl App {
     /// applied; its outcome is.
     fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
         let Some(show) = self.plugin.as_ref() else {
+            self.discard_stale_answer(res.gen);
             return;
         };
         if res.session.is_none()
@@ -359,6 +361,7 @@ impl App {
             || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
             || !self.shows_plugin_file(show)
         {
+            self.discard_stale_answer(res.gen);
             return;
         }
         if let Some(show) = self.plugin.as_mut() {
@@ -390,7 +393,10 @@ impl App {
             }
             Some(konoma_plugin::Outcome::Unhandled) | None => {}
         }
-        // The session is back: what waited for it goes now.
+        // The session is back. The redraw timer is armed again as for a landed answer (a tick
+        // skipped while this job was out would otherwise stop the animation), and what waited for
+        // the session goes now.
+        self.canvas_landed(None, false);
         self.plugin_session_returned();
     }
 
