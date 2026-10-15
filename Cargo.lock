@@ -1944,6 +1944,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-plugin-ratatui"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "ratatui",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
