@@ -7729,6 +7729,10 @@ mod embed_plugin_tests;
 #[cfg(test)]
 mod plugin_host_tests;
 
+// Rules of the canvas road that need state no key reaches (mutation audit, stage 2.5).
+#[cfg(test)]
+mod canvas_survivor_tests;
+
 // The built-in `command` plugin: a delegated command through the plugin road.
 #[cfg(test)]
 mod command_plugin_tests;

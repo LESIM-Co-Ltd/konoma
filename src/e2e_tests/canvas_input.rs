@@ -65,6 +65,13 @@ struct Shared {
     pages: AtomicBool,
     /// Whether the canvas answered is bigger than the area asked for.
     oversize: AtomicBool,
+    /// What `key` answers to the next keys, one reply per key, before `reply` is looked at (when
+    /// the line is empty `reply` answers).
+    script: Mutex<std::collections::VecDeque<Reply>>,
+    /// While set, `view` fails.
+    fail_views: AtomicBool,
+    /// The size (`cols`, `rows`) each `view` was asked for.
+    sizes: Mutex<Vec<(u16, u16)>>,
 }
 
 impl Shared {
@@ -89,6 +96,9 @@ impl Shared {
             key_gate: Latch::default(),
             pages: AtomicBool::new(false),
             oversize: AtomicBool::new(false),
+            script: Mutex::default(),
+            fail_views: AtomicBool::new(false),
+            sizes: Mutex::default(),
         })
     }
 
@@ -106,6 +116,10 @@ impl Shared {
 
     fn acts(&self) -> Vec<String> {
         self.acts.lock().unwrap().clone()
+    }
+
+    fn sizes(&self) -> Vec<(u16, u16)> {
+        self.sizes.lock().unwrap().clone()
     }
 }
 
@@ -193,8 +207,15 @@ impl Session for TypistSession {
             .lock()
             .unwrap()
             .push((req.repr.clone(), std::thread::current().id()));
+        self.sh.sizes.lock().unwrap().push((req.cols, req.rows));
         if self.sh.hold_views.load(Ordering::SeqCst) {
             self.sh.latch.wait();
+        }
+        if self.sh.fail_views.load(Ordering::SeqCst) {
+            return Err(Failure::external(t!(
+                en: "the view failed",
+                ja: "表示に失敗しました",
+            )));
         }
         let mut c = if self.sh.oversize.load(Ordering::SeqCst) {
             CanvasView::new(req.cols + 7, req.rows + 5)
@@ -236,7 +257,10 @@ impl Session for TypistSession {
         }
         self.sh.log.lock().unwrap().push(key.clone());
         self.own += 1;
-        let reply = {
+        let scripted = self.sh.script.lock().unwrap().pop_front();
+        let reply = if let Some(next) = scripted {
+            next
+        } else {
             let mut r = self.sh.reply.lock().unwrap();
             let now = r.clone();
             if matches!(now, Reply::ReloadOnce) {
@@ -1663,4 +1687,513 @@ fn e2e_canvas_an_answer_bigger_than_the_request_is_clipped_not_refused() {
     assert!(o.s.app.is_canvas_preview());
     assert!(o.s.app.plugin_failure().is_none());
     o.s.see("sess=1");
+}
+
+// ---- survivors of the stage-2.5 mutation audit (axis 4), batch E ---------------------------------
+
+/// Put a batch of keys together in one job: `a` goes out at once and is held in `key`; the keys
+/// typed meanwhile (`rest`) wait, and go together when `a` has been answered. `script` answers
+/// the keys in order, `a` first.
+fn one_batch(name: &str, script: Vec<Reply>, rest: &str) -> Opened {
+    let mut o = open_with(name, "en", true, |sh| {
+        *sh.script.lock().unwrap() = script.into();
+    });
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a');
+    for c in rest.chars() {
+        o.s.key(c);
+    }
+    assert_eq!(
+        o.s.app.plugin_key_queue_len_for_test(),
+        rest.chars().count()
+    );
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+    assert_eq!(chars(&o.sh.log()), format!("a{rest}"), "every key arrived");
+    o
+}
+
+#[test]
+fn e2e_canvas_a_batch_that_asks_for_a_reload_and_a_redraw_reads_the_file_again() {
+    // `b` answers Reload and `c` Redraw in one job: the reload wins (the redraw would draw the
+    // session that is going), in either order.
+    for (i, pair) in [
+        [Reply::Reload, Reply::Redraw],
+        [Reply::Redraw, Reply::Reload],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let script = vec![Reply::Unhandled, pair[0].clone(), pair[1].clone()];
+        let o = one_batch(&format!("cb_reload_{i}"), script, "bc");
+        assert_eq!(
+            o.sh.opens.load(Ordering::SeqCst),
+            2,
+            "order {i}: the file was read again"
+        );
+        assert_eq!(o.sh.drops(), 1, "order {i}: and the old session is gone");
+        o.s.see("sess=2");
+    }
+}
+
+#[test]
+fn e2e_canvas_a_batch_that_redraws_without_a_reload_takes_one_new_view_on_the_same_session() {
+    let o = one_batch(
+        "cb_redraw",
+        vec![Reply::Unhandled, Reply::Redraw, Reply::Redraw],
+        "bc",
+    );
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1, "no reload");
+    o.s.see("sess=1");
+    o.s.see("keys=3");
+}
+
+#[test]
+fn e2e_canvas_a_batch_that_asks_for_a_redraw_and_says_a_message_has_both() {
+    // The message is shown and the redraw is not lost, whatever the order of the two answers.
+    for (i, pair) in [
+        [Reply::Redraw, Reply::Flash("the batch said")],
+        [Reply::Flash("the batch said"), Reply::Redraw],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let script = vec![Reply::Unhandled, pair[0].clone(), pair[1].clone()];
+        let o = one_batch(&format!("cb_flash_{i}"), script, "bc");
+        assert_eq!(
+            o.s.app.flash.as_deref(),
+            Some("the batch said"),
+            "order {i}: the message is shown"
+        );
+        o.s.see("keys=3");
+        assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1, "order {i}: no reload");
+    }
+}
+
+#[test]
+fn e2e_canvas_a_batch_with_a_message_and_no_redraw_says_it_and_takes_no_view() {
+    let mut o = one_batch(
+        "cb_flash_only",
+        vec![
+            Reply::Unhandled,
+            Reply::Flash("only a message"),
+            Reply::Unhandled,
+        ],
+        "bc",
+    );
+    assert_eq!(o.s.app.flash.as_deref(), Some("only a message"));
+    let views = o.sh.views();
+    o.s.draw();
+    assert_eq!(o.sh.views(), views, "nobody asked for a view");
+}
+
+// ---- a refit asks again when only the height changed -----------------------------------------------
+
+#[test]
+fn e2e_canvas_a_resize_of_the_height_alone_asks_the_plugin_again() {
+    let mut o = open("cr_height");
+    let (cols, rows) = *o.sh.sizes().last().expect("asked");
+    let views = o.sh.views();
+    // Same width, 6 rows less.
+    o.s.resize(90, 20);
+    o.s.draw();
+    assert!(o.sh.views() > views, "the plugin was asked again");
+    let (c2, r2) = *o.sh.sizes().last().unwrap();
+    assert_eq!(c2, cols, "the width is the same");
+    assert_eq!(r2, rows - 6, "and the rows follow the terminal");
+    // Nothing more is asked while the size stays.
+    let views = o.sh.views();
+    o.s.draw();
+    o.s.draw();
+    assert_eq!(o.sh.views(), views, "once per size");
+    // The other direction too.
+    o.s.resize(90, 30);
+    o.s.draw();
+    assert_eq!(o.sh.sizes().last().unwrap().1, r2 + 10);
+}
+
+#[test]
+fn e2e_canvas_a_resize_of_the_width_alone_asks_the_plugin_again() {
+    let mut o = open("cr_width");
+    let (cols, rows) = *o.sh.sizes().last().expect("asked");
+    let views = o.sh.views();
+    o.s.resize(70, 26);
+    o.s.draw();
+    assert!(o.sh.views() > views);
+    let (c2, r2) = *o.sh.sizes().last().unwrap();
+    assert_eq!((c2, r2), (cols - 20, rows));
+}
+
+// ---- the Esc latch survives a failed view and a reading again ----------------------------------------
+
+#[test]
+fn e2e_canvas_input_a_failed_view_drops_the_deadline_and_the_file_read_again_starts_clean() {
+    let mut o = open_with("ce_esc_fail", "en", false, |sh| {
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.s.esc();
+    assert!(!o.s.app.is_plugin_input());
+    assert!(
+        o.s.app.canvas_redraw_deadline().is_some(),
+        "the canvas on screen wants the timer"
+    );
+    // The user presses the plugin's action and the view it asks for fails.
+    o.sh.fail_views.store(true, Ordering::SeqCst);
+    o.s.key('x');
+    assert!(o.s.app.plugin_failure().is_some(), "the view failed");
+    assert!(!o.s.app.is_canvas_preview());
+    assert_eq!(
+        o.s.app.canvas_redraw_deadline(),
+        None,
+        "a failed show has no timer"
+    );
+    assert!(!o.s.app.is_plugin_input(), "no canvas, no typing");
+    // The file is read again: that is a new show, and a show starts clean (like opening the file
+    // again), so the canvas that asks for the typing takes it.
+    o.sh.fail_views.store(false, Ordering::SeqCst);
+    touch_file(&o);
+    o.s.app.reload_preview();
+    o.s.draw();
+    assert!(o.s.app.is_canvas_preview(), "the canvas is back");
+    assert!(o.s.app.is_plugin_input(), "a new show starts clean");
+    assert!(o.s.app.canvas_redraw_deadline().is_some());
+}
+
+#[test]
+fn e2e_canvas_input_a_failure_the_users_action_caused_does_not_release_the_latch() {
+    // The failure of the view an action asked for is "the user's" answer, and it is not a canvas:
+    // it must not give the typing back. A canvas that comes after it, when nobody asked, does not
+    // either (the latch is the user's to release).
+    let mut o = open("ce_esc_user_fail");
+    o.s.esc();
+    assert!(!o.s.app.is_plugin_input());
+    o.s.app.canvas_landed_for_test(Some(None), true);
+    assert!(!o.s.app.is_plugin_input());
+    o.s.app
+        .canvas_landed_for_test(Some(Some((true, None))), false);
+    assert!(
+        !o.s.app.is_plugin_input(),
+        "a canvas nobody asked for does not take the typing after a failure"
+    );
+    // And a view that is not a canvas, the user's, leaves it as it was too.
+    o.s.app.canvas_landed_for_test(Some(None), true);
+    o.s.app
+        .canvas_landed_for_test(Some(Some((true, None))), false);
+    assert!(!o.s.app.is_plugin_input());
+    // The user's request releases it.
+    o.s.app
+        .canvas_landed_for_test(Some(Some((true, None))), true);
+    assert!(o.s.app.is_plugin_input());
+}
+
+// ---- the re-arm of a skipped deadline is kept within the bounds ---------------------------------------
+
+#[test]
+fn e2e_canvas_timer_a_deadline_armed_again_by_a_result_without_a_view_is_within_the_bounds() {
+    for (i, ask) in [
+        Duration::ZERO,
+        Duration::from_millis(1),
+        Duration::from_millis(32),
+        Duration::from_millis(50),
+        Duration::from_secs(10),
+        Duration::MAX,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut o = open_with(&format!("ct_rearm_{i}"), "en", false, |sh| {
+            *sh.after.lock().unwrap() = Some(ask);
+            *sh.reply.lock().unwrap() = Reply::Unhandled;
+        });
+        // The tick passed while a job was out, so no deadline is waiting.
+        o.s.app.set_canvas_redraw_at_for_test(None);
+        let before = Instant::now();
+        // A key that changes nothing: the result carries no view, and the canvas on screen is armed
+        // from its own `redraw_after`.
+        o.s.key('b');
+        let after = Instant::now();
+        let at = o.s.app.canvas_redraw_deadline().expect("armed again");
+        let kept = ask.clamp(
+            Duration::from_millis(33), // the documented lower bound
+            crate::app::MAX_REDRAW_AFTER,
+        );
+        assert!(at >= before + kept, "{ask:?}: not earlier than {kept:?}");
+        assert!(at <= after + kept, "{ask:?}: not later than {kept:?}");
+    }
+}
+
+// ---- a menu opened before the canvas asked for the typing does not swallow the typing ----------------
+
+#[test]
+fn e2e_canvas_input_a_key_typed_in_the_capture_closes_a_menu_opened_before() {
+    let mut o = open_with("cl_leader_key", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    o.s.key('y');
+    assert_eq!(o.s.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
+    // The canvas now asks for the typing (the answer to a tick), with the menu still open.
+    o.sh.want_input.store(true, Ordering::SeqCst);
+    tick(&mut o);
+    assert!(o.s.app.is_plugin_input(), "the capture began");
+    assert_eq!(
+        o.s.app.pending_leader,
+        Some(crate::keymap::LeaderId::Copy),
+        "nothing closed the menu yet"
+    );
+    o.s.key('z');
+    assert_eq!(chars(&o.sh.log()), "z", "the key is the plugin's");
+    assert_eq!(o.s.app.pending_leader, None, "and the menu is closed");
+}
+
+#[test]
+fn e2e_canvas_input_a_paste_in_the_capture_closes_a_menu_opened_before() {
+    let mut o = open_with("cl_leader_paste", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    o.s.key('y');
+    assert_eq!(o.s.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
+    o.sh.want_input.store(true, Ordering::SeqCst);
+    tick(&mut o);
+    assert!(o.s.app.is_plugin_input());
+    assert_eq!(o.s.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
+    o.s.app.handle_paste("pasted".to_string());
+    assert_eq!(o.sh.log(), vec![Key::paste("pasted")]);
+    assert_eq!(o.s.app.pending_leader, None, "the menu is closed");
+}
+
+// ---- the UI thread never waits for a keys job ---------------------------------------------------------
+
+#[test]
+fn e2e_canvas_input_a_slow_key_does_not_make_the_ui_thread_wait() {
+    // There is no seam for the wait the handoff is given (`Wait::Result(ZERO)`), so this watches
+    // the effect: with a key held in the plugin, the key press returns at once, with the session
+    // out. A wait of seconds (the budget of a first frame is 30 ms; a mutation to 5 s) makes the
+    // press last that long, because the worker is held by the gate and cannot answer.
+    let mut o = open_with("cw_zero", "en", true, |_| {});
+    o.sh.hold_key_gate.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    o.s.key('a');
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "the UI thread waited {took:?} for a held key"
+    );
+    assert!(o.s.app.plugin_session_is_out_for_test(), "the job is out");
+    assert!(o.sh.log().is_empty(), "and the plugin has not answered");
+    // The same for a key queued behind it, and a paste.
+    let started = Instant::now();
+    o.s.key('b');
+    o.s.app.handle_paste("p".into());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    o.sh.hold_key_gate.store(false, Ordering::SeqCst);
+    o.sh.key_gate.open();
+    settle(&mut o.s);
+    assert_eq!(o.sh.log().len(), 3, "every key arrived");
+}
+
+// ---- what the host lists for a canvas: footer, `?` help, menus ---------------------------------------
+//
+// A canvas keeps a handful of host keys (`keys::reserved("canvas")`): the page keys, the outline
+// (page list), the representation, the file and tab jumps, the bookmarks, `r`, `Y`, the verbs, `?`,
+// `q`. The footer, the help and the menus list each of them while it acts. These read the plans
+// of the canvas context directly (`Context::Canvas`), with a session that has pages and two
+// representations so that the keys that need them act.
+
+fn paged(name: &str, lang: &str) -> Opened {
+    open_with(name, lang, false, |sh| {
+        sh.pages.store(true, Ordering::SeqCst);
+        sh.reprs.store(true, Ordering::SeqCst);
+        sh.want_input.store(false, Ordering::SeqCst);
+    })
+}
+
+fn canvas_tokens(o: &Opened) -> Vec<String> {
+    crate::ops::footer::tokens(&o.s.app, crate::keymap::Context::Canvas)
+}
+
+#[test]
+fn e2e_canvas_the_footer_lists_every_host_key_of_a_canvas_that_acts() {
+    let o = paged("co_footer", "en");
+    let tokens = canvas_tokens(&o);
+    // The host's keys come in this order, the plugin's own right after `q:back`.
+    let expected = [
+        "q:back",
+        "x:refresh",
+        "z:second",
+        "J/K:page",
+        "O:pages",
+        "R:Two",
+        "C-n/C-p:next/prev file",
+        "?:help",
+        "e:edit",
+        "o:open in app",
+        "[/]:tab",
+        ",:view",
+    ];
+    assert_eq!(tokens, expected, "{tokens:?}");
+}
+
+#[test]
+fn e2e_canvas_the_footer_without_pages_and_representations_lists_the_rest() {
+    // The page keys, the page list and `R` show only while they act.
+    let o = open_with("co_footer_plain", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    let tokens = canvas_tokens(&o);
+    for t in ["J/K:page", "O:pages", "R:Two"] {
+        assert!(!tokens.iter().any(|x| x == t), "{t} in {tokens:?}");
+    }
+    for t in ["q:back", "?:help", "[/]:tab", ",:view", "e:edit"] {
+        assert!(tokens.iter().any(|x| x == t), "{t} missing from {tokens:?}");
+    }
+}
+
+#[test]
+fn e2e_canvas_the_footer_is_in_japanese_when_the_ui_is() {
+    let o = paged("co_footer_ja", "ja");
+    let tokens = canvas_tokens(&o);
+    let en = canvas_tokens(&paged("co_footer_ja_en", "en"));
+    assert_eq!(tokens.len(), en.len());
+    assert_ne!(tokens, en, "the labels follow the language");
+    assert!(tokens.iter().any(|t| t.starts_with("?:")), "{tokens:?}");
+}
+
+#[test]
+fn e2e_canvas_the_help_lists_the_host_keys_under_the_canvas_title() {
+    let o = paged("co_help", "en");
+    let sections = crate::ops::help::sections_for(&o.s.app, crate::keymap::Context::Canvas);
+    let own = sections
+        .iter()
+        .find(|s| s.title == "Preview: plugin view")
+        .unwrap_or_else(|| {
+            panic!(
+                "sections: {:?}",
+                sections.iter().map(|s| &s.title).collect::<Vec<_>>()
+            )
+        });
+    let rows: Vec<(&str, &str)> = own
+        .rows
+        .iter()
+        .map(|(k, d)| (k.as_str(), d.as_str()))
+        .collect();
+    let has = |key: &str, desc_part: &str| {
+        assert!(
+            rows.iter().any(|(k, d)| *k == key && d.contains(desc_part)),
+            "no row `{key}` / `{desc_part}` in {rows:?}"
+        );
+    };
+    has("J / K", "page");
+    has("O", "pages");
+    has("R", "Two");
+    has("Ctrl-n / Ctrl-p", "next / previous file");
+    has("m / '", "bookmark");
+    has("r", "refresh");
+    has("Y", "@path");
+    has("q / Esc", "back to tree");
+    // Nothing that would scroll or search is promised.
+    for scrolling in ["j / k", "g / G", "h / j / k / l", "/  n / N", "/", "v / V"] {
+        assert!(
+            !rows.iter().any(|(k, _)| *k == scrolling),
+            "{scrolling} in {rows:?}"
+        );
+    }
+    // The plugin's own keys are in a section of their own, under its name.
+    let plugin = sections
+        .iter()
+        .find(|s| s.title == "co_help")
+        .expect("plugin section");
+    assert!(plugin
+        .rows
+        .iter()
+        .any(|(k, d)| k == "x" && d == "Draw again"));
+}
+
+#[test]
+fn e2e_canvas_the_help_edit_row_says_the_external_editor_not_the_environment_one() {
+    // In a canvas (as in a picture or a table) `e` opens the file in the external editor; in a text
+    // preview the row names the environment variable the editor comes from.
+    let o = paged("co_help_edit", "en");
+    let launch = |ctx| {
+        crate::ops::help::rows_for(&o.s.app, ctx)
+            .into_iter()
+            .find(|r| r.actions.contains(&crate::keymap::Action::RequestEdit))
+            .map(|r| r.desc)
+            .expect("an `e` row")
+    };
+    let canvas = launch(crate::keymap::Context::Canvas);
+    assert_eq!(canvas, launch(crate::keymap::Context::Image));
+    assert_eq!(canvas, launch(crate::keymap::Context::Table));
+    assert_ne!(
+        canvas,
+        launch(crate::keymap::Context::Text),
+        "the text preview's row is the other one"
+    );
+    assert_eq!(canvas, "edit in external editor");
+}
+
+#[test]
+fn e2e_canvas_the_menus_offer_the_path_style_and_the_host_keys() {
+    use crate::keymap::{Action, Context, LeaderId};
+    use crate::ops::menu::{menu, View};
+    let o = paged("co_menu", "en");
+    // `,` : the path style, which has no key of its own in a canvas.
+    let options = menu(&o.s.app, Context::Canvas, LeaderId::Options, View::Open).expect("a menu");
+    assert_eq!(
+        options
+            .items
+            .iter()
+            .map(|i| (i.key.label(), i.action))
+            .collect::<Vec<_>>(),
+        vec![("p".to_string(), Action::CyclePathStyle)]
+    );
+    // `Space`: the plugin's actions and the host's, the path style among them.
+    let actions = menu(&o.s.app, Context::Canvas, LeaderId::Actions, View::Open).expect("a menu");
+    let has = |a: Action| actions.items.iter().any(|i| i.action == a);
+    for a in [
+        Action::PreviewBack,
+        Action::PageNext,
+        Action::PagePrev,
+        Action::ToggleOutline,
+        Action::CycleRepresentation,
+        Action::PreviewFileNext,
+        Action::PreviewFilePrev,
+        Action::ToggleHelp,
+        Action::RequestEdit,
+        Action::OpenExternal,
+        Action::TabPrev,
+        Action::TabNext,
+        Action::Refresh,
+        Action::CyclePathStyle,
+    ] {
+        assert!(has(a), "{a:?} missing from {:?}", actions.items);
+    }
+}
+
+#[test]
+fn e2e_canvas_the_canvas_context_writes_enter_short_and_no_navigation_key_is_host_bound() {
+    use crate::keymap::Context;
+    assert!(crate::ops::keys::short_enter(Context::Canvas));
+    // The fixed keys of a canvas: `Esc` only.
+    let fixed = crate::ops::keys::fixed_bindings(Context::Canvas);
+    assert_eq!(fixed.len(), 1);
+    assert_eq!(fixed[0].action, crate::keymap::Action::Cancel);
+}
+
+/// FINDING: a canvas that reports pages is taken for a table by the host (`is_table_preview`
+/// answers `plugin_is_paged()` for any plugin that is not a picture's), so its footer, its `?` help
+/// and its keys are the table's (`h/j/k/l:cell`, "CSV / TSV / spreadsheet / archive") instead of
+/// the canvas's. Found while probing the footer of a paged canvas (2026-10-15).
+#[test]
+#[ignore = "FINDING: a canvas with pages is taken for a table (is_table_preview)"]
+fn e2e_canvas_a_canvas_with_pages_is_still_a_canvas_context() {
+    let o = paged("co_paged_ctx", "en");
+    assert!(o.s.app.is_canvas_preview());
+    assert_eq!(
+        o.s.app.key_context(),
+        Some(crate::keymap::Context::Canvas),
+        "footer: {}",
+        footer(&o.s)
+    );
+    assert!(!o.s.app.is_table_preview());
 }

@@ -682,6 +682,34 @@ fn color_depth_from_the_environment_values() {
     assert_eq!(d(Some("yes"), Some("vt100")), ColorDepth::Ansi16);
 }
 
+/// `COLORTERM` and `TERM` are trimmed and compared in lower case. (The doc of `color_depth_from`
+/// does not say so; this pins what the detector does: a value copied from a shell with a stray
+/// space or in capitals still names the terminal.)
+#[test]
+fn color_depth_from_trims_and_ignores_case_in_both_values() {
+    use crate::app::color_depth_from_for_test as d;
+    // COLORTERM
+    assert_eq!(d(Some(" truecolor "), None), ColorDepth::TrueColor);
+    assert_eq!(d(Some("24bit\n"), None), ColorDepth::TrueColor);
+    assert_eq!(d(Some("\t24BIT"), None), ColorDepth::TrueColor);
+    assert_eq!(d(Some("TRUECOLOR"), None), ColorDepth::TrueColor);
+    // TERM: the terminals known to draw 24-bit color, trimmed and in any case.
+    assert_eq!(d(None, Some(" xterm-kitty ")), ColorDepth::TrueColor);
+    assert_eq!(d(None, Some("XTERM-KITTY")), ColorDepth::TrueColor);
+    assert_eq!(d(None, Some("Xterm-Ghostty\n")), ColorDepth::TrueColor);
+    assert_eq!(d(None, Some("\twezterm")), ColorDepth::TrueColor);
+    assert_eq!(d(None, Some("  Ghostty ")), ColorDepth::TrueColor);
+    assert_eq!(d(None, Some("KITTY")), ColorDepth::TrueColor);
+    // TERM: the 256-color palette, in any case.
+    assert_eq!(d(None, Some("XTERM-256COLOR")), ColorDepth::Ansi256);
+    assert_eq!(d(None, Some(" screen-256Color ")), ColorDepth::Ansi256);
+    // A value that is only blanks says nothing.
+    assert_eq!(d(Some("  "), Some("\t ")), ColorDepth::Ansi16);
+    // A name that merely contains a known one is not it.
+    assert_eq!(d(None, Some("xterm-kitty-extra")), ColorDepth::Ansi16);
+    assert_eq!(d(Some("truecolor!"), None), ColorDepth::Ansi16);
+}
+
 #[test]
 fn e2e_canvas_the_plugin_is_told_how_many_colors_the_terminal_shows() {
     for (depth, tag) in [
