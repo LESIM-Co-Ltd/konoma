@@ -26,8 +26,11 @@
 //!   (a kitty placeholder wants a clean state) and keep their background.
 //! - On a terminal with no image backend nothing is decoded and the cells stay; with a
 //!   halfblocks-only backend the pictures are drawn as halfblocks, as Markdown images are.
-//! - The rectangles drawn this frame are reported as the overlay signature, so the run loop's
-//!   one-time clear (placeholder debris) also covers a canvas picture that moved or vanished.
+//! - The rectangles drawn this frame (with the picture ids, never the content) are reported as the
+//!   overlay signature, so the run loop's one-time clear (placeholder debris) also covers a canvas
+//!   picture that moved or vanished, and a picture whose pixels change in place does not clear.
+//! - A picture whose content changed keeps drawing its previous entry until the new one can be
+//!   drawn (`App::canvas_shown_key`).
 //!
 //! Text input and the redraw timer are the app's (`App::canvas_view` tells what the view asks
 //! for).
@@ -36,6 +39,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Block;
 use ratatui::Frame;
+use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 
 use konoma_plugin::view::CanvasView;
@@ -115,26 +119,38 @@ pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
 
 /// Draw the pictures of the canvas over the cells already painted (see the module comment).
 fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
-    let placements = app.canvas_image_placements();
-    if placements.is_empty() {
+    let count = app.canvas_place_count();
+    if count == 0 {
         return;
     }
     // One pass = one frame for the slot bookkeeping: every `ensure_md_image` below stamps this
     // number, which keeps the encodes of the pictures on screen from being recycled.
     app.begin_md_image_frame();
-    use std::hash::{Hash, Hasher};
-    let mut sig = std::collections::hash_map::DefaultHasher::new();
-    (inner.x, inner.y, inner.width, inner.height).hash(&mut sig);
+    let mut sig = OverlaySig::new(inner);
     let mut drawn = 0usize;
-    for (key, r) in placements {
+    for n in 0..count {
+        // The placement and its key were made when the answer landed: no string is built here.
+        let Some(place) = app.canvas_place(n) else {
+            continue;
+        };
+        let Some(wanted) = place.key else {
+            continue; // `unchanged` for a picture the host does not hold: the cells stay
+        };
+        let r = place.rect;
         let target = match visible_rect(inner, r) {
             Some(t) => t,
             None => continue,
         };
         // Asked every frame (cheap when settled): decoding is already done, the encode is the
         // worker's.
-        app.ensure_md_image(&key, r.cols, r.rows, 0, target.height);
-        let Some(img) = app.md_image_proto(&key, r.cols, r.rows, 0, target.height) else {
+        app.ensure_md_image(&wanted, r.cols, r.rows, 0, target.height);
+        // The content the plugin named once it can be drawn; until then the one drawn before (so
+        // a picture whose content changes does not blink).
+        let shown = app.canvas_shown_key(place.id, &wanted, r.cols, r.rows, target.height);
+        if !Arc::ptr_eq(&shown, &wanted) {
+            app.ensure_md_image(&shown, r.cols, r.rows, 0, target.height);
+        }
+        let Some(img) = app.md_image_proto(&shown, r.cols, r.rows, 0, target.height) else {
             continue; // not encoded yet, or failed: the plugin's cells stay
         };
         // A kitty placeholder assumes a clean SGR state: reset the attributes and the foreground
@@ -154,20 +170,39 @@ fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             }
         }
         img.render(target, buf);
-        (
-            key.as_str(),
-            target.x,
-            target.y,
-            target.width,
-            target.height,
-        )
-            .hash(&mut sig);
+        // The signature follows what is where, never the content: a picture whose pixels change
+        // under the same id must not look like a picture that moved (that clears the screen).
+        sig.add(place.id, target);
         drawn += 1;
     }
     // A frame that drew no picture records nothing: the finish side then clears once when
     // pictures were drawn just before ("they left"), and not again.
     if drawn > 0 {
         app.note_md_overlay(sig.finish());
+    }
+}
+
+/// The signature of what the canvas overlay drew in one frame: the area, and for each picture its
+/// id and where it was drawn. The run loop clears the screen once when it changes (debris of a
+/// picture that moved or left), so it follows **what is where**, never the content of a picture.
+pub(crate) struct OverlaySig(std::collections::hash_map::DefaultHasher);
+
+impl OverlaySig {
+    pub(crate) fn new(inner: Rect) -> OverlaySig {
+        use std::hash::Hash;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (inner.x, inner.y, inner.width, inner.height).hash(&mut h);
+        OverlaySig(h)
+    }
+
+    pub(crate) fn add(&mut self, id: u64, at: Rect) {
+        use std::hash::Hash;
+        (id, at.x, at.y, at.width, at.height).hash(&mut self.0);
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        use std::hash::Hasher;
+        self.0.finish()
     }
 }
 
@@ -259,6 +294,41 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
         paint(&mut buf, inner, &canvas);
         assert_eq!(buf[(0, 0)].symbol(), "日");
+    }
+
+    fn sig(inner: Rect, items: &[(u64, Rect)]) -> u64 {
+        let mut s = OverlaySig::new(inner);
+        for (id, r) in items {
+            s.add(*id, *r);
+        }
+        s.finish()
+    }
+
+    #[test]
+    fn the_overlay_signature_follows_every_input() {
+        let area = Rect::new(1, 2, 30, 10);
+        let at = Rect::new(5, 3, 8, 4);
+        let base = sig(area, &[(1, at)]);
+        assert_eq!(base, sig(area, &[(1, at)]), "stable");
+        assert_ne!(base, sig(Rect::new(2, 2, 30, 10), &[(1, at)]), "area x");
+        assert_ne!(base, sig(Rect::new(1, 3, 30, 10), &[(1, at)]), "area y");
+        assert_ne!(base, sig(Rect::new(1, 2, 31, 10), &[(1, at)]), "area width");
+        assert_ne!(
+            base,
+            sig(Rect::new(1, 2, 30, 11), &[(1, at)]),
+            "area height"
+        );
+        assert_ne!(
+            base,
+            sig(area, &[(2, at)]),
+            "another picture in the same place"
+        );
+        assert_ne!(base, sig(area, &[(1, Rect::new(6, 3, 8, 4))]), "x");
+        assert_ne!(base, sig(area, &[(1, Rect::new(5, 4, 8, 4))]), "y");
+        assert_ne!(base, sig(area, &[(1, Rect::new(5, 3, 9, 4))]), "width");
+        assert_ne!(base, sig(area, &[(1, Rect::new(5, 3, 8, 3))]), "height");
+        assert_ne!(base, sig(area, &[]), "gone");
+        assert_ne!(base, sig(area, &[(1, at), (2, at)]), "another one");
     }
 
     const INNER: Rect = Rect {

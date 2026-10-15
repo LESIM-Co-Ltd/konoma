@@ -852,6 +852,16 @@ fn run(
                 terminal.draw(|frame| ui::render(frame, app))?;
             }
         }
+        // Canvas pictures that went: free their stored images in the (kitty) terminal.
+        let deletes = app.take_kitty_deletes();
+        if !deletes.is_empty() {
+            use std::io::Write as _;
+            let out = terminal.backend_mut();
+            for escape in deletes {
+                out.write_all(escape.as_bytes())?;
+            }
+            out.flush()?;
+        }
 
         // Waiting on heavy code highlighting (the first time for a cold language): offload the
         // grammar compile to a separate thread so the UI isn't blocked.

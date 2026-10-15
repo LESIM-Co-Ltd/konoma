@@ -168,13 +168,22 @@ impl Opened {
     /// until nothing is out. Records the transmits of every frame.
     #[track_caller]
     fn pump(&mut self) {
+        self.pump_with(|_| {});
+    }
+
+    /// [`Self::pump`], calling `each` after every step (every answer applied, every frame drawn),
+    /// so a test can look at the screen between the steps and not only at the end.
+    #[track_caller]
+    fn pump_with(&mut self, mut each: impl FnMut(&mut Opened)) {
         for _ in 0..60 {
             if self.s.app.is_media_loading() {
                 self.s.drain_plugin();
                 self.transmits.extend(transmitted_kitty_ids(&self.s.term));
+                each(self);
                 continue;
             }
             self.draw();
+            each(self);
             if self.s.app.is_media_loading() {
                 continue;
             }
@@ -182,11 +191,30 @@ impl Opened {
             if self.s.md_enc_rx.is_some() && self.s.drain_md_encode_if_any() {
                 // It drew a frame itself: read it.
                 self.transmits.extend(transmitted_kitty_ids(&self.s.term));
+                each(self);
                 continue;
             }
             return;
         }
         panic!("the pipeline did not settle");
+    }
+
+    /// Draw once more and return the frame **as the renderer made it**. The terminal's own buffer
+    /// keeps stale values for cells the diff skips (the cells a kitty placeholder row covers), so
+    /// the style of those cells can only be read here.
+    fn drawn_frame(&mut self) -> ratatui::buffer::Buffer {
+        let app = &mut self.s.app;
+        self.s
+            .term
+            .draw(|f| crate::ui::render(f, app))
+            .expect("draw")
+            .buffer
+            .clone()
+    }
+
+    /// The kitty ids the app asked the terminal to delete so far (text of the escapes).
+    fn deletes(&mut self) -> Vec<String> {
+        self.s.app.take_kitty_deletes()
     }
 
     /// The plugin is asked for the canvas again (the declared action `x`), and the answer lands.
@@ -335,6 +363,22 @@ fn e2e_canvas_image_resets_the_text_style_under_it_and_keeps_the_background() {
     assert_ne!(c.fg, RColor::Red);
     // A cell of the rectangle the placeholder row does not own keeps the background.
     assert_eq!(cell(&o.s, 12, 6).bg, RColor::Blue, "background kept");
+    // Every cell of the rectangle, the last row and the last column included, lost the plugin's
+    // text style and kept its background (read off the renderer's own frame: the terminal's
+    // buffer keeps the old value of the cells a placeholder row covers).
+    let frame = o.drawn_frame();
+    let (ax, ay, _, _) = o.area();
+    for y in 3..7 {
+        for x in 5..13 {
+            let c = &frame[(ax + x, ay + y)];
+            assert!(
+                !c.modifier.contains(RModifier::BOLD),
+                "({x}, {y}) attributes reset: {c:?}"
+            );
+            assert_ne!(c.fg, RColor::Red, "({x}, {y}) foreground reset: {c:?}");
+            assert_eq!(c.bg, RColor::Blue, "({x}, {y}) background kept: {c:?}");
+        }
+    }
     // Next to the rectangle the plugin's style is unchanged.
     assert_eq!(cell(&o.s, 4, 3).bg, RColor::Reset);
 }
@@ -388,6 +432,81 @@ fn e2e_canvas_same_picture_under_two_ids_is_two_entries_but_same_id_twice_decode
     assert_eq!(keys[0], keys[1]);
     assert_eq!(o.s.app.md_image_cache_len(), 1, "one entry for the one key");
     assert_eq!(o.rows().len(), 4, "both placements are drawn (2 rows each)");
+}
+
+// ---- the frame bookkeeping ---------------------------------------------------------------------
+
+#[test]
+fn e2e_canvas_every_drawn_frame_stamps_its_pictures_as_wanted() {
+    // The encodes of the pictures on screen are kept from being recycled by the pass number
+    // `begin_md_image_frame` hands out and `ensure_md_image` stamps.
+    let mut o = open_kitty("cvi_stamp", one_sprite("cvi_stamp", |_| [4, 5, 6]), 90, 26);
+    let key = o.canvas_keys()[0].clone();
+    let (f0, used0) = o.s.app.md_frame_and_last_used_for_test(&key);
+    assert!(f0 > 0, "a frame was counted");
+    assert_eq!(used0, Some(f0), "and the picture was stamped with it");
+    o.draw();
+    let (f1, used1) = o.s.app.md_frame_and_last_used_for_test(&key);
+    assert_eq!(f1, f0 + 1, "one pass per drawn frame");
+    assert_eq!(used1, Some(f1));
+}
+
+#[test]
+fn e2e_canvas_the_first_appearance_of_a_picture_asks_for_no_clear() {
+    // Nothing was on screen before, so there is no debris to sweep; and frames in which the
+    // placement exists but nothing can be drawn yet (not encoded) record no overlay at all.
+    let mut o = open_kitty(
+        "cvi_appear",
+        one_sprite("cvi_appear", |_| [8, 8, 8]),
+        90,
+        26,
+    );
+    assert_eq!(o.rows().len(), 4);
+    assert!(
+        !o.s.app.take_md_overlay_moved(),
+        "appearing is not moving, in any frame on the way"
+    );
+}
+
+#[test]
+fn e2e_canvas_the_overlay_follows_what_is_where_and_not_the_content() {
+    // Phase 0: id 1 at (5, 3), 8 x 4. Each later phase changes exactly one thing.
+    let p = Sprites::new("cvi_sig", |req, n| {
+        let mut c = base(req);
+        let id = if n == 3 { 2 } else { 1 };
+        let rows = if n == 4 { 3 } else { 4 };
+        let (w, h) = fill_px(req, 8, rows);
+        let color = if n == 1 { [250, 0, 0] } else { [0, 0, 250] };
+        c.images.push(placed(id, 5, 3, 8, rows, solid(w, h, color)));
+        c
+    });
+    let mut o = open_kitty("cvi_sig", p, 90, 26);
+    let moved_after = |o: &mut Opened, n: usize| {
+        o.p.phase.store(n, Ordering::SeqCst);
+        let _ = o.s.app.take_md_overlay_moved();
+        let mut moved = false;
+        o.s.key('x');
+        o.pump_with(|o| moved |= o.s.app.take_md_overlay_moved());
+        moved
+    };
+    assert!(!moved_after(&mut o, 1), "other pixels: the same place");
+    assert!(!moved_after(&mut o, 2), "back again");
+    assert!(
+        moved_after(&mut o, 3),
+        "another id (a different picture) in the same place"
+    );
+    assert!(
+        moved_after(&mut o, 4),
+        "the same x, y and width, but one row shorter"
+    );
+    // Only the size of the area changes: the picture's screen rectangle is the same.
+    let _ = o.s.app.take_md_overlay_moved();
+    o.s.resize(100, 26);
+    o.pump();
+    assert!(
+        o.s.app.take_md_overlay_moved(),
+        "a different area is a different overlay"
+    );
 }
 
 // ---- clipping ---------------------------------------------------------------------------------
@@ -564,7 +683,7 @@ fn e2e_canvas_same_id_and_content_is_not_decoded_encoded_or_transmitted_again() 
 }
 
 #[test]
-fn e2e_canvas_changed_content_under_the_same_id_replaces_the_entry() {
+fn e2e_canvas_changed_content_under_the_same_id_replaces_the_picture_in_place() {
     // Phase 0 is red, phase 1 blue.
     let p = one_sprite(
         "cvi_change",
@@ -573,26 +692,173 @@ fn e2e_canvas_changed_content_under_the_same_id_replaces_the_entry() {
     let mut o = open_kitty("cvi_change", p, 90, 26);
     let old = o.canvas_keys()[0].clone();
     assert_eq!(o.transmits.len(), 1);
+    let first_id = o.transmits[0];
+    let ids_before = o.s.app.md_kitty_ids_for_test(&old);
+    let _ = o.s.app.take_md_overlay_moved();
     o.p.phase.store(1, Ordering::SeqCst);
-    o.redraw();
+    // Watch every step between the new answer and the new picture's arrival: the picture never
+    // blinks out, and nothing asks the run loop for the screen-wide clear.
+    o.s.key('x');
+    let mut steps = 0;
+    let mut blinked = Vec::new();
+    let mut moved = false;
+    o.pump_with(|o| {
+        steps += 1;
+        if o.rows().len() != 4 {
+            blinked.push(steps);
+        }
+        moved |= o.s.app.take_md_overlay_moved();
+    });
+    assert!(steps >= 3, "the answer and the encode arrived in steps");
+    assert!(
+        blinked.is_empty(),
+        "the picture blinked at steps {blinked:?}"
+    );
+    assert!(!moved, "changing the content does not clear the screen");
     let new = o.canvas_keys()[0].clone();
-    assert_ne!(old, new, "another content, another key");
+    assert_ne!(old, new, "another content, another entry");
     assert!(old.to_string_lossy().starts_with("canvas://cvi_change/1/"));
     assert!(new.to_string_lossy().starts_with("canvas://cvi_change/1/"));
     assert!(
         !o.s.app.md_image_cache_contains(&old),
-        "the old entry is dropped"
+        "the old entry is dropped once the new one is drawn"
     );
     assert!(o.s.app.md_image_cache_contains(&new));
     assert_eq!(o.s.app.md_image_cache_len(), 1);
+    // The new picture is sent over the same terminal image: no second id, no delete.
     assert_eq!(
-        o.transmits.len(),
-        2,
-        "the new picture was sent: {:?}",
+        o.transmits,
+        vec![first_id, first_id],
+        "sent again, under the same id"
+    );
+    assert_eq!(o.s.app.md_kitty_ids_for_test(&new), ids_before);
+    assert!(o.deletes().is_empty(), "nothing to delete: it was replaced");
+    assert_eq!(o.rows().len(), 4);
+}
+
+#[test]
+fn e2e_canvas_content_changing_over_and_over_never_adds_a_terminal_image() {
+    // A live tile: new pixels on every answer.
+    let p = one_sprite("cvi_live", |n| {
+        [(n * 7 % 250) as u8, 20, (n * 13 % 250) as u8]
+    });
+    let mut o = open_kitty("cvi_live", p, 90, 26);
+    let first_id = o.transmits[0];
+    for n in 1..=12 {
+        o.p.phase.store(n, Ordering::SeqCst);
+        o.redraw();
+    }
+    assert_eq!(o.transmits.len(), 13, "every change is sent");
+    assert!(
+        o.transmits.iter().all(|id| *id == first_id),
+        "always over the one terminal image: {:?}",
         o.transmits
     );
-    assert_ne!(o.transmits[0], o.transmits[1], "under its own id");
+    assert_eq!(o.s.app.md_image_cache_len(), 1, "one entry at a time");
+    assert!(o.deletes().is_empty());
     assert_eq!(o.rows().len(), 4);
+}
+
+#[test]
+fn e2e_canvas_the_same_pixels_under_a_new_id_are_a_new_picture_and_the_old_one_is_deleted() {
+    let p = Sprites::new("cvi_newid", |req, n| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 8, 4);
+        c.images
+            .push(placed(1 + n as u64, 5, 3, 8, 4, solid(w, h, [9, 99, 9])));
+        c
+    });
+    let mut o = open_kitty("cvi_newid", p, 90, 26);
+    let first_id = o.transmits[0];
+    o.p.phase.store(1, Ordering::SeqCst);
+    o.redraw();
+    assert_eq!(o.transmits.len(), 2);
+    assert_ne!(o.transmits[1], first_id, "a picture of its own");
+    let deletes = o.deletes();
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
+    assert!(
+        deletes[0].contains(&format!("a=d,d=I,i={first_id}")),
+        "{:?}",
+        deletes[0]
+    );
+    assert_eq!(o.s.app.md_image_cache_len(), 1);
+}
+
+#[test]
+fn e2e_canvas_an_unchanged_picture_is_kept_without_its_pixels_being_sent_again() {
+    // Phase 0 sends the pixels, the later phases only name the picture.
+    let p = Sprites::new("cvi_unch", |req, n| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 8, 4);
+        let r = CellRect::new(5 + n as u16, 3, 8, 4);
+        c.images.push(if n == 0 {
+            CanvasImage::new(1, r, solid(w, h, [40, 90, 200]))
+        } else {
+            CanvasImage::unchanged(1, r)
+        });
+        c
+    });
+    let mut o = open_kitty("cvi_unch", p, 90, 26);
+    let key = o.canvas_keys()[0].clone();
+    let hash = hash_of_key(&key);
+    let (ax, _, _, _) = o.area();
+    assert_eq!(o.rows()[0].0, ax + 5);
+    for n in 1..=3 {
+        o.p.phase.store(n, Ordering::SeqCst);
+        o.redraw();
+        assert_eq!(o.canvas_keys(), vec![key.clone()], "the same picture");
+        assert_eq!(o.rows().len(), 4, "still drawn");
+        assert_eq!(o.rows()[0].0, ax + 5 + n as u16, "and moved");
+    }
+    assert_eq!(decoded_count(hash), 1, "decoded once");
+    assert_eq!(o.transmits.len(), 1, "sent once: {:?}", o.transmits);
+    assert_eq!(o.s.app.md_image_cache_len(), 1);
+}
+
+#[test]
+fn e2e_canvas_an_unchanged_picture_of_an_unknown_id_leaves_the_cells() {
+    let p = Sprites::new("cvi_unk", |req, _| {
+        let mut c = base(req);
+        c.fill(CellRect::new(5, 3, 8, 4), PStyle::new().bg(Color::Cyan));
+        c.images
+            .push(CanvasImage::unchanged(9, CellRect::new(5, 3, 8, 4)));
+        c
+    });
+    let o = open_kitty("cvi_unk", p, 90, 26);
+    assert!(o.rows().is_empty());
+    assert_eq!(cell(&o.s, 5, 3).bg, RColor::Cyan, "the plugin's cells stay");
+    assert!(o.canvas_keys().is_empty(), "a failed placement has no key");
+    assert_eq!(o.s.app.md_image_cache_len(), 0);
+    assert!(o.s.app.is_canvas_preview());
+}
+
+#[test]
+fn e2e_canvas_more_pictures_than_one_answer_decodes_all_arrive_without_another_key_press() {
+    // 40 distinct 1 x 1 cell pictures: one answer decodes 32, the host asks for the rest.
+    let p = Sprites::new("cvi_many", |req, _| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 1, 1);
+        for i in 0..40u16 {
+            c.images.push(placed(
+                i as u64,
+                i,
+                6,
+                1,
+                1,
+                solid(w, h, [i as u8 * 5, 100, 200 - i as u8]),
+            ));
+        }
+        c
+    });
+    let mut o = open_kitty("cvi_many", p, 90, 26);
+    assert_eq!(o.rows().len(), 40, "all 40 are drawn");
+    assert!(
+        o.views() >= 3,
+        "the plugin was asked again for the rest: {}",
+        o.views()
+    );
+    assert_eq!(o.s.app.md_image_cache_len(), 40);
+    assert!(o.deletes().is_empty(), "nothing was deleted on the way");
 }
 
 #[test]
@@ -609,6 +875,7 @@ fn e2e_canvas_pictures_the_canvas_no_longer_has_are_dropped_and_the_overlay_is_r
     });
     let mut o = open_kitty("cvi_gone", p, 90, 26);
     assert_eq!(o.rows().len(), 4);
+    let old_key = o.canvas_keys()[0].clone();
     let _ = o.s.app.take_md_overlay_moved();
     // An unchanged redraw does not ask for the clear.
     o.draw();
@@ -622,6 +889,15 @@ fn e2e_canvas_pictures_the_canvas_no_longer_has_are_dropped_and_the_overlay_is_r
     );
     assert_eq!(o.s.app.md_image_cache_len(), 0, "and its entry is dropped");
     assert!(o.canvas_keys().is_empty());
+    // Its stored image is deleted from the terminal.
+    let deletes = o.deletes();
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
+    assert!(
+        deletes[0].contains(&format!("a=d,d=I,i={}", o.transmits[0])),
+        "{:?}",
+        deletes[0]
+    );
+    assert!(o.s.app.md_kitty_ids_for_test(&old_key).is_none());
 }
 
 #[test]
@@ -866,9 +1142,11 @@ fn e2e_canvas_frames_animate_under_one_kitty_id() {
     });
     let mut o = open_kitty("cvi_frames", p, 90, 26);
     assert_eq!(o.transmits.len(), 1);
-    // The first call only starts the timer; zero delays advance on each call after.
+    // The first call only starts the timer; a frame lasts at least `MIN_FRAME_DELAY` even when
+    // the plugin asked for none, so the test ages the frame instead of waiting for it.
     let _ = o.s.app.advance_md_gifs_if_due();
     for _ in 0..4 {
+        o.s.app.age_md_gif_frames_for_test();
         assert!(o.s.app.advance_md_gifs_if_due(), "the frame advances");
         o.pump();
     }
@@ -915,6 +1193,9 @@ fn e2e_canvas_pictures_go_with_the_show() {
         "no entry outlives the show"
     );
     assert!(o.canvas_keys().is_empty());
+    let deletes = o.deletes();
+    assert_eq!(deletes.len(), 1, "its stored image is deleted: {deletes:?}");
+    assert!(deletes[0].contains(&format!("a=d,d=I,i={}", o.transmits[0])));
 }
 
 #[test]

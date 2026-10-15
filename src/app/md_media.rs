@@ -47,7 +47,9 @@ fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option
 /// `slot` is the index `reserve_proto_slot` just handed out, so an id is pinned to a slot and not
 /// to the size that slot currently holds: recycling the slot re-points its id at the new size, and
 /// the terminal replaces that one picture instead of gaining another. Ids are only ever appended,
-/// never dropped — see `App::md_kitty_ids`.
+/// never dropped — see `App::md_kitty_ids` (except the ids of a canvas picture, which
+/// `App::sweep_canvas_kitty_ids` deletes when the picture is gone; the ids of a canvas picture are
+/// filed under its identity, not its content: `canvas_images::kitty_key`).
 ///
 /// Takes the map rather than `&mut App` so a caller can hold a `&mut` borrow of an `md_image_cache`
 /// entry at the same time (two disjoint fields of `App`, which the borrow checker splits happily).
@@ -61,7 +63,9 @@ fn kitty_id_for(
     if !use_kitty {
         return None;
     }
-    let family = &mut ids.entry(path.to_path_buf()).or_default()[key.slot()];
+    let family = &mut ids
+        .entry(super::canvas_images::kitty_key(path))
+        .or_default()[key.slot()];
     while family.len() <= slot {
         family.push(crate::preview::kitty::next_id());
     }

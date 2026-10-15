@@ -1838,9 +1838,15 @@ pub struct App {
     /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
     /// is by construction the cheaper of the two.
     md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
-    /// The cache keys of the pictures of the canvas on screen, in the order of
-    /// `CanvasView::images` (`app/canvas_images.rs`).
-    canvas_keys: Vec<PathBuf>,
+    /// The placements of the canvas on screen, in the order of `CanvasView::images`, with the
+    /// cache key made once when the answer landed (`app/canvas_images.rs`).
+    canvas_places: Vec<canvas_images::CanvasPlace>,
+    /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
+    /// content of the id has no protocol yet, so a changing picture does not blink.
+    canvas_front: std::collections::HashMap<u64, Arc<str>>,
+    /// Kitty image ids of canvas pictures that are gone, waiting to be deleted from the terminal
+    /// (`App::take_kitty_deletes`).
+    kitty_deletes: Vec<u32>,
     /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
     /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
     /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
@@ -3594,7 +3600,9 @@ impl App {
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
-            canvas_keys: Vec::new(),
+            canvas_places: Vec::new(),
+            canvas_front: std::collections::HashMap::new(),
+            kitty_deletes: Vec::new(),
             md_frame: 0,
             md_request_seq: 0,
             draw_seq: 0,

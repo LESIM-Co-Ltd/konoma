@@ -353,7 +353,7 @@ pub(crate) struct PluginWork {
     /// The cache keys of the canvas pictures the app already holds: a canvas answer is decoded
     /// only for the pictures not in it (`canvas_images.rs`). `None` = pictures cannot be shown
     /// (no image backend): nothing of a canvas is decoded.
-    pub(super) canvas_known: Option<std::collections::HashSet<PathBuf>>,
+    pub(super) canvas_known: Option<super::canvas_images::CanvasHeld>,
 }
 
 /// What became of a picture a worker decoded.
@@ -2045,7 +2045,14 @@ impl App {
         // cache (the entries of pictures the canvas dropped go). A view that is not a canvas, or a
         // failure, leaves none.
         match (&canvas_now, canvas_pictures) {
-            (Some(Some(_)), Picture::Canvas(Some(pics))) => self.canvas_pictures_landed(*pics),
+            (Some(Some(_)), Picture::Canvas(Some(pics))) => {
+                // Pictures waiting for a later answer (the work limits of one): ask for it.
+                if self.canvas_pictures_landed(*pics) {
+                    if let Some(show) = self.plugin.as_mut() {
+                        show.flow.wants_view = true;
+                    }
+                }
+            }
             (Some(_), _) => self.forget_canvas_pictures(),
             (None, _) => {}
         }
