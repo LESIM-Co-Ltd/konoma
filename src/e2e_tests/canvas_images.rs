@@ -891,6 +891,43 @@ fn e2e_canvas_more_pictures_than_one_answer_decodes_all_arrive_without_another_k
 }
 
 #[test]
+fn e2e_canvas_a_follow_up_that_took_long_is_not_followed_by_an_ask_at_once() {
+    // 100 pictures: answers of 32, 32, 32 and 4. The third answer is the answer to an ask made
+    // long ago (the clock is set so: the job "took" half a second): its own follow-up waits one
+    // floor from the landing, it does not go back to back with it.
+    let p = Sprites::new("cvi_slow", |req, _| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 1, 1);
+        for i in 0..100u16 {
+            c.images.push(placed(
+                i as u64,
+                i % 50,
+                6 + i / 50,
+                1,
+                1,
+                solid(w, h, [i as u8 * 2, 100, 200 - i as u8]),
+            ));
+        }
+        c
+    });
+    let mut o = open_kitty("cvi_slow", p, 90, 26);
+    assert_eq!(o.s.app.md_image_cache_len(), 64, "two answers of 32");
+    let long_ago = std::time::Instant::now() - Duration::from_millis(500);
+    o.s.app.set_canvas_redraw_at_for_test(Some(long_ago));
+    assert!(o.s.app.canvas_redraw_if_due(long_ago));
+    o.pump();
+    assert_eq!(o.s.app.md_image_cache_len(), 96, "the third answer landed");
+    assert!(
+        o.s.app.canvas_redraw_deadline().is_some(),
+        "and the fourth waits for its deadline instead of being asked at once"
+    );
+    let at = o.s.app.canvas_redraw_deadline().unwrap();
+    assert!(o.s.app.canvas_redraw_if_due(at));
+    o.pump();
+    assert_eq!(o.s.app.md_image_cache_len(), 100);
+}
+
+#[test]
 fn e2e_canvas_pictures_the_canvas_no_longer_has_are_dropped_and_the_overlay_is_reported_moved() {
     // Phase 0 places the picture, phase 1 none.
     let p = Sprites::new("cvi_gone", |req, n| {

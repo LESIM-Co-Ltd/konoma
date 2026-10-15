@@ -569,3 +569,24 @@ fn a_default_cell_is_a_valid_symbol() {
     assert_eq!(c.symbol, " ");
     assert_eq!(CanvasView::new(3, 3).check(), Ok(()));
 }
+
+#[test]
+fn every_ascii_control_character_is_refused_and_every_printable_one_accepted() {
+    // The single-byte fast path must agree with the general path at both of its edges (U+001F is
+    // the last C0 control, U+007F the DEL), not only for the few controls tried elsewhere.
+    for b in 0u8..=0x7f {
+        let s = char::from(b).to_string();
+        let printable = (0x20..0x7f).contains(&b);
+        assert_eq!(CanvasCell::is_plain_symbol(&s), printable, "{b:#04x}");
+        let got = with_symbol(3, 1, &s).check();
+        if printable {
+            assert_eq!(got, Ok(()), "{b:#04x}");
+        } else {
+            assert_eq!(
+                got,
+                Err(CanvasIssue::CellControl { x: 1, y: 0 }),
+                "{b:#04x}"
+            );
+        }
+    }
+}

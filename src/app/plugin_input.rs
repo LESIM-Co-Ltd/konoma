@@ -189,29 +189,50 @@ impl App {
         true
     }
 
-    /// Hand the queued keys to the plugin, in one job, if nothing holds the session. Called when a
-    /// key is queued and whenever an answer gave the session back. Does nothing without keys, while
-    /// a job holds the session, or while the plugin's work group is busy (a job parked in the
-    /// group's slot could be replaced, and keys are never replaced).
+    /// Hand what waits for the session to the plugin, **in the order it was pressed**: the queued
+    /// keys and the queued actions are one line. The next thing is the oldest queued action when
+    /// no key was queued before it (it goes as a job of its own), else the keys queued ahead of
+    /// that action (one job, in order; all of them when no action waits). One job at a time: the
+    /// answer gives the session back and this runs again. Called when a key or an action is
+    /// queued and whenever an answer gave the session back. Does nothing while a job holds the
+    /// session or the plugin's work group is busy (a job parked in the group's slot could be
+    /// replaced, and keys and actions are never replaced).
     pub(super) fn flush_plugin_keys(&mut self) {
-        if self.plugin_key_queue.is_empty() || !self.plugin_session_is_free() {
+        if !self.plugin_session_is_free() {
             return;
         }
+        let queued = self.plugin_key_queue.len();
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
-        let Some(session) = show.session.take() else {
-            return;
-        };
-        let (id, path, req) = (show.id.clone(), show.path.clone(), show.req.clone());
-        let keys = std::mem::take(&mut self.plugin_key_queue);
-        let work = self.plugin_work(
-            id,
-            path,
-            plugin_host::PluginJob::Keys { session, keys },
-            req,
-        );
-        self.dispatch_plugin_work(work, plugin_host::Wait::Result(Duration::ZERO));
+        // How many keys were queued ahead of the oldest action. The count was made when the action
+        // was pressed; keys cleared since (the queue is forgotten with the show) cannot be waited
+        // for, hence the clamp.
+        let ahead = show.flow.acts.first().map(|a| a.after_keys.min(queued));
+        match ahead {
+            Some(0) => {
+                self.send_first_queued_act();
+            }
+            _ if queued == 0 => {}
+            _ => {
+                let n = ahead.unwrap_or(queued);
+                for a in show.flow.acts.iter_mut() {
+                    a.after_keys = a.after_keys.saturating_sub(n);
+                }
+                let Some(session) = show.session.take() else {
+                    return;
+                };
+                let (id, path, req) = (show.id.clone(), show.path.clone(), show.req.clone());
+                let keys: Vec<Key> = self.plugin_key_queue.drain(..n).collect();
+                let work = self.plugin_work(
+                    id,
+                    path,
+                    plugin_host::PluginJob::Keys { session, keys },
+                    req,
+                );
+                self.dispatch_plugin_work(work, plugin_host::Wait::Result(Duration::ZERO));
+            }
+        }
     }
 
     /// Forget the keys waiting, the `Esc` latch and the redraw deadline (the show is going).
@@ -279,6 +300,19 @@ impl App {
         }
         let at = due.max(now);
         self.canvas_redraw_at = Some(self.canvas_redraw_at.map_or(at, |old| old.min(at)));
+    }
+
+    /// [`Self::canvas_ask_more`] for an answer that has just landed (`now`). The floor between two
+    /// asks counts from this landing, the end of the job that took the time, when the answer was
+    /// itself the answer to an ask (a follow-up or the timer's: `canvas_more_at` is set): a job
+    /// longer than the floor must not make the next ask due at once, or the asking would run back
+    /// to back for as long as pictures keep coming. The answer to the user's own action (no ask
+    /// before it) is followed up at once.
+    pub(crate) fn canvas_ask_more_after_landing(&mut self, now: Instant) {
+        if self.canvas_more_at.is_some() {
+            self.canvas_more_at = Some(now);
+        }
+        self.canvas_ask_more(now);
     }
 
     /// Whether the canvas that wants the timer is on screen: preview mode, and the plugin show is

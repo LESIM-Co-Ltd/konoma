@@ -477,11 +477,14 @@ impl App {
     pub fn is_table_preview(&self) -> bool {
         match self.tab.preview_kind {
             Some(PreviewKind::Plugin { .. }) => {
-                // A canvas with pages is a canvas, not a table: its keys, footer, help and chip
-                // are the canvas's, and `j`/`Enter` are the plugin's.
+                // A plugin that declares a canvas is a table only when the view it shows is one
+                // (`plugin_table`): its pages do not make it a table, before its first view
+                // (loading) or when it shows a message or a failure. A canvas with pages is a
+                // canvas: its keys, footer, help and chip are the canvas's, and `j`/`Enter` are
+                // the plugin's.
                 self.plugin_table().is_some()
                     || (!self.shows_media_plugin()
-                        && !self.plugin_is_canvas()
+                        && !self.plugin_declares_canvas()
                         && self.plugin_is_paged())
             }
             Some(
@@ -493,6 +496,13 @@ impl App {
             )
             | None => false,
         }
+    }
+
+    /// Whether the open plugin declares that it draws a canvas.
+    fn plugin_declares_canvas(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| crate::plugins::profile_of(&p.id).canvas)
     }
 
     /// Whether the open plugin show has reported separate pages (a workbook's sheets).

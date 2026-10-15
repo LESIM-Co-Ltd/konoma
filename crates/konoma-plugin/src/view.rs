@@ -621,7 +621,13 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 /// decoded yet (left for a later answer by the per-answer limits, or refused for now by the
 /// memory bound) and decodes it on a later answer even when that answer says `None`. Only newer
 /// `Some` content for the `id` replaces what the host kept; it is released when the canvas stops
-/// naming the `id`.
+/// naming the `id`. The host keeps at most 256 MiB of such not-yet-decoded source data over all
+/// ids; past it the one kept longest is dropped and its `id` shows the cells until you send a
+/// `Some` for it again.
+///
+/// New content for an `id` replaces the picture that `id` shows: it is not held next to it. When
+/// the memory bound is so tight that the new content does not fit even then, the `id` shows the
+/// cells (never the old picture) until it does.
 ///
 /// **How a picture is fitted.** It is scaled to fit inside the `cols` x `rows` cells with its
 /// aspect ratio kept, starting at the top-left of the rectangle, and it is not enlarged past its
@@ -636,7 +642,9 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 ///   [`CANVAS_MAX_FRAMES`] frames, not nested;
 /// - the host holds at most 256 MiB of decoded canvas pixels over all files. A picture that would
 ///   not fit is refused for now, not failed: it is decoded on a later answer once room is free
-///   (the pictures the canvas no longer names go first);
+///   (the pictures the canvas no longer names go first, and the old picture of an `id` goes when
+///   its new content needs the room; the host asks you for another answer by itself when room
+///   grew for a refused picture);
 /// - per answer it decodes at most 32 new pictures, 64 MiB of encoded input and 128 MiB of new
 ///   pixels (their decoded size); the rest follow on later answers. The cells under a picture that
 ///   is not drawn (yet) stay, so draw something sensible there;

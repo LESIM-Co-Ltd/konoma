@@ -31,6 +31,10 @@ struct Seen {
     view_threads: Mutex<Vec<std::thread::ThreadId>>,
     /// `CanvasView::redraw_after` of the next canvas.
     after: Mutex<Option<std::time::Duration>>,
+    /// Every key (`key:a`) and every action (`act:one`) the session got, in the order it got them.
+    order: Mutex<Vec<String>>,
+    /// The request of every `view`.
+    reqs: Mutex<Vec<ViewReq>>,
 }
 
 impl Seen {
@@ -53,6 +57,8 @@ struct Mini {
     id: String,
     group: Option<String>,
     seen: Arc<Seen>,
+    /// Also declares a table and reports separate pages (a plugin of both display types).
+    table: bool,
 }
 
 impl Plugin for Mini {
@@ -62,6 +68,11 @@ impl Plugin for Mini {
             .shows(ViewKind::Canvas)
             .action(Act::new("one").key("x").label("one").help("The first"))
             .action(Act::new("two").key("z").label("two").help("The second"));
+        let m = if self.table {
+            m.shows(ViewKind::Table)
+        } else {
+            m
+        };
         match &self.group {
             Some(g) => m.work_group(g.as_str()),
             None => m,
@@ -71,17 +82,31 @@ impl Plugin for Mini {
     fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
         Ok(Box::new(MiniSession {
             seen: self.seen.clone(),
+            table: self.table,
         }))
     }
 }
 
 struct MiniSession {
     seen: Arc<Seen>,
+    table: bool,
 }
 
 impl Session for MiniSession {
+    fn layout(&self) -> konoma_plugin::view::Layout {
+        let mut l = konoma_plugin::view::Layout::single();
+        if self.table {
+            l.pages = Some(konoma_plugin::view::PageLayout::Separate {
+                count: Some(3),
+                titles: Vec::new(),
+            });
+        }
+        l
+    }
+
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         self.seen.views.fetch_add(1, Ordering::SeqCst);
+        self.seen.reqs.lock().unwrap().push(req.clone());
         self.seen
             .view_threads
             .lock()
@@ -96,11 +121,19 @@ impl Session for MiniSession {
 
     fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
         self.seen.acts.lock().unwrap().push(action.to_string());
+        self.seen
+            .order
+            .lock()
+            .unwrap()
+            .push(format!("act:{action}"));
         Ok(Outcome::Unhandled)
     }
 
     fn key(&mut self, key: &Key, _: &ActCx) -> Result<Outcome, Failure> {
         self.seen.keys.lock().unwrap().push(key.clone());
+        if let konoma_plugin::key::KeyCode::Char(c) = &key.code {
+            self.seen.order.lock().unwrap().push(format!("key:{c}"));
+        }
         Ok(Outcome::Unhandled)
     }
 }
@@ -117,6 +150,11 @@ impl H {
     /// An app previewing `a.mini` with the stand-in, drawn once. With `asynchronous` the plugin
     /// jobs run on workers (the one channel of the run loop), as in the real program.
     fn open(name: &str, group: Option<&str>, asynchronous: bool) -> H {
+        H::open_as(name, group, asynchronous, false)
+    }
+
+    /// [`H::open`] with the plugin also declaring a table (`table`) and reporting pages.
+    fn open_as(name: &str, group: Option<&str>, asynchronous: bool, table: bool) -> H {
         let dir = unique_tmp(&format!("konoma_canvas_surv_{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.mini"), b"x").unwrap();
@@ -128,6 +166,7 @@ impl H {
                 id: name.to_string(),
                 group: group.map(str::to_string),
                 seen: seen.clone(),
+                table,
             }),
         );
         let cfg: Config = test_plugins::marker_config(&marker);
@@ -421,7 +460,10 @@ impl Seen {
 fn an_action_pressed_with_older_presses_waiting_goes_behind_them() {
     let mut h = H::open("cs_acts_order", None, true);
     assert!(h.show().session.is_some());
-    h.show_mut().flow.acts.push("one".to_string());
+    h.show_mut()
+        .flow
+        .acts
+        .push(plugin_host::QueuedAct::now("one"));
     assert!(h.app.plugin_act("two"));
     h.settle();
     assert_eq!(h.seen.acts(), ["one", "two"], "in the order pressed");
@@ -441,7 +483,16 @@ fn queued_actions_go_when_a_work_group_is_freed_by_another_jobs_result() {
     let dispatched = h.app.plugin_group_dispatches;
     assert!(h.app.plugin_act("one"));
     assert!(h.app.plugin_act("two"));
-    assert_eq!(h.show().flow.acts, ["one", "two"], "both wait");
+    assert_eq!(
+        h.show()
+            .flow
+            .acts
+            .iter()
+            .map(|a| a.action.as_str())
+            .collect::<Vec<_>>(),
+        ["one", "two"],
+        "both wait"
+    );
     assert_eq!(
         h.app.plugin_group_dispatches, dispatched,
         "nothing was sent"
@@ -552,4 +603,209 @@ fn only_the_hosts_own_plugins_are_standard() {
         assert!(crate::plugins::profile_of(id).standard, "{id}");
     }
     assert!(!crate::plugins::profile_of("no-such-plugin").standard);
+}
+
+// ---- round 3: one line for keys and actions, the first answer of a session, the surface -------------------
+
+impl H {
+    /// Free the work group `g` through a result that is not this plugin's (as a job of another
+    /// plugin of the group would), so the queue goes.
+    fn free_group(&mut self, g: &str) {
+        self.app.plugin_groups.get_mut(g).unwrap().busy = false;
+        let stale_gen = self.app.media_gen.wrapping_add(7);
+        self.app.apply_media(MediaResult {
+            gen: stale_gen,
+            payload: None,
+        });
+        self.settle();
+    }
+}
+
+fn typed_key(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+/// Keys and actions are one line: what was pressed first goes first, whatever kind it is.
+#[test]
+fn keys_and_actions_pressed_while_the_group_is_busy_go_in_the_order_pressed() {
+    let mut h = H::open("cs_one_line", Some("cs-one-line"), true);
+    h.app
+        .plugin_groups
+        .entry("cs-one-line".into())
+        .or_default()
+        .busy = true;
+    // An action first, then typing, then another action, then more typing.
+    assert!(h.app.plugin_act("one"));
+    h.app.plugin_input_key(&typed_key('a'));
+    h.app.plugin_input_key(&typed_key('b'));
+    assert!(h.app.plugin_act("two"));
+    h.app.plugin_input_key(&typed_key('c'));
+    assert!(h.seen.order.lock().unwrap().is_empty(), "nothing was sent");
+    h.free_group("cs-one-line");
+    assert_eq!(
+        *h.seen.order.lock().unwrap(),
+        ["act:one", "key:a", "key:b", "act:two", "key:c"],
+        "the order of the presses"
+    );
+    assert!(h.app.plugin_key_queue.is_empty());
+    assert!(h.show().flow.acts.is_empty());
+}
+
+/// Typing first and an action after it: the keys are not held back by the action, and the action
+/// does not go ahead of them.
+#[test]
+fn typing_pressed_before_an_action_goes_before_it() {
+    let mut h = H::open("cs_one_line2", Some("cs-one-line2"), true);
+    h.app
+        .plugin_groups
+        .entry("cs-one-line2".into())
+        .or_default()
+        .busy = true;
+    h.app.plugin_input_key(&typed_key('a'));
+    assert!(h.app.plugin_act("one"));
+    // The action recorded how many keys were ahead of it.
+    assert_eq!(h.show().flow.acts[0].after_keys, 1);
+    h.free_group("cs-one-line2");
+    assert_eq!(*h.seen.order.lock().unwrap(), ["key:a", "act:one"]);
+}
+
+/// An action pressed with keys waiting never overtakes them (the keys wait for a busy group).
+#[test]
+fn an_action_never_overtakes_keys_that_wait() {
+    let mut h = H::open("cs_one_line3", Some("cs-one-line3"), true);
+    h.app
+        .plugin_groups
+        .entry("cs-one-line3".into())
+        .or_default()
+        .busy = true;
+    h.app.plugin_key_queue.push(waiting_key('a'));
+    assert!(h.app.plugin_act("one"));
+    assert_eq!(h.show().flow.acts.len(), 1, "queued behind the key");
+    assert_eq!(h.show().flow.acts[0].after_keys, 1);
+    h.free_group("cs-one-line3");
+    assert_eq!(*h.seen.order.lock().unwrap(), ["key:a", "act:one"]);
+}
+
+/// Keys cleared (the show forgot them) cannot be waited for: an action that counted them is not
+/// stuck behind keys that are gone.
+#[test]
+fn an_action_that_counted_keys_which_are_gone_still_goes() {
+    let mut h = H::open("cs_one_line4", Some("cs-one-line4"), true);
+    h.app
+        .plugin_groups
+        .entry("cs-one-line4".into())
+        .or_default()
+        .busy = true;
+    h.app.plugin_key_queue.push(waiting_key('a'));
+    assert!(h.app.plugin_act("one"));
+    h.app.plugin_key_queue.clear();
+    h.free_group("cs-one-line4");
+    assert_eq!(*h.seen.order.lock().unwrap(), ["act:one"]);
+}
+
+/// The first answer of a new session must not resolve `unchanged` to the pictures of the session
+/// before it (the file was read again with the old view kept).
+#[test]
+fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() {
+    use super::canvas_images::{CanvasPlace, KeptPicture};
+    let mut h = H::open("cs_known", None, false);
+    h.app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, _rx) = channel();
+    h.app.attach_md_encoder(tx);
+    let key: Arc<str> = Arc::from("canvas://cs_known/3/00000000000000d1");
+    h.app.canvas_places.push(CanvasPlace {
+        id: 3,
+        rect: konoma_plugin::view::CellRect::new(0, 0, 1, 1),
+        key: Some(key.clone()),
+    });
+    h.app.canvas_front.insert(3, key.clone());
+    h.app.canvas_kept.insert(
+        3,
+        KeptPicture {
+            key: Some(key.clone()),
+            hash: Some(0xd1),
+            data: konoma_plugin::view::ImageData::Rgba {
+                width: 1,
+                height: 1,
+                pixels: Arc::new(vec![0; 4]),
+            },
+            needs: None,
+        },
+    );
+    let (id, path) = (h.show().id.clone(), h.show().path.clone());
+    let req = h.app.plugin_view_req();
+    let plugin: Arc<dyn konoma_plugin::Plugin> = Arc::new(Mini {
+        id: id.clone(),
+        group: None,
+        seen: h.seen.clone(),
+        table: false,
+    });
+    let open = h.app.plugin_work(
+        id.clone(),
+        path.clone(),
+        plugin_host::PluginJob::Open {
+            plugin,
+            input: konoma_plugin::Input::File {
+                path: path.clone(),
+                hint: None,
+            },
+        },
+        req.clone(),
+    );
+    let known = open.canvas_known.expect("pictures can be shown");
+    assert!(known.by_id.is_empty(), "no id of the old session");
+    assert!(known.kept.is_empty(), "no source kept for the old session");
+    assert!(
+        known.front.contains_key(&3),
+        "the entry on screen stays (no blink)"
+    );
+    // Any later job of the session is told, as before.
+    let session = h.show_mut().session.take().expect("the session is at hand");
+    let view = h
+        .app
+        .plugin_work(id, path, plugin_host::PluginJob::View { session }, req);
+    let known = view.canvas_known.expect("pictures can be shown");
+    assert!(known.by_id.contains_key(&3));
+    assert!(known.kept.contains_key(&3));
+}
+
+/// A plugin that declares a table and a canvas is neither before its first view, and it is a table
+/// only while the view it shows is one: its pages do not make it a table.
+#[test]
+fn a_plugin_of_both_display_types_is_a_table_only_while_it_shows_a_table() {
+    let mut h = H::open_as("cs_both", None, false, true);
+    assert!(
+        matches!(
+            h.show().layout.pages,
+            Some(konoma_plugin::view::PageLayout::Separate { .. })
+        ),
+        "it reported pages"
+    );
+    assert!(h.app.is_canvas_preview(), "it shows a canvas");
+    assert!(!h.app.is_table_preview(), "a canvas with pages is no table");
+    // Before the first view (loading, or the file read again): neither.
+    h.show_mut().view = None;
+    assert!(!h.app.is_canvas_preview());
+    assert!(
+        !h.app.is_table_preview(),
+        "pages alone make no table for a plugin that also declares a canvas"
+    );
+    // A text view instead: still no table.
+    h.show_mut().view = Some(View::text(["nothing here"]));
+    assert!(!h.app.is_table_preview());
+}
+
+/// `plugin_view_now` of a plugin that is not a standard one goes to a worker with the request it
+/// was given (not the one the tab would make).
+#[test]
+fn a_view_asked_for_on_the_spot_from_a_non_standard_plugin_keeps_its_request() {
+    let mut h = H::open("cs_view_now", None, true);
+    let before = h.seen.reqs.lock().unwrap().len();
+    let mut req = ViewReq::new(33, 9);
+    req.page = Some(4);
+    assert!(h.app.plugin_view_now(req));
+    h.settle();
+    let reqs = h.seen.reqs.lock().unwrap();
+    let got = reqs.get(before).expect("the plugin was asked");
+    assert_eq!((got.cols, got.rows, got.page), (33, 9, Some(4)));
 }

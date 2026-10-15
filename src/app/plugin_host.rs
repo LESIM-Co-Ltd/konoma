@@ -199,8 +199,30 @@ pub(crate) struct ShowFlow {
     /// session returns, with the request the tab then makes (so it carries the newest choice).
     pub wants_view: bool,
     /// Declared actions pressed while a job held the session of a canvas, in the order pressed;
-    /// each runs, one job at a time, when the session returns. Never dropped, never reordered.
-    pub acts: Vec<String>,
+    /// each runs, one job at a time, when the session returns. Never dropped, never reordered --
+    /// and never reordered against the queued keys either ([`QueuedAct::after_keys`]).
+    pub acts: Vec<QueuedAct>,
+}
+
+/// A declared action waiting for the session, with its place among the queued keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedAct {
+    /// The action id.
+    pub action: String,
+    /// How many queued keys were pressed before this action and are still waiting: they go first
+    /// (the keys and the actions are one line, in the order pressed).
+    pub after_keys: usize,
+}
+
+impl QueuedAct {
+    /// An action with no key queued ahead of it.
+    #[cfg(test)]
+    pub(crate) fn now(action: &str) -> QueuedAct {
+        QueuedAct {
+            action: action.to_string(),
+            after_keys: 0,
+        }
+    }
 }
 
 /// The view itself, or the failure that says the plugin returned a display type it did not declare
@@ -1244,22 +1266,6 @@ impl App {
             })
     }
 
-    /// Whether the open plugin show is a canvas: its view is one, or it has no view yet (loading,
-    /// reading again) and the plugin declares a canvas and no table. Decides the surface, so a
-    /// canvas that reports pages is a canvas (its `j`/`Enter` are the plugin's) and never a table.
-    pub(super) fn plugin_is_canvas(&self) -> bool {
-        let Some(show) = self.plugin.as_ref() else {
-            return false;
-        };
-        match show.view.as_ref() {
-            Some(v) => matches!(v, View::Canvas(_)),
-            None => {
-                let p = crate::plugins::profile_of(&show.id);
-                p.canvas && !p.table
-            }
-        }
-    }
-
     /// The canvas the plugin show holds, if it is the one on screen.
     pub(crate) fn canvas_view(&self) -> Option<&konoma_plugin::view::CanvasView> {
         if !self.is_canvas_preview() {
@@ -1336,7 +1342,17 @@ impl App {
             path,
             external,
             default_raster_px: self.cfg.ui.svg_max_px,
-            canvas_known: self.canvas_known_keys(),
+            canvas_known: self.canvas_known_keys().map(|mut held| {
+                // The first answer of a session knows nothing of the pictures of the one before
+                // (a file read again keeps the previous view on screen): its `unchanged` must not
+                // resolve to the old file's picture or to a source kept for it. The cache itself
+                // is by content, and stays true.
+                if matches!(job, PluginJob::Open { .. }) {
+                    held.by_id.clear();
+                    held.kept.clear();
+                }
+                held
+            }),
             decode_cancel: None,
             on_layout: None,
             gen: 0,
@@ -1686,7 +1702,6 @@ impl App {
     /// in order), the actions pressed meanwhile (one job at a time), a view asked for.
     pub(super) fn plugin_session_returned(&mut self) {
         self.flush_plugin_keys();
-        self.flush_plugin_acts();
         let wanted = self.plugin.as_ref().is_some_and(|p| {
             p.flow.wants_view && p.session.is_some() && matches!(p.phase, PluginPhase::Ready)
         });
@@ -1699,19 +1714,17 @@ impl App {
         }
     }
 
-    /// Run the oldest action pressed while a job held the session, if the session is free. One at
-    /// a time: each answer may change what works, and the next press then goes in its turn.
-    fn flush_plugin_acts(&mut self) {
-        if !self.plugin_session_is_free() {
-            return;
-        }
+    /// Run the oldest queued action (the session is free and no queued key goes before it:
+    /// `flush_plugin_keys` decides). One at a time: each answer may change what works, and the
+    /// next press then goes in its turn.
+    pub(super) fn send_first_queued_act(&mut self) {
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
         if show.flow.acts.is_empty() {
             return;
         }
-        let action = show.flow.acts.remove(0);
+        let action = show.flow.acts.remove(0).action;
         let Some(session) = show.session.take() else {
             return;
         };
@@ -1767,7 +1780,7 @@ impl App {
         };
         if !crate::plugins::profile_of(&show.id).standard {
             // Asked on a worker; false (the choice is taken back) when no session is at hand.
-            return self.plugin_request_view(self.plugin_view_req());
+            return self.plugin_request_view(req);
         }
         let Some(session) = show.session.take() else {
             return false;
@@ -1852,6 +1865,7 @@ impl App {
                 .is_some_and(|p| !p.flow.acts.is_empty())
                 || !self.plugin_session_is_free())
         {
+            let queued_keys = self.plugin_key_queue.len();
             let full = self
                 .plugin
                 .as_ref()
@@ -1862,10 +1876,13 @@ impl App {
                 return false;
             }
             if let Some(show) = self.plugin.as_mut() {
-                show.flow.acts.push(action.to_string());
+                show.flow.acts.push(QueuedAct {
+                    action: action.to_string(),
+                    after_keys: queued_keys,
+                });
             }
             // The session may be at hand (the presses before this one were waiting for a group).
-            self.flush_plugin_acts();
+            self.flush_plugin_keys();
             return true;
         }
         let Some(show) = self.plugin.as_mut() else {
@@ -2104,7 +2121,7 @@ impl App {
         self.canvas_landed(canvas_now, by_user);
         if ask_more {
             // After the deadline was set: the follow-up is throttled with the timer's floor.
-            self.canvas_ask_more(std::time::Instant::now());
+            self.canvas_ask_more_after_landing(std::time::Instant::now());
         }
         // What waited for the session goes now: the keys typed while it was out (in order, in one
         // job), the actions pressed meanwhile, a view asked for.

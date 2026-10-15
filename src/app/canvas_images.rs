@@ -83,6 +83,11 @@ pub(super) const MAX_CANVAS_IMAGES: usize = 256;
 pub(super) const MAX_CANVAS_BYTES: u64 = 128 * 1024 * 1024;
 /// How many bytes of decoded pixels all the pictures of the canvas may hold together.
 pub(super) const MAX_CANVAS_HELD_BYTES: u64 = 256 * 1024 * 1024;
+/// How many bytes of picture *source* data (encoded bytes, SVG, raw pixels) the host keeps for the
+/// pictures it has not turned into cache entries yet ([`KeptPicture`]), over all the ids of the
+/// canvas. Past it the oldest kept source is dropped: its id shows its cells until the plugin sends
+/// the picture again.
+pub(super) const MAX_CANVAS_KEPT_BYTES: u64 = 256 * 1024 * 1024;
 /// How many pictures one answer decodes (the ones the cache does not hold); the rest waits.
 pub(super) const MAX_DECODES_PER_ANSWER: usize = 32;
 /// How many bytes of picture input (encoded bytes, SVG, raw pixels, a file's size) one answer
@@ -152,7 +157,9 @@ pub(super) struct CanvasPictures {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) refused: usize,
     /// Another answer is worth asking for: pictures wait and this answer made progress (so the
-    /// next one does too, and the asking ends).
+    /// next one does too, and the asking ends), or pictures were left unhashed (the next answer
+    /// takes the kept ones first, so it moves on whatever this one did). Pictures refused for the
+    /// memory bound do not come back by asking (the landing asks when room grew for one).
     pub(super) more: bool,
     /// The source of every picture this answer had to decode or defer, by id (`Arc` clones, no
     /// copy of the data). The app keeps those that are still not in the cache after landing
@@ -513,6 +520,18 @@ fn input_bytes(data: &ImageData) -> u64 {
     }
 }
 
+/// The bytes of memory the source `data` of a picture holds (a file is not held: it is read when
+/// decoded).
+fn source_bytes(data: &ImageData) -> u64 {
+    match data {
+        ImageData::File(_) | ImageData::Lazy(_) => 0,
+        ImageData::Encoded(b) => b.len() as u64,
+        ImageData::Svg { data, .. } => data.len() as u64,
+        ImageData::Rgba { pixels, .. } => pixels.len() as u64,
+        ImageData::Frames(f) => f.iter().map(|(d, _)| source_bytes(d)).sum(),
+    }
+}
+
 /// Decode the pictures of `canvas` that `held` (what the cache holds) does not have. Runs on the
 /// worker. `path` is the file shown (relative references of an SVG resolve from it).
 ///
@@ -681,9 +700,16 @@ pub(super) fn decode_canvas_within(
     // its ids is drawn from now (until the newer content can be drawn). The rest goes when the
     // answer lands, so only this counts against the memory bound.
     let mut kept: HashSet<&str> = key_of.values().map(|k| &**k).collect();
-    for id in key_of.keys() {
+    for (id, key) in &key_of {
         if let Some(f) = held.front.get(id) {
-            kept.insert(&**f);
+            // The entry an id is drawn from is replaced by its new content when that lands (the
+            // landing frees it for the room, `canvas_pictures_landed_within`), so it is not extra
+            // held next to the new content. One whose new content is already in the cache stays
+            // counted: the cache holds both until the next landing's prune.
+            let being_replaced = **f != **key && !held.keys.contains_key(Path::new(&**key));
+            if !being_replaced {
+                kept.insert(&**f);
+            }
         }
     }
     let kept_bytes: u64 = kept
@@ -766,12 +792,13 @@ pub(super) fn decode_canvas_within(
         sources.push(keep(t, None));
         fresh.push((key, decoded));
     }
-    let more = waiting > 0 && !fresh.is_empty();
+    // Asking again helps when the work limits left pictures and this answer made progress, or when
+    // pictures were not even hashed (the input budget): the host keeps those first in line, so the
+    // next answer always moves on, whether or not this one decoded anything.
+    let more = (waiting > 0 && !fresh.is_empty()) || unhashed > 0;
     CanvasPictures {
         places,
         fresh,
-        // Asking again helps when the work limits left pictures and this answer made progress;
-        // pictures refused for the memory bound do not come back by asking.
         more,
         waiting,
         refused,
@@ -850,7 +877,7 @@ impl App {
     /// names goes first (so the memory bound is judged against what it keeps), then each new
     /// picture is added unless it would not fit; one refused for that is left out (not failed) and
     /// comes with a later answer. Returns whether another answer should be asked for
-    /// ([`CanvasPictures::more`]).
+    /// ([`CanvasPictures::more`], or room grew for a picture that was refused).
     pub(super) fn canvas_pictures_landed(&mut self, pics: CanvasPictures) -> bool {
         self.canvas_pictures_landed_within(pics, MAX_CANVAS_HELD_BYTES)
     }
@@ -861,14 +888,33 @@ impl App {
         pics: CanvasPictures,
         held_bytes: u64,
     ) -> bool {
+        self.canvas_pictures_landed_limits(pics, held_bytes, MAX_CANVAS_KEPT_BYTES)
+    }
+
+    /// [`Self::canvas_pictures_landed`] under the given memory bound and bound on the kept
+    /// sources.
+    pub(super) fn canvas_pictures_landed_limits(
+        &mut self,
+        pics: CanvasPictures,
+        held_bytes: u64,
+        kept_source_bytes: u64,
+    ) -> bool {
         // The ids of the canvas, the entries it names and the entries its ids are drawn from.
         let ids: HashSet<u64> = pics.places.iter().map(|p| p.id).collect();
         self.canvas_front.retain(|id, _| ids.contains(id));
-        let mut live: HashSet<PathBuf> = pics
+        let named: HashSet<PathBuf> = pics
             .places
             .iter()
             .filter_map(|p| p.key.as_deref().map(PathBuf::from))
             .collect();
+        // A new content of an id the memory bound refused (the worker knew it did not fit) ends the
+        // old picture of that id: its cells show rather than a stale picture.
+        for (id, k) in &pics.sources {
+            if k.needs.is_some() {
+                self.canvas_front_gives_way(*id, k.key.as_deref());
+            }
+        }
+        let mut live: HashSet<PathBuf> = named.clone();
         live.extend(self.canvas_front.values().map(|k| PathBuf::from(&**k)));
         for (key, _) in &pics.fresh {
             live.insert(key.clone());
@@ -901,9 +947,25 @@ impl App {
                     (Err(why.code().to_string()), None)
                 }
             };
+            let naming: Vec<u64> = pics
+                .places
+                .iter()
+                .filter(|p| p.key.as_deref().is_some_and(|k| Path::new(k) == key))
+                .map(|p| p.id)
+                .collect();
+            if held + bytes > held_bytes {
+                // The entries these ids are drawn from are the ones their new content replaces:
+                // free them for the room (the tight case is the only one where a picture may
+                // blink), and look again.
+                for id in &naming {
+                    self.canvas_front_gives_way(*id, Some(&key.to_string_lossy()));
+                }
+                self.prune_canvas_to_named(&named);
+                held = self.canvas_held_bytes();
+            }
             if held + bytes > held_bytes {
                 // Refused for now, and not remembered as failed: it is decoded again when there
-                // is room (the host keeps its source, `canvas_kept`).
+                // is room (the host keeps its source, `canvas_kept`). Its ids show their cells.
                 refused_here.insert(key, bytes);
                 continue;
             }
@@ -926,7 +988,9 @@ impl App {
         // kept by its source, per id, so a later answer that says `unchanged` still gets it
         // decoded. Replaced as a whole: an id the canvas no longer names, or a picture that landed,
         // is released.
-        self.canvas_kept = pics
+        let unhashed_pending = pics.sources.iter().any(|(_, k)| k.key.is_none());
+        let before = std::mem::take(&mut self.canvas_kept);
+        let mut kept: Vec<(u64, KeptPicture)> = pics
             .sources
             .into_iter()
             .filter(|(_, k)| {
@@ -945,9 +1009,50 @@ impl App {
                 (id, k)
             })
             .collect();
+        // The kept sources are bounded too: past `kept_source_bytes` of source data the oldest
+        // (the ones kept longest, then the first deferred) are dropped, and their ids show their
+        // cells until the plugin sends the picture again.
+        kept.sort_by_key(|(id, _)| !before.contains_key(id));
+        let mut total: u64 = kept.iter().map(|(_, k)| source_bytes(&k.data)).sum();
+        let mut dropped = 0;
+        while total > kept_source_bytes && dropped < kept.len() {
+            total -= source_bytes(&kept[dropped].1.data);
+            dropped += 1;
+        }
+        self.canvas_kept = kept.into_iter().skip(dropped).collect();
+        self.prune_canvas_to_named(&named);
         self.canvas_places = pics.places;
         self.sweep_canvas_kitty_ids();
-        pics.more && added_any
+        // Ask again for what the work limits left (`more`), and for a refused picture that fits now
+        // that room grew (an entry went): the next answer decodes it from the kept source.
+        let room = held_bytes.saturating_sub(self.canvas_held_bytes());
+        let room_for_refused = self
+            .canvas_kept
+            .values()
+            .any(|k| k.needs.is_some_and(|n| n <= room));
+        (pics.more && (added_any || unhashed_pending)) || room_for_refused
+    }
+
+    /// The entry the canvas id `id` is drawn from gives way to its new content `new` (which is
+    /// not there to be drawn): the pointer goes, so the cells show and the entry is dropped by the
+    /// next [`Self::prune_canvas_to_named`] unless something else names or draws from it. Nothing
+    /// happens when `new` is the entry itself.
+    fn canvas_front_gives_way(&mut self, id: u64, new: Option<&str>) {
+        if self
+            .canvas_front
+            .get(&id)
+            .is_some_and(|front| new != Some(&**front))
+        {
+            self.canvas_front.remove(&id);
+        }
+    }
+
+    /// Drop the canvas entries that neither `named` (the keys the canvas names) nor a front
+    /// pointer keeps.
+    fn prune_canvas_to_named(&mut self, named: &HashSet<PathBuf>) {
+        let mut live = named.clone();
+        live.extend(self.canvas_front.values().map(|k| PathBuf::from(&**k)));
+        self.prune_canvas_pictures(&live);
     }
 
     /// Drop the cache entries of the canvas pictures not in `live` (and the drawn-from pointer of

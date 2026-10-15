@@ -2388,3 +2388,27 @@ fn e2e_canvas_the_follow_up_ask_waits_while_the_canvas_is_covered() {
         "the timer asks when it is seen"
     );
 }
+
+#[test]
+fn e2e_canvas_the_follow_up_floor_counts_from_the_landing_of_the_previous_answer() {
+    let mut o = open_with("co_more_landing", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    let t0 = Instant::now();
+    let floor = crate::app::MIN_REDRAW_AFTER;
+    // The answer to the user's own action: no ask came before it, the follow-up goes at once.
+    o.s.app.canvas_ask_more_after_landing(t0);
+    assert!(o.s.app.plugin_wants_view_for_test());
+    o.s.app.clear_plugin_wants_view_for_test();
+    // That ask was answered 10 floors later (the job took long): the answer's own follow-up waits
+    // one floor from the landing, not from the ask (which was long ago).
+    let landed = t0 + floor * 10;
+    o.s.app.canvas_ask_more_after_landing(landed);
+    assert!(
+        !o.s.app.plugin_wants_view_for_test(),
+        "a job longer than the floor does not make the next ask due at once"
+    );
+    assert_eq!(o.s.app.canvas_redraw_deadline(), Some(landed + floor));
+    // The timer asks at that deadline, and an answer landing right after waits again.
+    assert!(o.s.app.canvas_redraw_if_due(landed + floor));
+}
