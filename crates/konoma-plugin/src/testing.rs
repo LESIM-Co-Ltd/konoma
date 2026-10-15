@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::hints::hints;
 use crate::input::Input;
+use crate::key::Key;
 use crate::keys::{self, KeyIssue};
-use crate::session::{Failure, OpenCx, Plugin, Session, ViewCx};
+use crate::session::{ActCx, Failure, OpenCx, Outcome, Plugin, Session, ViewCx};
 use crate::text::Tr;
-use crate::view::{DocumentView, ImageView, TextSource, View, ViewReq};
+use crate::view::{CanvasView, DocumentView, ImageView, TextSource, View, ViewReq};
 
 /// Open a file with a plugin using default (English, no settings, no pixels) contexts.
 pub fn open_file(plugin: &dyn Plugin, path: &Path) -> Result<Box<dyn Session>, Failure> {
@@ -120,6 +121,72 @@ pub fn view_image(session: &mut dyn Session, req: &ViewReq) -> Result<ImageView,
                 .with_detail(format!("{other:?}")))
         }
     }
+}
+
+/// The canvas view of a session. A view of another type is an error, and so is a malformed canvas
+/// ([`CanvasView::check`]), which the host would refuse.
+pub fn view_canvas(session: &mut dyn Session, req: &ViewReq) -> Result<CanvasView, Failure> {
+    match session.view(req, &ViewCx::bare())? {
+        View::Canvas(c) => {
+            c.check().map_err(|e| {
+                Failure::corrupt(Tr::new("malformed canvas")).with_detail(e.to_string())
+            })?;
+            Ok(c)
+        }
+        other => {
+            Err(Failure::unsupported(Tr::new("not a canvas view"))
+                .with_detail(format!("{other:?}")))
+        }
+    }
+}
+
+/// A canvas as plain text, for assertions: one string per row, the symbols of the cells joined
+/// (a continuation cell contributes nothing, so a wide character is written once) and the trailing
+/// spaces cut. Styles and pictures are not in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanvasText {
+    pub rows: Vec<String>,
+}
+
+impl CanvasText {
+    /// Read the rows of `canvas`. A canvas whose cell count does not match its size shows as many
+    /// rows as it has cells for.
+    pub fn of(canvas: &CanvasView) -> CanvasText {
+        let cols = canvas.cols as usize;
+        let rows = if cols == 0 {
+            Vec::new()
+        } else {
+            canvas
+                .cells
+                .chunks(cols)
+                .map(|row| {
+                    let s: String = row.iter().map(|c| c.symbol.as_str()).collect();
+                    s.trim_end().to_string()
+                })
+                .collect()
+        };
+        CanvasText { rows }
+    }
+
+    /// The rows joined by newlines.
+    pub fn text(&self) -> String {
+        self.rows.join("\n")
+    }
+}
+
+impl std::fmt::Display for CanvasText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text())
+    }
+}
+
+/// Send `keys` to a session one by one with default contexts, as the host does while the view
+/// asks for text input, and return each answer in order. The first failure stops the run and is
+/// returned.
+pub fn send_keys(session: &mut dyn Session, keys: &[Key]) -> Result<Vec<Outcome>, Failure> {
+    keys.iter()
+        .map(|k| session.key(k, &ActCx::bare()))
+        .collect()
 }
 
 /// A file made from bytes held in memory, removed when dropped. Keep it alive as long as the

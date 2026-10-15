@@ -217,16 +217,29 @@ fn named(layer: Layer, codes: &[KeyCode]) -> Vec<(KeySpec, Layer)> {
 }
 
 /// The host contexts that show a pane the plugin could add keys to.
-const VIEW_CONTEXTS: [&str; 5] = ["text", "document", "table", "image", "diff"];
+const VIEW_CONTEXTS: [&str; 6] = ["text", "document", "table", "image", "diff", "canvas"];
 
 /// The keys a plugin cannot use in `context` (layers 0 to 3 and the context's layer 2).
 ///
-/// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`. Any other
+/// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`, `canvas`. Any other
 /// name (`git.changes`, a plugin's own screen) is treated as a list.
+///
+/// A `canvas` keeps far fewer: the plugin draws everything, so the host holds back only layer 0,
+/// the verbs, `q`, `Esc`, `Space` and `,` (the menus), and `R` / `J` / `K` / `O` (representation and
+/// page keys, so a canvas that is one representation or page can be left), and leaves scrolling, searching and the
+/// rest of layers 1 and 2 to the plugin.
 pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
     let mut v = Vec::new();
     // Layer 0.
     v.extend(chars(Layer::Global, "?QFPtT[]123456789"));
+    if context == "canvas" {
+        v.extend(chars(Layer::Base, "q, "));
+        v.extend(named(Layer::Base, &[KeyCode::Esc]));
+        v.extend(chars(Layer::Verb, "eop!"));
+        // Layer 2 keys that move out of a canvas that is one representation or one page.
+        v.extend(chars(Layer::Type, "RJKO"));
+        return v;
+    }
     // Layer 1.
     v.extend(chars(Layer::Base, "jkhlgG0$q/nNvVyYrm', "));
     v.extend(ctrls(Layer::Base, "dufbnpt"));

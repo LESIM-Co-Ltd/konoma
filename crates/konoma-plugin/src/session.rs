@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::input::Input;
+use crate::key::Key;
 use crate::manifest::Manifest;
 use crate::settings::Settings;
 use crate::text::Tr;
@@ -32,6 +33,15 @@ pub trait Session: Send {
         let _ = (action, cx);
         Ok(Outcome::Unhandled)
     }
+    /// A key press, while the view asked for text input ([`crate::view::CanvasView::text_input`]).
+    /// Every key but `Esc` comes here, a paste as one [`crate::key::KeyCode::Paste`]; `Esc` is the
+    /// host's (it leaves the input state) and arrives here too, as a notice that cannot be
+    /// refused. Keys are never dropped: those that came while a call was running arrive one by
+    /// one in order. Return [`Outcome::Redraw`] to have the view asked for again.
+    fn key(&mut self, key: &Key, cx: &ActCx) -> Result<Outcome, Failure> {
+        let _ = (key, cx);
+        Ok(Outcome::Unhandled)
+    }
     /// Whether a declared action works now. The host uses one answer for the key handler, the
     /// footer and the help, so a hint is shown only while the key acts.
     fn enabled(&self, action: &str) -> bool {
@@ -40,11 +50,26 @@ pub trait Session: Send {
     }
 }
 
+/// How many colors the terminal shows. The host does not convert a plugin's colors: a plugin
+/// that draws its own cells ([`crate::view::CanvasView`]) picks colors by this.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ColorDepth {
+    /// The 16 named colors. The default: when nothing is known, promise the least.
+    #[default]
+    Ansi16,
+    /// The 256-color palette ([`crate::Color::Indexed`]).
+    Ansi256,
+    /// 24-bit color ([`crate::Color::Rgb`]).
+    TrueColor,
+}
+
 /// What the terminal can do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermCaps {
     /// Whether real pixels can be drawn (a graphics protocol).
     pub pixels: bool,
+    /// How many colors can be shown.
+    pub colors: ColorDepth,
 }
 
 /// A cancellation check the host passes to long work.

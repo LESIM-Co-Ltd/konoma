@@ -1940,6 +1940,7 @@ version = "0.1.0"
 dependencies = [
  "globset",
  "konoma-test-support",
+ "unicode-width",
 ]
 
 [[package]]

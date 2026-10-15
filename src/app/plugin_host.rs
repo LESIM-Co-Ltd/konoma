@@ -160,6 +160,17 @@ fn undeclared_view(
     let Some(got) = view.kind() else {
         return Ok(view);
     };
+    // stage 2.5: drawn in T2. Until then a canvas is treated as a view the host cannot show.
+    if matches!(view, View::Canvas(_)) {
+        return Err(Failure::unsupported(
+            konoma_plugin::Tr::new(format!(
+                "plugin {id} returned a canvas view, which is not supported yet"
+            ))
+            .ja(format!(
+                "プラグイン {id} は自由描画の表示を返しましたが、まだ対応していません"
+            )),
+        ));
+    }
     let checked = !declared.is_empty() || unscreened;
     if !checked || crate::plugins::is_internal(id) || view.fits(declared) {
         return Ok(view);
@@ -545,7 +556,11 @@ impl PluginWork {
                 .map(|id| (id.clone(), session.enabled(id)))
                 .collect()
         };
-        let term = TermCaps { pixels };
+        // stage 2.5: the color depth is detected in a later task; Ansi16 promises the least.
+        let term = TermCaps {
+            pixels,
+            ..TermCaps::default()
+        };
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
         let profile = crate::plugins::profile_of(&id);

@@ -50,11 +50,14 @@ pub enum ViewKind {
     Diff,
     /// A list of rows.
     List,
+    /// Cells and pictures the plugin draws itself (see [`crate::view::CanvasView`]). The host
+    /// keeps only a few keys for itself in this context.
+    Canvas,
 }
 
 impl ViewKind {
     /// The name of the key context of this kind (`text`, `document`, `table`, `image`, `diff`,
-    /// `list`).
+    /// `list`, `canvas`).
     pub fn context(self) -> &'static str {
         match self {
             ViewKind::Text => "text",
@@ -63,6 +66,7 @@ impl ViewKind {
             ViewKind::Image => "image",
             ViewKind::Diff => "diff",
             ViewKind::List => "list",
+            ViewKind::Canvas => "canvas",
         }
     }
 }

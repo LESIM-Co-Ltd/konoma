@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use crate::input::{LazyResource, Origin, Resources};
 use crate::manifest::ViewKind;
-use crate::style::Line;
+use crate::style::{Line, Style};
 use crate::text::Tr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// How a session can be shown: its representations and its pages.
 ///
@@ -112,6 +113,8 @@ pub enum View {
     Image(ImageView),
     List(ListView),
     Diff(DiffView),
+    /// Cells and picture placements the plugin draws itself.
+    Canvas(CanvasView),
     /// "Open this again as that content type" (a converted document, say).
     Reopen(Reopen),
     Message(MessageView),
@@ -128,6 +131,7 @@ impl View {
             View::Image(_) => Some(ViewKind::Image),
             View::List(_) => Some(ViewKind::List),
             View::Diff(_) => Some(ViewKind::Diff),
+            View::Canvas(_) => Some(ViewKind::Canvas),
             View::Message(_) => None,
         }
     }
@@ -486,4 +490,308 @@ pub struct Reopen {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MessageView {
     pub lines: Vec<Line>,
+}
+
+/// One cell of a canvas: a symbol (one grapheme) and its style.
+///
+/// The symbol of a wide character (CJK, most emoji) sits in its left cell and the cell to its
+/// right holds the empty string (a *continuation*), the same as ratatui's buffer. The default cell
+/// is one space with the default style.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanvasCell {
+    pub symbol: String,
+    pub style: Style,
+}
+
+impl CanvasCell {
+    /// A cell of `symbol` in `style`.
+    pub fn new(symbol: impl Into<String>, style: Style) -> CanvasCell {
+        CanvasCell {
+            symbol: symbol.into(),
+            style,
+        }
+    }
+
+    /// Whether this is the empty right half of a wide character.
+    pub fn is_continuation(&self) -> bool {
+        self.symbol.is_empty()
+    }
+}
+
+impl Default for CanvasCell {
+    fn default() -> CanvasCell {
+        CanvasCell {
+            symbol: " ".to_string(),
+            style: Style::default(),
+        }
+    }
+}
+
+/// A rectangle of canvas cells.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellRect {
+    pub x: u16,
+    pub y: u16,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl CellRect {
+    pub fn new(x: u16, y: u16, cols: u16, rows: u16) -> CellRect {
+        CellRect { x, y, cols, rows }
+    }
+}
+
+/// A picture placed on a canvas, covering `cols` x `rows` cells from (`x`, `y`).
+///
+/// **`id` names the picture**: the same `id` means the same picture, so the host keeps the
+/// decoded and encoded pixels and the terminal's stored copy for it and does not redo the work
+/// when the plugin returns the same `id` again (an animation that moves a sprite sends the sprite
+/// once). Give a different `id` whenever the pixels differ. [`ImageData::Lazy`] is not allowed on
+/// a canvas, which is plain data ([`CanvasView::check`] refuses it).
+#[derive(Clone, Debug)]
+pub struct CanvasImage {
+    pub id: u64,
+    pub x: u16,
+    pub y: u16,
+    pub cols: u16,
+    pub rows: u16,
+    pub image: ImageData,
+}
+
+/// What is wrong with a canvas ([`CanvasView::check`]). The host refuses such a canvas with a
+/// message instead of drawing it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanvasIssue {
+    /// `cells.len()` is not `cols * rows`.
+    CellCount { expected: usize, actual: usize },
+    /// Image number `index` reaches outside the canvas.
+    ImageOutOfBounds { index: usize },
+    /// Image number `index` covers no cell.
+    ImageZeroSize { index: usize },
+    /// Image number `index` is [`ImageData::Lazy`] (also inside animation frames).
+    ImageLazy { index: usize },
+}
+
+impl fmt::Display for CanvasIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CanvasIssue::CellCount { expected, actual } => {
+                write!(f, "canvas has {actual} cells, expected {expected}")
+            }
+            CanvasIssue::ImageOutOfBounds { index } => {
+                write!(f, "canvas image {index} is outside the canvas")
+            }
+            CanvasIssue::ImageZeroSize { index } => {
+                write!(f, "canvas image {index} covers no cell")
+            }
+            CanvasIssue::ImageLazy { index } => {
+                write!(
+                    f,
+                    "canvas image {index} is lazy, which a canvas cannot hold"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CanvasIssue {}
+
+/// A view the plugin draws itself: a grid of styled cells plus picture placements. It is plain
+/// data (no closures), so it can cross a process boundary as it is.
+///
+/// Colors: the host does not convert. Read [`crate::TermCaps::colors`] and pick colors the
+/// terminal can show.
+#[derive(Clone, Debug)]
+pub struct CanvasView {
+    pub cols: u16,
+    pub rows: u16,
+    /// Row by row, `cols * rows` cells.
+    pub cells: Vec<CanvasCell>,
+    /// Drawn over the cells, in order.
+    pub images: Vec<CanvasImage>,
+    /// Ask the host to call `view` again after this long (at least 33 ms; only while the canvas
+    /// is on screen).
+    pub redraw_after: Option<Duration>,
+    /// Ask the host to send every key but `Esc` to [`crate::Session::key`].
+    pub text_input: bool,
+}
+
+impl CanvasView {
+    /// A blank canvas.
+    pub fn new(cols: u16, rows: u16) -> CanvasView {
+        CanvasView {
+            cols,
+            rows,
+            cells: vec![CanvasCell::default(); cols as usize * rows as usize],
+            images: Vec::new(),
+            redraw_after: None,
+            text_input: false,
+        }
+    }
+
+    fn index(&self, x: u16, y: u16) -> Option<usize> {
+        (x < self.cols && y < self.rows).then(|| y as usize * self.cols as usize + x as usize)
+    }
+
+    /// The cell at (`x`, `y`), if inside.
+    pub fn cell(&self, x: u16, y: u16) -> Option<&CanvasCell> {
+        self.index(x, y).and_then(|i| self.cells.get(i))
+    }
+
+    /// The cell at (`x`, `y`) for changing, if inside. Writing a wide character by hand is on you;
+    /// [`CanvasView::set_string`] keeps the halves together.
+    pub fn cell_mut(&mut self, x: u16, y: u16) -> Option<&mut CanvasCell> {
+        let i = self.index(x, y)?;
+        self.cells.get_mut(i)
+    }
+
+    /// Blank the cell at (`x`, `y`) keeping its style (a half of a wide character that lost the
+    /// other half).
+    fn blank(&mut self, x: u16, y: u16) {
+        if let Some(c) = self.cell_mut(x, y) {
+            c.symbol = " ".to_string();
+        }
+    }
+
+    /// Before the cells `x0..x1` of row `y` are overwritten, blank the neighbours that would be
+    /// left as half of a wide character.
+    fn break_wide(&mut self, y: u16, x0: u16, x1: u16) {
+        if x1 <= x0 {
+            return;
+        }
+        if x0 > 0 && self.cell(x0, y).is_some_and(CanvasCell::is_continuation) {
+            self.blank(x0 - 1, y);
+        }
+        let last = x1 - 1;
+        let right_is_cont = self.cell(x1, y).is_some_and(CanvasCell::is_continuation);
+        let last_is_wide = self
+            .cell(last, y)
+            .is_some_and(|c| !c.is_continuation() && c.symbol.width() >= 2);
+        if right_is_cont && last_is_wide {
+            self.blank(x1, y);
+        }
+    }
+
+    /// Write `s` from (`x`, `y`) in `style` and return how many columns it took.
+    ///
+    /// Widths are display widths: a wide character takes two cells (the right one is a
+    /// continuation), a zero-width character (a combining mark, a variation selector, a joiner and
+    /// what it joins) is added to the cell before it, and a control character is skipped. The text
+    /// is clipped at the right edge; a wide character that does not fit whole is not written at
+    /// all. Overwriting one half of a wide character blanks the other half. Nothing is written
+    /// outside the canvas, and a newline is not special (it is skipped like any control).
+    pub fn set_string(&mut self, x: u16, y: u16, s: &str, style: Style) -> u16 {
+        if y >= self.rows {
+            return 0;
+        }
+        let mut cx = x as u32;
+        // The cell that owns the last written character (the one a zero-width char joins).
+        let mut owner: Option<u16> = None;
+        let mut after_joiner = false;
+        for ch in s.chars() {
+            let w = match ch.width() {
+                Some(w) => w as u32,
+                None => continue,
+            };
+            if w == 0 || after_joiner {
+                // Joins the previous character. Nothing to join at the start: dropped.
+                if let Some(o) = owner {
+                    if let Some(c) = self.cell_mut(o, y) {
+                        c.symbol.push(ch);
+                    }
+                }
+                after_joiner = ch == '\u{200D}';
+                continue;
+            }
+            if cx + w > self.cols as u32 {
+                break;
+            }
+            let at = cx as u16;
+            self.break_wide(y, at, at + w as u16);
+            for k in 0..w as u16 {
+                if let Some(c) = self.cell_mut(at + k, y) {
+                    c.symbol = if k == 0 {
+                        ch.to_string()
+                    } else {
+                        String::new()
+                    };
+                    c.style = style;
+                }
+            }
+            owner = Some(at);
+            after_joiner = false;
+            cx += w;
+        }
+        (cx - x as u32) as u16
+    }
+
+    /// Set every cell of `rect` (clipped to the canvas) to a space in `style`. The halves of wide
+    /// characters cut by the edge of `rect` are blanked.
+    pub fn fill(&mut self, rect: CellRect, style: Style) {
+        let x1 = (rect.x as u32 + rect.cols as u32).min(self.cols as u32) as u16;
+        let y1 = (rect.y as u32 + rect.rows as u32).min(self.rows as u32) as u16;
+        for y in rect.y..y1 {
+            self.break_wide(y, rect.x, x1);
+            for x in rect.x..x1 {
+                if let Some(c) = self.cell_mut(x, y) {
+                    c.symbol = " ".to_string();
+                    c.style = style;
+                }
+            }
+        }
+    }
+
+    /// Add a picture placement.
+    pub fn image(mut self, image: CanvasImage) -> CanvasView {
+        self.images.push(image);
+        self
+    }
+
+    /// Ask to be drawn again after `after`.
+    pub fn redraw_after(mut self, after: Duration) -> CanvasView {
+        self.redraw_after = Some(after);
+        self
+    }
+
+    /// Ask for the keys (`true`) or not.
+    pub fn text_input(mut self, on: bool) -> CanvasView {
+        self.text_input = on;
+        self
+    }
+
+    /// Whether the canvas is well-formed: `cells.len() == cols * rows`, every image non-empty,
+    /// inside the canvas, and not lazy. The host calls this and refuses a bad canvas with the
+    /// issue's message.
+    pub fn check(&self) -> Result<(), CanvasIssue> {
+        let expected = self.cols as usize * self.rows as usize;
+        if self.cells.len() != expected {
+            return Err(CanvasIssue::CellCount {
+                expected,
+                actual: self.cells.len(),
+            });
+        }
+        for (index, im) in self.images.iter().enumerate() {
+            if im.cols == 0 || im.rows == 0 {
+                return Err(CanvasIssue::ImageZeroSize { index });
+            }
+            if im.x as u32 + im.cols as u32 > self.cols as u32
+                || im.y as u32 + im.rows as u32 > self.rows as u32
+            {
+                return Err(CanvasIssue::ImageOutOfBounds { index });
+            }
+            if has_lazy(&im.image) {
+                return Err(CanvasIssue::ImageLazy { index });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn has_lazy(data: &ImageData) -> bool {
+    match data {
+        ImageData::Lazy(_) => true,
+        ImageData::Frames(frames) => frames.iter().any(|(d, _)| has_lazy(d)),
+        _ => false,
+    }
 }

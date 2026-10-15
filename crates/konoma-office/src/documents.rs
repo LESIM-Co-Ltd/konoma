@@ -514,7 +514,10 @@ mod tests {
         };
         session.view(
             &req,
-            &ViewCx::new(settings, "en").with_term(TermCaps { pixels }),
+            &ViewCx::new(settings, "en").with_term(TermCaps {
+                pixels,
+                ..TermCaps::default()
+            }),
         )
     }
 
