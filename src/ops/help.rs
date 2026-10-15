@@ -195,6 +195,8 @@ pub fn help_context(app: &App) -> Context {
         crate::app::Mode::Preview => {
             if app.is_table_preview() {
                 Context::Table
+            } else if app.is_canvas_preview() {
+                Context::Canvas
             } else if app.document_text_missing() {
                 Context::Text
             } else if app.is_image_preview() {
@@ -230,6 +232,7 @@ fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         Context::Text | Context::Document => text_rows(app, ctx),
         Context::Image => (Msg::PreviewImage, image_rows()),
         Context::Table => (Msg::PreviewTable, table_rows()),
+        Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
         #[cfg(feature = "git")]
         Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
         #[cfg(feature = "git")]
@@ -377,6 +380,21 @@ fn image_rows() -> Vec<Row> {
         r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(&[Action::Refresh]),
         r(&[Action::CyclePathStyle]),
+        r(BACK_PREVIEW),
+    ]
+}
+
+/// The keys the host keeps in a canvas; the plugin's own are the plugin's section.
+fn canvas_rows() -> Vec<Row> {
+    vec![
+        r(PAGE_TURN),
+        r(&[Action::ToggleOutline]),
+        r(&[Action::CycleRepresentation]),
+        r(&[Action::RequestEdit]),
+        r(&[Action::OpenExternal]),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(BACK_PREVIEW),
     ]
 }

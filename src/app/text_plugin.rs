@@ -57,7 +57,7 @@ fn modifier_of(m: PModifier) -> Modifier {
     Modifier::from_bits_truncate(m.bits())
 }
 
-fn style_of(s: PStyle) -> Style {
+pub(crate) fn style_of(s: PStyle) -> Style {
     let mut out = Style::default()
         .add_modifier(modifier_of(s.add))
         .remove_modifier(modifier_of(s.sub));

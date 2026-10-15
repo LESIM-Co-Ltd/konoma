@@ -1531,6 +1531,9 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Right => app.image_pan(1.0, 0.0),
             _ => {}
         },
+        // A plugin's canvas has nothing the host scrolls or pans: no key is a motion there (the
+        // keys are the plugin's).
+        Surface::PreviewCanvas => {}
         // Table (csv/tsv): hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last
         // column / paging.
         Surface::PreviewTable => match m {
@@ -2213,7 +2216,10 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         // Tables also have search, so use the same convention as text/image (previously Esc did
         // nothing here = the search highlight couldn't be cleared, and you couldn't return to the
         // tree either).
-        Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable => {
+        Surface::PreviewText
+        | Surface::PreviewImage
+        | Surface::PreviewTable
+        | Surface::PreviewCanvas => {
             // If a search is active, clear it; otherwise return to the tree.
             if app.preview_search_query().is_some() {
                 app.search_clear();

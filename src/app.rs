@@ -50,6 +50,9 @@ pub(crate) use embed_plugin::probe_fence_picture;
 pub(crate) use md_media::redraw_svg;
 #[cfg(test)]
 pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
+#[cfg(test)]
+pub(crate) use plugin_host::color_depth_from as color_depth_from_for_test;
+pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
@@ -147,6 +150,8 @@ pub enum BaseKind {
     PreviewText,
     PreviewImage,
     PreviewTable,
+    /// A plugin's free-drawing view (`View::Canvas`).
+    PreviewCanvas,
 }
 
 /// The bottom layer of the UI stack, plus the two facts that decorate it.
@@ -249,6 +254,7 @@ impl BaseLayer {
             BaseKind::Tree => S::Tree,
             BaseKind::PreviewImage => S::PreviewImage,
             BaseKind::PreviewTable => S::PreviewTable,
+            BaseKind::PreviewCanvas => S::PreviewCanvas,
             BaseKind::PreviewText => {
                 if self.preview_visual {
                     S::PreviewTextVisual
@@ -461,6 +467,7 @@ impl crate::keymap::Surface {
             S::PreviewTextVisual => base(BaseKind::PreviewText, true),
             S::PreviewImage => base(BaseKind::PreviewImage, false),
             S::PreviewTable => base(BaseKind::PreviewTable, false),
+            S::PreviewCanvas => base(BaseKind::PreviewCanvas, false),
         }
     }
 }
@@ -1619,6 +1626,9 @@ pub struct App {
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
     /// offloaded to a separate thread via `img_tx`, and the result is applied in apply_image_resize.
     picker: Option<Picker>,
+    /// How many colors the terminal shows, read once from `COLORTERM` / `TERM` at startup and
+    /// handed to the plugins (`TermCaps::colors`); the host never converts a plugin's colors.
+    plugin_colors: konoma_plugin::ColorDepth,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     pub image: Option<ThreadProtocol>,
     /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
@@ -3122,6 +3132,9 @@ pub(crate) struct PerTab {
     pub(crate) preview_hscroll: u16,
     /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
     pub(crate) preview_viewport: u16,
+    /// Width (in columns) of the preview content area at the last render that measured it
+    /// (`ui::preview::render`); 0 until the preview has been drawn. A plugin's `ViewReq::cols`.
+    pub(crate) preview_cols: u16,
     table_cur_row: usize,
     table_cur_col: usize,
     table_top_row: usize,
@@ -3338,6 +3351,7 @@ impl Default for PerTab {
             preview_scroll: 0,
             preview_hscroll: 0,
             preview_viewport: 0,
+            preview_cols: 0,
             table_cur_row: 0,
             table_cur_col: 0,
             table_top_row: 0,
@@ -3493,6 +3507,7 @@ impl App {
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
             picker: None,
+            plugin_colors: plugin_host::detect_color_depth(),
             img_tx: None,
             image: None,
             use_kitty: false,
@@ -3952,6 +3967,7 @@ impl App {
             kind: match self.tab.mode {
                 Mode::Preview if self.is_image_preview() => BaseKind::PreviewImage,
                 Mode::Preview if self.is_table_preview() => BaseKind::PreviewTable,
+                Mode::Preview if self.is_canvas_preview() => BaseKind::PreviewCanvas,
                 Mode::Preview => BaseKind::PreviewText,
                 Mode::Tree => BaseKind::Tree,
             },

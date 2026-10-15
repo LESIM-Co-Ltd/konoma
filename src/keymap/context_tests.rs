@@ -31,6 +31,7 @@ fn context_names_are_the_documented_ones() {
     #[allow(unused_mut)]
     let mut expected: Vec<&str> = vec![
         "bookmarks",
+        "canvas",
         "document",
         "help",
         "image",

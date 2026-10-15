@@ -19,7 +19,7 @@ use crate::plugins::{ActBinding, PluginAct};
 fn is_view_context(ctx: Context) -> bool {
     matches!(
         ctx,
-        Context::Text | Context::Document | Context::Table | Context::Image
+        Context::Text | Context::Document | Context::Table | Context::Image | Context::Canvas
     )
 }
 

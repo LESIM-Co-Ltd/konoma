@@ -286,7 +286,7 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
     match a {
         A::RequestEdit => {
             t.label = app.edit_label(M::HintEdit, M::HintOpen);
-            t.help = if matches!(ctx, Context::Image | Context::Table) {
+            t.help = if matches!(ctx, Context::Image | Context::Table | Context::Canvas) {
                 app.edit_help_label(M::EditExternal)
             } else {
                 app.edit_help_label(M::EditExternalEnv)

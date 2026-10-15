@@ -50,7 +50,8 @@ use std::time::Duration;
 
 use konoma_plugin::view::{DocOptions, DocumentView, Layout, PageLayout, TableView, View, ViewReq};
 use konoma_plugin::{
-    t, ActCx, Cancel, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings, TermCaps, ViewCx,
+    t, ActCx, Cancel, ColorDepth, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings,
+    TermCaps, ViewCx,
 };
 
 use super::media_plugin::image_failure_of;
@@ -111,6 +112,39 @@ impl Drop for LongFirstFrame {
     }
 }
 
+/// How many colors the terminal shows, from the values of `COLORTERM` and `TERM` (pure: the
+/// caller reads the environment).
+///
+/// `COLORTERM=truecolor|24bit` is the standard claim of 24-bit color; failing that, a `TERM` that
+/// names a terminal known to draw 24-bit color without saying so (kitty, Ghostty, WezTerm) is
+/// true color too; a `TERM` with `256color` is the 256-color palette; anything else (or nothing
+/// known) promises the 16 named colors only.
+pub(crate) fn color_depth_from(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
+    let colorterm = colorterm.unwrap_or("").trim().to_ascii_lowercase();
+    if colorterm == "truecolor" || colorterm == "24bit" {
+        return ColorDepth::TrueColor;
+    }
+    let term = term.unwrap_or("").trim().to_ascii_lowercase();
+    if matches!(
+        term.as_str(),
+        "xterm-kitty" | "xterm-ghostty" | "wezterm" | "ghostty" | "kitty"
+    ) {
+        return ColorDepth::TrueColor;
+    }
+    if term.contains("256color") {
+        return ColorDepth::Ansi256;
+    }
+    ColorDepth::Ansi16
+}
+
+/// [`color_depth_from`] for the environment of this process. Read once, at startup.
+pub(crate) fn detect_color_depth() -> ColorDepth {
+    color_depth_from(
+        std::env::var("COLORTERM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
 /// Where the plugin show stands.
 pub(crate) enum PluginPhase {
     /// The first `open` has not come back.
@@ -160,20 +194,9 @@ fn undeclared_view(
     let Some(got) = view.kind() else {
         return Ok(view);
     };
-    // stage 2.5: drawn in T2. Until then a canvas is treated as a view the host cannot show.
-    if matches!(view, View::Canvas(_)) {
-        return Err(Failure::unsupported(
-            konoma_plugin::Tr::new(format!(
-                "plugin {id} returned a canvas view, which is not supported yet"
-            ))
-            .ja(format!(
-                "プラグイン {id} は自由描画の表示を返しましたが、まだ対応していません"
-            )),
-        ));
-    }
     let checked = !declared.is_empty() || unscreened;
     if !checked || crate::plugins::is_internal(id) || view.fits(declared) {
-        return Ok(view);
+        return well_formed(id, view);
     }
     let kind = got.context();
     let tr = if declared.is_empty() {
@@ -197,6 +220,29 @@ fn undeclared_view(
         ))
     };
     Err(Failure::unsupported(tr))
+}
+
+/// The view, or the failure that says a canvas it holds is malformed (`CanvasView::check`: the cell
+/// count does not match the size, a picture reaches outside, a lazy picture). The host refuses
+/// such a canvas with a message instead of drawing it. Any other view passes.
+fn well_formed(id: &str, view: View) -> Result<View, Failure> {
+    use crate::i18n::{tr, Lang, Msg};
+    let View::Canvas(c) = &view else {
+        return Ok(view);
+    };
+    match c.check() {
+        Ok(()) => Ok(view),
+        Err(issue) => Err(Failure::corrupt(
+            konoma_plugin::Tr::new(format!(
+                "{} ({id}): {issue}",
+                tr(Lang::En, Msg::PluginCanvasInvalid)
+            ))
+            .ja(format!(
+                "{}（{id}）: {issue}",
+                tr(Lang::Jp, Msg::PluginCanvasInvalid)
+            )),
+        )),
+    }
 }
 
 /// What a worker is asked to do.
@@ -249,6 +295,8 @@ pub(crate) struct PluginWork {
     pub(super) settings: Settings,
     pub(super) lang: String,
     pub(super) pixels: bool,
+    /// How many colors the terminal shows (`TermCaps::colors`).
+    pub(super) colors: ColorDepth,
     /// The file shown (a picture's relative references resolve from it).
     pub(super) path: PathBuf,
     /// Whether the plugin may start an external program (`[external] pdf` / `video`).
@@ -540,6 +588,7 @@ impl PluginWork {
             settings,
             lang,
             pixels,
+            colors,
             path,
             external,
             default_raster_px,
@@ -556,11 +605,7 @@ impl PluginWork {
                 .map(|id| (id.clone(), session.enabled(id)))
                 .collect()
         };
-        // stage 2.5: the color depth is detected in a later task; Ansi16 promises the least.
-        let term = TermCaps {
-            pixels,
-            ..TermCaps::default()
-        };
+        let term = TermCaps { pixels, colors };
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
         let profile = crate::plugins::profile_of(&id);
@@ -1021,7 +1066,16 @@ impl App {
     /// The request a view is asked with: the size of the preview area as far as it is known, and
     /// the page the tab is on (counted from 0; a plugin without pages ignores it).
     pub(super) fn plugin_view_req(&self) -> ViewReq {
+        // The size of the area the view is drawn into, as the last frame measured it
+        // (`ui::preview::render`). Before the first frame there is no measure: the width is the
+        // old 80, the height one row, and a canvas is asked again once it is drawn
+        // (`App::refit_canvas`).
         let rows = self.tab.preview_viewport.max(1);
+        let cols = if self.tab.preview_cols == 0 {
+            80
+        } else {
+            self.tab.preview_cols
+        };
         // The source view is the host's own for a standalone diagram file (no plugin round trip);
         // any other `source` is a representation the plugin declared, asked for like the rest.
         let repr = self.tab.repr.clone().filter(|r| {
@@ -1032,8 +1086,69 @@ impl App {
         ViewReq {
             repr,
             page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
-            ..ViewReq::new(80, rows)
+            cell_px: self.plugin_cell_px(),
+            ..ViewReq::new(cols, rows)
         }
+    }
+
+    /// Test-only: pretend the terminal shows `colors` (the real value is read from the
+    /// environment once, at startup).
+    #[cfg(test)]
+    pub(crate) fn set_plugin_colors_for_test(&mut self, colors: ColorDepth) {
+        self.plugin_colors = colors;
+    }
+
+    /// The size of one terminal cell in pixels, for the plugins that draw pictures; `None` when
+    /// the terminal draws no pixels (no image backend, or half blocks).
+    fn plugin_cell_px(&self) -> Option<(u16, u16)> {
+        if !self.terminal_draws_pixels() {
+            return None;
+        }
+        self.picker.as_ref().map(|p| {
+            let f = p.font_size();
+            (f.width, f.height)
+        })
+    }
+
+    /// Whether the preview on screen is a canvas a plugin drew (`View::Canvas`) for this file.
+    pub fn is_canvas_preview(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+            && self.plugin.as_ref().is_some_and(|p| {
+                matches!(p.phase, PluginPhase::Ready)
+                    && matches!(p.view, Some(View::Canvas(_)))
+                    && self.shows_plugin_file(p)
+            })
+    }
+
+    /// The canvas the plugin show holds, if it is the one on screen.
+    pub(crate) fn canvas_view(&self) -> Option<&konoma_plugin::view::CanvasView> {
+        if !self.is_canvas_preview() {
+            return None;
+        }
+        match self.plugin.as_ref()?.view.as_ref()? {
+            View::Canvas(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Ask the plugin for the canvas again when the area it is drawn into is not the size of the
+    /// request that produced it (the terminal was resized, the first frame measured the area).
+    /// Called by the frame that drew the canvas. At most one request is out: while a job holds the
+    /// session nothing is asked, and the job's result is compared with the size at the next
+    /// frame, so a drag that resizes many times asks the plugin once per answer, always for the
+    /// newest size (latest wins). Returns whether a request was started.
+    pub(crate) fn refit_canvas(&mut self) -> bool {
+        if !self.is_canvas_preview() {
+            return false;
+        }
+        let want = self.plugin_view_req();
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        if show.session.is_none() || (show.req.cols, show.req.rows) == (want.cols, want.rows) {
+            return false;
+        }
+        self.plugin_request_view(want)
     }
 
     /// What a worker needs when the plugin `id` declares it shows a document (`shows(Document)`):
@@ -1074,6 +1189,7 @@ impl App {
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
+            colors: self.plugin_colors,
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
             document: self.document_job(&id),
             id,

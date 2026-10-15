@@ -446,11 +446,9 @@ fn fixed_keys_have_a_default_operation_per_context() {
     use crossterm::event::KeyCode as K;
     for ctx in Context::all() {
         assert_eq!(fixed_action(ctx, K::Esc), Some(Action::Cancel), "{ctx:?}");
-        assert_eq!(
-            fixed_action(ctx, K::Up),
-            Some(Action::Navigate(Motion::Up)),
-            "{ctx:?}"
-        );
+        // A canvas has nothing to move: the arrows are the plugin's, so the host binds none.
+        let up = (ctx != Context::Canvas).then_some(Action::Navigate(Motion::Up));
+        assert_eq!(fixed_action(ctx, K::Up), up, "{ctx:?}");
     }
     let enter = |c| fixed_action(c, K::Enter);
     assert_eq!(enter(Context::Tree), Some(Action::TreeActivate));

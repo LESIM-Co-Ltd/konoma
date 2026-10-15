@@ -180,6 +180,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         settings: Settings::new(),
         lang: "en".to_string(),
         pixels: false,
+        colors: konoma_plugin::ColorDepth::default(),
         path,
         external: false,
         default_raster_px: 800,

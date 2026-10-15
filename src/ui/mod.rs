@@ -4,6 +4,7 @@
 // full-screen per mode.)
 
 pub mod bookmarks;
+pub mod canvas;
 pub mod dialog;
 pub mod git;
 pub mod help;
