@@ -320,10 +320,7 @@ mod tests {
         lang: &str,
         settings: &Settings,
     ) -> Result<TableView, Failure> {
-        let req = ViewReq {
-            page: Some(page),
-            ..ViewReq::default()
-        };
+        let req = ViewReq::default().page(page);
         match session.view(&req, &ViewCx::new(settings, lang))? {
             View::Table(t) => Ok(t),
             other => panic!("expected a table: {other:?}"),

@@ -207,10 +207,9 @@ impl App {
             }
         };
         // The page asked for, counted from 0 in the request.
-        let req = ViewReq {
-            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
-            ..self.plugin_view_req()
-        };
+        let req = self
+            .plugin_view_req()
+            .page(self.tab.page.max(1).saturating_sub(1) as usize);
         let (job, wait) = match session {
             Some(session) => (PluginJob::View { session }, Wait::Nothing),
             None => (

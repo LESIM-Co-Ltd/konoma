@@ -33,14 +33,7 @@ fn rgba() -> ImageData {
 }
 
 fn img(id: u64, x: u16, y: u16, cols: u16, rows: u16, image: ImageData) -> CanvasImage {
-    CanvasImage {
-        id,
-        x,
-        y,
-        cols,
-        rows,
-        image,
-    }
+    CanvasImage::new(id, CellRect::new(x, y, cols, rows), image)
 }
 
 // ---- set_string ----
@@ -423,14 +416,14 @@ fn canvas_context_reserves_little() {
     for c in "?QFPtT[]1q, eop!RJKO".chars() {
         assert!(has(keys::KeySpec::ch(c)), "{c:?} must stay reserved");
     }
-    assert!(has(keys::KeySpec::key(keys::KeyCode::Esc)));
+    assert!(has(keys::KeySpec::key(keys::KeyName::Esc)));
     // Left to the plugin.
     for c in "jkhlgGnNvVyYrm/'0$".chars() {
         assert!(!has(keys::KeySpec::ch(c)), "{c:?} must be free in a canvas");
     }
     assert!(!has(keys::KeySpec::ctrl('d')));
-    assert!(!has(keys::KeySpec::key(keys::KeyCode::Tab)));
-    assert!(!has(keys::KeySpec::key(keys::KeyCode::Up)));
+    assert!(!has(keys::KeySpec::key(keys::KeyName::Tab)));
+    assert!(!has(keys::KeySpec::key(keys::KeyName::Up)));
     assert!(r("canvas").len() < r("text").len());
 }
 
@@ -616,10 +609,7 @@ fn term_caps_colors() {
     assert!(
         ColorDepth::Ansi16 < ColorDepth::Ansi256 && ColorDepth::Ansi256 < ColorDepth::TrueColor
     );
-    let cx = ViewCx::bare().with_term(TermCaps {
-        pixels: true,
-        colors: ColorDepth::TrueColor,
-    });
+    let cx = ViewCx::bare().with_term(TermCaps::new().pixels(true).colors(ColorDepth::TrueColor));
     assert!(cx.term.pixels);
     assert_eq!(cx.term.colors, ColorDepth::TrueColor);
 }

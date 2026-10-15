@@ -123,19 +123,19 @@ impl Session for ClockSession {
 
     fn key(&mut self, key: &Key, _cx: &ActCx) -> Result<Outcome, Failure> {
         match &key.code {
-            InputKeyCode::Char(c) => self.line.push(*c),
-            InputKeyCode::Paste(s) => self.line.push_str(s),
-            InputKeyCode::Backspace => {
+            KeyCode::Char(c) => self.line.push(*c),
+            KeyCode::Paste(s) => self.line.push_str(s),
+            KeyCode::Backspace => {
                 self.line.pop();
             }
-            InputKeyCode::Enter => {
+            KeyCode::Enter => {
                 let line = std::mem::take(&mut self.line);
                 if !line.is_empty() {
                     self.notes.push(line);
                 }
             }
             // The host leaves the input state by itself; this is the notice.
-            InputKeyCode::Esc => self.typing = false,
+            KeyCode::Esc => self.typing = false,
             _ => return Ok(Outcome::Unhandled),
         }
         Ok(Outcome::Redraw)

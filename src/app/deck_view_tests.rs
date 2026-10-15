@@ -175,10 +175,7 @@ fn loaded(doc: Document, repr: &str) -> (LoadedDocument, konoma_plugin::view::La
         PathBuf::from("d.pptx"),
         konoma_office::Converted::from_document(doc),
     );
-    let req = ViewReq {
-        repr: Some(repr.to_string()),
-        ..ViewReq::default()
-    };
+    let req = ViewReq::default().repr(repr);
     let view = session.view(&req, &ViewCx::bare()).unwrap();
     let View::Document(d) = view else {
         panic!("a deck is a document view");

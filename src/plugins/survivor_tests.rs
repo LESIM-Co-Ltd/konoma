@@ -253,7 +253,7 @@ mod declared_acts {
     use super::super::acts::{keypress_of, PluginKeys, PluginNote};
     use crate::keymap::KeyPress;
     use crossterm::event::KeyCode;
-    use konoma_plugin::keys::{KeyCode as PKeyCode, KeySpec};
+    use konoma_plugin::keys::{KeyName as PKeyName, KeySpec};
     use konoma_plugin::prelude::*;
     use konoma_plugin::registry::{PluginOrigin, Registry};
     use konoma_plugin::Act;
@@ -401,22 +401,22 @@ mod declared_acts {
     #[test]
     fn every_plugin_key_code_is_its_host_key() {
         let all = [
-            (PKeyCode::Char('q'), KeyCode::Char('q')),
-            (PKeyCode::Enter, KeyCode::Enter),
-            (PKeyCode::Tab, KeyCode::Tab),
-            (PKeyCode::BackTab, KeyCode::BackTab),
-            (PKeyCode::Esc, KeyCode::Esc),
-            (PKeyCode::Backspace, KeyCode::Backspace),
-            (PKeyCode::Delete, KeyCode::Delete),
-            (PKeyCode::Up, KeyCode::Up),
-            (PKeyCode::Down, KeyCode::Down),
-            (PKeyCode::Left, KeyCode::Left),
-            (PKeyCode::Right, KeyCode::Right),
-            (PKeyCode::Home, KeyCode::Home),
-            (PKeyCode::End, KeyCode::End),
-            (PKeyCode::PageUp, KeyCode::PageUp),
-            (PKeyCode::PageDown, KeyCode::PageDown),
-            (PKeyCode::F(3), KeyCode::F(3)),
+            (PKeyName::Char('q'), KeyCode::Char('q')),
+            (PKeyName::Enter, KeyCode::Enter),
+            (PKeyName::Tab, KeyCode::Tab),
+            (PKeyName::BackTab, KeyCode::BackTab),
+            (PKeyName::Esc, KeyCode::Esc),
+            (PKeyName::Backspace, KeyCode::Backspace),
+            (PKeyName::Delete, KeyCode::Delete),
+            (PKeyName::Up, KeyCode::Up),
+            (PKeyName::Down, KeyCode::Down),
+            (PKeyName::Left, KeyCode::Left),
+            (PKeyName::Right, KeyCode::Right),
+            (PKeyName::Home, KeyCode::Home),
+            (PKeyName::End, KeyCode::End),
+            (PKeyName::PageUp, KeyCode::PageUp),
+            (PKeyName::PageDown, KeyCode::PageDown),
+            (PKeyName::F(3), KeyCode::F(3)),
         ];
         for (p, h) in all {
             assert_eq!(keypress_of(KeySpec::key(p)), KeyPress::key(h), "{p:?}");

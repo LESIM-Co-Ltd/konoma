@@ -297,23 +297,19 @@ fn e2e_canvas_input_every_kind_of_key_is_converted() {
     let shift = KeyMods::SHIFT;
     let cases: Vec<(C, M, PK, KeyMods)> = vec![
         (C::Char('a'), M::NONE, PK::Char('a'), none),
-        (C::Char('A'), M::SHIFT, PK::Char('A'), shift),
+        // Shift is in the character: the bit is not reported with `Char` or `BackTab`.
+        (C::Char('A'), M::SHIFT, PK::Char('A'), none),
         (C::Char('A'), M::NONE, PK::Char('A'), none),
         (C::Char('日'), M::NONE, PK::Char('日'), none),
         (C::Char('c'), M::CONTROL, PK::Char('c'), ctrl),
         (C::Char('f'), M::ALT, PK::Char('f'), alt),
         (C::Char('x'), M::CONTROL | M::ALT, PK::Char('x'), ctrl | alt),
-        (
-            C::Char('X'),
-            M::CONTROL | M::SHIFT,
-            PK::Char('X'),
-            ctrl | shift,
-        ),
+        (C::Char('X'), M::CONTROL | M::SHIFT, PK::Char('X'), ctrl),
         (
             C::Char('z'),
             M::CONTROL | M::ALT | M::SHIFT,
             PK::Char('z'),
-            ctrl | alt | shift,
+            ctrl | alt,
         ),
         (C::Enter, M::NONE, PK::Enter, none),
         (C::Enter, M::ALT, PK::Enter, alt),
@@ -321,7 +317,7 @@ fn e2e_canvas_input_every_kind_of_key_is_converted() {
         (C::Backspace, M::CONTROL, PK::Backspace, ctrl),
         (C::Delete, M::NONE, PK::Delete, none),
         (C::Tab, M::NONE, PK::Tab, none),
-        (C::BackTab, M::SHIFT, PK::BackTab, shift),
+        (C::BackTab, M::SHIFT, PK::BackTab, none),
         (C::Left, M::NONE, PK::Left, none),
         (C::Right, M::CONTROL, PK::Right, ctrl),
         (C::Up, M::NONE, PK::Up, none),
@@ -351,6 +347,40 @@ fn e2e_canvas_input_every_kind_of_key_is_converted() {
     for (got, (_, _, want, want_mods)) in log.iter().zip(&cases) {
         assert_eq!((&got.code, got.mods), (want, *want_mods));
     }
+}
+
+#[test]
+fn e2e_canvas_input_shift_is_in_the_character_and_never_a_separate_bit_with_it() {
+    use crossterm::event::{KeyCode as C, KeyEvent, KeyModifiers as M};
+    let conv = |c: C, m: M| crate::app::plugin_key_of(&KeyEvent::new(c, m)).unwrap();
+    // A terminal that reports Shift (kitty protocol) and one that does not give the same key,
+    // so `key == Key::char('A')` holds on both.
+    assert_eq!(conv(C::Char('A'), M::SHIFT), Key::char('A'));
+    assert_eq!(conv(C::Char('A'), M::NONE), Key::char('A'));
+    assert_eq!(conv(C::Char('!'), M::SHIFT), Key::char('!'));
+    assert_eq!(conv(C::Char('日'), M::SHIFT), Key::char('日'));
+    // BackTab is Shift-Tab already.
+    assert_eq!(conv(C::BackTab, M::SHIFT), Key::new(PK::BackTab));
+    assert_eq!(conv(C::BackTab, M::NONE), Key::new(PK::BackTab));
+    // Other modifiers stay; Shift is dropped only beside them.
+    assert_eq!(conv(C::Char('X'), M::CONTROL | M::SHIFT), Key::ctrl('X'));
+    assert_eq!(
+        conv(C::Char('x'), M::ALT | M::SHIFT),
+        Key::char('x').with_mods(KeyMods::ALT)
+    );
+    // Keys without a case keep Shift (Shift-Left selects, Shift-Enter is not Enter).
+    assert_eq!(
+        conv(C::Left, M::SHIFT),
+        Key::new(PK::Left).with_mods(KeyMods::SHIFT)
+    );
+    assert_eq!(
+        conv(C::Enter, M::SHIFT),
+        Key::new(PK::Enter).with_mods(KeyMods::SHIFT)
+    );
+    assert_eq!(
+        conv(C::F(3), M::SHIFT),
+        Key::new(PK::F(3)).with_mods(KeyMods::SHIFT)
+    );
 }
 
 #[test]

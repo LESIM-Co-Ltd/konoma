@@ -249,15 +249,19 @@ pub(super) fn decode_canvas(
     let mut fresh: Vec<(PathBuf, CanvasDecoded)> = Vec::new();
     let mut budget = MAX_CANVAS_BYTES;
     for (n, im) in canvas.images.iter().enumerate() {
-        let key = PathBuf::from(crate::preview::markdown::canvas_url(
-            plugin_id,
-            im.id,
-            content_hash(&im.image),
-        ));
+        // batch D: `None` ("the same picture as the previous answer for this id") should resolve
+        // to what the host holds under the id. Until then it is a failed placement under a key
+        // of its own (hash 0): the plugin's cells under it stay.
+        let hash = im.image.as_ref().map_or(0, content_hash);
+        let key = PathBuf::from(crate::preview::markdown::canvas_url(plugin_id, im.id, hash));
         keys.push(key.clone());
         if known.contains(&key) || fresh.iter().any(|(k, _)| *k == key) {
             continue;
         }
+        let Some(data) = &im.image else {
+            fresh.push((key, CanvasDecoded::Failed(ImageFailure::UnsupportedFormat)));
+            continue;
+        };
         let decoded = if n >= MAX_CANVAS_IMAGES {
             CanvasDecoded::Failed(ImageFailure::TooLarge)
         } else if cancel.is_some_and(|c| c.is_cancelled()) {
@@ -265,8 +269,8 @@ pub(super) fn decode_canvas(
             CanvasDecoded::Failed(ImageFailure::Cancelled)
         } else {
             #[cfg(test)]
-            seen_for_tests::note(content_hash(&im.image));
-            let d = decode_one(&im.image, path, default_raster_px, cancel, trust_own_svg);
+            seen_for_tests::note(content_hash(data));
+            let d = decode_one(data, path, default_raster_px, cancel, trust_own_svg);
             let bytes = decoded_bytes(&d);
             if bytes > budget {
                 CanvasDecoded::Failed(ImageFailure::TooLarge)

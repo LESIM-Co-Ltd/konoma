@@ -40,6 +40,7 @@ impl std::fmt::Display for ApiVersion {
 /// in that view (the keys of the display type: see [`crate::keys::reserved`]), so a plugin that
 /// shows only text is not refused the keys a table would need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ViewKind {
     /// Windowed text (source, hex dumps, logs).
     Text,

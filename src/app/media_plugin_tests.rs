@@ -173,10 +173,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
             },
         },
         // The first page, counted from 0 in the request.
-        req: ViewReq {
-            page: Some(0),
-            ..ViewReq::new(80, 24)
-        },
+        req: ViewReq::new(80, 24).page(0),
         settings: Settings::new(),
         lang: "en".to_string(),
         pixels: false,

@@ -69,13 +69,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Copy the cells of `canvas` into `buf` inside `inner`, clipped to it.
+///
+/// `CanvasView::check` is the contract and the host refuses a canvas that fails it; this is the
+/// second line: whatever the cells hold, a control character is never written to the buffer (it
+/// would reach the terminal as an escape sequence), it becomes a space. All positions are
+/// computed in `u32`.
 pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
     let cols = canvas.cols as usize;
     if cols == 0 {
         return;
     }
-    let show_cols = (canvas.cols).min(inner.width);
-    let show_rows = (canvas.rows).min(inner.height);
+    let show_cols = (canvas.cols).min(inner.width) as u32;
+    let show_rows = (canvas.rows).min(inner.height) as u32;
     for y in 0..show_rows {
         for x in 0..show_cols {
             let Some(cell) = canvas.cells.get(y as usize * cols + x as usize) else {
@@ -85,16 +90,25 @@ pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
                 continue;
             }
             // A wide character whose right half is outside the area is not drawn.
-            let width = cell.symbol.width().max(1) as u16;
+            let width = cell.symbol.width().max(1) as u32;
             if x + width > show_cols && width > 1 {
                 continue;
             }
-            let Some(target) = buf.cell_mut((inner.x + x, inner.y + y)) else {
+            let (Ok(tx), Ok(ty)) = (
+                u16::try_from(inner.x as u32 + x),
+                u16::try_from(inner.y as u32 + y),
+            ) else {
                 continue;
             };
-            target
-                .set_symbol(&cell.symbol)
-                .set_style(plugin_style_of(cell.style));
+            let Some(target) = buf.cell_mut((tx, ty)) else {
+                continue;
+            };
+            let style = plugin_style_of(cell.style);
+            if cell.symbol.chars().any(char::is_control) {
+                target.set_symbol(" ").set_style(style);
+            } else {
+                target.set_symbol(&cell.symbol).set_style(style);
+            }
         }
     }
 }
@@ -179,6 +193,73 @@ pub(crate) fn visible_rect(inner: Rect, r: konoma_plugin::view::CellRect) -> Opt
 mod tests {
     use super::*;
     use konoma_plugin::view::CellRect;
+
+    fn canvas_of(cols: u16, symbols: &[&str]) -> CanvasView {
+        let mut c = CanvasView::new(cols, 1);
+        for (i, s) in symbols.iter().enumerate() {
+            c.cells[i].symbol = s.to_string();
+        }
+        c
+    }
+
+    fn painted(canvas: &CanvasView, inner: Rect) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 4));
+        paint(&mut buf, inner, canvas);
+        buf
+    }
+
+    #[test]
+    fn paint_never_writes_a_control_character_even_if_check_was_bypassed() {
+        // None of these would pass `CanvasView::check`; the host paints them anyway as spaces.
+        let bad = [
+            "\u{1b}[31m",
+            "\u{1b}",
+            "\u{7}",
+            "\n",
+            "\r",
+            "\u{7f}",
+            "\u{9b}",
+            "a\u{1b}",
+            "\u{90}",
+        ];
+        let canvas = canvas_of(bad.len() as u16, &bad);
+        assert!(canvas.check().is_err());
+        let buf = painted(&canvas, Rect::new(1, 1, 10, 2));
+        for cell in &buf.content {
+            assert!(
+                !cell.symbol().chars().any(char::is_control),
+                "{:?} reached the buffer",
+                cell.symbol()
+            );
+        }
+        for i in 0..bad.len() as u16 {
+            assert_eq!(buf[(1 + i, 1)].symbol(), " ", "cell {i}");
+        }
+    }
+
+    #[test]
+    fn paint_still_draws_ordinary_symbols_and_styles() {
+        let mut canvas = canvas_of(3, &["a", "日", ""]);
+        canvas.cells[0].style = konoma_plugin::Style::new().fg(konoma_plugin::Color::Red);
+        let buf = painted(&canvas, Rect::new(2, 1, 8, 2));
+        assert_eq!(buf[(2, 1)].symbol(), "a");
+        assert_eq!(buf[(2, 1)].fg, ratatui::style::Color::Red);
+        assert_eq!(buf[(3, 1)].symbol(), "日");
+    }
+
+    #[test]
+    fn paint_stops_at_the_cells_it_has_for_a_huge_claimed_canvas() {
+        // A canvas that claims 65535 columns but holds 3 cells: positions are summed in u32,
+        // nothing wraps or panics, and painting stops where the cells end.
+        let mut canvas = CanvasView::new(0, 0);
+        canvas.cols = u16::MAX;
+        canvas.rows = 1;
+        canvas.cells = vec![konoma_plugin::view::CanvasCell::new("日", Default::default()); 3];
+        let inner = Rect::new(0, 0, u16::MAX, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        paint(&mut buf, inner, &canvas);
+        assert_eq!(buf[(0, 0)].symbol(), "日");
+    }
 
     const INNER: Rect = Rect {
         x: 3,

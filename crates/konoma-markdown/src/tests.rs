@@ -12,10 +12,8 @@ fn tmp_file(name: &str, bytes: &[u8]) -> (konoma_test_support::TmpDir, PathBuf) 
 }
 
 fn view_of(session: &mut dyn Session, repr: Option<&str>) -> View {
-    let req = ViewReq {
-        repr: repr.map(str::to_string),
-        ..ViewReq::default()
-    };
+    let mut req = ViewReq::new(80, 24);
+    req.repr = repr.map(str::to_string);
     session
         .view(&req, &ViewCx::new(Settings::empty(), "en"))
         .expect("a view")

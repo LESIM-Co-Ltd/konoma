@@ -10,6 +10,7 @@ use crate::keymap::{Context, LeaderId};
 use crate::ops::{self, menu::View as MenuView};
 use crate::plugins::test_plugins::{self, Latch};
 use crate::plugins::PluginAct;
+use crossterm::event::KeyCode;
 use konoma_plugin::prelude::*;
 use konoma_plugin::view::{CanvasView, Layout, ReprDecl};
 use konoma_plugin::{ColorDepth, Style as PStyle};
@@ -711,7 +712,7 @@ fn e2e_canvas_a_malformed_canvas_is_refused_in_japanese_too() {
 #[test]
 fn e2e_canvas_a_canvas_with_a_picture_outside_it_is_refused() {
     // The check is the API's (`CanvasView::check`): an image reaching outside the canvas.
-    use konoma_plugin::view::{CanvasImage, ImageData};
+    use konoma_plugin::view::{CanvasImage, CellRect, ImageData};
     struct OutOfBounds;
     impl Plugin for OutOfBounds {
         fn manifest(&self) -> Manifest {
@@ -723,14 +724,11 @@ fn e2e_canvas_a_canvas_with_a_picture_outside_it_is_refused() {
             struct S;
             impl Session for S {
                 fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
-                    Ok(View::Canvas(CanvasView::new(4, 4).image(CanvasImage {
-                        id: 1,
-                        x: 3,
-                        y: 3,
-                        cols: 4,
-                        rows: 4,
-                        image: ImageData::Encoded(Arc::from(Vec::<u8>::new())),
-                    })))
+                    Ok(View::Canvas(CanvasView::new(4, 4).image(CanvasImage::new(
+                        1,
+                        CellRect::new(3, 3, 4, 4),
+                        ImageData::Encoded(Arc::from(Vec::<u8>::new())),
+                    ))))
                 }
             }
             Ok(Box::new(S))

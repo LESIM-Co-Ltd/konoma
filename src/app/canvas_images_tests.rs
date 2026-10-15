@@ -18,14 +18,7 @@ fn canvas_of(images: Vec<CanvasImage>) -> CanvasView {
 }
 
 fn im(id: u64, data: ImageData) -> CanvasImage {
-    CanvasImage {
-        id,
-        x: 0,
-        y: 0,
-        cols: 2,
-        rows: 2,
-        image: data,
-    }
+    CanvasImage::new(id, konoma_plugin::view::CellRect::new(0, 0, 2, 2), data)
 }
 
 fn decode(plugin: &str, c: &CanvasView, known: &HashSet<PathBuf>) -> CanvasPictures {
@@ -416,4 +409,26 @@ fn canvas_urls_are_synthetic_and_distinct_from_every_other_scheme() {
     assert_ne!(canvas_url("a", 1, 2), canvas_url("b", 1, 2));
     assert_ne!(canvas_url("a", 1, 2), canvas_url("a", 2, 2));
     assert_ne!(canvas_url("a", 1, 2), canvas_url("a", 1, 3));
+}
+
+#[test]
+fn an_unchanged_picture_is_a_failed_placement_until_the_host_resolves_it() {
+    // batch D resolves `None` to the picture held under the id; until then it must not panic, must
+    // not decode anything, and must leave the plugin's cells (a failed placement).
+    let none = CanvasImage::unchanged(1, konoma_plugin::view::CellRect::new(0, 0, 2, 2));
+    let c = canvas_of(vec![none, im(2, rgba(4, 4, 10))]);
+    let got = decode("pa", &c, &HashSet::new());
+    assert_eq!(got.keys.len(), 2);
+    assert_ne!(got.keys[0], got.keys[1]);
+    let (_, first) = &got.fresh[0];
+    assert!(matches!(first, CanvasDecoded::Failed(_)));
+    assert!(matches!(&got.fresh[1].1, CanvasDecoded::Still(_)));
+    // Known keys are not asked twice.
+    let known: HashSet<PathBuf> = got.keys.iter().cloned().collect();
+    assert!(decode("pa", &c, &known).fresh.is_empty());
+}
+
+#[test]
+fn the_apis_rgba_side_limit_is_the_decode_cap_of_the_host() {
+    assert_eq!(konoma_plugin::view::CANVAS_MAX_RGBA_SIDE, MD_IMAGE_MAX_SIDE);
 }

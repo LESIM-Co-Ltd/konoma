@@ -199,12 +199,7 @@ impl App {
             Ok(s) => s,
             Err(f) => return unavailable_lines(src, Some(&f)),
         };
-        let req = ViewReq {
-            repr: Some(REPR_TEXT.to_string()),
-            cols: width,
-            rows: self.tab.preview_viewport.max(1),
-            ..ViewReq::default()
-        };
+        let req = ViewReq::new(width, self.tab.preview_viewport.max(1)).repr(REPR_TEXT);
         let view_cx = ViewCx::new(&embed.settings, &embed.lang);
         match session.view(&req, &view_cx) {
             Ok(View::Text(t)) => match t.source {

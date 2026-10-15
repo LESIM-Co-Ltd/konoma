@@ -9,6 +9,7 @@ use crate::input::{LazyResource, Origin, Resources};
 use crate::manifest::ViewKind;
 use crate::style::{Line, Style};
 use crate::text::Tr;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// How a session can be shown: its representations and its pages.
@@ -72,7 +73,10 @@ pub enum PageLayout {
 }
 
 /// What the host asks `Session::view` for.
+///
+/// Build one with [`ViewReq::new`] and the builders (more fields may be added later).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ViewReq {
     /// The representation (`None` = the default).
     pub repr: Option<String>,
@@ -96,6 +100,24 @@ impl ViewReq {
             cell_px: None,
         }
     }
+
+    /// The same asking for the representation `repr`.
+    pub fn repr(mut self, repr: impl Into<String>) -> ViewReq {
+        self.repr = Some(repr.into());
+        self
+    }
+
+    /// The same asking for the page `page` (from 0).
+    pub fn page(mut self, page: usize) -> ViewReq {
+        self.page = Some(page);
+        self
+    }
+
+    /// The same with the size of one cell in pixels.
+    pub fn cell_px(mut self, w: u16, h: u16) -> ViewReq {
+        self.cell_px = Some((w, h));
+        self
+    }
 }
 
 impl Default for ViewReq {
@@ -104,8 +126,9 @@ impl Default for ViewReq {
     }
 }
 
-/// A display type.
+/// A display type. More may be added later: match with a `_` arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum View {
     Text(TextView),
     Document(DocumentView),
@@ -512,6 +535,14 @@ impl CanvasCell {
         }
     }
 
+    /// Whether `symbol` may sit in a cell as it is: one grapheme of at most
+    /// [`CANVAS_MAX_SYMBOL_BYTES`] bytes with no control character, 1 or 2 columns wide. (The
+    /// empty continuation is not a symbol; [`CanvasView::check`] accepts it after a wide
+    /// character.) Code that fills cells from another source can use this to blank what fails.
+    pub fn is_plain_symbol(symbol: &str) -> bool {
+        !symbol.is_empty() && symbol_fault(symbol).is_none()
+    }
+
     /// Whether this is the empty right half of a wide character.
     pub fn is_continuation(&self) -> bool {
         self.symbol.is_empty()
@@ -542,6 +573,22 @@ impl CellRect {
     }
 }
 
+/// The most cells a canvas may be wide or tall.
+pub const CANVAS_MAX_SIDE: u16 = 4096;
+/// The most cells a canvas may hold in all (`cols * rows`).
+pub const CANVAS_MAX_CELLS: usize = 1 << 22;
+/// The most picture placements a canvas may hold.
+pub const CANVAS_MAX_PLACEMENTS: usize = 4096;
+/// The most distinct picture ids a canvas may use.
+pub const CANVAS_MAX_PICTURES: usize = 256;
+/// The longest symbol of a cell, in bytes (a base character with its marks, or a joined emoji).
+pub const CANVAS_MAX_SYMBOL_BYTES: usize = 32;
+/// The longest side, in pixels, of a raw [`ImageData::Rgba`] picture on a canvas. This is the
+/// side the host keeps decoded pictures at.
+pub const CANVAS_MAX_RGBA_SIDE: u32 = 4096;
+/// The most frames an animation ([`ImageData::Frames`]) on a canvas may have.
+pub const CANVAS_MAX_FRAMES: usize = 5000;
+
 /// A picture placed on a canvas, covering `cols` x `rows` cells from (`x`, `y`).
 ///
 /// **`id` names the picture**: the same `id` means the same picture, so the host keeps the
@@ -549,28 +596,98 @@ impl CellRect {
 /// when the plugin returns the same `id` again (an animation that moves a sprite sends the sprite
 /// once). Give a different `id` whenever the pixels differ. [`ImageData::Lazy`] is not allowed on
 /// a canvas, which is plain data ([`CanvasView::check`] refuses it).
+///
+/// **`image: None` means "the same picture as in the previous answer for this `id`"**, so a
+/// redraw that only moves or keeps a sprite need not send its pixels again. A `None` for an id the
+/// host does not hold (the first answer, or one it dropped) is a failed placement: the cells under
+/// it stay. Send the pixels (`Some`) whenever you are not sure.
+///
+/// Build one with [`CanvasImage::new`] (or [`CanvasImage::unchanged`]); more fields may be added
+/// later.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CanvasImage {
     pub id: u64,
     pub x: u16,
     pub y: u16,
     pub cols: u16,
     pub rows: u16,
-    pub image: ImageData,
+    /// The pixels, or `None` for the picture the host already holds under `id`.
+    pub image: Option<ImageData>,
+}
+
+impl CanvasImage {
+    /// The picture `image` named `id`, covering `rect`.
+    pub fn new(id: u64, rect: CellRect, image: ImageData) -> CanvasImage {
+        CanvasImage {
+            id,
+            x: rect.x,
+            y: rect.y,
+            cols: rect.cols,
+            rows: rect.rows,
+            image: Some(image),
+        }
+    }
+
+    /// The picture the host already holds under `id` (sent in an earlier answer), covering `rect`.
+    pub fn unchanged(id: u64, rect: CellRect) -> CanvasImage {
+        CanvasImage {
+            id,
+            x: rect.x,
+            y: rect.y,
+            cols: rect.cols,
+            rows: rect.rows,
+            image: None,
+        }
+    }
+
+    /// The cells this picture covers.
+    pub fn rect(&self) -> CellRect {
+        CellRect::new(self.x, self.y, self.cols, self.rows)
+    }
 }
 
 /// What is wrong with a canvas ([`CanvasView::check`]). The host refuses such a canvas with a
-/// message instead of drawing it.
+/// message instead of drawing it. More may be added later: match with a `_` arm.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CanvasIssue {
     /// `cells.len()` is not `cols * rows`.
     CellCount { expected: usize, actual: usize },
+    /// `cols` or `rows` is over [`CANVAS_MAX_SIDE`], or `cols * rows` over [`CANVAS_MAX_CELLS`].
+    AreaTooLarge { cols: u16, rows: u16 },
+    /// The symbol of the cell at (`x`, `y`) holds a control character (C0, DEL or C1).
+    CellControl { x: u16, y: u16 },
+    /// The symbol of the cell at (`x`, `y`) is longer than [`CANVAS_MAX_SYMBOL_BYTES`].
+    CellSymbolTooLong { x: u16, y: u16 },
+    /// The symbol of the cell at (`x`, `y`) is more than one grapheme.
+    CellNotOneGrapheme { x: u16, y: u16 },
+    /// The symbol of the cell at (`x`, `y`) is wider than 2 columns, or has no width at all.
+    CellBadWidth { x: u16, y: u16 },
+    /// The wide character in the cell at (`x`, `y`) is not followed by an empty continuation cell
+    /// (it is the last column, or the next cell has a symbol).
+    WideWithoutContinuation { x: u16, y: u16 },
+    /// The empty cell at (`x`, `y`) does not follow a wide character.
+    StrayContinuation { x: u16, y: u16 },
+    /// More than [`CANVAS_MAX_PLACEMENTS`] picture placements.
+    TooManyPlacements { count: usize },
+    /// More than [`CANVAS_MAX_PICTURES`] distinct picture ids.
+    TooManyPictures { count: usize },
     /// Image number `index` reaches outside the canvas.
     ImageOutOfBounds { index: usize },
     /// Image number `index` covers no cell.
     ImageZeroSize { index: usize },
     /// Image number `index` is [`ImageData::Lazy`] (also inside animation frames).
     ImageLazy { index: usize },
+    /// Image number `index` is raw pixels whose byte count is not `width * height * 4`, or
+    /// that has a zero side (also inside animation frames).
+    ImageRgbaSize { index: usize },
+    /// Image number `index` is raw pixels with a side over [`CANVAS_MAX_RGBA_SIDE`].
+    ImageTooLarge { index: usize },
+    /// Image number `index` is an animation inside an animation.
+    ImageNestedFrames { index: usize },
+    /// Image number `index` is an animation of more than [`CANVAS_MAX_FRAMES`] frames.
+    ImageTooManyFrames { index: usize },
 }
 
 impl fmt::Display for CanvasIssue {
@@ -578,6 +695,39 @@ impl fmt::Display for CanvasIssue {
         match self {
             CanvasIssue::CellCount { expected, actual } => {
                 write!(f, "canvas has {actual} cells, expected {expected}")
+            }
+            CanvasIssue::AreaTooLarge { cols, rows } => {
+                write!(f, "canvas of {cols}x{rows} cells is too large")
+            }
+            CanvasIssue::CellControl { x, y } => {
+                write!(f, "canvas cell ({x}, {y}) holds a control character")
+            }
+            CanvasIssue::CellSymbolTooLong { x, y } => {
+                write!(f, "canvas cell ({x}, {y}) has too long a symbol")
+            }
+            CanvasIssue::CellNotOneGrapheme { x, y } => {
+                write!(f, "canvas cell ({x}, {y}) is not exactly one character")
+            }
+            CanvasIssue::CellBadWidth { x, y } => {
+                write!(f, "canvas cell ({x}, {y}) is not 1 or 2 columns wide")
+            }
+            CanvasIssue::WideWithoutContinuation { x, y } => {
+                write!(
+                    f,
+                    "canvas cell ({x}, {y}) is a wide character with no empty cell after it"
+                )
+            }
+            CanvasIssue::StrayContinuation { x, y } => {
+                write!(
+                    f,
+                    "canvas cell ({x}, {y}) is empty but follows no wide character"
+                )
+            }
+            CanvasIssue::TooManyPlacements { count } => {
+                write!(f, "canvas has {count} pictures placed, too many")
+            }
+            CanvasIssue::TooManyPictures { count } => {
+                write!(f, "canvas uses {count} different pictures, too many")
             }
             CanvasIssue::ImageOutOfBounds { index } => {
                 write!(f, "canvas image {index} is outside the canvas")
@@ -591,6 +741,21 @@ impl fmt::Display for CanvasIssue {
                     "canvas image {index} is lazy, which a canvas cannot hold"
                 )
             }
+            CanvasIssue::ImageRgbaSize { index } => {
+                write!(f, "canvas image {index} has a wrong pixel byte count")
+            }
+            CanvasIssue::ImageTooLarge { index } => {
+                write!(f, "canvas image {index} has too many pixels")
+            }
+            CanvasIssue::ImageNestedFrames { index } => {
+                write!(
+                    f,
+                    "canvas image {index} has an animation inside an animation"
+                )
+            }
+            CanvasIssue::ImageTooManyFrames { index } => {
+                write!(f, "canvas image {index} has too many frames")
+            }
         }
     }
 }
@@ -602,7 +767,16 @@ impl std::error::Error for CanvasIssue {}
 ///
 /// Colors: the host does not convert. Read [`crate::TermCaps::colors`] and pick colors the
 /// terminal can show.
+///
+/// **What [`CanvasView::check`] guarantees** (the host refuses a canvas that fails it, and the
+/// cell-writing methods here only produce cells that pass): every cell symbol is a single
+/// grapheme of at most [`CANVAS_MAX_SYMBOL_BYTES`] bytes with no control character (C0, DEL, C1)
+/// and 1 or 2 columns wide, or empty (the continuation of the wide character to its left); the
+/// area is at most [`CANVAS_MAX_SIDE`] per side and [`CANVAS_MAX_CELLS`] cells; and the pictures
+/// are within the `CANVAS_MAX_*` limits. Build one with [`CanvasView::new`]; more fields may be
+/// added later.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CanvasView {
     pub cols: u16,
     pub rows: u16,
@@ -610,8 +784,9 @@ pub struct CanvasView {
     pub cells: Vec<CanvasCell>,
     /// Drawn over the cells, in order.
     pub images: Vec<CanvasImage>,
-    /// Ask the host to call `view` again after this long (at least 33 ms; only while the canvas
-    /// is on screen).
+    /// Ask the host to call `view` again after this long. It applies to **this answer only**: the
+    /// next answer asks again, or the timer stops. Values under 33 ms are raised to 33 ms, and
+    /// very large values are fine (the host caps them). Only while the canvas is on screen.
     pub redraw_after: Option<Duration>,
     /// Ask the host to send every key but `Esc` to [`crate::Session::key`].
     pub text_input: bool,
@@ -688,6 +863,8 @@ impl CanvasView {
         let mut cx = x as u32;
         // The cell that owns the last written character (the one a zero-width char joins).
         let mut owner: Option<u16> = None;
+        // The width the owner's character took (1 or 2): what a joined mark must not change.
+        let mut owner_w = 1u32;
         let mut after_joiner = false;
         for ch in s.chars() {
             let w = match ch.width() {
@@ -695,13 +872,23 @@ impl CanvasView {
                 None => continue,
             };
             if w == 0 || after_joiner {
-                // Joins the previous character. Nothing to join at the start: dropped.
+                // Joins the previous character. Nothing to join at the start: dropped. A character
+                // that would make the cell more than one grapheme, longer than the limit, or a
+                // different width from the columns the cell takes is dropped as well.
+                let mut joined = false;
                 if let Some(o) = owner {
                     if let Some(c) = self.cell_mut(o, y) {
-                        c.symbol.push(ch);
+                        let mut candidate = String::with_capacity(c.symbol.len() + ch.len_utf8());
+                        candidate.push_str(&c.symbol);
+                        candidate.push(ch);
+                        if symbol_fault(&candidate).is_none() && candidate.width() as u32 == owner_w
+                        {
+                            c.symbol = candidate;
+                            joined = true;
+                        }
                     }
                 }
-                after_joiner = ch == '\u{200D}';
+                after_joiner = joined && ch == '\u{200D}';
                 continue;
             }
             if cx + w > self.cols as u32 {
@@ -720,6 +907,7 @@ impl CanvasView {
                 }
             }
             owner = Some(at);
+            owner_w = w;
             after_joiner = false;
             cx += w;
         }
@@ -760,16 +948,55 @@ impl CanvasView {
         self
     }
 
-    /// Whether the canvas is well-formed: `cells.len() == cols * rows`, every image non-empty,
-    /// inside the canvas, and not lazy. The host calls this and refuses a bad canvas with the
-    /// issue's message.
+    /// Whether the canvas is plain data the host may draw. This is the one contract; the host
+    /// calls it and refuses a bad canvas with the issue's message. It requires:
+    ///
+    /// - the area within [`CANVAS_MAX_SIDE`] per side and [`CANVAS_MAX_CELLS`] in all, and
+    ///   `cells.len() == cols * rows`;
+    /// - every symbol empty (a continuation) or one grapheme of at most
+    ///   [`CANVAS_MAX_SYMBOL_BYTES`] bytes, with no control character (C0, DEL, C1) and 1 or 2
+    ///   columns wide; a 2-column symbol is followed by a continuation in the same row, and a
+    ///   continuation follows nothing else;
+    /// - at most [`CANVAS_MAX_PLACEMENTS`] placements using at most [`CANVAS_MAX_PICTURES`]
+    ///   distinct ids, each non-empty, inside the canvas and not lazy;
+    /// - [`ImageData::Rgba`] with `width * height * 4` bytes and sides from 1 to
+    ///   [`CANVAS_MAX_RGBA_SIDE`] (also inside frames); [`ImageData::Frames`] of at most
+    ///   [`CANVAS_MAX_FRAMES`] frames and not inside another `Frames`.
+    ///
+    /// The delays of an animation are not checked: the host raises a short delay.
     pub fn check(&self) -> Result<(), CanvasIssue> {
+        if self.cols > CANVAS_MAX_SIDE
+            || self.rows > CANVAS_MAX_SIDE
+            || self.cols as usize * self.rows as usize > CANVAS_MAX_CELLS
+        {
+            return Err(CanvasIssue::AreaTooLarge {
+                cols: self.cols,
+                rows: self.rows,
+            });
+        }
         let expected = self.cols as usize * self.rows as usize;
         if self.cells.len() != expected {
             return Err(CanvasIssue::CellCount {
                 expected,
                 actual: self.cells.len(),
             });
+        }
+        if self.cols > 0 {
+            for (y, row) in self.cells.chunks(self.cols as usize).enumerate() {
+                self.check_row(y as u16, row)?;
+            }
+        }
+        if self.images.len() > CANVAS_MAX_PLACEMENTS {
+            return Err(CanvasIssue::TooManyPlacements {
+                count: self.images.len(),
+            });
+        }
+        let mut ids = std::collections::HashSet::new();
+        for im in &self.images {
+            ids.insert(im.id);
+            if ids.len() > CANVAS_MAX_PICTURES {
+                return Err(CanvasIssue::TooManyPictures { count: ids.len() });
+            }
         }
         for (index, im) in self.images.iter().enumerate() {
             if im.cols == 0 || im.rows == 0 {
@@ -780,18 +1007,109 @@ impl CanvasView {
             {
                 return Err(CanvasIssue::ImageOutOfBounds { index });
             }
-            if has_lazy(&im.image) {
-                return Err(CanvasIssue::ImageLazy { index });
+            if let Some(data) = &im.image {
+                check_image(data, index, false)?;
             }
+        }
+        Ok(())
+    }
+
+    fn check_row(&self, y: u16, row: &[CanvasCell]) -> Result<(), CanvasIssue> {
+        // The x of a wide character still waiting for its continuation, and whether the previous
+        // cell was a wide character (so an empty cell may follow).
+        let mut pending: Option<u16> = None;
+        for (x, cell) in row.iter().enumerate() {
+            let x = x as u16;
+            if cell.symbol.is_empty() {
+                if pending.take().is_none() {
+                    return Err(CanvasIssue::StrayContinuation { x, y });
+                }
+                continue;
+            }
+            if let Some(wx) = pending {
+                return Err(CanvasIssue::WideWithoutContinuation { x: wx, y });
+            }
+            match symbol_fault(&cell.symbol) {
+                None => {}
+                Some(SymbolFault::Control) => return Err(CanvasIssue::CellControl { x, y }),
+                Some(SymbolFault::TooLong) => return Err(CanvasIssue::CellSymbolTooLong { x, y }),
+                Some(SymbolFault::NotOne) => return Err(CanvasIssue::CellNotOneGrapheme { x, y }),
+                Some(SymbolFault::BadWidth) => return Err(CanvasIssue::CellBadWidth { x, y }),
+            }
+            if cell.symbol.width() == 2 {
+                pending = Some(x);
+            }
+        }
+        if let Some(wx) = pending {
+            return Err(CanvasIssue::WideWithoutContinuation { x: wx, y });
         }
         Ok(())
     }
 }
 
-fn has_lazy(data: &ImageData) -> bool {
+/// What is wrong with a non-empty cell symbol.
+enum SymbolFault {
+    Control,
+    TooLong,
+    NotOne,
+    BadWidth,
+}
+
+/// Whether `symbol` (not empty) may sit in a canvas cell: one grapheme of at most
+/// [`CANVAS_MAX_SYMBOL_BYTES`] bytes, no control character, 1 or 2 columns wide.
+fn symbol_fault(symbol: &str) -> Option<SymbolFault> {
+    // The common case: one printable ASCII character.
+    if let [b] = symbol.as_bytes() {
+        if (0x20..0x7f).contains(b) {
+            return None;
+        }
+    }
+    if symbol.len() > CANVAS_MAX_SYMBOL_BYTES {
+        return Some(SymbolFault::TooLong);
+    }
+    if symbol.chars().any(char::is_control) {
+        return Some(SymbolFault::Control);
+    }
+    if symbol.graphemes(true).nth(1).is_some() {
+        return Some(SymbolFault::NotOne);
+    }
+    match symbol.width() {
+        1 | 2 => None,
+        _ => Some(SymbolFault::BadWidth),
+    }
+}
+
+/// Check the pixels of one picture (`nested`: inside a `Frames`).
+fn check_image(data: &ImageData, index: usize, nested: bool) -> Result<(), CanvasIssue> {
     match data {
-        ImageData::Lazy(_) => true,
-        ImageData::Frames(frames) => frames.iter().any(|(d, _)| has_lazy(d)),
-        _ => false,
+        ImageData::Lazy(_) => Err(CanvasIssue::ImageLazy { index }),
+        ImageData::Rgba {
+            width,
+            height,
+            pixels,
+        } => {
+            if *width == 0 || *height == 0 {
+                return Err(CanvasIssue::ImageRgbaSize { index });
+            }
+            if *width > CANVAS_MAX_RGBA_SIDE || *height > CANVAS_MAX_RGBA_SIDE {
+                return Err(CanvasIssue::ImageTooLarge { index });
+            }
+            if pixels.len() as u64 != *width as u64 * *height as u64 * 4 {
+                return Err(CanvasIssue::ImageRgbaSize { index });
+            }
+            Ok(())
+        }
+        ImageData::Frames(frames) => {
+            if nested {
+                return Err(CanvasIssue::ImageNestedFrames { index });
+            }
+            if frames.len() > CANVAS_MAX_FRAMES {
+                return Err(CanvasIssue::ImageTooManyFrames { index });
+            }
+            frames
+                .iter()
+                .try_for_each(|(d, _)| check_image(d, index, true))
+        }
+        _ => Ok(()),
     }
 }

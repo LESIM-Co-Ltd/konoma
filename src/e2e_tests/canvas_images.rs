@@ -115,14 +115,7 @@ fn solid(w: u32, h: u32, c: [u8; 3]) -> ImageData {
 }
 
 fn placed(id: u64, x: u16, y: u16, cols: u16, rows: u16, image: ImageData) -> CanvasImage {
-    CanvasImage {
-        id,
-        x,
-        y,
-        cols,
-        rows,
-        image,
-    }
+    CanvasImage::new(id, CellRect::new(x, y, cols, rows), image)
 }
 
 /// The pixel size that fills `cols` x `rows` cells exactly for the cell size the host reported

@@ -621,7 +621,7 @@ impl PluginWork {
                 .map(|id| (id.clone(), session.enabled(id)))
                 .collect()
         };
-        let term = TermCaps { pixels, colors };
+        let term = TermCaps::new().pixels(pixels).colors(colors);
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
         let profile = crate::plugins::profile_of(&id);
@@ -1170,12 +1170,11 @@ impl App {
                 && self.host_source_view()
                 && !self.holds_document())
         });
-        ViewReq {
-            repr,
-            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
-            cell_px: self.plugin_cell_px(),
-            ..ViewReq::new(cols, rows)
-        }
+        let mut req = ViewReq::new(cols, rows);
+        req.repr = repr;
+        req.page = Some(self.tab.page.max(1).saturating_sub(1) as usize);
+        req.cell_px = self.plugin_cell_px();
+        req
     }
 
     /// Test-only: pretend the terminal shows `colors` (the real value is read from the

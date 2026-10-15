@@ -35,7 +35,7 @@ pub mod text;
 pub mod view;
 
 pub use input::{Input, LazyResource, Origin, Resource, ResourceReq, Resources};
-pub use key::{Key, KeyMods};
+pub use key::{Key, KeyCode, KeyMods};
 pub use manifest::{
     Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
     Unavailable, Verb, VerbDecl, ViewKind,

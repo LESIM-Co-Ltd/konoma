@@ -1,6 +1,6 @@
 //! What a plugin author imports: `use konoma_plugin::prelude::*;`.
 
-pub use crate::key::{Key, KeyCode as InputKeyCode, KeyMods};
+pub use crate::key::{Key, KeyCode, KeyMods};
 pub use crate::manifest::ViewKind;
 pub use crate::session::ColorDepth;
 pub use crate::session::{ActCx, Failure, OpenCx, Outcome, Plugin, Session, ViewCx};

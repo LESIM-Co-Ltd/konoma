@@ -66,7 +66,9 @@ pub(crate) fn plugin_key_of(key: &crossterm::event::KeyEvent) -> Option<Key> {
     if key.modifiers.contains(M::ALT) {
         mods |= KeyMods::ALT;
     }
-    if key.modifiers.contains(M::SHIFT) {
+    // Shift is in the character itself (`'A'`) and in the key (`BackTab`): terminals differ in
+    // whether they also report the bit, so the plugin never sees it with these two.
+    if key.modifiers.contains(M::SHIFT) && !matches!(code, PKey::Char(_) | PKey::BackTab) {
         mods |= KeyMods::SHIFT;
     }
     Some(Key { code, mods })

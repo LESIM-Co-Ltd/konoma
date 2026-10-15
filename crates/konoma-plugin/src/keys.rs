@@ -10,7 +10,7 @@ use crate::manifest::{Act, Manifest};
 
 /// A key without its modifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum KeyCode {
+pub enum KeyName {
     /// A character; an upper-case letter means Shift is included.
     Char(char),
     Enter,
@@ -35,26 +35,26 @@ pub enum KeyCode {
 /// A parsed key: a code and whether Ctrl is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeySpec {
-    pub code: KeyCode,
+    pub code: KeyName,
     pub ctrl: bool,
 }
 
 impl KeySpec {
     pub fn ch(c: char) -> KeySpec {
         KeySpec {
-            code: KeyCode::Char(c),
+            code: KeyName::Char(c),
             ctrl: false,
         }
     }
 
     pub fn ctrl(c: char) -> KeySpec {
         KeySpec {
-            code: KeyCode::Char(c),
+            code: KeyName::Char(c),
             ctrl: true,
         }
     }
 
-    pub fn key(code: KeyCode) -> KeySpec {
+    pub fn key(code: KeyName) -> KeySpec {
         KeySpec { code, ctrl: false }
     }
 }
@@ -66,23 +66,23 @@ impl fmt::Display for KeySpec {
             write!(f, "Ctrl-")?;
         }
         match self.code {
-            KeyCode::Char(' ') => write!(f, "Space"),
-            KeyCode::Char(c) => write!(f, "{c}"),
-            KeyCode::Enter => write!(f, "Enter"),
-            KeyCode::Tab => write!(f, "Tab"),
-            KeyCode::BackTab => write!(f, "Shift-Tab"),
-            KeyCode::Esc => write!(f, "Esc"),
-            KeyCode::Backspace => write!(f, "Backspace"),
-            KeyCode::Delete => write!(f, "Delete"),
-            KeyCode::Up => write!(f, "Up"),
-            KeyCode::Down => write!(f, "Down"),
-            KeyCode::Left => write!(f, "Left"),
-            KeyCode::Right => write!(f, "Right"),
-            KeyCode::Home => write!(f, "Home"),
-            KeyCode::End => write!(f, "End"),
-            KeyCode::PageUp => write!(f, "PageUp"),
-            KeyCode::PageDown => write!(f, "PageDown"),
-            KeyCode::F(n) => write!(f, "F{n}"),
+            KeyName::Char(' ') => write!(f, "Space"),
+            KeyName::Char(c) => write!(f, "{c}"),
+            KeyName::Enter => write!(f, "Enter"),
+            KeyName::Tab => write!(f, "Tab"),
+            KeyName::BackTab => write!(f, "Shift-Tab"),
+            KeyName::Esc => write!(f, "Esc"),
+            KeyName::Backspace => write!(f, "Backspace"),
+            KeyName::Delete => write!(f, "Delete"),
+            KeyName::Up => write!(f, "Up"),
+            KeyName::Down => write!(f, "Down"),
+            KeyName::Left => write!(f, "Left"),
+            KeyName::Right => write!(f, "Right"),
+            KeyName::Home => write!(f, "Home"),
+            KeyName::End => write!(f, "End"),
+            KeyName::PageUp => write!(f, "PageUp"),
+            KeyName::PageDown => write!(f, "PageDown"),
+            KeyName::F(n) => write!(f, "F{n}"),
         }
     }
 }
@@ -136,14 +136,14 @@ pub fn parse_key(s: &str) -> Result<KeySpec, KeyError> {
     if let Some(r) = strip_prefix_ci(rest, "shift-") {
         if r.eq_ignore_ascii_case("tab") {
             return Ok(KeySpec {
-                code: KeyCode::BackTab,
+                code: KeyName::BackTab,
                 ctrl,
             });
         }
         let mut it = r.chars();
         return match (it.next(), it.next()) {
             (Some(c), None) if c.is_ascii_alphabetic() => Ok(KeySpec {
-                code: KeyCode::Char(c.to_ascii_uppercase()),
+                code: KeyName::Char(c.to_ascii_uppercase()),
                 ctrl,
             }),
             (None, _) => Err(KeyError::MissingKey(s.to_string())),
@@ -151,21 +151,21 @@ pub fn parse_key(s: &str) -> Result<KeySpec, KeyError> {
         };
     }
     let code = match rest.to_ascii_lowercase().as_str() {
-        "space" => KeyCode::Char(' '),
-        "tab" => KeyCode::Tab,
-        "backtab" => KeyCode::BackTab,
-        "enter" | "return" => KeyCode::Enter,
-        "esc" | "escape" => KeyCode::Esc,
-        "backspace" => KeyCode::Backspace,
-        "delete" | "del" => KeyCode::Delete,
-        "up" => KeyCode::Up,
-        "down" => KeyCode::Down,
-        "left" => KeyCode::Left,
-        "right" => KeyCode::Right,
-        "home" => KeyCode::Home,
-        "end" => KeyCode::End,
-        "pageup" | "pgup" => KeyCode::PageUp,
-        "pagedown" | "pgdn" | "pagedn" => KeyCode::PageDown,
+        "space" => KeyName::Char(' '),
+        "tab" => KeyName::Tab,
+        "backtab" => KeyName::BackTab,
+        "enter" | "return" => KeyName::Enter,
+        "esc" | "escape" => KeyName::Esc,
+        "backspace" => KeyName::Backspace,
+        "delete" | "del" => KeyName::Delete,
+        "up" => KeyName::Up,
+        "down" => KeyName::Down,
+        "left" => KeyName::Left,
+        "right" => KeyName::Right,
+        "home" => KeyName::Home,
+        "end" => KeyName::End,
+        "pageup" | "pgup" => KeyName::PageUp,
+        "pagedown" | "pgdn" | "pagedn" => KeyName::PageDown,
         name => {
             // `F1` to `F12`.
             if let Some(n) = name
@@ -175,13 +175,13 @@ pub fn parse_key(s: &str) -> Result<KeySpec, KeyError> {
                 .filter(|n| (1..=12).contains(n))
             {
                 return Ok(KeySpec {
-                    code: KeyCode::F(n),
+                    code: KeyName::F(n),
                     ctrl,
                 });
             }
             let mut it = rest.chars();
             match (it.next(), it.next()) {
-                (Some(c), None) => KeyCode::Char(c),
+                (Some(c), None) => KeyName::Char(c),
                 _ => return Err(KeyError::Unknown(s.to_string())),
             }
         }
@@ -212,7 +212,7 @@ fn ctrls(layer: Layer, cs: &str) -> Vec<(KeySpec, Layer)> {
     cs.chars().map(|c| (KeySpec::ctrl(c), layer)).collect()
 }
 
-fn named(layer: Layer, codes: &[KeyCode]) -> Vec<(KeySpec, Layer)> {
+fn named(layer: Layer, codes: &[KeyName]) -> Vec<(KeySpec, Layer)> {
     codes.iter().map(|c| (KeySpec::key(*c), layer)).collect()
 }
 
@@ -234,7 +234,7 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
     v.extend(chars(Layer::Global, "?QFPtT[]123456789"));
     if context == "canvas" {
         v.extend(chars(Layer::Base, "q, "));
-        v.extend(named(Layer::Base, &[KeyCode::Esc]));
+        v.extend(named(Layer::Base, &[KeyName::Esc]));
         v.extend(chars(Layer::Verb, "eop!"));
         // Layer 2 keys that move out of a canvas that is one representation or one page.
         v.extend(chars(Layer::Type, "RJKO"));
@@ -246,17 +246,17 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
     v.extend(named(
         Layer::Base,
         &[
-            KeyCode::Up,
-            KeyCode::Down,
-            KeyCode::Left,
-            KeyCode::Right,
-            KeyCode::Esc,
-            KeyCode::Enter,
+            KeyName::Up,
+            KeyName::Down,
+            KeyName::Left,
+            KeyName::Right,
+            KeyName::Esc,
+            KeyName::Enter,
             // Aliases of the page keys and of `g`/`G`.
-            KeyCode::PageUp,
-            KeyCode::PageDown,
-            KeyCode::Home,
-            KeyCode::End,
+            KeyName::PageUp,
+            KeyName::PageDown,
+            KeyName::Home,
+            KeyName::End,
         ],
     ));
     // Layer 3.
@@ -267,7 +267,7 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
         "global" => {}
         "tree" => v.extend(chars(Layer::Type, "dCaA.i")),
         "text" | "document" => {
-            v.extend(named(Layer::Type, &[KeyCode::Tab, KeyCode::BackTab]));
+            v.extend(named(Layer::Type, &[KeyName::Tab, KeyName::BackTab]));
             v.extend(chars(Layer::Type, "R+-=f"));
         }
         "image" => v.extend(chars(Layer::Type, "R+-=")),
@@ -276,7 +276,7 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
         // "list" and every plugin screen.
         _ => {
             // `Tab`/`Shift-Tab` walk the version-control screens (the host's).
-            v.extend(named(Layer::Type, &[KeyCode::Tab, KeyCode::BackTab]));
+            v.extend(named(Layer::Type, &[KeyName::Tab, KeyName::BackTab]));
             v.extend(chars(Layer::Type, "R"));
         }
     }

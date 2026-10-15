@@ -48,7 +48,8 @@ pub fn draw_canvas(req: &ViewReq, f: impl FnOnce(&mut Buffer)) -> CanvasView {
 ///   string, a skipped cell). A wide character that would not fit whole in its row becomes a
 ///   blank, so the canvas never holds half a wide character.
 /// * A cell with `skip` set, a cell with an empty or zero-width symbol that is not a wide
-///   character's continuation, and a control character become the default cell (a space).
+///   character's continuation, and a symbol a canvas cell may not hold (a control character, more
+///   than one grapheme, over 32 bytes, wider than two columns) become the default cell (a space).
 /// * `Color::Reset` becomes "no color" (`None`), so the host's own default shows through.
 ///   Underline colors are dropped.
 pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
@@ -65,6 +66,7 @@ pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
                 continue;
             }
             let sym = cell.symbol();
+            // First: `cell_width` must not see a control character.
             if sym.chars().any(char::is_control) {
                 x += 1;
                 continue;
@@ -73,6 +75,12 @@ pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
             if width == 0 {
                 // Empty or zero-width: nothing to show; a lone one is a blank.
                 canvas.cells[at].style = style_of(cell);
+                x += 1;
+                continue;
+            }
+            if !CanvasCell::is_plain_symbol(sym) {
+                // Several graphemes, a long cluster or a symbol wider than two columns: what a
+                // canvas cell may not hold becomes the default cell.
                 x += 1;
                 continue;
             }

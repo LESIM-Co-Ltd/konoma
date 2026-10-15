@@ -149,6 +149,26 @@ fn zero_width_and_control_symbols_become_blanks() {
 }
 
 #[test]
+fn symbols_a_canvas_cell_may_not_hold_become_blanks_and_the_canvas_passes_check() {
+    let mut b = buf(8, 1);
+    // Several graphemes, a cluster over 32 bytes, a three-column grapheme, ESC and C1.
+    b[(0, 0)].set_symbol("ab");
+    let long = format!("e{}", "\u{0301}".repeat(20));
+    b[(1, 0)].set_symbol(&long);
+    b[(2, 0)].set_symbol("\u{0600}日");
+    b[(4, 0)].set_symbol("\u{1b}[31m");
+    b[(5, 0)].set_symbol("\u{9b}");
+    b[(6, 0)].set_symbol("ok");
+    b[(7, 0)].set_symbol("z");
+    let c = canvas_from_buffer(&b);
+    for x in 0..6 {
+        assert_eq!(sym(&c, x, 0), " ", "cell {x}");
+    }
+    assert_eq!(sym(&c, 7, 0), "z");
+    assert_eq!(c.check(), Ok(()));
+}
+
+#[test]
 fn skipped_cells_become_default_cells() {
     let mut b = buf(3, 1);
     b.set_string(0, 0, "abc", RStyle::new().fg(RColor::Red).bg(RColor::Blue));

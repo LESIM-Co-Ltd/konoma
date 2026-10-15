@@ -16632,10 +16632,7 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
 fn pdf_page_rgba(path: &std::path::Path, index: usize) -> (u32, u32, Vec<u8>) {
     use konoma_plugin::view::{ImageData, View, ViewReq};
     let mut session = konoma_plugin::testing::open_file(&konoma_media::PdfPlugin, path).unwrap();
-    let req = ViewReq {
-        page: Some(index),
-        ..ViewReq::default()
-    };
+    let req = ViewReq::default().page(index);
     match session.view(&req, &konoma_plugin::ViewCx::bare()).unwrap() {
         View::Image(iv) => match iv.data {
             ImageData::Rgba {

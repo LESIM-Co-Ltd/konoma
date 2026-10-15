@@ -53,6 +53,7 @@ pub trait Session: Send {
 /// How many colors the terminal shows. The host does not convert a plugin's colors: a plugin
 /// that draws its own cells ([`crate::view::CanvasView`]) picks colors by this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum ColorDepth {
     /// The 16 named colors. The default: when nothing is known, promise the least.
     #[default]
@@ -64,12 +65,34 @@ pub enum ColorDepth {
 }
 
 /// What the terminal can do.
+///
+/// Build one with [`TermCaps::new`] and the builders (more fields may be added later).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TermCaps {
     /// Whether real pixels can be drawn (a graphics protocol).
     pub pixels: bool,
     /// How many colors can be shown.
     pub colors: ColorDepth,
+}
+
+impl TermCaps {
+    /// The least a terminal promises: no pixels, 16 colors.
+    pub fn new() -> TermCaps {
+        TermCaps::default()
+    }
+
+    /// The same with `pixels` set.
+    pub fn pixels(mut self, on: bool) -> TermCaps {
+        self.pixels = on;
+        self
+    }
+
+    /// The same with `colors` set.
+    pub fn colors(mut self, depth: ColorDepth) -> TermCaps {
+        self.colors = depth;
+        self
+    }
 }
 
 /// A cancellation check the host passes to long work.

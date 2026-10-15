@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use crossterm::event::KeyCode;
-use konoma_plugin::keys::{self, KeyCode as PKeyCode, KeyIssue, KeySpec};
+use konoma_plugin::keys::{self, KeyIssue, KeyName as PKeyName, KeySpec};
 use konoma_plugin::registry::{NoteKind, Registry};
 use konoma_plugin::{ApiVersion, Tr};
 
@@ -118,22 +118,22 @@ struct PluginEntry {
 /// The key a plugin's `KeySpec` is on the host side.
 pub fn keypress_of(spec: KeySpec) -> KeyPress {
     let code = match spec.code {
-        PKeyCode::Char(c) => KeyCode::Char(c),
-        PKeyCode::Enter => KeyCode::Enter,
-        PKeyCode::Tab => KeyCode::Tab,
-        PKeyCode::BackTab => KeyCode::BackTab,
-        PKeyCode::Esc => KeyCode::Esc,
-        PKeyCode::Backspace => KeyCode::Backspace,
-        PKeyCode::Delete => KeyCode::Delete,
-        PKeyCode::Up => KeyCode::Up,
-        PKeyCode::Down => KeyCode::Down,
-        PKeyCode::Left => KeyCode::Left,
-        PKeyCode::Right => KeyCode::Right,
-        PKeyCode::Home => KeyCode::Home,
-        PKeyCode::End => KeyCode::End,
-        PKeyCode::PageUp => KeyCode::PageUp,
-        PKeyCode::PageDown => KeyCode::PageDown,
-        PKeyCode::F(n) => KeyCode::F(n),
+        PKeyName::Char(c) => KeyCode::Char(c),
+        PKeyName::Enter => KeyCode::Enter,
+        PKeyName::Tab => KeyCode::Tab,
+        PKeyName::BackTab => KeyCode::BackTab,
+        PKeyName::Esc => KeyCode::Esc,
+        PKeyName::Backspace => KeyCode::Backspace,
+        PKeyName::Delete => KeyCode::Delete,
+        PKeyName::Up => KeyCode::Up,
+        PKeyName::Down => KeyCode::Down,
+        PKeyName::Left => KeyCode::Left,
+        PKeyName::Right => KeyCode::Right,
+        PKeyName::Home => KeyCode::Home,
+        PKeyName::End => KeyCode::End,
+        PKeyName::PageUp => KeyCode::PageUp,
+        PKeyName::PageDown => KeyCode::PageDown,
+        PKeyName::F(n) => KeyCode::F(n),
     };
     KeyPress {
         code,
@@ -563,16 +563,16 @@ mod tests {
         for (spec, want) in [
             (KeySpec::ch('a'), KeyPress::ch('a')),
             (KeySpec::ctrl('a'), KeyPress::ctrl_ch('a')),
-            (KeySpec::key(PKeyCode::Enter), KeyPress::key(KeyCode::Enter)),
+            (KeySpec::key(PKeyName::Enter), KeyPress::key(KeyCode::Enter)),
             (
-                KeySpec::key(PKeyCode::BackTab),
+                KeySpec::key(PKeyName::BackTab),
                 KeyPress::key(KeyCode::BackTab),
             ),
             (
-                KeySpec::key(PKeyCode::PageDown),
+                KeySpec::key(PKeyName::PageDown),
                 KeyPress::key(KeyCode::PageDown),
             ),
-            (KeySpec::key(PKeyCode::F(12)), KeyPress::key(KeyCode::F(12))),
+            (KeySpec::key(PKeyName::F(12)), KeyPress::key(KeyCode::F(12))),
         ] {
             assert_eq!(keypress_of(spec), want);
         }

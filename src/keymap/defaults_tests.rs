@@ -447,7 +447,7 @@ fn the_keys_that_terminals_cannot_tell_apart_are_not_defaults() {
     let theirs: Vec<char> = konoma_plugin::keys::forbidden_defaults()
         .iter()
         .filter_map(|k| match k.code {
-            konoma_plugin::keys::KeyCode::Char(c) if k.ctrl => Some(c),
+            konoma_plugin::keys::KeyName::Char(c) if k.ctrl => Some(c),
             _ => None,
         })
         .collect();
@@ -1124,7 +1124,7 @@ fn several_git_tables_at_once_merge_each_into_its_own_contexts() {
 /// crate's names (tree, text, document, table, image, diff, list).
 #[test]
 fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
-    use konoma_plugin::keys::{reserved, KeyCode as PKey, KeySpec};
+    use konoma_plugin::keys::{reserved, KeyName as PKey, KeySpec};
     use Action as A;
     // The operations that are the meaning of a layer-0-to-3 key (or of the display type's own).
     let layered = |a: Action| -> bool {

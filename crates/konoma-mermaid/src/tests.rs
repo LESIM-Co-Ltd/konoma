@@ -121,17 +121,11 @@ fn mode_text_and_the_text_representation_give_the_box_drawing_diagram() {
     let a = text_of(view(embed(FLOW), &text_mode, &ViewReq::default()).unwrap());
     assert!(!a.is_empty());
     // The same lines come from asking for the representation by name, whatever the mode.
-    let req = ViewReq {
-        repr: Some(REPR_TEXT.into()),
-        ..ViewReq::default()
-    };
+    let req = ViewReq::default().repr(REPR_TEXT);
     let b = text_of(view(embed(FLOW), Settings::empty(), &req).unwrap());
     assert_eq!(a, b);
     // And an explicit "image" beats mode = text.
-    let req = ViewReq {
-        repr: Some(REPR_IMAGE.into()),
-        ..ViewReq::default()
-    };
+    let req = ViewReq::default().repr(REPR_IMAGE);
     assert!(matches!(
         view(embed(FLOW), &text_mode, &req),
         Ok(View::Image(_))
@@ -141,11 +135,7 @@ fn mode_text_and_the_text_representation_give_the_box_drawing_diagram() {
 #[test]
 fn the_text_diagram_follows_the_requested_width() {
     let wide = "graph LR\n  A[a long first box] --> B[a long second box] --> C[a long third box]\n";
-    let req = |cols| ViewReq {
-        repr: Some(REPR_TEXT.into()),
-        cols,
-        ..ViewReq::default()
-    };
+    let req = |cols| ViewReq::new(cols, 24).repr(REPR_TEXT);
     let at = |cols| text_of(view(embed(wide), Settings::empty(), &req(cols)).unwrap());
     let unlimited = at(0);
     let narrow = at(30);

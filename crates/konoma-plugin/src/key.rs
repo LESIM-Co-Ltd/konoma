@@ -1,21 +1,21 @@
 //! A key press as plain data, for [`crate::Session::key`].
 //!
-//! This is the key a plugin *receives*. It is not [`crate::keys::KeyCode`], which names a key in a
+//! This is the key a plugin *receives*. It is not [`crate::keys::KeyName`], which names a key in a
 //! manifest declaration and cannot hold a paste.
 
 use std::ops::{BitOr, BitOrAssign};
 
-/// Which key.
+/// Which key. More keys may be named later: match with a `_` arm.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum KeyCode {
-    /// A character. Shift is already in it (`'A'`), and also in [`KeyMods::SHIFT`] when the
-    /// terminal reports it.
+    /// A character. Shift is already applied (`'A'`, `'!'`); see the note on [`Key`].
     Char(char),
     Enter,
     Backspace,
     Delete,
     Tab,
-    /// Shift-Tab.
+    /// Shift-Tab (without [`KeyMods::SHIFT`]; see the note on [`Key`]).
     BackTab,
     Left,
     Right,
@@ -72,6 +72,12 @@ impl BitOrAssign for KeyMods {
 }
 
 /// A key and the modifiers held with it.
+///
+/// **Shift.** For [`KeyCode::Char`] the case of the character carries Shift (`'A'`, not `'a'`
+/// plus a Shift bit), and for [`KeyCode::BackTab`] the key itself is Shift-Tab. The host never
+/// sets [`KeyMods::SHIFT`] with either of them, whatever the terminal reports, so
+/// `key == Key::char('A')` works on every terminal and in tests. `SHIFT` can still come with the
+/// other keys (`Shift-Left`, `Shift-Enter`). `CTRL` and `ALT` are reported as they are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     pub code: KeyCode,
