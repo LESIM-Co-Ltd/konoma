@@ -51,8 +51,14 @@ pub enum ViewKind {
     Diff,
     /// A list of rows.
     List,
-    /// Cells and pictures the plugin draws itself (see [`crate::view::CanvasView`]). The host
-    /// keeps only a few keys for itself in this context.
+    /// Cells and pictures the plugin draws itself (see [`crate::view::CanvasView`]). The key
+    /// context is `canvas`. The host provides no scrolling, search or selection here and keeps
+    /// only the keys that mean the same everywhere: layer 0 (`? Q F P t T [ ] 1`-`9`), `q`,
+    /// `Esc`, `,` and `Space` (the menus), `y Y r m '` and `Ctrl-t Ctrl-n Ctrl-p`, the launch
+    /// verbs `e o p !`, and `R J K O` (representation and page). Every other key is free for a
+    /// declared [`Act`]; the exact set is [`crate::keys::reserved`]`("canvas")`. A plugin gets raw
+    /// keys through [`crate::Session::key`] while its view asks for text input
+    /// ([`crate::view::CanvasView::text_input`]).
     Canvas,
 }
 
@@ -387,8 +393,9 @@ impl Act {
         self
     }
 
-    /// The context the key lives in: a host context name (`text`, `table`, `image`, `document`)
-    /// or a screen of the plugin.
+    /// The context the key lives in: a host context name (`text`, `table`, `image`, `document`,
+    /// `canvas`) or a screen of the plugin. When it is not set, the action lives in the context of
+    /// the view types the plugin `shows` (a plugin that shows `ViewKind::Canvas` gets `canvas`).
     pub fn context(mut self, context: impl Into<String>) -> Act {
         self.screen = Some(context.into());
         self

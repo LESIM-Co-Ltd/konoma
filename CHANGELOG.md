@@ -76,6 +76,21 @@ All notable changes to konoma are documented in this file. The format is based o
   block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
   that file in a new tab.
 - **Line wrapping can be switched while running**: `,` then `w` in a text or document preview (action `toggle_wrap`).
+- **Canvas views for plugin authors (free drawing).** A plugin that needs more than konoma's display types (a chart, a game, a form)
+  can answer `View::Canvas(CanvasView)`: a grid of styled cells plus picture placements, as plain data that konoma copies to the
+  screen (a plugin never draws into konoma's own buffer, so it works the same as a child process later). The size is the real one
+  (`ViewReq::cols` / `rows` / `cell_px`, asked again after a resize) and the terminal's colour depth is in `TermCaps::colors`
+  (konoma does not convert colours). A new key context `canvas`: konoma keeps the global keys, `q`, `Esc`, the menus (`Space`,
+  `,`), `e` `o` `p` `!`, `R` `J` `K` `O` and the keys every file preview shares (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p` `Ctrl-t`);
+  everything else is the plugin's, through the actions it declares (they show in the footer, the `?` help and the `Space` menu
+  like any plugin action). A canvas can ask for text input (`CanvasView::text_input`): every key but `Esc` then goes to the new
+  `Session::key`, and `Esc` always leaves. It can ask to be drawn again (`redraw_after`, 33 ms to 24 h, only while it is fully
+  visible) and place pictures over the cells (`CanvasImage`: raw pixels, encoded images, SVG in the supervised child process,
+  files, animations; the plugin's `id` is the picture's identity, so a redraw that only moves it sends nothing and `None` means
+  unchanged), decoded on the worker with memory and count limits. `CanvasView::check` is the one contract of "plain data is safe",
+  and a canvas that fails it is refused with a message. The new crate `konoma-plugin-ratatui` converts a ratatui `Buffer`
+  into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). Nothing changes for users
+  of the standard plugins: none of them draws a canvas.
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its

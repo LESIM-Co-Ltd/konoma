@@ -299,15 +299,15 @@ fn a_zero_sized_request_draws_an_empty_valid_canvas() {
 // ---- the example plugin through the testing helpers ----
 
 fn open_clock() -> (Box<dyn Session>, konoma_plugin::testing::Scratch) {
-    open_bytes(&clock::Clock, "a.konoma-demo", b"My title\n").unwrap()
+    open_bytes(&clock::Clock::default(), "a.konoma-demo", b"My title\n").unwrap()
 }
 
 #[test]
 fn the_example_declares_what_it_does() {
     use konoma_plugin::Plugin as _;
-    let m = clock::Clock.manifest();
+    let m = clock::Clock::default().manifest();
     assert!(m.shows.contains(&ViewKind::Canvas));
-    assert_eq!(check_manifest(&clock::Clock), vec![]);
+    assert_eq!(check_manifest(&clock::Clock::default()), vec![]);
     assert!(m.actions.iter().any(|a| a.id == "edit"));
 }
 
@@ -325,12 +325,101 @@ fn the_example_returns_a_canvas_sized_to_the_request() {
 }
 
 #[test]
-fn the_example_gauge_moves_between_redraws() {
+fn the_example_view_does_not_advance_state() {
+    // `view` runs on a resize or after a key too: asking twice at once must give the same canvas.
     let (mut s, _f) = open_clock();
     let req = ViewReq::new(30, 5);
     let a = view_canvas(&mut *s, &req).unwrap();
     let b = view_canvas(&mut *s, &req).unwrap();
-    assert_ne!(CanvasText::of(&a), CanvasText::of(&b));
+    assert_eq!(CanvasText::of(&a), CanvasText::of(&b));
+}
+
+#[test]
+fn the_example_gauge_follows_the_time_since_open() {
+    use std::time::Duration;
+    let req = ViewReq::new(30, 5);
+    let label = |age: u64| {
+        let clock = clock::Clock {
+            age: Duration::from_secs(age),
+        };
+        let (mut s, _f) = open_bytes(&clock, "a.konoma-demo", b"T\n").unwrap();
+        let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
+        t.rows[1].clone()
+    };
+    assert!(label(0).contains("0 s"), "{}", label(0));
+    assert!(label(7).contains("7 s"), "{}", label(7));
+    assert_ne!(label(3), label(4));
+}
+
+#[test]
+fn the_example_ignores_ctrl_and_alt_keys_in_the_line_editor() {
+    let (mut s, _f) = open_clock();
+    let req = ViewReq::new(34, 6);
+    s.act("edit", &ActCx::bare()).unwrap();
+    let ctrl_c = Key::new(KeyCode::Char('c')).with_mods(KeyMods::CTRL);
+    let alt_x = Key::new(KeyCode::Char('x')).with_mods(KeyMods::ALT);
+    let out = send_keys(&mut *s, &[ctrl_c, alt_x, Key::char('a')]).unwrap();
+    assert_eq!(
+        out,
+        vec![Outcome::Unhandled, Outcome::Unhandled, Outcome::Redraw]
+    );
+    let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
+    assert!(t.rows.iter().any(|r| r.contains("> a_")), "{t}");
+}
+
+#[test]
+fn the_example_picture_has_a_stable_id_and_is_unchanged_after_the_first_answer() {
+    use konoma_plugin::session::TermCaps;
+    let (mut s, _f) = open_clock();
+    let req = ViewReq::new(30, 5);
+    let cx = ViewCx::bare().with_term(TermCaps::new().pixels(true));
+    let pic = |s: &mut dyn Session, req: &ViewReq| match s.view(req, &cx).unwrap() {
+        View::Canvas(c) => {
+            assert_eq!(c.check(), Ok(()));
+            c.images
+        }
+        _ => unreachable!(),
+    };
+    let first = pic(&mut *s, &req);
+    assert_eq!(first.len(), 1);
+    assert!(
+        first[0].image.is_some(),
+        "the first answer carries the pixels"
+    );
+    let again = pic(&mut *s, &req);
+    assert_eq!(again[0].id, first[0].id, "one stable id");
+    assert!(again[0].image.is_none(), "later answers say unchanged");
+    // A new area sends the pixels again (the picture moved).
+    let resized = pic(&mut *s, &ViewReq::new(40, 6));
+    assert!(resized[0].image.is_some());
+    // No pixels, no picture.
+    let (mut s2, _g) = open_clock();
+    let none = match s2.view(&req, &ViewCx::bare()).unwrap() {
+        View::Canvas(c) => c.images,
+        _ => unreachable!(),
+    };
+    assert!(none.is_empty());
+}
+
+#[test]
+fn the_example_picks_colors_by_the_terminal_depth() {
+    use konoma_plugin::session::TermCaps;
+    use konoma_plugin::style::Color;
+    let req = ViewReq::new(30, 5);
+    let border = |depth: ColorDepth| {
+        let (mut s, _f) = open_clock();
+        let cx = ViewCx::bare().with_term(TermCaps::new().colors(depth));
+        match s.view(&req, &cx).unwrap() {
+            View::Canvas(c) => c.cells[0].style.fg,
+            _ => unreachable!(),
+        }
+    };
+    assert_eq!(border(ColorDepth::Ansi16), Some(Color::Cyan));
+    assert_eq!(border(ColorDepth::Ansi256), Some(Color::Indexed(80)));
+    assert_eq!(
+        border(ColorDepth::TrueColor),
+        Some(Color::Rgb(80, 200, 220))
+    );
 }
 
 #[test]

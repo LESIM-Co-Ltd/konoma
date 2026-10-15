@@ -221,8 +221,8 @@ const VIEW_CONTEXTS: [&str; 6] = ["text", "document", "table", "image", "diff", 
 
 /// The keys a plugin cannot use in `context` (layers 0 to 3 and the context's layer 2).
 ///
-/// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`, `canvas`. Any other
-/// name (`git.changes`, a plugin's own screen) is treated as a list.
+/// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`, `canvas`.
+/// Any other name (`git.changes`, a plugin's own screen) is treated as a list.
 ///
 /// A key means the same thing everywhere, so a `canvas` keeps layer 0, the base keys that are not
 /// motion (`y` `Y` `r` `m` `'`, `Ctrl-t` `Ctrl-n` `Ctrl-p`), the verbs, `q`, `Esc`, `Space` and `,`

@@ -2,8 +2,68 @@
 //!
 //! A plugin implements [`Plugin`] (declarations plus `open`) and [`Session`] (one opened file).
 //! It never draws: it returns a [`View`] (a display type) and the host draws it with its own
-//! widgets. This crate does not depend on any terminal library; colors and modifiers are the small
+//! widgets. (A plugin that needs free drawing returns a [`CanvasView`](view::CanvasView): cells and
+//! picture placements as plain data that the host copies to the screen. See "Canvas" below.) This crate does not depend on any terminal library; colors and modifiers are the small
 //! types in [`style`], which the host maps onto its renderer.
+//!
+//! # Canvas (free drawing)
+//!
+//! Prefer a display type (text, document, table, image, list, diff) when one fits: it gets
+//! scrolling, search, selection and copy from the host for free. A plugin whose picture is not
+//! one of them (a chart, a game, a form) shows [`ViewKind::Canvas`]
+//! and answers `View::Canvas(CanvasView)`.
+//!
+//! - **Cells.** A [`CanvasView`](view::CanvasView) is `cols x rows` cells (a grapheme and a
+//!   [`Style`]); size it to the request (`CanvasView::new(req.cols, req.rows)`) and write with
+//!   `set_string` / `fill`. [`CanvasView::check`](view::CanvasView::check) is the one contract of
+//!   "plain data is safe", and the host refuses a canvas that fails it.
+//!   `Session::view` is called at times the plugin does not choose, so it must not advance state.
+//! - **Colors** are the plugin's to choose: read `cx.term.colors` ([`ColorDepth`]); the host does
+//!   not convert.
+//! - **Keys.** Declared actions work in the `canvas` key context; the host keeps a few keys for
+//!   itself ([`keys::reserved`]). A plugin that needs raw keys returns `text_input: true` and
+//!   receives them in [`Session::key`] until the user presses `Esc`.
+//! - **Time.** `redraw_after` asks to be drawn again (33 ms to 24 h), only while the canvas is
+//!   fully visible.
+//! - **Pictures.** [`CanvasImage`] places a picture over the cells; its `id` is the picture's
+//!   identity. See its documentation for the limits.
+//!
+//! ```
+//! use konoma_plugin::prelude::*;
+//! use konoma_plugin::testing::{open_bytes, view_canvas, CanvasText};
+//!
+//! struct Banner;
+//! impl Plugin for Banner {
+//!     fn manifest(&self) -> Manifest {
+//!         Manifest::new("banner", "0.1.0")
+//!             .bind(Bind::files(["*.banner"]))
+//!             .shows(ViewKind::Canvas)
+//!     }
+//!     fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+//!         let title = match &input {
+//!             Input::File { path, .. } => std::fs::read_to_string(path)?.trim().to_string(),
+//!             _ => String::new(),
+//!         };
+//!         Ok(Box::new(BannerSession { title }))
+//!     }
+//! }
+//!
+//! struct BannerSession {
+//!     title: String,
+//! }
+//! impl Session for BannerSession {
+//!     fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+//!         let mut canvas = CanvasView::new(req.cols, req.rows);
+//!         canvas.fill(CellRect::new(0, 0, req.cols, 1), Style::new().reversed());
+//!         canvas.set_string(1, 0, &self.title, Style::new().reversed().bold());
+//!         Ok(View::Canvas(canvas))
+//!     }
+//! }
+//!
+//! let (mut session, _file) = open_bytes(&Banner, "a.banner", b"hello\n").unwrap();
+//! let canvas = view_canvas(&mut *session, &ViewReq::new(12, 2)).unwrap();
+//! assert_eq!(CanvasText::of(&canvas).rows[0], " hello");
+//! ```
 //!
 //! Modules:
 //! - [`text`]: per-language strings ([`Tr`], [`t!`])

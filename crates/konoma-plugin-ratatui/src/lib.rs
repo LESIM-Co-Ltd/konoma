@@ -5,17 +5,33 @@
 //! thread) the plugin renders widgets into a [`ratatui::buffer::Buffer`] it owns, then converts
 //! the buffer.
 //!
-//! ```ignore
-//! fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
-//!     let canvas = konoma_plugin_ratatui::draw_canvas(req, |buf| {
-//!         Block::bordered().title("hello").render(buf.area, buf);
-//!     });
-//!     Ok(View::Canvas(canvas))
+//! ```
+//! use konoma_plugin::prelude::*;
+//! use konoma_plugin_ratatui::ratatui::widgets::{Block, Widget};
+//!
+//! struct Hello;
+//! impl Session for Hello {
+//!     fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+//!         let canvas = konoma_plugin_ratatui::draw_canvas(req, |buf| {
+//!             Block::bordered().title("hello").render(buf.area, buf);
+//!         });
+//!         Ok(View::Canvas(canvas))
+//!     }
 //! }
+//!
+//! let view = Hello.view(&ViewReq::new(20, 3), &ViewCx::bare()).unwrap();
+//! let View::Canvas(canvas) = view else { panic!("a canvas") };
+//! assert!(canvas.check().is_ok());
+//! assert_eq!(canvas.cells[1].symbol, "h");
 //! ```
 //!
-//! The result is plain data, so the ratatui this crate is built with does not have to be the one
-//! konoma uses: nothing of ratatui crosses into the host.
+//! **Which ratatui.** The [`ratatui::buffer::Buffer`] you draw into belongs to this crate, so use
+//! the ratatui it re-exports (`konoma_plugin_ratatui::ratatui`) or depend on the same ratatui
+//! version as this crate (0.30.x): a plugin built on another ratatui gets a confusing "expected
+//! `Buffer`, found `Buffer`" type error. What crosses into konoma is plain data, so konoma's own
+//! ratatui version does not matter, and each ratatui minor release needs a new version of this
+//! crate. There is no `Frame` here (no `render_widget`, no cursor position): render with
+//! `Widget::render(area, buf)` or `StatefulWidget::render(area, buf, &mut state)`.
 //!
 //! Pictures are not part of a `Buffer`. A plugin that wants them adds [`CanvasImage`]s to the
 //! returned canvas itself (`canvas.image(..)`), and sets `redraw_after` / `text_input` the same
@@ -25,6 +41,9 @@
 
 use konoma_plugin::style::{Color, Modifier, Style};
 use konoma_plugin::view::{CanvasCell, CanvasView, ViewReq};
+/// The ratatui this crate is built with. A plugin should draw with this one (or depend on the same
+/// version): the `Buffer` handed to [`draw_canvas`] is this ratatui's.
+pub use ratatui;
 use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
 use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier as RModifier};

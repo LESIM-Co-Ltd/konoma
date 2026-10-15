@@ -34,16 +34,22 @@ pub trait Session: Send {
         Ok(Outcome::Unhandled)
     }
     /// A key press, while the view asked for text input ([`crate::view::CanvasView::text_input`]).
-    /// Every key but `Esc` comes here, a paste as one [`crate::key::KeyCode::Paste`]; `Esc` is the
-    /// host's (it leaves the input state) and arrives here too, as a notice that cannot be
-    /// refused. Keys are never dropped: those that came while a call was running arrive one by
-    /// one in order (the host holds a bounded backlog and refuses new input past it, so a call
-    /// that never returns does not grow memory without bound). Return [`Outcome::Redraw`] to have
-    /// the view asked for again.
     ///
-    /// After `Esc` the host does not give the typing back because a later view asks for it again:
-    /// only an answer to something the user did does (a declared action they pressed, or opening
-    /// the file again). See [`crate::view::CanvasView::text_input`].
+    /// - Every key but `Esc` comes here, layer-0 keys (`?`, `Q`, `t`...) and `Ctrl-C` included,
+    ///   as ordinary keys; a paste is one [`crate::key::KeyCode::Paste`]. Keys the API has no name
+    ///   for (`Insert`, media keys) are dropped.
+    /// - `Esc` is the host's: it leaves the input state whatever the plugin answers, and arrives
+    ///   here too as a notice that cannot be refused. After it the host does not give the typing
+    ///   back because a later view asks for it again: only an answer to something the user did
+    ///   does (a declared action they pressed, or opening the file again). See
+    ///   [`crate::view::CanvasView::text_input`].
+    /// - [`Outcome::Unhandled`] does nothing: the key does not fall back to the host's keymap or to
+    ///   the plugin's declared actions. Return `Unhandled` for keys you do not use, for example
+    ///   those with `CTRL` or `ALT` ([`crate::key::KeyMods`]).
+    /// - Return [`Outcome::Redraw`] to have the view asked for again. Keys are never dropped:
+    ///   those that came while a call was running arrive one by one in order. The host holds a
+    ///   bounded backlog (4096 keys, a paste cut at 1 MiB) and refuses new input past it, so a
+    ///   call that never returns does not grow memory without bound.
     fn key(&mut self, key: &Key, cx: &ActCx) -> Result<Outcome, Failure> {
         let _ = (key, cx);
         Ok(Outcome::Unhandled)

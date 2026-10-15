@@ -83,10 +83,14 @@ pub struct ViewReq {
     /// The page, counted from 0 (`None` = the first or the whole). A page past the end is clamped
     /// to the last one.
     pub page: Option<usize>,
-    /// The size of the area in cells.
+    /// The size of the area in cells: what the host will draw the view into. It is the real size
+    /// (the preview's content area), either may be 0, and it changes when the user resizes the
+    /// terminal; the host then asks again (a canvas) with the new size.
     pub cols: u16,
     pub rows: u16,
-    /// The size of one cell in pixels, if known.
+    /// The size of one cell in pixels as (width, height), if known. `None` when the terminal
+    /// draws no real pixels (no graphics backend, or half blocks only); canvas pictures may still
+    /// be drawn as half blocks then.
     pub cell_px: Option<(u16, u16)>,
 }
 
@@ -591,16 +595,54 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 
 /// A picture placed on a canvas, covering `cols` x `rows` cells from (`x`, `y`).
 ///
-/// **`id` names the picture**: the same `id` means the same picture, so the host keeps the
-/// decoded and encoded pixels and the terminal's stored copy for it and does not redo the work
-/// when the plugin returns the same `id` again (an animation that moves a sprite sends the sprite
-/// once). Give a different `id` whenever the pixels differ. [`ImageData::Lazy`] is not allowed on
-/// a canvas, which is plain data ([`CanvasView::check`] refuses it).
+/// **`id` is the picture's identity**, chosen by the plugin and scoped to the opened file. The host
+/// decodes the pixels once, keeps the terminal's stored copy under the same `id`, and does not
+/// redo the work when the plugin answers with the same `id` and the same content again (an
+/// animation that moves a sprite sends the sprite once):
 ///
-/// **`image: None` means "the same picture as in the previous answer for this `id`"**, so a
-/// redraw that only moves or keeps a sprite need not send its pixels again. A `None` for an id the
-/// host does not hold (the first answer, or one it dropped) is a failed placement: the cells under
-/// it stay. Send the pixels (`Some`) whenever you are not sure.
+/// - the same `id` with the same content: the same picture, nothing is redone;
+/// - the same `id` with changed content: the picture is **replaced** in place (the old one keeps
+///   drawing until the new one is ready, so it does not blink). Reusing one `id` for a "slot"
+///   (the album art, the current frame) is fine and is the way to avoid leaking terminal memory;
+/// - a new `id`: a new picture. An `id` the canvas stops naming is dropped;
+/// - the same `id` placed twice in one answer: the same picture at two places (a tiled sprite).
+///
+/// The content is compared on every answer (every byte of `Rgba` and `Encoded` data, the path,
+/// size and mtime of a `File`), so keep one `Arc` and clone it into each answer rather than
+/// rebuilding a large buffer per frame. [`ImageData::Lazy`] is not allowed on a canvas, which is
+/// plain data ([`CanvasView::check`] refuses it).
+///
+/// **`image: None` means "unchanged"**: the picture the last answer named for this `id`, so a
+/// redraw that only moves a sprite need not send its pixels again. A `None` for an `id` the host
+/// does not hold (the first answer, one it dropped, one it refused) shows the cells instead. After
+/// a refusal, or whenever you are not sure, send `Some` again.
+///
+/// **How a picture is fitted.** It is scaled to fit inside the `cols` x `rows` cells with its
+/// aspect ratio kept, starting at the top-left of the rectangle, and it is not enlarged past its
+/// own pixel size. For a pixel-exact result make an `Rgba` picture `cols * cell_px.0` by
+/// `rows * cell_px.1` pixels ([`ViewReq::cell_px`], which is (width, height)).
+///
+/// **Limits** (the host's, they may change; the `CANVAS_MAX_*` constants are checked by
+/// [`CanvasView::check`], which refuses the whole canvas):
+///
+/// - at most [`CANVAS_MAX_PLACEMENTS`] placements and [`CANVAS_MAX_PICTURES`] distinct ids per
+///   canvas; a raw `Rgba` side of at most [`CANVAS_MAX_RGBA_SIDE`] pixels; an animation of at most
+///   [`CANVAS_MAX_FRAMES`] frames, not nested;
+/// - the host holds at most 256 MiB of decoded canvas pixels over all files. A picture that would
+///   not fit is refused for now, not failed: it is decoded on a later answer once room is free
+///   (the pictures the canvas no longer names go first);
+/// - per answer it decodes at most 32 new pictures, 64 MiB of encoded input and 128 MiB of new
+///   pixels (width x height x 4); the rest follow on later answers. The cells under a picture that
+///   is not drawn (yet) stay, so draw something sensible there;
+/// - a frame of an animation is shown for at least 20 ms;
+/// - a picture from a file must be a regular file (not a pipe or a device);
+/// - a picture that cannot be decoded (damaged, too large, an SVG that is refused) is not retried
+///   for the same content;
+/// - a picture that starts outside the area is not drawn; one that reaches past the right edge is
+///   not drawn at all; one that reaches below the bottom is cut to the visible rows. Keep
+///   pictures inside `ViewReq::cols` x `rows`;
+/// - on a terminal with no graphics nothing is decoded and the cells stay; with half blocks only,
+///   pictures are drawn as half blocks. [`crate::TermCaps::pixels`] tells which.
 ///
 /// Build one with [`CanvasImage::new`] (or [`CanvasImage::unchanged`]); more fields may be added
 /// later.
@@ -776,11 +818,45 @@ impl std::error::Error for CanvasIssue {}
 /// are within the `CANVAS_MAX_*` limits. Build one with [`CanvasView::new`]; more fields may be
 /// added later.
 ///
-/// **The size is the plugin's to fit, the host clips.** `cols` and `rows` should be the
-/// [`crate::ViewReq`]'s. A resize can race an answer, so a canvas bigger than the area asked for
-/// (in either dimension, up to the limits above) is not refused: it is drawn clipped to the area
-/// and the plugin is asked again with the new size. A smaller one leaves the rest of the area
-/// blank.
+/// **The size is the plugin's to fit, the host clips.** Size it to the request:
+/// `CanvasView::new(req.cols, req.rows)`. A resize can race an answer, so a canvas bigger than the
+/// area asked for (in either dimension, up to the limits above) is not refused: it is drawn
+/// clipped at the right and bottom edges (a wide character cut by the edge is blanked) and the
+/// plugin is asked again with the new size. A smaller one leaves the rest of the area blank. The
+/// canvas is drawn at the top-left of the preview's content area. `cols` and `rows` can be 0.
+///
+/// **`Session::view` is called at times the plugin does not choose**: on the first measure of the
+/// area, on every resize, after a `Redraw` answer to a key or an action, and on each timer tick.
+/// So it must not advance state (do not count calls to animate): keep it a function of the
+/// session's state, and take time from an `Instant` stored at `open`.
+///
+/// A canvas has no scrolling, search or selection from the host (see
+/// [`crate::keys::reserved`]), and no cursor: draw your own caret.
+///
+/// ```
+/// use konoma_plugin::prelude::*;
+///
+/// struct Hello;
+/// impl Session for Hello {
+///     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+///         let mut canvas = CanvasView::new(req.cols, req.rows);
+///         // Colors are the plugin's choice: the host does not convert them.
+///         let style = match cx.term.colors {
+///             ColorDepth::TrueColor => Style::new().fg(Color::Rgb(255, 160, 40)),
+///             _ => Style::new().fg(Color::Yellow),
+///         };
+///         canvas.set_string(1, 0, "hello, 世界", style);
+///         Ok(View::Canvas(canvas))
+///     }
+/// }
+///
+/// let req = ViewReq::new(20, 2);
+/// let View::Canvas(canvas) = Hello.view(&req, &ViewCx::bare()).unwrap() else {
+///     panic!("a canvas")
+/// };
+/// assert_eq!((canvas.cols, canvas.rows), (20, 2));
+/// assert!(canvas.check().is_ok());
+/// ```
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct CanvasView {
@@ -790,11 +866,15 @@ pub struct CanvasView {
     pub cells: Vec<CanvasCell>,
     /// Drawn over the cells, in order.
     pub images: Vec<CanvasImage>,
-    /// Ask the host to call `view` again after this long. It applies to **this answer only**: the
-    /// next answer asks again, or the timer stops. Values under 33 ms are raised to 33 ms, and
-    /// very large values are fine (the host caps them at 24 hours). Only while the canvas is on
-    /// screen and fully visible: under the help screen or a dialog the plugin is not asked, and
-    /// it is asked once when that closes.
+    /// Ask the host to call `view` again after this long. It is **one-shot**: it applies to this
+    /// answer only, so an animation sets it on every view it returns, and the timer stops when an
+    /// answer leaves it `None`. It is a clamp, not a rule: values under 33 ms are raised to 33 ms
+    /// (about 30 frames a second) and values over 24 hours are lowered to 24 hours. The time runs
+    /// from the moment the answer lands, so the real period is the delay plus the time `view`
+    /// takes. Only while the canvas is on screen and fully visible: under the help screen or a
+    /// dialog the plugin is not asked, and it is asked once when that closes; in the tree, on
+    /// another file or another tab it is not asked at all. A tick that falls while a call is still
+    /// running is skipped, not queued, so measure time with `Instant` and do not count calls.
     pub redraw_after: Option<Duration>,
     /// Ask the host to send every key but `Esc` to [`crate::Session::key`].
     ///
@@ -804,6 +884,10 @@ pub struct CanvasView {
     /// asks is the answer to something the user did -- a declared action they pressed, or opening
     /// the file again. So a plugin that wants a "typing mode" needs an action (a key such as `i`)
     /// that enters it, and its `Esc` handling should show a canvas with `text_input: false`.
+    ///
+    /// While it is on, **every key but `Esc` is the plugin's**, layer-0 keys (`?`, `Q`, `t`,
+    /// `[`, `1`-`9`...) and `Ctrl-C` included: they are text. Show a hint that `Esc` leaves. The
+    /// host puts "input" in the status line and the footer.
     pub text_input: bool,
 }
 
