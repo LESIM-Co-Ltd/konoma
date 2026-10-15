@@ -60,6 +60,7 @@ pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
+pub(crate) mod canvas_images;
 mod outline;
 mod paste_jump;
 mod plugin_acts;
@@ -1829,6 +1830,9 @@ pub struct App {
     /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
     /// is by construction the cheaper of the two.
     md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
+    /// The cache keys of the pictures of the canvas on screen, in the order of
+    /// `CanvasView::images` (`app/canvas_images.rs`).
+    canvas_keys: Vec<PathBuf>,
     /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
     /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
     /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
@@ -3581,6 +3585,7 @@ impl App {
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
+            canvas_keys: Vec::new(),
             md_frame: 0,
             md_request_seq: 0,
             draw_seq: 0,

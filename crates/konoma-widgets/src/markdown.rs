@@ -2871,6 +2871,23 @@ pub fn is_synthetic_md_url(url: &str) -> bool {
         || is_math_url(url)
         || is_media_diff_url(url)
         || is_office_image_url(url)
+        || is_canvas_url(url)
+}
+
+/// Whether an inline-image URL names a picture a plugin placed on its canvas
+/// (`canvas://<plugin id>/<image id>/<content hash>`, built by the host). Its pixels were decoded
+/// on the worker that ran the plugin and live only in the cache, never in a file.
+pub fn is_canvas_url(url: &str) -> bool {
+    url.starts_with("canvas://")
+}
+
+/// The synthetic cache key of one picture of a plugin's canvas. The same plugin, `image_id` and
+/// content hash give the same key, so a picture the plugin sends again is found in the cache
+/// (nothing is decoded, encoded or transmitted again); changed content under the same id is a
+/// different key. The id is scoped by the plugin id, which cannot contain `/` (a plugin id is a
+/// plain name), so two plugins never share a key.
+pub fn canvas_url(plugin_id: &str, image_id: u64, content_hash: u64) -> String {
+    format!("canvas://{plugin_id}/{image_id}/{content_hash:016x}")
 }
 
 /// Whether an inline-image URL names a picture of the open Word document

@@ -328,6 +328,10 @@ pub(crate) struct PluginWork {
     /// The ids of the actions the plugin declares: the worker asks the session which of them work
     /// now before it hands the session back.
     pub(super) act_ids: Vec<String>,
+    /// The cache keys of the canvas pictures the app already holds: a canvas answer is decoded
+    /// only for the pictures not in it (`canvas_images.rs`). `None` = pictures cannot be shown
+    /// (no image backend): nothing of a canvas is decoded.
+    pub(super) canvas_known: Option<std::collections::HashSet<PathBuf>>,
 }
 
 /// What became of a picture a worker decoded.
@@ -338,6 +342,9 @@ pub(super) enum Picture {
     Decoded(Box<MediaPayload>),
     /// The view was a picture that could not be made into pixels, with no reason to show.
     Failed,
+    /// The view was a canvas: the pictures it places, decoded (`canvas_images.rs`). `None` when
+    /// pictures cannot be shown (no image backend), so the plugin's cells stay.
+    Canvas(Option<Box<super::canvas_images::CanvasPictures>>),
 }
 
 /// The text a plugin made, written by the worker to a private temp file the host's windowed reader
@@ -489,7 +496,7 @@ impl PluginResult {
     pub(super) fn into_image_payload(self) -> Option<MediaPayload> {
         match self.picture {
             Picture::Decoded(p) => Some(*p),
-            Picture::Failed => None,
+            Picture::Failed | Picture::Canvas(_) => None,
             Picture::None => self
                 .failure
                 .and_then(|f| super::media_plugin::image_failure_of(&self.id, &f))
@@ -606,6 +613,7 @@ impl PluginWork {
             on_layout,
             group: _,
             act_ids,
+            canvas_known,
         } = self;
         let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
             act_ids
@@ -667,6 +675,22 @@ impl PluginWork {
                         .flatten();
                     document = Some(Box::new(document_of(d, display)));
                     (None, None)
+                }
+                // A canvas: the pictures it places that the app does not hold yet are decoded here,
+                // on the worker, in the same job (the view itself is kept as it is).
+                Ok(View::Canvas(c)) => {
+                    picture = Picture::Canvas(canvas_known.as_ref().map(|known| {
+                        Box::new(super::canvas_images::decode_canvas(
+                            &id,
+                            &c,
+                            known,
+                            &path,
+                            default_raster_px,
+                            decode_cancel.as_ref(),
+                            trust_own_svg,
+                        ))
+                    }));
+                    (Some(View::Canvas(c)), None)
                 }
                 Ok(_) if expects_picture => (
                     None,
@@ -1052,6 +1076,7 @@ impl App {
         // The keys, the `Esc` that left a text input and the redraw deadline belong to the show
         // that is going: whatever opens next starts clean.
         self.forget_canvas_state();
+        self.forget_canvas_pictures();
         if let Some(old) = self.plugin.take() {
             super::table_actions::discard_in_background(old);
         }
@@ -1258,6 +1283,7 @@ impl App {
             path,
             external,
             default_raster_px: self.cfg.ui.svg_max_px,
+            canvas_known: self.canvas_known_keys(),
             decode_cancel: None,
             on_layout: None,
             gen: 0,
@@ -1820,8 +1846,11 @@ impl App {
                 self.apply_payload(MediaPayload::ImageFailed(why));
             }
         }
-        if let Picture::Decoded(payload) = res.picture {
-            self.apply_payload(*payload);
+        let mut canvas_pictures = Picture::None;
+        match res.picture {
+            Picture::Decoded(payload) => self.apply_payload(*payload),
+            p @ Picture::Canvas(_) => canvas_pictures = p,
+            Picture::None | Picture::Failed => {}
         }
         // The delegated command: its text output opens the windowed reader, a failure is the reason
         // the `[can not preview]` screen gives.
@@ -1855,6 +1884,14 @@ impl App {
                 }
             }
             Some(Outcome::Redraw) | Some(Outcome::Unhandled) | None => {}
+        }
+        // The pictures of the canvas this result carried: decoded on the worker, now put into the
+        // cache (the entries of pictures the canvas dropped go). A view that is not a canvas, or a
+        // failure, leaves none.
+        match (&canvas_now, canvas_pictures) {
+            (Some(Some(_)), Picture::Canvas(Some(pics))) => self.canvas_pictures_landed(*pics),
+            (Some(_), _) => self.forget_canvas_pictures(),
+            (None, _) => {}
         }
         // The canvas this result left on screen: what text input and the redraw timer follow.
         self.canvas_landed(canvas_now);

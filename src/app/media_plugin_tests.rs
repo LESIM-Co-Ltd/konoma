@@ -190,6 +190,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         on_layout: None,
         group: None,
         act_ids: Vec::new(),
+        canvas_known: None,
     }
 }
 
