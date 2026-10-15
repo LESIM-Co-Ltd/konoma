@@ -68,15 +68,18 @@ impl App {
     }
 
     /// Whether the session says `p` works now. False before the first answer (while the file is
-    /// loading), when the plugin could not open the file, and **while a job holds the session**
-    /// (the key would be ignored, so its hint is not shown: [[hint-shown-iff-key-acts]]).
+    /// loading) and when the plugin could not open the file. **While a job holds the session** the
+    /// answer is the last the session gave, for a canvas (its presses wait in line, so the key does
+    /// act: [[hint-shown-iff-key-acts]], and the hint does not flicker with a redraw timer's
+    /// ticks); for any other display it is false, because the press would be ignored.
     pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
+        let canvas = self.is_canvas_preview();
         self.plugin
             .as_ref()
             .filter(|s| {
                 s.id == p.plugin()
                     && matches!(s.phase, plugin_host::PluginPhase::Ready)
-                    && s.session.is_some()
+                    && (s.session.is_some() || canvas)
             })
             .and_then(|s| s.enabled.get(p.act()))
             .copied()
@@ -100,8 +103,8 @@ impl App {
     }
 
     /// Run a declared action of the open plugin on the worker. While a job still holds the
-    /// session (the previous key is being answered) the press is ignored, and so is its hint: the
-    /// gate is off meanwhile (`plugin_act_enabled`).
+    /// session of a canvas the press waits in line and goes when the session returns; for any
+    /// other display it is ignored, and so is its hint (`plugin_act_enabled`).
     pub fn run_plugin_action(&mut self, p: PluginAct) {
         let _ = self.plugin_act(p.act());
     }

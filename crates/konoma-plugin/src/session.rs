@@ -37,7 +37,13 @@ pub trait Session: Send {
     /// Every key but `Esc` comes here, a paste as one [`crate::key::KeyCode::Paste`]; `Esc` is the
     /// host's (it leaves the input state) and arrives here too, as a notice that cannot be
     /// refused. Keys are never dropped: those that came while a call was running arrive one by
-    /// one in order. Return [`Outcome::Redraw`] to have the view asked for again.
+    /// one in order (the host holds a bounded backlog and refuses new input past it, so a call
+    /// that never returns does not grow memory without bound). Return [`Outcome::Redraw`] to have
+    /// the view asked for again.
+    ///
+    /// After `Esc` the host does not give the typing back because a later view asks for it again:
+    /// only an answer to something the user did does (a declared action they pressed, or opening
+    /// the file again). See [`crate::view::CanvasView::text_input`].
     fn key(&mut self, key: &Key, cx: &ActCx) -> Result<Outcome, Failure> {
         let _ = (key, cx);
         Ok(Outcome::Unhandled)

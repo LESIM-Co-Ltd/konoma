@@ -24,6 +24,10 @@ enum Reply {
     Unhandled,
     Flash(&'static str),
     Reload,
+    /// Reload for the first key, then Redraw for the rest.
+    ReloadOnce,
+    /// Redraw for the first key, then the message for the rest.
+    RedrawThenFlash(&'static str),
     Fail,
 }
 
@@ -43,6 +47,24 @@ struct Shared {
     /// While set, `view` waits for `latch` (the first `n` views are let through: see `free_views`).
     hold_views: AtomicBool,
     latch: Latch,
+    /// While set, `open` waits for `open_gate`.
+    hold_opens: AtomicBool,
+    open_gate: Latch,
+    /// How many sessions were dropped (freed).
+    drops: AtomicUsize,
+    /// Whether the session declares two representations (`one`, `two`).
+    reprs: AtomicBool,
+    /// The representation each `view` was asked for, and the thread it ran on.
+    asked: Mutex<Vec<(Option<String>, std::thread::ThreadId)>>,
+    /// The declared actions run, in order.
+    acts: Mutex<Vec<String>>,
+    /// While set, `key` waits for `key_gate` (a gate of its own, apart from `latch`).
+    hold_key_gate: AtomicBool,
+    key_gate: Latch,
+    /// Whether the session declares three pages.
+    pages: AtomicBool,
+    /// Whether the canvas answered is bigger than the area asked for.
+    oversize: AtomicBool,
 }
 
 impl Shared {
@@ -57,6 +79,16 @@ impl Shared {
             hold_keys: AtomicBool::new(false),
             hold_views: AtomicBool::new(false),
             latch: Latch::default(),
+            hold_opens: AtomicBool::new(false),
+            open_gate: Latch::default(),
+            drops: AtomicUsize::new(0),
+            reprs: AtomicBool::new(false),
+            asked: Mutex::default(),
+            acts: Mutex::default(),
+            hold_key_gate: AtomicBool::new(false),
+            key_gate: Latch::default(),
+            pages: AtomicBool::new(false),
+            oversize: AtomicBool::new(false),
         })
     }
 
@@ -66,6 +98,14 @@ impl Shared {
 
     fn views(&self) -> usize {
         self.views.load(Ordering::SeqCst)
+    }
+
+    fn drops(&self) -> usize {
+        self.drops.load(Ordering::SeqCst)
+    }
+
+    fn acts(&self) -> Vec<String> {
+        self.acts.lock().unwrap().clone()
     }
 }
 
@@ -86,31 +126,92 @@ impl Plugin for Typist {
                     .help(t!(en: "Draw again", ja: "描き直す"))
                     .footer(1),
             )
+            .action(
+                Act::new("second")
+                    .key("z")
+                    .label(t!(en: "second", ja: "二つ目"))
+                    .help(t!(en: "Another action", ja: "別の操作"))
+                    .footer(2),
+            )
     }
 
     fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
-        self.sh.opens.fetch_add(1, Ordering::SeqCst);
+        let seq = self.sh.opens.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.sh.hold_opens.load(Ordering::SeqCst) {
+            self.sh.open_gate.wait();
+        }
         Ok(Box::new(TypistSession {
             sh: self.sh.clone(),
+            seq,
+            own: 0,
         }))
     }
 }
 
 struct TypistSession {
     sh: Arc<Shared>,
+    /// Which `open` made this session (1 = the first).
+    seq: usize,
+    /// How many keys this very session was given.
+    own: usize,
+}
+
+impl Drop for TypistSession {
+    fn drop(&mut self) {
+        self.sh.drops.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl Session for TypistSession {
+    fn layout(&self) -> Layout {
+        let mut layout = if self.sh.reprs.load(Ordering::SeqCst) {
+            Layout {
+                reprs: vec![
+                    ReprDecl::new("one", t!(en: "One", ja: "一")),
+                    ReprDecl::new("two", t!(en: "Two", ja: "二")),
+                ],
+                default_repr: Some("one".into()),
+                default_repr_without_pixels: Some("one".into()),
+                pages: None,
+            }
+        } else {
+            Layout::single()
+        };
+        if self.sh.pages.load(Ordering::SeqCst) {
+            layout.pages = Some(konoma_plugin::view::PageLayout::Separate {
+                count: Some(3),
+                titles: Vec::new(),
+            });
+        }
+        layout
+    }
+
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         self.sh.views.fetch_add(1, Ordering::SeqCst);
+        self.sh
+            .asked
+            .lock()
+            .unwrap()
+            .push((req.repr.clone(), std::thread::current().id()));
         if self.sh.hold_views.load(Ordering::SeqCst) {
             self.sh.latch.wait();
         }
-        let mut c = CanvasView::new(req.cols, req.rows);
+        let mut c = if self.sh.oversize.load(Ordering::SeqCst) {
+            CanvasView::new(req.cols + 7, req.rows + 5)
+        } else {
+            CanvasView::new(req.cols, req.rows)
+        };
         c.set_string(
             0,
             0,
-            &format!("keys={}", self.sh.log.lock().unwrap().len()),
+            &format!(
+                "keys={} sess={} own={} repr={} page={}",
+                self.sh.log.lock().unwrap().len(),
+                self.seq,
+                self.own,
+                req.repr.as_deref().unwrap_or("-"),
+                req.page.map_or("-".to_string(), |p| p.to_string())
+            ),
             PStyle::new(),
         );
         c.text_input = self.sh.want_input.load(Ordering::SeqCst);
@@ -119,8 +220,9 @@ impl Session for TypistSession {
     }
 
     fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        self.sh.acts.lock().unwrap().push(action.to_string());
         match action {
-            "refresh" => Ok(Outcome::Redraw),
+            "refresh" | "second" => Ok(Outcome::Redraw),
             _ => Ok(Outcome::Unhandled),
         }
     }
@@ -129,12 +231,30 @@ impl Session for TypistSession {
         if self.sh.hold_keys.load(Ordering::SeqCst) {
             self.sh.latch.wait();
         }
+        if self.sh.hold_key_gate.load(Ordering::SeqCst) {
+            self.sh.key_gate.wait();
+        }
         self.sh.log.lock().unwrap().push(key.clone());
-        match self.sh.reply.lock().unwrap().clone() {
+        self.own += 1;
+        let reply = {
+            let mut r = self.sh.reply.lock().unwrap();
+            let now = r.clone();
+            if matches!(now, Reply::ReloadOnce) {
+                *r = Reply::Redraw;
+            }
+            if let Reply::RedrawThenFlash(m) = now {
+                *r = Reply::Flash(m);
+                drop(r);
+                return Ok(Outcome::Redraw);
+            }
+            now
+        };
+        match reply {
             Reply::Redraw => Ok(Outcome::Redraw),
             Reply::Unhandled => Ok(Outcome::Unhandled),
             Reply::Flash(m) => Ok(Outcome::Flash(Tr::new(m).ja(format!("{m} (ja)")))),
-            Reply::Reload => Ok(Outcome::Reload),
+            Reply::Reload | Reply::ReloadOnce => Ok(Outcome::Reload),
+            Reply::RedrawThenFlash(_) => Ok(Outcome::Redraw),
             Reply::Fail => Err(Failure::external(t!(
                 en: "the key failed",
                 ja: "キーが失敗しました",
@@ -454,8 +574,19 @@ fn e2e_canvas_input_esc_is_not_a_request_the_plugin_can_refuse() {
     assert_eq!(o.sh.log(), vec![Key::new(PK::Esc)]);
 }
 
+/// Make the timer fire once (a tick answered by the plugin on the spot).
+fn tick(o: &mut Opened) {
+    let now = Instant::now();
+    o.s.app.set_canvas_redraw_at_for_test(Some(now));
+    assert!(
+        o.s.app.canvas_redraw_if_due(now),
+        "the tick asked the plugin"
+    );
+    o.s.draw();
+}
+
 #[test]
-fn e2e_canvas_input_is_not_taken_again_until_the_plugin_says_false_then_true() {
+fn e2e_canvas_input_only_the_user_takes_the_typing_back_after_esc() {
     let mut o = open("ci_notrap");
     o.s.esc();
     assert!(!o.s.app.is_plugin_input());
@@ -465,23 +596,62 @@ fn e2e_canvas_input_is_not_taken_again_until_the_plugin_says_false_then_true() {
     o.s.key('q');
     assert!(!o.s.app.show_help);
     assert!(o.s.app.is_canvas_preview());
-    // More canvases that still ask: still not captured.
-    o.s.key('x');
-    assert!(!o.s.app.is_plugin_input());
-    // The plugin shows a canvas that does not ask...
+    // A plugin that flaps `text_input` from timer ticks (still asking; not asking; asking again)
+    // never gets the typing back: that is not the user's doing.
+    tick(&mut o);
+    assert!(!o.s.app.is_plugin_input(), "a tick that still asks");
     o.sh.want_input.store(false, Ordering::SeqCst);
-    o.s.key('x');
+    tick(&mut o);
     assert!(!o.s.app.is_plugin_input());
-    // ...and later one that does: a new request, taken.
     o.sh.want_input.store(true, Ordering::SeqCst);
-    o.s.key('x');
+    tick(&mut o);
     assert!(
-        o.s.app.is_plugin_input(),
-        "false then true is a new request"
+        !o.s.app.is_plugin_input(),
+        "false then true from a tick is not a request of the user"
     );
+    // A resize (a refit) is not the user's either.
+    o.s.resize(80, 20);
+    o.s.draw();
+    o.s.draw();
+    assert!(!o.s.app.is_plugin_input(), "a refit");
+    // The user presses the plugin's own action (`x`, "refresh"): the canvas it is answered with
+    // asks for the typing, and that one is taken.
+    o.s.key('x');
+    assert!(o.s.app.is_plugin_input(), "the user's action is a request");
     let before = o.sh.log().len();
     o.s.key('?');
     assert_eq!(o.sh.log().len(), before + 1, "and `?` is text again");
+}
+
+#[test]
+fn e2e_canvas_input_a_user_action_answered_without_asking_does_not_take_the_typing() {
+    let mut o = open("ci_notrap_user");
+    o.s.esc();
+    o.sh.want_input.store(false, Ordering::SeqCst);
+    o.s.key('x');
+    assert!(!o.s.app.is_plugin_input());
+    // The mark of that action is spent: a later tick that asks is nobody's request.
+    o.sh.want_input.store(true, Ordering::SeqCst);
+    tick(&mut o);
+    assert!(
+        !o.s.app.is_plugin_input(),
+        "the earlier action is not remembered"
+    );
+}
+
+#[test]
+fn e2e_canvas_input_a_message_between_two_canvases_does_not_release_the_latch() {
+    // The flap through a message view (which always fits) instead of a canvas that does not ask.
+    let mut o = open("ci_notrap_msg");
+    o.s.esc();
+    // The latch survives a failure/non-canvas answer: the show is replaced by a message and back.
+    o.s.app.canvas_landed_for_test(Some(None), false);
+    o.s.app
+        .canvas_landed_for_test(Some(Some((true, None))), false);
+    assert!(!o.s.app.is_plugin_input(), "not the user's doing");
+    o.s.app
+        .canvas_landed_for_test(Some(Some((true, None))), true);
+    assert!(o.s.app.is_plugin_input(), "the user's");
 }
 
 #[test]
@@ -951,15 +1121,30 @@ fn e2e_canvas_timer_another_kind_of_preview_stops_it() {
 }
 
 #[test]
-fn e2e_canvas_timer_runs_under_the_help_overlay_like_the_gif_timers_do() {
-    // The condition is the GIF timers' (preview mode, this file): an overlay in front does not
-    // stop the animation behind it.
+fn e2e_canvas_timer_waits_under_an_overlay_and_asks_once_when_it_closes() {
     let mut o = ticking("ct_help");
     o.s.key('?');
     assert!(o.s.app.show_help);
     let at = o.s.app.canvas_redraw_deadline().unwrap();
     let views = o.sh.views();
-    assert!(o.s.app.canvas_redraw_if_due(at));
+    // The canvas is hidden: no wake-up for it and no call of the plugin, however late.
+    assert_eq!(o.s.app.canvas_poll_timeout(at), None);
+    assert!(!o.s.app.canvas_redraw_if_due(at + AFTER * 10));
+    assert!(!o.s.app.canvas_redraw_if_due(at + AFTER * 20));
+    assert_eq!(o.sh.views(), views, "the plugin was not called under help");
+    assert_eq!(
+        o.s.app.canvas_redraw_deadline(),
+        Some(at),
+        "the deadline waits, it is not dropped"
+    );
+    // The overlay closes: the long-past deadline fires, once.
+    o.s.key('?');
+    assert!(!o.s.app.show_help);
+    assert!(o.s.app.canvas_poll_timeout(at).is_some());
+    assert!(o.s.app.canvas_redraw_if_due(at + AFTER * 20));
+    assert_eq!(o.sh.views(), views + 1, "asked once");
+    // The answer armed the next deadline from now: nothing is due at the old time.
+    assert!(!o.s.app.canvas_redraw_if_due(at), "only once");
     assert_eq!(o.sh.views(), views + 1);
 }
 
@@ -1086,4 +1271,396 @@ fn e2e_canvas_timer_and_text_input_work_together() {
         o.s.app.is_plugin_input(),
         "still capturing after a timer redraw"
     );
+}
+
+// ---- the job road: a reload, a wish and a press never lose the session ---------------------------
+
+/// What a test file looks like after the file on disk changed (the size is what the host sees).
+fn touch_file(o: &Opened) {
+    std::fs::write(o.dir.join("a.typ"), b"changed, and longer").unwrap();
+}
+
+#[test]
+fn e2e_canvas_reload_the_old_session_is_out_of_reach_while_the_file_is_read_again() {
+    // The previous view stays on screen while the file is read again, but the session that made it
+    // must not be taken by the timer, the keys or a refit meanwhile: whatever it answered would
+    // make the new `Open` stale, and the new session (the new content) would be lost.
+    let mut o = open_with("cj_reopen", "en", true, |sh| {
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.s.see("sess=1");
+    // The reading again is held in `open`.
+    o.sh.hold_opens.store(true, Ordering::SeqCst);
+    touch_file(&o);
+    o.s.app.reload_preview();
+    assert!(
+        o.s.app.plugin_session_is_out_for_test(),
+        "the old session is out of reach"
+    );
+    assert_eq!(o.sh.drops(), 1, "and it is freed (off the UI thread)");
+    o.s.see("sess=1"); // the old view is still what is drawn
+                       // The timer is due: nobody to ask.
+    let views = o.sh.views();
+    assert!(!o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    // Typed keys wait, in order.
+    o.s.key('a');
+    o.s.key('b');
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 2);
+    assert!(o.sh.log().is_empty(), "no key went to the old session");
+    assert_eq!(o.sh.views(), views, "nothing asked the old session");
+    // The new session lands: the new content is shown, and the keys go to it, in order.
+    o.sh.hold_opens.store(false, Ordering::SeqCst);
+    o.sh.open_gate.open();
+    settle(&mut o.s);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 2);
+    o.s.see("sess=2");
+    o.s.dont_see("sess=1");
+    assert_eq!(chars(&o.sh.log()), "ab");
+    o.s.see("own=2");
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 0);
+    // The timer re-arms from the new answer.
+    assert!(o.s.app.canvas_redraw_deadline().is_some());
+}
+
+#[test]
+fn e2e_canvas_reload_a_late_answer_of_the_old_session_is_not_put_back() {
+    // A tick job holds the old session when the file changes. Its answer is older than the `Open`
+    // and arrives first: it must not become the show's session (it would take the queued keys, and
+    // the `Open` would be stale).
+    let mut o = open_with("cj_late", "en", true, |sh| {
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    let now = Instant::now() + AFTER * 4;
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(
+        o.s.app.canvas_redraw_if_due(now),
+        "the tick is out with the old session"
+    );
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    // The file changes: read again; the `Open` waits in `open`.
+    o.sh.hold_opens.store(true, Ordering::SeqCst);
+    touch_file(&o);
+    o.s.app.reload_preview();
+    o.s.key('a');
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 1);
+    // The tick finishes first: its answer is stale, and its session is not given back.
+    o.sh.latch.open();
+    assert!(!o.s.drain_plugin(), "the stale answer is not applied");
+    assert!(o.s.app.plugin_session_is_out_for_test(), "not put back");
+    assert_eq!(
+        o.s.app.plugin_key_queue_len_for_test(),
+        1,
+        "the key still waits"
+    );
+    assert!(o.sh.log().is_empty(), "the old session was given no key");
+    // Now the new session.
+    o.sh.hold_opens.store(false, Ordering::SeqCst);
+    o.sh.open_gate.open();
+    settle(&mut o.s);
+    o.s.see("sess=2");
+    o.s.see("own=1");
+    assert_eq!(chars(&o.sh.log()), "a");
+}
+
+#[test]
+fn e2e_canvas_reload_answered_to_a_key_with_more_keys_waiting_goes_to_the_new_session() {
+    // The deterministic case: the key answers `Reload` while other keys are queued. The reading
+    // again and the sending of the queue happen in the same step; the queue must wait for the new
+    // session, not take the old one.
+    let mut o = open_with("cj_reload_keys", "en", true, |sh| {
+        *sh.reply.lock().unwrap() = Reply::ReloadOnce;
+    });
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a');
+    o.s.key('b');
+    o.s.key('c');
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 2);
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    // The reading again is held, so the key answer is applied alone.
+    o.sh.hold_opens.store(true, Ordering::SeqCst);
+    o.sh.latch.open();
+    assert!(o.s.drain_plugin(), "the key answered Reload");
+    assert!(
+        o.s.app.plugin_session_is_out_for_test(),
+        "the old session is not used again"
+    );
+    assert_eq!(chars(&o.sh.log()), "a", "`b` and `c` wait for the new one");
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 2);
+    o.sh.hold_opens.store(false, Ordering::SeqCst);
+    o.sh.open_gate.open();
+    settle(&mut o.s);
+    assert_eq!(
+        o.sh.opens.load(Ordering::SeqCst),
+        2,
+        "the file was read again"
+    );
+    assert_eq!(o.sh.drops(), 1, "the old session is gone");
+    // The new session is what is shown, and it got `b` and `c`.
+    o.s.see("sess=2");
+    o.s.see("own=2");
+    assert_eq!(chars(&o.sh.log()), "abc");
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), 0);
+}
+
+#[test]
+fn e2e_canvas_r_is_asked_on_a_worker_never_on_the_ui_thread() {
+    let mut o = open_with("cj_r", "en", true, |sh| {
+        sh.reprs.store(true, Ordering::SeqCst);
+        sh.want_input.store(false, Ordering::SeqCst);
+    });
+    assert!(footer(&o.s).contains("R:Two"), "footer: {}", footer(&o.s));
+    o.s.key('R');
+    settle(&mut o.s);
+    o.s.see("repr=two");
+    let (repr, thread) = o.sh.asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(repr.as_deref(), Some("two"));
+    assert_ne!(thread, std::thread::current().id(), "not the UI thread");
+}
+
+#[test]
+fn e2e_canvas_r_pressed_while_a_job_holds_the_session_is_asked_when_it_returns() {
+    let mut o = open_with("cj_r_wait", "en", true, |sh| {
+        sh.reprs.store(true, Ordering::SeqCst);
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    assert!(o.s.app.plugin_session_is_out_for_test());
+    o.s.key('R');
+    let two = |o: &Opened| {
+        o.sh.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| r.as_deref() == Some("two"))
+            .count()
+    };
+    assert_eq!(two(&o), 0, "nothing asked for `two` yet");
+    o.sh.latch.open();
+    settle(&mut o.s);
+    o.s.see("repr=two");
+    // It was asked once, with the choice the tab then had.
+    assert_eq!(
+        o.sh.asked.lock().unwrap().last().unwrap().0.as_deref(),
+        Some("two")
+    );
+}
+
+#[test]
+fn e2e_canvas_a_page_turn_while_a_job_holds_the_session_does_not_open_the_file_again() {
+    let mut o = open_with("cj_page", "en", true, |sh| {
+        sh.pages.store(true, Ordering::SeqCst);
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.s.see("page=0");
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    let opens = o.sh.opens.load(Ordering::SeqCst);
+    o.s.key('J');
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens, "not opened again");
+    o.s.see("page=0"); // the view stays on screen: no "Loading..."
+    o.sh.latch.open();
+    settle(&mut o.s);
+    assert_eq!(
+        o.sh.opens.load(Ordering::SeqCst),
+        opens,
+        "still the same session"
+    );
+    o.s.see("page=1");
+    o.s.see("sess=1");
+}
+
+#[test]
+fn e2e_canvas_actions_pressed_while_a_job_holds_the_session_wait_in_order() {
+    let mut o = open_with("cj_acts", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    assert!(o.s.app.plugin_session_is_out_for_test());
+    // The hint does not flicker with the tick: the last known answer stands.
+    o.s.draw();
+    assert!(
+        footer(&o.s).contains("x:refresh"),
+        "footer: {}",
+        footer(&o.s)
+    );
+    o.s.key('z');
+    o.s.key('x');
+    o.s.key('z');
+    assert!(o.sh.acts().is_empty(), "nothing ran yet");
+    o.sh.latch.open();
+    settle(&mut o.s);
+    assert_eq!(
+        o.sh.acts(),
+        ["second", "refresh", "second"],
+        "in the order pressed"
+    );
+}
+
+#[test]
+fn e2e_canvas_actions_waiting_are_bounded() {
+    let mut o = open_with("cj_acts_cap", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    let cap = crate::app::MAX_QUEUED_ACTS;
+    for _ in 0..cap + 10 {
+        o.s.key('x');
+    }
+    assert!(o.s.app.flash.is_some(), "the refused press is told");
+    o.sh.latch.open();
+    // One action per job, each answered with a redraw: settle until the line is empty.
+    for _ in 0..(cap * 3) {
+        if !o.s.app.is_media_loading() {
+            break;
+        }
+        o.s.drain_plugin();
+    }
+    assert_eq!(
+        o.sh.acts().len(),
+        cap,
+        "the first {cap} ran, the rest were refused"
+    );
+}
+
+#[test]
+fn e2e_canvas_a_stale_keys_answer_with_a_redraw_and_a_message_keeps_both() {
+    let mut o = open_with("cj_stale_keys", "en", true, |sh| {
+        *sh.after.lock().unwrap() = Some(AFTER);
+        *sh.reply.lock().unwrap() = Reply::RedrawThenFlash("the message");
+    });
+    // Two keys wait behind a tick, so they go in one job.
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    o.s.key('a');
+    o.s.key('b');
+    o.sh.hold_key_gate.store(true, Ordering::SeqCst);
+    o.sh.latch.open();
+    assert!(
+        o.s.drain_plugin(),
+        "the tick lands and the keys go in one job"
+    );
+    // Another media job moves the generation on while the keys are out: their answer is stale.
+    o.s.app.another_media_job_starts_for_test();
+    let views = o.sh.views();
+    o.sh.hold_key_gate.store(false, Ordering::SeqCst);
+    o.sh.key_gate.open();
+    settle(&mut o.s);
+    assert_eq!(o.s.app.flash.as_deref(), Some("the message"));
+    // The job drew once itself (dropped as stale); the redraw was asked for again.
+    assert_eq!(o.sh.views() - views, 2, "the redraw was not lost");
+    o.s.see("keys=2");
+}
+
+#[test]
+fn e2e_canvas_a_huge_redraw_after_does_not_panic_and_is_bounded() {
+    for d in [
+        Duration::MAX,
+        Duration::from_secs(u64::MAX),
+        Duration::from_secs(1 << 40),
+    ] {
+        let mut o = open_with("cj_huge", "en", false, |sh| {
+            sh.want_input.store(false, Ordering::SeqCst);
+            *sh.after.lock().unwrap() = Some(d);
+        });
+        o.s.key('x');
+        let at = o.s.app.canvas_redraw_deadline().expect("armed");
+        assert!(
+            at <= Instant::now() + crate::app::MAX_REDRAW_AFTER + Duration::from_secs(5),
+            "bounded: {d:?}"
+        );
+        assert!(at >= Instant::now(), "{d:?}");
+    }
+}
+
+#[test]
+fn e2e_canvas_input_the_queue_of_keys_is_bounded_and_keeps_its_order() {
+    let mut o = open_with("cj_cap", "en", true, |_| {});
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a'); // goes out at once and is held
+    let cap = crate::app::MAX_QUEUED_KEYS;
+    for i in 0..cap + 20 {
+        o.s.key(char::from(b'a' + (i % 26) as u8));
+    }
+    assert_eq!(o.s.app.plugin_key_queue_len_for_test(), cap);
+    assert!(o.s.app.flash.is_some(), "the refusal is told");
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+    let log = o.sh.log();
+    assert_eq!(log.len(), 1 + cap);
+    // The oldest are kept, in order; the refused ones are the newest.
+    let want: String = std::iter::once('a')
+        .chain((0..cap).map(|i| char::from(b'a' + (i % 26) as u8)))
+        .collect();
+    assert_eq!(chars(&log), want);
+}
+
+#[test]
+fn e2e_canvas_input_esc_is_the_hosts_even_when_the_queue_is_full() {
+    let mut o = open_with("cj_cap_esc", "en", true, |_| {});
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a');
+    for _ in 0..crate::app::MAX_QUEUED_KEYS + 5 {
+        o.s.key('b');
+    }
+    o.s.esc();
+    assert!(!o.s.app.is_plugin_input(), "the user can always leave");
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+}
+
+#[test]
+fn e2e_canvas_input_a_long_paste_is_cut_at_a_character_boundary() {
+    let mut o = open("cj_paste_cut");
+    let max = crate::app::MAX_PASTE_BYTES;
+    // Two-byte characters: the cut at an odd limit would split one.
+    let text: String = "é".repeat(max); // 2 * max bytes
+    o.s.app.handle_paste(text);
+    let log = o.sh.log();
+    assert_eq!(log.len(), 1);
+    let PK::Paste(got) = &log[0].code else {
+        panic!("a paste: {log:?}")
+    };
+    assert!(got.len() <= max && got.len() >= max - 1, "{}", got.len());
+    assert!(got.chars().all(|c| c == 'é'));
+    assert!(o.s.app.flash.is_some(), "the cut is told");
+    // A paste within the limit is whole and silent.
+    let mut o = open("cj_paste_ok");
+    o.s.app.handle_paste("short".to_string());
+    assert_eq!(o.sh.log(), vec![Key::paste("short")]);
+    assert!(o.s.app.flash.is_none());
+}
+
+#[test]
+fn e2e_canvas_an_answer_bigger_than_the_request_is_clipped_not_refused() {
+    // A resize can race a plugin's answer: the canvas is drawn clipped to the area. It stays
+    // within the `check()` limits (4096 a side, 4M cells), which are the cap.
+    let mut o = open_with("cj_oversize", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        sh.oversize.store(true, Ordering::SeqCst);
+    });
+    o.s.key('x');
+    o.s.draw();
+    assert!(o.s.app.is_canvas_preview());
+    assert!(o.s.app.plugin_failure().is_none());
+    o.s.see("sess=1");
 }

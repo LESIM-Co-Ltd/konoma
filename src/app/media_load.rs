@@ -353,6 +353,9 @@ impl App {
             || show.id != res.id
             || show.path != res.path
             || show.session.is_some()
+            // Older than the newest `Open` of the show (the file was read again meanwhile): the
+            // `Open` brings the session of the show, and this one must never take its place.
+            || res.gen < show.flow.open_gen
             || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
             || !self.shows_plugin_file(show)
         {
@@ -364,9 +367,20 @@ impl App {
         }
         // What an action asked for is still true of the session it ran on (its state changed): a
         // view that no longer matches is drawn again, a file to read again is read again.
+        let redraw = std::mem::take(&mut res.redraw);
+        // A stale action's answer is not a canvas, but the redraw / reload it asks for is still
+        // the user's doing.
+        self.settle_user_act(false, res.outcome.clone());
         match res.outcome.take() {
             Some(konoma_plugin::Outcome::Flash(msg)) => {
                 self.flash = Some(msg.get(self.plugin_lang()).to_string());
+                // The keys also asked for a redraw: the message is the outcome, the redraw is
+                // carried beside it, and it is not lost with the view of the stale answer.
+                if redraw {
+                    if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
+                        self.plugin_request_view(req);
+                    }
+                }
             }
             Some(konoma_plugin::Outcome::Reload) => self.reload_plugin(),
             Some(konoma_plugin::Outcome::Redraw) => {
@@ -376,6 +390,8 @@ impl App {
             }
             Some(konoma_plugin::Outcome::Unhandled) | None => {}
         }
+        // The session is back: what waited for it goes now.
+        self.plugin_session_returned();
     }
 
     pub(super) fn apply_payload(&mut self, payload: MediaPayload) {

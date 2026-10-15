@@ -265,32 +265,48 @@ mod repr {
         assert_eq!(next_label(&app).as_deref(), Some("Beta"));
     }
 
-    /// When the session cannot be asked (a job holds it), `R` does nothing and the choice it
-    /// made is taken back, for a document and for the other displays.
+    /// When the session cannot be asked (a job holds it), a document's `R` does nothing and the
+    /// choice it made is taken back (its answer lands on the spot, so it needs the session now).
     #[test]
-    fn a_cycle_that_could_not_ask_the_session_leaves_the_choice_as_it_was() {
-        for (name, file, shape) in [
-            ("f8b_repr_back_doc", "a.xdoc", Shape::Doc),
-            ("f8b_repr_back_txt", "a.xtxt", Shape::Text),
-        ] {
-            let (mut app, _d, _r) = open(name, file, shape, 3, None, false);
-            assert_eq!(app.tab.repr, None, "{name}");
-            // A first cycle works: the choice is `beta`.
-            assert!(app.cycle_repr(), "{name}");
-            assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}");
-            // A job holds the session now.
-            let held = app.plugin.as_mut().unwrap().session.take();
-            assert!(held.is_some());
-            assert!(!app.cycle_repr(), "{name}: nothing to ask");
-            assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}: taken back");
-            // And from no choice at all, the choice is back to none.
-            app.plugin.as_mut().unwrap().session = held;
-            app.tab.repr = None;
-            let held = app.plugin.as_mut().unwrap().session.take();
-            assert!(!app.cycle_repr(), "{name}");
-            assert_eq!(app.tab.repr, None, "{name}: back to none");
-            app.plugin.as_mut().unwrap().session = held;
-        }
+    fn a_document_cycle_that_could_not_ask_the_session_leaves_the_choice_as_it_was() {
+        let name = "f8b_repr_back_doc";
+        let (mut app, _d, _r) = open(name, "a.xdoc", Shape::Doc, 3, None, false);
+        assert_eq!(app.tab.repr, None, "{name}");
+        // A first cycle works: the choice is `beta`.
+        assert!(app.cycle_repr(), "{name}");
+        assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}");
+        // A job holds the session now.
+        let held = app.plugin.as_mut().unwrap().session.take();
+        assert!(held.is_some());
+        assert!(!app.cycle_repr(), "{name}: nothing to ask");
+        assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}: taken back");
+        // And from no choice at all, the choice is back to none.
+        app.plugin.as_mut().unwrap().session = held;
+        app.tab.repr = None;
+        let held = app.plugin.as_mut().unwrap().session.take();
+        assert!(!app.cycle_repr(), "{name}");
+        assert_eq!(app.tab.repr, None, "{name}: back to none");
+        app.plugin.as_mut().unwrap().session = held;
+    }
+
+    /// Any other display asks on a worker: with a job holding the session the choice stands, the
+    /// wish is remembered, and it is asked (once, with the newest choice) when the session returns.
+    #[test]
+    fn another_displays_cycle_waits_for_the_session_instead_of_being_lost() {
+        let (mut app, _d, rx) = open("f8b_repr_wait_txt", "a.xtxt", Shape::Text, 3, None, false);
+        let held = app.plugin.as_mut().unwrap().session.take();
+        assert!(held.is_some());
+        assert!(app.cycle_repr(), "R acts: the wish is remembered");
+        assert_eq!(app.tab.repr.as_deref(), Some("beta"));
+        assert!(app.plugin.as_ref().unwrap().flow.wants_view);
+        // The session returns (a job answered): the view is asked for, with `beta`.
+        app.plugin.as_mut().unwrap().session = held;
+        app.plugin_session_returned();
+        assert!(!app.plugin.as_ref().unwrap().flow.wants_view);
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker is asked");
+        assert!(app.apply_media(res), "the answer lands");
     }
 
     /// Another representation starts the view over: scroll, caret, selection and the windowed

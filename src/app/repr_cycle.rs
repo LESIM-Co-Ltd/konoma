@@ -125,10 +125,12 @@ impl App {
         } else if self.is_table_preview() {
             self.turn_table_page();
         } else {
-            if !self.plugin_view_now(self.plugin_view_req()) {
-                self.tab.repr = before;
-                return false;
-            }
+            // Any other plugin (a canvas, a text view a third party made): its `view` is arbitrary
+            // code and may be slow, so it is asked on a worker like every first frame, never on
+            // this thread. With a job holding the session (a redraw tick) the wish is remembered
+            // and asked when the session returns. Only a document's session is cheap enough to ask
+            // on the spot (above): the golden snapshots are of those.
+            self.plugin_view_when_free();
             self.reset_view_for_repr_change();
         }
         true

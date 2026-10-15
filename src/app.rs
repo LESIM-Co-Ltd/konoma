@@ -53,7 +53,11 @@ pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
 #[cfg(test)]
 pub(crate) use plugin_host::color_depth_from as color_depth_from_for_test;
 #[cfg(test)]
+pub(crate) use plugin_host::MAX_QUEUED_ACTS;
+#[cfg(test)]
 pub(crate) use plugin_input::plugin_key_of;
+#[cfg(test)]
+pub(crate) use plugin_input::{MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_REDRAW_AFTER};
 pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
@@ -1648,6 +1652,10 @@ pub struct App {
     /// `Esc` left the plugin's text input: the host does not take the typing again until the
     /// plugin shows a canvas that does not ask for it (so a plugin cannot trap the user).
     plugin_input_left: bool,
+    /// A declared action the user pressed is out (or its follow-up `view` is): the canvas that
+    /// answers it is "the user's" and may take the typing back after `Esc`
+    /// (`App::canvas_landed`). Cleared as the answer lands, and with the show.
+    plugin_user_act: bool,
     /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
     canvas_redraw_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
@@ -3534,6 +3542,7 @@ impl App {
             plugin_colors: plugin_host::detect_color_depth(),
             plugin_key_queue: Vec::new(),
             plugin_input_left: false,
+            plugin_user_act: false,
             canvas_redraw_at: None,
             img_tx: None,
             image: None,

@@ -738,6 +738,7 @@ impl App {
                 view: None,
                 req: konoma_plugin::ViewReq::default(),
                 enabled: Default::default(),
+                flow: Default::default(),
             });
         }
         let mut work = self.plugin_work(

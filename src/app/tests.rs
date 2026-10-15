@@ -20108,6 +20108,7 @@ fn lc_make_canvas(app: &mut App, text_input: bool) {
         )),
         req: konoma_plugin::view::ViewReq::default(),
         enabled: Default::default(),
+        flow: Default::default(),
     });
 }
 fn lc_confirm(app: &mut App, op: PendingOp) {
@@ -25034,6 +25035,7 @@ fn show_sheet(app: &mut App, wb: Workbook) {
         view: Some(view),
         req: konoma_plugin::view::ViewReq::default(),
         enabled: Default::default(),
+        flow: Default::default(),
     });
 }
 
@@ -25049,6 +25051,7 @@ fn show_sheet_loading(app: &mut App) {
         view: None,
         req: konoma_plugin::view::ViewReq::default(),
         enabled: Default::default(),
+        flow: Default::default(),
     });
 }
 

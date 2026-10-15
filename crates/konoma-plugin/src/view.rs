@@ -775,6 +775,12 @@ impl std::error::Error for CanvasIssue {}
 /// area is at most [`CANVAS_MAX_SIDE`] per side and [`CANVAS_MAX_CELLS`] cells; and the pictures
 /// are within the `CANVAS_MAX_*` limits. Build one with [`CanvasView::new`]; more fields may be
 /// added later.
+///
+/// **The size is the plugin's to fit, the host clips.** `cols` and `rows` should be the
+/// [`crate::ViewReq`]'s. A resize can race an answer, so a canvas bigger than the area asked for
+/// (in either dimension, up to the limits above) is not refused: it is drawn clipped to the area
+/// and the plugin is asked again with the new size. A smaller one leaves the rest of the area
+/// blank.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct CanvasView {
@@ -786,9 +792,18 @@ pub struct CanvasView {
     pub images: Vec<CanvasImage>,
     /// Ask the host to call `view` again after this long. It applies to **this answer only**: the
     /// next answer asks again, or the timer stops. Values under 33 ms are raised to 33 ms, and
-    /// very large values are fine (the host caps them). Only while the canvas is on screen.
+    /// very large values are fine (the host caps them at 24 hours). Only while the canvas is on
+    /// screen and fully visible: under the help screen or a dialog the plugin is not asked, and
+    /// it is asked once when that closes.
     pub redraw_after: Option<Duration>,
     /// Ask the host to send every key but `Esc` to [`crate::Session::key`].
+    ///
+    /// **`Esc` leaves, and only the user comes back.** `Esc` always leaves the text input, whatever
+    /// the plugin answers. After it the host does not take the typing again because a later view
+    /// asks for it (a timer redraw, a resize, the answer to a key): it does when the canvas that
+    /// asks is the answer to something the user did -- a declared action they pressed, or opening
+    /// the file again. So a plugin that wants a "typing mode" needs an action (a key such as `i`)
+    /// that enters it, and its `Esc` handling should show a canvas with `text_input: false`.
     pub text_input: bool,
 }
 

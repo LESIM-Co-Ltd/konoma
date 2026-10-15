@@ -202,6 +202,7 @@ impl App {
                     view: None,
                     req: ViewReq::default(),
                     enabled: Default::default(),
+                    flow: Default::default(),
                 });
                 None
             }

@@ -835,6 +835,10 @@ pub enum Msg {
     DocErrUnsupportedOpen,
     /// A plugin returned a canvas that is not well-formed (the details follow it).
     PluginCanvasInvalid,
+    /// Typing for a plugin was refused: too much is waiting for a plugin that does not answer.
+    PluginInputFull,
+    /// A pasted text for a plugin was cut at the size limit.
+    PluginPasteCut,
     DocTruncatedTitle,
     MermaidUnavailable,
     /// Prefix before the I/O error when a text-drawn preview (e.g. a `.mmd` file shown as text)
@@ -1570,6 +1574,8 @@ fn en(msg: Msg) -> &'static str {
         SheetEmptyWord => "empty",
         DocErrUnsupportedOpen => "Press `e` to open it in an Office app",
         PluginCanvasInvalid => "the plugin drew a malformed canvas",
+        PluginInputFull => "the plugin is not answering: input refused",
+        PluginPasteCut => "the paste was too long: cut for the plugin",
         DocTruncatedTitle => "· truncated (too large to show in full) ",
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
         DecoratedReadFailed => "[can not preview: could not read it]",
@@ -2211,6 +2217,8 @@ fn jp(msg: Msg) -> &'static str {
         SheetEmptyWord => "空",
         DocErrUnsupportedOpen => "Office アプリで開くには `e` を押してください",
         PluginCanvasInvalid => "プラグインの描いた表示の形式が正しくありません",
+        PluginInputFull => "プラグインが応答しません: 入力を受け付けません",
+        PluginPasteCut => "貼り付けが長すぎるため、プラグインには途中までを渡しました",
         DocTruncatedTitle => "· 打ち切り(大きすぎて全部は表示していません) ",
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
         DecoratedReadFailed => "[can not preview: 読み込み失敗]",
@@ -2928,6 +2936,8 @@ mod tests {
         Msg::SheetEmptyWord,
         Msg::DocErrUnsupportedOpen,
         Msg::PluginCanvasInvalid,
+        Msg::PluginInputFull,
+        Msg::PluginPasteCut,
         Msg::DocTruncatedTitle,
         Msg::MermaidUnavailable,
         Msg::DecoratedReadFailed,
