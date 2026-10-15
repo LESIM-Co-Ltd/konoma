@@ -61,8 +61,9 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
         action,
         alias: false,
     };
-    // A canvas has nothing to move: the arrows and `Home` / `End` are the plugin's, so the host
-    // keeps only `Esc` (`keys::reserved("canvas")`).
+    // A canvas has nothing to move: the navigation fixed keys (arrows, `Home` / `End`, `Enter`,
+    // `Tab`) are the plugin's (`handle_fixed_key` runs its action on one and otherwise does
+    // nothing), so the host keeps only `Esc` (`keys::reserved("canvas")`).
     if ctx == Context::Canvas {
         return vec![own(KeyCode::Esc, Action::Cancel)];
     }

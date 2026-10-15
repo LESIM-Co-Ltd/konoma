@@ -571,8 +571,10 @@ code_theme = "TwoDark"
 #   text_visual   : the text preview's visual selection (v / V)
 #   image         : images, SVG, PDF pages, video thumbnails      diff : a file's git/jj diff
 #   table         : CSV/TSV/archive/spreadsheet tables    table_cell : the full-cell popup (Enter in a table)
-#   canvas        : a view a plugin draws itself; the host keeps only q ? e o p ! , Space R J K O Esc
-#                   and the global keys, every other key is the plugin's
+#   canvas        : a view a plugin draws itself; the host keeps the global keys, q Esc ? e o p ! , Space
+#                   R J K O, and the base keys of any file preview (y Y copy, m ' bookmarks, r reload,
+#                   Ctrl-n/Ctrl-p next/previous file); scrolling, search, selection and the arrows,
+#                   Home/End, PageUp/PageDown, Enter and Tab belong to the plugin
 #   git.changes   : the changes list (p)   git.log / git.graph / git.branches / git.detail
 #   git.graph_picker : the graph's branch-visibility panel (b)
 #   git.worktrees : the linked-worktree list (w, on the version-control screens)

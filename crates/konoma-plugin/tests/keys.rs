@@ -322,9 +322,24 @@ fn every_context_table_is_exactly_the_shared_part_plus_its_own_layer_two() {
 }
 
 #[test]
+fn the_canvas_table_is_layer_zero_the_non_motion_base_keys_the_verbs_and_the_page_keys() {
+    // A key means the same thing everywhere: a canvas gives up only the type layer (scrolling,
+    // searching, selecting) and the navigation fixed keys.
+    assert_eq!(
+        table("canvas"),
+        expected(&[
+            ("Global", "? Q F P t T [ ] 1 2 3 4 5 6 7 8 9"),
+            ("Base", "q , Space y Y r m ' Ctrl-t Ctrl-n Ctrl-p Esc"),
+            ("Verb", "e o p !"),
+            ("Type", "R J K O"),
+        ])
+    );
+}
+
+#[test]
 fn no_context_table_lists_a_key_twice() {
     for ctx in [
-        "global", "tree", "text", "document", "table", "image", "diff", "list",
+        "global", "tree", "text", "document", "table", "image", "diff", "list", "canvas",
     ] {
         let r = reserved(ctx);
         for (i, (a, _)) in r.iter().enumerate() {

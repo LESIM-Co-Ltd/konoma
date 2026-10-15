@@ -964,9 +964,11 @@ pub enum Context {
     TextVisual,
     Image,
     Table,
-    /// A view the plugin draws itself (cells and pictures). The host holds back only layer 0,
-    /// the verbs, `q`, `Esc`, `Space`, `,` and `R` / `J` / `K` / `O` (`keys::reserved("canvas")`);
-    /// it inherits neither layer 1 nor a layer-2 table.
+    /// A view the plugin draws itself (cells and pictures). The host keeps layer 0, the verbs,
+    /// `q`, `Esc`, `Space`, `,`, `R` / `J` / `K` / `O` and the base keys that are not motion
+    /// (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p` `Ctrl-t`: `keys::reserved("canvas")`), bound in its
+    /// own table. It inherits neither the motion keys of layer 1 (`j` `k` are the plugin's) nor a
+    /// layer-2 table.
     Canvas,
     TableCell,
     Bookmarks,
@@ -1530,11 +1532,15 @@ impl KeyMap {
         contexts.insert(Context::Table, ptbl);
 
         // --- Preview: a plugin's canvas ---
-        // The plugin draws everything, so the host keeps only `keys::reserved("canvas")`: layer 0
-        // (the `global` table), the verbs (`e` `o` `p` `!`), `q`, `Esc` (a fixed key), `Space`
-        // (the menu of the plugin's operations), `,`, and `R` `J` `K` `O` (a canvas that is one
-        // representation or one page can be left). No scrolling, searching, selecting, bookmarks
-        // or file paging: those keys are the plugin's to declare.
+        // A key means the same thing everywhere: the host keeps layer 0 (the `global` table), the
+        // base keys every file preview shares that are not motion (`y` `Y` copy, `m` `'`
+        // bookmarks, `r` reload, `Ctrl-n` / `Ctrl-p` file paging, `Ctrl-t`), the verbs (`e` `o` `p`
+        // `!`), `q`, `Esc` (a fixed key), `Space` (the menu of the plugin's operations), `,`, and
+        // `R` `J` `K` `O` (a canvas that is one representation or one page can be left). It gives
+        // up the type layer (scrolling, searching, selecting) and the navigation fixed keys
+        // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
+        // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
+        // the plugin's).
         let mut pcvs: ContextMap = HashMap::new();
         pcvs.insert(KeyPress::ch('q'), run(Action::PreviewBack));
         pcvs.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::Actions));
@@ -1548,6 +1554,13 @@ impl KeyMap {
         pcvs.insert(KeyPress::ch('J'), run(Action::PageNext));
         pcvs.insert(KeyPress::ch('K'), run(Action::PagePrev));
         pcvs.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
+        pcvs.insert(KeyPress::ch('r'), run(Action::Refresh));
+        pcvs.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
+        pcvs.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
+        pcvs.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+        pcvs.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
+        pcvs.insert(KeyPress::ch('m'), run(Action::MarkSet));
+        pcvs.insert(KeyPress::ch('\''), run(Action::MarkJump));
         contexts.insert(Context::Canvas, pcvs);
 
         // --- Version-control contexts (feature gate) ---

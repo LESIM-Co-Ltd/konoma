@@ -530,8 +530,10 @@ code_theme = "TwoDark"
 #   text_visual   : テキストプレビューのビジュアル選択中(v / V)
 #   image         : 画像・SVG・PDF のページ・動画サムネイル       diff : 1 ファイルの git/jj 差分
 #   table         : CSV/TSV/アーカイブ/表計算の表   table_cell : セル全文ポップアップ(表の Enter)
-#   canvas        : プラグインが自分で描く表示。ホストが持つのは q ? e o p ! , Space R J K O Esc と
-#                   全体のキーだけで、ほかのキーはプラグインのもの
+#   canvas        : プラグインが自分で描く表示。ホストが持つのは全体のキー・q Esc ? e o p ! , Space
+#                   R J K O と、どのファイルのプレビューにもある基本のキー(y Y コピー・m ' ブックマーク・
+#                   r 読み直し・Ctrl-n/Ctrl-p 前後のファイル)。スクロール・検索・選択と、矢印・Home/End・
+#                   PageUp/PageDown・Enter・Tab はプラグインのもの
 #   git.changes   : Git 変更一覧(p)        git.log / git.graph / git.branches / git.detail
 #   git.graph_picker : グラフのブランチ表示パネル(b)
 #   git.worktrees : リンクワークツリー一覧(w・バージョン管理の画面内)

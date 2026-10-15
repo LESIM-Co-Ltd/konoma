@@ -29,6 +29,7 @@ bookmarks | t | tab_new_after
 bookmarks | Ctrl-e | bookmark_edit
 canvas | Space | leader:actions
 canvas | ! | git_launch_tool
+canvas | ' | mark_jump
 canvas | , | leader:options
 canvas | 1 | tab_goto
 canvas | 2 | tab_goto
@@ -48,13 +49,19 @@ canvas | P | paste_jump
 canvas | Q | quit
 canvas | R | cycle_representation
 canvas | T | toggle_tab_list
+canvas | Y | preview_copy_selection_ref
 canvas | [ | tab_prev
 canvas | ] | tab_next
 canvas | e | request_edit
+canvas | m | mark_set
 canvas | o | open_external
 canvas | p | open_git_view
 canvas | q | preview_back
+canvas | r | refresh
 canvas | t | tab_new_after
+canvas | y | leader:copy
+canvas | Ctrl-n | preview_next_file
+canvas | Ctrl-p | preview_prev_file
 diff | Space | leader:actions
 diff | ! | git_launch_tool
 diff | $ | navigate:line_end

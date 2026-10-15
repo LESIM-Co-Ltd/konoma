@@ -2319,6 +2319,13 @@ fn handle_fixed_key(
     if !ops::keys::is_fixed_code(key.code) {
         return Ok(None);
     }
+    // A canvas hands the navigation fixed keys to the plugin: the key runs the plugin's action
+    // when it declares one on it (the same lookup the footer and help use), else nothing.
+    if ctx == keymap::Context::Canvas {
+        if let Some(a) = app.plugin_action_for_key(ctx, KeyPress::norm(&key)) {
+            return dispatch_action(app, a, sfc).map(Some);
+        }
+    }
     // A fixed key with no operation on this screen simply does nothing.
     let Some(action) = ops::keys::fixed_action(ctx, key.code) else {
         return Ok(Some(false));

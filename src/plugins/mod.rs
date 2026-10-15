@@ -31,6 +31,8 @@ use konoma_plugin::{
     Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Settings, Verb, VerbDecl,
 };
 
+#[cfg(test)]
+pub(crate) use acts::PluginNote;
 pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;

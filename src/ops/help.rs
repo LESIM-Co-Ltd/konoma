@@ -390,11 +390,15 @@ fn canvas_rows() -> Vec<Row> {
         r(PAGE_TURN),
         r(&[Action::ToggleOutline]),
         r(&[Action::CycleRepresentation]),
+        r(FILE_JUMP),
+        r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
         r(&[Action::RequestEdit]),
         r(&[Action::OpenExternal]),
         r(&[Action::OpenGitView]),
         #[cfg(feature = "git")]
         r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
+        r(&[Action::PreviewCopySelectionRef]),
         r(BACK_PREVIEW),
     ]
 }

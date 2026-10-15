@@ -224,16 +224,21 @@ const VIEW_CONTEXTS: [&str; 6] = ["text", "document", "table", "image", "diff", 
 /// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`, `canvas`. Any other
 /// name (`git.changes`, a plugin's own screen) is treated as a list.
 ///
-/// A `canvas` keeps far fewer: the plugin draws everything, so the host holds back only layer 0,
-/// the verbs, `q`, `Esc`, `Space` and `,` (the menus), and `R` / `J` / `K` / `O` (representation and
-/// page keys, so a canvas that is one representation or page can be left), and leaves scrolling, searching and the
-/// rest of layers 1 and 2 to the plugin.
+/// A key means the same thing everywhere, so a `canvas` keeps layer 0, the base keys that are not
+/// motion (`y` `Y` `r` `m` `'`, `Ctrl-t` `Ctrl-n` `Ctrl-p`), the verbs, `q`, `Esc`, `Space` and `,`
+/// (the menus), and `R` / `J` / `K` / `O` (representation and page keys, so a canvas that is one
+/// representation or page can be left). It gives up only what the host does not provide for a
+/// canvas: the type layer (scrolling, searching, selecting: `j` `k` `h` `l` `g` `G` `0` `$` `/` `n`
+/// `N` `v` `V`, `Ctrl-d` `Ctrl-u` `Ctrl-f` `Ctrl-b`) and the navigation fixed keys (arrows, `Home`,
+/// `End`, `PageUp`, `PageDown`, `Enter`, `Tab`, `Shift-Tab`), which run the plugin's action when it
+/// declares one on them and do nothing otherwise.
 pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
     let mut v = Vec::new();
     // Layer 0.
     v.extend(chars(Layer::Global, "?QFPtT[]123456789"));
     if context == "canvas" {
-        v.extend(chars(Layer::Base, "q, "));
+        v.extend(chars(Layer::Base, "q, yYrm'"));
+        v.extend(ctrls(Layer::Base, "tnp"));
         v.extend(named(Layer::Base, &[KeyName::Esc]));
         v.extend(chars(Layer::Verb, "eop!"));
         // Layer 2 keys that move out of a canvas that is one representation or one page.

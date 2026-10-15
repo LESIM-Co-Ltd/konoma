@@ -241,6 +241,7 @@ fn canvas(_app: &App) -> Vec<Foot> {
         Foot::GroupOp(PAGE_TURN),
         Foot::Op(Action::ToggleOutline),
         Foot::Op(Action::CycleRepresentation),
+        Foot::Group(FILE_JUMP, Msg::HintFileJump),
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
         Foot::Op(Action::OpenExternal),

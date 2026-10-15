@@ -51,6 +51,9 @@ struct Painter {
     acts: bool,
     /// Two representations, `one` and `two`.
     reprs: bool,
+    /// Declare actions on the navigation fixed keys the host hands to a canvas: `Enter` (+10),
+    /// `Up` (+100), `Tab` (+1000), `Shift-Tab` (+2000), `PageDown` (+3000), `Home` (+4000).
+    fixed: bool,
     seen: Arc<Mutex<Vec<Seen>>>,
     /// When set, a `view` call waits for `hold` before it answers (a test that has several resizes
     /// out while one request is on the worker).
@@ -67,6 +70,7 @@ impl Painter {
             declares_canvas: true,
             acts: false,
             reprs: false,
+            fixed: false,
             seen: Arc::default(),
             hold_on: Arc::default(),
             hold: Arc::default(),
@@ -76,6 +80,11 @@ impl Painter {
 
     fn with_acts(mut self) -> Painter {
         self.acts = true;
+        self
+    }
+
+    fn with_fixed(mut self) -> Painter {
+        self.fixed = true;
         self
     }
 
@@ -119,6 +128,24 @@ impl Plugin for Painter {
                         .help(t!(en: "Draw a star", ja: "星を描く"))
                         .footer(2),
                 );
+        }
+        if self.fixed {
+            for (name, key, label) in [
+                ("pick", "Enter", "pick"),
+                ("rise", "Up", "rise"),
+                ("next", "Tab", "next"),
+                ("prev", "Shift-Tab", "prev"),
+                ("far", "PageDown", "far"),
+                ("start", "Home", "start"),
+            ] {
+                m = m.action(
+                    Act::new(name)
+                        .key(key)
+                        .label(Tr::new(label))
+                        .help(Tr::new(format!("Help for {label}")))
+                        .footer(3),
+                );
+            }
         }
         m
     }
@@ -237,6 +264,17 @@ impl Session for PainterSession {
             }
             "star" => {
                 self.star = !self.star;
+                Ok(Outcome::Redraw)
+            }
+            "pick" | "rise" | "next" | "prev" | "far" | "start" => {
+                self.n += match action {
+                    "pick" => 10,
+                    "rise" => 100,
+                    "next" => 1000,
+                    "prev" => 2000,
+                    "far" => 3000,
+                    _ => 4000,
+                };
                 Ok(Outcome::Redraw)
             }
             _ => Ok(Outcome::Unhandled),
@@ -868,7 +906,7 @@ fn e2e_canvas_host_motion_keys_do_nothing_without_a_plugin_action() {
     );
     let before = o.s.screen();
     for c in [
-        'j', 'k', 'h', 'l', 'g', 'G', '0', '$', 'n', 'N', 'v', 'V', '/', '+', '-', 'm', 'r',
+        'j', 'k', 'h', 'l', 'g', 'G', '0', '$', 'n', 'N', 'v', 'V', '/', '+', '-',
     ] {
         o.s.key(c);
         assert_eq!(o.s.screen(), before, "`{c}` changed a canvas");
@@ -886,16 +924,19 @@ fn e2e_canvas_host_motion_keys_do_nothing_without_a_plugin_action() {
         KeyCode::PageDown,
         KeyCode::PageUp,
         KeyCode::Tab,
+        KeyCode::BackTab,
         KeyCode::Enter,
     ] {
         o.s.press(code, KeyModifiers::NONE);
         assert_eq!(o.s.app.tab.preview_scroll, 0, "{code:?}");
         assert!(o.s.app.is_canvas_preview(), "{code:?}");
+        assert_eq!(o.s.screen(), before, "{code:?} changed a canvas");
+        assert_eq!(o.s.app.pending_leader, None, "{code:?}");
     }
     o.s.ctrl('d');
     o.s.ctrl('u');
-    o.s.ctrl('n');
-    o.s.ctrl('p');
+    o.s.ctrl('f');
+    o.s.ctrl('b');
     assert_eq!(o.s.app.tab.preview_scroll, 0);
     assert!(o.s.app.is_canvas_preview());
     assert_eq!(o.s.screen(), before);
@@ -909,10 +950,17 @@ fn e2e_canvas_a_plugin_may_take_the_keys_the_host_leaves_free() {
     use konoma_plugin::keys::{reserved, KeySpec};
     let r: Vec<KeySpec> = reserved("canvas").into_iter().map(|(k, _)| k).collect();
     let has = |c: char| r.contains(&KeySpec::ch(c));
-    for c in ['q', 'e', 'o', 'p', '!', ',', ' ', 'R', 'J', 'K', 'O', '?'] {
+    for c in [
+        'q', 'e', 'o', 'p', '!', ',', ' ', 'R', 'J', 'K', 'O', '?', 'y', 'Y', 'm', '\'', 'r',
+    ] {
         assert!(has(c), "{c} is the host's in a canvas");
     }
-    for c in ['j', 'k', 'h', 'l', 'g', 'G', '/', 'n', 'v', 'y', 'm', 'r'] {
+    for c in ['t', 'n', 'p'] {
+        assert!(r.contains(&KeySpec::ctrl(c)), "Ctrl-{c} is the host's");
+    }
+    for c in [
+        'j', 'k', 'h', 'l', 'g', 'G', '/', 'n', 'N', 'v', 'V', '0', '$',
+    ] {
         assert!(!has(c), "{c} is free in a canvas");
     }
 }
@@ -969,8 +1017,9 @@ fn e2e_canvas_the_host_keys_that_stay_still_act() {
 
 #[test]
 fn e2e_canvas_the_host_binds_only_the_reserved_keys_in_a_canvas() {
-    // Every key the default keymap resolves in a canvas is one of `keys::reserved("canvas")`, or
-    // a layer 0 key (`global`).
+    // Every key the default keymap resolves in a canvas is one of `keys::reserved("canvas")`.
+    // The converse holds too: every reserved key but the fixed `Esc` and the global keys of the
+    // text input is bound, so a key the host keeps always does something.
     use konoma_plugin::keys::{reserved, KeySpec};
     let o = open("cv_bound", Draw::Pattern { cols: 10, rows: 4 });
     let allowed: Vec<KeySpec> = reserved("canvas").into_iter().map(|(k, _)| k).collect();
@@ -978,17 +1027,23 @@ fn e2e_canvas_the_host_binds_only_the_reserved_keys_in_a_canvas() {
         let crossterm::event::KeyCode::Char(c) = kp.code else {
             continue;
         };
-        if kp.ctrl {
-            panic!("{kp:?} => {action:?}: no Ctrl key is bound in a canvas");
-        }
+        let spec = if kp.ctrl {
+            KeySpec::ctrl(c)
+        } else {
+            KeySpec::ch(c)
+        };
         assert!(
-            allowed.contains(&KeySpec::ch(c)),
-            "`{c}` => {action:?} is bound in a canvas but is not reserved for the host"
+            allowed.contains(&spec),
+            "`{c}` (ctrl {}) => {action:?} is bound in a canvas but is not reserved for the host",
+            kp.ctrl
         );
     }
     for (_, leader) in o.s.app.keymaps.leader_keys_of(Context::Canvas) {
         assert!(
-            matches!(leader, LeaderId::Actions | LeaderId::Options),
+            matches!(
+                leader,
+                LeaderId::Actions | LeaderId::Options | LeaderId::Copy
+            ),
             "{leader:?}"
         );
     }
@@ -1020,6 +1075,285 @@ fn e2e_canvas_a_plugin_that_declares_a_reserved_key_does_not_get_it() {
                 .bind(Bind::files(["*.pnt"]))
                 .shows(ViewKind::Canvas)
                 .action(Act::new("steal").key("q").label(Tr::new("steal")))
+        }
+        fn open(&self, i: Input, c: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            self.0.open(i, c)
+        }
+    }
+}
+
+// ---- a key means the same thing everywhere: the base keys act in a canvas -----------------------
+
+/// Two canvas files in one folder, so `Ctrl-n` / `Ctrl-p` have somewhere to go.
+fn open_two(name: &str, p: Painter) -> Opened {
+    let dir = sandbox(name);
+    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    std::fs::write(dir.join("b.pnt"), b"y").unwrap();
+    let marker = test_plugins::register(name, Arc::new(p.clone()));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26);
+    s.select("a.pnt");
+    s.enter();
+    s.draw();
+    Opened { s, p, _dir: dir }
+}
+
+#[test]
+fn e2e_canvas_y_opens_the_copy_menu_like_in_any_file_preview() {
+    let mut o = open("cv_y", Draw::Pattern { cols: 20, rows: 4 });
+    o.s.key('y');
+    assert_eq!(o.s.app.pending_leader, Some(LeaderId::Copy));
+    // The menu offers the path copies; `Esc` closes it.
+    let items = ops::menu::menu(&o.s.app, Context::Canvas, LeaderId::Copy, MenuView::Open)
+        .map(|m| m.items.len())
+        .unwrap_or(0);
+    assert!(items > 0, "the copy menu has items in a canvas");
+    o.s.esc();
+    assert_eq!(o.s.app.pending_leader, None);
+    assert!(o.s.app.is_canvas_preview());
+}
+
+#[test]
+fn e2e_canvas_capital_y_copies_the_reference_of_the_file() {
+    let mut o = open("cv_cy", Draw::Pattern { cols: 20, rows: 4 });
+    o.s.key('Y');
+    assert!(o.s.app.is_canvas_preview());
+    let f = o.s.app.flash.clone().unwrap_or_default();
+    assert!(!f.is_empty(), "Y says what it did or why it could not");
+}
+
+#[test]
+fn e2e_canvas_m_and_quote_are_the_bookmarks() {
+    let mut o = open("cv_marks", Draw::Pattern { cols: 20, rows: 4 });
+    let cfg = o._dir.join("cfg");
+    o.s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg, &o._dir);
+    o.s.keys("mb");
+    assert!(
+        o.s.app
+            .bookmarks
+            .get('b')
+            .is_some_and(|p| p.ends_with("a.pnt")),
+        "m registers the file on display"
+    );
+    o.s.key('\'');
+    assert!(o.s.app.is_bookmark_list(), "' opens the bookmark list");
+}
+
+#[test]
+fn e2e_canvas_r_reads_the_file_again() {
+    let mut o = open("cv_r", Draw::Pattern { cols: 20, rows: 4 });
+    let before = o.p.requests().len();
+    o.s.key('r');
+    o.s.draw();
+    assert!(o.s.app.is_canvas_preview());
+    assert!(
+        o.p.requests().len() > before,
+        "r asks the plugin for the view again ({before} -> {})",
+        o.p.requests().len()
+    );
+}
+
+#[test]
+fn e2e_canvas_ctrl_n_and_ctrl_p_walk_the_files() {
+    let mut o = open_two("cv_files", Painter::new("cv_files", Draw::Follow));
+    let shown = |o: &Opened| o.s.app.tab.preview_path.clone().unwrap();
+    assert!(shown(&o).ends_with("a.pnt"));
+    o.s.ctrl('n');
+    o.s.draw();
+    assert!(shown(&o).ends_with("b.pnt"), "{:?}", shown(&o));
+    assert!(o.s.app.is_canvas_preview());
+    o.s.ctrl('p');
+    o.s.draw();
+    assert!(shown(&o).ends_with("a.pnt"), "{:?}", shown(&o));
+}
+
+#[test]
+fn e2e_canvas_the_footer_and_help_list_the_base_keys_that_act() {
+    let mut o = open_two("cv_base_hints", Painter::new("cv_base_hints", Draw::Follow));
+    let f = footer(&o.s);
+    assert!(
+        f.contains("^n") || f.contains("Ctrl-n") || f.contains("C-n"),
+        "footer: {f}"
+    );
+    o.s.key('?');
+    o.s.see("Preview: plugin view");
+    let screen = o.s.screen();
+    assert!(
+        screen.contains("bookmark") || screen.contains("Bookmark"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("refresh") || screen.contains("Refresh") || screen.contains("reload"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn e2e_canvas_a_plugin_that_declares_a_base_key_gets_an_issue_and_not_the_key() {
+    // `y` `m` `r` and friends are the host's in a canvas: the registry drops the key with a note,
+    // and pressing it does what the host does.
+    for (key, name) in [("y", "cv_take_y"), ("m", "cv_take_m"), ("r", "cv_take_r")] {
+        let dir = sandbox(name);
+        std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+        let p = Painter::new(name, Draw::Pattern { cols: 10, rows: 4 });
+        let marker = test_plugins::register(name, Arc::new(TakesKey(p.clone(), key)));
+        let mut cfg = test_plugins::marker_config(&marker);
+        cfg.ui.lang = "en".into();
+        let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26);
+        let noted =
+            s.app.plugin_keys.notes().iter().any(
+                |n| matches!(n, crate::plugins::PluginNote::Key { plugin, .. } if plugin == name),
+            );
+        assert!(noted, "{key}: the dropped key is noted");
+        s.select("a.pnt");
+        s.enter();
+        s.key(key.chars().next().unwrap());
+        assert_eq!(
+            p.acts_run.load(Ordering::SeqCst),
+            0,
+            "{key} is not the plugin's"
+        );
+        if key == "y" {
+            assert_eq!(s.app.pending_leader, Some(LeaderId::Copy));
+        }
+    }
+
+    struct TakesKey(Painter, &'static str);
+    impl Plugin for TakesKey {
+        fn manifest(&self) -> Manifest {
+            Manifest::new(self.0.id.as_str(), "0.1.0")
+                .bind(Bind::files(["*.pnt"]))
+                .shows(ViewKind::Canvas)
+                .action(Act::new("steal").key(self.1).label(Tr::new("steal")))
+        }
+        fn open(&self, i: Input, c: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            self.0.open(i, c)
+        }
+    }
+}
+
+// ---- the navigation fixed keys are the plugin's --------------------------------------------------
+
+fn with_fixed(name: &str) -> Opened {
+    open_with(
+        name,
+        Painter::new(name, Draw::Pattern { cols: 30, rows: 6 }).with_fixed(),
+        90,
+        26,
+        "en",
+    )
+}
+
+#[test]
+fn e2e_canvas_an_action_on_a_navigation_fixed_key_runs() {
+    let mut o = with_fixed("cv_fixed_run");
+    o.s.see("n=0 one");
+    let mut total = 0;
+    for (code, mods, add) in [
+        (KeyCode::Enter, KeyModifiers::NONE, 10),
+        (KeyCode::Up, KeyModifiers::NONE, 100),
+        (KeyCode::Tab, KeyModifiers::NONE, 1000),
+        (KeyCode::BackTab, KeyModifiers::SHIFT, 2000),
+        (KeyCode::PageDown, KeyModifiers::NONE, 3000),
+        (KeyCode::Home, KeyModifiers::NONE, 4000),
+    ] {
+        o.s.press(code, mods);
+        total += add;
+        o.s.see(&format!("n={total} one"));
+    }
+    assert_eq!(o.p.acts_run.load(Ordering::SeqCst), 6);
+    assert!(o.s.app.is_canvas_preview());
+}
+
+#[test]
+fn e2e_canvas_a_fixed_key_without_an_action_does_nothing_next_to_one_with() {
+    // The plugin declares six fixed keys; the others (`Down` `End` `Left` `Right` `PageUp`) stay still.
+    let mut o = with_fixed("cv_fixed_other");
+    let before = o.s.screen();
+    o.s.press(KeyCode::Down, KeyModifiers::NONE);
+    o.s.press(KeyCode::End, KeyModifiers::NONE);
+    o.s.press(KeyCode::Left, KeyModifiers::NONE);
+    o.s.press(KeyCode::Right, KeyModifiers::NONE);
+    o.s.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(o.p.acts_run.load(Ordering::SeqCst), 0);
+    assert_eq!(o.s.screen(), before);
+    assert_eq!(o.s.app.tab.preview_scroll, 0);
+}
+
+#[test]
+fn e2e_canvas_a_fixed_key_action_shows_in_the_footer_the_help_and_the_menu() {
+    let mut o = with_fixed("cv_fixed_hints");
+    let tokens = crate::ui::preview::footer_hints(&o.s.app);
+    for t in ["↵:pick", "↑:rise", "Tab:next"] {
+        assert!(tokens.iter().any(|x| x == t), "{t} not in {tokens:?}");
+    }
+    o.s.key('?');
+    o.s.see("Help for pick");
+    o.s.see("Help for rise");
+    o.s.esc();
+    let items: Vec<_> =
+        ops::menu::menu(&o.s.app, Context::Canvas, LeaderId::Actions, MenuView::Open)
+            .map(|m| {
+                m.items
+                    .into_iter()
+                    .map(|i| (i.key.label(), i.label))
+                    .collect()
+            })
+            .unwrap_or_default();
+    assert!(
+        items.iter().any(|(_, l): &(String, String)| l == "pick"),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn e2e_canvas_an_undeclared_fixed_key_shows_nothing_in_the_footer_or_help() {
+    let o = open("cv_fixed_none", Draw::Pattern { cols: 30, rows: 6 });
+    let tokens = crate::ui::preview::footer_hints(&o.s.app);
+    for bad in [
+        "Enter", "Up", "Down", "Tab", "Home", "End", "PageUp", "PageDown",
+    ] {
+        assert!(
+            !tokens.iter().any(|t| t.starts_with(&format!("{bad}:"))),
+            "{bad} in {tokens:?}"
+        );
+    }
+}
+
+#[test]
+fn e2e_canvas_j_k_g_big_g_and_slash_stay_free_for_the_plugin() {
+    // A plugin with an action on each of the type-layer keys the host gives up gets all of them.
+    let name = "cv_free_keys";
+    let dir = sandbox(name);
+    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    let p = Painter::new(name, Draw::Pattern { cols: 10, rows: 4 });
+    let marker = test_plugins::register(name, Arc::new(Frees(p.clone())));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26);
+    assert!(
+        s.app.plugin_keys.notes().is_empty(),
+        "{:?}",
+        s.app.plugin_keys.notes()
+    );
+    s.select("a.pnt");
+    s.enter();
+    for c in ['j', 'k', 'g', 'G', '/'] {
+        s.key(c);
+    }
+    assert_eq!(p.acts_run.load(Ordering::SeqCst), 5);
+
+    struct Frees(Painter);
+    impl Plugin for Frees {
+        fn manifest(&self) -> Manifest {
+            let mut m = Manifest::new(self.0.id.as_str(), "0.1.0")
+                .bind(Bind::files(["*.pnt"]))
+                .shows(ViewKind::Canvas);
+            for (n, k) in [("a", "j"), ("b", "k"), ("c", "g"), ("d", "G"), ("e", "/")] {
+                m = m.action(Act::new(n).key(k).label(Tr::new(n)));
+            }
+            m
         }
         fn open(&self, i: Input, c: &OpenCx) -> Result<Box<dyn Session>, Failure> {
             self.0.open(i, c)

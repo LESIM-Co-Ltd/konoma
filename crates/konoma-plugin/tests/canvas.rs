@@ -412,18 +412,40 @@ fn canvas_context_reserves_little() {
     };
     let canvas = keys::reserved("canvas");
     let has = |k: keys::KeySpec| canvas.iter().any(|(x, _)| *x == k);
-    // Kept by the host.
-    for c in "?QFPtT[]1q, eop!RJKO".chars() {
+    // Kept by the host: layer 0, the base keys that are not motion (copy, bookmarks, reload), the
+    // verbs, the menus and the representation / page keys.
+    for c in "?QFPtT[]1q, eop!RJKOyYrm'".chars() {
         assert!(has(keys::KeySpec::ch(c)), "{c:?} must stay reserved");
     }
+    for c in "tnp".chars() {
+        assert!(has(keys::KeySpec::ctrl(c)), "Ctrl-{c} must stay reserved");
+    }
     assert!(has(keys::KeySpec::key(keys::KeyName::Esc)));
-    // Left to the plugin.
-    for c in "jkhlgGnNvVyYrm/'0$".chars() {
+    // Left to the plugin: the type layer (motion, search, selection) and the navigation fixed keys.
+    for c in "jkhlgGnNvV/0$".chars() {
         assert!(!has(keys::KeySpec::ch(c)), "{c:?} must be free in a canvas");
     }
-    assert!(!has(keys::KeySpec::ctrl('d')));
-    assert!(!has(keys::KeySpec::key(keys::KeyName::Tab)));
-    assert!(!has(keys::KeySpec::key(keys::KeyName::Up)));
+    for c in "dufb".chars() {
+        assert!(!has(keys::KeySpec::ctrl(c)), "Ctrl-{c} must be free");
+    }
+    for k in [
+        keys::KeyName::Tab,
+        keys::KeyName::BackTab,
+        keys::KeyName::Up,
+        keys::KeyName::Down,
+        keys::KeyName::Left,
+        keys::KeyName::Right,
+        keys::KeyName::Home,
+        keys::KeyName::End,
+        keys::KeyName::PageUp,
+        keys::KeyName::PageDown,
+        keys::KeyName::Enter,
+    ] {
+        assert!(
+            !has(keys::KeySpec::key(k)),
+            "{k:?} must be free in a canvas"
+        );
+    }
     assert!(r("canvas").len() < r("text").len());
 }
 
@@ -443,6 +465,16 @@ fn a_canvas_plugin_may_use_keys_a_text_plugin_may_not() {
         "R moves out of a canvas"
     );
     assert_eq!(issues_for(ViewKind::Canvas, "x"), 0);
+    // The base keys every file preview shares are the host's in a canvas too.
+    for k in ["y", "Y", "r", "m", "'", "Ctrl-t", "Ctrl-n", "Ctrl-p"] {
+        assert!(issues_for(ViewKind::Canvas, k) > 0, "{k} is the host's");
+    }
+    // The navigation fixed keys are the plugin's.
+    for k in [
+        "Enter", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Tab",
+    ] {
+        assert_eq!(issues_for(ViewKind::Canvas, k), 0, "{k} is free");
+    }
     assert!(issues_for(ViewKind::Text, "j") > 0);
     // The host keeps `q`, in a canvas too.
     assert!(issues_for(ViewKind::Canvas, "q") > 0);
