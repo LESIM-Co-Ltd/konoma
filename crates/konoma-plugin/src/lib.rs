@@ -3,8 +3,9 @@
 //! A plugin implements [`Plugin`] (declarations plus `open`) and [`Session`] (one opened file).
 //! It never draws: it returns a [`View`] (a display type) and the host draws it with its own
 //! widgets. (A plugin that needs free drawing returns a [`CanvasView`](view::CanvasView): cells and
-//! picture placements as plain data that the host copies to the screen. See "Canvas" below.) This crate does not depend on any terminal library; colors and modifiers are the small
-//! types in [`style`], which the host maps onto its renderer.
+//! picture placements as plain data that the host copies to the screen. See "Canvas" below.)
+//! This crate does not depend on any terminal library; colors and modifiers are the small types
+//! in [`style`], which the host maps onto its renderer.
 //!
 //! # Canvas (free drawing)
 //!
@@ -107,4 +108,6 @@ pub use session::{
 pub use settings::{Settings, Value};
 pub use style::{Color, Line, Modifier, Span, Style};
 pub use text::Tr;
-pub use view::{CanvasCell, CanvasImage, CanvasIssue, CanvasView, CellRect, View, ViewReq};
+pub use view::{
+    symbol_width, CanvasCell, CanvasImage, CanvasIssue, CanvasView, CellRect, View, ViewReq,
+};

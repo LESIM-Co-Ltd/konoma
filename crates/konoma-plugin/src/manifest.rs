@@ -54,7 +54,7 @@ pub enum ViewKind {
     /// Cells and pictures the plugin draws itself (see [`crate::view::CanvasView`]). The key
     /// context is `canvas`. The host provides no scrolling, search or selection here and keeps
     /// only the keys that mean the same everywhere: layer 0 (`? Q F P t T [ ] 1`-`9`), `q`,
-    /// `Esc`, `,` and `Space` (the menus), `y Y r m '` and `Ctrl-t Ctrl-n Ctrl-p`, the launch
+    /// `Esc`, `,` and `Space` (the menus), `y Y r m '` and `Ctrl-n Ctrl-p` (and `Ctrl-t`, which is only reserved: it does nothing in a canvas), the launch
     /// verbs `e o p !`, and `R J K O` (representation and page). Every other key is free for a
     /// declared [`Act`]; the exact set is [`crate::keys::reserved`]`("canvas")`. A plugin gets raw
     /// keys through [`crate::Session::key`] while its view asks for text input

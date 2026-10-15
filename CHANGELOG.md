@@ -81,7 +81,7 @@ All notable changes to konoma are documented in this file. The format is based o
   screen (a plugin never draws into konoma's own buffer, so it works the same as a child process later). The size is the real one
   (`ViewReq::cols` / `rows` / `cell_px`, asked again after a resize) and the terminal's colour depth is in `TermCaps::colors`
   (konoma does not convert colours). A new key context `canvas`: konoma keeps the global keys, `q`, `Esc`, the menus (`Space`,
-  `,`), `e` `o` `p` `!`, `R` `J` `K` `O` and the keys every file preview shares (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p` `Ctrl-t`);
+  `,`), `e` `o` `p` `!`, `R` `J` `K` `O` and the keys every file preview shares (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p`, and `Ctrl-t`, which is only reserved: it does nothing in a canvas);
   everything else is the plugin's, through the actions it declares (they show in the footer, the `?` help and the `Space` menu
   like any plugin action). A canvas can ask for text input (`CanvasView::text_input`): every key but `Esc` then goes to the new
   `Session::key`, and `Esc` always leaves. It can ask to be drawn again (`redraw_after`, 33 ms to 24 h, only while it is fully
@@ -89,8 +89,10 @@ All notable changes to konoma are documented in this file. The format is based o
   files, animations; the plugin's `id` is the picture's identity, so a redraw that only moves it sends nothing and `None` means
   unchanged), decoded on the worker with memory and count limits. `CanvasView::check` is the one contract of "plain data is safe",
   and a canvas that fails it is refused with a message. The new crate `konoma-plugin-ratatui` converts a ratatui `Buffer`
-  into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). Nothing changes for users
-  of the standard plugins: none of them draws a canvas.
+  into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). None of the standard plugins draws a canvas, and what they show does not change, with one
+  exception: the text mermaid diagram (`[ui] mermaid = "text"`, and `R` on a `.mmd` file) is laid out at the preview's real
+  width again, as it was in v0.31.0, instead of a fixed 80 columns (it is measured when the file is opened; it is not laid out
+  again when the window is resized).
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its

@@ -126,7 +126,17 @@ pub fn view_image(session: &mut dyn Session, req: &ViewReq) -> Result<ImageView,
 /// The canvas view of a session. A view of another type is an error, and so is a malformed canvas
 /// ([`CanvasView::check`]), which the host would refuse.
 pub fn view_canvas(session: &mut dyn Session, req: &ViewReq) -> Result<CanvasView, Failure> {
-    match session.view(req, &ViewCx::bare())? {
+    view_canvas_with(session, req, &ViewCx::bare())
+}
+
+/// [`view_canvas`] with an explicit context, for a plugin that reads the terminal's colors, the
+/// cell size or its settings from `cx`.
+pub fn view_canvas_with(
+    session: &mut dyn Session,
+    req: &ViewReq,
+    cx: &ViewCx,
+) -> Result<CanvasView, Failure> {
+    match session.view(req, cx)? {
         View::Canvas(c) => {
             c.check().map_err(|e| {
                 Failure::corrupt(Tr::new("malformed canvas")).with_detail(e.to_string())
@@ -184,9 +194,17 @@ impl std::fmt::Display for CanvasText {
 /// asks for text input, and return each answer in order. The first failure stops the run and is
 /// returned.
 pub fn send_keys(session: &mut dyn Session, keys: &[Key]) -> Result<Vec<Outcome>, Failure> {
-    keys.iter()
-        .map(|k| session.key(k, &ActCx::bare()))
-        .collect()
+    send_keys_with(session, keys, &ActCx::bare())
+}
+
+/// [`send_keys`] with an explicit context (the file, the settings and the terminal the host would
+/// pass).
+pub fn send_keys_with(
+    session: &mut dyn Session,
+    keys: &[Key],
+    cx: &ActCx,
+) -> Result<Vec<Outcome>, Failure> {
+    keys.iter().map(|k| session.key(k, cx)).collect()
 }
 
 /// A file made from bytes held in memory, removed when dropped. Keep it alive as long as the

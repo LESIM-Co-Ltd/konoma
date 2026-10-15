@@ -26,7 +26,8 @@ pub enum KeyCode {
     PageUp,
     PageDown,
     Esc,
-    /// A function key, `F(1)` to `F(12)`.
+    /// A function key `F(n)`: usually 1 to 12, but the host passes whatever number the terminal
+    /// reports (with the kitty keyboard protocol F13 and above can arrive).
     F(u8),
     /// A paste, which arrives as one key holding all the text.
     Paste(String),

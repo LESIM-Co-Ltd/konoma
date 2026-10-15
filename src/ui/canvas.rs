@@ -40,7 +40,6 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Block;
 use ratatui::Frame;
 use std::sync::Arc;
-use unicode_width::UnicodeWidthStr;
 
 use konoma_plugin::view::CanvasView;
 
@@ -94,7 +93,7 @@ pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
                 continue;
             }
             // A wide character whose right half is outside the area is not drawn.
-            let width = cell.symbol.width().max(1) as u32;
+            let width = konoma_plugin::symbol_width(&cell.symbol).max(1) as u32;
             if x + width > show_cols && width > 1 {
                 continue;
             }
@@ -280,6 +279,19 @@ mod tests {
         assert_eq!(buf[(2, 1)].symbol(), "a");
         assert_eq!(buf[(2, 1)].fg, ratatui::style::Color::Red);
         assert_eq!(buf[(3, 1)].symbol(), "日");
+    }
+
+    #[test]
+    fn paint_counts_a_voiced_halfwidth_kana_as_two_columns_like_ratatui() {
+        // "ｶﾞ" is two columns for ratatui (the voiced mark has a column of its own), so at the right
+        // edge of the area it is cut like any wide character instead of being drawn half over.
+        let canvas = canvas_of(3, &["a", "ｶﾞ", ""]);
+        assert_eq!(canvas.check(), Ok(()));
+        let buf = painted(&canvas, Rect::new(0, 0, 2, 1));
+        assert_eq!(buf[(0, 0)].symbol(), "a");
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        let buf = painted(&canvas, Rect::new(0, 0, 3, 1));
+        assert_eq!(buf[(1, 0)].symbol(), "ｶﾞ");
     }
 
     #[test]

@@ -39,7 +39,8 @@ pub trait Session: Send {
     ///   as ordinary keys; a paste is one [`crate::key::KeyCode::Paste`]. Keys the API has no name
     ///   for (`Insert`, media keys) are dropped.
     /// - `Esc` is the host's: it leaves the input state whatever the plugin answers, and arrives
-    ///   here too as a notice that cannot be refused. After it the host does not give the typing
+    ///   here too as a notice that cannot be refused (it gets through even when the backlog below
+    ///   is full: the last place is kept for it). After it the host does not give the typing
     ///   back because a later view asks for it again: only an answer to something the user did
     ///   does (a declared action they pressed, or opening the file again). See
     ///   [`crate::view::CanvasView::text_input`].
@@ -48,7 +49,7 @@ pub trait Session: Send {
     ///   those with `CTRL` or `ALT` ([`crate::key::KeyMods`]).
     /// - Return [`Outcome::Redraw`] to have the view asked for again. Keys are never dropped:
     ///   those that came while a call was running arrive one by one in order. The host holds a
-    ///   bounded backlog (4096 keys, a paste cut at 1 MiB) and refuses new input past it, so a
+    ///   bounded backlog (4096 keys, a paste cut at 1 MiB, 4 MiB of waiting pastes in total) and refuses new input past it, so a
     ///   call that never returns does not grow memory without bound.
     fn key(&mut self, key: &Key, cx: &ActCx) -> Result<Outcome, Failure> {
         let _ = (key, cx);

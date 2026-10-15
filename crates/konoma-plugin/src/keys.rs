@@ -225,7 +225,7 @@ const VIEW_CONTEXTS: [&str; 6] = ["text", "document", "table", "image", "diff", 
 /// Any other name (`git.changes`, a plugin's own screen) is treated as a list.
 ///
 /// A key means the same thing everywhere, so a `canvas` keeps layer 0, the base keys that are not
-/// motion (`y` `Y` `r` `m` `'`, `Ctrl-t` `Ctrl-n` `Ctrl-p`), the verbs, `q`, `Esc`, `Space` and `,`
+/// motion (`y` `Y` `r` `m` `'`, `Ctrl-t` `Ctrl-n` `Ctrl-p`; `Ctrl-t` is only reserved, it does nothing in a canvas), the verbs, `q`, `Esc`, `Space` and `,`
 /// (the menus), and `R` / `J` / `K` / `O` (representation and page keys, so a canvas that is one
 /// representation or page can be left). It gives up only what the host does not provide for a
 /// canvas: the type layer (scrolling, searching, selecting: `j` `k` `h` `l` `g` `G` `0` `$` `/` `n`

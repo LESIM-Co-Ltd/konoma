@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Draw a konoma plugin's canvas with ratatui widgets: converts a ratatui Buffer into a konoma_plugin::CanvasView (plain data, so the plugin's ratatui version need not match konoma's)"
+description = "Draw a konoma plugin's canvas with ratatui widgets: converts a ratatui Buffer into a konoma_plugin::CanvasView (plain data, so konoma's own ratatui is not involved; draw with the ratatui this crate re-exports, 0.30.x)"
 keywords = ["konoma-plugin", "konoma", "ratatui", "tui", "canvas"]
 categories = ["command-line-utilities"]
 

@@ -390,7 +390,7 @@ PDF や動画など 1 種類のプレビューだけ止めたいときは、`[[p
 | `text_visual` | テキスト/文書プレビューの文字・行選択(`v` / `V`) |
 | `image` | 画像・SVG・PDF のページ・動画サムネイル |
 | `table` | CSV / TSV / アーカイブ / 表計算の表。`table_cell` はセル全文ポップアップ(`Enter`) |
-| `canvas` | プラグインが自分で描く表示(セルと画像)。ホストが持つのは全体のキー(層 0)・`q`・`Esc`・`Space` と `,`(メニュー)・`e` `o` `p` `!`・`R` `J` `K` `O`・どのファイルのプレビューでも同じ意味のキー(`y` `Y` コピー・`m` `'` ブックマーク・`r` 読み直し・`Ctrl-n` `Ctrl-p` 次/前のファイル・`Ctrl-t`)。スクロール・検索・選択・矢印・`Home` / `End`・`PageUp` / `PageDown`・`Enter`・`Tab` はプラグインのもので、プラグインが宣言した操作を通してだけ届く(文字入力を求めている間は文字として届き、ホストが持つのは `Esc` だけ) |
+| `canvas` | プラグインが自分で描く表示(セルと画像)。ホストが持つのは全体のキー(層 0)・`q`・`Esc`・`Space` と `,`(メニュー)・`e` `o` `p` `!`・`R` `J` `K` `O`・どのファイルのプレビューでも同じ意味のキー(`y` `Y` コピー・`m` `'` ブックマーク・`r` 読み直し・`Ctrl-n` `Ctrl-p` 次/前のファイル。`Ctrl-t` は予約するだけで canvas では何も起きない)。スクロール・検索・選択・矢印・`Home` / `End`・`PageUp` / `PageDown`・`Enter`・`Tab` はプラグインのもので、プラグインが宣言した操作を通してだけ届く(文字入力を求めている間は文字として届き、ホストが持つのは `Esc` だけ) |
 | `sort` | 旧・並べ替えメニュー(下記)。ほかに `bookmarks`・`tabs`(タブ一覧)・`outline`・`info`・`help` |
 | `diff` | 1 ファイルの git / jj の diff(git ビルド) |
 | `git.changes`・`git.log`・`git.graph`・`git.graph_picker`・`git.branches`・`git.worktrees`・`git.detail` | git リポジトリのバージョン管理の画面(git ビルド)。`git.worktrees` はリンクワークツリー一覧、`git.graph_picker` はグラフのブランチパネル、`git.detail` はコミットの詳細 |

@@ -44,7 +44,7 @@ use konoma_plugin::view::{CanvasCell, CanvasView, ViewReq};
 /// The ratatui this crate is built with. A plugin should draw with this one (or depend on the same
 /// version): the `Buffer` handed to [`draw_canvas`] is this ratatui's.
 pub use ratatui;
-use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
+use ratatui::buffer::{Buffer, Cell, CellDiffOption};
 use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier as RModifier};
 
@@ -85,12 +85,14 @@ pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
                 continue;
             }
             let sym = cell.symbol();
-            // First: `cell_width` must not see a control character.
+            // A control character is not a symbol a canvas cell may hold.
             if sym.chars().any(char::is_control) {
                 x += 1;
                 continue;
             }
-            let width = cell.cell_width();
+            // The one width function of the canvas; a `ForcedWidth` option is ignored because the
+            // host draws the symbol, not the option.
+            let width = konoma_plugin::symbol_width(sym);
             if width == 0 {
                 // Empty or zero-width: nothing to show; a lone one is a blank.
                 canvas.cells[at].style = style_of(cell);

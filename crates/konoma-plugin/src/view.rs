@@ -85,7 +85,9 @@ pub struct ViewReq {
     pub page: Option<usize>,
     /// The size of the area in cells: what the host will draw the view into. It is the real size
     /// (the preview's content area), either may be 0, and it changes when the user resizes the
-    /// terminal; the host then asks again (a canvas) with the new size.
+    /// terminal; the host then asks again (a canvas) with the new size. Before the first frame has
+    /// been measured it is a placeholder (80 × 1); a canvas is asked again once the real size is
+    /// known.
     pub cols: u16,
     pub rows: u16,
     /// The size of one cell in pixels as (width, height), if known. `None` when the terminal
@@ -636,7 +638,7 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 ///   not fit is refused for now, not failed: it is decoded on a later answer once room is free
 ///   (the pictures the canvas no longer names go first);
 /// - per answer it decodes at most 32 new pictures, 64 MiB of encoded input and 128 MiB of new
-///   pixels (width x height x 4); the rest follow on later answers. The cells under a picture that
+///   pixels (their decoded size); the rest follow on later answers. The cells under a picture that
 ///   is not drawn (yet) stay, so draw something sensible there;
 /// - a frame of an animation is shown for at least 20 ms;
 /// - a picture from a file must be a regular file (not a pipe or a device);
@@ -825,8 +827,9 @@ impl std::error::Error for CanvasIssue {}
 /// **The size is the plugin's to fit, the host clips.** Size it to the request:
 /// `CanvasView::new(req.cols, req.rows)`. A resize can race an answer, so a canvas bigger than the
 /// area asked for (in either dimension, up to the limits above) is not refused: it is drawn
-/// clipped at the right and bottom edges (a wide character cut by the edge is blanked) and the
-/// plugin is asked again with the new size. A smaller one leaves the rest of the area blank. The
+/// clipped at the right and bottom edges (a wide character cut by the edge is blanked). The host
+/// asks again when the *area* changes (a resize), not because a canvas is bigger than it was asked
+/// for, so a plugin that always returns a larger canvas is simply clipped. A smaller one leaves the rest of the area blank. The
 /// canvas is drawn at the top-left of the preview's content area. `cols` and `rows` can be 0.
 ///
 /// **`Session::view` is called at times the plugin does not choose**: on the first measure of the
@@ -945,7 +948,7 @@ impl CanvasView {
         let right_is_cont = self.cell(x1, y).is_some_and(CanvasCell::is_continuation);
         let last_is_wide = self
             .cell(last, y)
-            .is_some_and(|c| !c.is_continuation() && c.symbol.width() >= 2);
+            .is_some_and(|c| !c.is_continuation() && symbol_width(&c.symbol) >= 2);
         if right_is_cont && last_is_wide {
             self.blank(x1, y);
         }
@@ -970,7 +973,7 @@ impl CanvasView {
         let mut owner_w = 1u32;
         let mut after_joiner = false;
         for ch in s.chars() {
-            let w = match ch.width() {
+            let w = match char_width(ch) {
                 Some(w) => w as u32,
                 None => continue,
             };
@@ -984,7 +987,8 @@ impl CanvasView {
                         let mut candidate = String::with_capacity(c.symbol.len() + ch.len_utf8());
                         candidate.push_str(&c.symbol);
                         candidate.push(ch);
-                        if symbol_fault(&candidate).is_none() && candidate.width() as u32 == owner_w
+                        if symbol_fault(&candidate).is_none()
+                            && symbol_width(&candidate) as u32 == owner_w
                         {
                             c.symbol = candidate;
                             joined = true;
@@ -1037,6 +1041,12 @@ impl CanvasView {
     pub fn image(mut self, image: CanvasImage) -> CanvasView {
         self.images.push(image);
         self
+    }
+
+    /// Add a picture placement to a canvas held by `&mut` (the same as [`CanvasView::image`] for
+    /// code that builds the canvas in a loop or in a helper).
+    pub fn push_image(&mut self, image: CanvasImage) {
+        self.images.push(image);
     }
 
     /// Ask to be drawn again after `after`.
@@ -1139,7 +1149,7 @@ impl CanvasView {
                 Some(SymbolFault::NotOne) => return Err(CanvasIssue::CellNotOneGrapheme { x, y }),
                 Some(SymbolFault::BadWidth) => return Err(CanvasIssue::CellBadWidth { x, y }),
             }
-            if cell.symbol.width() == 2 {
+            if symbol_width(&cell.symbol) == 2 {
                 pending = Some(x);
             }
         }
@@ -1148,6 +1158,38 @@ impl CanvasView {
         }
         Ok(())
     }
+}
+
+/// The number of terminal columns a cell symbol takes. This is the one width function of the
+/// canvas: [`CanvasView::check`], [`CanvasView::set_string`], the host's drawing and the ratatui
+/// adapter all use it, so they cannot disagree.
+///
+/// It is the Unicode display width (`unicode-width`) plus one column for each halfwidth katakana
+/// voiced or semi-voiced sound mark (U+FF9E, U+FF9F). `unicode-width` counts those marks as zero
+/// (they extend the grapheme before them), but ratatui, which draws the screen, and the terminals
+/// it targets give each mark its own column, so `"ﾃﾞ"` takes two. The result matches ratatui's own
+/// cell width for every symbol a canvas cell may hold (a test in `konoma-plugin-ratatui` compares
+/// them).
+pub fn symbol_width(symbol: &str) -> usize {
+    symbol.width()
+        + symbol
+            .chars()
+            .filter(|c| is_halfwidth_sound_mark(*c))
+            .count()
+}
+
+/// U+FF9E and U+FF9F.
+fn is_halfwidth_sound_mark(c: char) -> bool {
+    matches!(c, '\u{FF9E}' | '\u{FF9F}')
+}
+
+/// The columns one character takes by itself (`None` for a control character). A halfwidth sound
+/// mark is a column of its own, as in [`symbol_width`].
+fn char_width(c: char) -> Option<usize> {
+    if is_halfwidth_sound_mark(c) {
+        return Some(1);
+    }
+    c.width()
 }
 
 /// What is wrong with a non-empty cell symbol.
@@ -1176,7 +1218,7 @@ fn symbol_fault(symbol: &str) -> Option<SymbolFault> {
     if symbol.graphemes(true).nth(1).is_some() {
         return Some(SymbolFault::NotOne);
     }
-    match symbol.width() {
+    match symbol_width(symbol) {
         1 | 2 => None,
         _ => Some(SymbolFault::BadWidth),
     }
