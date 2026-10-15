@@ -754,6 +754,44 @@ fn poll_timeout(app: &App) -> Duration {
         .unwrap_or(Duration::from_millis(100))
 }
 
+/// Delete from the terminal the images of the canvas pictures that went: write the escapes
+/// `App::take_kitty_deletes` returns to `out` and flush it. Nothing is written (or flushed) when
+/// there is nothing to delete.
+fn flush_kitty_deletes(app: &mut App, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    let deletes = app.take_kitty_deletes();
+    if deletes.is_empty() {
+        return Ok(());
+    }
+    for escape in deletes {
+        out.write_all(escape.as_bytes())?;
+    }
+    out.flush()
+}
+
+/// The animation timers of the run loop. Every one is looked at on every tick (no short-circuit),
+/// and the result says whether the screen has to be drawn again.
+fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
+    let mut redraw = false;
+    // GIF animation: once the current frame's display time has elapsed, advance to the next
+    // frame (swap image_src → the next render's prepare_image rebuilds → worker re-encodes →
+    // applied by the branch above).
+    if app.advance_gif_if_due() {
+        redraw = true;
+    }
+    // Inline Markdown GIF: likewise advance each entry independently (swap decoded → the next
+    // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
+    // md_enc branch).
+    if app.advance_md_gifs_if_due() {
+        redraw = true;
+    }
+    // A plugin canvas that asked to be drawn again after a while (`redraw_after`): when the
+    // time has come, ask the plugin for the view (async; the answer is applied by the loop).
+    if app.canvas_redraw_if_due(now) {
+        redraw = true;
+    }
+    redraw
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -853,15 +891,7 @@ fn run(
             }
         }
         // Canvas pictures that went: free their stored images in the (kitty) terminal.
-        let deletes = app.take_kitty_deletes();
-        if !deletes.is_empty() {
-            use std::io::Write as _;
-            let out = terminal.backend_mut();
-            for escape in deletes {
-                out.write_all(escape.as_bytes())?;
-            }
-            out.flush()?;
-        }
+        flush_kitty_deletes(app, terminal.backend_mut())?;
 
         // Waiting on heavy code highlighting (the first time for a cold language): offload the
         // grammar compile to a separate thread so the UI isn't blocked.
@@ -1067,21 +1097,8 @@ fn run(
             }
         }
 
-        // GIF animation: once the current frame's display time has elapsed, advance to the next
-        // frame (swap image_src → the next render's prepare_image rebuilds → worker re-encodes →
-        // applied by the branch above).
-        if app.advance_gif_if_due() {
-            needs_redraw = true;
-        }
-        // Inline Markdown GIF: likewise advance each entry independently (swap decoded → the next
-        // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
-        // md_enc branch).
-        if app.advance_md_gifs_if_due() {
-            needs_redraw = true;
-        }
-        // A plugin canvas that asked to be drawn again after a while (`redraw_after`): when the
-        // time has come, ask the plugin for the view (async; the answer is applied above).
-        if app.canvas_redraw_if_due(std::time::Instant::now()) {
+        // GIF animations and the plugin canvas timer (see `animation_timers_due`).
+        if animation_timers_due(app, std::time::Instant::now()) {
             needs_redraw = true;
         }
 

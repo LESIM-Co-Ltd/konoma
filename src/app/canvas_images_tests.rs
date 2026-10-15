@@ -1855,3 +1855,397 @@ fn the_oldest_kept_source_goes_first_whatever_the_order_the_worker_listed_them_i
     ids.sort();
     assert_eq!(ids, [5, 6], "the one kept longest (id 2) is dropped");
 }
+
+// ---- round 3 of the mutation audit: survivors of the pictures' worker and landing --------------------
+
+fn junk(n: u8) -> ImageData {
+    ImageData::Encoded(Arc::from(vec![n; 100]))
+}
+
+#[test]
+fn the_hash_chunk_is_a_mebibyte_and_the_cancellation_is_looked_at_every_chunk() {
+    // The pinned value, and a buffer sized in plain bytes (not by the constant): with a bigger
+    // chunk the cancellation would be looked at once, before the buffer was read.
+    assert_eq!(HASH_CHUNK, 1 << 20);
+    let big = ImageData::Encoded(Arc::from(vec![1u8; 5 * 1024 * 1024 + 1]));
+    let questions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let q = questions.clone();
+    let cancel = crate::preview::office::Cancel::new(move || {
+        q.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2
+    });
+    let mut h = Hasher::new(Some(&cancel));
+    assert_eq!(h.content(&big), None, "cancelled on the third chunk");
+    assert_eq!(h.bytes, 0);
+    assert_eq!(questions.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_file_of_another_size_is_another_picture_even_with_the_same_modification_time() {
+    let dir = crate::test_support::unique_tmp("cvi_filesize");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("p.png");
+    let t0 = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let set = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(t0)
+            .unwrap();
+    };
+    std::fs::write(&f, b"aaaa").unwrap();
+    set();
+    let a = content_hash(&ImageData::File(f.to_path_buf()));
+    std::fs::write(&f, b"aaaaaa").unwrap();
+    set();
+    let b = content_hash(&ImageData::File(f.to_path_buf()));
+    assert_ne!(a, b, "same path, same time, another size");
+}
+
+#[test]
+fn the_same_pixels_in_another_shape_are_not_the_same_source() {
+    let p = Arc::new(vec![0u8; 64]);
+    let r = |w: u32, h: u32| ImageData::Rgba {
+        width: w,
+        height: h,
+        pixels: p.clone(),
+    };
+    assert!(same_source(&r(4, 4), &r(4, 4)));
+    assert!(!same_source(&r(4, 4), &r(2, 8)), "both differ");
+    assert!(!same_source(&r(4, 4), &r(4, 8)), "the height differs");
+    assert!(!same_source(&r(4, 4), &r(8, 4)), "the width differs");
+    // Through the worker: the hash made for the 4 x 4 picture is not reused for the 2 x 8 one that
+    // shares its buffer, so the key follows the new shape.
+    let first = decode("pshape", &canvas_of(vec![im(1, r(4, 4))]), &nothing_held());
+    let key = first.places[0].key.clone().unwrap();
+    let mut held = nothing_held();
+    held.kept.insert(
+        1,
+        KeptPicture {
+            key: Some(key.clone()),
+            hash: Some(content_hash(&r(4, 4))),
+            data: r(4, 4),
+            needs: None,
+        },
+    );
+    let next = decode("pshape", &canvas_of(vec![im(1, r(2, 8))]), &held);
+    assert_ne!(next.places[0].key.as_deref(), Some(&*key));
+}
+
+#[test]
+fn the_input_of_a_picture_is_the_bytes_the_decode_reads() {
+    let dir = crate::test_support::unique_tmp("cvi_inputbytes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("p.bin");
+    std::fs::write(&f, vec![7u8; 600]).unwrap();
+    assert_eq!(input_bytes(&ImageData::File(f.to_path_buf())), 600);
+    assert_eq!(input_bytes(&ImageData::File(dir.join("missing"))), 0);
+    assert_eq!(input_bytes(&junk(1)), 100);
+    assert_eq!(input_bytes(&rgba(2, 3, 1)), 24);
+    let svg = ImageData::Svg {
+        data: Arc::from(vec![b' '; 40]),
+        base_dir: None,
+        trusted: false,
+    };
+    assert_eq!(input_bytes(&svg), 40);
+    let frames = ImageData::Frames(vec![
+        (junk(1), Duration::from_millis(30)),
+        (rgba(1, 1, 1), Duration::from_millis(30)),
+    ]);
+    assert_eq!(input_bytes(&frames), 104);
+}
+
+#[test]
+fn files_count_against_the_input_budget_of_the_decode_loop() {
+    // A file is hashed by its path (no bytes counted), so only the decode loop can stop on the
+    // bytes it reads: three 600-byte files against a 1000-byte budget -- two run, the third waits.
+    let dir = crate::test_support::unique_tmp("cvi_fileinput");
+    std::fs::create_dir_all(&dir).unwrap();
+    let files: Vec<ImageData> = (1..=3u8)
+        .map(|n| {
+            let f = dir.join(format!("f{n}.bin"));
+            std::fs::write(&f, vec![n; 600]).unwrap();
+            ImageData::File(f.to_path_buf())
+        })
+        .collect();
+    let c = canvas_of(
+        files
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| im(i as u64 + 1, d))
+            .collect(),
+    );
+    let got = decode_within(&c, &nothing_held(), small(|l| l.input_bytes = 1000));
+    assert_eq!(got.fresh.len(), 2);
+    assert_eq!(got.waiting, 1);
+    assert!(got.more);
+    assert!(
+        got.places.iter().all(|p| p.key.is_some()),
+        "all three were hashed (by their path)"
+    );
+}
+
+#[test]
+fn sources_the_host_kept_unhashed_are_hashed_before_new_pictures_when_the_budget_is_short() {
+    let mut held = nothing_held();
+    held.kept.insert(
+        2,
+        KeptPicture {
+            key: None,
+            hash: None,
+            data: junk(2),
+            needs: None,
+        },
+    );
+    // Id 1 is new and comes first in the canvas; id 2 was kept. A budget of one byte hashes one
+    // picture (the first is always hashed): the kept one.
+    let c = canvas_of(vec![im(1, junk(1)), none(2)]);
+    let got = decode_within(&c, &held, small(|l| l.input_bytes = 1));
+    assert!(got.places[1].key.is_some(), "the kept source is hashed");
+    assert!(got.places[0].key.is_none(), "the new picture waits");
+    assert_eq!(got.waiting, 1);
+}
+
+#[test]
+fn pictures_are_decoded_in_the_order_they_appear_though_kept_ones_were_hashed_first() {
+    let kept_data = rgba(4, 4, 9);
+    let hash = content_hash(&kept_data);
+    let key: Arc<str> = konoma_widgets::markdown::canvas_url("pw", 2, hash).into();
+    let mut held = nothing_held();
+    held.kept.insert(
+        2,
+        KeptPicture {
+            key: Some(key.clone()),
+            hash: Some(hash),
+            data: kept_data,
+            needs: None,
+        },
+    );
+    // One decode per answer: the picture that appears first in the canvas (id 1, new) goes, the
+    // kept one (id 2, listed second) waits for the next answer.
+    let c = canvas_of(vec![im(1, rgba(4, 4, 5)), none(2)]);
+    let got = decode_within(&c, &held, small(|l| l.decodes = 1));
+    assert_eq!(got.fresh.len(), 1);
+    assert_eq!(
+        got.fresh[0].0,
+        PathBuf::from(&**got.places[0].key.as_ref().unwrap()),
+        "the first in the canvas"
+    );
+    assert_eq!(got.waiting, 1);
+    assert_eq!(got.places[1].key.as_deref(), Some(&*key));
+}
+
+#[test]
+fn a_copy_that_exactly_fits_the_room_is_taken() {
+    let data = rgba(100, 100, 9); // 40,000 bytes
+    let c = canvas_of(vec![im(1, data.clone()), im(2, data)]);
+    let exact = decode_within(&c, &nothing_held(), small(|l| l.held_bytes = 80_000));
+    assert_eq!(exact.fresh.len(), 2, "40,000 + 40,000 fills 80,000");
+    assert_eq!(exact.refused, 0);
+    let short = decode_within(&c, &nothing_held(), small(|l| l.held_bytes = 79_999));
+    assert_eq!(short.fresh.len(), 1);
+    assert_eq!(short.refused, 1);
+}
+
+#[test]
+fn the_first_picture_is_hashed_even_with_no_input_budget_at_all() {
+    let c = canvas_of(vec![im(1, junk(1)), im(2, junk(2))]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.input_bytes = 0));
+    assert!(
+        got.places[0].key.is_some(),
+        "an answer always makes progress"
+    );
+    assert!(got.places[1].key.is_none());
+    assert_eq!(got.waiting, 2, "one unhashed, one hashed but not decoded");
+}
+
+#[test]
+fn pictures_are_drawable_only_with_an_image_backend_and_the_encode_worker() {
+    let (mut app, _dir) = new_app("cvi_drawable");
+    assert!(!app.canvas_pictures_drawable());
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    assert!(app.md_enc_tx.is_none());
+    assert!(
+        !app.canvas_pictures_drawable(),
+        "a picker without the encode worker"
+    );
+    assert!(app.canvas_known_keys().is_none());
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.md_enc_tx = Some(tx);
+    assert!(app.canvas_pictures_drawable());
+    assert!(app.canvas_known_keys().is_some());
+    app.picker = None;
+    assert!(
+        !app.canvas_pictures_drawable(),
+        "the encode worker without a picker"
+    );
+}
+
+#[test]
+fn a_decoded_picture_for_a_key_already_held_leaves_the_entry_as_it_is() {
+    let (mut app, _dir) = new_app("cvi_double_add");
+    let first = decode(
+        "pdbl",
+        &canvas_of(vec![im(1, rgba(4, 4, 1))]),
+        &nothing_held(),
+    );
+    let key = first.fresh[0].0.clone();
+    let places = first.places.clone();
+    app.canvas_pictures_landed(first);
+    let before = app.md_image_cache[&key].pixel_bytes();
+    assert_eq!(before, 64);
+    // A job that was out before that landing answers with the same key (decoded bigger here, to
+    // see whether it replaces the entry).
+    let second = CanvasPictures {
+        places,
+        fresh: vec![(
+            key.clone(),
+            CanvasDecoded::Still(image::DynamicImage::new_rgba8(8, 8)),
+        )],
+        waiting: 0,
+        refused: 0,
+        more: false,
+        sources: Vec::new(),
+    };
+    app.canvas_pictures_landed(second);
+    assert_eq!(app.md_image_cache.len(), 1);
+    assert_eq!(
+        app.md_image_cache[&key].pixel_bytes(),
+        before,
+        "the entry (with its encodes and kitty ids) is kept"
+    );
+}
+
+// ---- round 3: the boundaries of the limits, exactly at the bound ---------------------------------------
+
+#[test]
+fn a_picture_exactly_as_big_as_the_memory_bound_fits() {
+    let c = canvas_of(vec![im(1, rgba(100, 100, 1))]); // 40,000 bytes
+    let exact = decode_within(&c, &nothing_held(), small(|l| l.held_bytes = 40_000));
+    assert!(matches!(exact.fresh[0].1, CanvasDecoded::Still(_)));
+    assert_eq!(exact.refused, 0);
+}
+
+#[test]
+fn a_refused_picture_is_decoded_again_when_the_room_is_exactly_what_it_needs() {
+    let data = rgba(100, 100, 3);
+    let hash = content_hash(&data);
+    let key: Arc<str> = konoma_widgets::markdown::canvas_url("pw", 1, hash).into();
+    let kept = |needs: u64| {
+        let mut held = nothing_held();
+        held.kept.insert(
+            1,
+            KeptPicture {
+                key: Some(key.clone()),
+                hash: Some(hash),
+                data: data.clone(),
+                needs: Some(needs),
+            },
+        );
+        held
+    };
+    let c = canvas_of(vec![none(1)]);
+    let l = small(|l| l.held_bytes = 40_000);
+    let exact = decode_within(&c, &kept(40_000), l);
+    assert_eq!(exact.fresh.len(), 1, "the room is what it needs");
+    assert_eq!(exact.refused, 0);
+    let short = decode_within(&c, &kept(40_001), l);
+    assert!(short.fresh.is_empty(), "one byte short: not decoded again");
+    assert_eq!(short.refused, 1);
+}
+
+#[test]
+fn the_old_picture_of_an_id_stays_when_the_new_content_exactly_fits_next_to_it() {
+    let (mut app, _dir) = new_app("cvi_exact_front");
+    let old = decode(
+        "pef",
+        &canvas_of(vec![im(1, rgba(100, 100, 1))]),
+        &nothing_held(),
+    );
+    let old_key = old.places[0].key.clone().unwrap();
+    app.canvas_pictures_landed_within(old, 80_000);
+    app.canvas_front.insert(1, old_key.clone());
+    let held = app.canvas_known_keys_for_test();
+    let new = decode_within(
+        &canvas_of(vec![im(1, rgba(100, 100, 2))]),
+        &held,
+        small(|l| l.held_bytes = 80_000),
+    );
+    assert_eq!(new.fresh.len(), 1);
+    app.canvas_pictures_landed_within(new, 80_000);
+    // 40,000 + 40,000 is exactly the bound: it fits, so nothing had to give way (the old picture
+    // is still drawn until the new one can be).
+    assert_eq!(app.md_image_cache.len(), 2);
+    assert_eq!(app.canvas_front.get(&1), Some(&old_key));
+}
+
+#[test]
+fn landing_asks_again_when_the_room_is_exactly_what_a_refused_picture_needs() {
+    let (mut app, _dir) = new_app("cvi_exact_room");
+    let kp = |needs: u64| {
+        (
+            1u64,
+            KeptPicture {
+                key: Some(Arc::from("canvas://pw/1/00000000000000aa")),
+                hash: Some(0xaa),
+                data: rgba(100, 100, 1),
+                needs: Some(needs),
+            },
+        )
+    };
+    let pics = |needs: u64| CanvasPictures {
+        places: vec![CanvasPlace {
+            id: 1,
+            rect: CellRect::new(0, 0, 2, 2),
+            key: Some(Arc::from("canvas://pw/1/00000000000000aa")),
+        }],
+        fresh: Vec::new(),
+        waiting: 0,
+        refused: 1,
+        more: false,
+        sources: vec![kp(needs)],
+    };
+    assert!(app.canvas_pictures_landed_within(pics(40_000), 40_000));
+    assert!(!app.canvas_pictures_landed_within(pics(40_001), 40_000));
+}
+
+#[test]
+fn the_input_budget_exactly_used_leaves_the_next_picture_unhashed() {
+    let c = canvas_of(vec![im(1, junk(1)), im(2, junk(2))]); // 100 bytes each
+    let got = decode_within(&c, &nothing_held(), small(|l| l.input_bytes = 100));
+    assert!(got.places[0].key.is_some());
+    assert!(got.places[1].key.is_none(), "100 bytes were read of 100");
+    let more = decode_within(&c, &nothing_held(), small(|l| l.input_bytes = 101));
+    assert!(more.places[1].key.is_some());
+}
+
+#[test]
+fn kept_sources_exactly_at_their_bound_are_all_kept() {
+    let (mut app, _dir) = new_app("cvi_kept_exact");
+    let kp = |c: u8| KeptPicture {
+        key: None,
+        hash: None,
+        data: rgba(100, 100, c), // 40,000 bytes of source
+        needs: None,
+    };
+    let places = [1u64, 2]
+        .iter()
+        .map(|id| CanvasPlace {
+            id: *id,
+            rect: CellRect::new(0, 0, 1, 1),
+            key: None,
+        })
+        .collect();
+    let pics = CanvasPictures {
+        places,
+        fresh: Vec::new(),
+        waiting: 2,
+        refused: 0,
+        more: false,
+        sources: vec![(1, kp(1)), (2, kp(2))],
+    };
+    app.canvas_pictures_landed_limits(pics, MAX_CANVAS_HELD_BYTES, 80_000);
+    let mut ids: Vec<u64> = app.canvas_kept.keys().copied().collect();
+    ids.sort();
+    assert_eq!(ids, [1, 2], "80,000 of 80,000 is within the bound");
+}

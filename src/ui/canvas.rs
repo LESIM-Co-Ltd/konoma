@@ -282,6 +282,19 @@ mod tests {
     }
 
     #[test]
+    fn paint_leaves_the_trailing_cell_of_a_wide_character_alone() {
+        // The right half of a wide character belongs to the left cell: its own style (the plugin
+        // may have set one) is not painted over the terminal's two-column cell.
+        let mut canvas = canvas_of(3, &["日", "", "a"]);
+        canvas.cells[1].style = konoma_plugin::Style::new().bg(konoma_plugin::Color::Red);
+        let buf = painted(&canvas, Rect::new(0, 0, 3, 1));
+        assert_eq!(buf[(0, 0)].symbol(), "日");
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        assert_eq!(buf[(1, 0)].bg, ratatui::style::Color::Reset);
+        assert_eq!(buf[(2, 0)].symbol(), "a");
+    }
+
+    #[test]
     fn paint_counts_a_voiced_halfwidth_kana_as_two_columns_like_ratatui() {
         // "ｶﾞ" is two columns for ratatui (the voiced mark has a column of its own), so at the right
         // edge of the area it is cut like any wide character instead of being drawn half over.

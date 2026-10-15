@@ -7229,6 +7229,31 @@ fn set_gif_frames_and_advance_when_due() {
     assert_eq!(app.gif_idx, 1);
 }
 
+/// The run loop asks `animation_timers_due`: a full-screen GIF frame that is due draws again.
+#[test]
+fn the_loops_animation_timers_report_a_due_full_screen_gif_frame() {
+    let (mut app, _dir) = app_with_image();
+    let frame = |c: [u8; 3]| {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb(c)))
+    };
+    let now = std::time::Instant::now();
+    assert!(!crate::animation_timers_due(&mut app, now), "nothing plays");
+    app.set_gif_frames(vec![
+        (frame([255, 0, 0]), std::time::Duration::from_millis(50)),
+        (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
+    ]);
+    assert!(
+        !crate::animation_timers_due(&mut app, now),
+        "starts the timer"
+    );
+    app.gif_shown_at = Some(now - std::time::Duration::from_secs(1));
+    assert!(
+        crate::animation_timers_due(&mut app, now),
+        "the frame is due"
+    );
+    assert_eq!(app.gif_idx, 1);
+}
+
 #[test]
 fn gif_poll_timeout_none_without_anim_some_when_playing() {
     use std::time::Duration;

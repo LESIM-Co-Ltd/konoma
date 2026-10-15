@@ -1228,6 +1228,36 @@ fn e2e_canvas_frames_animate_under_one_kitty_id() {
     assert_eq!(o.rows().len(), 4);
 }
 
+/// The run loop's tick reports an inline animation frame that is due (the screen is drawn again).
+#[test]
+fn e2e_canvas_the_loops_animation_timers_report_a_due_frame() {
+    let p = Sprites::new("cvi_frames_tick", |req, _| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, 8, 4);
+        c.images.push(placed(
+            1,
+            5,
+            3,
+            8,
+            4,
+            ImageData::Frames(vec![
+                (solid(w, h, [200, 0, 0]), Duration::ZERO),
+                (solid(w, h, [0, 200, 0]), Duration::ZERO),
+            ]),
+        ));
+        c
+    });
+    let mut o = open_kitty("cvi_frames_tick", p, 90, 26);
+    let now = std::time::Instant::now();
+    // The first tick only starts the timer.
+    let _ = crate::animation_timers_due(&mut o.s.app, now);
+    o.s.app.age_md_gif_frames_for_test();
+    assert!(
+        crate::animation_timers_due(&mut o.s.app, now),
+        "the frame advances and the screen is drawn again"
+    );
+}
+
 #[test]
 fn e2e_canvas_empty_frames_list_fails_quietly() {
     let p = Sprites::new("cvi_noframes", |req, _| {

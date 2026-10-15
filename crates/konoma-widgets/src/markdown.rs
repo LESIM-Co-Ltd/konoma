@@ -13012,4 +13012,14 @@ mod canvas_key_tests {
         assert_eq!(canvas_slot_of("canvas://1/0"), None, "no plugin part");
         assert_eq!(canvas_slot_of("canvas://"), None);
     }
+
+    #[test]
+    fn a_plugin_with_an_empty_id_still_has_its_slot() {
+        // The slot starts right after `canvas://`: the plugin part may be empty (the escape of the
+        // id leaves an empty id empty), and the slot is the same for every content.
+        let k = canvas_url("", 42, 7);
+        assert_eq!(k, "canvas:///42/0000000000000007");
+        assert_eq!(canvas_slot_of(&k), Some("canvas:///42"));
+        assert_eq!(canvas_slot_of(&k), Some(canvas_slot_url("", 42).as_str()));
+    }
 }
