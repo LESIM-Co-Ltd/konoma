@@ -73,6 +73,8 @@ mod outline;
 mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
+#[cfg(test)]
+pub(crate) use plugin_host::InlineAnswers;
 mod plugin_input;
 mod preview_visual;
 mod repr_cycle;
@@ -1663,6 +1665,9 @@ pub struct App {
     /// The generation of the job `plugin_user_act` was set for: a stale answer of that job or of a
     /// later one that is discarded takes the mark away (it is no longer the answer to the action).
     plugin_user_act_gen: u64,
+    /// `plugin_session_returned` is running (0 = no, 1 = running, 2 = running and asked again):
+    /// an answer taken on the spot inside it only marks "more to do", the outer loop goes on.
+    plugin_returning: u8,
     /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
     canvas_redraw_at: Option<std::time::Instant>,
     /// When the host last asked the plugin again because canvas pictures were left for later (the
@@ -3566,6 +3571,7 @@ impl App {
             plugin_input_left: false,
             plugin_user_act: false,
             plugin_user_act_gen: 0,
+            plugin_returning: 0,
             canvas_redraw_at: None,
             canvas_more_at: None,
             img_tx: None,

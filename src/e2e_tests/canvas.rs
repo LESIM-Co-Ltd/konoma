@@ -344,6 +344,9 @@ fn footer(s: &Sim) -> String {
 #[track_caller]
 fn settle(s: &mut Sim) {
     for _ in 0..20 {
+        // Draw first: an answer applied on the spot (a worker faster than the host's wait) is
+        // not followed by a drain, and the screen would still show the frame before it.
+        s.draw();
         if !s.app.is_media_loading() {
             return;
         }

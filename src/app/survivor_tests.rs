@@ -101,11 +101,22 @@ mod repr {
     struct Split {
         inner: Multi,
         defaults: Option<Defaults>,
+        hold: Arc<Hold>,
+    }
+
+    /// A gate on the `view` of a [`Split`] session: while `held`, a `view` waits for `gate`, so the
+    /// job is certainly still out when the press that started it returns (whatever the speed of
+    /// the machine) and its answer comes through the channel, never on the spot.
+    #[derive(Default)]
+    struct Hold {
+        held: std::sync::atomic::AtomicBool,
+        gate: crate::plugins::test_plugins::Latch,
     }
 
     struct SplitSession {
         inner: Box<dyn Session>,
         defaults: Option<Defaults>,
+        hold: Arc<Hold>,
     }
 
     impl Plugin for Split {
@@ -116,6 +127,7 @@ mod repr {
             Ok(Box::new(SplitSession {
                 inner: self.inner.open(input, cx)?,
                 defaults: self.defaults,
+                hold: Arc::clone(&self.hold),
             }))
         }
     }
@@ -130,6 +142,9 @@ mod repr {
             l
         }
         fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+            if self.hold.held.load(std::sync::atomic::Ordering::SeqCst) {
+                self.hold.gate.wait();
+            }
             self.inner.view(req, cx)
         }
     }
@@ -148,6 +163,25 @@ mod repr {
         crate::test_support::TmpDir,
         std::sync::mpsc::Receiver<MediaResult>,
     ) {
+        let (app, dir, rx, _hold) = open_held(name, file, shape, reprs, defaults, pixels);
+        (app, dir, rx)
+    }
+
+    /// [`open`], and the gate on the `view` of the plugin (not held until a test holds it).
+    fn open_held(
+        name: &str,
+        file: &str,
+        shape: Shape,
+        reprs: usize,
+        defaults: Option<Defaults>,
+        pixels: bool,
+    ) -> (
+        App,
+        crate::test_support::TmpDir,
+        std::sync::mpsc::Receiver<MediaResult>,
+        Arc<Hold>,
+    ) {
+        let hold = Arc::new(Hold::default());
         let dir = unique_tmp(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(file), b"x").unwrap();
@@ -170,6 +204,7 @@ mod repr {
                     pages: 1,
                 },
                 defaults,
+                hold: Arc::clone(&hold),
             }),
         );
         let mut cfg = test_plugins::marker_config(&marker);
@@ -185,7 +220,7 @@ mod repr {
         }
         app.enter_preview(&dir.join(file));
         settle(&mut app, &rx);
-        (app, dir, rx)
+        (app, dir, rx, hold)
     }
 
     /// Apply what the worker answered until the plugin's show is ready.
@@ -270,12 +305,17 @@ mod repr {
     #[test]
     fn a_document_cycle_that_could_not_ask_the_session_leaves_the_choice_as_it_was() {
         let name = "f8b_repr_back_doc";
-        let (mut app, _d, rx) = open(name, "a.xdoc", Shape::Doc, 3, None, false);
+        let (mut app, _d, rx, hold) = open_held(name, "a.xdoc", Shape::Doc, 3, None, false);
         assert_eq!(app.tab.repr, None, "{name}");
         // A first cycle works: the choice is `beta`. (This stand-in is not one of the host's own
-        // plugins, so its answer comes from a worker, not on the spot.)
+        // plugins, so its answer comes from a worker, not on the spot.) The worker is held at the
+        // gate until the press has returned: the answer cannot be inside the host's wait, so it
+        // certainly comes through the channel (a fast worker would be taken on the spot, and the
+        // channel would stay empty).
+        hold.held.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(app.cycle_repr(), "{name}");
         assert_eq!(app.tab.repr.as_deref(), Some("beta"), "{name}");
+        hold.gate.open();
         let res = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the worker answers");
@@ -294,20 +334,43 @@ mod repr {
         app.plugin.as_mut().unwrap().session = held;
     }
 
+    /// The reason the test above holds the worker at a gate: when the worker answers inside the
+    /// host's wait (a fast machine), the answer is taken on the spot and nothing is sent.
+    #[test]
+    fn a_quick_worker_answer_is_taken_on_the_spot_and_the_channel_stays_empty() {
+        let _inline = crate::app::plugin_host::InlineAnswers::force();
+        let (mut app, _d, rx) = open("f8b_repr_inline", "a.xdoc", Shape::Doc, 3, None, false);
+        assert!(app.cycle_repr());
+        assert!(
+            rx.try_recv().is_err(),
+            "the answer was applied inline: nothing is on the channel"
+        );
+        assert!(matches!(
+            app.plugin.as_ref().unwrap().phase,
+            plugin_host::PluginPhase::Ready
+        ));
+        assert!(app.plugin.as_ref().unwrap().session.is_some());
+    }
+
     /// Any other display asks on a worker: with a job holding the session the choice stands, the
     /// wish is remembered, and it is asked (once, with the newest choice) when the session returns.
     #[test]
     fn another_displays_cycle_waits_for_the_session_instead_of_being_lost() {
-        let (mut app, _d, rx) = open("f8b_repr_wait_txt", "a.xtxt", Shape::Text, 3, None, false);
+        let (mut app, _d, rx, hold) =
+            open_held("f8b_repr_wait_txt", "a.xtxt", Shape::Text, 3, None, false);
         let held = app.plugin.as_mut().unwrap().session.take();
         assert!(held.is_some());
         assert!(app.cycle_repr(), "R acts: the wish is remembered");
         assert_eq!(app.tab.repr.as_deref(), Some("beta"));
         assert!(app.plugin.as_ref().unwrap().flow.wants_view);
         // The session returns (a job answered): the view is asked for, with `beta`.
+        // (The worker is held at the gate until the call returns: the answer cannot be inside the
+        // host's wait, so it comes through the channel, whatever the speed of the machine.)
+        hold.held.store(true, std::sync::atomic::Ordering::SeqCst);
         app.plugin.as_mut().unwrap().session = held;
         app.plugin_session_returned();
         assert!(!app.plugin.as_ref().unwrap().flow.wants_view);
+        hold.gate.open();
         let res = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the worker is asked");

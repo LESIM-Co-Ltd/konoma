@@ -56,6 +56,10 @@ struct Stand {
     open_delay: std::time::Duration,
     /// How long each `view` takes (the page is slow to draw).
     view_delay: std::time::Duration,
+    /// When set, `open` waits for this gate instead of sleeping `open_delay`: the open is then
+    /// certainly still out whatever the speed of the machine (a sleep is a race with the host's
+    /// first-frame wait).
+    open_gate: Option<Arc<crate::plugins::test_plugins::Latch>>,
 }
 
 struct StandSession {
@@ -78,7 +82,10 @@ impl Plugin for Stand {
             .store(cx.term.pixels, Ordering::SeqCst);
         *self.seen.settings.lock().unwrap() = Some(cx.settings.clone());
         *self.seen.lang.lock().unwrap() = cx.lang.to_string();
-        std::thread::sleep(self.open_delay);
+        match &self.open_gate {
+            Some(gate) => gate.wait(),
+            None => std::thread::sleep(self.open_delay),
+        }
         Ok(Box::new(StandSession {
             seen: self.seen.clone(),
             reply: self.reply.clone(),
@@ -155,6 +162,27 @@ fn stand_slow(
             pages,
             open_delay,
             view_delay,
+            open_gate: None,
+        }),
+        seen,
+    )
+}
+
+/// A stand-in whose `open` returns only when `gate` is opened.
+fn stand_gated(
+    reply: Reply,
+    pages: Option<usize>,
+    gate: &Arc<crate::plugins::test_plugins::Latch>,
+) -> (Arc<dyn Plugin>, Arc<Seen>) {
+    let seen = Arc::new(Seen::default());
+    (
+        Arc::new(Stand {
+            seen: seen.clone(),
+            reply,
+            pages,
+            open_delay: Duration::ZERO,
+            view_delay: Duration::ZERO,
+            open_gate: Some(Arc::clone(gate)),
         }),
         seen,
     )
@@ -610,20 +638,13 @@ fn a_slow_open_sends_the_layout_ahead_of_the_picture() {
     app.tab.preview_kind = Some(PreviewKind::pdf(p.clone()));
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
-    let (plugin, _) = stand_slow(
-        Reply::Picture,
-        Some(3),
-        Duration::from_millis(250),
-        Duration::from_millis(100),
-    );
-    let t0 = std::time::Instant::now();
+    let gate = Arc::new(crate::plugins::test_plugins::Latch::default());
+    let (plugin, _) = stand_gated(Reply::Picture, Some(3), &gate);
     app.start_media_plugin_with(plugin, konoma_media::PDF_ID, &p);
-    assert!(
-        t0.elapsed() < Duration::from_millis(200),
-        "the UI waited {:?} for a plugin that needs 250ms to open",
-        t0.elapsed()
-    );
+    // The call returned while `open` is held at the gate: the UI did not wait for it.
+    assert!(!gate.is_open());
     assert_eq!(app.page_indicator(), None, "open has not returned yet");
+    gate.open();
     let first = recv_any(&rx);
     assert!(
         matches!(first.payload, Some(MediaPayload::PluginLayout(_))),
@@ -653,13 +674,11 @@ fn a_stale_layout_message_is_dropped() {
     app.tab.preview_kind = Some(PreviewKind::pdf(p.clone()));
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
-    let (plugin, _) = stand_slow(
-        Reply::Picture,
-        Some(3),
-        Duration::from_millis(250),
-        Duration::ZERO,
-    );
+    let gate = Arc::new(crate::plugins::test_plugins::Latch::default());
+    let (plugin, _) = stand_gated(Reply::Picture, Some(3), &gate);
     app.start_media_plugin_with(plugin, konoma_media::PDF_ID, &p);
+    // Held at the gate past the host's wait: the layout comes through the channel.
+    gate.open();
     let layout = recv_any(&rx);
     assert!(matches!(
         layout.payload,

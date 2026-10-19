@@ -1604,6 +1604,73 @@ fn e2e_canvas_actions_waiting_are_bounded() {
     );
 }
 
+/// With every answer taken on the spot (a worker faster than the host's wait), the queued actions
+/// go one after the other from a loop, not by recursing once per action (256 of them overflowed the
+/// stack, an abort no catch stops). All of them run, in the order pressed.
+#[test]
+fn e2e_canvas_queued_actions_answered_on_the_spot_do_not_recurse() {
+    let mut o = open_with("cj_acts_inline", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    let cap = crate::app::MAX_QUEUED_ACTS;
+    let mut expected = Vec::new();
+    for i in 0..cap {
+        let (key, name) = if i % 2 == 0 {
+            ('z', "second")
+        } else {
+            ('x', "refresh")
+        };
+        o.s.key(key);
+        expected.push(name.to_string());
+    }
+    assert!(o.sh.acts().is_empty(), "nothing ran yet");
+    o.sh.latch.open();
+    // From here on every job is answered inside the call that starts it.
+    let _inline = crate::app::InlineAnswers::force();
+    settle(&mut o.s);
+    assert_eq!(o.sh.acts(), expected, "all of them, in the order pressed");
+    assert!(!o.s.app.is_media_loading());
+    assert!(!o.s.app.plugin_session_is_out_for_test());
+}
+
+/// The same for keys typed while a job holds the session: they reach the plugin in order.
+#[test]
+fn e2e_canvas_queued_keys_answered_on_the_spot_do_not_recurse() {
+    let mut o = open_with("cj_keys_inline", "en", true, |sh| {
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    let rounds = crate::app::MAX_QUEUED_ACTS;
+    let mut keys = Vec::new();
+    for i in 0..rounds {
+        let k = char::from(b'a' + (i % 2) as u8);
+        o.s.key(k);
+        keys.push(k);
+    }
+    assert!(o.sh.log().is_empty(), "nothing ran yet");
+    o.sh.latch.open();
+    let _inline = crate::app::InlineAnswers::force();
+    settle(&mut o.s);
+    let got: Vec<char> =
+        o.sh.log()
+            .iter()
+            .filter_map(|k| match k.code {
+                konoma_plugin::KeyCode::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+    assert_eq!(got, keys, "the keys reached the plugin in order");
+    assert!(!o.s.app.is_media_loading());
+}
+
 #[test]
 fn e2e_canvas_a_stale_keys_answer_with_a_redraw_and_a_message_keeps_both() {
     let mut o = open_with("cj_stale_keys", "en", true, |sh| {

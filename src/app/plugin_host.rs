@@ -108,6 +108,34 @@ impl LongFirstFrame {
 }
 
 #[cfg(test)]
+thread_local! {
+    static RESULT_WAIT_FLOOR: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: while it lives, every `Wait::Result` and `Wait::Layout` of this test's UI thread waits at least
+/// `floor`, so a worker that answers quickly is *always* taken on the spot (nothing goes through
+/// the channel). It forces the fast side of the race between "the worker answers inside the wait"
+/// and "it answers after it" -- the side a slow runner rarely shows -- so a test that waits on the
+/// channel unconditionally can be shown to fail, and the ones that do not can be shown to hold.
+#[cfg(test)]
+pub(crate) struct InlineAnswers;
+
+#[cfg(test)]
+impl InlineAnswers {
+    pub(crate) fn force() -> InlineAnswers {
+        RESULT_WAIT_FLOOR.with(|c| c.set(Some(Duration::from_secs(30))));
+        InlineAnswers
+    }
+}
+
+#[cfg(test)]
+impl Drop for InlineAnswers {
+    fn drop(&mut self) {
+        RESULT_WAIT_FLOOR.with(|c| c.set(None));
+    }
+}
+
+#[cfg(test)]
 impl Drop for LongFirstFrame {
     fn drop(&mut self) {
         BUDGET_OVERRIDE.with(|c| c.set(None));
@@ -1670,7 +1698,13 @@ impl App {
         }
         match wait {
             Wait::Nothing => false,
-            Wait::Result(budget) => match handoff.and_then(|h| h.wait(budget)) {
+            Wait::Result(budget) => match handoff.and_then(|h| {
+                #[cfg(test)]
+                let budget = RESULT_WAIT_FLOOR
+                    .with(|c| c.get())
+                    .map_or(budget, |f| budget.max(f));
+                h.wait(budget)
+            }) {
                 // A job of a work group is never waited for (`wait` is `Nothing` above), so a
                 // result handed over here has no group to release.
                 Some(result) => {
@@ -1680,6 +1714,10 @@ impl App {
                 None => false,
             },
             Wait::Layout(budget) => {
+                #[cfg(test)]
+                let budget = RESULT_WAIT_FLOOR
+                    .with(|c| c.get())
+                    .map_or(budget, |f| budget.max(f));
                 if let Some(layout) = gate.and_then(|g| g.wait(budget)) {
                     self.adopt_plugin_layout(&layout);
                 }
@@ -1781,6 +1819,25 @@ impl App {
     /// back): what waited for it goes now, in this order -- the keys typed meanwhile (one job,
     /// in order), the actions pressed meanwhile (one job at a time), a view asked for.
     pub(super) fn plugin_session_returned(&mut self) {
+        // Answers taken on the spot call this again from inside the work it starts: that must not
+        // recurse once per queued item (the stack would overflow). The inner call only marks
+        // "again"; the outermost one loops while the session is home and something was asked.
+        if self.plugin_returning != 0 {
+            self.plugin_returning = 2;
+            return;
+        }
+        self.plugin_returning = 1;
+        loop {
+            self.plugin_session_returned_once();
+            if self.plugin_returning != 2 {
+                break;
+            }
+            self.plugin_returning = 1;
+        }
+        self.plugin_returning = 0;
+    }
+
+    fn plugin_session_returned_once(&mut self) {
         self.flush_plugin_keys();
         let wanted = self.plugin.as_ref().is_some_and(|p| {
             p.flow.wants_view && p.session.is_some() && matches!(p.phase, PluginPhase::Ready)
