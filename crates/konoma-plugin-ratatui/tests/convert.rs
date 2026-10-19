@@ -363,7 +363,7 @@ fn the_example_ignores_ctrl_and_alt_keys_in_the_line_editor() {
         vec![Outcome::Unhandled, Outcome::Unhandled, Outcome::Redraw]
     );
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
-    assert!(t.rows.iter().any(|r| r.contains("> a_")), "{t}");
+    assert!(t.rows.iter().any(|r| r.contains("> a█")), "{t}");
 }
 
 #[test]
@@ -433,11 +433,11 @@ fn keys_typed_in_input_mode_appear_and_esc_leaves() {
     keys.push(Key::paste("日本"));
     send_keys(&mut *s, &keys).unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
-    assert!(t.rows.iter().any(|r| r.contains("> ab日本_")), "{t}");
+    assert!(t.rows.iter().any(|r| r.contains("> ab日本█")), "{t}");
 
     send_keys(&mut *s, &[Key::new(KeyCode::Backspace)]).unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
-    assert!(t.rows.iter().any(|r| r.contains("> ab日_")), "{t}");
+    assert!(t.rows.iter().any(|r| r.contains("> ab日█")), "{t}");
 
     send_keys(&mut *s, &[Key::new(KeyCode::Enter)]).unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
@@ -551,4 +551,163 @@ fn the_demo_arrows_are_declared_on_left_and_right_and_the_picture_is_64_by_32() 
         unreachable!()
     };
     assert!(c.images.is_empty());
+}
+
+// ---- the demo explains itself, in both languages ----
+
+fn demo_rows(lang: &str, cols: u16, rows: u16, keys: &[Key], edit: bool) -> CanvasText {
+    use konoma_plugin::testing::view_canvas_with;
+    let (mut s, _f) = open_clock();
+    if edit {
+        s.act("edit", &ActCx::bare()).unwrap();
+    }
+    send_keys(&mut *s, keys).unwrap();
+    let cx = ViewCx::new(Settings::empty(), lang);
+    CanvasText::of(&view_canvas_with(&mut *s, &ViewReq::new(cols, rows), &cx).unwrap())
+}
+
+fn any_row(t: &CanvasText, needle: &str) -> bool {
+    t.rows.iter().any(|r| r.contains(needle))
+}
+
+#[test]
+fn the_demo_hint_line_names_the_keys_and_c_only_with_notes() {
+    let en = demo_rows("en", 70, 6, &[], false);
+    assert!(
+        any_row(&en, "i: type a note   \u{2190}/\u{2192}: gauge colour"),
+        "{en}"
+    );
+    assert!(!any_row(&en, "c: clear notes"), "{en}");
+    let ja = demo_rows("ja", 70, 6, &[], false);
+    assert!(any_row(&ja, "i: メモを入力"), "{ja}");
+    assert!(!any_row(&ja, "メモを消す"), "{ja}");
+
+    let keys = [
+        Key::new(KeyCode::Char('a')),
+        Key::new(KeyCode::Enter),
+        Key::new(KeyCode::Esc),
+    ];
+    let en = demo_rows("en", 70, 6, &keys, true);
+    assert!(any_row(&en, "c: clear notes"), "{en}");
+    let ja = demo_rows("ja", 70, 6, &keys, true);
+    assert!(any_row(&ja, "c: メモを消す"), "{ja}");
+}
+
+#[test]
+fn the_demo_typing_banner_sits_above_the_prompt_in_both_languages() {
+    let keys: Vec<Key> = "hello".chars().map(Key::char).collect();
+    for (lang, banner) in [
+        (
+            "en",
+            "Typing - type text, Enter adds it as a note, Esc leaves",
+        ),
+        ("ja", "入力中 — 文字を打って Enter で追加 / Esc で抜ける"),
+    ] {
+        let t = demo_rows(lang, 70, 6, &keys, true);
+        let b = t.rows.iter().position(|r| r.contains(banner)).unwrap_or(99);
+        let p = t
+            .rows
+            .iter()
+            .position(|r| r.contains("> hello█"))
+            .unwrap_or(98);
+        assert_eq!(b + 1, p, "{lang}: banner directly above the prompt\n{t}");
+        // No hint while typing.
+        assert!(
+            !any_row(&t, "gauge colour") && !any_row(&t, "ゲージ"),
+            "{t}"
+        );
+    }
+}
+
+#[test]
+fn the_demo_prompt_line_is_highlighted_across_its_width() {
+    use konoma_plugin::testing::view_canvas_with;
+    let (mut s, _f) = open_clock();
+    s.act("edit", &ActCx::bare()).unwrap();
+    let cx = ViewCx::bare();
+    let c = view_canvas_with(&mut *s, &ViewReq::new(40, 6), &cx).unwrap();
+    let t = CanvasText::of(&c);
+    let y = t.rows.iter().position(|r| r.contains("> █")).unwrap();
+    let hl = c.cells[y * 40..(y + 1) * 40]
+        .iter()
+        .filter(|cell| cell.style.bg.is_some())
+        .count();
+    assert!(hl >= 30, "the prompt row has a background: {hl} cells");
+}
+
+#[test]
+fn the_demo_notes_have_a_heading_and_keep_the_newest_when_short() {
+    let mut keys = Vec::new();
+    for n in ["one", "two", "three", "four"] {
+        keys.extend(n.chars().map(Key::char));
+        keys.push(Key::new(KeyCode::Enter));
+    }
+    let en = demo_rows("en", 70, 11, &keys, true);
+    assert!(any_row(&en, "Notes"), "{en}");
+    assert!(any_row(&en, "- one") && any_row(&en, "- four"), "{en}");
+    let ja = demo_rows("ja", 70, 11, &keys, true);
+    assert!(any_row(&ja, "メモ"), "{ja}");
+    // Short: 6 rows = border 2 + gauge 1 + 3 body rows = banner + prompt + one note row.
+    let short = demo_rows("en", 70, 6, &keys, true);
+    assert!(any_row(&short, "- four"), "{short}");
+    assert!(!any_row(&short, "- one"), "{short}");
+    // Idle, 2 notes rows (heading + one note): heading + the newest note.
+    let mut leave = keys.clone();
+    leave.push(Key::new(KeyCode::Esc));
+    let idle = demo_rows("en", 70, 6, &leave, true);
+    assert!(
+        any_row(&idle, "Notes") && any_row(&idle, "- four"),
+        "{idle}"
+    );
+    assert!(!any_row(&idle, "- three"), "{idle}");
+}
+
+#[test]
+fn the_demo_text_stays_inside_tiny_areas() {
+    let keys: Vec<Key> = "abc".chars().map(Key::char).collect();
+    for (cols, rows) in [(3, 3), (10, 3), (10, 4), (12, 5), (30, 4)] {
+        for edit in [false, true] {
+            let t = demo_rows("ja", cols, rows, &keys, edit);
+            assert_eq!(t.rows.len(), rows as usize);
+        }
+    }
+}
+
+#[test]
+fn the_demo_screens_in_japanese_idle_typing_and_after_enter() {
+    let typed: Vec<Key> = "hello".chars().map(Key::char).collect();
+    let idle = demo_rows("ja", 56, 7, &[], false);
+    let typing = demo_rows("ja", 56, 7, &typed, true);
+    let mut sent = typed.clone();
+    sent.push(Key::new(KeyCode::Enter));
+    let after = demo_rows("ja", 56, 7, &sent, true);
+    println!("idle:\n{idle}\ntyping:\n{typing}\nafter Enter:\n{after}");
+    assert!(any_row(&idle, "i: メモを入力"));
+    assert!(any_row(&typing, "> hello█") && any_row(&typing, "入力中"));
+    assert!(any_row(&after, "- hello") && any_row(&after, "メモ"));
+}
+
+#[test]
+fn the_demo_action_labels_do_not_collide_with_the_hosts_edit_key() {
+    use konoma_plugin::Plugin as _;
+    let m = clock::Clock::default().manifest();
+    let label = |id: &str, lang: &str| {
+        m.actions
+            .iter()
+            .find(|a| a.id == id)
+            .unwrap()
+            .label
+            .get(lang)
+            .to_string()
+    };
+    assert_eq!(
+        (label("edit", "en"), label("edit", "ja")),
+        ("note".into(), "メモ".into())
+    );
+    assert_eq!(label("clear", "en"), "clear notes");
+    assert_eq!(label("clear", "ja"), "メモを消す");
+    assert_eq!(
+        (label("colour_next", "en"), label("colour_next", "ja")),
+        ("colour".into(), "色".into())
+    );
 }

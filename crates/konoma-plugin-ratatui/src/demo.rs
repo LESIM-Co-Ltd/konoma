@@ -30,6 +30,7 @@ use konoma_plugin::view::ImageData;
 use crate::draw_canvas;
 use crate::ratatui::layout::{Constraint, Layout as RLayout};
 use crate::ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
+use crate::ratatui::text::{Line as RLine, Span as RSpan};
 use crate::ratatui::widgets::{Block, Gauge, Paragraph, Widget};
 
 /// The id the plugin registers under.
@@ -54,8 +55,8 @@ impl Plugin for Clock {
             .action(
                 Act::new("edit")
                     .key("i")
-                    .label(t!(en: "edit", ja: "入力"))
-                    .help(t!(en: "Type a note", ja: "メモを入力する"))
+                    .label(t!(en: "note", ja: "メモ"))
+                    .help(t!(en: "Type a note", ja: "メモを入力"))
                     .footer(1),
             )
             .action(
@@ -74,8 +75,8 @@ impl Plugin for Clock {
             .action(
                 Act::new("clear")
                     .key("c")
-                    .label(t!(en: "clear", ja: "消す"))
-                    .help(t!(en: "Forget the notes", ja: "メモを消す")),
+                    .label(t!(en: "clear notes", ja: "メモを消す"))
+                    .help(t!(en: "Forget all notes", ja: "メモをすべて消す")),
             )
     }
 
@@ -124,6 +125,76 @@ struct ClockSession {
     notes: Vec<String>,
 }
 
+impl ClockSession {
+    /// The notes (newest kept when the area is short), then, at the bottom, either the hint line
+    /// or - while typing - a banner and a highlighted prompt with a block cursor.
+    fn draw_text(
+        &self,
+        body: crate::ratatui::layout::Rect,
+        buf: &mut crate::ratatui::buffer::Buffer,
+        lang: &str,
+        accent: RColor,
+    ) {
+        let bottom = if self.typing { 2 } else { 1 }.min(body.height);
+        let [notes_area, bottom_area] =
+            RLayout::vertical([Constraint::Min(0), Constraint::Length(bottom)]).areas(body);
+        let rows = notes_area.height as usize;
+        if rows > 0 && !self.notes.is_empty() {
+            let heading = rows >= 2;
+            let room = rows - usize::from(heading);
+            let shown = &self.notes[self.notes.len().saturating_sub(room)..];
+            let mut lines: Vec<RLine> = Vec::new();
+            if heading {
+                lines.push(RLine::styled(
+                    t!(en: "Notes", ja: "メモ").get(lang).to_string(),
+                    RStyle::new().fg(accent).add_modifier(RModifier::BOLD),
+                ));
+            }
+            lines.extend(shown.iter().map(|n| RLine::from(format!("- {n}"))));
+            Paragraph::new(lines).render(notes_area, buf);
+        }
+        if bottom_area.height == 0 {
+            return;
+        }
+        if self.typing {
+            let rect =
+                |y| crate::ratatui::layout::Rect::new(bottom_area.x, y, bottom_area.width, 1);
+            let prompt_y = bottom_area.y + bottom_area.height - 1;
+            if bottom_area.height >= 2 {
+                let banner = t!(
+                    en: "Typing - type text, Enter adds it as a note, Esc leaves",
+                    ja: "入力中 — 文字を打って Enter で追加 / Esc で抜ける"
+                );
+                Paragraph::new(banner.get(lang).to_string())
+                    .style(RStyle::new().fg(accent).add_modifier(RModifier::BOLD))
+                    .render(rect(bottom_area.y), buf);
+            }
+            let prompt = RLine::from(vec![
+                RSpan::raw(format!("> {}", self.line)),
+                RSpan::styled("█", RStyle::new().fg(accent)),
+            ]);
+            Paragraph::new(prompt)
+                .style(RStyle::new().fg(RColor::White).bg(RColor::DarkGray))
+                .render(rect(prompt_y), buf);
+        } else {
+            let hint = if self.notes.is_empty() {
+                t!(
+                    en: "i: type a note   \u{2190}/\u{2192}: gauge colour",
+                    ja: "i: メモを入力   \u{2190}/\u{2192}: ゲージの色"
+                )
+            } else {
+                t!(
+                    en: "i: type a note   \u{2190}/\u{2192}: gauge colour   c: clear notes",
+                    ja: "i: メモを入力   \u{2190}/\u{2192}: ゲージの色   c: メモを消す"
+                )
+            };
+            Paragraph::new(hint.get(lang).to_string())
+                .style(RStyle::new().add_modifier(RModifier::DIM))
+                .render(bottom_area, buf);
+        }
+    }
+}
+
 impl Session for ClockSession {
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
         let secs = self.started.elapsed().as_secs();
@@ -142,12 +213,6 @@ impl Session for ClockSession {
                 .label(format!("{secs} s · {}", HUES[self.hue % HUES.len()].name))
                 .gauge_style(RStyle::new().fg(ok).bg(RColor::DarkGray))
                 .render(gauge, buf);
-            let mut text: Vec<String> = self.notes.iter().map(|n| format!("- {n}")).collect();
-            text.push(if self.typing {
-                format!("> {}_", self.line)
-            } else {
-                "press i to type, c to clear".to_string()
-            });
             // The picture takes the right end of the body; the text keeps to the rest.
             let body = if show_badge {
                 RLayout::horizontal([Constraint::Min(0), Constraint::Length(BADGE_CELLS_W + 1)])
@@ -155,9 +220,7 @@ impl Session for ClockSession {
             } else {
                 body
             };
-            Paragraph::new(text.join("\n"))
-                .style(RStyle::new().add_modifier(RModifier::BOLD))
-                .render(body, buf);
+            self.draw_text(body, buf, cx.lang, accent);
         });
         // The picture sits at the right end of the body (below the gauge), only when the terminal
         // can show pixels and it fits inside the area. Its pixels go over once per area; after that
