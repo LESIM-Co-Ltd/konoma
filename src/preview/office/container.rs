@@ -293,7 +293,10 @@ fn scan_zip(path: &Path, limits: &Limits) -> Result<Vec<String>, OfficeError> {
     for i in 0..zip.len() {
         {
             let raw = zip.by_index_raw(i).map_err(zip_err)?;
-            names.push(raw.name().to_string());
+            names.push(raw.name().map_or_else(
+                |_| String::from_utf8_lossy(raw.name_raw()).into_owned(),
+                |n| n.into_owned(),
+            ));
             if raw.is_dir() {
                 continue;
             }

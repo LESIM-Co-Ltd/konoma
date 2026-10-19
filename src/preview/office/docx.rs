@@ -295,7 +295,8 @@ impl Pkg {
         let zip = container::open_zip(path)?;
         let names = zip
             .file_names()
-            .map(|n| (norm_name(n), n.to_string()))
+            .filter_map(Result::ok)
+            .map(|n| (norm_name(&n), n.to_string()))
             .collect();
         Ok(Pkg { zip, names })
     }

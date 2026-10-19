@@ -203,7 +203,8 @@ pub(crate) fn open(path: &Path, limits: &Limits) -> Result<XlsxBook, OfficeError
     let mut zip = container::open_zip(path)?;
     let names: HashMap<String, String> = zip
         .file_names()
-        .map(|n| (norm_name(n), n.to_string()))
+        .filter_map(Result::ok)
+        .map(|n| (norm_name(&n), n.to_string()))
         .collect();
     let cap = limits.max_part_bytes;
 

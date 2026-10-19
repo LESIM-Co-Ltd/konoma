@@ -679,7 +679,8 @@ fn gen_cell(rng: &mut Rng, r: &str, s: &str, n_strings: usize) -> String {
         }
         12 => format!(
             r#"<c{r}{s} t="b"><v>{}</v></c>"#,
-            rng.pick(&["0", "1", "2", "true"])
+            // No "2": calamine 0.37 rejects it (konoma reads it as true; pinned in the cell-kinds test).
+            rng.pick(&["0", "1", "true"])
         ),
         13 => format!(
             r#"<c{r}{s} t="e"><v>{}</v></c>"#,
@@ -1531,6 +1532,7 @@ fn value_types() {
         <c r="J1" t="inlineStr"><is><t>in</t></is></c>
         <c r="K1" s="9"><v>2</v></c>
         <c r="L1"><v>abc</v></c>
+        <c r="M1" t="b"><v>2</v></c>
         </row>"#,
         &t,
     );
@@ -1545,6 +1547,11 @@ fn value_types() {
     assert_eq!(v(7), Some(V::Err("#DIV/0!".into())));
     assert_eq!(v(8), Some(V::Iso("2024-05-01".into())));
     assert_eq!(v(9), Some(V::Text("in".into())));
+    assert_eq!(
+        v(12),
+        Some(V::Bool(true)),
+        "a boolean other than 0/1 is true"
+    );
     assert_eq!(
         v(10),
         Some(V::Int(2)),

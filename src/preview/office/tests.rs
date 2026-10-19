@@ -2042,11 +2042,11 @@ fn forge_declared_size(mut z: Vec<u8>, declared: u32) -> Vec<u8> {
 }
 
 #[test]
-fn zip_does_not_stop_at_declared_size() {
-    // Pins the behaviour the safety design depends on: zip 8.6 inflates past a *forged* declared
-    // size (the central directory says 100 bytes; the stream holds 5 MiB). If a future zip starts
-    // enforcing the declared size, this test fails and the extra counting in `container::scan_zip`
-    // can be revisited.
+fn zip_stops_at_the_declared_size() {
+    // Pins the behaviour the safety design now relies on: zip 9 stops a stream at a *forged*
+    // declared size (the central directory says 100 bytes; the stream holds 5 MiB) and reports an
+    // error instead of inflating further. (zip 8.6 inflated all 5 MiB.) The extra counting in
+    // `container::scan_zip` stays as the second line of defence.
     let real = vec![0u8; 5 << 20];
     let z = forge_declared_size(deflated(&[("a.bin", &real)]), 100);
     let mut ar = zip::ZipArchive::new(Cursor::new(z)).unwrap();
@@ -2056,9 +2056,12 @@ fn zip_does_not_stop_at_declared_size() {
         "the lie took effect"
     );
     let mut out = Vec::new();
-    // Reading may or may not end in an error at EOF, but the data comes out in full first.
-    let _ = ar.by_index(0).unwrap().read_to_end(&mut out);
-    assert_eq!(out.len(), 5 << 20, "zip inflated past the declared size");
+    let read = ar.by_index(0).unwrap().read_to_end(&mut out);
+    assert!(read.is_err(), "zip reports the oversized stream");
+    assert!(
+        out.len() < 5 << 20,
+        "zip did not inflate past the declared size"
+    );
 }
 
 #[test]
@@ -2074,14 +2077,17 @@ fn a_zip_bomb_with_a_forged_size_is_stopped_by_counting_real_bytes() {
         max_part_bytes: 1 << 20,
         ..small_limits()
     };
-    assert_eq!(
+    // zip 9 enforces the declared size itself, so the forged entry is refused as corrupt before
+    // konoma's own byte counting (still there as a backstop) is reached.
+    for err in [
         load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "entry" }
-    );
-    assert_eq!(
         container::inspect(&p, &limits).unwrap_err(),
-        OfficeError::TooLarge { what: "entry" }
-    );
+    ] {
+        assert!(
+            matches!(&err, OfficeError::Corrupt(m) if m.contains("declared uncompressed size")),
+            "{err:?}"
+        );
+    }
 }
 
 #[test]
@@ -2389,7 +2395,7 @@ pub(super) fn read_parts(path: &Path) -> Vec<(String, Vec<u8>)> {
         let mut f = ar.by_index(i).unwrap();
         let mut b = Vec::new();
         f.read_to_end(&mut b).unwrap();
-        parts.push((f.name().to_string(), b));
+        parts.push((f.name().unwrap().to_string(), b));
     }
     parts
 }

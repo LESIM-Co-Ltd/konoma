@@ -6,6 +6,9 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Security
+- Updated `rustls` to 0.23.46 (the TLS library used to fetch remote Markdown images over HTTPS; RUSTSEC-2026-0346 to 0349) and `zip` to 9 (RUSTSEC-2026-0367 to 0369; `calamine` moved to 0.37 because it pulls `zip`). konoma only reads archives and never extracts them, so the zip extraction advisories did not affect it.
+
 ## [0.31.1] - 2026-10-14
 
 ### Fixed
