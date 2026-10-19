@@ -294,17 +294,24 @@ pub fn open_cfb(path: &Path) -> Result<cfb::CompoundFile<BufReader<File>>, Offic
         .map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))
 }
 
-/// Walks a compound file's header and DIFAT chain (nothing else) and refuses it only when the
-/// list of FAT sector ids would make `cfb`'s FAT out of proportion to the file: an id listed
-/// twice, an id at or past the end of the file, a DIFAT chain that loops or leaves the file, or
-/// more distinct ids than the file has sectors (implied by the checks above; it keeps the FAT no
-/// larger than the file). Everything else `cfb` accepts is accepted here too: it stops at the first FREE slot of the header, skips
-/// FREE slots in the DIFAT, and strips trailing zeros of a chained DIFAT sector (writers that pad
-/// with 0 instead of FREE, `cfb` issue 41; any file has at most as many DIFAT sectors as it has
-/// sectors, so those zeros are bounded by the file's length). Each DIFAT sector is read once
-/// (a repeated one is refused), so the work and memory are bounded by the file's length. `cfb` is
-/// only called on what passes.
-pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeError> {
+/// The list of FAT sector ids `cfb` 0.15 (permissive) will read the FAT from (and the sector
+/// count), worked out the way its `open_internal` does, in the same order and with the same
+/// quirks:
+///
+/// 1. the header's 109 slots (everything after the first FREE one is FREE: `cfb` stops reading
+///    there), then **every** slot (FREE ones too) of each sector of the DIFAT chain;
+/// 2. while the list is longer than 109 *and* longer than the header's `num_fat_sectors` *and*
+///    ends in a 0, the last entry is dropped (writers that pad with 0 instead of FREE, `cfb`
+///    issue 41; the header field is not validated, so a forged one stops this);
+/// 3. then, and only then, trailing FREE entries are dropped.
+///
+/// The result is what `cfb` will turn into FAT, 128 entries per id, before it looks at any of
+/// them. The chain is walked once per sector (a repeated or out-of-file one is refused), so the
+/// work and the list are bounded by the length of the file.
+pub(crate) fn cfb_fat_sector_list<R: Read + Seek>(
+    r: &mut R,
+    len: u64,
+) -> Result<(Vec<u32>, u64), OfficeError> {
     const FREE: u32 = 0xFFFF_FFFF;
     const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
     const MAX_REGULAR: u32 = 0xFFFF_FFFA;
@@ -320,35 +327,29 @@ pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeEr
         return Err(bad("unsupported sector size"));
     }
     let ss = 1u64 << shift;
-    let per_sector = ss / 4;
-    // Sectors after the header (a partial last one counts: more generous than `cfb`).
+    let per_sector = (ss / 4) as usize;
+    // Sectors after the header (a partial last one counts, as it does for `cfb`).
     let num_sectors = len.saturating_sub(ss).div_ceil(ss);
+    let num_fat_sectors = le32(&head, 44) as usize;
 
-    let mut ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    // Zeros at the end of a chained DIFAT sector are padding some writers use instead of FREE;
-    // `cfb` strips them when permissive, so they are held back until something follows them.
-    let mut pending_zeros: u64 = 0;
-    let take = |id: u32, ids: &mut std::collections::HashSet<u32>| -> Result<(), OfficeError> {
-        if u64::from(id) >= num_sectors {
-            return Err(bad("FAT sector id past the end of the file"));
-        }
-        if !ids.insert(id) {
-            return Err(bad("FAT sector listed twice"));
-        }
-        // Distinct ids below `num_sectors` are at most `num_sectors` of them, so the FAT `cfb`
-        // builds (128 entries per id) is never larger than the file.
-        Ok(())
-    };
+    let mut list: Vec<u32> = Vec::with_capacity(HEADER_FAT_IDS);
+    let mut free_from_here = false;
     for i in 0..HEADER_FAT_IDS {
-        let id = le32(&head, 76 + 4 * i);
-        // `cfb` stops at the first FREE slot: what stands after it is never read.
+        let id = if free_from_here {
+            FREE
+        } else {
+            le32(&head, 76 + 4 * i)
+        };
         if id == FREE {
-            break;
+            free_from_here = true;
+        } else if id > MAX_REGULAR {
+            return Err(bad("FAT sector id out of range"));
         }
-        take(id, &mut ids)?;
+        list.push(id);
     }
     let mut seen_difat: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut next = le32(&head, 68);
+    // `cfb` takes FREE here for the end of the chain too.
     let mut buf = vec![0u8; ss as usize];
     while next != FREE && next != END_OF_CHAIN {
         if next > MAX_REGULAR || u64::from(next) >= num_sectors {
@@ -361,21 +362,44 @@ pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeEr
             .map_err(io_err)?;
         r.read_exact(&mut buf)
             .map_err(|_| bad("truncated DIFAT sector"))?;
-        for i in 0..(per_sector as usize - 1) {
+        for i in 0..per_sector - 1 {
             let id = le32(&buf, 4 * i);
-            if id == FREE {
-                continue;
+            if id != FREE && id > MAX_REGULAR {
+                return Err(bad("FAT sector id out of range"));
             }
-            if id == 0 {
-                pending_zeros += 1;
-                continue;
-            }
-            for _ in 0..std::mem::take(&mut pending_zeros) {
-                take(0, &mut ids)?;
-            }
-            take(id, &mut ids)?;
+            list.push(id);
         }
         next = le32(&buf, ss as usize - 4);
+    }
+    while list.len() > HEADER_FAT_IDS && list.len() > num_fat_sectors && list.last() == Some(&0) {
+        list.pop();
+    }
+    while list.last() == Some(&FREE) {
+        list.pop();
+    }
+    Ok((list, num_sectors))
+}
+
+/// Refuses a compound file whose list of FAT sector ids ([`cfb_fat_sector_list`]) would make
+/// `cfb`'s FAT out of proportion to the file: an id (0 included) listed twice, or an id (FREE
+/// included) at or past the end of the file, which `cfb` refuses itself, but only after it has
+/// read the FAT sectors before it. Distinct ids below the sector count are at most as many as the
+/// file has sectors, so the FAT (128 entries per id) is then no larger than the file. A DIFAT
+/// chain that loops or leaves the file is refused on the way. `cfb` is only called on what passes.
+pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeError> {
+    let bad = |what: &str| OfficeError::Corrupt(format!("compound file: {what}"));
+    let (list, num_sectors) = cfb_fat_sector_list(r, len)?;
+    // One bit per sector: an id is below the sector count, which is bounded by the file's length.
+    let mut seen = vec![0u64; (num_sectors as usize).div_ceil(64)];
+    for id in list {
+        if u64::from(id) >= num_sectors {
+            return Err(bad("FAT sector id past the end of the file"));
+        }
+        let (w, b) = (id as usize / 64, id % 64);
+        if seen[w] >> b & 1 == 1 {
+            return Err(bad("FAT sector listed twice"));
+        }
+        seen[w] |= 1 << b;
     }
     Ok(())
 }

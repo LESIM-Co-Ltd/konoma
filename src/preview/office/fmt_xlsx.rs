@@ -110,8 +110,11 @@ impl SheetFormats {
             None => (row, col, row, col),
             Some((r0, c0, r1, c1)) => (r0.min(row), c0.min(col), r1.max(row), c1.max(col)),
         });
-        if fmt != 0 && (col as usize) < limits.max_cols {
-            self.cells.push((row, col as u16, fmt));
+        // A column past `u16` is not a cell the format table can hold (never wrap it onto another).
+        if let Ok(col) = u16::try_from(col) {
+            if fmt != 0 && (col as usize) < limits.max_cols {
+                self.cells.push((row, col, fmt));
+            }
         }
         Ok(())
     }
@@ -133,12 +136,16 @@ impl SheetFormats {
         fmt: u16,
         limits: &Limits,
     ) {
+        // Past the last column the format table holds, or past `u16`: not a cell (no wrapping).
+        let Ok(col) = u16::try_from(col) else {
+            return;
+        };
         if (col as usize) >= limits.max_cols {
             return;
         }
-        let key = (row, col as u16);
+        let key = (row, col);
         if fmt == 0 && last.is_some_and(|l| key <= l) {
-            self.cells.push((row, col as u16, 0));
+            self.cells.push((row, col, 0));
         }
         if last.is_none_or(|l| key > l) {
             *last = Some(key);

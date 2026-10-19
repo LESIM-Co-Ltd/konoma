@@ -16,9 +16,9 @@
 //! mirrors every token of `parse_formula` (what it prints, how far it reads, where it errors) and
 //! charges the bytes that `calamine` would move. Names and sheet names are taken at their longest
 //! possible UTF-8 size, so the answer is an upper bound for the length and exact in the shape of
-//! the work. The caller rewrites a formula that is too costly to an empty one (`cce = 0`) in the
-//! stream it hands `calamine`: the cell keeps its cached value, only the formula text of the cell
-//! detail is lost.
+//! the work. The caller rewrites a formula that is too costly to a single `PtgMissArg` (`cce = 1`,
+//! token `0x16`, for which `calamine` prints nothing) in the stream it hands `calamine`: the cell
+//! keeps its cached value, only the formula text of the cell detail is lost.
 //!
 //! The table of argument counts is `FTAB_ARGC` of `calamine` 0.37 (MIT, Copyright 2016-2026
 //! Johann Tuffe), which is not public.
@@ -33,8 +33,10 @@ pub(crate) struct Cost {
     pub text: u64,
     /// The longest the text gets while it is built (transient memory).
     pub peak: u64,
-    /// Bytes copied or moved while building it.
+    /// Bytes copied, moved or written while building it.
     pub work: u64,
+    /// `calamine` gives up on it (and leaves a short message instead of the text).
+    pub failed: bool,
 }
 
 /// The lookups `parse_formula` makes, as upper bounds on the UTF-8 size of each answer.
@@ -71,35 +73,43 @@ impl Env {
     }
 }
 
-/// What an unparseable formula leaves in the cell detail ("Unrecognised formula for cell ...").
-const ERROR_TEXT: u64 = 96;
+/// What an unparseable formula leaves in the cell detail ("Unrecognised formula for cell ...";
+/// the longest of `calamine`'s messages is 110 bytes).
+pub(crate) const ERROR_TEXT: u64 = 128;
 /// The longest function name of `FTAB`, with room to spare.
-const FN_NAME: u64 = 24;
+pub(crate) const FN_NAME: u64 = 24;
 /// What `#REF` (a sheet that is not there) prints.
 const NO_SHEET: u64 = 4;
 
-/// The size of a string of `units` characters read from `bytes`: 1 byte per character when all of
-/// them are ASCII, else the worst case of any code page or surrogate pair (3 per unit).
+/// What one character of a string costs, whatever the code page. `calamine` decodes a string
+/// with the encoding of the workbook's `CODEPAGE` record: a compressed (8-bit) character is
+/// widened to two bytes (`b, 0`) and a 16-bit one is two bytes, and `encoding_rs` turns each
+/// input byte into at most one `U+FFFD` (3 bytes of UTF-8), e.g. any byte of an ISO-2022-JP
+/// stream in the wrong state. So a character is at most 6 bytes of output, an ASCII one too.
+/// A surrogate pair is two characters (12 bytes).
+pub(crate) const CHAR_MAX: u64 = 6;
+
+/// The size of a string of `units` characters read from `bytes` (8-bit, or 16-bit when `wide`):
+/// the worst case of any code page, [`CHAR_MAX`] per unit that is there.
 pub(crate) fn text_size(bytes: &[u8], units: usize, wide: bool) -> u64 {
-    let ascii = if wide {
-        bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .take(units)
-            .all(|c| c[1] == 0 && c[0] < 0x80)
-    } else {
-        bytes.iter().take(units).all(|&b| b < 0x80)
-    };
     let n = if wide {
         (bytes.len() / 2).min(units)
     } else {
         bytes.len().min(units)
     } as u64;
-    if ascii {
-        n
-    } else {
-        n * 3
+    n * CHAR_MAX
+}
+
+/// The 3d sheet index a defined name's first token (`rgce`, the token bytes of a `NAME`) points
+/// at, if `calamine`'s `parse_defined_names` reads one and then puts the sheet's name in front of
+/// the name's formula: `PtgRef3d`, `PtgArea3d`, `PtgRefErr3d` and `PtgAreaErr3d`, in all three
+/// token classes. The index is at byte 1 in BIFF8 and at byte 11 before it.
+pub(crate) fn name_sheet_ixti(rgce: &[u8], biff8: bool) -> Option<u16> {
+    match rgce.first()? {
+        0x3a | 0x5a | 0x7a | 0x3b | 0x5b | 0x7b | 0x3c | 0x5c | 0x7c | 0x3d | 0x5d | 0x7d => {
+            u16_at(rgce, if biff8 { 1 } else { 11 })
+        }
+        _ => None,
     }
 }
 
@@ -138,6 +148,7 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                 text: ERROR_TEXT,
                 peak,
                 work,
+                failed: true,
             }
         };
     }
@@ -200,13 +211,18 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
             0x03..=0x11 => {
                 let Some(e2) = stack.pop() else { fail!() };
                 let tail = len.saturating_sub(e2);
-                work = work.saturating_add(tail.saturating_mul(2));
+                // `split_off` copies the tail, then the operator (2 bytes at most) and the tail
+                // are written.
+                work = work
+                    .saturating_add(tail.saturating_mul(2))
+                    .saturating_add(2);
                 len = len.saturating_add(2);
             }
             // Unary plus / minus: one character inserted before the operand.
             0x12 | 0x13 => {
                 let Some(&e) = stack.last() else { fail!() };
-                work = work.saturating_add(len.saturating_sub(e));
+                // The tail moves up by one, and one byte is written.
+                work = work.saturating_add(len.saturating_sub(e)).saturating_add(1);
                 len = len.saturating_add(1);
             }
             0x14 => push_text!(1),
@@ -217,17 +233,15 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                 push_text!(2);
             }
             0x16 => stack.push(len),
-            // PtgStr: quotes and the characters (at most 3 bytes each).
+            // PtgStr: quotes and the characters (at most CHAR_MAX bytes each).
             0x17 => {
                 stack.push(len);
                 let Some(&cch) = rgce.first() else { fail!() };
                 let cch = usize::from(cch);
                 let Some(&flags) = rgce.get(1) else { fail!() };
                 let consumed = 1 + if flags & 1 != 0 { 2 * cch } else { cch };
-                if rgce.len() < 1 + consumed {
-                    fail!()
-                }
-                push_text!(2 + 3 * cch as u64);
+                push_text!(2 + CHAR_MAX * cch as u64);
+                // (`cch`, then the flags and the characters: a string cut short is a failure.)
                 adv!(1 + consumed);
             }
             0x18 => adv!(5),
@@ -247,7 +261,10 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                         adv!(2);
                         let Some(&e) = stack.last() else { fail!() };
                         let tail = len.saturating_sub(e);
-                        work = work.saturating_add(tail.saturating_mul(2));
+                        // `SUM(` and `)` are written around the tail that was cut off.
+                        work = work
+                            .saturating_add(tail.saturating_mul(2))
+                            .saturating_add(5);
                         len = len.saturating_add(5);
                     }
                     // PtgAttrSpace: `cch` characters inserted one by one at the operand's start.
@@ -259,10 +276,12 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                         let Some(&cch) = rgce.get(1) else { fail!() };
                         let cch = u64::from(cch);
                         let tail = len.saturating_sub(e);
-                        // Insert k moves `tail + k` bytes: tail * cch + cch * (cch - 1) / 2.
+                        // Insert k moves `tail + k` bytes and writes one:
+                        // tail * cch + cch * (cch - 1) / 2 + cch.
                         work = work
                             .saturating_add(tail.saturating_mul(cch))
-                            .saturating_add(cch * cch.saturating_sub(1) / 2);
+                            .saturating_add(cch * cch.saturating_sub(1) / 2)
+                            .saturating_add(cch);
                         len = len.saturating_add(cch);
                         adv!(2);
                     }
@@ -317,13 +336,13 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
             }
             // PtgFunc, PtgFuncVar
             0x21 | 0x22 | 0x41 | 0x42 | 0x61 | 0x62 => {
-                let argc = if matches!(ptg, 0x22 | 0x42 | 0x62) {
+                let (iftab, argc) = if matches!(ptg, 0x22 | 0x42 | 0x62) {
                     let Some(&argc) = rgce.first() else { fail!() };
-                    if u16_at(rgce, 1).is_none() {
+                    let Some(iftab) = u16_at(rgce, 1).map(usize::from) else {
                         fail!()
-                    }
+                    };
                     adv!(3);
-                    usize::from(argc)
+                    (iftab, usize::from(argc))
                 } else {
                     let Some(iftab) = u16_at(rgce, 0).map(usize::from) else {
                         fail!()
@@ -332,8 +351,12 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                         fail!()
                     };
                     adv!(2);
-                    usize::from(argc)
+                    (iftab, usize::from(argc))
                 };
+                // `calamine` looks the name up (and fails) for both kinds, with or without arguments.
+                if iftab >= FTAB_ARGC.len() {
+                    fail!()
+                }
                 if stack.len() < argc {
                     fail!()
                 }
@@ -341,8 +364,11 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                     let args_start = stack.len() - argc;
                     let start = stack[args_start];
                     let fargs = len.saturating_sub(start);
-                    // split_off, then the arguments written back with a comma after each.
-                    work = work.saturating_add(fargs.saturating_mul(2));
+                    // `split_off` copies the arguments, then the name, `(`, the arguments again,
+                    // a comma after each and `)` are written.
+                    work = work
+                        .saturating_add(fargs.saturating_mul(2))
+                        .saturating_add(FN_NAME + 1 + argc as u64);
                     stack.truncate(args_start);
                     stack.push(start);
                     len = start
@@ -406,12 +432,14 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
             text: len,
             peak,
             work,
+            failed: false,
         }
     } else {
         Cost {
             text: ERROR_TEXT,
             peak,
             work,
+            failed: true,
         }
     }
 }

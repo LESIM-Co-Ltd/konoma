@@ -63,9 +63,9 @@ const NAME: u16 = 0x0018;
 const EXTERNSHEET: u16 = 0x0017;
 /// One formula whose text would get longer than this while it is built (it is nearly always under
 /// a few KB: a record holds at most 8 KB of tokens) is not given to `calamine`.
-const MAX_FORMULA_PEAK: u64 = 4 << 20;
+pub(super) const MAX_FORMULA_PEAK: u64 = 4 << 20;
 /// One formula that would need more byte moves than this (a few tens of milliseconds) likewise.
-const MAX_FORMULA_WORK: u64 = 1 << 27;
+pub(super) const MAX_FORMULA_WORK: u64 = 1 << 27;
 /// NUMBER, LABEL, RSTRING, BOOLERR, LABELSST, RK, FORMULA: `row, col, ixfe` first.
 const SIMPLE_CELLS: [u16; 7] = [0x0203, 0x0204, 0x00D6, 0x0205, 0x00FD, 0x027E, 0x0006];
 /// A cancel flag is looked at every this many records of a sheet.
@@ -113,12 +113,7 @@ pub fn read_scanned(
 ) -> Result<(XlsxFormats, std::io::Cursor<Vec<u8>>), OfficeError> {
     let mut stream = read_workbook_stream(path, limits)?;
     let (fm, blank) = scan_stream(&stream, limits, cancel)?;
-    // Formulas `calamine` would spend too much on (see `fmt_xls_formula`) get no tokens: it prints
-    // nothing for them, and the cells keep their cached values (other records).
-    for at in blank {
-        stream[at] = 0;
-        stream[at + 1] = 0;
-    }
+    apply_blanks(&mut stream, &blank);
     // Memory, for a stream of N bytes (N <= `max_part_bytes`, 256 MiB, as before this check
     // existed). While scanning: the stream (N, allocated at its real size) plus the container
     // built from it (about 1.01 N, pre-sized so the writer never doubles it). The stream is
@@ -130,6 +125,27 @@ pub fn read_scanned(
     // container itself; the dense cells (`max_dense_cells`, ~800 MB) come on top of both.
     let container = clean_container(&stream)?;
     Ok((fm, container))
+}
+
+/// Rewrites what [`scan_stream`] marked: a formula `calamine` would spend too much on (see
+/// `fmt_xls_formula`) becomes a single `PtgMissArg` (`cce = 1`, token `0x16`), for which
+/// `calamine` prints nothing (an empty `Ok`; `cce = 0` would make it build an error message of
+/// ~80 bytes per formula instead, outside every budget); the cell keeps its cached value (other
+/// bytes of the record). A defined name's `cce` is zeroed: its formula is then "empty".
+pub(crate) fn apply_blanks(stream: &mut [u8], blank: &[Blank]) {
+    for b in blank {
+        match *b {
+            Blank::Formula(at) => {
+                stream[at] = 1;
+                stream[at + 1] = 0;
+                stream[at + 2] = 0x16;
+            }
+            Blank::Name(at) => {
+                stream[at] = 0;
+                stream[at + 1] = 0;
+            }
+        }
+    }
 }
 
 /// A new compound file (version 3: 512-byte sectors, what Excel writes) with a single root-level `Workbook` stream holding `stream`.
@@ -257,6 +273,18 @@ fn format_code(data: &[u8], biff8: bool) -> Option<String> {
     } else {
         let cch = usize::from(*data.get(2)?);
         Some(chars_at(data, 3, cch, false))
+    }
+}
+
+/// The size of a sheet's name as `calamine` will hold it (worst case, see
+/// [`formula::text_size`]), from a `BoundSheet8` body.
+fn sheet_name_size(data: &[u8], biff8: bool) -> u64 {
+    let cch = usize::from(data.get(6).copied().unwrap_or(0));
+    if biff8 {
+        let wide = data.get(7).is_some_and(|f| f & 1 != 0);
+        formula::text_size(data.get(8..).unwrap_or(&[]), cch, wide)
+    } else {
+        formula::text_size(data.get(7..).unwrap_or(&[]), cch, false)
     }
 }
 
@@ -407,9 +435,17 @@ pub(crate) fn parse_stream_cancellable(
     scan_stream(stream, limits, cancel).map(|(fm, _)| fm)
 }
 
-/// The formulas `calamine` is not to print (see `fmt_xls_formula`): the offsets, in the stream, of
-/// their `cce` field (zeroed, a formula or defined name has no tokens and `calamine` prints
-/// nothing for it; the cached value of the cell is a different record and stays).
+/// A place in the stream to rewrite (see [`apply_blanks`]): the offset of the `cce` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Blank {
+    /// A `FORMULA` record's `cce` (it is followed by at least one byte of the record).
+    Formula(usize),
+    /// A `NAME` record's `cce`.
+    Name(usize),
+}
+
+/// The formulas `calamine` is not to print (see `fmt_xls_formula`) and the budgets they are
+/// charged to.
 pub(crate) struct FormulaGuard {
     /// Whether the workbook globals' last `BOF` made `calamine` read BIFF8; it uses that one
     /// for every sheet too.
@@ -419,25 +455,74 @@ pub(crate) struct FormulaGuard {
     work_left: u64,
     /// Where the sheet being scanned starts in the stream.
     base: usize,
-    pub(crate) blank: Vec<usize>,
+    pub(crate) blank: Vec<Blank>,
+    /// What each admitted or dropped formula was charged, with its cell (tests only).
+    #[cfg(test)]
+    pub(crate) trace: FormulaTrace,
+    #[cfg(test)]
+    pub(crate) pos: (u32, u32),
 }
 
 impl FormulaGuard {
     /// Charges a `FORMULA` record's tokens (`body` = the record from byte 20, at `cce_at` in the
-    /// current sheet) to the budgets, or marks the formula for removal.
-    fn admit(&mut self, cce_at: usize, body: &[u8]) {
+    /// current sheet) to the budgets, or marks the formula for removal. A formula that is over
+    /// budget but has no byte after its `cce` for the replacement token cannot be made empty (it
+    /// would still print an error message): the file is refused.
+    fn admit(&mut self, cce_at: usize, body: &[u8]) -> Result<(), OfficeError> {
         let c = formula::formula_cost(body, &self.env);
+        #[cfg(test)]
+        self.trace.push((self.pos, c));
+        self.charge(cce_at, body.len(), c)
+    }
+
+    /// The budget decisions of [`Self::admit`] for a cost already worked out.
+    fn charge(
+        &mut self,
+        cce_at: usize,
+        body_len: usize,
+        c: formula::Cost,
+    ) -> Result<(), OfficeError> {
         if c.peak > MAX_FORMULA_PEAK
             || c.work > MAX_FORMULA_WORK
             || c.text > self.text_left
             || c.work > self.work_left
         {
-            self.blank.push(self.base + cce_at);
+            if body_len < 3 {
+                return Err(OfficeError::TooLarge {
+                    what: "formula text",
+                });
+            }
+            self.blank.push(Blank::Formula(self.base + cce_at));
         } else {
             self.text_left -= c.text;
             self.work_left -= c.work;
         }
+        Ok(())
     }
+}
+
+/// Whether a formula of this cost, charged to budgets with this much left, is dropped (tests:
+/// the boundaries of every comparison).
+#[cfg(test)]
+pub(super) fn is_dropped_when(c: formula::Cost, text_left: u64, work_left: u64) -> bool {
+    let mut g = FormulaGuard {
+        biff8: true,
+        env: Env::default(),
+        text_left,
+        work_left,
+        base: 0,
+        blank: Vec::new(),
+        trace: Vec::new(),
+        pos: (0, 0),
+    };
+    g.charge(0, 3, c).unwrap();
+    !g.blank.is_empty()
+}
+
+/// The most records all the sheets together may visit: one pass over a stream is `len / 4`
+/// records at most, and a sheet that never closes lets the next ones read the same records again.
+pub(super) fn visit_budget(stream_len: usize) -> u64 {
+    (stream_len as u64 / 4) * 2 + 16
 }
 
 /// Scans the stream like [`parse_stream_cancellable`] and also says which formulas to drop.
@@ -445,7 +530,25 @@ pub(crate) fn scan_stream(
     stream: &[u8],
     limits: &Limits,
     cancel: Option<&Cancel>,
-) -> Result<(XlsxFormats, Vec<usize>), OfficeError> {
+) -> Result<(XlsxFormats, Vec<Blank>), OfficeError> {
+    scan_guarded(stream, limits, cancel).map(|(fm, g)| (fm, g.blank))
+}
+
+/// What each formula was charged, with its cell, in record order (tests).
+#[cfg(test)]
+pub(crate) type FormulaTrace = Vec<((u32, u32), formula::Cost)>;
+
+/// What each formula of the stream is charged, as `(row, col, cost)` in record order (tests).
+#[cfg(test)]
+pub(crate) fn formula_costs(stream: &[u8], limits: &Limits) -> Result<FormulaTrace, OfficeError> {
+    scan_guarded(stream, limits, None).map(|(_, g)| g.trace)
+}
+
+fn scan_guarded(
+    stream: &[u8],
+    limits: &Limits,
+    cancel: Option<&Cancel>,
+) -> Result<(XlsxFormats, FormulaGuard), OfficeError> {
     let mut date1904 = false;
     let mut biff8 = true;
     let mut env = Env::default();
@@ -498,11 +601,7 @@ pub(crate) fn scan_stream(
                     if sheets.len() >= MAX_SHEETS {
                         return Err(OfficeError::TooLarge { what: "sheets" });
                     }
-                    env.sheets.push(if s.1.is_ascii() {
-                        s.1.len() as u64
-                    } else {
-                        s.1.chars().count() as u64 * 6
-                    });
+                    env.sheets.push(sheet_name_size(r.data, biff8));
                     sheets.push(s);
                 }
             }
@@ -516,16 +615,9 @@ pub(crate) fn scan_stream(
                     formula::text_size(r.data.get(14..).unwrap_or(&[]), cch, false)
                 });
                 if let Some(cce) = u16_at(r.data, 4).map(usize::from) {
-                    if cce > 0 && cce <= r.data.len() {
-                        let at = r.data.len() - cce;
-                        let ixti = match r.data[at] {
-                            0x3a | 0x5a | 0x7a | 0x3b | 0x5b | 0x7b if biff8 => {
-                                u16_at(r.data, at + 1)
-                            }
-                            0x3a | 0x5a | 0x7a | 0x3b | 0x5b | 0x7b => u16_at(r.data, at + 11),
-                            _ => None,
-                        };
-                        if let Some(i) = ixti {
+                    if cce <= r.data.len() {
+                        let rgce = &r.data[r.data.len() - cce..];
+                        if let Some(i) = formula::name_sheet_ixti(rgce, biff8) {
                             name_prefix.push((offset_of(r.data) + 4, usize::from(i)));
                         }
                     }
@@ -550,7 +642,8 @@ pub(crate) fn scan_stream(
 
     // Before BIFF8 a formula names its sheets by index: `calamine` makes the XTI table the identity.
     env.pre_biff8 = !biff8;
-    if !biff8 && env.xti_first.is_empty() {
+    // (`EXTERNSHEET` is not read before BIFF8, so the table is empty here.)
+    if !biff8 {
         env.xti_first = (0..env.sheets.len())
             .map_while(|i| i16::try_from(i).ok())
             .collect();
@@ -561,6 +654,10 @@ pub(crate) fn scan_stream(
         work_left: limits.max_formula_work,
         base: 0,
         blank: Vec::new(),
+        #[cfg(test)]
+        trace: Vec::new(),
+        #[cfg(test)]
+        pos: (0, 0),
         env,
     };
     // The prefixes of defined names share a quarter of the formula text budget.
@@ -568,7 +665,7 @@ pub(crate) fn scan_stream(
     for (cce_at, ixti) in name_prefix {
         let cost = guard.env.via_xti(ixti) + 40;
         if cost > name_budget {
-            guard.blank.push(cce_at);
+            guard.blank.push(Blank::Name(cce_at));
         } else {
             name_budget -= cost;
         }
@@ -599,7 +696,7 @@ pub(crate) fn scan_stream(
     sheets.sort_by_key(|&(pos, _)| pos);
     let mut prev_end = 0usize;
     let mut visited = 0u64;
-    let visit_budget = (stream.len() as u64 / 4) * 2 + 16;
+    let visit_budget = visit_budget(stream.len());
     for (pos, name) in sheets {
         if pos < prev_end {
             return Err(OfficeError::Corrupt(
@@ -640,7 +737,7 @@ pub(crate) fn scan_stream(
         SheetFormats::check_total_area(area_total, limits)?;
         out.sheets.insert(name, sf);
     }
-    Ok((out, guard.blank))
+    Ok((out, guard))
 }
 
 /// The area a DIMENSIONS record declares (what `calamine` `reserve`s).
@@ -747,7 +844,11 @@ fn parse_sheet_span(
                     formula_pos = (u32::from(row), u32::from(col));
                     if r.data.len() >= 20 {
                         let cce_at = r.data.as_ptr() as usize - stream.as_ptr() as usize + 20;
-                        guard.admit(cce_at, &r.data[20..]);
+                        #[cfg(test)]
+                        {
+                            guard.pos = formula_pos;
+                        }
+                        guard.admit(cce_at, &r.data[20..])?;
                     }
                 }
                 let cost = match r.typ {

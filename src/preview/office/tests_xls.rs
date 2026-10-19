@@ -2022,6 +2022,15 @@ fn difat_only_file(header_ids: &[u32], difat_sectors: u32, entry: impl Fn(u64) -
     h
 }
 
+/// 109 different, valid FAT sector ids for the header (a file of 100+ sectors).
+fn header_ids() -> Vec<u32> {
+    (10..119).collect()
+}
+
+fn set_num_fat_sectors(bytes: &mut [u8], n: u32) {
+    bytes[44..48].copy_from_slice(&n.to_le_bytes());
+}
+
 fn check_bytes(bytes: Vec<u8>) -> (Result<(), OfficeError>, u64, u64) {
     let len = bytes.len() as u64;
     let mut r = Counting {
@@ -2036,7 +2045,7 @@ fn check_bytes(bytes: Vec<u8>) -> (Result<(), OfficeError>, u64, u64) {
 fn a_difat_that_lists_one_fat_sector_over_and_over_is_refused_without_the_blowup() {
     // Every sector of the file is a DIFAT sector naming sector 1: `cfb` would read 128 entries
     // for each of the ~38,000 ids (127 times the file) before noticing anything.
-    let bytes = difat_only_file(&[], 300, |_| 1);
+    let bytes = difat_only_file(&header_ids(), 300, |_| 1);
     let (res, read, len) = check_bytes(bytes.clone());
     assert!(
         matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
@@ -2066,10 +2075,11 @@ fn a_difat_that_lists_one_fat_sector_over_and_over_is_refused_without_the_blowup
 
 #[test]
 fn a_difat_naming_every_sector_once_is_bounded_by_the_file_and_not_refused() {
-    // 300 sectors, 299 different FAT ids: `cfb`'s FAT would be 299 x 512 bytes, i.e. the size of
+    // 300 sectors, 300 different FAT ids (109 in the header): `cfb`'s FAT would be 300 x 512 bytes, i.e. the size of
     // the file, so this is not a blow-up and the check lets it through (whether `cfb` likes the
     // rest is its business). The repeats that make the blow-up are refused ("twice"), see above.
-    let bytes = difat_only_file(&[], 300, |n| if n < 299 { 1 + n as u32 } else { FREE });
+    let ids: Vec<u32> = (0..109).collect();
+    let bytes = difat_only_file(&ids, 300, |n| if n < 191 { 109 + n as u32 } else { FREE });
     let (res, read, len) = check_bytes(bytes);
     assert!(res.is_ok(), "{res:?}");
     assert!(read <= 2 * len);
@@ -2096,20 +2106,21 @@ fn stale_ids_after_the_first_free_header_slot_are_ignored_like_cfb_does() {
 }
 
 #[test]
-fn zero_padding_in_a_chained_difat_sector_is_accepted_but_zeros_before_an_id_are_not() {
-    // [0, 0, ...] with nothing after them: padding, stripped like `cfb` does.
+fn zero_padding_in_a_chained_difat_sector_is_accepted_but_zeros_cfb_keeps_are_not() {
+    // [0, 0, ...] with nothing after them and the header's count at 0: padding, stripped like
+    // `cfb` does (down to the header's 109 slots, all of them FREE here).
     let (res, read, len) = check_bytes(difat_only_file(&[], 4, |_| 0));
     assert!(res.is_ok(), "{res:?}");
     assert!(read <= 2 * len);
-    // One zero followed by a real id is FAT sector 0 and sector 5.
-    let (res, _, _) = check_bytes(difat_only_file(&[], 8, |n| match n {
+    // A zero followed by a real id is FAT sector 0 and that sector.
+    let (res, _, _) = check_bytes(difat_only_file(&header_ids(), 200, |n| match n {
         0 => 0,
         1 => 5,
         _ => FREE,
     }));
     assert!(res.is_ok(), "{res:?}");
     // Two zeros followed by an id list sector 0 twice.
-    let (res, _, _) = check_bytes(difat_only_file(&[], 8, |n| match n {
+    let (res, _, _) = check_bytes(difat_only_file(&header_ids(), 200, |n| match n {
         0 | 1 => 0,
         2 => 5,
         _ => FREE,
@@ -2118,6 +2129,193 @@ fn zero_padding_in_a_chained_difat_sector_is_accepted_but_zeros_before_an_id_are
         matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
         "{res:?}"
     );
+}
+
+#[test]
+fn zeros_that_cfb_does_not_strip_are_fat_sector_zero_listed_again_shape_a() {
+    // The header claims 0xFFFFFFFF FAT sectors, so `cfb` never strips the zero padding and reads
+    // sector 0 as a FAT sector once per zero (128 FAT entries each: 127 x the file).
+    let mut bytes = difat_only_file(&header_ids(), 300, |_| 0);
+    set_num_fat_sectors(&mut bytes, 0xFFFF_FFFF);
+    let (res, read, len) = check_bytes(bytes);
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+    assert!(read <= 2 * len);
+}
+
+#[test]
+fn zeros_that_cfb_does_not_strip_are_fat_sector_zero_listed_again_shape_b() {
+    // No header trick: the last slot of the chain is FREE, so `cfb` finds no trailing zero to
+    // strip, and only then removes the trailing FREE. Every zero before it stays.
+    let total = 300 * 127;
+    let mut bytes = difat_only_file(
+        &header_ids(),
+        300,
+        |n| if n == total - 1 { FREE } else { 0 },
+    );
+    let (res, _, _) = check_bytes(bytes.clone());
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+    // The same with an accurate-looking count: still refused (the count only matters for the
+    // zeros at the very end).
+    set_num_fat_sectors(&mut bytes, 110);
+    let (res, _, _) = check_bytes(bytes);
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+}
+
+/// The list the check evaluates, for a header + DIFAT layout.
+fn fat_list(bytes: Vec<u8>) -> Result<Vec<u32>, OfficeError> {
+    let len = bytes.len() as u64;
+    container::cfb_fat_sector_list(&mut std::io::Cursor::new(bytes), len).map(|(l, _)| l)
+}
+
+#[test]
+fn the_fat_list_is_what_cfb_builds_in_its_order_with_its_stripping_rules() {
+    let hdr = header_ids();
+    let with = |nfat: u32, entry: &dyn Fn(u64) -> u32| {
+        let mut b = difat_only_file(&hdr, 2, entry);
+        set_num_fat_sectors(&mut b, nfat);
+        fat_list(b).unwrap()
+    };
+    let hdr_and = |extra: &[u32]| [hdr.clone(), extra.to_vec()].concat();
+    // Padding zeros are stripped down to the header's count (110: one id from the chain).
+    assert_eq!(with(110, &|n| if n == 0 { 77 } else { 0 }), hdr_and(&[77]));
+    // A count under 109 changes nothing: the header's 109 slots are never stripped.
+    assert_eq!(with(3, &|n| if n == 0 { 77 } else { 0 }), hdr_and(&[77]));
+    // The count stops the stripping where it says: 112 entries, the last of them a zero.
+    assert_eq!(
+        with(112, &|n| match n {
+            0 => 70,
+            1 => 71,
+            _ => 0,
+        }),
+        hdr_and(&[70, 71, 0])
+    );
+    // A count that is too big (or a lie) strips nothing: every zero stays (2 x 127 of them).
+    let l = with(0xFFFF_FFFF, &|n| if n == 0 { 77 } else { 0 });
+    assert_eq!(l.len(), 109 + 254);
+    assert_eq!(l.iter().filter(|&&x| x == 0).count(), 253);
+    // A FREE at the very end blocks the zero stripping and is then removed itself.
+    let l = with(110, &|n| match n {
+        0 => 77,
+        253 => FREE,
+        _ => 0,
+    });
+    assert_eq!(l.len(), 109 + 253);
+    assert_eq!(l.iter().filter(|&&x| x == 0).count(), 252);
+    // FREE entries before the end stay (and `check_cfb_fat` refuses them: past the end).
+    let l = with(0, &|n| match n {
+        0 => 77,
+        1 => FREE,
+        2 => 78,
+        _ => FREE,
+    });
+    assert_eq!(l.len(), 109 + 3);
+    assert_eq!(l[109 + 1], FREE);
+    // The header: the first FREE slot ends it even when ids follow.
+    let b = difat_only_file(&[5, 6, FREE, 7], 2, |_| FREE);
+    assert_eq!(fat_list(b).unwrap(), vec![5, 6]);
+    // The order is the header's 109 slots (FREE ones included), then each chained sector's in
+    // chain order.
+    let b = difat_only_file(&[5, 6], 2, |n| if n < 2 { 20 + n as u32 } else { FREE });
+    let l = fat_list(b).unwrap();
+    assert_eq!(l.len(), 109 + 2);
+    assert_eq!(l[..2], [5, 6]);
+    assert!(l[2..109].iter().all(|&x| x == FREE));
+    assert_eq!(l[109..], [20, 21]);
+}
+
+#[test]
+fn a_free_slot_in_the_middle_of_the_fat_list_is_refused() {
+    // `cfb` would read the FAT sectors before it and then fail on this one.
+    let (res, _, _) = check_bytes(difat_only_file(&[], 8, |n| match n {
+        0 => 0,
+        1 => 5,
+        _ => FREE,
+    }));
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("past the end")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn the_fat_list_of_real_files_is_what_the_writer_wrote_zero_padded_or_not() {
+    // Parity with `cfb`: files cfb itself wrote (and opens), at sizes around the DIFAT limits,
+    // padded with FREE as written and then with zeros (cfb issue 41): the list is the 109 header
+    // slots plus the used DIFAT entries, and cfb still reads the stream back.
+    let dir = tmp("cfb_fat_list_parity");
+    let le = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    for (i, size) in [6_900_000usize, 7_100_000, 7_300_000, 7_450_000, 15_500_000]
+        .into_iter()
+        .enumerate()
+    {
+        let p = dir.join(format!("p{i}.xls"));
+        let mut cf = cfb::CompoundFile::create_with_version(
+            cfb::Version::V3,
+            std::fs::File::create(&p).unwrap(),
+        )
+        .unwrap();
+        cf.create_stream("/Workbook")
+            .unwrap()
+            .write_all(&vec![0xABu8; size])
+            .unwrap();
+        cf.flush().unwrap();
+        drop(cf);
+        let bytes = std::fs::read(&p).unwrap();
+        let nfat = le(&bytes, 44) as usize;
+        // Expected: header ids, then the chained entries that are not FREE, in order.
+        let mut expected: Vec<u32> = (0..109)
+            .map(|k| le(&bytes, 76 + 4 * k))
+            .take_while(|&x| x != FREE)
+            .collect();
+        let mut next = le(&bytes, 68);
+        let mut sectors = Vec::new();
+        while next != EOC && next != FREE {
+            sectors.push(next as usize);
+            let at = (next as usize + 1) * 512;
+            expected.extend(
+                (0..127)
+                    .map(|k| le(&bytes, at + 4 * k))
+                    .filter(|&x| x != FREE),
+            );
+            next = le(&bytes, at + 508);
+        }
+        assert_eq!(expected.len(), nfat, "size {size}");
+        assert_eq!(
+            fat_list(bytes.clone()).unwrap(),
+            expected,
+            "written by cfb, size {size}"
+        );
+        let mut padded = bytes.clone();
+        for &sec in &sectors {
+            for k in 0..127 {
+                let at = (sec + 1) * 512 + 4 * k;
+                if le(&padded, at) == FREE {
+                    padded[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+                }
+            }
+        }
+        assert_eq!(
+            fat_list(padded.clone()).unwrap(),
+            expected,
+            "zero padded, size {size}"
+        );
+        let q = dir.join(format!("q{i}.xls"));
+        std::fs::write(&q, &padded).unwrap();
+        let mut cf = container::open_cfb(&q).unwrap();
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut cf.open_stream("/Workbook").unwrap(), &mut out).unwrap();
+        assert_eq!(out.len(), size);
+        assert!(out.iter().all(|&b| b == 0xAB));
+    }
 }
 
 #[test]
@@ -2400,6 +2598,12 @@ fn scanned_formulas(book: &Book, limits: &Limits) -> Vec<(u32, u32, String)> {
 
 const DROPPED: &str = "Unrecognised formula";
 
+/// What `calamine` prints for a formula the guard took the tokens off: nothing (a lone
+/// `PtgMissArg`), not an error message.
+fn was_dropped(text: &str) -> bool {
+    text.is_empty()
+}
+
 /// `N + N + N ...` (left to right: PtgName, then PtgName and PtgAdd for each further one).
 fn name_chain(names: usize) -> Vec<u8> {
     let mut rgce = vec![0x23, 1, 0, 0, 0];
@@ -2429,8 +2633,9 @@ fn a_chain_of_long_names_prints_a_megabyte_per_record_and_is_dropped_over_the_bu
         sheets: vec![sheet("S", values)],
     };
     let printed = 1366 * 255 + 1365;
-    // The bound counts two bytes for every operator (`<=`, `<>`): room for two formulas.
-    let bound = 1366 * 255 + 1365 * 2;
+    // The bound counts the worst case of any code page for every character of the name and two
+    // bytes for every operator (`<=`, `<>`): room for two formulas.
+    let bound = 1366 * 255 * 6 + 1365 * 2;
     let tight = Limits {
         max_formula_text_bytes: 2 * bound as u64 + 10,
         ..Limits::default()
@@ -2446,11 +2651,7 @@ fn a_chain_of_long_names_prints_a_megabyte_per_record_and_is_dropped_over_the_bu
                 &text[..text.len().min(100)]
             );
         } else {
-            assert!(
-                text.starts_with(DROPPED) && text.len() < 200,
-                "row {r}: {} bytes",
-                text.len()
-            );
+            assert!(was_dropped(text), "row {r}: {} bytes", text.len());
         }
     }
     // Over the budget the cached values are all still there.
@@ -2496,7 +2697,7 @@ fn a_right_nested_chain_is_quadratic_and_dropped_by_the_per_formula_cap() {
         sheets: vec![sheet("S", vec![formula_rec(0, 0, 0, 1.0, &rgce)])],
     };
     let f = scanned_formulas(&book, &Limits::default());
-    assert!(f[0].2.starts_with(DROPPED), "{}", f[0].2.len());
+    assert!(was_dropped(&f[0].2), "{}", f[0].2.len());
 }
 
 #[test]
@@ -2530,7 +2731,11 @@ fn spaces_inserted_at_the_start_of_an_operand_are_counted_and_the_formula_droppe
     let f = scanned_formulas(&book, &Limits::default());
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     assert_eq!(f.len(), 2);
-    assert!(f[0].2.starts_with(DROPPED), "{:?}", &f[0].2[..40]);
+    assert!(
+        was_dropped(&f[0].2),
+        "{:?}",
+        &f[0].2[..f[0].2.len().min(40)]
+    );
     assert_eq!(f[1].2, "   1");
     // The cached values of both are intact.
     let dir = tmp("xls_formula_space_values");
@@ -2564,7 +2769,7 @@ fn the_work_budget_is_shared_by_all_formulas_of_the_workbook() {
         ..Limits::default()
     };
     let f = scanned_formulas(&book, &limits);
-    let kept = f.iter().filter(|(_, _, t)| !t.starts_with(DROPPED)).count();
+    let kept = f.iter().filter(|(_, _, t)| !was_dropped(t)).count();
     assert_eq!(
         kept,
         4,
@@ -2696,7 +2901,8 @@ fn the_cost_is_an_upper_bound_of_what_calamine_prints_and_mirrors_where_it_gives
         if text.starts_with(DROPPED) {
             errors += 1;
             assert_eq!(
-                cost.text, 96,
+                cost.text,
+                fmt_xls_formula::ERROR_TEXT,
                 "sample {r} is an error for calamine: {rgce:02x?}"
             );
         } else {
@@ -2706,7 +2912,10 @@ fn the_cost_is_an_upper_bound_of_what_calamine_prints_and_mirrors_where_it_gives
                 cost.text,
                 text.len()
             );
-            assert!(cost.text != 96, "sample {r} was parsed: {text}");
+            assert!(
+                cost.text != fmt_xls_formula::ERROR_TEXT,
+                "sample {r} was parsed: {text}"
+            );
             assert!(cost.peak >= cost.text);
         }
     }
@@ -2749,7 +2958,11 @@ fn random_tokens_never_panic_the_cost_and_it_bounds_what_calamine_prints() {
                     assert!(cost.text >= t.len() as u64, "round {round}: {rgce:02x?}");
                     checked += 1;
                 } else {
-                    assert_eq!(cost.text, 96, "round {round}: {rgce:02x?}");
+                    assert_eq!(
+                        cost.text,
+                        fmt_xls_formula::ERROR_TEXT,
+                        "round {round}: {rgce:02x?}"
+                    );
                 }
             }
         }
@@ -2814,9 +3027,9 @@ fn defined_names_with_a_sheet_prefix_share_a_quarter_of_the_text_budget() {
     };
     let dir = tmp("xls_name_prefix");
     let p = book.write(&dir, "n.xls");
-    // 204 + 40 per prefix; a quarter of 4 x 244 x 10 = 2,440 allows ten.
+    // 1,200 (6 per character) + 40 per prefix; a quarter of 4 x 1,240 x 10 allows ten.
     let limits = Limits {
-        max_formula_text_bytes: 4 * 244 * 10,
+        max_formula_text_bytes: 4 * 1240 * 10,
         ..Limits::default()
     };
     let (_, container) = fmt_xls::read_scanned(&p, &limits, None).unwrap();
@@ -2892,3 +3105,6 @@ fn version_zero_globals_are_read_as_biff8_and_sheets_use_the_globals_version() {
     assert_eq!(a.sheets["S"].text_bytes, b.sheets["S"].text_bytes);
     assert!(a.sheets["S"].text_bytes >= 20);
 }
+
+#[cfg(test)]
+mod cost;
