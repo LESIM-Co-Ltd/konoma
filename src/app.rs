@@ -67,6 +67,8 @@ pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 pub(crate) mod canvas_images;
+#[cfg(feature = "demo-canvas")]
+mod canvas_trace;
 mod outline;
 mod paste_jump;
 mod plugin_acts;
@@ -1730,6 +1732,9 @@ pub struct App {
     /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
     /// not re-read a workbook of hundreds of megabytes.
     plugin_stamp: Option<FileStamp>,
+    /// Set while the user's own refresh (`r`) runs: a plugin's file is read again whatever its
+    /// stamp says (`plugin_file_unchanged`), because the user asked for it.
+    plugin_reopen_forced: bool,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -3584,6 +3589,7 @@ impl App {
             md_overlay_moved: false,
             preview_media_mtime: None,
             plugin_stamp: None,
+            plugin_reopen_forced: false,
             command_err: None,
             image_failure: None,
             #[cfg(test)]
@@ -5114,18 +5120,24 @@ impl App {
         }
     }
 
-    /// Whether the open plugin show reads heavily (its manifest names a work group) and the file it
-    /// shows is the one it was opened on, unchanged since: reading it again would only repeat the
-    /// work (an FS event for `.git`, or for another file, reaches `reload_preview` as well).
-    /// A plugin that reads cheaply (a CSV, an archive listing) is opened again every time, as it
-    /// always was.
+    /// Whether the open plugin show reads heavily (its manifest names a work group) or keeps a
+    /// state of its own (it declares a canvas), and the file it shows is the one it was opened on,
+    /// unchanged since: reading it again would only repeat the work, or lose the state (an FS
+    /// event for `.git`, or for another file, or of an unknown cause, reaches `reload_preview` as
+    /// well). Such a plugin is opened again only when the file's stamp (mtime, size, inode, ctime)
+    /// changed. A plugin that reads cheaply and keeps nothing (a CSV, an archive listing) is
+    /// opened again every time, as it always was.
     fn plugin_file_unchanged(&self) -> bool {
         let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
             return false;
         };
+        if self.plugin_reopen_forced {
+            return false;
+        }
         let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
             .manifest(id)
-            .is_some_and(|m| m.work_group.is_some());
+            .is_some_and(|m| m.work_group.is_some())
+            || crate::plugins::profile_of(id).canvas;
         heavy
             && self
                 .plugin

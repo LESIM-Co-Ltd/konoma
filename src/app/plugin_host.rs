@@ -198,6 +198,10 @@ pub(crate) struct ShowFlow {
     /// A `view` was asked for while no session was at hand (`R`, a page turn): it is asked when the
     /// session returns, with the request the tab then makes (so it carries the newest choice).
     pub wants_view: bool,
+    /// The file is being read again with the previous view kept on screen: the old session was
+    /// taken out of reach, and the `Open` in flight brings the new one. What the user presses
+    /// meanwhile (`R`, a declared action) waits for it instead of being ignored.
+    pub reopening: bool,
     /// Declared actions pressed while a job held the session of a canvas, in the order pressed;
     /// each runs, one job at a time, when the session returns. Never dropped, never reordered --
     /// and never reordered against the queued keys either ([`QueuedAct::after_keys`]).
@@ -491,6 +495,21 @@ pub struct PluginLayoutMsg {
 }
 
 impl PluginResult {
+    /// The texts a plugin handed over, as the interface keeps them: a message, a label or a page
+    /// name past `MAX_TEXT_CHARS` is cut with an ellipsis. Done where the answer is taken in (on
+    /// the worker, once), so no frame ever copies or measures a text of any length.
+    pub(super) fn clip_texts(&mut self) {
+        if let Some(f) = &mut self.failure {
+            *f = f.clipped();
+        }
+        if let Some(l) = &mut self.layout {
+            *l = l.clipped();
+        }
+        if let Some(Outcome::Flash(msg)) = &mut self.outcome {
+            *msg = msg.clipped();
+        }
+    }
+
     pub(super) fn failed(gen: u64, id: String, req: ViewReq, failure: Failure) -> PluginResult {
         PluginResult {
             gen,
@@ -643,6 +662,7 @@ impl PluginWork {
                 )
             });
         res.path = path;
+        res.clip_texts();
         res
     }
 
@@ -789,7 +809,7 @@ impl PluginWork {
                         // What `open` learned (a PDF's page count) goes to the host now, before the
                         // first page is drawn.
                         if let Some(announce) = &on_layout {
-                            announce(&session.layout());
+                            announce(&session.layout().clipped());
                         }
                         view_of(session, req)
                     }
@@ -1299,6 +1319,34 @@ impl App {
         self.plugin_request_view(want)
     }
 
+    /// [`App::refit_canvas`] for the other plugins that declare their views depend on the size
+    /// (`Manifest::sized`: a text diagram laid out to the width): ask again when the area is not
+    /// the size of the request that produced the view. The same rules -- one request at a time
+    /// (nothing is asked while a job holds the session), so a drag that resizes many times asks
+    /// once per answer and always for the newest size. A picture is scaled by the host, so a view
+    /// that is a picture is never asked again for a size. Called after a frame was drawn.
+    pub(crate) fn refit_sized_view(&mut self) -> bool {
+        if self.is_canvas_preview() {
+            return false;
+        }
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        if !self.shows_plugin_file(show)
+            || !matches!(show.phase, PluginPhase::Ready)
+            || show.session.is_none()
+            || !crate::plugins::profile_of(&show.id).sized
+            || matches!(show.view, None | Some(View::Image(_)))
+        {
+            return false;
+        }
+        let want = self.plugin_view_req();
+        if (show.req.cols, show.req.rows) == (want.cols, want.rows) {
+            return false;
+        }
+        self.plugin_request_view(want)
+    }
+
     /// What a worker needs when the plugin `id` declares it shows a document (`shows(Document)`):
     /// the plugin that takes `markdown` for a `Reopen` it may answer with, and the Markdown
     /// settings for a converted `Document` it may answer with. `None` for every other plugin.
@@ -1405,6 +1453,9 @@ impl App {
             if let Some(old) = show.session.take() {
                 super::table_actions::discard_in_background(old);
             }
+            show.flow.reopening = true;
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_reopen();
         }
         self.plugin_stamp = file_stamp(&path);
         // A Markdown or Word document is asked for in its rendered form first, whatever the tab
@@ -1584,6 +1635,8 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("konoma-plugin".into())
             .spawn(move || {
+                #[cfg(feature = "demo-canvas")]
+                let _alive = super::canvas_trace::WorkerGuard::new();
                 let (work, handoff, gate, tx, cancel, group) = worker;
                 let taken = work.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(work) = taken {
@@ -1697,6 +1750,31 @@ impl App {
         if let Some(show) = self.plugin.as_mut() {
             show.flow.wants_view = true;
         }
+    }
+
+    /// Whether the file is being read again with the previous view on screen (the session comes
+    /// with the `Open` in flight): a press that needs the session waits for it.
+    pub(crate) fn plugin_is_reopening(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| p.flow.reopening && p.session.is_none())
+    }
+
+    /// [`App::plugin_view_now`], but while the file is read again the wish is remembered and asked
+    /// when the new session lands (`plugin_session_returned`), with the request the tab then
+    /// makes: `R` of a document is not lost to the reload. Returns false only when the press has
+    /// to be ignored (no show, or a job that is not an `Open` holds the session).
+    pub(super) fn plugin_view_now_or_queue(&mut self, req: ViewReq) -> bool {
+        if self.plugin_view_now(req) {
+            return true;
+        }
+        if !self.plugin_is_reopening() {
+            return false;
+        }
+        if let Some(show) = self.plugin.as_mut() {
+            show.flow.wants_view = true;
+        }
+        true
     }
 
     /// The session of the show is back at the app (a job answered, or a stale answer gave it
@@ -1860,12 +1938,14 @@ impl App {
         // (`plugin_act_enabled`). Other displays keep ignoring the press while a job holds it.
         // Also when the session is at hand but presses are already waiting, or the work group is
         // busy: a press never overtakes the ones before it.
-        if self.is_canvas_preview()
-            && (self
-                .plugin
-                .as_ref()
-                .is_some_and(|p| !p.flow.acts.is_empty())
-                || !self.plugin_session_is_free())
+        // While the file is read again, any display waits for the new session (`reopening`).
+        if self.plugin_is_reopening()
+            || (self.is_canvas_preview()
+                && (self
+                    .plugin
+                    .as_ref()
+                    .is_some_and(|p| !p.flow.acts.is_empty())
+                    || !self.plugin_session_is_free()))
         {
             let queued_keys = self.plugin_key_queue.len();
             let full = self
@@ -1961,6 +2041,15 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.id == res.id && self.shows_plugin_file(p));
         if !current || !belongs {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(
+                res.gen,
+                if current {
+                    "not the show on screen"
+                } else {
+                    "not the newest generation"
+                },
+            );
             self.discard_stale_answer(res.gen);
             super::table_actions::discard_in_background(res);
             return false;
@@ -1982,6 +2071,8 @@ impl App {
         // The session being replaced (a read again) holds the pictures of a document: it is
         // freed off the UI thread.
         let session_back = res.session.is_some();
+        // The `Open` of a read again has answered (a session, or a failure): nothing waits for it.
+        show.flow.reopening = false;
         if let Some(old) = std::mem::replace(&mut show.session, res.session) {
             super::table_actions::discard_in_background(old);
         }

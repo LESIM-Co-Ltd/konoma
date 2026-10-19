@@ -39,6 +39,9 @@ pub struct Profile {
     pub converts: bool,
     /// Its text view is the file itself.
     pub file_text: bool,
+    /// Its views depend on the request's size (`Manifest::sized`; a canvas is sized implicitly):
+    /// the host asks again when the area changes.
+    pub sized: bool,
     /// The host believes the `trusted` claim of the SVGs it returns: a **standard** plugin that
     /// draws the SVG itself, from a diagram or a formula, with konoma's own code (mermaid and
     /// math). Decided by where the plugin comes from: the plugins a user adds never have it, and
@@ -61,6 +64,7 @@ impl Profile {
             standard,
             converts: m.converts,
             file_text: m.file_text,
+            sized: m.sized || has(ViewKind::Canvas),
             unscreened: m.assigns_files_without_shows(),
             own_svg: standard
                 && matches!(

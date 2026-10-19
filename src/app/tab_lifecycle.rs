@@ -50,6 +50,15 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
+        // The size of the area this tab last drew (`ViewReq::cols` / `rows`) is read when the
+        // plugin is opened below (a text diagram is laid out to the width, a canvas to the size),
+        // while `self.tab` still holds the previous tab's until the bulk restore at the end. A tab
+        // that was never drawn (a new one) has no measure of its own: the previous tab's stands in,
+        // the area is the same terminal's, so its first request carries a real width, not 80.
+        if t.preview_cols != 0 {
+            self.tab.preview_cols = t.preview_cols;
+            self.tab.preview_viewport = t.preview_viewport;
+        }
         // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
         // the previous tab's and let the media block below re-read this tab's on the worker. (A
         // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened

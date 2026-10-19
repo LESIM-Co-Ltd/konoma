@@ -348,6 +348,8 @@ impl App {
     /// applied; its outcome is.
     fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
         let Some(show) = self.plugin.as_ref() else {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(res.gen, "stale: no show");
             self.discard_stale_answer(res.gen);
             return;
         };
@@ -361,6 +363,24 @@ impl App {
             || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
             || !self.shows_plugin_file(show)
         {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(
+                res.gen,
+                if res.session.is_none() {
+                    "stale: no session in the answer"
+                } else if show.id != res.id
+                    || show.path != res.path
+                    || !self.shows_plugin_file(show)
+                {
+                    "stale: another show"
+                } else if show.session.is_some() {
+                    "stale: the show already has a session"
+                } else if res.gen < show.flow.open_gen {
+                    "stale: older than the newest Open"
+                } else {
+                    "stale: the show is not ready"
+                },
+            );
             self.discard_stale_answer(res.gen);
             return;
         }

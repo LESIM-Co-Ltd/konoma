@@ -152,6 +152,13 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, e: ScrollExtent) {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+    render_body(frame, app, area);
+    // The area is measured now: a plugin whose views depend on the size is asked again when the
+    // size is not the one its view was made for (`Manifest::sized`).
+    app.refit_sized_view();
+}
+
+fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     // The width of the content area, for the size a plugin's view is asked for
     // (`App::plugin_view_req`). Every branch below frames its content with a one-cell border.
     app.tab.preview_cols = Block::bordered().inner(area).width;

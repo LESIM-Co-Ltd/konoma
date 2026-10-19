@@ -63,13 +63,31 @@ fn kitty_id_for(
     if !use_kitty {
         return None;
     }
-    let family = &mut ids
-        .entry(super::canvas_images::kitty_key(path))
-        .or_default()[key.slot()];
+    let kitty_key = super::canvas_images::kitty_key(path);
+    // A canvas picture's ids are noted process-wide so that every way out of the program can
+    // delete them from the terminal (`canvas_images::LIVE_CANVAS_KITTY`).
+    let canvas = crate::preview::markdown::is_canvas_url(&kitty_key.to_string_lossy());
+    let family = &mut ids.entry(kitty_key).or_default()[key.slot()];
     while family.len() <= slot {
-        family.push(crate::preview::kitty::next_id());
+        let id = crate::preview::kitty::next_id();
+        if canvas {
+            super::canvas_images::LIVE_CANVAS_KITTY.note(id);
+        }
+        family.push(id);
     }
     family.get(slot).copied()
+}
+
+/// Test seam for [`kitty_id_for`].
+#[cfg(test)]
+pub(super) fn kitty_id_for_test(
+    ids: &mut std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
+    path: &Path,
+    key: &MdEncodeKey,
+    slot: usize,
+    use_kitty: bool,
+) -> Option<u32> {
+    kitty_id_for(ids, path, key, slot, use_kitty)
 }
 
 /// Whether a cache key names a picture whose pixels can be made again once dropped: a regular
@@ -96,6 +114,7 @@ impl App {
             std::env::var("TERM").ok().as_deref(),
             std::env::var("TERM_PROGRAM").ok().as_deref(),
         );
+        super::canvas_images::LIVE_CANVAS_KITTY.set_tmux(self.kitty_is_tmux);
         self.picker = Some(picker);
         self.img_tx = Some(tx);
     }

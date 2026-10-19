@@ -20778,6 +20778,9 @@ mod canvas_input;
 #[cfg(test)]
 mod canvas_images;
 
+#[cfg(test)]
+mod part2_host;
+
 // The temporary demo plugin (removed with the `demo-canvas` feature).
 #[cfg(all(test, feature = "demo-canvas"))]
 mod demo_canvas;

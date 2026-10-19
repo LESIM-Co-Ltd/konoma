@@ -1508,6 +1508,16 @@ impl App {
         self.refresh_fs(true)
     }
 
+    /// `r`, the user's own refresh: [`App::refresh`], and a plugin's file is read again even when
+    /// its stamp says nothing changed (an FS event of unknown cause does not do that, the user
+    /// asking does).
+    pub fn refresh_explicit(&mut self) -> Result<()> {
+        self.plugin_reopen_forced = true;
+        let result = self.refresh();
+        self.plugin_reopen_forced = false;
+        result
+    }
+
     /// Reload from FSEvents. When `recompute_ignored=false`, **skip recomputing the heavy ignore set (`ignored`)**
     /// and refetch only the cheap `statuses`+`branch`. Ignore rules (`.gitignore` /
     /// `.git/info/exclude`) rarely change, so this is called with `true` only when they actually change, also rebuilding

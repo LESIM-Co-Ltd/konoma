@@ -76,6 +76,87 @@ use konoma_plugin::view::{CanvasView, CellRect, ImageData, ImageView};
 
 use super::*;
 
+/// The kitty image ids of canvas pictures that are on the terminal now, **process-wide**: the
+/// places that end the program (the normal exit, the panic hook, the signal thread) have no `App`
+/// to ask, and an image left in the terminal's storage outlives the program (it is counted
+/// against the terminal's quota until the terminal evicts something). Ids are noted when a canvas
+/// picture is given one (`md_media::kitty_id_for`) and forgotten when their delete is handed out
+/// (`App::take_kitty_deletes`).
+pub(crate) struct LiveKittyIds {
+    ids: std::sync::Mutex<std::collections::BTreeSet<u32>>,
+    tmux: std::sync::atomic::AtomicBool,
+}
+
+impl LiveKittyIds {
+    pub(crate) const fn new() -> LiveKittyIds {
+        LiveKittyIds {
+            ids: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            tmux: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn note(&self, id: u32) {
+        self.ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id);
+    }
+
+    pub(crate) fn forget(&self, id: u32) {
+        self.ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
+    pub(crate) fn set_tmux(&self, tmux: bool) {
+        self.tmux.store(tmux, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The ids noted now (for a test).
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Vec<u32> {
+        self.ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// The escapes that delete every id noted, and the table emptied. Never blocks on a lock that
+    /// a panicking thread poisoned.
+    pub(crate) fn take_delete_escapes(&self) -> Vec<String> {
+        let tmux = self.tmux.load(std::sync::atomic::Ordering::SeqCst);
+        std::mem::take(&mut *self.ids.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .map(|id| crate::preview::kitty::build_delete(id, tmux))
+            .collect()
+    }
+}
+
+/// The ids of the canvas pictures on the terminal now (see [`LiveKittyIds`]).
+pub(crate) static LIVE_CANVAS_KITTY: LiveKittyIds = LiveKittyIds::new();
+
+/// Write to `out` the deletes of every id `table` holds, and flush; the table is emptied. Every
+/// failure is dropped: the terminal may be gone (SIGHUP).
+pub(crate) fn delete_kitty_images_in(table: &LiveKittyIds, out: &mut dyn std::io::Write) {
+    let escapes = table.take_delete_escapes();
+    if escapes.is_empty() {
+        return;
+    }
+    for e in escapes {
+        let _ = out.write_all(e.as_bytes());
+    }
+    let _ = out.flush();
+}
+
+/// Write to `out` the deletes of every canvas picture still on the terminal. What the ways out of
+/// the program do (`preview::command::leave_for_good`), before the terminal is restored.
+pub(crate) fn delete_canvas_kitty_images(out: &mut dyn std::io::Write) {
+    delete_kitty_images_in(&LIVE_CANVAS_KITTY, out);
+}
+
 /// How many distinct pictures (ids) of one canvas the host looks at.
 pub(super) const MAX_CANVAS_IMAGES: usize = 256;
 /// How many bytes of decoded pixels one answer of the plugin may add to the cache; past it the
@@ -177,8 +258,10 @@ pub(super) struct KeptPicture {
     pub(super) key: Option<Arc<str>>,
     /// The content hash (the part of the key), when it was made.
     pub(super) hash: Option<u64>,
-    /// What the plugin sent.
-    pub(super) data: ImageData,
+    /// What the plugin sent. Shared: a copy of the table (one per job sent to the worker) and the
+    /// table itself hold the same data, and a `Frames` of thousands of frames is not copied for
+    /// each job or freed on the UI thread by every landing.
+    pub(super) data: Arc<ImageData>,
     /// The decoded bytes it needs when the memory bound refused it: it is not decoded again until
     /// that much room is free.
     pub(super) needs: Option<u64>,
@@ -235,6 +318,8 @@ struct Hasher<'a> {
     /// The bytes of the distinct buffers hashed so far.
     bytes: u64,
     cancel: Option<&'a crate::preview::office::Cancel>,
+    /// The file being previewed: a relative picture path is relative to its directory.
+    shown: Option<&'a Path>,
 }
 
 impl<'a> Hasher<'a> {
@@ -243,7 +328,14 @@ impl<'a> Hasher<'a> {
             memo: HashMap::new(),
             bytes: 0,
             cancel,
+            shown: None,
         }
+    }
+
+    /// Resolve the relative picture files of a plugin against `shown`'s directory.
+    fn relative_to(mut self, shown: &'a Path) -> Hasher<'a> {
+        self.shown = Some(shown);
+        self
     }
 
     /// The hash of the bytes of `b`; `None` when the job was cancelled meanwhile.
@@ -278,7 +370,10 @@ impl<'a> Hasher<'a> {
             ImageData::File(p) => {
                 h.num(1);
                 h.bytes(p.as_os_str().as_encoded_bytes());
-                if let Ok(m) = std::fs::metadata(p) {
+                let abs = self
+                    .shown
+                    .map_or_else(|| p.to_path_buf(), |shown| resolve_picture_path(shown, p));
+                if let Ok(m) = std::fs::metadata(abs) {
                     h.num(m.len());
                     let t = m
                         .modified()
@@ -388,10 +483,71 @@ pub(super) fn kitty_key(path: &Path) -> PathBuf {
         .map_or_else(|| path.to_path_buf(), PathBuf::from)
 }
 
-/// Whether `p` is a regular file: the only kind the host opens for a plugin (a FIFO would block
-/// the worker for good, a device such as `/dev/tty` would read the user's keystrokes).
-fn regular_file(p: &Path) -> bool {
-    std::fs::metadata(p).is_ok_and(|m| m.is_file())
+/// The most bytes of a picture file the host reads for a plugin (`ImageData::File`).
+pub(super) const MAX_PICTURE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where the picture file `p` of a plugin is: an absolute path is itself, a relative one is
+/// relative to the directory of the file being previewed (`shown`), never to the directory
+/// konoma happens to run in.
+pub(super) fn resolve_picture_path(shown: &Path, p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    shown
+        .parent()
+        .map_or_else(|| p.to_path_buf(), |d| d.join(p))
+}
+
+/// Read the picture file `p` (resolved against `shown`, see [`resolve_picture_path`]) that a plugin
+/// named, and say what it holds as data the decoders take: an SVG (by its first bytes) drawn
+/// from the directory it is in, anything else as encoded bytes.
+///
+/// **Only a regular file is read, and it is decided on the file that was opened**, not on the path:
+/// the file is opened without blocking (`O_NONBLOCK`: opening a FIFO that nobody writes to would
+/// hold the worker for good, and a cancellation cannot reach it) and without becoming a
+/// controlling terminal, and `fstat` of the opened handle must say "regular file" (a device such
+/// as `/dev/tty` would read the user's keystrokes). A path checked first and opened afterwards
+/// could be swapped for a FIFO in between. The bytes are read from the handle and decoded from
+/// memory, so nothing opens the path a second time. Any file the user can read is read -- konoma
+/// shows what the user could `cat` -- up to [`MAX_PICTURE_FILE_BYTES`].
+fn read_picture_file(
+    shown: &Path,
+    p: &Path,
+) -> Result<ImageData, crate::preview::image::ImageFailure> {
+    use crate::preview::image::ImageFailure;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let abs = resolve_picture_path(shown, p);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(&abs)
+        .map_err(|_| ImageFailure::Corrupt)?;
+    let meta = file.metadata().map_err(|_| ImageFailure::Corrupt)?;
+    if !meta.is_file() {
+        return Err(ImageFailure::Corrupt);
+    }
+    if meta.len() > MAX_PICTURE_FILE_BYTES {
+        return Err(ImageFailure::TooLarge);
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_PICTURE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ImageFailure::Corrupt)?;
+    if bytes.len() as u64 > MAX_PICTURE_FILE_BYTES {
+        return Err(ImageFailure::TooLarge);
+    }
+    if crate::preview::svg::can_begin_svg(&bytes[..bytes.len().min(512)]) {
+        return Ok(ImageData::Svg {
+            data: Arc::from(bytes),
+            base_dir: Some(
+                abs.parent()
+                    .map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
+            ),
+            trusted: false,
+        });
+    }
+    Ok(ImageData::Encoded(Arc::from(bytes)))
 }
 
 /// Decode one still picture (no animation): the reason when it cannot be shown.
@@ -403,13 +559,10 @@ fn decode_still(
     trust_own_svg: bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
-    let cancelled = || cancel.is_some_and(|c| c.is_cancelled());
     match data {
         ImageData::File(p) => {
-            if !regular_file(p) {
-                return Err(ImageFailure::Corrupt);
-            }
-            md_decode_image_why(p, default_raster_px, &cancelled)
+            let read = read_picture_file(path, p)?;
+            decode_still(&read, path, default_raster_px, cancel, trust_own_svg)
         }
         ImageData::Encoded(b) => {
             crate::preview::image::decode_static_bytes_capped_why(b, MD_IMAGE_MAX_SIDE)
@@ -442,12 +595,23 @@ fn decode_one(
     trust_own_svg: bool,
 ) -> CanvasDecoded {
     use crate::preview::image::ImageFailure;
+    // A file is read once, from the handle that was opened (`read_picture_file`), and decoded from
+    // memory: a GIF file is an animation like GIF bytes are.
+    let read;
+    let data = if let ImageData::File(p) = data {
+        match read_picture_file(path, p) {
+            Ok(d) => {
+                read = d;
+                &read
+            }
+            Err(why) => return CanvasDecoded::Failed(why),
+        }
+    } else {
+        data
+    };
     let animated = match data {
         // A GIF is an animation when it has more than one frame; anything else (a single frame,
         // a damaged one) falls through to the still decode, as an inline Markdown image does.
-        ImageData::File(p) if regular_file(p) && App::looks_like_gif(p) => {
-            crate::preview::image::decode_gif_inline(p)
-        }
         ImageData::Encoded(b) if b.starts_with(b"GIF8") => {
             crate::preview::image::decode_gif_bytes_inline(b).map(|(frames, _)| frames)
         }
@@ -512,14 +676,26 @@ fn copy_decoded(d: &CanvasDecoded) -> CanvasDecoded {
     }
 }
 
-/// The bytes of input a decode of `data` reads (what the per-answer input budget counts).
-fn input_bytes(data: &ImageData) -> u64 {
+/// How many decodes the picture `data` costs the budget of an answer: one per frame of an
+/// animation given as `ImageData::Frames` (each is decoded on its own, an SVG frame in a child
+/// process), one for anything else.
+fn decode_cost(data: &ImageData) -> usize {
     match data {
-        ImageData::File(p) => std::fs::metadata(p).map_or(0, |m| m.len()),
+        ImageData::Frames(f) => f.len().max(1),
+        _ => 1,
+    }
+}
+
+/// The bytes of input a decode of `data` reads (what the per-answer input budget counts).
+fn input_bytes(data: &ImageData, shown: &Path) -> u64 {
+    match data {
+        ImageData::File(p) => {
+            std::fs::metadata(resolve_picture_path(shown, p)).map_or(0, |m| m.len())
+        }
         ImageData::Encoded(b) => b.len() as u64,
         ImageData::Svg { data, .. } => data.len() as u64,
         ImageData::Rgba { pixels, .. } => pixels.len() as u64,
-        ImageData::Frames(f) => f.iter().map(|(d, _)| input_bytes(d)).sum(),
+        ImageData::Frames(f) => f.iter().map(|(d, _)| input_bytes(d, shown)).sum(),
         ImageData::Lazy(_) => 0,
         _ => 0,
     }
@@ -584,7 +760,7 @@ pub(super) fn decode_canvas_within(
     // Each id is resolved to a key without decoding anything: a picture the cache holds, one to
     // decode (`todo`), or one left for later. The pictures the host kept from an earlier answer
     // go first, so a picture deferred before is not starved by the new ones.
-    let mut hasher = Hasher::new(cancel);
+    let mut hasher = Hasher::new(cancel).relative_to(path);
     // (order of appearance, id, the placement that decided it)
     let mut ids: Vec<(usize, u64, &konoma_plugin::view::CanvasImage)> = Vec::new();
     {
@@ -610,9 +786,9 @@ pub(super) fn decode_canvas_within(
     for (order, id, im) in ids {
         let kept = held.kept.get(&id);
         // The data this id is about: what the plugin sent, or for `unchanged` what the host kept.
-        let data = match (&im.image, kept) {
-            (Some(d), _) => d,
-            (None, Some(k)) => &k.data,
+        let (data, shared): (&ImageData, Option<&Arc<ImageData>>) = match (&im.image, kept) {
+            (Some(d), _) => (d, None),
+            (None, Some(k)) => (&*k.data, Some(&k.data)),
             (None, None) => {
                 // Nothing kept: the picture is in the cache or the id is not held.
                 if let Some(k) = held.by_id.get(&id) {
@@ -642,7 +818,7 @@ pub(super) fn decode_canvas_within(
                         KeptPicture {
                             key: None,
                             hash: None,
-                            data: data.clone(),
+                            data: shared.cloned().unwrap_or_else(|| Arc::new(data.clone())),
                             needs: None,
                         },
                     ));
@@ -688,7 +864,7 @@ pub(super) fn decode_canvas_within(
                 id,
                 key: key.clone(),
                 hash,
-                data: data.clone(),
+                data: shared.cloned().unwrap_or_else(|| Arc::new(data.clone())),
                 needs,
             });
         }
@@ -765,6 +941,11 @@ pub(super) fn decode_canvas_within(
             sources.push(keep(t, needs));
             continue;
         } else if decodes >= limits.decodes
+            // Every frame of an animation is a decode (a picture of N frames costs N): one that
+            // does not fit next to what this answer decoded waits (kept) for a later answer, where
+            // it may come first. The first picture of an answer is decoded however many frames it
+            // has, so an answer makes progress.
+            || (decodes > 0 && decodes + decode_cost(&t.data) > limits.decodes)
             || input >= limits.input_bytes
             || added >= limits.answer_bytes
         {
@@ -775,8 +956,8 @@ pub(super) fn decode_canvas_within(
         } else {
             #[cfg(test)]
             seen_for_tests::note(t.hash);
-            decodes += 1;
-            input += input_bytes(&t.data);
+            decodes += decode_cost(&t.data);
+            input += input_bytes(&t.data, path);
             let d = decode_one(&t.data, path, default_raster_px, cancel, trust_own_svg);
             let bytes = decoded_bytes(&d);
             if bytes > limits.held_bytes {
@@ -820,7 +1001,7 @@ struct Todo {
     id: u64,
     key: Arc<str>,
     hash: u64,
-    data: ImageData,
+    data: Arc<ImageData>,
     /// The decoded bytes it needed when the memory bound refused it.
     needs: Option<u64>,
 }
@@ -1026,7 +1207,11 @@ impl App {
             total -= source_bytes(&kept[dropped].1.data);
             dropped += 1;
         }
-        self.canvas_kept = kept.into_iter().skip(dropped).collect();
+        let rest = kept.split_off(dropped);
+        self.canvas_kept = rest.into_iter().collect();
+        // What goes (the table of the answer before, the sources dropped for the bound) may be
+        // the last holder of a large animation: it is freed off the UI thread.
+        super::table_actions::discard_in_background((before, kept));
         self.prune_canvas_to_named(&named);
         self.canvas_places = pics.places;
         self.sweep_canvas_kitty_ids();
@@ -1116,6 +1301,9 @@ impl App {
         let ids = std::mem::take(&mut self.kitty_deletes);
         if !self.use_kitty {
             return Vec::new();
+        }
+        for id in &ids {
+            LIVE_CANVAS_KITTY.forget(*id);
         }
         ids.into_iter()
             .map(|id| crate::preview::kitty::build_delete(id, self.kitty_is_tmux))

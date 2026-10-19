@@ -109,7 +109,7 @@ impl App {
         let before = self.tab.repr.replace(step.id);
         if self.holds_document() {
             // The session holds the content: the answer lands at once.
-            if !self.plugin_view_now(self.plugin_view_req()) {
+            if !self.plugin_view_now_or_queue(self.plugin_view_req()) {
                 self.tab.repr = before;
                 return false;
             }

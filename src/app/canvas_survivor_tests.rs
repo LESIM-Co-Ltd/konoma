@@ -724,11 +724,11 @@ fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() 
         KeptPicture {
             key: Some(key.clone()),
             hash: Some(0xd1),
-            data: konoma_plugin::view::ImageData::Rgba {
+            data: Arc::new(konoma_plugin::view::ImageData::Rgba {
                 width: 1,
                 height: 1,
                 pixels: Arc::new(vec![0; 4]),
-            },
+            }),
             needs: None,
         },
     );

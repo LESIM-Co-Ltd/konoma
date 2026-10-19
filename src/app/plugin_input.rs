@@ -374,13 +374,30 @@ impl App {
     }
 
     /// TEMPORARY (feature `demo-canvas`): one line describing why the redraw timer would or would
-    /// not fire now, for tracing a stuck canvas in a real terminal (`KONOMA_CANVAS_TRACE=<file>`).
+    /// not fire now, and what the job road is doing, for tracing a stuck canvas in a real
+    /// terminal (`KONOMA_CANVAS_TRACE=<file>`): the phase of the show, the generations, the size
+    /// of the request the view answers, the plugin worker threads alive, how many times the file
+    /// was read again, and the generation and reason of the last answer that was not applied.
     #[cfg(feature = "demo-canvas")]
     pub fn canvas_trace_line(&self, now: Instant) -> String {
+        let phase = match self.plugin.as_ref().map(|p| &p.phase) {
+            None => "none",
+            Some(super::plugin_host::PluginPhase::Loading) => "loading",
+            Some(super::plugin_host::PluginPhase::Ready) => "ready",
+            Some(super::plugin_host::PluginPhase::Failed(_)) => "failed",
+        };
+        let req = self.plugin.as_ref().map(|p| (p.req.cols, p.req.rows));
         format!(
-            "surface={:?} plugin={} queued_keys={} input_left={} path={:?} deadline_in={:?} visible={} covered={} layer={:?} session_out={} loading={} mode_preview={} asks={:?} flash={}",
+            "surface={:?} plugin={} phase={} media_gen={} open_gen={:?} show_req={:?} workers={} reopens={} last_discard={:?} queued_keys={} input_left={} path={:?} deadline_in={:?} visible={} covered={} layer={:?} session_out={} loading={} mode_preview={} asks={:?} flash={}",
             self.surface(),
             self.plugin.is_some(),
+            phase,
+            self.media_gen,
+            self.plugin.as_ref().map(|p| p.flow.open_gen),
+            req,
+            super::canvas_trace::workers(),
+            super::canvas_trace::reopens(),
+            super::canvas_trace::last_discard(),
             self.plugin_key_queue.len(),
             self.plugin_input_left,
             self.tab.preview_path.as_deref().and_then(|p| p.file_name()),

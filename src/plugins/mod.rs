@@ -36,6 +36,8 @@ pub(crate) use acts::PluginNote;
 pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
+#[cfg(test)]
+pub(crate) use profile::record as record_for_test;
 pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 

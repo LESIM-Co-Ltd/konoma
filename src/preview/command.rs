@@ -132,6 +132,7 @@ pub fn exit_cleanup() {
 pub(crate) enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
@@ -140,6 +141,7 @@ pub(crate) enum ExitStep {
 enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
@@ -186,6 +188,13 @@ pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>
 /// short of the SVG drawing processes.
 pub fn leave_for_good() {
     exit_cleanup();
+    // The pictures a plugin's canvas put on a kitty-graphics terminal stay in the terminal's image
+    // storage after the program is gone: delete them while the terminal is still ours.
+    if dry_run() {
+        note_exit_step(ExitStep::DeleteCanvasImages);
+    } else {
+        crate::app::canvas_images::delete_canvas_kitty_images(&mut std::io::stdout());
+    }
     if dry_run() {
         note_exit_step(ExitStep::RestoreTerminal);
     } else {
@@ -1167,6 +1176,44 @@ mod tests {
         assert!(!temp.exists(), "the private temp directory was not removed");
     }
 
+    /// The real `leave_for_good`, in a process of its own (it is one-way and process-wide): the
+    /// deletes of the canvas pictures still on the terminal are written to stdout, **before** the
+    /// terminal is restored. The recorded steps above cannot tell a step that was noted from one
+    /// that was done.
+    #[cfg(unix)]
+    #[test]
+    fn leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore() {
+        const ENV: &str = "KONOMA_TEST_LEAVE_DELETES_CHILD";
+        const ID: u32 = 4_242_424;
+        let name = "preview::command::tests::leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore";
+        if std::env::var_os(ENV).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact", "--test-threads=1", "--nocapture"])
+                .env(ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let wire = String::from_utf8_lossy(&out.stdout).into_owned();
+            let delete = format!("\x1b_Gq=2,a=d,d=I,i={ID}\x1b\\");
+            let at = wire
+                .find(&delete)
+                .unwrap_or_else(|| panic!("no delete in {wire:?}"));
+            let restore = wire.find("\x1b[?1049l").expect("the terminal was restored");
+            assert!(
+                at < restore,
+                "the delete comes before the restore: {wire:?}"
+            );
+            assert_eq!(wire.matches(&delete).count(), 1, "once");
+            return;
+        }
+        crate::app::canvas_images::LIVE_CANVAS_KITTY.note(ID);
+        leave_for_good();
+    }
+
     /// Every way out runs the whole exit cleanup (not just the temp-dir removal), and then the
     /// terminal teardown.
     #[test]
@@ -1174,6 +1221,7 @@ mod tests {
         let all = vec![
             ExitStep::StopSvgProcesses,
             ExitStep::RemoveTempDir,
+            ExitStep::DeleteCanvasImages,
             ExitStep::RestoreTerminal,
         ];
         let ((), steps) = recorded_exit_steps(leave_for_good);

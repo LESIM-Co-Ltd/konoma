@@ -122,6 +122,8 @@ pub struct Manifest {
     pub converts: bool,
     /// Whether a text view is the file itself. See [`Manifest::file_text`].
     pub file_text: bool,
+    /// Whether the plugin's views depend on the size of the request. See [`Manifest::sized`].
+    pub sized: bool,
     /// What the host shows when the plugin shows nothing. See [`Unavailable`].
     pub unavailable: Unavailable,
 }
@@ -144,6 +146,7 @@ impl Manifest {
             work_group: None,
             converts: false,
             file_text: false,
+            sized: false,
             unavailable: Unavailable::Message,
         }
     }
@@ -186,6 +189,20 @@ impl Manifest {
     /// [`TextSource::File`]: crate::view::TextSource::File
     pub fn file_text(mut self) -> Manifest {
         self.file_text = true;
+        self
+    }
+
+    /// Declare that the plugin's views depend on the size of the request ([`ViewReq::cols`] and
+    /// [`ViewReq::rows`]): a text diagram laid out to the width of the area, a view that fills it.
+    /// The host then asks for the view again when the area changes (a resize, the first frame
+    /// that measured it, another tab's size), **once per answer and always for the newest size**.
+    /// A plugin that shows a canvas is sized without saying so. Pictures are scaled by the host,
+    /// so a picture view is never asked again for a size.
+    ///
+    /// [`ViewReq::cols`]: crate::view::ViewReq::cols
+    /// [`ViewReq::rows`]: crate::view::ViewReq::rows
+    pub fn sized(mut self) -> Manifest {
+        self.sized = true;
         self
     }
 

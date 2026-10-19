@@ -71,7 +71,7 @@ impl App {
     /// loading) and when the plugin could not open the file. **While a job holds the session** the
     /// answer is the last the session gave, for a canvas (its presses wait in line, so the key does
     /// act: [[hint-shown-iff-key-acts]], and the hint does not flicker with a redraw timer's
-    /// ticks); for any other display it is false, because the press would be ignored.
+    /// ticks); for any other display it is false, because the press would be ignored -- except while the file is read again (`ShowFlow::reopening`): then the press waits for the new session, so the hint stays.
     pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
         let canvas = self.is_canvas_preview();
         self.plugin
@@ -79,7 +79,7 @@ impl App {
             .filter(|s| {
                 s.id == p.plugin()
                     && matches!(s.phase, plugin_host::PluginPhase::Ready)
-                    && (s.session.is_some() || canvas)
+                    && (s.session.is_some() || canvas || s.flow.reopening)
             })
             .and_then(|s| s.enabled.get(p.act()))
             .copied()
@@ -104,7 +104,8 @@ impl App {
 
     /// Run a declared action of the open plugin on the worker. While a job still holds the
     /// session of a canvas the press waits in line and goes when the session returns; for any
-    /// other display it is ignored, and so is its hint (`plugin_act_enabled`).
+    /// other display it is ignored, and so is its hint (`plugin_act_enabled`), unless the file is
+    /// being read again: then it waits for the new session.
     pub fn run_plugin_action(&mut self, p: PluginAct) {
         let _ = self.plugin_act(p.act());
     }

@@ -160,7 +160,7 @@ impl App {
             return true;
         }
         let before = std::mem::replace(&mut self.tab.repr, next);
-        if !self.plugin_view_now(self.plugin_view_req()) {
+        if !self.plugin_view_now_or_queue(self.plugin_view_req()) {
             self.tab.repr = before;
             return false;
         }

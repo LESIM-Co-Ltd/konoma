@@ -20,6 +20,8 @@ fn grid_of(plugin: &Option<PluginShow>) -> Option<Grid<'_>> {
 /// thread cannot be had the value is freed here, as it would have been.
 pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
     use std::sync::{mpsc, Mutex, OnceLock};
+    #[cfg(test)]
+    DISCARDED.with(|d| d.borrow_mut().push(std::any::type_name::<T>()));
     type Junk = Box<dyn Send>;
     static REAPER: OnceLock<Option<Mutex<mpsc::Sender<Junk>>>> = OnceLock::new();
     let reaper = REAPER.get_or_init(|| {
@@ -43,6 +45,14 @@ pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
         }
     }
     drop(value);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the type of every value handed to [`discard_in_background`] on this thread, so a
+    /// test can say that a large value was not freed on the calling (UI) thread.
+    pub(super) static DISCARDED: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A table lighter than this (see [`row_weight`]) is searched on the calling thread: starting

@@ -1711,7 +1711,7 @@ fn landing_asks_again_when_room_grew_for_a_refused_picture() {
             KeptPicture {
                 key: Some(key.clone()),
                 hash: Some(0xc1),
-                data: rgba(100, 100, 5),
+                data: Arc::new(rgba(100, 100, 5)),
                 needs: Some(needs),
             },
         )],
@@ -1827,7 +1827,7 @@ fn the_oldest_kept_source_goes_first_whatever_the_order_the_worker_listed_them_i
     let kp = |c: u8| KeptPicture {
         key: None,
         hash: None,
-        data: rgba(100, 100, c),
+        data: Arc::new(rgba(100, 100, c)),
         needs: None,
     };
     // Id 2 was kept by an earlier landing.
@@ -1924,7 +1924,7 @@ fn the_same_pixels_in_another_shape_are_not_the_same_source() {
         KeptPicture {
             key: Some(key.clone()),
             hash: Some(content_hash(&r(4, 4))),
-            data: r(4, 4),
+            data: Arc::new(r(4, 4)),
             needs: None,
         },
     );
@@ -1938,21 +1938,27 @@ fn the_input_of_a_picture_is_the_bytes_the_decode_reads() {
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("p.bin");
     std::fs::write(&f, vec![7u8; 600]).unwrap();
-    assert_eq!(input_bytes(&ImageData::File(f.to_path_buf())), 600);
-    assert_eq!(input_bytes(&ImageData::File(dir.join("missing"))), 0);
-    assert_eq!(input_bytes(&junk(1)), 100);
-    assert_eq!(input_bytes(&rgba(2, 3, 1)), 24);
+    assert_eq!(
+        input_bytes(&ImageData::File(f.to_path_buf()), Path::new("/x/a.spr")),
+        600
+    );
+    assert_eq!(
+        input_bytes(&ImageData::File(dir.join("missing")), Path::new("/x/a.spr")),
+        0
+    );
+    assert_eq!(input_bytes(&junk(1), Path::new("/x/a.spr")), 100);
+    assert_eq!(input_bytes(&rgba(2, 3, 1), Path::new("/x/a.spr")), 24);
     let svg = ImageData::Svg {
         data: Arc::from(vec![b' '; 40]),
         base_dir: None,
         trusted: false,
     };
-    assert_eq!(input_bytes(&svg), 40);
+    assert_eq!(input_bytes(&svg, Path::new("/x/a.spr")), 40);
     let frames = ImageData::Frames(vec![
         (junk(1), Duration::from_millis(30)),
         (rgba(1, 1, 1), Duration::from_millis(30)),
     ]);
-    assert_eq!(input_bytes(&frames), 104);
+    assert_eq!(input_bytes(&frames, Path::new("/x/a.spr")), 104);
 }
 
 #[test]
@@ -1993,7 +1999,7 @@ fn sources_the_host_kept_unhashed_are_hashed_before_new_pictures_when_the_budget
         KeptPicture {
             key: None,
             hash: None,
-            data: junk(2),
+            data: Arc::new(junk(2)),
             needs: None,
         },
     );
@@ -2017,7 +2023,7 @@ fn pictures_are_decoded_in_the_order_they_appear_though_kept_ones_were_hashed_fi
         KeptPicture {
             key: Some(key.clone()),
             hash: Some(hash),
-            data: kept_data,
+            data: Arc::new(kept_data),
             needs: None,
         },
     );
@@ -2138,7 +2144,7 @@ fn a_refused_picture_is_decoded_again_when_the_room_is_exactly_what_it_needs() {
             KeptPicture {
                 key: Some(key.clone()),
                 hash: Some(hash),
-                data: data.clone(),
+                data: Arc::new(data.clone()),
                 needs: Some(needs),
             },
         );
@@ -2188,7 +2194,7 @@ fn landing_asks_again_when_the_room_is_exactly_what_a_refused_picture_needs() {
             KeptPicture {
                 key: Some(Arc::from("canvas://pw/1/00000000000000aa")),
                 hash: Some(0xaa),
-                data: rgba(100, 100, 1),
+                data: Arc::new(rgba(100, 100, 1)),
                 needs: Some(needs),
             },
         )
@@ -2225,7 +2231,7 @@ fn kept_sources_exactly_at_their_bound_are_all_kept() {
     let kp = |c: u8| KeptPicture {
         key: None,
         hash: None,
-        data: rgba(100, 100, c), // 40,000 bytes of source
+        data: Arc::new(rgba(100, 100, c)), // 40,000 bytes of source
         needs: None,
     };
     let places = [1u64, 2]
@@ -2248,4 +2254,432 @@ fn kept_sources_exactly_at_their_bound_are_all_kept() {
     let mut ids: Vec<u64> = app.canvas_kept.keys().copied().collect();
     ids.sort();
     assert_eq!(ids, [1, 2], "80,000 of 80,000 is within the bound");
+}
+
+// ---- the kept sources are shared, not copied; frames are decodes (stage 2.5 / part 2) ------------
+
+fn animation(n: usize, c: u8) -> ImageData {
+    ImageData::Frames(
+        (0..n)
+            .map(|i| {
+                (
+                    rgba(1, 1, c.wrapping_add(i as u8)),
+                    Duration::from_millis(100),
+                )
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn the_table_a_job_gets_shares_the_kept_data_instead_of_copying_it() {
+    // A thousand-frame animation kept for later: the copy of the table that goes with every job
+    // (Open, View, Act, Keys) holds the very same allocation, so the UI thread copies pointers,
+    // not frames.
+    let (mut app, _dir) = new_app("cvi_share");
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_md_encoder(tx);
+    let data = Arc::new(animation(1000, 1));
+    app.canvas_kept.insert(
+        7,
+        KeptPicture {
+            key: None,
+            hash: None,
+            data: data.clone(),
+            needs: None,
+        },
+    );
+    let held = app.canvas_known_keys().expect("pictures can be shown");
+    assert!(
+        Arc::ptr_eq(&held.kept[&7].data, &data),
+        "the job's table points at the kept data"
+    );
+    // A second job: still the one allocation (3 holders: the test, the app, the two copies).
+    let again = app.canvas_known_keys().unwrap();
+    assert!(Arc::ptr_eq(&again.kept[&7].data, &held.kept[&7].data));
+    assert_eq!(Arc::strong_count(&data), 4);
+}
+
+#[test]
+fn an_unchanged_picture_keeps_the_kept_allocation_through_the_worker() {
+    // The worker hands back the source of a kept picture it decodes: the same allocation, not a
+    // deep copy of its frames.
+    let data = Arc::new(animation(50, 1));
+    let mut held = nothing_held();
+    held.kept.insert(
+        1,
+        KeptPicture {
+            key: None,
+            hash: None,
+            data: data.clone(),
+            needs: None,
+        },
+    );
+    let c = canvas_of(vec![none(1)]);
+    // The source kept for the landing is the same allocation, not a copy.
+    let got = decode_within(&c, &held, CanvasLimits::PRODUCTION);
+    let (_, kept) = got.sources.iter().find(|(id, _)| *id == 1).unwrap();
+    assert!(Arc::ptr_eq(&kept.data, &data), "no copy of the frames");
+}
+
+#[test]
+fn landing_frees_the_replaced_kept_table_off_the_ui_thread() {
+    let (mut app, _dir) = new_app("cvi_discard");
+    for id in 1..=3u64 {
+        app.canvas_kept.insert(
+            id,
+            KeptPicture {
+                key: None,
+                hash: None,
+                data: Arc::new(animation(10, id as u8)),
+                needs: None,
+            },
+        );
+    }
+    super::table_actions::DISCARDED.with(|d| d.borrow_mut().clear());
+    app.canvas_pictures_landed(decode("pd", &canvas_of(vec![]), &nothing_held()));
+    assert!(app.canvas_kept.is_empty());
+    let discarded = super::table_actions::DISCARDED.with(|d| d.borrow().clone());
+    assert!(
+        discarded.iter().any(|t| t.contains("KeptPicture")),
+        "the old table was handed to the reaper, not dropped here: {discarded:?}"
+    );
+}
+
+#[test]
+fn every_frame_of_an_animation_is_a_decode_of_the_answer() {
+    // decodes = 4: a 3-frame animation takes 3; the next 3-frame one does not fit next to it and
+    // waits (kept, not failed); a still after it takes the last one.
+    let c = canvas_of(vec![
+        im(1, animation(3, 10)),
+        im(2, animation(3, 50)),
+        im(3, rgba(1, 1, 99)),
+    ]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
+    let keys_done: Vec<&str> = got.fresh.iter().map(|(k, _)| k.to_str().unwrap()).collect();
+    assert_eq!(got.fresh.len(), 2, "{keys_done:?}");
+    assert!(keys_done.iter().any(|k| k.starts_with("canvas://pw/1/")));
+    assert!(keys_done.iter().any(|k| k.starts_with("canvas://pw/3/")));
+    assert!(
+        got.fresh
+            .iter()
+            .all(|(_, d)| !matches!(d, CanvasDecoded::Failed(_))),
+        "the one that waits did not fail"
+    );
+    assert_eq!(got.waiting, 1);
+    assert!(got.more);
+    let (id, kept) = got
+        .sources
+        .iter()
+        .find(|(_, k)| {
+            k.needs.is_none()
+                && k.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("canvas://pw/2/"))
+        })
+        .expect("the waiting animation is kept");
+    assert_eq!(*id, 2);
+    // The next answer (the kept ones go first) decodes it.
+    let mut held = held_after(&nothing_held(), &got);
+    held.kept.insert(*id, kept.clone());
+    let next = decode_within(&canvas_of(vec![none(2)]), &held, small(|l| l.decodes = 4));
+    assert_eq!(next.fresh.len(), 1);
+    assert!(matches!(next.fresh[0].1, CanvasDecoded::Frames(_)));
+}
+
+#[test]
+fn an_animation_with_more_frames_than_the_budget_still_runs_when_it_is_first() {
+    // Progress is never starved: the first picture of an answer is decoded however many frames
+    // it has; what follows waits.
+    let c = canvas_of(vec![im(1, animation(10, 1)), im(2, rgba(1, 1, 7))]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
+    assert_eq!(got.fresh.len(), 1);
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Frames(_)));
+    assert_eq!(got.waiting, 1);
+    // And one that has to wait behind a smaller picture is decoded first thing in a later answer.
+    let c = canvas_of(vec![im(2, rgba(1, 1, 7)), im(1, animation(10, 1))]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
+    assert_eq!(got.fresh.len(), 1, "the still first, the animation waits");
+    assert_eq!(got.waiting, 1);
+}
+
+// ---- leaving the program deletes the canvas pictures from the terminal (S6) --------------------
+
+#[test]
+fn the_exit_cleanup_writes_a_delete_for_every_canvas_picture_still_placed() {
+    let table = LiveKittyIds::new();
+    for id in [7, 3, 9] {
+        table.note(id);
+    }
+    table.forget(3); // already deleted by the sweep
+    let mut out = Vec::new();
+    delete_kitty_images_in(&table, &mut out);
+    let wire = String::from_utf8(out).unwrap();
+    assert_eq!(
+        wire,
+        format!(
+            "{}{}",
+            crate::preview::kitty::build_delete(7, false),
+            crate::preview::kitty::build_delete(9, false)
+        ),
+        "one delete per id still placed, none for the one already gone"
+    );
+    // Taken: a second exit step writes nothing.
+    let mut again = Vec::new();
+    delete_kitty_images_in(&table, &mut again);
+    assert!(again.is_empty());
+}
+
+#[test]
+fn the_exit_cleanup_wraps_the_deletes_for_tmux() {
+    let table = LiveKittyIds::new();
+    table.set_tmux(true);
+    table.note(4);
+    let mut out = Vec::new();
+    delete_kitty_images_in(&table, &mut out);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        crate::preview::kitty::build_delete(4, true)
+    );
+}
+
+#[test]
+fn an_empty_table_writes_nothing_and_does_not_flush() {
+    struct NoFlush(Vec<u8>);
+    impl std::io::Write for NoFlush {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            panic!("flushed with nothing to write");
+        }
+    }
+    let mut w = NoFlush(Vec::new());
+    delete_kitty_images_in(&LiveKittyIds::new(), &mut w);
+    assert!(w.0.is_empty());
+}
+
+#[test]
+fn a_write_that_fails_does_not_panic() {
+    struct Gone;
+    impl std::io::Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("the terminal is gone"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("the terminal is gone"))
+        }
+    }
+    let table = LiveKittyIds::new();
+    table.note(1);
+    delete_kitty_images_in(&table, &mut Gone);
+}
+
+#[test]
+fn a_canvas_picture_given_a_kitty_id_is_noted_for_the_exit_and_other_pictures_are_not() {
+    use super::md_media::kitty_id_for_test;
+    let mut ids = HashMap::new();
+    let full = MdEncodeKey::Full { cols: 2, rows: 2 };
+    let canvas = Path::new("canvas://pexit/1/00000000000000aa");
+    let id = kitty_id_for_test(&mut ids, canvas, &full, 0, true).expect("an id");
+    assert!(LIVE_CANVAS_KITTY.snapshot().contains(&id), "noted");
+    let other = kitty_id_for_test(&mut ids, Path::new("/x/a.png"), &full, 0, true).expect("an id");
+    assert!(
+        !LIVE_CANVAS_KITTY.snapshot().contains(&other),
+        "a Markdown picture is not a canvas picture"
+    );
+    // Not on a terminal without kitty graphics: no id, nothing noted.
+    assert_eq!(
+        kitty_id_for_test(&mut ids, Path::new("canvas://pexit/2/00"), &full, 0, false),
+        None
+    );
+}
+
+#[test]
+fn the_ids_whose_deletes_were_handed_out_are_forgotten() {
+    let (mut app, _dir) = new_app("cvi_exit_forget");
+    app.use_kitty = true;
+    let id = crate::preview::kitty::next_id();
+    LIVE_CANVAS_KITTY.note(id);
+    app.kitty_deletes = vec![id];
+    assert_eq!(app.take_kitty_deletes().len(), 1);
+    assert!(
+        !LIVE_CANVAS_KITTY.snapshot().contains(&id),
+        "the exit does not delete it a second time"
+    );
+}
+
+// ---- picture files (S7) ------------------------------------------------------------------------
+
+fn write_png(p: &Path, c: u8) {
+    image::RgbaImage::from_pixel(3, 3, image::Rgba([c, 2, 3, 255]))
+        .save(p)
+        .unwrap();
+}
+
+#[test]
+fn a_relative_picture_path_is_relative_to_the_previewed_files_directory() {
+    let dir = crate::test_support::unique_tmp("cvi_rel");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    write_png(&dir.join("sub").join("pic.png"), 9);
+    let shown = dir.join("a.spr");
+    // The process's own directory is somewhere else: the path must not be looked for there.
+    let c = canvas_of(vec![im(1, ImageData::File("sub/pic.png".into()))]);
+    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    assert!(
+        matches!(got.fresh[0].1, CanvasDecoded::Still(_)),
+        "found next to the shown file"
+    );
+    // An absolute path is itself, wherever the shown file is.
+    let abs = canvas_of(vec![im(
+        1,
+        ImageData::File(dir.join("sub").join("pic.png")),
+    )]);
+    let got = decode_canvas(
+        "pr",
+        &abs,
+        &nothing_held(),
+        Path::new("/elsewhere/b.spr"),
+        800,
+        None,
+        false,
+    );
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Still(_)));
+    // A relative path that is not there fails (it is not looked for in the working directory).
+    let missing = canvas_of(vec![im(1, ImageData::File("nothing.png".into()))]);
+    let got = decode_canvas("pr", &missing, &nothing_held(), &shown, 800, None, false);
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
+}
+
+#[test]
+fn the_hash_of_a_relative_file_follows_the_file_next_to_the_shown_one() {
+    let dir = crate::test_support::unique_tmp("cvi_rel_hash");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shown = dir.join("a.spr");
+    let c = canvas_of(vec![im(1, ImageData::File("pic.png".into()))]);
+    write_png(&dir.join("pic.png"), 1);
+    let first = keys(&decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+    ));
+    // The file changed under the same name: another picture (its size/mtime are of that file, not
+    // of whatever the working directory holds under that name).
+    write_png(&dir.join("pic.png"), 200);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("pic.png"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    let second = keys(&decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+    ));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn a_device_a_directory_and_an_oversized_file_are_refused_on_the_opened_handle() {
+    let dir = crate::test_support::unique_tmp("cvi_special");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shown = dir.join("a.spr");
+    // `/dev/zero` is the telling one: read as a file it would never end (and be refused as too
+    // large after 64 MiB); refused on the handle it is "not a file" at once.
+    for special in [
+        PathBuf::from("/dev/zero"),
+        PathBuf::from("/dev/null"),
+        dir.to_path_buf(),
+    ] {
+        let c = canvas_of(vec![im(1, ImageData::File(special.clone()))]);
+        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        assert!(
+            matches!(
+                got.fresh[0].1,
+                CanvasDecoded::Failed(crate::preview::image::ImageFailure::Corrupt)
+            ),
+            "{special:?} is not a regular file"
+        );
+    }
+    // Over the cap: refused as too large, without reading it (a sparse file costs nothing).
+    let big = dir.join("big.png");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(MAX_PICTURE_FILE_BYTES + 1).unwrap();
+    let c = canvas_of(vec![im(1, ImageData::File(big))]);
+    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    assert!(matches!(
+        got.fresh[0].1,
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
+    ));
+}
+
+#[test]
+fn a_fifo_that_nobody_writes_to_is_refused_without_blocking_inside_frames_too() {
+    // The open itself must not block (`O_NONBLOCK`); the decision is made on the handle.
+    let dir = crate::test_support::unique_tmp("cvi_fifo2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe.gif");
+    if !std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let shown = dir.join("a.spr");
+    std::thread::spawn(move || {
+        let c = canvas_of(vec![im(1, ImageData::File(fifo))]);
+        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        let _ = tx.send(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the open blocked"),
+        "refused"
+    );
+}
+
+#[test]
+fn a_gif_file_is_an_animation_read_from_the_opened_handle() {
+    use image::codecs::gif::GifEncoder;
+    let dir = crate::test_support::unique_tmp("cvi_gif_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("anim.gif");
+    {
+        let mut enc = GifEncoder::new(std::fs::File::create(&path).unwrap());
+        for c in [10u8, 200] {
+            let frame = image::Frame::new(image::RgbaImage::from_pixel(
+                4,
+                4,
+                image::Rgba([c, 0, 0, 255]),
+            ));
+            enc.encode_frame(frame).unwrap();
+        }
+    }
+    let c = canvas_of(vec![im(1, ImageData::File("anim.gif".into()))]);
+    let got = decode_canvas(
+        "pg",
+        &c,
+        &nothing_held(),
+        &dir.join("a.spr"),
+        800,
+        None,
+        false,
+    );
+    let CanvasDecoded::Frames(f) = &got.fresh[0].1 else {
+        panic!("a GIF file with two frames is an animation");
+    };
+    assert_eq!(f.len(), 2);
 }

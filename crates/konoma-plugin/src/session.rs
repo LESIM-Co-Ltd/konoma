@@ -21,6 +21,18 @@ pub trait Plugin: Send + Sync + 'static {
 }
 
 /// One opened input.
+///
+/// **A session lasts as long as the file it was opened on is unchanged.** The host opens the file
+/// again (a new session, the old one dropped) when the file's stamp (modification time, size,
+/// inode, change time) changed -- an edit, a rename over it -- and for a plugin without a work
+/// group that keeps no state (a table, a listing) also on an event of unknown cause. A plugin
+/// that shows a canvas, or names a work group, is opened again **only when the file's stamp
+/// changed**: an event for `.git`, for another file or of an unknown cause does not touch it. So
+/// keep in the session what may be lost with the file (the typing of a form, the state of a
+/// game); keep what must outlive it elsewhere.
+///
+/// What the user presses while the file is being read again (`R`, a declared action, typing in a
+/// canvas) waits for the new session and goes to it, in order.
 pub trait Session: Send {
     /// The representations and pages this content has.
     fn layout(&self) -> Layout {
@@ -253,6 +265,19 @@ macro_rules! failure_ctor {
 }
 
 impl Failure {
+    /// The failure as the host keeps it: the message and the detail cut to
+    /// [`crate::text::MAX_TEXT_CHARS`].
+    pub fn clipped(&self) -> Failure {
+        Failure {
+            kind: self.kind,
+            message: self.message.clipped(),
+            detail: self
+                .detail
+                .as_deref()
+                .map(|d| crate::text::clip_text(d).into_owned()),
+        }
+    }
+
     pub fn new(kind: FailureKind, message: impl Into<Tr>) -> Failure {
         Failure {
             kind,

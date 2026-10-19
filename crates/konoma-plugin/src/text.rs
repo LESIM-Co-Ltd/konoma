@@ -10,7 +10,40 @@ pub struct Tr {
     others: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
+/// The longest user-visible text the host keeps from a plugin, in characters: a message, a label,
+/// a help line, a page name. Longer ones are cut at this length with a trailing `…` when the host
+/// takes them in, so a plugin cannot hand the interface a text it has to copy and measure on
+/// every frame.
+pub const MAX_TEXT_CHARS: usize = 512;
+
+/// `s` as the host keeps it: at most [`MAX_TEXT_CHARS`] characters, the last of a cut one an
+/// ellipsis. Whole characters are kept (a cut never lands inside one).
+pub fn clip_text(s: &str) -> std::borrow::Cow<'_, str> {
+    match s.char_indices().nth(MAX_TEXT_CHARS) {
+        None => std::borrow::Cow::Borrowed(s),
+        Some((end, _)) => {
+            let keep = s[..end]
+                .char_indices()
+                .nth(MAX_TEXT_CHARS - 1)
+                .map_or(end, |(i, _)| i);
+            std::borrow::Cow::Owned(format!("{}…", &s[..keep]))
+        }
+    }
+}
+
 impl Tr {
+    /// The same text with every language cut to [`MAX_TEXT_CHARS`] (see [`clip_text`]).
+    pub fn clipped(&self) -> Tr {
+        Tr {
+            en: clip_text(&self.en).into_owned().into(),
+            others: self
+                .others
+                .iter()
+                .map(|(l, t)| (l.clone(), clip_text(t).into_owned().into()))
+                .collect(),
+        }
+    }
+
     /// A string with only the English text.
     pub fn new(en: impl Into<Cow<'static, str>>) -> Tr {
         Tr {

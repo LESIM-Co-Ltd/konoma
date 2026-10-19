@@ -465,9 +465,22 @@ pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
         {
             act.key = None;
         }
+        act.label = act.label.clipped();
+        act.help = act.help.clipped();
         kept.push(act);
     }
     out.actions = kept;
+    // The texts of the rest of the manifest reach the interface as well.
+    out.name = out.name.clipped();
+    for v in &mut out.verbs {
+        v.label = v.label.as_ref().map(|l| l.clipped());
+    }
+    for st in &mut out.settings {
+        st.help = st.help.clipped();
+    }
+    if let crate::manifest::Unavailable::Notice(t) = &out.unavailable {
+        out.unavailable = crate::manifest::Unavailable::Notice(t.clipped());
+    }
     (out, issues)
 }
 

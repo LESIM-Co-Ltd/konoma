@@ -61,6 +61,10 @@ struct Shared {
     /// While set, `key` waits for `key_gate` (a gate of its own, apart from `latch`).
     hold_key_gate: AtomicBool,
     key_gate: Latch,
+    /// While set, a declared action waits for `act_gate` (a gate of its own): the action's job is
+    /// then certainly still out when the press returns, whatever the speed of the machine.
+    hold_acts: AtomicBool,
+    act_gate: Latch,
     /// Whether the session declares three pages.
     pages: AtomicBool,
     /// Whether the plugin declares actions on `j` and `Enter`.
@@ -96,6 +100,8 @@ impl Shared {
             acts: Mutex::default(),
             hold_key_gate: AtomicBool::new(false),
             key_gate: Latch::default(),
+            hold_acts: AtomicBool::new(false),
+            act_gate: Latch::default(),
             pages: AtomicBool::new(false),
             moves: AtomicBool::new(false),
             oversize: AtomicBool::new(false),
@@ -262,6 +268,9 @@ impl Session for TypistSession {
     }
 
     fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        if self.sh.hold_acts.load(Ordering::SeqCst) {
+            self.sh.act_gate.wait();
+        }
         self.sh.acts.lock().unwrap().push(action.to_string());
         match action {
             "refresh" | "second" | "down" | "pick" => Ok(Outcome::Redraw),
@@ -1200,12 +1209,23 @@ fn e2e_canvas_timer_skips_the_tick_while_a_job_is_out_and_the_next_answer_arms_a
         sh.want_input.store(false, Ordering::SeqCst);
         *sh.after.lock().unwrap() = Some(AFTER);
     });
-    // An action whose view request is held on the worker.
+    // An action whose view request is held on the worker. The action's own job is held too, on a
+    // gate of its own, until the press has returned: a job that finished before the UI looked
+    // (a fast machine) would be applied inside the press, and the drain below would wait for an
+    // answer that never comes. With the gate the order is the same on every machine: the press
+    // returns with the job out, the gate opens, and its answer comes through the channel.
     o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.sh.hold_acts.store(true, Ordering::SeqCst);
     o.s.key('x');
+    assert!(
+        o.s.app.plugin_session_is_out_for_test(),
+        "the action's job is out"
+    );
+    o.sh.act_gate.open();
     // The action's own job ends first (its answer is applied here) and asks for the view, which
     // is the job that is held.
-    o.s.drain_plugin();
+    assert!(o.s.drain_plugin(), "the action's own answer");
+    assert_eq!(o.sh.acts(), ["refresh"]);
     assert!(
         o.s.app.plugin_session_is_out_for_test(),
         "a job holds the session"
@@ -2584,4 +2604,123 @@ fn e2e_canvas_esc_during_the_first_open_then_open_again() {
     assert!(!s.app.plugin_session_is_out_for_test());
     assert!(s.app.is_canvas_preview());
     assert!(s.app.canvas_redraw_deadline().is_some());
+}
+
+// ---- stage 2.5 part 2: the host's behaviour around the job road ---------------------------------
+
+#[test]
+fn e2e_canvas_an_fs_event_that_did_not_change_the_file_does_not_reopen_it() {
+    // The canvas keeps a state of its own (what the user typed): a refresh whose cause is a `.git`
+    // write, another file, or nothing known must not read the file again and lose it. Only a
+    // change of the file's stamp (mtime, size, inode, ctime) does.
+    let mut o = open_with("p2_storm", "en", false, |sh| {
+        sh.want_input.store(true, Ordering::SeqCst)
+    });
+    o.s.keys("hi");
+    o.s.see("own=2");
+    let root = canon(&o.dir);
+    let opens = o.sh.opens.load(Ordering::SeqCst);
+    assert_eq!(opens, 1);
+    let drops = o.sh.drops();
+    for changed in [
+        vec![],
+        vec![root.join(".git").join("index")],
+        vec![root.join(".git").join("refs").join("heads").join("main")],
+        vec![root.join("b.typ")],
+        // The file itself named, but nothing in it changed (a read, a metadata-only event).
+        vec![root.join("a.typ")],
+    ] {
+        o.s.app.refresh_fs_watched(false, &changed);
+        o.s.draw();
+        assert_eq!(
+            o.sh.opens.load(Ordering::SeqCst),
+            opens,
+            "not opened again for {changed:?}"
+        );
+        assert_eq!(o.sh.drops(), drops, "the session is kept for {changed:?}");
+        o.s.see("sess=1");
+        o.s.see("own=2");
+        assert_eq!(chars(&o.sh.log()), "hi");
+        assert!(o.s.app.is_plugin_input(), "still typing");
+    }
+    // The explicit reload (the editor returned) of a file nobody touched keeps it as well.
+    o.s.app.reload_preview();
+    o.s.draw();
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens);
+    // A real change of the file: read again, and the new session starts clean.
+    touch_file(&o);
+    o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
+    o.s.draw();
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens + 1, "opened again");
+    o.s.see("sess=2");
+    o.s.see("own=0");
+    // And it keeps that one through further events.
+    o.s.app.refresh_fs_watched(false, &[]);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens + 1);
+}
+
+#[test]
+fn e2e_canvas_a_storm_of_git_events_never_reopens_and_the_timer_keeps_running() {
+    let mut o = open_with("p2_storm2", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    let root = canon(&o.dir);
+    for _ in 0..50 {
+        o.s.app
+            .refresh_fs_watched(false, &[root.join(".git").join("index")]);
+        o.s.app.refresh_fs_watched(false, &[]);
+    }
+    settle(&mut o.s);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1, "never opened again");
+    assert!(!o.s.app.plugin_session_is_out_for_test());
+    assert!(o.s.app.canvas_redraw_deadline().is_some(), "the timer runs");
+}
+
+#[test]
+fn e2e_canvas_switching_to_a_tab_asks_with_that_tabs_own_size() {
+    // `ViewReq::cols` / `rows` come from the tab's saved measure, put back before the plugin is
+    // opened: the request used to carry the size the tab before it had drawn.
+    let mut o = open_with("p2_tabsize", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst)
+    });
+    let (wide, wide_rows) = *o.sh.sizes().last().expect("asked");
+    assert!(wide > 80, "the first frame measured the real width: {wide}");
+    // A new tab opens its first file with the width the terminal really has, not the default 80.
+    o.s.app.tab_new().unwrap();
+    o.s.select("b.typ");
+    o.s.enter();
+    let (first_new, _) = *o.sh.sizes().last().unwrap();
+    assert_eq!(first_new, wide, "a new tab's first request: the real width");
+    // The terminal shrinks while the second tab is on screen: only that tab draws at the new size.
+    o.s.resize(60, 20);
+    let (narrow, narrow_rows) = *o.sh.sizes().last().unwrap();
+    assert!(narrow < wide, "the canvas was asked again at the new size");
+    // Back to the first tab: the Open it is read with carries the size that tab last drew.
+    let n = o.sh.sizes().len();
+    o.s.app.tab_goto(0);
+    let asked = o.sh.sizes()[n];
+    assert_eq!(
+        asked,
+        (wide, wide_rows),
+        "the request of the tab switched to carries its own size, not the other tab's {narrow}x{narrow_rows}"
+    );
+}
+
+#[test]
+fn e2e_canvas_the_users_own_refresh_reads_the_file_again_even_when_it_is_unchanged() {
+    // `r` is the user asking; an event of unknown cause is not.
+    let mut o = open_with("p2_r_key", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst)
+    });
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1);
+    o.s.app.refresh_fs_watched(false, &[]);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1, "an event does not");
+    o.s.key('r');
+    o.s.draw();
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 2, "`r` does");
+    o.s.see("sess=2");
+    // The force is over once `r` is: the next event is quiet again.
+    o.s.app.refresh_fs_watched(false, &[]);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 2);
 }

@@ -1828,7 +1828,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::OpenExternal => app.open_in_other_app(),
         Action::OpenGitView => app.open_git_view(),
         Action::Refresh => {
-            app.refresh()?;
+            app.refresh_explicit()?;
             // The log, the graph, the branch and worktree lists read again too.
             #[cfg(feature = "git")]
             app.reload_front_list();

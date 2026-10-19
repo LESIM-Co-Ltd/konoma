@@ -35,6 +35,21 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// The layout as the host keeps it: every label and page name cut to
+    /// [`crate::text::MAX_TEXT_CHARS`].
+    pub fn clipped(&self) -> Layout {
+        let mut out = self.clone();
+        for r in &mut out.reprs {
+            r.label = r.label.clipped();
+        }
+        if let Some(PageLayout::Separate { titles, .. }) = &mut out.pages {
+            for t in titles {
+                *t = crate::text::clip_text(t).into_owned();
+            }
+        }
+        out
+    }
+
     /// One representation, no pages.
     pub fn single() -> Layout {
         Layout::default()
@@ -430,6 +445,12 @@ impl ImageView {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ImageData {
+    /// A picture file the host reads. An absolute path is used as it is; **a relative path is
+    /// relative to the directory of the file being previewed** (not to the directory konoma runs
+    /// in). The host reads any regular file the user can read (it shows what the user could
+    /// `cat`), at most 64 MiB of it, and only a regular file: a FIFO, a device or a directory is
+    /// refused, decided on the handle it opened (without blocking), so a path swapped for a FIFO
+    /// meanwhile cannot hold the host. An SVG file is drawn from the directory it is in.
     File(PathBuf),
     /// An encoded image (PNG, JPEG...).
     Encoded(Arc<[u8]>),
