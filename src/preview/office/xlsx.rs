@@ -1138,6 +1138,12 @@ fn read_v<R: BufRead>(
         T::Str | T::Iso => {
             text.clear();
             read_text_into(rd, closing, ev, text, cap)?;
+            if t == T::Str && text.contains("_x") {
+                // A formula's text result is stored with Excel's `_xHHHH_` escapes (`CHAR(13)`
+                // is `_x000D_`), exactly like a shared string.
+                let raw = std::mem::take(text);
+                push_unescaped(&raw, text);
+            }
             Ok(if t == T::Iso { Pv::Iso } else { Pv::Str })
         }
         T::Number | T::Shared | T::Bool | T::Error => {

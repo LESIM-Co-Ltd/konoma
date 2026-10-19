@@ -1201,7 +1201,7 @@ fn parse_body(
                         nested -= 1;
                     } else if let Some(mut t) = cur.take() {
                         // Real files are in order already; a hostile one cannot break lookups.
-                        t.out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+                        t.out.cells.sort_by_key(|&(r, c, _)| (r, c));
                         t.out.errors.sort_unstable_by_key(|&(r, c, _)| (r, c));
                         totals.area = totals.area.saturating_add(t.out.bbox_area());
                         totals.text = totals.text.saturating_add(t.out.text_bytes);

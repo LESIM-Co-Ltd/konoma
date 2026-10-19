@@ -2058,14 +2058,46 @@ fn zip_stops_at_the_declared_size() {
     let mut out = Vec::new();
     let read = ar.by_index(0).unwrap().read_to_end(&mut out);
     assert!(read.is_err(), "zip reports the oversized stream");
+    // zip 9 stops at declared size + 1: the one byte that crosses the line is still delivered to
+    // the caller's buffer before the error, and nothing after it.
     assert!(
-        out.len() < 5 << 20,
-        "zip did not inflate past the declared size"
+        out.len() <= 101,
+        "zip did not inflate past the declared size: {}",
+        out.len()
     );
 }
 
 #[test]
-fn a_zip_bomb_with_a_forged_size_is_stopped_by_counting_real_bytes() {
+fn the_real_byte_count_backstop_stops_at_the_limit_and_does_not_read_past_it() {
+    // Unreachable from a zip file with zip 9 (its own declared-size stop comes first), so it is
+    // pinned directly on the counting function `scan_zip` uses.
+    struct Endless(u64);
+    impl std::io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            buf.fill(0);
+            Ok(buf.len())
+        }
+    }
+    assert_eq!(container::count_real_bytes(&[0u8; 10][..], 10), Ok(10));
+    assert_eq!(
+        container::count_real_bytes(&[0u8; 11][..], 10),
+        Err(OfficeError::TooLarge { what: "entry" })
+    );
+    let mut endless = Endless(0);
+    assert_eq!(
+        container::count_real_bytes(&mut endless, 1000),
+        Err(OfficeError::TooLarge { what: "entry" })
+    );
+    assert!(
+        endless.0 < 1000 + 64 * 1024,
+        "stopped promptly: {}",
+        endless.0
+    );
+}
+
+#[test]
+fn a_zip_bomb_with_a_forged_size_is_refused_as_corrupt_by_the_declared_size() {
     let dir = tmp("bomb");
     let bomb = vec![0u8; 8 << 20];
     let z = forge_declared_size(

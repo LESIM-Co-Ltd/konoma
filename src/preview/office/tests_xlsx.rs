@@ -659,6 +659,9 @@ fn gen_cell(rng: &mut Rng, r: &str, s: &str, n_strings: usize) -> String {
             "x&lt;y",
             "",
             "line&#10;two",
+            "a_x000D_b",
+            "_x005F_x000D_",
+            "_x000G_ _x00_",
         ])
         .to_string()
     };
@@ -1078,6 +1081,28 @@ fn text_escapes_beyond_the_ascii_range_are_decoded_here() {
     assert_eq!(ours.values[&(0, 0)], V::Text("a中bAc".into()));
     let theirs = read_oracle(&p).reads.remove(0).unwrap();
     assert_eq!(theirs.values[&(0, 0)], V::Text("a_x4E2D_bAc".into()));
+}
+
+#[test]
+fn a_formula_text_result_decodes_the_x_escapes_like_excel_and_calamine() {
+    // `=A1&CHAR(13)&B1` is saved as `<c t="str"><f>..</f><v>a_x000D_b</v></c>`.
+    let dir = tmp("xlsx_str_escape");
+    let p = Pkg::new()
+        .sheet(
+            "S",
+            "visible",
+            body(
+                r#"<row r="1"><c r="A1" t="str"><f>A2&amp;CHAR(13)</f><v>a_x000D_b</v></c><c r="B1" t="str"><v>_x005F_x000D_</v></c><c r="C1" t="str"><v>q_x000G_r_x00_</v></c></row>"#,
+            ),
+        )
+        .write(&dir, "x.xlsx");
+    let ours = read_ours(&p).reads.remove(0).unwrap();
+    let theirs = read_oracle(&p).reads.remove(0).unwrap();
+    assert_eq!(ours.values[&(0, 0)], V::Text("a\rb".into()));
+    assert_eq!(ours.values[&(0, 0)], theirs.values[&(0, 0)]);
+    assert_eq!(ours.values[&(0, 1)], theirs.values[&(0, 1)]);
+    assert_eq!(ours.values[&(0, 2)], V::Text("q_x000G_r_x00_".into()));
+    assert_eq!(ours.values[&(0, 2)], theirs.values[&(0, 2)]);
 }
 
 #[test]

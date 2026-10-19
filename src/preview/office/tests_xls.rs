@@ -1302,3 +1302,132 @@ fn the_loader_refuses_the_shared_sheet_file_before_calamine_sees_it() {
     );
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }
+
+// ---------------------------------------------------------------------------------------------
+// nested substreams (embedded charts): `calamine` 0.37 skips them and ends the sheet at its own EOF
+// ---------------------------------------------------------------------------------------------
+
+/// An embedded chart: a nested `BOF`..`EOF` substream holding `inside`.
+fn chart(inside: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    let mut v = vec![bof(0x0600, 0x0020)];
+    v.extend(inside);
+    v.push(eof());
+    v
+}
+
+fn book_of(records: Vec<Vec<u8>>) -> Book {
+    Book {
+        globals: globals(&[(164, "0.0%")], &[4, 164]),
+        sheets: vec![sheet("S", records)],
+    }
+}
+
+#[test]
+fn a_far_cell_after_an_embedded_chart_is_refused_before_calamine_runs() {
+    let mut recs = vec![dimensions(0, 1, 0, 1), number(0, 0, 3, 1.0)];
+    recs.extend(chart(vec![]));
+    recs.push(number(65535, 255, 0, 1.0));
+    let book = book_of(recs);
+    assert_eq!(
+        fmt_xls::parse_stream(&book.stream(), &Limits::default()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+    let dir = tmp("xls_chart_far");
+    let p = book.write(&dir, "c.xls");
+    assert_eq!(
+        load(&p).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn a_huge_dimensions_after_an_embedded_chart_is_refused() {
+    let mut recs = vec![dimensions(0, 1, 0, 1), number(0, 0, 3, 1.0)];
+    recs.extend(chart(vec![]));
+    recs.push(dimensions(0, u32::MAX, 0, 255));
+    assert_eq!(
+        fmt_xls::parse_stream(&book_of(recs).stream(), &Limits::default()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn records_inside_a_nested_substream_are_not_cells_and_nesting_is_tracked_by_depth() {
+    // A chart inside a chart: only the depth-0 EOF ends the sheet, so the far cell after the
+    // inner EOF but still inside the outer chart is skipped, and the one after both is seen.
+    let mut inner = vec![bof(0x0600, 0x0020), number(60000, 200, 3, 1.0), eof()];
+    inner.push(number(61000, 201, 3, 1.0));
+    let mut recs = vec![number(0, 0, 3, 1.0)];
+    recs.extend(chart(inner));
+    let sf_book = book_of(recs.clone());
+    let fm = fmt_xls::parse_stream(&sf_book.stream(), &Limits::default()).unwrap();
+    let sf = &fm.sheets["S"];
+    assert_eq!(sf.value_cells, 1, "nothing inside the chart is a cell");
+    assert_eq!(sf.bbox, Some((0, 0, 0, 0)));
+    recs.push(number(65535, 255, 0, 1.0));
+    assert_eq!(
+        fmt_xls::parse_stream(&book_of(recs).stream(), &Limits::default()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn a_chart_cache_does_not_override_the_format_of_a_real_cell() {
+    // Cell xf 3 is `0.00`-ish (ifmt 4), xf 4 is `0.0%`. The chart's cached value for (0,0) has
+    // xf 4; the real A1 has xf 3 and must keep its own format.
+    let mut recs = vec![number(0, 0, 3, 1.0)];
+    recs.extend(chart(vec![number(0, 0, 4, 9.0)]));
+    let book = book_of(recs);
+    let fm = fmt_xls::parse_stream(&book.stream(), &Limits::default()).unwrap();
+    let sf = &fm.sheets["S"];
+    assert_eq!(sf.cells.len(), 1);
+    assert_eq!(sf.value_cells, 1);
+    let own = sf.format_at(0, 0);
+    // Reversed order: the chart first, the cell after it.
+    let mut recs = chart(vec![number(0, 0, 4, 9.0)]);
+    recs.push(number(0, 0, 3, 1.0));
+    let fm = fmt_xls::parse_stream(&book_of(recs).stream(), &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].format_at(0, 0), own);
+    assert_ne!(own, 0);
+    // End to end: A1 shows the sheet's own format.
+    let dir = tmp("xls_chart_fmt");
+    let mut recs = vec![number(0, 0, 3, 1.0)];
+    recs.extend(chart(vec![number(0, 0, 4, 9.0)]));
+    let p = book_of(recs).write(&dir, "f.xls");
+    let wb = load(&p).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "1.00");
+}
+
+#[test]
+fn duplicate_records_for_one_cell_resolve_to_the_last_one() {
+    // Seven records for A1, each with its own format: a lookup that lands on any duplicate other
+    // than the last (a binary search may) gives a different format.
+    let book = Book {
+        globals: globals(&[], &[4, 5, 6, 7, 8, 9, 10]),
+        sheets: vec![sheet(
+            "S",
+            (3..10).map(|ixfe| number(0, 0, ixfe, 1.0)).collect(),
+        )],
+    };
+    let fm = fmt_xls::parse_stream(&book.stream(), &Limits::default()).unwrap();
+    let sf = &fm.sheets["S"];
+    assert_eq!(sf.cells.len(), 7);
+    let last = sf.cells[6].2;
+    assert!(sf.cells[..6].iter().all(|c| c.2 != last));
+    assert_eq!(sf.format_at(0, 0), last);
+}
+
+#[test]
+fn a_16_byte_dimensions_record_is_read_like_the_14_byte_one() {
+    let mut d = Vec::new();
+    d.extend(0u32.to_le_bytes());
+    d.extend(10u32.to_le_bytes());
+    d.extend(2u16.to_le_bytes());
+    d.extend(5u16.to_le_bytes());
+    d.extend([0u8; 4]);
+    assert_eq!(d.len(), 16);
+    let dim = rec(0x0200, &d);
+    let too_large = Err(OfficeError::TooLarge { what: "sheet area" });
+    assert_eq!(parse_with_dimensions(dim.clone(), 30), Ok(()));
+    assert_eq!(parse_with_dimensions(dim, 29), too_large);
+}

@@ -377,6 +377,6 @@ pub(crate) fn parse_sheet<R: Read>(
             _ => {}
         }
     }
-    out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+    out.cells.sort_by_key(|&(r, c, _)| (r, c));
     Ok(out)
 }

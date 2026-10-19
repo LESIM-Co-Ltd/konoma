@@ -7,7 +7,11 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Security
-- Updated `rustls` to 0.23.46 (the TLS library used to fetch remote Markdown images over HTTPS; RUSTSEC-2026-0346 to 0349) and `zip` to 9 (RUSTSEC-2026-0367 to 0369; `calamine` moved to 0.37 because it pulls `zip`). konoma only reads archives and never extracts them, so the zip extraction advisories did not affect it.
+- Updated `rustls` to 0.23.46 (the TLS library used to fetch remote Markdown images over HTTPS; RUSTSEC-2026-0346 to 0349) and `zip` to 9 (RUSTSEC-2026-0367 to 0369; `calamine` moved to 0.37 because it pulls `zip`). konoma only reads archives and never extracts them, so the zip extraction advisories did not affect it. `zip` 9 also enforces an entry's declared size while reading, so a crafted package whose entries inflate past what they declare is now shown as a damaged file (`zip entry: File is larger than its declared uncompressed size`) instead of "too large"; konoma's own byte count stays as a second line of defence.
+
+### Fixed
+- An `.xls` workbook with an embedded chart: the memory check before opening walked a sheet only up to the first end-of-stream record (the chart's), while `calamine` 0.37 skips the chart and reads on to the sheet's own end. A crafted file could hide a far-away cell or a huge declared size after the chart and get past the check; the check now walks the sheet exactly as `calamine` does. Cached values inside the chart no longer take part in the cell formats, and a 16-byte dimensions record (written by some producers) is accepted.
+- A formula's text result in an `.xlsx` (`t="str"`) is now decoded for Excel's `_xHHHH_` escapes (`CHAR(13)` is stored as `_x000D_`), as Excel and `calamine` do; it showed the escape as written.
 
 ## [0.31.1] - 2026-10-14
 

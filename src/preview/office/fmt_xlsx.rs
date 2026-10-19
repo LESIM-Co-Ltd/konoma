@@ -155,10 +155,15 @@ impl SheetFormats {
         let Ok(col) = u16::try_from(col) else {
             return 0;
         };
-        self.cells
-            .binary_search_by_key(&(row, col), |&(r, c, _)| (r, c))
-            .map(|i| self.cells[i].2)
-            .unwrap_or(0)
+        // `cells` is sorted by position with a *stable* sort, so duplicates of one position stay in
+        // record order; the last one wins, as it does in `calamine`'s matrix.
+        let end = self
+            .cells
+            .partition_point(|&(r, c, _)| (r, c) <= (row, col));
+        match end.checked_sub(1).map(|i| self.cells[i]) {
+            Some((r, c, f)) if (r, c) == (row, col) => f,
+            _ => 0,
+        }
     }
 }
 

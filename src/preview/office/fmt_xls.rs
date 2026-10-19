@@ -17,7 +17,8 @@
 //! - `BOUNDSHEET8` (0x0085): `lbPlyPos: u32` (where the sheet's substream starts in the stream)
 //!   and the name (`ShortXLUnicodeString`).
 //!
-//! Each sheet substream, up to its first `EOF` (as `calamine` reads it): `NUMBER` 0x0203,
+//! Each sheet substream, up to its own `EOF` (nested `BOF`..`EOF` substreams such as embedded
+//! charts are skipped, as `calamine` 0.37 does): `NUMBER` 0x0203,
 //! `LABEL` 0x0204, `RSTRING` 0x00D6, `BOOLERR` 0x0205, `LABELSST` 0x00FD, `RK` 0x027E and
 //! `FORMULA` 0x0006 all start `row: u16, col: u16, ixfe: u16`; `STRING` 0x0207 (the text result of
 //! the formula just before it) has no position of its own and `calamine` puts it at the last
@@ -378,7 +379,7 @@ pub(crate) fn parse_stream_cancellable(
         sheets: HashMap::new(),
     };
     let mut area_total = 0u64;
-    // Each sheet is read from its position to its first EOF, and `calamine` does the same for
+    // Each sheet is read from its position to its own EOF, and `calamine` does the same for
     // every sheet. Substreams that overlap (BOUNDSHEETs pointing at one body, or into the middle
     // of another sheet) would make the work the number of sheets times the length of the body,
     // so the sheets are taken in stream order and each must start where the previous one ended:
@@ -422,7 +423,7 @@ fn declared_area(data: &[u8]) -> Result<u64, OfficeError> {
             u32::from(u16_at(data, 4).ok_or_else(bad)?),
             u32::from(u16_at(data, 6).ok_or_else(bad)?),
         ),
-        14 => (
+        14 | 16 => (
             u32_at(data, 0).ok_or_else(bad)?,
             u32_at(data, 4).ok_or_else(bad)?,
             u32::from(u16_at(data, 8).ok_or_else(bad)?),
@@ -452,7 +453,7 @@ fn string_cost(data: &[u8], cch_at: usize, flags_at: usize, biff8: bool) -> u64 
 }
 
 /// The format information of one sheet substream, and how many bytes of `stream` its records
-/// took (up to and including its first `EOF`).
+/// took (up to and including its own depth-0 `EOF`; nested substreams are skipped).
 fn parse_sheet_span(
     stream: &[u8],
     xf_to_format: &[u16],
@@ -469,14 +470,31 @@ fn parse_sheet_span(
     let mut records = Records { stream };
     let mut seen = 0u32;
     let mut ended = false;
+    // Walk the sheet exactly as `calamine` 0.37 does: the first BOF is the sheet's own, every
+    // later BOF opens a nested substream (an embedded chart, a macro sheet) whose records are
+    // skipped up to its matching EOF, and the sheet ends at its own depth-0 EOF.
+    let mut seen_sheet_bof = false;
+    let mut depth = 0usize;
     for rec in records.by_ref() {
         let r = rec?;
         seen += 1;
         if seen.is_multiple_of(CANCEL_EVERY) && cancel.is_some_and(Cancel::is_cancelled) {
             return Err(OfficeError::Corrupt("cancelled".into()));
         }
+        if depth > 0 {
+            match r.typ {
+                BOF => depth += 1,
+                EOF => depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
         match r.typ {
-            BOF => biff8 = u16_at(r.data, 0) == Some(0x0600),
+            BOF if seen_sheet_bof => depth += 1,
+            BOF => {
+                seen_sheet_bof = true;
+                biff8 = u16_at(r.data, 0) == Some(0x0600);
+            }
             EOF => {
                 ended = true;
                 break;
@@ -536,7 +554,7 @@ fn parse_sheet_span(
             _ => {}
         }
     }
-    out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+    out.cells.sort_by_key(|&(r, c, _)| (r, c));
     let used = if ended {
         stream.len() - records.stream.len()
     } else {

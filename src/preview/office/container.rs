@@ -6,15 +6,18 @@
 //! reader and the format passes, `fmt_*.rs`) read them only through [`part_reader`], so one place
 //! decides what is "too large".
 //!
-//! **Why declared zip sizes are not trusted.** `zip` 8.6 does *not* stop a deflate stream at the
-//! `uncompressed_size` written in the central directory: `Decompressor::Deflated` is a bare
-//! `flate2::bufread::DeflateDecoder` and the `Crc32Reader` around it only compares a checksum at
-//! EOF. A forged zip that declares 100 bytes and inflates to gigabytes therefore decompresses in
-//! full (the test `zip_does_not_stop_at_declared_size` below pins this against the real crate).
-//! So [`scan_zip`] decompresses every entry once through `Read::take(limit + 1)` and counts the
-//! bytes that actually come out. The cost is one extra inflate pass over the package (a worker
-//! thread, ~1 s per GiB); in exchange the readers only ever see packages whose real expanded size
-//! is bounded.
+//! **Declared zip sizes.** `zip` 9 enforces the `uncompressed_size` written in the central
+//! directory while reading an entry: the `Crc32Reader` around the decompressor fails with "File is
+//! larger than its declared uncompressed size" as soon as more bytes come out (the test
+//! `zip_stops_at_the_declared_size` pins this against the real crate; zip 8.6 inflated such a
+//! stream in full). A forged size therefore cannot hide a bomb: an entry that *declares* more than
+//! the part limit is refused up front, and one that declares less but inflates past it is
+//! `Corrupt`. [`scan_zip`] still inflates every entry once through [`count_real_bytes`] and counts
+//! the bytes that actually come out, as a backstop that does not depend on the zip crate keeping
+//! that behaviour (with zip 9 the count can only equal the declared size, so it is unreachable
+//! from a file and is covered by a unit test on the counting function). The cost is one extra
+//! inflate pass over the package (a worker thread, ~1 s per GiB); in exchange the readers only
+//! ever see packages whose real expanded size is bounded.
 
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -303,24 +306,32 @@ fn scan_zip(path: &Path, limits: &Limits) -> Result<Vec<String>, OfficeError> {
             if raw.encrypted() {
                 return Err(OfficeError::Encrypted);
             }
-            // The declared size is only an early exit; the real count below is what is enforced.
+            // The declared size is an early exit (and what zip 9 itself enforces while reading);
+            // the real count below is a backstop that does not rely on that.
             if raw.size() > limits.max_part_bytes {
                 return Err(OfficeError::TooLarge { what: "entry" });
             }
         }
         let entry = zip.by_index(i).map_err(zip_err)?;
-        let mut limited = entry.take(limits.max_part_bytes + 1);
-        let n = io::copy(&mut limited, &mut io::sink())
-            .map_err(|e| OfficeError::Corrupt(format!("zip entry: {e}")))?;
-        if n > limits.max_part_bytes {
-            return Err(OfficeError::TooLarge { what: "entry" });
-        }
+        let n = count_real_bytes(entry, limits.max_part_bytes)?;
         total = total.saturating_add(n);
         if total > limits.max_total_bytes {
             return Err(OfficeError::TooLarge { what: "package" });
         }
     }
     Ok(names)
+}
+
+/// Inflates `entry` into a sink and returns how many bytes it really holds, refusing more than
+/// `max` (it never reads past `max + 1`). Errors from the decompressor are `Corrupt`.
+pub(crate) fn count_real_bytes(entry: impl Read, max: u64) -> Result<u64, OfficeError> {
+    let mut limited = entry.take(max.saturating_add(1));
+    let n = io::copy(&mut limited, &mut io::sink())
+        .map_err(|e| OfficeError::Corrupt(format!("zip entry: {e}")))?;
+    if n > max {
+        return Err(OfficeError::TooLarge { what: "entry" });
+    }
+    Ok(n)
 }
 
 pub(crate) fn zip_err(e: ZipError) -> OfficeError {
