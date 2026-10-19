@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use super::container::Limits;
+use super::fmt_xls_formula::{self as formula, Env};
 use super::fmt_xlsx::{
     keep_format_code, styles_from, SheetFormats, XlsxFormats, MAX_SHEETS, STRING_OVERHEAD,
 };
@@ -58,12 +59,37 @@ const FORMULA_STRING: u16 = 0x0207;
 const LABEL: u16 = 0x0204;
 const RSTRING: u16 = 0x00D6;
 const LABELSST: u16 = 0x00FD;
+const NAME: u16 = 0x0018;
+const EXTERNSHEET: u16 = 0x0017;
+/// One formula whose text would get longer than this while it is built (it is nearly always under
+/// a few KB: a record holds at most 8 KB of tokens) is not given to `calamine`.
+const MAX_FORMULA_PEAK: u64 = 4 << 20;
+/// One formula that would need more byte moves than this (a few tens of milliseconds) likewise.
+const MAX_FORMULA_WORK: u64 = 1 << 27;
 /// NUMBER, LABEL, RSTRING, BOOLERR, LABELSST, RK, FORMULA: `row, col, ixfe` first.
 const SIMPLE_CELLS: [u16; 7] = [0x0203, 0x0204, 0x00D6, 0x0205, 0x00FD, 0x027E, 0x0006];
 /// A cancel flag is looked at every this many records of a sheet.
 const CANCEL_EVERY: u32 = 8_192;
 /// Most XF records kept (Excel allows 64,000 cell XFs plus the style XFs).
 const MAX_XFS: usize = 200_000;
+
+/// Whether a `BOF` body makes `calamine` read the stream as BIFF8: it maps the version word like
+/// this (`0x0200`, `0x0002`, `0x0007`, `0x0300`, `0x0400` and `0x0500` are older; version `0` is BIFF5 for a
+/// BIFF5 for the document type `0x1000`, else BIFF8; anything unknown is BIFF8).
+fn bof_is_biff8(data: &[u8]) -> bool {
+    let version = u16_at(data, 0).unwrap_or(0x0600);
+    let dt = u16_at(data, 2).unwrap_or(0);
+    match version {
+        0x0200 | 0x0002 | 0x0007 | 0x0300 | 0x0400 | 0x0500 => false,
+        0 => dt != 0x1000,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn bof_is_biff8_for_test(data: &[u8]) -> bool {
+    bof_is_biff8(data)
+}
 
 /// Reads the workbook-level and per-cell format information of an xls file.
 #[cfg(test)]
@@ -85,13 +111,23 @@ pub fn read_scanned(
     limits: &Limits,
     cancel: Option<&Cancel>,
 ) -> Result<(XlsxFormats, std::io::Cursor<Vec<u8>>), OfficeError> {
-    let stream = read_workbook_stream(path, limits)?;
-    let fm = parse_stream_cancellable(&stream, limits, cancel)?;
-    // Peak memory while scanning: the stream plus the container built from it, each about N bytes
-    // (N <= `max_xls_stream_bytes`; the container is shrunk to fit, the stream may hold up to 2N of
-    // capacity from growing). The stream is dropped as soon as the container exists. Afterwards
-    // `calamine` holds 3 N: the container (the reader), its own copy of the sectors, and the
-    // stream it extracts (see `Limits::max_xls_stream_bytes`).
+    let mut stream = read_workbook_stream(path, limits)?;
+    let (fm, blank) = scan_stream(&stream, limits, cancel)?;
+    // Formulas `calamine` would spend too much on (see `fmt_xls_formula`) get no tokens: it prints
+    // nothing for them, and the cells keep their cached values (other records).
+    for at in blank {
+        stream[at] = 0;
+        stream[at + 1] = 0;
+    }
+    // Memory, for a stream of N bytes (N <= `max_part_bytes`, 256 MiB, as before this check
+    // existed). While scanning: the stream (N, allocated at its real size) plus the container
+    // built from it (about 1.01 N, pre-sized so the writer never doubles it). The stream is
+    // dropped when this function returns, so `calamine` starts with only the container alive and
+    // then holds about 3 N at its peak: the container (its reader), its own copy of the sectors it
+    // touches (N, up to 2 N of capacity while that vector grows) and the stream it extracts (N, up
+    // to 2 N likewise). That is the same order as before this pass handed `calamine` a rebuilt
+    // container (it copied the file's sectors and extracted the stream the same way), plus the
+    // container itself; the dense cells (`max_dense_cells`, ~800 MB) come on top of both.
     let container = clean_container(&stream)?;
     Ok((fm, container))
 }
@@ -99,9 +135,14 @@ pub fn read_scanned(
 /// A new compound file (version 3: 512-byte sectors, what Excel writes) with a single root-level `Workbook` stream holding `stream`.
 pub fn clean_container(stream: &[u8]) -> Result<std::io::Cursor<Vec<u8>>, OfficeError> {
     let err = |e: std::io::Error| OfficeError::Corrupt(format!("compound file: {e}"));
-    let mut cf =
-        cfb::CompoundFile::create_with_version(cfb::Version::V3, std::io::Cursor::new(Vec::new()))
-            .map_err(err)?;
+    // The container is the stream plus its FAT (1/128), the directory and the header: reserve
+    // that up front so the writer never has to double (and briefly hold 2x) the buffer.
+    let reserve = stream.len() + stream.len() / 64 + 64 * 1024;
+    let mut cf = cfb::CompoundFile::create_with_version(
+        cfb::Version::V3,
+        std::io::Cursor::new(Vec::with_capacity(reserve)),
+    )
+    .map_err(err)?;
     cf.create_stream("/Workbook")
         .map_err(err)?
         .write_all(stream)
@@ -109,8 +150,8 @@ pub fn clean_container(stream: &[u8]) -> Result<std::io::Cursor<Vec<u8>>, Office
     cf.flush().map_err(err)?;
     // `calamine` reads from the current position, not from the start.
     let mut c = cf.into_inner();
-    // The writer grew the buffer by doubling: give back the slack, the container lives for as long
-    // as `calamine` reads from it.
+    // Give back any slack (the reserve above is an estimate): the container lives for as long as
+    // `calamine` reads from it.
     c.get_mut().shrink_to_fit();
     c.set_position(0);
     Ok(c)
@@ -131,8 +172,11 @@ pub fn read_workbook_stream(
     let stream = cf
         .open_stream(name)
         .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
-    let cap = limits.max_part_bytes.min(limits.max_xls_stream_bytes);
-    let mut out = Vec::new();
+    let cap = limits.max_part_bytes;
+    // Sized by the directory's length, but never beyond the file itself (a forged length cannot
+    // make a small file reserve a large buffer): the buffer is then exact and never doubles.
+    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let mut out = Vec::with_capacity(stream.len().min(file_len).min(cap) as usize + 1);
     stream
         .take(cap + 1)
         .read_to_end(&mut out)
@@ -177,11 +221,11 @@ impl<'a> Iterator for Records<'a> {
     }
 }
 
-fn u16_at(b: &[u8], at: usize) -> Option<u16> {
+pub(super) fn u16_at(b: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+pub(super) fn u32_at(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
@@ -354,13 +398,61 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
     parse_stream_cancellable(stream, limits, None)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_stream_cancellable(
     stream: &[u8],
     limits: &Limits,
     cancel: Option<&Cancel>,
 ) -> Result<XlsxFormats, OfficeError> {
+    scan_stream(stream, limits, cancel).map(|(fm, _)| fm)
+}
+
+/// The formulas `calamine` is not to print (see `fmt_xls_formula`): the offsets, in the stream, of
+/// their `cce` field (zeroed, a formula or defined name has no tokens and `calamine` prints
+/// nothing for it; the cached value of the cell is a different record and stays).
+pub(crate) struct FormulaGuard {
+    /// Whether the workbook globals' last `BOF` made `calamine` read BIFF8; it uses that one
+    /// for every sheet too.
+    biff8: bool,
+    env: Env,
+    text_left: u64,
+    work_left: u64,
+    /// Where the sheet being scanned starts in the stream.
+    base: usize,
+    pub(crate) blank: Vec<usize>,
+}
+
+impl FormulaGuard {
+    /// Charges a `FORMULA` record's tokens (`body` = the record from byte 20, at `cce_at` in the
+    /// current sheet) to the budgets, or marks the formula for removal.
+    fn admit(&mut self, cce_at: usize, body: &[u8]) {
+        let c = formula::formula_cost(body, &self.env);
+        if c.peak > MAX_FORMULA_PEAK
+            || c.work > MAX_FORMULA_WORK
+            || c.text > self.text_left
+            || c.work > self.work_left
+        {
+            self.blank.push(self.base + cce_at);
+        } else {
+            self.text_left -= c.text;
+            self.work_left -= c.work;
+        }
+    }
+}
+
+/// Scans the stream like [`parse_stream_cancellable`] and also says which formulas to drop.
+pub(crate) fn scan_stream(
+    stream: &[u8],
+    limits: &Limits,
+    cancel: Option<&Cancel>,
+) -> Result<(XlsxFormats, Vec<usize>), OfficeError> {
     let mut date1904 = false;
     let mut biff8 = true;
+    let mut env = Env::default();
+    // Defined names whose formula starts with a sheet reference: where their `cce` is, and the
+    // XTI index (`calamine` prints the sheet's name in front of the name's formula).
+    let mut name_prefix: Vec<(usize, usize)> = Vec::new();
+    let offset_of = |data: &[u8]| data.as_ptr() as usize - stream.as_ptr() as usize;
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut xf_ids: Vec<u32> = Vec::new();
     let mut sheets: Vec<(usize, String)> = Vec::new();
@@ -383,7 +475,7 @@ pub(crate) fn parse_stream_cancellable(
                 sst_parts.push(r.data);
                 in_sst = true;
             }
-            BOF => biff8 = u16_at(r.data, 0) == Some(0x0600),
+            BOF => biff8 = bof_is_biff8(r.data),
             FILEPASS if u16_at(r.data, 0).is_some_and(|t| t != 0) => {
                 return Err(OfficeError::Encrypted)
             }
@@ -406,11 +498,79 @@ pub(crate) fn parse_stream_cancellable(
                     if sheets.len() >= MAX_SHEETS {
                         return Err(OfficeError::TooLarge { what: "sheets" });
                     }
+                    env.sheets.push(if s.1.is_ascii() {
+                        s.1.len() as u64
+                    } else {
+                        s.1.chars().count() as u64 * 6
+                    });
                     sheets.push(s);
+                }
+            }
+            NAME => {
+                let cch = usize::from(r.data.get(3).copied().unwrap_or(0));
+                env.names.push(if biff8 {
+                    r.data.get(14).map_or(0, |&fl| {
+                        formula::text_size(r.data.get(15..).unwrap_or(&[]), cch, fl & 1 != 0)
+                    })
+                } else {
+                    formula::text_size(r.data.get(14..).unwrap_or(&[]), cch, false)
+                });
+                if let Some(cce) = u16_at(r.data, 4).map(usize::from) {
+                    if cce > 0 && cce <= r.data.len() {
+                        let at = r.data.len() - cce;
+                        let ixti = match r.data[at] {
+                            0x3a | 0x5a | 0x7a | 0x3b | 0x5b | 0x7b if biff8 => {
+                                u16_at(r.data, at + 1)
+                            }
+                            0x3a | 0x5a | 0x7a | 0x3b | 0x5b | 0x7b => u16_at(r.data, at + 11),
+                            _ => None,
+                        };
+                        if let Some(i) = ixti {
+                            name_prefix.push((offset_of(r.data) + 4, usize::from(i)));
+                        }
+                    }
+                }
+            }
+            EXTERNSHEET if biff8 => {
+                let n = usize::from(u16_at(r.data, 0).unwrap_or(0));
+                if let Some(rest) = r.data.get(2..) {
+                    env.xti_first.extend(
+                        rest.as_chunks::<6>()
+                            .0
+                            .iter()
+                            .take(n)
+                            .map(|x| i16::from_le_bytes([x[2], x[3]])),
+                    );
                 }
             }
             EOF => break,
             _ => {}
+        }
+    }
+
+    // Before BIFF8 a formula names its sheets by index: `calamine` makes the XTI table the identity.
+    env.pre_biff8 = !biff8;
+    if !biff8 && env.xti_first.is_empty() {
+        env.xti_first = (0..env.sheets.len())
+            .map_while(|i| i16::try_from(i).ok())
+            .collect();
+    }
+    let mut guard = FormulaGuard {
+        biff8,
+        text_left: limits.max_formula_text_bytes,
+        work_left: limits.max_formula_work,
+        base: 0,
+        blank: Vec::new(),
+        env,
+    };
+    // The prefixes of defined names share a quarter of the formula text budget.
+    let mut name_budget = limits.max_formula_text_bytes / 4;
+    for (cce_at, ixti) in name_prefix {
+        let cost = guard.env.via_xti(ixti) + 40;
+        if cost > name_budget {
+            guard.blank.push(cce_at);
+        } else {
+            name_budget -= cost;
         }
     }
 
@@ -449,8 +609,15 @@ pub(crate) fn parse_stream_cancellable(
         let sub = stream
             .get(pos..)
             .ok_or_else(|| OfficeError::Corrupt("sheet position past the stream".into()))?;
-        let (sf, used, ended, seen) =
-            parse_sheet_span(sub, &styles.xf_to_format, &sst_lens, limits, cancel)?;
+        guard.base = pos;
+        let (sf, used, ended, seen) = parse_sheet_span(
+            sub,
+            &styles.xf_to_format,
+            &sst_lens,
+            limits,
+            cancel,
+            &mut guard,
+        )?;
         if ended {
             prev_end = pos + used;
         }
@@ -473,7 +640,7 @@ pub(crate) fn parse_stream_cancellable(
         SheetFormats::check_total_area(area_total, limits)?;
         out.sheets.insert(name, sf);
     }
-    Ok(out)
+    Ok((out, guard.blank))
 }
 
 /// The area a DIMENSIONS record declares (what `calamine` `reserve`s).
@@ -524,11 +691,13 @@ fn parse_sheet_span(
     sst_lens: &[u32],
     limits: &Limits,
     cancel: Option<&Cancel>,
+    guard: &mut FormulaGuard,
 ) -> Result<(SheetFormats, usize, bool, u32), OfficeError> {
     let mut out = SheetFormats::default();
     // Where `calamine` puts a formula's `STRING` result: the last FORMULA's cell, A1 before any.
     let mut formula_pos = (0u32, 0u32);
-    let mut biff8 = true;
+    // `calamine` reads every sheet with the version of the workbook globals' `BOF`, not its own.
+    let biff8 = guard.biff8;
     let fmt_of = |ixfe: u16| xf_to_format.get(usize::from(ixfe)).copied().unwrap_or(0);
     let short = || OfficeError::Corrupt("xls cell record too short".into());
     let mut records = Records { stream };
@@ -539,9 +708,9 @@ fn parse_sheet_span(
     // skipped up to its matching EOF, and the sheet ends at its own depth-0 EOF.
     let mut seen_sheet_bof = false;
     let mut depth = 0usize;
-    // Positions that got a non-General format, so that a later record for the same cell with
-    // General can replace it (the last record wins, as in `calamine`'s matrix).
-    let mut non_general: std::collections::HashSet<(u32, u16)> = std::collections::HashSet::new();
+    // The greatest cell position seen: a General record at or before it may replace an earlier
+    // record's format (the last record wins, as in `calamine`'s matrix).
+    let mut last_pos: Option<(u32, u16)> = None;
     for rec in records.by_ref() {
         let r = rec?;
         seen += 1;
@@ -558,10 +727,7 @@ fn parse_sheet_span(
         }
         match r.typ {
             BOF if seen_sheet_bof => depth += 1,
-            BOF => {
-                seen_sheet_bof = true;
-                biff8 = u16_at(r.data, 0) == Some(0x0600);
-            }
+            BOF => seen_sheet_bof = true,
             EOF => {
                 ended = true;
                 break;
@@ -579,6 +745,10 @@ fn parse_sheet_span(
                 };
                 if r.typ == FORMULA {
                     formula_pos = (u32::from(row), u32::from(col));
+                    if r.data.len() >= 20 {
+                        let cce_at = r.data.as_ptr() as usize - stream.as_ptr() as usize + 20;
+                        guard.admit(cce_at, &r.data[20..]);
+                    }
                 }
                 let cost = match r.typ {
                     LABELSST => {
@@ -591,7 +761,7 @@ fn parse_sheet_span(
                 out.add_text(cost, limits)?;
                 out.note_value(u32::from(row), u32::from(col), fmt_of(ixfe), limits)?;
                 out.keep_last_format(
-                    &mut non_general,
+                    &mut last_pos,
                     u32::from(row),
                     u32::from(col),
                     fmt_of(ixfe),
@@ -620,13 +790,7 @@ fn parse_sheet_span(
                     let ixfe = u16_at(r.data, 4 + 6 * i).ok_or_else(short)?;
                     let col = u32::from(first) + i as u32;
                     out.note_value(u32::from(row), col, fmt_of(ixfe), limits)?;
-                    out.keep_last_format(
-                        &mut non_general,
-                        u32::from(row),
-                        col,
-                        fmt_of(ixfe),
-                        limits,
-                    );
+                    out.keep_last_format(&mut last_pos, u32::from(row), col, fmt_of(ixfe), limits);
                 }
             }
             _ => {}

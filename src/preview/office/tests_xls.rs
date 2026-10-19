@@ -1679,17 +1679,13 @@ fn small_and_large_streams_in_both_sector_sizes_are_read_byte_for_byte() {
 fn a_looping_root_chain_with_huge_lengths_is_harmless() {
     // The root entry's (mini stream) chain loops on itself with a 4 GiB length and the header
     // claims a mini FAT: `calamine`'s own reader would append sectors until it ran out of memory.
-    // Whatever the container reader here makes of it, `calamine` never sees the file.
+    // The stream is under 4096 bytes so that a mini stream exists and the root really has a chain
+    // to loop. Whatever the container reader here makes of it, `calamine` never sees the file.
     let dir = tmp("xls_cfb_loop");
     let p = dir.join("l.xls");
-    let big = Book {
-        globals: globals(&[], &[4]),
-        sheets: vec![sheet(
-            "S",
-            (0..2000u16).map(|i| number(i, 0, 3, 1.0)).collect(),
-        )],
-    };
-    write_cfb(&p, &[("/Workbook", &big.stream())]);
+    let small = harmless_book().stream();
+    assert!(small.len() < 4096, "{}", small.len());
+    write_cfb(&p, &[("/Workbook", &small)]);
     let mut bytes = std::fs::read(&p).unwrap();
     let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     let ss = if u16::from_le_bytes([bytes[30], bytes[31]]) == 9 {
@@ -1701,18 +1697,28 @@ fn a_looping_root_chain_with_huge_lengths_is_harmless() {
     let root = ss + dir_start * ss;
     // Root entry: start sector at 116, size at 120.
     let root_start = u32_at(&bytes, root + 116) as usize;
+    assert!(
+        root_start < 0xFFFF_FFF0,
+        "the root must own a mini stream: {root_start:#x}"
+    );
     let fat_sector = u32_at(&bytes, 76) as usize;
-    if root_start < 0xFFFF_FFF0 {
-        let at = ss + fat_sector * ss + root_start * 4;
-        bytes[at..at + 4].copy_from_slice(&(root_start as u32).to_le_bytes());
-    }
-    bytes[root + 120..root + 124].copy_from_slice(&u32::MAX.to_le_bytes());
+    let at = ss + fat_sector * ss + root_start * 4;
+    bytes[at..at + 4].copy_from_slice(&(root_start as u32).to_le_bytes());
+    // A multiple of 64, which `cfb` insists on for the root.
+    bytes[root + 120..root + 124].copy_from_slice(&0xFFFF_FFC0u32.to_le_bytes());
     bytes[64..68].copy_from_slice(&1u32.to_le_bytes()); // mini FAT sector count
     std::fs::write(&p, &bytes).unwrap();
+    assert_eq!(u32_at(&std::fs::read(&p).unwrap(), at), root_start as u32);
     let t = std::time::Instant::now();
     let r = std::panic::catch_unwind(|| load_with(&p, small_limits()));
-    assert!(r.is_ok(), "panicked");
+    let r = r.expect("panicked");
     assert!(t.elapsed().as_secs() < 5);
+    // `cfb` follows the root chain when it reads the stream out of the mini stream and finds the
+    // loop: refused as a damaged file, quickly, and never handed to `calamine`.
+    assert!(
+        matches!(r, Err(OfficeError::Corrupt(ref m)) if m.contains("duplicate sector")),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -1721,48 +1727,59 @@ fn a_short_last_sector_cannot_make_calamine_read_other_bytes() {
     // never reads the file; the scanned stream is either complete or the load is refused.
     let dir = tmp("xls_cfb_short");
     let p = dir.join("t.xls");
-    write_cfb(&p, &[("/Workbook", &book_with_far_cell(3000, 20).stream())]);
+    let big = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            (0..2000u16).map(|i| number(i, 0, 3, 1.0)).collect(),
+        )],
+    };
+    write_cfb(&p, &[("/Workbook", &big.stream())]);
     let bytes = std::fs::read(&p).unwrap();
     for cut in [1usize, 7, 100, 300] {
         std::fs::write(&p, &bytes[..bytes.len() - cut]).unwrap();
-        // Either refused, or loaded with exactly the scanned content (far cell => too large).
-        assert!(load_with(&p, small_limits()).is_err(), "cut {cut}");
+        // A guard rather than a discriminating test: the cut lands in the padding after the
+        // stream (the sectors that matter are earlier), and `cfb` gives the same bytes as before.
+        // What it pins is that the load ends in the one expected outcome, never a panic or a
+        // different workbook.
+        let wb = load_with(&p, small_limits()).unwrap_or_else(|e| panic!("cut {cut}: {e:?}"));
+        assert_eq!(cell_text(&wb, 0, 0), "1.00", "cut {cut}");
     }
 }
 
 #[test]
 fn a_bom_prefixed_workbook_entry_never_reaches_calamine() {
     // `calamine` decodes entry names with a BOM-sniffing decoder, so `FF FE "Workbook"` is
-    // `Workbook` to it. Only the scanned stream is handed over, whatever the names decode to.
+    // `Workbook` to it. The names are ordered so that `cfb` accepts the file (the shorter
+    // `Workbook` first); only the scanned stream is handed over, whatever the names decode to.
     let dir = tmp("xls_cfb_bom");
     let p = dir.join("b.xls");
     write_cfb(
         &p,
         &[
-            ("/A", &book_with_far_cell(3000, 20).stream()),
             ("/Workbook", &harmless_book().stream()),
+            ("/ZZZZZZZZZ", &book_with_far_cell(3000, 20).stream()),
         ],
     );
     let mut bytes = std::fs::read(&p).unwrap();
-    let name: Vec<u8> = "A".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let at = (0..bytes.len() - 128)
+    let name: Vec<u8> = "ZZZZZZZZZ"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let at = (512..bytes.len() - 128)
         .step_by(128)
-        .find(|&o| bytes[o..o + 2] == name[..] && bytes[o + 2..o + 4] == [0, 0] && o > 512)
-        .expect("entry A");
-    let mut n = vec![0xFF, 0xFE];
+        .find(|&o| bytes[o..o + 18] == name[..] && bytes[o + 18..o + 20] == [0, 0])
+        .expect("the ZZZZZZZZZ entry");
+    let mut n: Vec<u8> = vec![0xFF, 0xFE]; // U+FEFF
     n.extend("Workbook".encode_utf16().flat_map(u16::to_le_bytes));
     n.extend([0, 0]);
-    let len = n.len() as u16;
-    n.resize(64, 0);
-    bytes[at..at + 64].copy_from_slice(&n);
-    bytes[at + 64..at + 66].copy_from_slice(&len.to_le_bytes());
+    assert_eq!(n.len(), 20);
+    bytes[at..at + 20].copy_from_slice(&n);
     std::fs::write(&p, &bytes).unwrap();
-    // The container reader refuses the out-of-order names, or the real `Workbook` is the one
-    // loaded; never the entry with the far cell.
-    match load_with(&p, small_limits()) {
-        Ok(wb) => assert_eq!(cell_text(&wb, 0, 0), "7.00"),
-        Err(e) => assert!(matches!(e, OfficeError::Corrupt(_)), "{e:?}"),
-    }
+    // The container reader accepts the names (so this exercises the clean-container path, not a
+    // refusal) and the real `Workbook` is the one loaded: the far cell is not there.
+    let wb = load_with(&p, small_limits()).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "7.00");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1795,6 +1812,41 @@ fn a_later_general_record_replaces_an_earlier_format_at_the_same_cell() {
     };
     let fm = fmt_xls::parse_stream(&mulrk_over.stream(), &Limits::default()).unwrap();
     assert_eq!(fm.sheets["S"].format_at(0, 1), 0);
+}
+
+#[test]
+fn an_in_order_sheet_writes_no_explicit_general_entries_and_a_return_to_a_cell_does() {
+    // Row-major records, some General: no earlier record can exist, so nothing extra is stored.
+    let in_order = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![
+                number(0, 0, 0, 1.0),
+                number(0, 1, 3, 1.0),
+                number(0, 2, 0, 1.0),
+                number(1, 0, 0, 1.0),
+                number(1, 1, 3, 1.0),
+            ],
+        )],
+    };
+    let fm = fmt_xls::parse_stream(&in_order.stream(), &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].cells.len(), 2, "{:?}", fm.sheets["S"].cells);
+    // A (formatted), then an earlier cell B, then a General record back at A: A must be General.
+    let back = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![
+                number(0, 5, 3, 1.0),
+                number(0, 1, 3, 1.0),
+                number(0, 5, 0, 2.0),
+            ],
+        )],
+    };
+    let fm = fmt_xls::parse_stream(&back.stream(), &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].format_at(0, 5), 0);
+    assert_ne!(fm.sheets["S"].format_at(0, 1), 0);
 }
 
 #[test]
@@ -2013,15 +2065,144 @@ fn a_difat_that_lists_one_fat_sector_over_and_over_is_refused_without_the_blowup
 }
 
 #[test]
-fn more_distinct_fat_ids_than_the_file_can_hold_are_refused() {
-    // 300 sectors need at most ceil(300 / 128) = 3 FAT sectors; this lists 299 different ones.
-    let bytes = difat_only_file(&[], 300, |n| 1 + (n % 299) as u32);
+fn a_difat_naming_every_sector_once_is_bounded_by_the_file_and_not_refused() {
+    // 300 sectors, 299 different FAT ids: `cfb`'s FAT would be 299 x 512 bytes, i.e. the size of
+    // the file, so this is not a blow-up and the check lets it through (whether `cfb` likes the
+    // rest is its business). The repeats that make the blow-up are refused ("twice"), see above.
+    let bytes = difat_only_file(&[], 300, |n| if n < 299 { 1 + n as u32 } else { FREE });
     let (res, read, len) = check_bytes(bytes);
+    assert!(res.is_ok(), "{res:?}");
+    assert!(read <= 2 * len);
+}
+
+#[test]
+fn an_over_allocated_fat_still_passes_the_check() {
+    // 10 sectors listing 5 FAT sectors (a writer that reserved FAT sectors it did not fill): the
+    // number of ids is under the number of sectors, which is all that bounds `cfb`'s FAT.
+    let (res, _, _) = check_bytes(difat_only_file(&[1, 2, 3, 4, 5], 10, |_| FREE));
+    assert!(res.is_ok(), "{res:?}");
+}
+
+#[test]
+fn stale_ids_after_the_first_free_header_slot_are_ignored_like_cfb_does() {
+    let (res, _, _) = check_bytes(difat_only_file(&[1, FREE, 1, 9_999], 10, |_| FREE));
+    assert!(res.is_ok(), "{res:?}");
+    // ... and the slots before it still count.
+    let (res, _, _) = check_bytes(difat_only_file(&[1, 1, FREE], 10, |_| FREE));
     assert!(
-        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("more FAT sectors")),
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
         "{res:?}"
     );
+}
+
+#[test]
+fn zero_padding_in_a_chained_difat_sector_is_accepted_but_zeros_before_an_id_are_not() {
+    // [0, 0, ...] with nothing after them: padding, stripped like `cfb` does.
+    let (res, read, len) = check_bytes(difat_only_file(&[], 4, |_| 0));
+    assert!(res.is_ok(), "{res:?}");
     assert!(read <= 2 * len);
+    // One zero followed by a real id is FAT sector 0 and sector 5.
+    let (res, _, _) = check_bytes(difat_only_file(&[], 8, |n| match n {
+        0 => 0,
+        1 => 5,
+        _ => FREE,
+    }));
+    assert!(res.is_ok(), "{res:?}");
+    // Two zeros followed by an id list sector 0 twice.
+    let (res, _, _) = check_bytes(difat_only_file(&[], 8, |n| match n {
+        0 | 1 => 0,
+        2 => 5,
+        _ => FREE,
+    }));
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn a_long_difat_chain_of_free_sectors_is_read_once_and_bounded_by_the_file() {
+    let (res, read, len) = check_bytes(difat_only_file(&[], 300, |_| FREE));
+    assert!(res.is_ok(), "{res:?}");
+    assert!(read <= 2 * len, "read {read} of {len}");
+}
+
+#[test]
+fn a_difat_chain_that_leaves_the_file_is_refused() {
+    for next in [9_999u32, 0xFFFF_FFFB, 0xFFFF_FFFC] {
+        let mut bytes = difat_only_file(&[], 2, |_| FREE);
+        // The last DIFAT sector (sector 1) points past the end / to a reserved value.
+        let at = 512 + 512 + 508;
+        bytes[at..at + 4].copy_from_slice(&next.to_le_bytes());
+        let (res, _, _) = check_bytes(bytes);
+        assert!(
+            matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("DIFAT sector past")),
+            "{next:#x}: {res:?}"
+        );
+    }
+}
+
+#[test]
+fn a_partial_last_sector_counts_as_a_sector_and_a_truncated_difat_sector_is_refused() {
+    // Sector 1 is only 100 bytes long: it still exists for the FAT list (floor division would
+    // call id 1 "past the end").
+    let mut bytes = difat_only_file(&[1], 1, |_| FREE);
+    bytes.extend([0u8; 100]);
+    let (res, _, _) = check_bytes(bytes);
+    assert!(res.is_ok(), "{res:?}");
+    // The DIFAT sector itself cut short: refused as truncated (floor division would call it "past
+    // the end").
+    let mut bytes = difat_only_file(&[], 1, |_| FREE);
+    bytes.truncate(512 + 412);
+    let (res, _, _) = check_bytes(bytes);
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("truncated DIFAT")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn a_real_size_file_with_a_zero_padded_difat_opens() {
+    // The shape of `cfb` issue 41 at a real size: 110-116 FAT sectors (a file of about 7 MB) need
+    // exactly one DIFAT sector, whose unused tail some writers fill with zeros instead of FREE.
+    let dir = tmp("cfb_zero_padded_difat");
+    let p = dir.join("z.xls");
+    let mut cf = cfb::CompoundFile::create_with_version(
+        cfb::Version::V3,
+        std::fs::File::create(&p).unwrap(),
+    )
+    .unwrap();
+    {
+        let mut s = cf.create_stream("/Workbook").unwrap();
+        s.write_all(&vec![0xABu8; 7_100_000]).unwrap();
+    }
+    cf.flush().unwrap();
+    drop(cf);
+    let mut bytes = std::fs::read(&p).unwrap();
+    let le = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let difat_at = (le(&bytes, 68) as usize + 1) * 512;
+    assert_eq!(le(&bytes, 72), 1, "one DIFAT sector");
+    let mut used = 0;
+    for i in 0..127 {
+        let at = difat_at + 4 * i;
+        if le(&bytes, at) == FREE {
+            bytes[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+        } else {
+            used += 1;
+        }
+    }
+    let fat_sectors = 109 + used;
+    assert!(
+        (110..=116).contains(&fat_sectors),
+        "{fat_sectors} FAT sectors: adjust the stream size"
+    );
+    std::fs::write(&p, &bytes).unwrap();
+    let mut cf = container::open_cfb(&p).unwrap();
+    let mut n = 0;
+    std::io::Read::read_to_end(&mut cf.open_stream("/Workbook").unwrap(), &mut vec![])
+        .map(|k| n = k)
+        .unwrap();
+    assert_eq!(n, 7_100_000);
 }
 
 #[test]
@@ -2138,25 +2319,576 @@ fn a_big_valid_file_with_a_chained_difat_still_opens() {
 }
 
 #[test]
-fn the_xls_stream_cap_is_lower_than_the_general_part_cap() {
+fn the_xls_stream_cap_is_the_part_cap_and_names_it() {
     let dir = tmp("xls_stream_cap");
     let p = dir.join("c.xls");
     write_cfb(&p, &[("Workbook", &harmless_book().stream())]);
     let n = harmless_book().stream().len() as u64;
     let lim = Limits {
-        max_xls_stream_bytes: n - 1,
+        max_part_bytes: n - 1,
         ..Limits::default()
     };
     assert!(matches!(
         fmt_xls::read_workbook_stream(&p, &lim),
-        Err(OfficeError::TooLarge { .. })
+        Err(OfficeError::TooLarge { what: "entry" })
     ));
     let lim = Limits {
-        max_xls_stream_bytes: n,
+        max_part_bytes: n,
         ..Limits::default()
     };
     assert_eq!(
         fmt_xls::read_workbook_stream(&p, &lim).unwrap().len() as u64,
         n
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// formula text: what `calamine` prints is counted first (`fmt_xls_formula`) and a formula that
+// would cost too much is handed over without tokens
+// ---------------------------------------------------------------------------------------------
+
+use super::fmt_xls_formula;
+use calamine::Reader as _;
+
+/// A FORMULA record with a numeric cached value and the given tokens (`cce` is added).
+fn formula_rec(row: u16, col: u16, ixfe: u16, v: f64, rgce: &[u8]) -> Vec<u8> {
+    let mut d = pos(row, col, ixfe);
+    d.extend(v.to_le_bytes());
+    d.extend([0, 0]); // grbit
+    d.extend([0, 0, 0, 0]); // chn
+    d.extend((rgce.len() as u16).to_le_bytes());
+    d.extend_from_slice(rgce);
+    rec(0x0006, &d)
+}
+
+/// A NAME record: a defined name (ASCII) whose formula is `rgce`.
+fn name_rec(name: &str, rgce: &[u8]) -> Vec<u8> {
+    let mut d = vec![0, 0, 0, name.len() as u8];
+    d.extend((rgce.len() as u16).to_le_bytes());
+    d.extend([0; 4]); // ixals, itab
+    d.extend([0; 4]); // menu, description, help, status text lengths
+    d.push(0); // 8-bit characters
+    d.extend(name.bytes());
+    d.extend_from_slice(rgce);
+    rec(0x0018, &d)
+}
+
+/// An EXTERNSHEET record: one XTI per `itabFirst`.
+fn externsheet(firsts: &[i16]) -> Vec<u8> {
+    let mut d = (firsts.len() as u16).to_le_bytes().to_vec();
+    for f in firsts {
+        d.extend(0u16.to_le_bytes());
+        d.extend(f.to_le_bytes());
+        d.extend(f.to_le_bytes());
+    }
+    rec(0x0017, &d)
+}
+
+/// The container `calamine` is given for this book, and its formulas by sheet: `(row, col, text)`.
+fn scanned_formulas(book: &Book, limits: &Limits) -> Vec<(u32, u32, String)> {
+    let dir = tmp("xls_formula_scan");
+    let p = book.write(&dir, "f.xls");
+    let (_, container) = fmt_xls::read_scanned(&p, limits, None).unwrap();
+    let mut wb = calamine::Xls::new(container).unwrap();
+    let name = wb.sheet_names()[0].clone();
+    wb.worksheet_formula(&name)
+        .unwrap()
+        .cells()
+        .map(|(r, c, s)| (r as u32, c as u32, s.clone()))
+        .collect()
+}
+
+const DROPPED: &str = "Unrecognised formula";
+
+/// `N + N + N ...` (left to right: PtgName, then PtgName and PtgAdd for each further one).
+fn name_chain(names: usize) -> Vec<u8> {
+    let mut rgce = vec![0x23, 1, 0, 0, 0];
+    for _ in 1..names {
+        rgce.extend([0x23, 1, 0, 0, 0, 0x03]);
+    }
+    rgce
+}
+
+#[test]
+fn a_chain_of_long_names_prints_a_megabyte_per_record_and_is_dropped_over_the_budget() {
+    // 1,366 x PtgName (5 bytes) of a 255-byte name: an 8 KB record prints 348 KB, and a file of
+    // such records 40 times its own size. Budget for two of them.
+    let long = "N".repeat(255);
+    let rgce = name_chain(1366);
+    assert!(rgce.len() < 8200, "{}", rgce.len());
+    assert_eq!(rgce.len(), 1366 * 5 + 1365);
+    let values: Vec<Vec<u8>> = (0..6u16)
+        .map(|r| formula_rec(r, 0, 0, f64::from(r) + 1.0, &rgce))
+        .collect();
+    let book = Book {
+        globals: {
+            let mut g = globals(&[], &[]);
+            g.push(name_rec(&long, &[0x1E, 1, 0]));
+            g
+        },
+        sheets: vec![sheet("S", values)],
+    };
+    let printed = 1366 * 255 + 1365;
+    // The bound counts two bytes for every operator (`<=`, `<>`): room for two formulas.
+    let bound = 1366 * 255 + 1365 * 2;
+    let tight = Limits {
+        max_formula_text_bytes: 2 * bound as u64 + 10,
+        ..Limits::default()
+    };
+    let f = scanned_formulas(&book, &tight);
+    assert_eq!(f.len(), 6, "every cell still has a formula entry");
+    for (r, _, text) in &f {
+        if *r < 2 {
+            assert_eq!(
+                text.len(),
+                printed,
+                "row {r} keeps its text: {}",
+                &text[..text.len().min(100)]
+            );
+        } else {
+            assert!(
+                text.starts_with(DROPPED) && text.len() < 200,
+                "row {r}: {} bytes",
+                text.len()
+            );
+        }
+    }
+    // Over the budget the cached values are all still there.
+    let dir = tmp("xls_formula_names_values");
+    let p = book.write(&dir, "v.xls");
+    let wb = load_with(
+        &p,
+        Limits {
+            max_formula_text_bytes: 2 * bound as u64 + 10,
+            ..small_limits()
+        },
+    )
+    .unwrap();
+    for r in 0..6 {
+        assert_eq!(cell_text(&wb, r, 0), (r + 1).to_string(), "row {r}");
+    }
+    // With room for all of them nothing is dropped (so the budget is what dropped the rest).
+    let roomy = scanned_formulas(&book, &Limits::default());
+    assert!(roomy.iter().all(|(_, _, t)| t.len() == printed));
+}
+
+#[test]
+fn a_right_nested_chain_is_quadratic_and_dropped_by_the_per_formula_cap() {
+    // PtgName x n, then PtgAdd x (n - 1): every add copies everything to its right.
+    let mut rgce = Vec::new();
+    for _ in 0..1366 {
+        rgce.extend([0x23, 1, 0, 0, 0]);
+    }
+    rgce.extend(std::iter::repeat_n(0x03, 1365));
+    let env = fmt_xls_formula::Env {
+        names: vec![255],
+        ..Default::default()
+    };
+    let body = [&(rgce.len() as u16).to_le_bytes()[..], &rgce].concat();
+    let cost = fmt_xls_formula::formula_cost(&body, &env);
+    assert!(cost.work > 400_000_000, "{cost:?}");
+    let book = Book {
+        globals: {
+            let mut g = globals(&[], &[]);
+            g.push(name_rec(&"N".repeat(255), &[0x1E, 1, 0]));
+            g
+        },
+        sheets: vec![sheet("S", vec![formula_rec(0, 0, 0, 1.0, &rgce)])],
+    };
+    let f = scanned_formulas(&book, &Limits::default());
+    assert!(f[0].2.starts_with(DROPPED), "{}", f[0].2.len());
+}
+
+#[test]
+fn spaces_inserted_at_the_start_of_an_operand_are_counted_and_the_formula_dropped() {
+    // One PtgInt, then 2,000 x PtgAttrSpace(255 spaces): each insert moves the whole text, about
+    // 1.3 x 10^11 byte moves for an 8 KB record. `calamine` would be at it for minutes.
+    let mut rgce = vec![0x1E, 1, 0];
+    for _ in 0..2000 {
+        rgce.extend([0x19, 0x40, 0x00, 255]);
+    }
+    let env = fmt_xls_formula::Env::default();
+    let cost = fmt_xls_formula::formula_cost(
+        &[&(rgce.len() as u16).to_le_bytes()[..], &rgce].concat(),
+        &env,
+    );
+    assert!(cost.work > 10_000_000_000, "{cost:?}");
+    assert_eq!(cost.text, 5 + 2000 * 255);
+    // A mild one passes and keeps its text (the spaces in front of the value).
+    let mild = vec![0x1E, 1, 0, 0x19, 0x40, 0x00, 3];
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet(
+            "S",
+            vec![
+                formula_rec(0, 0, 0, 1.0, &rgce),
+                formula_rec(1, 0, 0, 2.0, &mild),
+            ],
+        )],
+    };
+    let t = std::time::Instant::now();
+    let f = scanned_formulas(&book, &Limits::default());
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    assert_eq!(f.len(), 2);
+    assert!(f[0].2.starts_with(DROPPED), "{:?}", &f[0].2[..40]);
+    assert_eq!(f[1].2, "   1");
+    // The cached values of both are intact.
+    let dir = tmp("xls_formula_space_values");
+    let p = book.write(&dir, "s.xls");
+    let wb = load(&p).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "1");
+    assert_eq!(cell_text(&wb, 1, 0), "2");
+}
+
+#[test]
+fn the_work_budget_is_shared_by_all_formulas_of_the_workbook() {
+    // Each formula is under the per-formula cap but ten of them are over the shared budget.
+    let mut rgce = vec![0x1E, 1, 0];
+    for _ in 0..40 {
+        rgce.extend([0x19, 0x40, 0x00, 255]);
+    }
+    let one = fmt_xls_formula::formula_cost(
+        &[&(rgce.len() as u16).to_le_bytes()[..], &rgce].concat(),
+        &fmt_xls_formula::Env::default(),
+    );
+    assert!(one.work > 1_000_000 && one.work < 1 << 27, "{one:?}");
+    let recs: Vec<Vec<u8>> = (0..10u16)
+        .map(|r| formula_rec(r, 0, 0, 1.0, &rgce))
+        .collect();
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet("S", recs)],
+    };
+    let limits = Limits {
+        max_formula_work: one.work * 4 + 1,
+        ..Limits::default()
+    };
+    let f = scanned_formulas(&book, &limits);
+    let kept = f.iter().filter(|(_, _, t)| !t.starts_with(DROPPED)).count();
+    assert_eq!(
+        kept,
+        4,
+        "{:?}",
+        f.iter().map(|x| x.2.len()).collect::<Vec<_>>()
+    );
+}
+
+/// Token sequences with names, sheets and every kind of operand, for the property checks.
+fn formula_token_samples() -> Vec<Vec<u8>> {
+    let int = |v: u16| [&[0x1Eu8][..], &v.to_le_bytes()].concat();
+    let name = |i: u32| [&[0x23u8][..], &i.to_le_bytes()].concat();
+    let ref3d = |ixti: u16| {
+        let mut v = vec![0x3A];
+        v.extend(ixti.to_le_bytes());
+        v.extend([4, 0, 0x02, 0xC0]);
+        v
+    };
+    let area3d = |ixti: u16| {
+        let mut v = vec![0x3B];
+        v.extend(ixti.to_le_bytes());
+        v.extend([1, 0, 9, 0, 2, 0, 5, 0]);
+        v
+    };
+    let func1 = |iftab: u16| [&[0x21u8][..], &iftab.to_le_bytes()].concat(); // ABS-like, fixed arity
+    let num = |v: f64| [&[0x1Fu8][..], &v.to_le_bytes()].concat();
+    let mut out = vec![
+        int(1),
+        [int(1), int(2), vec![0x03]].concat(),
+        [int(1), int(2), vec![0x0E]].concat(),
+        [int(7), vec![0x12]].concat(),
+        [int(7), vec![0x13, 0x14]].concat(),
+        [int(7), vec![0x15]].concat(),
+        [name(1), name(1), vec![0x03]].concat(),
+        [name(2), name(3), vec![0x03]].concat(), // missing names
+        ref3d(0),
+        ref3d(1),
+        ref3d(99),
+        area3d(0),
+        area3d(1),
+        area3d(99),
+        [vec![0x3C, 0, 0, 0, 0, 0, 0]].concat(),
+        [vec![0x3D, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]].concat(),
+        [int(4), func1(6)].concat(),               // an arity-1 function
+        [int(4), int(5), func1(1)].concat(),       // wrong arity for IF: error path
+        [int(9), vec![0x19, 0x10, 0, 0]].concat(), // PtgAttrSum
+        [int(9), vec![0x19, 0x40, 0x00, 4]].concat(),
+        [int(9), vec![0x19, 0x41, 0x01, 2]].concat(),
+        [int(9), vec![0x19, 0x40, 0x09, 2]].concat(), // bad space kind: error path
+        [num(1.5)].concat(),
+        [num(1e300)].concat(),
+        [num(-2.5e-300)].concat(),
+        [num(f64::NAN)].concat(),
+        vec![0x17, 3, 0, b'a', b'b', b'c'],
+        vec![0x17, 2, 1, b'a', 0, 0x4E, 0x00],
+        vec![0x1D, 1],
+        vec![0x1C, 0x07],
+        vec![0x1C, 0x2B],
+        vec![0x1C, 0x55], // unknown error code: error path
+        vec![0x24, 3, 0, 5, 0xC0],
+        vec![0x25, 1, 0, 9, 0, 2, 0, 0x05, 0xC0],
+        vec![0x2A, 0, 0, 0, 0],
+        vec![0x2B, 0, 0, 0, 0, 0, 0, 0, 0],
+        vec![0x01, 0, 0, 0, 0],
+        vec![0x20, 0, 0, 0, 0, 0, 0, 0],
+        vec![0x39, 0, 0, 0, 0, 0, 0],
+        vec![0x03],                // stack underflow: error path
+        vec![0x77],                // unknown token: error path
+        [int(1), int(2)].concat(), // two values left: error path
+    ];
+    // A variable-arity function call: SUM(1, 2, 3).
+    let mut sum = [int(1), int(2), int(3)].concat();
+    sum.extend([0x22, 3, 4, 0]);
+    out.push(sum);
+    out
+}
+
+/// The `Env` of the book used by the property checks (see `property_book`).
+fn property_env() -> fmt_xls_formula::Env {
+    fmt_xls_formula::Env {
+        pre_biff8: false,
+        sheets: vec![1, 3],
+        names: vec![8, 3],
+        xti_first: vec![0, 1],
+    }
+}
+
+fn property_book(formulas: &[Vec<u8>]) -> Book {
+    Book {
+        globals: {
+            let mut g = globals(&[], &[]);
+            g.push(name_rec("LongName", &[0x1E, 1, 0]));
+            g.push(name_rec("two", &[0x1E, 1, 0]));
+            g.push(externsheet(&[0, 1]));
+            g
+        },
+        sheets: vec![sheet("S", vec![]), {
+            let mut s = sheet("Two", vec![]);
+            s.records = formulas
+                .iter()
+                .enumerate()
+                .map(|(i, f)| formula_rec(i as u16, 0, 0, 1.0, f))
+                .collect();
+            s
+        }],
+    }
+}
+
+#[test]
+fn the_cost_is_an_upper_bound_of_what_calamine_prints_and_mirrors_where_it_gives_up() {
+    let samples = formula_token_samples();
+    let book = property_book(&samples);
+    let stream = book.stream();
+    let container = fmt_xls::clean_container(&stream).unwrap();
+    let mut wb = calamine::Xls::new(container).unwrap();
+    let printed: Vec<(usize, String)> = wb
+        .worksheet_formula("Two")
+        .unwrap()
+        .cells()
+        .map(|(r, _, s)| (r, s.clone()))
+        .collect();
+    assert_eq!(printed.len(), samples.len());
+    let env = property_env();
+    let mut errors = 0;
+    for (r, text) in printed {
+        let rgce = &samples[r];
+        let body = [&(rgce.len() as u16).to_le_bytes()[..], rgce].concat();
+        let cost = fmt_xls_formula::formula_cost(&body, &env);
+        if text.starts_with(DROPPED) {
+            errors += 1;
+            assert_eq!(
+                cost.text, 96,
+                "sample {r} is an error for calamine: {rgce:02x?}"
+            );
+        } else {
+            assert!(
+                cost.text >= text.len() as u64,
+                "sample {r}: bound {} < printed {} ({text})",
+                cost.text,
+                text.len()
+            );
+            assert!(cost.text != 96, "sample {r} was parsed: {text}");
+            assert!(cost.peak >= cost.text);
+        }
+    }
+    assert!(errors >= 6, "the error paths are in the samples: {errors}");
+}
+
+#[test]
+fn random_tokens_never_panic_the_cost_and_it_bounds_what_calamine_prints() {
+    let samples = formula_token_samples();
+    let env = property_env();
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut checked = 0;
+    for round in 0..300 {
+        // Glue a few samples together and flip some bytes.
+        let mut rgce = Vec::new();
+        for _ in 0..(xorshift(&mut seed) % 4 + 1) {
+            rgce.extend(&samples[(xorshift(&mut seed) as usize) % samples.len()]);
+        }
+        for _ in 0..(xorshift(&mut seed) % 3) {
+            let at = (xorshift(&mut seed) as usize) % rgce.len();
+            rgce[at] = xorshift(&mut seed) as u8;
+        }
+        let body = [&(rgce.len() as u16).to_le_bytes()[..], &rgce].concat();
+        let cost = fmt_xls_formula::formula_cost(&body, &env);
+        let book = property_book(std::slice::from_ref(&rgce));
+        let stream = book.stream();
+        let Ok(container) = fmt_xls::clean_container(&stream) else {
+            continue;
+        };
+        let got = std::panic::catch_unwind(|| {
+            let mut wb = calamine::Xls::new(container).ok()?;
+            wb.worksheet_formula("Two")
+                .ok()
+                .map(|r| r.cells().map(|(_, _, s)| s.clone()).collect::<Vec<_>>())
+        });
+        // `calamine` indexes short operands and panics: the cost gave up there too (it never panics).
+        if let Ok(Some(texts)) = got {
+            for t in texts {
+                if !t.starts_with(DROPPED) {
+                    assert!(cost.text >= t.len() as u64, "round {round}: {rgce:02x?}");
+                    checked += 1;
+                } else {
+                    assert_eq!(cost.text, 96, "round {round}: {rgce:02x?}");
+                }
+            }
+        }
+    }
+    assert!(checked > 20, "{checked}");
+}
+
+#[test]
+fn every_real_xls_fixture_reads_the_same_with_and_without_the_formula_guard() {
+    // The formulas, values and sheet names `calamine` gives for a fixture are the same whether it
+    // reads the file itself or the container made from the scanned stream (nothing is dropped).
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/office");
+    let mut n = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) != Some("xls") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let Ok(mut own) = calamine::open_workbook::<calamine::Xls<_>, _>(&p) else {
+            continue; // encrypted.xls
+        };
+        let Ok((_, container)) = fmt_xls::read_scanned(&p, &Limits::default(), None) else {
+            panic!("{name}: the pass refuses what calamine opens");
+        };
+        let mut scanned = calamine::Xls::new(container).unwrap();
+        assert_eq!(own.sheet_names(), scanned.sheet_names(), "{name}");
+        for s in own.sheet_names() {
+            assert_eq!(
+                own.worksheet_range(&s).unwrap(),
+                scanned.worksheet_range(&s).unwrap(),
+                "{name}/{s} values"
+            );
+            let (a, b) = (
+                own.worksheet_formula(&s).unwrap(),
+                scanned.worksheet_formula(&s).unwrap(),
+            );
+            assert_eq!(a, b, "{name}/{s} formulas");
+            n += a.cells().count();
+        }
+        assert_eq!(own.defined_names(), scanned.defined_names(), "{name} names");
+    }
+    assert!(n > 5, "the fixtures have formulas: {n}");
+}
+
+#[test]
+fn defined_names_with_a_sheet_prefix_share_a_quarter_of_the_text_budget() {
+    // 100 names whose formula starts with a reference to a sheet with a 200-byte name: `calamine`
+    // prints the sheet's name in front of each. The names stay (PtgName indexes them), only the
+    // prefix of those over the budget is dropped.
+    let sheet_name = "S".repeat(200);
+    let mut ref3d = vec![0x3A, 0, 0];
+    ref3d.extend([0, 0, 0, 0]);
+    let mut g = globals(&[], &[]);
+    g.push(externsheet(&[0]));
+    for i in 0..100 {
+        g.push(name_rec(&format!("n{i}"), &ref3d));
+    }
+    let book = Book {
+        globals: g,
+        sheets: vec![sheet(&sheet_name, vec![number(0, 0, 0, 1.0)])],
+    };
+    let dir = tmp("xls_name_prefix");
+    let p = book.write(&dir, "n.xls");
+    // 204 + 40 per prefix; a quarter of 4 x 244 x 10 = 2,440 allows ten.
+    let limits = Limits {
+        max_formula_text_bytes: 4 * 244 * 10,
+        ..Limits::default()
+    };
+    let (_, container) = fmt_xls::read_scanned(&p, &limits, None).unwrap();
+    let wb = calamine::Xls::new(container).unwrap();
+    let names = wb.defined_names();
+    assert_eq!(names.len(), 100);
+    let with_prefix = names.iter().filter(|(_, f)| f.contains('!')).count();
+    assert_eq!(with_prefix, 10);
+    assert!(names.iter().all(|(n, _)| n.starts_with('n')));
+}
+
+#[test]
+fn the_biff_version_is_mapped_like_calamine_does() {
+    for (version, dt, biff8) in [
+        (0x0600u16, 0x0005u16, true),
+        (0x0500, 0x0005, false),
+        (0x0400, 0x0005, false),
+        (0x0300, 0x0005, false),
+        (0x0200, 0x0005, false),
+        (0x0002, 0x0005, false),
+        (0x0007, 0x0005, false),
+        (0x0000, 0x0005, true),
+        (0x0000, 0x1000, false),
+        (0x0700, 0x0005, true),
+        (0x1234, 0x0005, true),
+    ] {
+        let mut d = version.to_le_bytes().to_vec();
+        d.extend(dt.to_le_bytes());
+        assert_eq!(
+            fmt_xls::bof_is_biff8_for_test(&d),
+            biff8,
+            "{version:#x}/{dt:#x}"
+        );
+    }
+}
+
+#[test]
+fn version_zero_globals_are_read_as_biff8_and_sheets_use_the_globals_version() {
+    // Globals whose BOF says version 0 are BIFF8 for `calamine` (unless the type is 0x1000): the
+    // FORMAT record must be read in the BIFF8 layout.
+    let book = Book {
+        globals: globals(&[(164, "0.0%")], &[164]),
+        sheets: vec![sheet("S", vec![number(0, 0, 3, 0.256)])],
+    };
+    let mut stream = book.stream();
+    stream[4..6].copy_from_slice(&0u16.to_le_bytes());
+    let dir = tmp("xls_bof_zero");
+    let p = dir.join("z.xls");
+    write_cfb(&p, &[("/Workbook", &stream)]);
+    let wb = load(&p).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "25.6%");
+    // A sheet whose own BOF says BIFF5 is still read as the globals say (BIFF8): the cost of a
+    // wide LABEL string is the same as without the patch.
+    let label = |s: &str| {
+        let mut d = pos(0, 0, 0);
+        d.extend(xl_string(s, true));
+        rec(0x0204, &d)
+    };
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet("S", vec![label("まっさらな文字列です")])],
+    };
+    let plain = book.stream();
+    let mut patched = plain.clone();
+    // The sheet's BOF is the record after the globals' EOF: find its version word.
+    let at = plain
+        .windows(4)
+        .rposition(|w| w == [0x09, 0x08, 0x10, 0x00])
+        .unwrap();
+    patched[at + 4..at + 6].copy_from_slice(&0x0500u16.to_le_bytes());
+    let a = fmt_xls::parse_stream(&plain, &Limits::default()).unwrap();
+    let b = fmt_xls::parse_stream(&patched, &Limits::default()).unwrap();
+    assert_eq!(a.sheets["S"].text_bytes, b.sheets["S"].text_bytes);
+    assert!(a.sheets["S"].text_bytes >= 20);
 }

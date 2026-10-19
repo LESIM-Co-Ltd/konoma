@@ -236,7 +236,8 @@ pub(super) fn small_limits() -> Limits {
         max_sheet_text_bytes: 1 << 20,
         max_dense_cells: 10_000,
         max_text_bytes: 1 << 20,
-        max_xls_stream_bytes: 1 << 20,
+        max_formula_text_bytes: 1 << 20,
+        max_formula_work: 1 << 28,
     }
 }
 

@@ -287,17 +287,13 @@ fn norm_name(n: &str) -> String {
 
 struct Pkg {
     zip: ZipArchive<BufReader<File>>,
-    names: HashMap<String, String>,
+    names: HashMap<String, usize>,
 }
 
 impl Pkg {
     fn open(path: &Path) -> Result<Pkg, OfficeError> {
         let zip = container::open_zip(path)?;
-        let names = zip
-            .file_names()
-            .filter_map(Result::ok)
-            .map(|n| (norm_name(&n), n.to_string()))
-            .collect();
+        let names = container::entry_index(&zip);
         Ok(Pkg { zip, names })
     }
 
@@ -310,12 +306,13 @@ impl Pkg {
         part: &str,
         cap: u64,
     ) -> Result<Option<BufReader<impl Read + 'z>>, OfficeError> {
-        let name = self
+        let index = self
             .names
             .get(&norm_name(part))
-            .cloned()
-            .unwrap_or_else(|| part.to_string());
-        Ok(container::part_reader(&mut self.zip, &name, cap)?
+            .copied()
+            .or_else(|| self.zip.index_for_name(part));
+        let Some(index) = index else { return Ok(None) };
+        Ok(container::part_reader_at(&mut self.zip, index, cap)?
             .map(|r| BufReader::with_capacity(64 * 1024, r)))
     }
 }

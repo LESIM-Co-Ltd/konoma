@@ -344,8 +344,8 @@ pub(crate) fn parse_sheet<R: Read>(
     let mut buf = Vec::new();
     let mut out = SheetFormats::default();
     let mut in_data = false;
-    // Positions that got a format: a later General record for one of them is kept as a 0.
-    let mut non_general: std::collections::HashSet<(u32, u16)> = std::collections::HashSet::new();
+    // The greatest cell position seen: a General record at or before it is kept as a 0.
+    let mut last_pos: Option<(u32, u16)> = None;
     let mut row: u32 = 0;
     let max_row = u32::try_from(limits.max_rows).unwrap_or(u32::MAX);
     while let Some(id) = rd.next(&mut buf)? {
@@ -375,7 +375,7 @@ pub(crate) fn parse_sheet<R: Read>(
                 if fmt != 0 && (col as usize) < limits.max_cols {
                     out.cells.push((row, col as u16, fmt));
                 }
-                out.keep_last_format(&mut non_general, row, col, fmt, limits);
+                out.keep_last_format(&mut last_pos, row, col, fmt, limits);
             }
             _ => {}
         }

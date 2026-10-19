@@ -117,13 +117,17 @@ impl SheetFormats {
     }
 
     /// Makes "the last record at a cell wins" hold for the format too: [`Self::note_value`] keeps
-    /// only non-`General` formats, so a later record for a cell whose earlier record had a format
-    /// is written down as `General` explicitly. `non_general` is the set of positions that got a
-    /// format (the caller owns it, one per sheet). Call it right after `note_value`; not for a
-    /// formula's `STRING` result, which belongs to the `FORMULA` before it and keeps its format.
+    /// only non-`General` formats, so a later `General` record for a cell that an earlier record
+    /// may have given a format is written down as `General` explicitly. Real producers write
+    /// records in row-major order, so `last` (the greatest position seen so far, one per sheet,
+    /// owned by the caller) says whether an earlier record at this position can exist at all: only
+    /// a record at or before it needs the explicit entry, and a normal sheet pays nothing. (An
+    /// explicit `General` for a cell with no earlier record is harmless.) Call it right after
+    /// `note_value`; not for a formula's `STRING` result, which belongs to the `FORMULA` before it
+    /// and keeps its format.
     pub(crate) fn keep_last_format(
         &mut self,
-        non_general: &mut std::collections::HashSet<(u32, u16)>,
+        last: &mut Option<(u32, u16)>,
         row: u32,
         col: u32,
         fmt: u16,
@@ -133,10 +137,11 @@ impl SheetFormats {
             return;
         }
         let key = (row, col as u16);
-        if fmt != 0 {
-            non_general.insert(key);
-        } else if non_general.contains(&key) {
+        if fmt == 0 && last.is_some_and(|l| key <= l) {
             self.cells.push((row, col as u16, 0));
+        }
+        if last.is_none_or(|l| key > l) {
+            *last = Some(key);
         }
     }
 
