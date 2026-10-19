@@ -844,7 +844,9 @@ impl PluginWork {
                         Ok(Outcome::Redraw) => redraw = true,
                         Ok(Outcome::Reload) => reload = true,
                         Ok(Outcome::Flash(msg)) => flash = Some(msg),
-                        Ok(Outcome::Unhandled) => {}
+                        // An outcome this host does not know (`Outcome` is non-exhaustive) asks
+                        // for nothing.
+                        Ok(Outcome::Unhandled) | Ok(_) => {}
                         Err(f) => flash = Some(f.message.clone()),
                     }
                 }
@@ -2102,7 +2104,7 @@ impl App {
                     self.plugin_request_view(req);
                 }
             }
-            Some(Outcome::Redraw) | Some(Outcome::Unhandled) | None => {}
+            Some(Outcome::Redraw) | Some(Outcome::Unhandled) | Some(_) | None => {}
         }
         // The pictures of the canvas this result carried: decoded on the worker, now put into the
         // cache (the entries of pictures the canvas dropped go). A view that is not a canvas, or a

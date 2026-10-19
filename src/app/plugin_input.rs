@@ -106,7 +106,9 @@ pub(crate) fn plugin_key_of(key: &crossterm::event::KeyEvent) -> Option<Key> {
     if key.modifiers.contains(M::SHIFT) && !matches!(code, PKey::Char(_) | PKey::BackTab) {
         mods |= KeyMods::SHIFT;
     }
-    Some(Key { code, mods })
+    let mut key = Key::new(code);
+    key.mods = mods;
+    Some(key)
 }
 
 impl App {

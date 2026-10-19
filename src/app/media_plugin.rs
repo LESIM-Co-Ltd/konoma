@@ -130,9 +130,8 @@ pub(super) fn decode_image_view(
             Some(MediaPayload::Static(image::DynamicImage::ImageRgba8(img)))
         }
         // Not made by the picture plugins; a plugin that returns them gets the honest reason.
-        ImageData::Encoded(_) | ImageData::Frames(_) | ImageData::Lazy(_) => {
-            Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat))
-        }
+        // (`ImageData` is non-exhaustive: a kind this host does not know is refused the same way.)
+        _ => Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat)),
     }
 }
 

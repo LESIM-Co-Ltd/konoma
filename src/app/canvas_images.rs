@@ -325,6 +325,9 @@ impl<'a> Hasher<'a> {
                 }
             }
             ImageData::Lazy(_) => h.num(6),
+            // A kind this host does not know (`ImageData` is non-exhaustive): hashed as one
+            // value; decoding refuses it.
+            _ => h.num(7),
         }
         Some(())
     }
@@ -426,6 +429,7 @@ fn decode_still(
             }
         }
         ImageData::Frames(_) | ImageData::Lazy(_) => Err(ImageFailure::UnsupportedFormat),
+        _ => Err(ImageFailure::UnsupportedFormat),
     }
 }
 
@@ -517,6 +521,7 @@ fn input_bytes(data: &ImageData) -> u64 {
         ImageData::Rgba { pixels, .. } => pixels.len() as u64,
         ImageData::Frames(f) => f.iter().map(|(d, _)| input_bytes(d)).sum(),
         ImageData::Lazy(_) => 0,
+        _ => 0,
     }
 }
 
@@ -529,6 +534,8 @@ fn source_bytes(data: &ImageData) -> u64 {
         ImageData::Svg { data, .. } => data.len() as u64,
         ImageData::Rgba { pixels, .. } => pixels.len() as u64,
         ImageData::Frames(f) => f.iter().map(|(d, _)| source_bytes(d)).sum(),
+        // A kind this host does not know (`ImageData` is non-exhaustive).
+        _ => 0,
     }
 }
 

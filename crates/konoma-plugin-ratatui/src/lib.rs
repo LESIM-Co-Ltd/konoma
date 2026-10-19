@@ -67,8 +67,8 @@ pub fn draw_canvas(req: &ViewReq, f: impl FnOnce(&mut Buffer)) -> CanvasView {
 ///   string, a skipped cell). A wide character that would not fit whole in its row becomes a
 ///   blank, so the canvas never holds half a wide character.
 /// * A cell with `skip` set, a cell with an empty or zero-width symbol that is not a wide
-///   character's continuation, and a symbol a canvas cell may not hold (a control character, more
-///   than one grapheme, over 32 bytes, wider than two columns) become the default cell (a space).
+///   character's continuation, and a symbol a canvas cell may not hold (a control character, the kitty
+///   image placeholder U+10EEEE, more than one grapheme, over 32 bytes, wider than two columns) become the default cell (a space).
 /// * `Color::Reset` becomes "no color" (`None`), so the host's own default shows through.
 ///   Underline colors are dropped.
 pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
@@ -85,8 +85,12 @@ pub fn canvas_from_buffer(buf: &Buffer) -> CanvasView {
                 continue;
             }
             let sym = cell.symbol();
-            // A control character is not a symbol a canvas cell may hold.
-            if sym.chars().any(char::is_control) {
+            // A control character or the image placeholder (U+10EEEE) is not a symbol a canvas
+            // cell may hold.
+            if sym
+                .chars()
+                .any(|c| c.is_control() || c == konoma_plugin::view::KITTY_PLACEHOLDER)
+            {
                 x += 1;
                 continue;
             }
@@ -189,5 +193,8 @@ pub fn modifier_of(m: RModifier) -> Modifier {
     out
 }
 
+/// A demo plugin for konoma's temporary `demo-canvas` feature. **Temporary and unstable**: it is
+/// not part of this crate's API and is removed in stage 3.
 #[cfg(feature = "demo")]
+#[doc(hidden)]
 pub mod demo;

@@ -1,6 +1,7 @@
 //! A complete konoma plugin that draws with ratatui widgets (the "clock" demo).
 //!
-//! **Temporary, behind the `demo` feature.** It exists so that a canvas plugin can be seen in a real
+//! **Temporary and unstable, behind the `demo` feature (hidden from the docs, not part of the
+//! crate's API, no semver promise).** It exists so that a canvas plugin can be seen in a real
 //! terminal (`konoma --features demo-canvas`, open `samples/demo.konoma-demo`) before stage 3 can
 //! load plugins from outside. It is removed, with the `demo-canvas` feature of the konoma crate,
 //! when stage 3 can load external plugins (this file then stays only as the `clock` example).

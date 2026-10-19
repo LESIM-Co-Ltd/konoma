@@ -107,7 +107,11 @@ pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
                 continue;
             };
             let style = plugin_style_of(cell.style);
-            if cell.symbol.chars().any(char::is_control) {
+            if cell
+                .symbol
+                .chars()
+                .any(|c| c.is_control() || c == konoma_plugin::view::KITTY_PLACEHOLDER)
+            {
                 target.set_symbol(" ").set_style(style);
             } else {
                 target.set_symbol(&cell.symbol).set_style(style);
@@ -269,6 +273,19 @@ mod tests {
         for i in 0..bad.len() as u16 {
             assert_eq!(buf[(1 + i, 1)].symbol(), " ", "cell {i}");
         }
+    }
+
+    #[test]
+    fn paint_replaces_the_kitty_placeholder_with_a_space() {
+        let bad = ["\u{10EEEE}", "\u{10EEEE}\u{0305}\u{0305}"];
+        let canvas = canvas_of(bad.len() as u16, &bad);
+        assert!(canvas.check().is_err());
+        let buf = painted(&canvas, Rect::new(1, 1, 10, 2));
+        for cell in &buf.content {
+            assert!(!cell.symbol().contains('\u{10EEEE}'), "{:?}", cell.symbol());
+        }
+        assert_eq!(buf[(1, 1)].symbol(), " ");
+        assert_eq!(buf[(2, 1)].symbol(), " ");
     }
 
     #[test]

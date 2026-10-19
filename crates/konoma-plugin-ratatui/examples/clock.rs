@@ -21,7 +21,7 @@ fn main() -> Result<(), Failure> {
         .map(Key::char)
         .chain([Key::new(KeyCode::Enter)])
         .collect();
-    send_keys(&mut *session, &typed)?;
+    send_keys(&mut *session, &typed).outcomes()?;
     let canvas = view_canvas(&mut *session, &req)?;
     println!("{}", CanvasText::of(&canvas));
     println!(

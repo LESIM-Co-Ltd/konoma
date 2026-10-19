@@ -157,6 +157,10 @@ jobs:
             cargo check -p "$(basename "$d")" || exit 1
           done
           cargo check -p konoma-vcs-core --features git
+          # Alone, so that the host's ratatui features do not hide what the crate itself needs
+          # (it is the one crate plugin authors depend on), with and without its temporary demo.
+          cargo check -p konoma-plugin-ratatui
+          cargo check -p konoma-plugin-ratatui --features demo
 
       - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -179,6 +183,14 @@ jobs:
 
       - name: Test (no default features)
         run: cargo test --workspace --no-default-features
+
+      # The temporary `demo-canvas` feature (removed in stage 3) is not in any default build; keep
+      # its host side from rotting.
+      - name: Clippy (demo-canvas)
+        run: cargo clippy -p konoma --all-targets --features demo-canvas -- -D warnings
+
+      - name: Test (demo-canvas)
+        run: cargo test -p konoma --features demo-canvas demo_canvas
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
   # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma

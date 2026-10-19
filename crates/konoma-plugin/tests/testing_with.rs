@@ -55,13 +55,15 @@ fn view_canvas_with_passes_the_context() {
 fn send_keys_with_passes_the_context() {
     let (mut s, _f) = open_bytes(&Probe, "a.probe", b"x").unwrap();
     let req = ViewReq::new(20, 2);
-    send_keys(&mut *s, &[Key::char('a')]).unwrap();
+    send_keys(&mut *s, &[Key::char('a')]).outcomes().unwrap();
     assert_eq!(
         CanvasText::of(&view_canvas(&mut *s, &req).unwrap()).rows[1],
         "Ansi16"
     );
     let cx = ActCx::bare().with_term(TermCaps::new().colors(ColorDepth::Ansi256));
-    let out = send_keys_with(&mut *s, &[Key::char('a'), Key::char('b')], &cx).unwrap();
+    let out = send_keys_with(&mut *s, &[Key::char('a'), Key::char('b')], &cx)
+        .outcomes()
+        .unwrap();
     assert_eq!(out.len(), 2);
     assert_eq!(
         CanvasText::of(&view_canvas(&mut *s, &req).unwrap()).rows[1],
@@ -86,4 +88,51 @@ fn push_image_is_the_mut_form_of_image() {
     assert_eq!(pushed.images.len(), 2);
     assert_eq!(built.images[1].id, pushed.images[1].id);
     assert_eq!(pushed.check(), Ok(()));
+}
+
+struct Flaky;
+impl Plugin for Flaky {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("flaky", "0.1.0")
+            .bind(Bind::files(["*.flaky"]))
+            .shows(ViewKind::Canvas)
+    }
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(FlakySession {
+            typed: String::new(),
+        }))
+    }
+}
+
+struct FlakySession {
+    typed: String,
+}
+impl Session for FlakySession {
+    fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        let mut c = CanvasView::new(req.cols, req.rows);
+        c.set_string(0, 0, &self.typed, Style::new());
+        Ok(View::Canvas(c))
+    }
+    fn key(&mut self, key: &Key, _cx: &ActCx) -> Result<Outcome, Failure> {
+        if key.code == KeyCode::Char('x') {
+            return Err(Failure::unsupported("no x"));
+        }
+        if let KeyCode::Char(c) = key.code {
+            self.typed.push(c);
+        }
+        Ok(Outcome::Redraw)
+    }
+}
+
+#[test]
+fn send_keys_does_not_stop_at_a_failure_as_the_host_does_not() {
+    let (mut s, _f) = open_bytes(&Flaky, "a.flaky", b"").unwrap();
+    let run = send_keys(&mut *s, &[Key::char('a'), Key::char('x'), Key::char('b')]);
+    assert_eq!(run.results.len(), 3);
+    assert!(!run.is_ok());
+    assert_eq!(run.failures().len(), 1);
+    assert_eq!(run.results[2], Ok(Outcome::Redraw));
+    let c = view_canvas(&mut *s, &ViewReq::new(10, 1)).unwrap();
+    assert_eq!(CanvasText::of(&c).rows[0], "ab");
+    assert!(run.outcomes().is_err());
 }

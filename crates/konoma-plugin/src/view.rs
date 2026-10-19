@@ -428,6 +428,7 @@ impl ImageView {
 
 /// The pixels (or the way to get them) of an image.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum ImageData {
     File(PathBuf),
     /// An encoded image (PNG, JPEG...).
@@ -438,9 +439,13 @@ pub enum ImageData {
     /// that draws the SVG itself (the mermaid and math plugins: the SVG is made by konoma's own
     /// code from a diagram or a formula). For any other plugin, whatever it claims, and for any
     /// SVG that comes from a file or a document, the host draws it in the supervised child
-    /// process, and reads no file outside `base_dir`'s file name. Set `trusted: true` only when
+    /// process. Set `trusted: true` only when
     /// the plugin made the SVG from scratch; the value is an upper bound, never a way to skip
     /// the limits.
+    ///
+    /// **`base_dir`** is where the SVG's relative references (`<image href="a.png">`, `url()`)
+    /// resolve from: the host joins it with the shown file's name. With a `base_dir` the drawing
+    /// may read the files beside the SVG; with `None` it reads no file at all.
     Svg {
         data: Arc<[u8]>,
         base_dir: Option<PathBuf>,
@@ -527,6 +532,7 @@ pub struct MessageView {
 /// right holds the empty string (a *continuation*), the same as ratatui's buffer. The default cell
 /// is one space with the default style.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CanvasCell {
     pub symbol: String,
     pub style: Style,
@@ -580,6 +586,9 @@ impl CellRect {
 }
 
 /// The most cells a canvas may be wide or tall.
+///
+/// The `CANVAS_MAX_*` constants are the numbers of the `konoma-plugin` a plugin is built against;
+/// the host judges a canvas by its own numbers, which may differ.
 pub const CANVAS_MAX_SIDE: u16 = 4096;
 /// The most cells a canvas may hold in all (`cols * rows`).
 pub const CANVAS_MAX_CELLS: usize = 1 << 22;
@@ -635,7 +644,9 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 /// `rows * cell_px.1` pixels ([`ViewReq::cell_px`], which is (width, height)).
 ///
 /// **Limits** (the host's, they may change; the `CANVAS_MAX_*` constants are checked by
-/// [`CanvasView::check`], which refuses the whole canvas):
+/// [`CanvasView::check`], which refuses the whole canvas). The host is the authority: a plugin
+/// built against other numbers than the host's is still judged by the host's, so treat
+/// `check()` as a help for tests, not as the final word:
 ///
 /// - at most [`CANVAS_MAX_PLACEMENTS`] placements and [`CANVAS_MAX_PICTURES`] distinct ids per
 ///   canvas; a raw `Rgba` side of at most [`CANVAS_MAX_RGBA_SIDE`] pixels; an animation of at most
@@ -714,6 +725,10 @@ pub enum CanvasIssue {
     AreaTooLarge { cols: u16, rows: u16 },
     /// The symbol of the cell at (`x`, `y`) holds a control character (C0, DEL or C1).
     CellControl { x: u16, y: u16 },
+    /// The symbol of the cell at (`x`, `y`) holds U+10EEEE, the character the kitty graphics
+    /// protocol uses for its Unicode placeholders. A plugin must not draw it: it would show
+    /// another image the host has placed.
+    CellReserved { x: u16, y: u16 },
     /// The symbol of the cell at (`x`, `y`) is longer than [`CANVAS_MAX_SYMBOL_BYTES`].
     CellSymbolTooLong { x: u16, y: u16 },
     /// The symbol of the cell at (`x`, `y`) is more than one grapheme.
@@ -757,6 +772,12 @@ impl fmt::Display for CanvasIssue {
             }
             CanvasIssue::CellControl { x, y } => {
                 write!(f, "canvas cell ({x}, {y}) holds a control character")
+            }
+            CanvasIssue::CellReserved { x, y } => {
+                write!(
+                    f,
+                    "canvas cell ({x}, {y}) holds the reserved image placeholder character"
+                )
             }
             CanvasIssue::CellSymbolTooLong { x, y } => {
                 write!(f, "canvas cell ({x}, {y}) has too long a symbol")
@@ -966,7 +987,7 @@ impl CanvasView {
     ///
     /// Widths are display widths: a wide character takes two cells (the right one is a
     /// continuation), a zero-width character (a combining mark, a variation selector, a joiner and
-    /// what it joins) is added to the cell before it, and a control character is skipped. The text
+    /// what it joins) is added to the cell before it, and a control character and the reserved image placeholder (U+10EEEE) are skipped. The text
     /// is clipped at the right edge; a wide character that does not fit whole is not written at
     /// all. Overwriting one half of a wide character blanks the other half. Nothing is written
     /// outside the canvas, and a newline is not special (it is skipped like any control).
@@ -1153,6 +1174,7 @@ impl CanvasView {
             match symbol_fault(&cell.symbol) {
                 None => {}
                 Some(SymbolFault::Control) => return Err(CanvasIssue::CellControl { x, y }),
+                Some(SymbolFault::Reserved) => return Err(CanvasIssue::CellReserved { x, y }),
                 Some(SymbolFault::TooLong) => return Err(CanvasIssue::CellSymbolTooLong { x, y }),
                 Some(SymbolFault::NotOne) => return Err(CanvasIssue::CellNotOneGrapheme { x, y }),
                 Some(SymbolFault::BadWidth) => return Err(CanvasIssue::CellBadWidth { x, y }),
@@ -1194,15 +1216,24 @@ fn is_halfwidth_sound_mark(c: char) -> bool {
 /// The columns one character takes by itself (`None` for a control character). A halfwidth sound
 /// mark is a column of its own, as in [`symbol_width`].
 fn char_width(c: char) -> Option<usize> {
+    if c == KITTY_PLACEHOLDER {
+        return None;
+    }
     if is_halfwidth_sound_mark(c) {
         return Some(1);
     }
     c.width()
 }
 
+/// The kitty graphics protocol's Unicode placeholder. The host draws its own images with it, so a
+/// plugin's cell must never hold it (the colour of such a cell would pick one of the host's
+/// images).
+pub const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
+
 /// What is wrong with a non-empty cell symbol.
 enum SymbolFault {
     Control,
+    Reserved,
     TooLong,
     NotOne,
     BadWidth,
@@ -1222,6 +1253,9 @@ fn symbol_fault(symbol: &str) -> Option<SymbolFault> {
     }
     if symbol.chars().any(char::is_control) {
         return Some(SymbolFault::Control);
+    }
+    if symbol.contains(KITTY_PLACEHOLDER) {
+        return Some(SymbolFault::Reserved);
     }
     if symbol.graphemes(true).nth(1).is_some() {
         return Some(SymbolFault::NotOne);

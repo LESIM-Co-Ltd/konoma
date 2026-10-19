@@ -8,6 +8,6 @@ pub use crate::settings::{Settings, Value};
 pub use crate::style::{Color, Line, Modifier, Span, Style};
 pub use crate::t;
 pub use crate::text::Tr;
-pub use crate::view::{CanvasCell, CanvasImage, CanvasView, CellRect};
+pub use crate::view::{CanvasCell, CanvasImage, CanvasView, CellRect, ImageData};
 pub use crate::view::{Layout, ReprDecl, View, ViewReq};
 pub use crate::{Act, Bind, Input, Manifest, SettingDecl};

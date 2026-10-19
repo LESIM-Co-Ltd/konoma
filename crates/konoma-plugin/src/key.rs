@@ -80,6 +80,7 @@ impl BitOrAssign for KeyMods {
 /// `key == Key::char('A')` works on every terminal and in tests. `SHIFT` can still come with the
 /// other keys (`Shift-Left`, `Shift-Enter`). `CTRL` and `ALT` are reported as they are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Key {
     pub code: KeyCode,
     pub mods: KeyMods,

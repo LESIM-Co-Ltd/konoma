@@ -93,6 +93,7 @@ All notable changes to konoma are documented in this file. The format is based o
   exception: the text mermaid diagram (`[ui] mermaid = "text"`, and `R` on a `.mmd` file) is laid out at the preview's real
   width again, as it was in v0.31.0, instead of a fixed 80 columns (it is measured when the file is opened; it is not laid out
   again when the window is resized).
+- **Temporary `demo-canvas` build feature.** `cargo run --features demo-canvas -- samples/demo.konoma-demo` shows a canvas plugin (a ratatui clock with a gauge, a picture and a line editor) in a real terminal; `KONOMA_CANVAS_TRACE=<file>` logs what the canvas does. It is not in any default build, is not a supported option, and is removed when plugins can be loaded from outside (stage 3).
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its

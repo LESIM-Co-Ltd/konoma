@@ -357,7 +357,9 @@ fn the_example_ignores_ctrl_and_alt_keys_in_the_line_editor() {
     s.act("edit", &ActCx::bare()).unwrap();
     let ctrl_c = Key::new(KeyCode::Char('c')).with_mods(KeyMods::CTRL);
     let alt_x = Key::new(KeyCode::Char('x')).with_mods(KeyMods::ALT);
-    let out = send_keys(&mut *s, &[ctrl_c, alt_x, Key::char('a')]).unwrap();
+    let out = send_keys(&mut *s, &[ctrl_c, alt_x, Key::char('a')])
+        .outcomes()
+        .unwrap();
     assert_eq!(
         out,
         vec![Outcome::Unhandled, Outcome::Unhandled, Outcome::Redraw]
@@ -431,19 +433,25 @@ fn keys_typed_in_input_mode_appear_and_esc_leaves() {
 
     let mut keys: Vec<Key> = "ab".chars().map(Key::char).collect();
     keys.push(Key::paste("日本"));
-    send_keys(&mut *s, &keys).unwrap();
+    send_keys(&mut *s, &keys).outcomes().unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
     assert!(t.rows.iter().any(|r| r.contains("> ab日本█")), "{t}");
 
-    send_keys(&mut *s, &[Key::new(KeyCode::Backspace)]).unwrap();
+    send_keys(&mut *s, &[Key::new(KeyCode::Backspace)])
+        .outcomes()
+        .unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
     assert!(t.rows.iter().any(|r| r.contains("> ab日█")), "{t}");
 
-    send_keys(&mut *s, &[Key::new(KeyCode::Enter)]).unwrap();
+    send_keys(&mut *s, &[Key::new(KeyCode::Enter)])
+        .outcomes()
+        .unwrap();
     let t = CanvasText::of(&view_canvas(&mut *s, &req).unwrap());
     assert!(t.rows.iter().any(|r| r.contains("- ab日")), "{t}");
 
-    send_keys(&mut *s, &[Key::new(KeyCode::Esc)]).unwrap();
+    send_keys(&mut *s, &[Key::new(KeyCode::Esc)])
+        .outcomes()
+        .unwrap();
     let c = view_canvas(&mut *s, &req).unwrap();
     assert!(!c.text_input, "Esc leaves the input state");
 }
@@ -462,6 +470,7 @@ fn a_declared_action_is_gated_by_enabled_and_clears_the_notes() {
             Key::new(KeyCode::Esc),
         ],
     )
+    .outcomes()
     .unwrap();
     assert!(s.enabled("clear"));
     assert!(CanvasText::of(&view_canvas(&mut *s, &req).unwrap())
@@ -561,7 +570,7 @@ fn demo_rows(lang: &str, cols: u16, rows: u16, keys: &[Key], edit: bool) -> Canv
     if edit {
         s.act("edit", &ActCx::bare()).unwrap();
     }
-    send_keys(&mut *s, keys).unwrap();
+    send_keys(&mut *s, keys).outcomes().unwrap();
     let cx = ViewCx::new(Settings::empty(), lang);
     CanvasText::of(&view_canvas_with(&mut *s, &ViewReq::new(cols, rows), &cx).unwrap())
 }
@@ -710,4 +719,17 @@ fn the_demo_action_labels_do_not_collide_with_the_hosts_edit_key() {
         (label("colour_next", "en"), label("colour_next", "ja")),
         ("colour".into(), "色".into())
     );
+}
+
+#[test]
+fn the_kitty_placeholder_becomes_a_blank_and_the_canvas_passes_check() {
+    let mut b = buf(3, 1);
+    b[(0, 0)].set_symbol("\u{10EEEE}");
+    b[(1, 0)].set_symbol("\u{10EEEE}\u{0305}");
+    b[(2, 0)].set_symbol("z");
+    let c = canvas_from_buffer(&b);
+    assert_eq!(sym(&c, 0, 0), " ");
+    assert_eq!(sym(&c, 1, 0), " ");
+    assert_eq!(sym(&c, 2, 0), "z");
+    assert!(c.check().is_ok());
 }

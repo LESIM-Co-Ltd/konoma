@@ -190,21 +190,51 @@ impl std::fmt::Display for CanvasText {
     }
 }
 
+/// The answers to a run of keys ([`send_keys`]): one result per key, in order.
+///
+/// The run does not stop at a failure, as the host does not: a failed key is told to the user and
+/// the next key is still delivered. [`KeyRun::outcomes`] gives the successes when every key
+/// worked; [`KeyRun::failures`] lists the failures.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct KeyRun {
+    /// What each key answered, in the order the keys were sent.
+    pub results: Vec<Result<Outcome, Failure>>,
+}
+
+impl KeyRun {
+    /// The outcome of every key, or the first failure (all the keys were sent either way).
+    pub fn outcomes(self) -> Result<Vec<Outcome>, Failure> {
+        self.results.into_iter().collect()
+    }
+
+    /// The failures, in order.
+    pub fn failures(&self) -> Vec<&Failure> {
+        self.results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .collect()
+    }
+
+    /// Whether every key worked.
+    pub fn is_ok(&self) -> bool {
+        self.results.iter().all(Result::is_ok)
+    }
+}
+
 /// Send `keys` to a session one by one with default contexts, as the host does while the view
-/// asks for text input, and return each answer in order. The first failure stops the run and is
-/// returned.
-pub fn send_keys(session: &mut dyn Session, keys: &[Key]) -> Result<Vec<Outcome>, Failure> {
+/// asks for text input, and return each answer in order. Like the host, it does not stop at a
+/// failed key: every key is delivered and each failure is in the [`KeyRun`].
+pub fn send_keys(session: &mut dyn Session, keys: &[Key]) -> KeyRun {
     send_keys_with(session, keys, &ActCx::bare())
 }
 
 /// [`send_keys`] with an explicit context (the file, the settings and the terminal the host would
 /// pass).
-pub fn send_keys_with(
-    session: &mut dyn Session,
-    keys: &[Key],
-    cx: &ActCx,
-) -> Result<Vec<Outcome>, Failure> {
-    keys.iter().map(|k| session.key(k, cx)).collect()
+pub fn send_keys_with(session: &mut dyn Session, keys: &[Key], cx: &ActCx) -> KeyRun {
+    KeyRun {
+        results: keys.iter().map(|k| session.key(k, cx)).collect(),
+    }
 }
 
 /// A file made from bytes held in memory, removed when dropped. Keep it alive as long as the

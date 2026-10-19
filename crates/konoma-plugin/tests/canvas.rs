@@ -572,7 +572,9 @@ fn session_key_defaults_to_unhandled() {
     let out = s.key(&Key::char('a'), &ActCx::bare()).unwrap();
     assert_eq!(out, Outcome::Unhandled);
     assert_eq!(
-        send_keys(&mut s, &[Key::char('a'), Key::paste("zz")]).unwrap(),
+        send_keys(&mut s, &[Key::char('a'), Key::paste("zz")])
+            .outcomes()
+            .unwrap(),
         vec![Outcome::Unhandled, Outcome::Unhandled]
     );
 }
@@ -584,6 +586,7 @@ fn send_keys_reaches_the_session_in_order() {
         s.as_mut(),
         &[Key::char('h'), Key::char('i'), Key::paste(" there")],
     )
+    .outcomes()
     .unwrap();
     assert_eq!(outs, vec![Outcome::Redraw; 3]);
     let c = view_canvas(s.as_mut(), &ViewReq::new(20, 2)).unwrap();
@@ -592,7 +595,7 @@ fn send_keys_reaches_the_session_in_order() {
         vec!["hi there".to_string(), String::new()]
     );
     assert!(c.text_input);
-    assert!(send_keys(s.as_mut(), &[]).unwrap().is_empty());
+    assert!(send_keys(s.as_mut(), &[]).outcomes().unwrap().is_empty());
 }
 
 // ---- testing helpers ----

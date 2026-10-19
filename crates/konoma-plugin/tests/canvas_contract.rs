@@ -70,6 +70,51 @@ fn check_rejects_every_kind_of_control_character_in_a_symbol() {
 }
 
 #[test]
+fn check_rejects_the_kitty_placeholder_alone_or_with_marks() {
+    for bad in [
+        "\u{10EEEE}",
+        "\u{10EEEE}\u{0305}",
+        "\u{10EEEE}\u{0305}\u{0305}",
+        "a\u{10EEEE}",
+    ] {
+        let r = with_symbol(3, 1, bad).check();
+        assert!(
+            matches!(
+                r,
+                Err(CanvasIssue::CellReserved { x: 1, y: 0 })
+                    | Err(CanvasIssue::CellNotOneGrapheme { x: 1, y: 0 })
+            ),
+            "{bad:?}: {r:?}"
+        );
+    }
+    assert_eq!(
+        with_symbol(3, 1, "\u{10EEEE}").check(),
+        Err(CanvasIssue::CellReserved { x: 1, y: 0 })
+    );
+    assert_eq!(
+        with_symbol(3, 1, "\u{10EEEE}\u{0305}\u{0305}").check(),
+        Err(CanvasIssue::CellReserved { x: 1, y: 0 })
+    );
+    assert!(!konoma_plugin::view::CanvasCell::is_plain_symbol(
+        "\u{10EEEE}"
+    ));
+}
+
+#[test]
+fn set_string_skips_the_kitty_placeholder_and_never_joins_it() {
+    let mut c = konoma_plugin::view::CanvasView::new(6, 1);
+    let took = c.set_string(
+        0,
+        0,
+        "a\u{10EEEE}\u{0305}b\u{200D}\u{10EEEE}c",
+        konoma_plugin::Style::new(),
+    );
+    assert!(c.check().is_ok());
+    assert!(c.cells.iter().all(|x| !x.symbol.contains('\u{10EEEE}')));
+    assert!(took <= 4, "{took}");
+}
+
+#[test]
 fn check_accepts_ordinary_symbols() {
     for good in [
         " ",

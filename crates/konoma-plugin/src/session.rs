@@ -65,6 +65,10 @@ pub trait Session: Send {
 
 /// How many colors the terminal shows. The host does not convert a plugin's colors: a plugin
 /// that draws its own cells ([`crate::view::CanvasView`]) picks colors by this.
+///
+/// The variants are ordered by capability, the fewest colors first, so `depth >= ColorDepth::Ansi256`
+/// means "at least 256 colors". A new variant keeps this order (a lesser one goes before
+/// `Ansi16`, a richer one after `TrueColor`), so such a comparison stays right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ColorDepth {
@@ -197,8 +201,11 @@ context!(
     ActCx
 );
 
-/// The result of an action.
+/// The result of an action ([`Session::act`]) or of a key ([`Session::key`]).
+///
+/// More may be added later: match with a `_` arm (an outcome you do not know asks for nothing).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// Not an action of this session.
     Unhandled,

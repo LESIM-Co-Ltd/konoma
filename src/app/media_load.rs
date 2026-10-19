@@ -391,7 +391,8 @@ impl App {
                     self.plugin_request_view(req);
                 }
             }
-            Some(konoma_plugin::Outcome::Unhandled) | None => {}
+            // `Outcome` is non-exhaustive: an outcome this host does not know asks for nothing.
+            Some(konoma_plugin::Outcome::Unhandled) | Some(_) | None => {}
         }
         // The session is back. The redraw timer is armed again as for a landed answer (a tick
         // skipped while this job was out would otherwise stop the animation), and what waited for
