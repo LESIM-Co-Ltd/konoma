@@ -1024,14 +1024,6 @@ pub(crate) fn run_command_job(
     .run()
 }
 
-/// Decode a still image for the full-screen preview: the picture, or why there is none.
-fn still_payload(path: &Path) -> MediaPayload {
-    match crate::preview::image::decode_static_why(path) {
-        Ok(img) => MediaPayload::Static(img),
-        Err(why) => MediaPayload::ImageFailed(why),
-    }
-}
-
 /// Result of the **heavy ignored set (`git::ignored`)** computed on a separate thread. Staleness is judged by `gen`, and
 /// only the latest generation is applied (results from after moving to another repo while computing are discarded). `workdir` is the
 /// repo workdir being computed; on apply it is put into `git_ignored_for` to serve as the Phase G cache key.
@@ -1668,6 +1660,9 @@ pub struct App {
     /// `plugin_session_returned` is running (0 = no, 1 = running, 2 = running and asked again):
     /// an answer taken on the spot inside it only marks "more to do", the outer loop goes on.
     plugin_returning: u8,
+    /// `plugin_session_returned` stopped at its per-call bound with work left (answers taken on
+    /// the spot keep asking for more): the run loop continues it next turn.
+    plugin_returned_pending: bool,
     /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
     canvas_redraw_at: Option<std::time::Instant>,
     /// When the host last asked the plugin again because canvas pictures were left for later (the
@@ -1738,7 +1733,8 @@ pub struct App {
     /// not re-read a workbook of hundreds of megabytes.
     plugin_stamp: Option<FileStamp>,
     /// Set while the user's own refresh (`r`) runs: a plugin's file is read again whatever its
-    /// stamp says (`plugin_file_unchanged`), because the user asked for it.
+    /// stamp says (`plugin_file_unchanged`), because the user asked for it. Only a canvas show
+    /// honours it; every other plugin keeps the stamp rule.
     plugin_reopen_forced: bool,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
@@ -2847,9 +2843,33 @@ fn reserve_proto_slot(
     frame: u64,
     cap: usize,
 ) -> usize {
+    reserve_proto_slot_inner(slots, key, frame, cap, false).expect("the soft family always grows")
+}
+
+/// [`reserve_proto_slot`] with a **hard** ceiling: when every slot of the family is live in this
+/// frame (and the family is already at `cap`), there is no slot to give (`None`) instead of the
+/// family growing. For a canvas picture, whose plugin is not trusted to place one picture at few
+/// sizes: its encodes can never outgrow `MD_PROTO_SLOTS`. (An honest canvas places an id at one
+/// size, `CanvasView::check`, so it never gets here.)
+fn reserve_proto_slot_hard(
+    slots: &mut Vec<MdProtoSlot>,
+    key: MdEncodeKey,
+    frame: u64,
+    cap: usize,
+) -> Option<usize> {
+    reserve_proto_slot_inner(slots, key, frame, cap, true)
+}
+
+fn reserve_proto_slot_inner(
+    slots: &mut Vec<MdProtoSlot>,
+    key: MdEncodeKey,
+    frame: u64,
+    cap: usize,
+    hard: bool,
+) -> Option<usize> {
     if let Some(i) = slots.iter().position(|s| s.key == key) {
         slots[i].used = frame;
-        return i;
+        return Some(i);
     }
     let fresh = MdProtoSlot {
         key,
@@ -2866,11 +2886,14 @@ fn reserve_proto_slot(
             .map(|(i, _)| i);
         if let Some(i) = lru {
             slots[i] = fresh;
-            return i;
+            return Some(i);
+        }
+        if hard {
+            return None;
         }
     }
     slots.push(fresh);
-    slots.len() - 1
+    Some(slots.len() - 1)
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -3572,6 +3595,7 @@ impl App {
             plugin_user_act: false,
             plugin_user_act_gen: 0,
             plugin_returning: 0,
+            plugin_returned_pending: false,
             canvas_redraw_at: None,
             canvas_more_at: None,
             img_tx: None,
@@ -5101,6 +5125,13 @@ impl App {
     /// Reopen the preview after the external editor exits (reflect the edited content). Caches are also discarded.
     /// Even if the editor replaces the file (temp→rename), the FileWindow is reopened so the latest is read.
     pub fn reload_preview(&mut self) {
+        self.reload_preview_named(false);
+    }
+
+    /// [`App::reload_preview`]. `named` is true when the FS event names the shown file itself:
+    /// then a plugin's file is opened again without consulting its stamp (a coarse-mtime
+    /// filesystem can leave the stamp equal across a real rewrite).
+    pub(crate) fn reload_preview_named(&mut self, named: bool) {
         self.md_cache = None;
         self.win_cache = None;
         // The ordinary preview's own change-gutter baseline (`docs/STATUS.md` ★未修正 item 4) is a
@@ -5118,7 +5149,7 @@ impl App {
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
                 && !self.shows_file_text_plugin()
             {
-                if !self.plugin_file_unchanged() {
+                if named || !self.plugin_file_unchanged() {
                     self.reload_plugin();
                 }
                 self.clamp_table_cursor();
@@ -5137,13 +5168,16 @@ impl App {
         let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
             return false;
         };
-        if self.plugin_reopen_forced {
+        let canvas = crate::plugins::profile_of(id).canvas;
+        // The user's own `r` forces a reopen only for a canvas (a state of its own the user may
+        // want rebuilt); every other plugin keeps the stamp rule, as before.
+        if self.plugin_reopen_forced && canvas {
             return false;
         }
         let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
             .manifest(id)
             .is_some_and(|m| m.work_group.is_some())
-            || crate::plugins::profile_of(id).canvas;
+            || canvas;
         heavy
             && self
                 .plugin

@@ -295,8 +295,11 @@ impl App {
         let changed = self.apply_media_result(result);
         // Whatever the result was (current, stale, another plugin's that freed a work group), what
         // waited for the session -- the keys typed meanwhile, the actions pressed, a view asked
-        // for -- goes now.
-        self.plugin_session_returned();
+        // for -- goes now. (Not when the install above already stopped at its per-call bound:
+        // the run loop continues that next turn, and a second call here would double the bound.)
+        if !self.plugin_returned_pending() {
+            self.plugin_session_returned();
+        }
         changed
     }
 
@@ -501,7 +504,9 @@ impl App {
     /// Decide whether it is a GIF by the leading bytes (looks at the magic, not the extension).
     pub(super) fn looks_like_gif(path: &Path) -> bool {
         use std::io::Read;
-        let Ok(mut f) = std::fs::File::open(path) else {
+        // The previewed file itself, which may be a FIFO or a device the user selected in the
+        // tree: only a regular file is opened (and never blocking), on the UI thread too.
+        let Ok(mut f) = super::canvas_images::open_regular_picture(path) else {
             return false;
         };
         let mut head = [0u8; 6];

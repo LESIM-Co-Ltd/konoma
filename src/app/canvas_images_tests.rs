@@ -187,6 +187,52 @@ fn file_hash_follows_the_modification_time_when_the_size_is_the_same() {
 }
 
 #[test]
+fn file_hash_follows_the_inode_and_the_change_time_with_size_and_modification_time_kept() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = crate::test_support::unique_tmp("cvi_fileinode");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("p.png");
+    let t0 = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let put_back = |p: &Path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(t0)
+            .unwrap();
+    };
+    std::fs::write(&f, b"aaaa").unwrap();
+    put_back(&f);
+    let a = content_hash(&ImageData::File(f.to_path_buf()));
+    // Replaced by another file of the same size with the same modification time (what `cp -p`,
+    // `rsync -t` and a rename do): another inode.
+    let other = dir.join("other.png");
+    std::fs::write(&other, b"bbbb").unwrap();
+    put_back(&other);
+    std::fs::rename(&other, &f).unwrap();
+    let b = content_hash(&ImageData::File(f.to_path_buf()));
+    assert_ne!(a, b, "a replacement with the size and the time kept");
+    // Rewritten in place, the time put back: the inode is the same, the change time moved.
+    let ino = std::fs::metadata(&f).unwrap().ino();
+    let mut before = std::fs::metadata(&f).unwrap().ctime_nsec();
+    let mut moved = false;
+    for _ in 0..200 {
+        std::fs::write(&f, b"cccc").unwrap();
+        put_back(&f);
+        let m = std::fs::metadata(&f).unwrap();
+        assert_eq!(m.ino(), ino);
+        if m.ctime_nsec() != before {
+            moved = true;
+            break;
+        }
+        before = m.ctime_nsec();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(moved, "the file system never moved the change time");
+    assert_ne!(b, content_hash(&ImageData::File(f.to_path_buf())));
+}
+
+#[test]
 fn the_hash_follows_every_part_of_every_kind() {
     let bytes = |s: &str| -> Arc<[u8]> { Arc::from(s.as_bytes()) };
     let enc = |s: &str| ImageData::Encoded(bytes(s));
@@ -2271,6 +2317,15 @@ fn animation(n: usize, c: u8) -> ImageData {
     )
 }
 
+/// An animation of `n` frames of `w` x `h` pixels.
+fn animation_of(n: usize, w: u32, h: u32) -> ImageData {
+    ImageData::Frames(
+        (0..n)
+            .map(|i| (rgba(w, h, i as u8), Duration::from_millis(100)))
+            .collect(),
+    )
+}
+
 #[test]
 fn the_table_a_job_gets_shares_the_kept_data_instead_of_copying_it() {
     // A thousand-frame animation kept for later: the copy of the table that goes with every job
@@ -2348,12 +2403,12 @@ fn landing_frees_the_replaced_kept_table_off_the_ui_thread() {
 }
 
 #[test]
-fn every_frame_of_an_animation_is_a_decode_of_the_answer() {
-    // decodes = 4: a 3-frame animation takes 3; the next 3-frame one does not fit next to it and
+fn every_svg_frame_of_an_animation_is_a_decode_of_the_answer() {
+    // decodes = 4: a 3-frame SVG animation takes 3; the next 3-frame one does not fit next to it and
     // waits (kept, not failed); a still after it takes the last one.
     let c = canvas_of(vec![
-        im(1, animation(3, 10)),
-        im(2, animation(3, 50)),
+        im(1, svg_animation_seeded(3, 10)),
+        im(2, svg_animation_seeded(3, 50)),
         im(3, rgba(1, 1, 99)),
     ]);
     let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
@@ -2388,20 +2443,104 @@ fn every_frame_of_an_animation_is_a_decode_of_the_answer() {
     assert!(matches!(next.fresh[0].1, CanvasDecoded::Frames(_)));
 }
 
+/// An animation of `n` SVG frames (each is a child-process decode).
+fn svg_animation(n: usize) -> ImageData {
+    svg_animation_seeded(n, 0)
+}
+
+fn svg_animation_seeded(n: usize, seed: u8) -> ImageData {
+    ImageData::Frames(
+        (0..n)
+            .map(|i| {
+                (
+                    ImageData::Svg {
+                        data: Arc::from(
+                            format!(
+                                "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'><rect width='4' height='4' fill='#{:02x}0000'/></svg>",
+                                (i as u8).wrapping_add(seed)
+                            )
+                            .into_bytes(),
+                        ),
+                        base_dir: None,
+                        trusted: false,
+                    },
+                    Duration::from_millis(100),
+                )
+            })
+            .collect(),
+    )
+}
+
 #[test]
-fn an_animation_with_more_frames_than_the_budget_still_runs_when_it_is_first() {
-    // Progress is never starved: the first picture of an answer is decoded however many frames
-    // it has; what follows waits.
-    let c = canvas_of(vec![im(1, animation(10, 1)), im(2, rgba(1, 1, 7))]);
+fn a_raster_animation_of_many_frames_is_decoded_and_svg_frames_count_against_the_budget() {
+    // Raster frames are cheap: a 100-frame animation decodes in one answer although the budget is
+    // 4 decodes; only its input bytes are bounded.
+    let c = canvas_of(vec![im(1, animation(100, 1)), im(2, rgba(1, 1, 7))]);
     let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
-    assert_eq!(got.fresh.len(), 1);
-    assert!(matches!(got.fresh[0].1, CanvasDecoded::Frames(_)));
+    assert_eq!(got.fresh.len(), 2, "raster frames cost no decode");
+    assert!(got
+        .fresh
+        .iter()
+        .any(|(_, d)| matches!(d, CanvasDecoded::Frames(f) if f.len() == 100)));
+    // SVG frames each are a decode: more of them than the budget is refused for good, wherever
+    // it stands, and never run as 40 child decodes in one answer.
+    for order in [true, false] {
+        let mut v = vec![im(1, svg_animation(40)), im(2, rgba(1, 1, 7))];
+        if !order {
+            v.reverse();
+        }
+        let got = decode_within(&canvas_of(v), &nothing_held(), small(|l| l.decodes = 32));
+        let key = got
+            .places
+            .iter()
+            .find(|p| p.id == 1)
+            .unwrap()
+            .key
+            .clone()
+            .unwrap();
+        let (_, d) = got
+            .fresh
+            .iter()
+            .find(|(k, _)| k.to_str() == Some(&*key))
+            .unwrap();
+        assert!(matches!(
+            d,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
+        ));
+        assert_eq!(got.waiting, 0);
+    }
+    // One that fits the budget by itself runs when first and waits behind what used the budget.
+    let fits = canvas_of(vec![im(1, svg_animation(4)), im(2, rgba(1, 1, 7))]);
+    let got = decode_within(&fits, &nothing_held(), small(|l| l.decodes = 4));
+    assert!(got
+        .fresh
+        .iter()
+        .any(|(_, d)| matches!(d, CanvasDecoded::Frames(_))));
     assert_eq!(got.waiting, 1);
-    // And one that has to wait behind a smaller picture is decoded first thing in a later answer.
-    let c = canvas_of(vec![im(2, rgba(1, 1, 7)), im(1, animation(10, 1))]);
-    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 4));
+    let behind = canvas_of(vec![im(2, rgba(1, 1, 7)), im(1, svg_animation(4))]);
+    let got = decode_within(&behind, &nothing_held(), small(|l| l.decodes = 4));
     assert_eq!(got.fresh.len(), 1, "the still first, the animation waits");
     assert_eq!(got.waiting, 1);
+}
+
+#[test]
+fn an_animation_with_more_input_than_the_budget_is_refused_but_a_single_image_is_not() {
+    // Frames of 100x100 pixels (40,000 bytes each) against an input budget of 100,000: three
+    // frames are 120,000 > 100,000 and are refused as one animation; one single image of 40,000
+    // bytes is decoded as the first of an answer even when the budget is 1 byte (an answer
+    // makes progress).
+    let big = canvas_of(vec![im(1, animation_of(3, 100, 100))]);
+    let got = decode_within(&big, &nothing_held(), small(|l| l.input_bytes = 100_000));
+    assert!(matches!(
+        got.fresh[0].1,
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
+    ));
+    let ok = canvas_of(vec![im(1, animation_of(2, 100, 100))]);
+    let got = decode_within(&ok, &nothing_held(), small(|l| l.input_bytes = 100_000));
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Frames(_)));
+    let single = canvas_of(vec![im(1, rgba(100, 100, 3))]);
+    let got = decode_within(&single, &nothing_held(), small(|l| l.input_bytes = 1));
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Still(_)));
 }
 
 // ---- leaving the program deletes the canvas pictures from the terminal (S6) --------------------
@@ -2682,4 +2821,31 @@ fn a_gif_file_is_an_animation_read_from_the_opened_handle() {
         panic!("a GIF file with two frames is an animation");
     };
     assert_eq!(f.len(), 2);
+}
+
+#[test]
+fn a_canvas_pictures_encode_slots_never_grow_past_the_cap() {
+    use crate::app::{reserve_proto_slot_hard, MdEncodeKey, MD_PROTO_SLOTS};
+    let key = |n: u16| MdEncodeKey::Full { cols: n, rows: 1 };
+    let mut slots = Vec::new();
+    // One frame wants more keys than the family can hold: it is held at the cap, the rest get no
+    // slot (their cells stay), where a document's family would grow by one each.
+    let mut given = 0;
+    for n in 1..=50u16 {
+        if reserve_proto_slot_hard(&mut slots, key(n), 10, MD_PROTO_SLOTS).is_some() {
+            given += 1;
+        }
+    }
+    assert_eq!(given, MD_PROTO_SLOTS);
+    assert_eq!(slots.len(), MD_PROTO_SLOTS);
+    // The next frame recycles the ones the last frame did not want, still at the cap.
+    for n in 100..=150u16 {
+        let _ = reserve_proto_slot_hard(&mut slots, key(n), 11, MD_PROTO_SLOTS);
+    }
+    assert_eq!(slots.len(), MD_PROTO_SLOTS);
+    // A key that is already there is found, not duplicated.
+    let first = slots[0].key;
+    let again = reserve_proto_slot_hard(&mut slots, first, 11, MD_PROTO_SLOTS);
+    assert_eq!(again, Some(0));
+    assert_eq!(slots.len(), MD_PROTO_SLOTS);
 }

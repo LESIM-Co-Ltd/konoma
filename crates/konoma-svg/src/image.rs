@@ -664,6 +664,15 @@ pub fn decode_static_capped_why(path: &Path, max_side: u32) -> Result<DynamicIma
     decode_reader(open_reader(path)?, Some(max_side))
 }
 
+/// `decode_static_why` from a file already opened (the host opened it by its own door: a regular
+/// file only, never a second open of the path).
+pub fn decode_static_file_why(file: std::fs::File) -> Result<DynamicImage, ImageFailure> {
+    let reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|_| ImageFailure::Corrupt)?;
+    decode_reader(reader, None)
+}
+
 fn open_reader(
     path: &Path,
 ) -> Result<image::ImageReader<std::io::BufReader<std::fs::File>>, ImageFailure> {
@@ -832,6 +841,11 @@ pub fn gif_work_within_limit(canvas_px: u64, frames: usize) -> bool {
 /// and the caller falls back to the normal still-image loader (load_image).
 pub fn decode_gif(path: &Path) -> Option<GifFrames> {
     decode_gif_with_budget(path, MAX_GIF_BYTES)
+}
+
+/// `decode_gif` from a file already opened (see [`decode_static_file_why`]).
+pub fn decode_gif_file(file: std::fs::File) -> Option<GifFrames> {
+    decode_gif_from_reader(std::io::BufReader::new(file), MAX_GIF_BYTES).map(|(frames, _)| frames)
 }
 
 /// The frame target for shrink factor `shrink` against the original canvas (min 1px per side).

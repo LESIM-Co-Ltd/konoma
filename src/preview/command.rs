@@ -132,6 +132,7 @@ pub fn exit_cleanup() {
 pub(crate) enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    HoldTerminal,
     DeleteCanvasImages,
     RestoreTerminal,
 }
@@ -141,6 +142,7 @@ pub(crate) enum ExitStep {
 enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    HoldTerminal,
     DeleteCanvasImages,
     RestoreTerminal,
 }
@@ -183,11 +185,82 @@ pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>
     (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
 }
 
+/// Serializes what the program writes to the terminal in one go: a frame (a kitty transmit is a
+/// run of chunks that must not have anything written between them) and the deletes of canvas
+/// pictures. The main thread holds it for the length of a draw and of a delete flush
+/// ([`terminal_write`]); the signal thread takes it, boundedly, before it deletes pictures and
+/// restores the terminal ([`leave_for_good`]), so its escapes never land inside a transmit.
+static TERMINAL_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// This thread holds [`TERMINAL_WRITE`] (a panic hook that runs on it must not wait for itself).
+    static HOLDS_TERMINAL_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The right to write to the terminal; released on drop. Hold it for a whole draw.
+pub(crate) struct TerminalWrite {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for TerminalWrite {
+    fn drop(&mut self) {
+        HOLDS_TERMINAL_WRITE.with(|h| h.set(false));
+    }
+}
+
+/// Wait for the right to write to the terminal (the main thread's draws).
+pub(crate) fn terminal_write() -> TerminalWrite {
+    let guard = TERMINAL_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+    TerminalWrite { _guard: guard }
+}
+
+/// The same, for at most `wait`, and `None` when it was not given in time -- or when this very
+/// thread already holds it (a panic inside a draw): the exit path then goes on without it. A
+/// draw is a few milliseconds, so a signal normally waits a frame; if the main thread is stuck the
+/// exit does not wait for it for good.
+pub(crate) fn terminal_write_within(wait: Duration) -> Option<TerminalWrite> {
+    if HOLDS_TERMINAL_WRITE.with(std::cell::Cell::get) {
+        return None;
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        match TERMINAL_WRITE.try_lock() {
+            Ok(guard) => {
+                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+                return Some(TerminalWrite { _guard: guard });
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+                return Some(TerminalWrite {
+                    _guard: e.into_inner(),
+                });
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+/// How long the exit path waits for a frame in the middle of being written.
+const EXIT_TERMINAL_WAIT: Duration = Duration::from_millis(500);
+
 /// Leaving the program for good: `exit_cleanup`, then the terminal teardown. The one thing the
 /// normal exit, the signal thread and the fatal-panic hook all call, so none of them can stop
 /// short of the SVG drawing processes.
 pub fn leave_for_good() {
     exit_cleanup();
+    // Not in the middle of a frame (a transmit in chunks): wait for the draw that holds the
+    // terminal, and keep it through the deletes and the restore so the main thread cannot draw
+    // after the terminal is given back. (The restore of the terminal was always racy against a
+    // draw in progress; with this it no longer is, apart from a main thread stuck for longer than
+    // the wait, where the exit goes on without it.)
+    note_exit_step(ExitStep::HoldTerminal);
+    let _terminal = terminal_write_within(EXIT_TERMINAL_WAIT);
     // The pictures a plugin's canvas put on a kitty-graphics terminal stay in the terminal's image
     // storage after the program is gone: delete them while the terminal is still ours.
     if dry_run() {
@@ -1221,6 +1294,7 @@ mod tests {
         let all = vec![
             ExitStep::StopSvgProcesses,
             ExitStep::RemoveTempDir,
+            ExitStep::HoldTerminal,
             ExitStep::DeleteCanvasImages,
             ExitStep::RestoreTerminal,
         ];
@@ -1238,6 +1312,53 @@ mod tests {
             assert_eq!(code, Some(128 + sig));
             assert_eq!(steps, all, "signal {sig}");
         }
+    }
+
+    /// The signal thread's escapes never land inside a frame the main thread is writing: it waits
+    /// for the draw that holds the terminal. (A transmit is a run of chunks; a delete between two
+    /// of them is taken for part of the transmit and the picture stays in the terminal.)
+    #[test]
+    fn the_exit_path_waits_for_the_frame_being_written_and_never_lands_inside_it() {
+        use std::sync::mpsc::channel;
+        use std::sync::{Arc, Mutex};
+        let wire = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (go_tx, go_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel::<()>();
+        let w = wire.clone();
+        let exit = std::thread::spawn(move || {
+            go_rx.recv().unwrap();
+            // The signal thread: waits for the frame, then writes its delete.
+            let held = terminal_write_within(Duration::from_secs(30));
+            assert!(held.is_some(), "given the terminal once the frame is done");
+            w.lock().unwrap().push("delete");
+            drop(held);
+            done_tx.send(()).unwrap();
+        });
+        {
+            // The main thread: a frame in chunks.
+            let _frame = terminal_write();
+            wire.lock().unwrap().push("chunk 1");
+            go_tx.send(()).unwrap();
+            // Had the exit path not waited, it would be done well within this time.
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+                "the exit path wrote while a frame was being written"
+            );
+            wire.lock().unwrap().push("chunk 2");
+        }
+        done_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        exit.join().unwrap();
+        assert_eq!(*wire.lock().unwrap(), ["chunk 1", "chunk 2", "delete"]);
+        // A thread that holds the terminal itself (a panic inside a draw) does not wait for
+        // itself, and a stuck holder is given up on after the wait.
+        let _mine = terminal_write();
+        assert!(terminal_write_within(Duration::from_secs(30)).is_none());
+        let stuck =
+            std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none());
+        assert!(
+            stuck.join().unwrap(),
+            "the exit goes on without a stuck frame"
+        );
     }
 
     /// What does not end the process does not clean up: a caught panic or a worker's panic, and

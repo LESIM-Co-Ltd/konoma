@@ -1206,7 +1206,24 @@ impl App {
             let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
             (Some((0, y0, dw, h)), vis_rows)
         };
-        let slot = reserve_proto_slot(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS);
+        // A canvas picture's family is capped for good (its plugin is not trusted to place one
+        // picture at few sizes); a document's grows by one when every slot is live.
+        let canvas = path
+            .to_str()
+            .is_some_and(|p| crate::preview::markdown::canvas_slot_of(p).is_some());
+        let slot = if canvas {
+            reserve_proto_slot_hard(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS)
+        } else {
+            Some(reserve_proto_slot(
+                entry.slots_mut(&enc_key),
+                enc_key,
+                frame,
+                MD_PROTO_SLOTS,
+            ))
+        };
+        let Some(slot) = slot else {
+            return; // the cells stay under this placement
+        };
         let kitty = kitty_id_for(ids, &path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let born = entry.born;

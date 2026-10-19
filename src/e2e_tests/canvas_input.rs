@@ -368,11 +368,15 @@ fn open(name: &str) -> Opened {
 /// Apply plugin answers until no job is out.
 #[track_caller]
 fn settle(s: &mut Sim) {
-    for _ in 0..20 {
-        if !s.app.is_media_loading() {
+    for _ in 0..400 {
+        // What the host left at its per-call bound goes next turn, as in the run loop.
+        s.app.plugin_returned_continue();
+        if !s.app.is_media_loading() && !s.app.plugin_returned_pending() {
             return;
         }
-        s.drain_plugin();
+        if s.app.is_media_loading() {
+            s.drain_plugin();
+        }
     }
     panic!("a plugin job is still out after 20 answers");
 }
@@ -1638,6 +1642,69 @@ fn e2e_canvas_queued_actions_answered_on_the_spot_do_not_recurse() {
     assert!(!o.s.app.plugin_session_is_out_for_test());
 }
 
+/// One call of the host's "the session is back" step does a bounded amount, and the run loop
+/// comes back for the rest: 256 actions answered on the spot do not hold the UI thread for all
+/// of them at once. The order is unchanged.
+#[test]
+fn e2e_canvas_queued_actions_are_taken_a_bounded_amount_per_turn_in_order() {
+    let mut o = open_with("cj_acts_bound", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        *sh.after.lock().unwrap() = Some(AFTER);
+    });
+    o.sh.hold_views.store(true, Ordering::SeqCst);
+    o.s.app.set_canvas_redraw_at_for_test(Some(Instant::now()));
+    assert!(o.s.app.canvas_redraw_if_due(Instant::now() + AFTER * 4));
+    o.sh.hold_views.store(false, Ordering::SeqCst);
+    let cap = crate::app::MAX_QUEUED_ACTS;
+    let mut expected = Vec::new();
+    for i in 0..cap {
+        let (key, name) = if i % 2 == 0 {
+            ('z', "second")
+        } else {
+            ('x', "refresh")
+        };
+        o.s.key(key);
+        expected.push(name.to_string());
+    }
+    o.sh.latch.open();
+    let _inline = crate::app::InlineAnswers::force();
+    // The held job's answer arrives: the queue is taken from there, a bounded amount.
+    assert!(!o.s.app.plugin_returned_pending());
+    o.s.drain_plugin();
+    let first = o.sh.acts().len();
+    assert!(
+        (1..=8).contains(&first),
+        "one call does a bounded amount, not all {cap}: {first}"
+    );
+    assert!(
+        o.s.app.plugin_returned_pending(),
+        "the rest is left for the next turn"
+    );
+    assert!(
+        o.s.app.plugin_returned_pending(),
+        "and the loop polls fast meanwhile"
+    );
+    // Each turn does a bounded amount more, in order.
+    let mut turns = 0;
+    let mut prev = first;
+    while o.s.app.plugin_returned_continue() {
+        turns += 1;
+        let now = o.sh.acts().len();
+        assert!(now - prev <= 8, "turn {turns} took {}", now - prev);
+        assert_eq!(o.sh.acts(), expected[..now].to_vec(), "in order so far");
+        prev = now;
+        if !o.s.app.is_media_loading() && !o.s.app.plugin_returned_pending() {
+            break;
+        }
+        if o.s.app.is_media_loading() {
+            o.s.drain_plugin();
+        }
+    }
+    assert!(turns >= 2, "it took several turns: {turns}");
+    settle(&mut o.s);
+    assert_eq!(o.sh.acts(), expected, "all of them, in the order pressed");
+}
+
 /// The same for keys typed while a job holds the session: they reach the plugin in order.
 #[test]
 fn e2e_canvas_queued_keys_answered_on_the_spot_do_not_recurse() {
@@ -2694,8 +2761,6 @@ fn e2e_canvas_an_fs_event_that_did_not_change_the_file_does_not_reopen_it() {
         vec![root.join(".git").join("index")],
         vec![root.join(".git").join("refs").join("heads").join("main")],
         vec![root.join("b.typ")],
-        // The file itself named, but nothing in it changed (a read, a metadata-only event).
-        vec![root.join("a.typ")],
     ] {
         o.s.app.refresh_fs_watched(false, &changed);
         o.s.draw();
@@ -2724,6 +2789,35 @@ fn e2e_canvas_an_fs_event_that_did_not_change_the_file_does_not_reopen_it() {
     // And it keeps that one through further events.
     o.s.app.refresh_fs_watched(false, &[]);
     assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens + 1);
+}
+
+#[test]
+fn e2e_canvas_an_event_naming_the_shown_file_reopens_without_asking_the_stamp() {
+    // A coarse-mtime filesystem can leave the stamp equal across a real rewrite; an event that
+    // names the shown file itself is believed. (The stamp decides only for empty / `.git`-only /
+    // other-file events, checked in the test above.)
+    let mut o = open_with("p2_named", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst)
+    });
+    let root = canon(&o.dir);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1);
+    // Nothing about the file changed: the stamp is equal.
+    o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
+    o.s.draw();
+    assert_eq!(
+        o.sh.opens.load(Ordering::SeqCst),
+        2,
+        "the named file is opened again"
+    );
+    o.s.see("sess=2");
+    // A mixed event that also names another file still reaches the shown file.
+    o.s.app
+        .refresh_fs_watched(false, &[root.join("b.typ"), root.join("a.typ")]);
+    o.s.draw();
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 3);
+    // Other-file events remain quiet.
+    o.s.app.refresh_fs_watched(false, &[root.join("b.typ")]);
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), 3);
 }
 
 #[test]

@@ -60,6 +60,8 @@ struct Painter {
     hold_on: Arc<AtomicBool>,
     hold: Arc<Latch>,
     acts_run: Arc<AtomicUsize>,
+    /// Also declares pictures (a media plugin by the host's measure).
+    declares_picture: bool,
 }
 
 impl Painter {
@@ -75,7 +77,13 @@ impl Painter {
             hold_on: Arc::default(),
             hold: Arc::default(),
             acts_run: Arc::default(),
+            declares_picture: false,
         }
+    }
+
+    fn with_picture(mut self) -> Painter {
+        self.declares_picture = true;
+        self
     }
 
     fn with_acts(mut self) -> Painter {
@@ -112,6 +120,9 @@ impl Plugin for Painter {
             } else {
                 ViewKind::Text
             });
+        if self.declares_picture {
+            m = m.shows(ViewKind::Image);
+        }
         if self.acts {
             m = m
                 .action(
@@ -344,6 +355,7 @@ fn footer(s: &Sim) -> String {
 #[track_caller]
 fn settle(s: &mut Sim) {
     for _ in 0..20 {
+        s.app.plugin_returned_continue();
         // Draw first: an answer applied on the spot (a worker faster than the host's wait) is
         // not followed by a drain, and the screen would still show the frame before it.
         s.draw();
@@ -621,6 +633,65 @@ fn e2e_canvas_resize_asks_again_with_the_new_size_and_only_then() {
     o.s.draw();
     o.s.see("size=98x26");
     assert_eq!(o.p.requests().len(), before + 2);
+}
+
+#[test]
+fn e2e_canvas_a_refit_is_answered_through_the_channel_even_when_answers_could_be_taken_on_the_spot()
+{
+    // The refit is asked from inside the draw of a frame. Were its answer taken on the spot, it
+    // would land after the body was drawn and nothing would redraw until the next key: the old
+    // size would stay on screen. It must arrive through the channel so the loop draws again.
+    let p = Painter::new("cv_refit_chan", Draw::Follow);
+    let dir = sandbox("cv_refit_chan");
+    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    let marker = test_plugins::register("cv_refit_chan", Arc::new(p.clone()));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26).with_async_plugins();
+    s.select("a.pnt");
+    s.enter();
+    settle(&mut s);
+    s.see("size=88x22");
+    let _inline = crate::app::InlineAnswers::force();
+    s.resize(70, 20);
+    assert!(
+        s.app.is_media_loading(),
+        "the answer is still in the channel, not installed inside the draw"
+    );
+    assert!(s.drain_plugin(), "applying it asks for a redraw");
+    s.see("size=68x16");
+    assert!(!s.app.is_media_loading());
+}
+
+#[test]
+fn e2e_canvas_that_also_declares_pictures_keeps_its_view_while_it_is_refit() {
+    // A canvas plugin that also declares pictures is a media plugin by the host's measure: the
+    // full-screen loading view must not replace the canvas on every refit (it would flash).
+    let p = Painter::new("cv_refit_flash", Draw::Follow).with_picture();
+    let dir = sandbox("cv_refit_flash");
+    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    let marker = test_plugins::register("cv_refit_flash", Arc::new(p.clone()));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26)
+        .with_async_plugins()
+        .with_picker();
+    s.select("a.pnt");
+    s.enter();
+    settle(&mut s);
+    s.see("size=88x22");
+    s.resize(70, 20);
+    assert!(s.app.is_media_loading(), "the refit is out");
+    // The next frame, drawn while the request is out.
+    s.draw();
+    let screen = s.screen();
+    assert!(!screen.contains("loading…"), "{screen}");
+    assert!(
+        screen.contains("size=88x22"),
+        "the old canvas stays: {screen}"
+    );
+    assert!(s.drain_plugin());
+    s.see("size=68x16");
 }
 
 #[test]

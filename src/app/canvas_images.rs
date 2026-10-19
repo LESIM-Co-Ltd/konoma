@@ -374,6 +374,7 @@ impl<'a> Hasher<'a> {
                     .shown
                     .map_or_else(|| p.to_path_buf(), |shown| resolve_picture_path(shown, p));
                 if let Ok(m) = std::fs::metadata(abs) {
+                    use std::os::unix::fs::MetadataExt;
                     h.num(m.len());
                     let t = m
                         .modified()
@@ -381,6 +382,14 @@ impl<'a> Hasher<'a> {
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |d| d.as_nanos() as u64);
                     h.num(t);
+                    // The same material as the stamp of the shown file (`FileStamp`): a file
+                    // replaced with its size and modification time kept (`cp -p`, `rsync -t`, a
+                    // rename) differs in inode, and one rewritten in place with the time put
+                    // back differs in change time.
+                    h.num(m.dev());
+                    h.num(m.ino());
+                    h.num(m.ctime() as u64);
+                    h.num(m.ctime_nsec() as u64);
                 }
             }
             ImageData::Encoded(b) => {
@@ -490,12 +499,53 @@ pub(super) const MAX_PICTURE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// relative to the directory of the file being previewed (`shown`), never to the directory
 /// konoma happens to run in.
 pub(super) fn resolve_picture_path(shown: &Path, p: &Path) -> PathBuf {
-    if p.is_absolute() {
+    // The previewed file itself (the standard image plugin hands its own path back) is not
+    // joined onto its own folder.
+    if p.is_absolute() || p == shown {
         return p.to_path_buf();
     }
     shown
         .parent()
         .map_or_else(|| p.to_path_buf(), |d| d.join(p))
+}
+
+/// Open the picture file at `abs` for reading, refusing anything but a regular file **without
+/// opening it first** where that can be told from the path (`metadata`: a FIFO, a device or a
+/// directory is never opened, so opening cannot have a side effect such as raising DTR on a
+/// serial line or waking a FIFO's writer), and then deciding again on the handle that was
+/// opened (`fstat`: a path checked first and opened afterwards could be swapped in between). The
+/// file is opened without blocking (`O_NONBLOCK`) and without becoming a controlling terminal
+/// (`O_NOCTTY`). The one door every path that opens a plugin's (or the previewed) picture file
+/// goes through.
+pub(super) fn open_regular_picture(
+    abs: &Path,
+) -> Result<std::fs::File, crate::preview::image::ImageFailure> {
+    use crate::preview::image::ImageFailure;
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::metadata(abs) {
+        Ok(m) if m.is_file() => {}
+        _ => return Err(ImageFailure::Corrupt),
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(abs)
+        .map_err(|_| ImageFailure::Corrupt)?;
+    match file.metadata() {
+        Ok(m) if m.is_file() => Ok(file),
+        _ => Err(ImageFailure::Corrupt),
+    }
+}
+
+/// [`open_regular_picture`] for the file `p` a plugin named, resolved against `shown`
+/// ([`resolve_picture_path`]): the handle and the resolved path.
+pub(super) fn open_picture_file(
+    shown: &Path,
+    p: &Path,
+) -> Result<(std::fs::File, PathBuf), crate::preview::image::ImageFailure> {
+    let abs = resolve_picture_path(shown, p);
+    let file = open_regular_picture(&abs)?;
+    Ok((file, abs))
 }
 
 /// Read the picture file `p` (resolved against `shown`, see [`resolve_picture_path`]) that a plugin
@@ -516,17 +566,8 @@ fn read_picture_file(
 ) -> Result<ImageData, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    let abs = resolve_picture_path(shown, p);
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(&abs)
-        .map_err(|_| ImageFailure::Corrupt)?;
+    let (file, abs) = open_picture_file(shown, p)?;
     let meta = file.metadata().map_err(|_| ImageFailure::Corrupt)?;
-    if !meta.is_file() {
-        return Err(ImageFailure::Corrupt);
-    }
     if meta.len() > MAX_PICTURE_FILE_BYTES {
         return Err(ImageFailure::TooLarge);
     }
@@ -676,12 +717,20 @@ fn copy_decoded(d: &CanvasDecoded) -> CanvasDecoded {
     }
 }
 
-/// How many decodes the picture `data` costs the budget of an answer: one per frame of an
-/// animation given as `ImageData::Frames` (each is decoded on its own, an SVG frame in a child
-/// process), one for anything else.
+/// How many decodes the picture `data` costs the budget of an answer. An animation given as
+/// `ImageData::Frames` costs one per *expensive* frame: an SVG (drawn in a child process) or a
+/// file (read, and possibly an SVG); raster frames (`Rgba`, `Encoded`) are cheap and cost
+/// nothing, bounded instead by the input budget. Any picture costs at least one.
 fn decode_cost(data: &ImageData) -> usize {
+    fn frame(d: &ImageData) -> usize {
+        match d {
+            ImageData::Svg { .. } | ImageData::File(_) => 1,
+            ImageData::Frames(f) => f.iter().map(|(d, _)| frame(d)).sum(),
+            _ => 0,
+        }
+    }
     match data {
-        ImageData::Frames(f) => f.len().max(1),
+        ImageData::Frames(f) => f.iter().map(|(d, _)| frame(d)).sum::<usize>().max(1),
         _ => 1,
     }
 }
@@ -940,12 +989,25 @@ pub(super) fn decode_canvas_within(
             let needs = t.needs;
             sources.push(keep(t, needs));
             continue;
+        } else if matches!(t.data.as_ref(), ImageData::Frames(_))
+            && (decode_cost(&t.data) > limits.decodes
+                || input_bytes(&t.data, path) > limits.input_bytes)
+        {
+            // An animation that alone costs more than one answer may do (more SVG / file frames than
+            // the decode budget, more input than the input budget; raster frames are not counted) can never be decoded: it is
+            // refused for good (the cells stay) instead of being decoded without a bound as "the
+            // first picture of an answer" (5000 SVG frames are 5000 child processes). Every animation that is not refused here costs at most the budget
+            // by itself, so the first picture of an answer always fits and an answer makes
+            // progress, the work of one answer bounded by the budgets whatever order the
+            // pictures come in. A single image is the exception that keeps an answer moving: it
+            // is decoded even when it is larger than the input budget, bounded by its own limits
+            // (64 MiB of file, the decoders' size limits).
+            CanvasDecoded::Failed(ImageFailure::TooLarge)
         } else if decodes >= limits.decodes
             // Every frame of an animation is a decode (a picture of N frames costs N): one that
             // does not fit next to what this answer decoded waits (kept) for a later answer, where
-            // it may come first. The first picture of an answer is decoded however many frames it
-            // has, so an answer makes progress.
-            || (decodes > 0 && decodes + decode_cost(&t.data) > limits.decodes)
+            // it may come first.
+            || decodes + decode_cost(&t.data) > limits.decodes
             || input >= limits.input_bytes
             || added >= limits.answer_bytes
         {

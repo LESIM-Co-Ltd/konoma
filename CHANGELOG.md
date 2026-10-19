@@ -91,8 +91,27 @@ All notable changes to konoma are documented in this file. The format is based o
   and a canvas that fails it is refused with a message. The new crate `konoma-plugin-ratatui` converts a ratatui `Buffer`
   into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). None of the standard plugins draws a canvas, and what they show does not change, with one
   exception: the text mermaid diagram (`[ui] mermaid = "text"`, and `R` on a `.mmd` file) is laid out at the preview's real
-  width again, as it was in v0.31.0, instead of a fixed 80 columns (it is measured when the file is opened; it is not laid out
-  again when the window is resized).
+  width again, as it was in v0.31.0, instead of a fixed 80 columns (it is laid out again at the new width when the window is
+  resized).
+- **How a canvas and the plugin API behave around it (details for plugin authors).**
+  - *Reading again.* A plugin that keeps a state of its own (a canvas) or reads heavily (a work group) is opened again only when
+    its file's stamp (modification time, size, inode, change time) changed, so an event for `.git`, another file or an unknown
+    cause no longer throws a canvas's state away. An FS event that names the shown file itself always reads it again (a file
+    system with coarse time cannot hide a rewrite). `r` reads a **canvas** file again even when nothing changed (it is you
+    asking); every other plugin keeps the rule above, so `r` on an unchanged workbook reads nothing.
+  - *`Manifest::sized`.* A plugin whose view depends on the width (a text diagram) says so and is asked again after a resize;
+    the answer comes through the worker and is drawn without another key.
+  - *Texts.* Everything a plugin says to the interface (a message, a label, a help line, a page name) is cut at 512 characters
+    and has its control characters (a newline and a tab stay) and the kitty placeholder character U+10EEEE removed; a `Tr` keeps
+    at most 16 other languages, a layout at most 64 representations and 100,000 pages (a bigger count is read as that).
+  - *Pictures.* `ImageData::File` is opened by one door for a canvas and for `View::Image`: a regular file only (checked before
+    and after opening, never a pipe or a device), opened without blocking, a relative path read from the folder of the file being
+    previewed. One picture id is placed at one size on a canvas (`CanvasIssue::ImageSizeMismatch`), and an animation that alone
+    costs more than one answer may do (over 32 SVG or file frames, which are decoded one by one; over 64 MiB of input) is
+    refused as too large, while raster frames (`Rgba`, `Encoded`) cost no decode, so a 100-frame animation runs. Leaving konoma (a quit, a
+    signal, a panic) deletes the canvas pictures from a kitty terminal, without landing inside a frame being written.
+  - *API.* `testing::send_keys` returns a `KeyRun` and goes on after a failed key; `Key`, `CanvasCell`, `Outcome`, `ImageData`
+    and `Style` are `#[non_exhaustive]`, so a plugin matches them with a `_` arm.
 - **Temporary `demo-canvas` build feature.** `cargo run --features demo-canvas -- samples/demo.konoma-demo` shows a canvas plugin (a ratatui clock with a gauge, a picture and a line editor) in a real terminal; `KONOMA_CANVAS_TRACE=<file>` logs what the canvas does. It is not in any default build, is not a supported option, and is removed when plugins can be loaded from outside (stage 3).
 
 ### Changed

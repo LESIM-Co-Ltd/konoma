@@ -1510,7 +1510,7 @@ impl App {
 
     /// `r`, the user's own refresh: [`App::refresh`], and a plugin's file is read again even when
     /// its stamp says nothing changed (an FS event of unknown cause does not do that, the user
-    /// asking does).
+    /// asking does) — for a canvas show only; every other plugin keeps the stamp rule.
     pub fn refresh_explicit(&mut self) -> Result<()> {
         self.plugin_reopen_forced = true;
         let result = self.refresh();
@@ -1687,7 +1687,14 @@ impl App {
             // entry is keyed by path — so the entry outlives a rewrite of the bytes behind it and
             // has to be dropped by hand before the reload re-reads the document.
             self.drop_changed_md_images(changed);
-            self.reload_preview();
+            // An event that names the shown file itself reopens a plugin's file without the
+            // stamp rule; the stamp decides only for empty / `.git`-only / other-file events.
+            let named = self
+                .tab
+                .preview_path
+                .as_deref()
+                .is_some_and(|cur| changed.iter().any(|p| p == cur));
+            self.reload_preview_named(named);
         }
         tree
     }

@@ -262,6 +262,10 @@ type RulesOpened = (
 );
 
 fn open_rules(name: &str, sized: bool) -> RulesOpened {
+    open_rules_as(name, sized, false)
+}
+
+fn open_rules_as(name: &str, sized: bool, asynchronous: bool) -> RulesOpened {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let dir = sandbox(name);
     std::fs::write(dir.join("a.rul"), "x").unwrap();
@@ -276,6 +280,9 @@ fn open_rules(name: &str, sized: bool) -> RulesOpened {
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = "en".into();
     let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26);
+    if asynchronous {
+        s = s.with_async_plugins();
+    }
     s.select("a.rul");
     s.enter();
     s.draw();
@@ -303,6 +310,32 @@ fn e2e_a_sized_plugin_is_asked_again_when_the_area_changes() {
     s.draw();
     s.draw();
     assert_eq!(asked.lock().unwrap().len(), n + 1);
+}
+
+#[test]
+fn e2e_a_sized_plugin_refit_arrives_through_the_channel_and_is_drawn_without_another_key() {
+    // The refit is asked from inside the draw of a frame: taken on the spot it would land after
+    // the body was drawn and the old width would stay until the next key.
+    let (mut s, asked, _dir) = open_rules_as("p2_sized_chan", true, true);
+    for _ in 0..20 {
+        s.draw();
+        if !s.app.is_media_loading() {
+            break;
+        }
+        s.drain_plugin();
+    }
+    let first = *asked.lock().unwrap().last().unwrap();
+    s.see(&format!("cols={}", first.0));
+    let _inline = crate::app::InlineAnswers::force();
+    s.resize(50, 26);
+    assert!(
+        s.app.is_media_loading(),
+        "the answer is in the channel, not installed inside the draw"
+    );
+    assert!(s.drain_plugin());
+    let after = *asked.lock().unwrap().last().unwrap();
+    assert!(after.0 < first.0);
+    s.see(&format!("cols={}", after.0));
 }
 
 #[test]
@@ -436,6 +469,59 @@ fn e2e_a_failure_message_a_plugin_returns_is_cut_to_the_limit() {
     let f = s.app.plugin_failure().expect("the open failed");
     assert_eq!(f.message.en().chars().count(), MAX_TEXT_CHARS);
     assert_eq!(f.detail.as_deref().unwrap().chars().count(), MAX_TEXT_CHARS);
+}
+
+#[test]
+fn e2e_a_plugin_that_declares_billions_of_pages_is_read_as_declaring_a_bounded_number() {
+    use konoma_plugin::view::{PageLayout, MAX_LAYOUT_PAGES};
+    struct Paged;
+    impl Plugin for Paged {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("x-paged", "0.1.0")
+                .bind(Bind::files(["*.pgd"]))
+                .shows(ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(PagedSession))
+        }
+    }
+    struct PagedSession;
+    impl Session for PagedSession {
+        fn layout(&self) -> Layout {
+            Layout {
+                pages: Some(PageLayout::Separate {
+                    count: Some(4_000_000_000),
+                    titles: vec![],
+                }),
+                ..Layout::default()
+            }
+        }
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Ok(View::text(["page"]))
+        }
+    }
+    let dir = sandbox("p2_paged");
+    std::fs::write(dir.join("a.pgd"), "x").unwrap();
+    let marker = test_plugins::register("p2_paged", Arc::new(Paged));
+    let mut s = Sim::with_config_sized(&canon(&dir), test_plugins::marker_config(&marker), 90, 26);
+    s.select("a.pgd");
+    s.enter();
+    assert_eq!(
+        s.app.page_count_for_test(),
+        Some(MAX_LAYOUT_PAGES as u32),
+        "the declared count is bounded at the door"
+    );
+    assert!(s.app.page_list_usable());
+    // The question the footer asks every frame is answered by the count alone: with a count no
+    // list could be built for (4 billion strings), it still answers at once.
+    s.app.set_page_count_for_test(Some(u32::MAX));
+    assert!(s.app.page_list_usable());
+    assert!(s.app.is_page_list_preview());
+    s.app.set_page_count_for_test(Some(1));
+    assert!(!s.app.page_list_usable(), "one page: nothing to choose");
+    assert!(s.app.is_page_list_preview());
+    s.app.set_page_count_for_test(Some(0));
+    assert!(!s.app.page_list_usable());
 }
 
 #[cfg(feature = "demo-canvas")]

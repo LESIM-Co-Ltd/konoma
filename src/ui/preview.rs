@@ -177,6 +177,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if app.is_media_loading()
         && !app.is_image_preview()
+        && !(app.shows_media_plugin() && app.plugin_keeps_view_while_loading())
         && (app.shows_media_plugin()
             || matches!(
                 app.tab.preview_kind,

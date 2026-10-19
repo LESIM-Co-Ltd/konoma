@@ -919,3 +919,119 @@ fn a_plugin_failure_lands_as_the_reason_of_the_picture() {
     let (plugin, _) = stand(Reply::Fail(FailureKind::Unsupported), None);
     assert!(image_payload(job(plugin, "pdf").run_on_the_spot()).is_none());
 }
+
+// ---- a picture plugin's `ImageData::File` goes through the one door -------------------------------
+
+fn file_view(shown: &Path, p: &Path) -> Option<MediaPayload> {
+    decode_image_view(
+        ImageView::new(ImageData::File(p.to_path_buf())),
+        shown,
+        100,
+        None,
+        false,
+    )
+}
+
+/// Run `f` on a thread and fail (not hang) when it does not finish: an open that blocks on a FIFO.
+fn within_ten_seconds<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("a special file was opened (the decode is stuck)")
+}
+
+fn failed(p: &Option<MediaPayload>) -> bool {
+    matches!(p, Some(MediaPayload::ImageFailed(_)))
+}
+
+#[test]
+fn a_fifo_is_refused_by_the_picture_view_without_blocking() {
+    let dir = unique_tmp("konoma_pic_fifo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe.png");
+    if !std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        return;
+    }
+    let shown = dir.join("a.spr");
+    let (f, s) = (fifo.to_path_buf(), shown.clone());
+    assert!(failed(&within_ten_seconds(move || file_view(&s, &f))));
+    // The relative spelling of the same FIFO.
+    let s = shown.clone();
+    assert!(failed(&within_ten_seconds(move || file_view(
+        &s,
+        Path::new("pipe.png")
+    ))));
+    // The previewed file itself being a FIFO: the host's own GIF sniff does not open it either.
+    let f = fifo.to_path_buf();
+    assert!(!within_ten_seconds(move || App::looks_like_gif(&f)));
+}
+
+#[test]
+fn a_device_and_a_directory_are_refused_by_the_picture_view() {
+    let dir = unique_tmp("konoma_pic_dev");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shown = dir.join("a.spr");
+    for special in [
+        Path::new("/dev/null"),
+        Path::new("/dev/zero"),
+        dir.as_path(),
+    ] {
+        let (s, p) = (shown.clone(), special.to_path_buf());
+        assert!(
+            failed(&within_ten_seconds(move || file_view(&s, &p))),
+            "{special:?} is not a picture file"
+        );
+    }
+    assert!(!App::looks_like_gif(Path::new("/dev/null")));
+    assert!(!App::looks_like_gif(&dir));
+}
+
+#[test]
+fn a_relative_picture_path_is_read_from_the_previewed_files_folder() {
+    let dir = unique_tmp("konoma_pic_rel");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    png(&dir.join("sub").join("pic.png"), 5, 3);
+    let shown = dir.join("sub").join("a.spr");
+    // Not the folder konoma runs in: the same name there does not exist.
+    match file_view(&shown, Path::new("pic.png")) {
+        Some(MediaPayload::Static(img)) => assert_eq!((img.width(), img.height()), (5, 3)),
+        _ => panic!("the picture next to the previewed file is shown"),
+    }
+    // Absolute stays absolute.
+    assert!(matches!(
+        file_view(&shown, &dir.join("sub").join("pic.png")),
+        Some(MediaPayload::Static(_))
+    ));
+    // A relative path that names the previewed file itself is not joined onto its folder twice.
+    let rel_shown = Path::new("konoma_pic_rel_never_exists/x.png");
+    assert!(failed(&file_view(rel_shown, rel_shown)));
+}
+
+#[test]
+fn a_gif_file_of_the_picture_view_is_an_animation_read_from_the_opened_handle() {
+    use image::codecs::gif::GifEncoder;
+    let dir = unique_tmp("konoma_pic_gif");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let mut enc = GifEncoder::new(std::fs::File::create(dir.join("anim.gif")).unwrap());
+        for c in [10u8, 200] {
+            enc.encode_frame(image::Frame::new(image::RgbaImage::from_pixel(
+                4,
+                4,
+                image::Rgba([c, 0, 0, 255]),
+            )))
+            .unwrap();
+        }
+    }
+    let shown = dir.join("a.spr");
+    match file_view(&shown, Path::new("anim.gif")) {
+        Some(MediaPayload::Gif(frames)) => assert_eq!(frames.len(), 2),
+        _ => panic!("two frames animate"),
+    }
+}

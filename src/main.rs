@@ -743,6 +743,7 @@ fn poll_timeout(app: &App) -> Duration {
         || app.md_pixels_pending()
         || app.kitty_build_pending()
         || app.filter_pool_scan_in_flight()
+        || app.plugin_returned_pending()
     {
         return Duration::from_millis(16);
     }
@@ -899,6 +900,9 @@ fn run(
     let mut trace_at = std::time::Instant::now();
     loop {
         if needs_redraw {
+            // The right to write to the terminal for the whole frame (a signal's exit cleanup
+            // waits for it, so its escapes never land between the chunks of a transmit).
+            let _writing = preview::command::terminal_write();
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
             // On a frame where an inline image's (kitty unicode placeholder) display position
@@ -914,7 +918,10 @@ fn run(
             }
         }
         // Canvas pictures that went: free their stored images in the (kitty) terminal.
-        flush_kitty_deletes(app, terminal.backend_mut())?;
+        {
+            let _writing = preview::command::terminal_write();
+            flush_kitty_deletes(app, terminal.backend_mut())?;
+        }
 
         // Waiting on heavy code highlighting (the first time for a cold language): offload the
         // grammar compile to a separate thread so the UI isn't blocked.
@@ -1017,6 +1024,12 @@ fn run(
             if app.apply_image_resize(resp) {
                 needs_redraw = true;
             }
+        }
+
+        // What `plugin_session_returned` left at its per-call bound (queued keys and actions
+        // answered on the spot): the next bounded turn of it.
+        if app.plugin_returned_continue() {
+            needs_redraw = true;
         }
 
         // Apply the separate thread's media load (SVG/GIF) completion(s) (all of them, if there
@@ -4009,6 +4022,45 @@ mod tests {
         assert!(!app.filter_pool_scan_in_flight());
         assert_eq!(poll_timeout(&app), idle, "着地したら元の待ちに戻る");
         app::set_filter_scan_budget(None);
+    }
+
+    /// Work that `plugin_session_returned` left at its per-call bound must shorten the loop's wait,
+    /// or the rest of a queue would wait a whole idle timeout per turn.
+    #[test]
+    fn poll_is_fast_while_returned_plugin_work_is_pending() {
+        let dir = unique_tmp("konoma_poll_returned");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        let idle = poll_timeout(&app);
+        assert!(idle > Duration::from_millis(16), "{idle:?}");
+        app.set_plugin_returned_pending_for_test(true);
+        assert_eq!(poll_timeout(&app), Duration::from_millis(16));
+        assert!(app.plugin_returned_continue());
+        assert_eq!(poll_timeout(&app), idle);
+    }
+
+    /// Every write of a frame (and of the canvas-picture deletes) in the run loop holds the right
+    /// to write to the terminal, so the signal thread's exit cleanup cannot land inside a kitty
+    /// transmit. The loop cannot be driven here, so this reads the source: the draws and the
+    /// delete flush are each preceded by the guard.
+    #[test]
+    fn the_run_loop_writes_frames_and_deletes_under_the_terminal_guard() {
+        let src = include_str!("main.rs");
+        let run = &src[src.find("\nfn run(").expect("fn run")..];
+        let loop_body = &run[run.find("    loop {").expect("the loop")..];
+        let draw = loop_body
+            .find("terminal.draw(|frame| ui::render(frame, app))?;")
+            .unwrap();
+        let guard = loop_body
+            .find("preview::command::terminal_write()")
+            .unwrap();
+        assert!(guard < draw, "the frame is drawn under the guard");
+        let flush = loop_body
+            .find("flush_kitty_deletes(app, terminal.backend_mut())")
+            .unwrap();
+        let second = loop_body[flush - 200..flush].contains("preview::command::terminal_write()");
+        assert!(second, "the deletes are flushed under the guard");
     }
 
     // --- tool_command (the `!` tool-selection logic pulled out of run_git_tool) ------------

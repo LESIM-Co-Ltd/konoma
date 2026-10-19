@@ -34,18 +34,43 @@ pub struct Layout {
     pub pages: Option<PageLayout>,
 }
 
+/// The most representations the host keeps from a plugin's [`Layout`].
+pub const MAX_LAYOUT_REPRS: usize = 64;
+
+/// The most pages (and page titles) the host keeps from a plugin's [`Layout`]: a plugin that
+/// declares more is read as declaring this many.
+pub const MAX_LAYOUT_PAGES: usize = 100_000;
+
 impl Layout {
     /// The layout as the host keeps it: every label and page name cut to
-    /// [`crate::text::MAX_TEXT_CHARS`].
+    /// [`crate::text::MAX_TEXT_CHARS`], and the counts bounded -- at most [`MAX_LAYOUT_REPRS`]
+    /// representations (one whose id is over the text bound is dropped), at most
+    /// [`MAX_LAYOUT_PAGES`] pages and titles, a default representation named by an over-long id
+    /// ignored.
     pub fn clipped(&self) -> Layout {
+        let max_id = crate::text::MAX_TEXT_CHARS;
+        let long = |s: &str| s.chars().nth(max_id).is_some();
         let mut out = self.clone();
+        out.reprs.retain(|r| !long(&r.id));
+        out.reprs.truncate(MAX_LAYOUT_REPRS);
         for r in &mut out.reprs {
             r.label = r.label.clipped();
         }
-        if let Some(PageLayout::Separate { titles, .. }) = &mut out.pages {
-            for t in titles {
-                *t = crate::text::clip_text(t).into_owned();
+        for d in [&mut out.default_repr, &mut out.default_repr_without_pixels] {
+            if d.as_deref().is_some_and(long) {
+                *d = None;
             }
+        }
+        match &mut out.pages {
+            Some(PageLayout::Separate { count, titles }) => {
+                *count = count.map(|n| n.min(MAX_LAYOUT_PAGES));
+                titles.truncate(MAX_LAYOUT_PAGES);
+                for t in titles {
+                    *t = crate::text::clip_text(t).into_owned();
+                }
+            }
+            Some(PageLayout::Anchored { count, .. }) => *count = (*count).min(MAX_LAYOUT_PAGES),
+            None => {}
         }
         out
     }
@@ -448,9 +473,10 @@ pub enum ImageData {
     /// A picture file the host reads. An absolute path is used as it is; **a relative path is
     /// relative to the directory of the file being previewed** (not to the directory konoma runs
     /// in). The host reads any regular file the user can read (it shows what the user could
-    /// `cat`), at most 64 MiB of it, and only a regular file: a FIFO, a device or a directory is
-    /// refused, decided on the handle it opened (without blocking), so a path swapped for a FIFO
-    /// meanwhile cannot hold the host. An SVG file is drawn from the directory it is in.
+    /// `cat`), at most 64 MiB of it on a canvas, and only a regular file: a FIFO, a device or a
+    /// directory is refused without being opened and decided again on the handle it opened
+    /// (without blocking), so a path swapped for a FIFO meanwhile cannot hold the host. The same
+    /// rules hold for a picture view and for a canvas. An SVG file is drawn from the directory it is in.
     File(PathBuf),
     /// An encoded image (PNG, JPEG...).
     Encoded(Arc<[u8]>),
@@ -677,11 +703,18 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 ///   (the pictures the canvas no longer names go first, and the old picture of an `id` goes when
 ///   its new content needs the room; the host asks you for another answer by itself when room
 ///   grew for a refused picture);
-/// - per answer it decodes at most 32 new pictures, 64 MiB of encoded input and 128 MiB of new
-///   pixels (their decoded size); the rest follow on later answers. The cells under a picture that
+/// - per answer it decodes at most 32 new pictures (each SVG or file frame of an animation counts;
+///   raster frames cost no decode), 64 MiB of
+///   encoded input and 128 MiB of new pixels (their decoded size); the rest follow on later
+///   answers. A single image is decoded even when it alone is larger than the input budget;
+///   an animation that alone has more than 32 SVG / file frames or more input than 64 MiB is
+///   refused as too large (its cells stay), because no answer could take it;
+/// - one picture `id` is placed at one size (`cols` x `rows`) everywhere on a canvas
+///   ([`CanvasIssue::ImageSizeMismatch`]); The cells under a picture that
 ///   is not drawn (yet) stay, so draw something sensible there;
 /// - a frame of an animation is shown for at least 20 ms;
-/// - a picture from a file must be a regular file (not a pipe or a device);
+/// - a picture from a file must be a regular file (not a pipe or a device); a relative path is read
+///   from the folder of the file being previewed;
 /// - a picture that cannot be decoded (damaged, too large, an SVG that is refused) is not retried
 ///   for the same content;
 /// - a picture that starts outside the area is not drawn; one that reaches past the right edge is
@@ -769,6 +802,9 @@ pub enum CanvasIssue {
     ImageOutOfBounds { index: usize },
     /// Image number `index` covers no cell.
     ImageZeroSize { index: usize },
+    /// Image number `index` places a picture id at a size (`cols` x `rows`) other than an earlier
+    /// placement of the same id: one picture id has one size on a canvas.
+    ImageSizeMismatch { index: usize },
     /// Image number `index` is [`ImageData::Lazy`] (also inside animation frames).
     ImageLazy { index: usize },
     /// Image number `index` is raw pixels whose byte count is not `width * height * 4`, or
@@ -832,6 +868,12 @@ impl fmt::Display for CanvasIssue {
             }
             CanvasIssue::ImageZeroSize { index } => {
                 write!(f, "canvas image {index} covers no cell")
+            }
+            CanvasIssue::ImageSizeMismatch { index } => {
+                write!(
+                    f,
+                    "canvas image {index} has another size than an earlier placement of the same picture id"
+                )
             }
             CanvasIssue::ImageLazy { index } => {
                 write!(
@@ -1121,7 +1163,9 @@ impl CanvasView {
     ///   columns wide; a 2-column symbol is followed by a continuation in the same row, and a
     ///   continuation follows nothing else;
     /// - at most [`CANVAS_MAX_PLACEMENTS`] placements using at most [`CANVAS_MAX_PICTURES`]
-    ///   distinct ids, each non-empty, inside the canvas and not lazy;
+    ///   distinct ids, each non-empty, inside the canvas and not lazy; one id is placed at one
+    ///   size (`cols` x `rows`) everywhere on the canvas (the host keeps one encoded picture per
+    ///   id and size: a plugin cannot multiply them);
     /// - [`ImageData::Rgba`] with `width * height * 4` bytes and sides from 1 to
     ///   [`CANVAS_MAX_RGBA_SIDE`] (also inside frames); [`ImageData::Frames`] of at most
     ///   [`CANVAS_MAX_FRAMES`] frames and not inside another `Frames`.
@@ -1161,9 +1205,14 @@ impl CanvasView {
                 return Err(CanvasIssue::TooManyPictures { count: ids.len() });
             }
         }
+        let mut sizes: std::collections::HashMap<u64, (u16, u16)> =
+            std::collections::HashMap::new();
         for (index, im) in self.images.iter().enumerate() {
             if im.cols == 0 || im.rows == 0 {
                 return Err(CanvasIssue::ImageZeroSize { index });
+            }
+            if *sizes.entry(im.id).or_insert((im.cols, im.rows)) != (im.cols, im.rows) {
+                return Err(CanvasIssue::ImageSizeMismatch { index });
             }
             if im.x as u32 + im.cols as u32 > self.cols as u32
                 || im.y as u32 + im.rows as u32 > self.rows as u32

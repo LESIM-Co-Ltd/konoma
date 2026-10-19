@@ -328,6 +328,40 @@ fn check_rejects_zero_size_images() {
     assert_eq!(b.check(), Err(CanvasIssue::ImageZeroSize { index: 0 }));
 }
 
+#[test]
+fn check_refuses_one_picture_id_at_two_sizes() {
+    // One id, one size on a canvas: the host keeps one encoded picture per id and size, so a
+    // plugin cannot multiply them by placing the same id at many sizes.
+    let same = CanvasView::new(20, 10)
+        .image(img(1, 0, 0, 2, 2, rgba()))
+        .image(CanvasImage::unchanged(1, CellRect::new(5, 5, 2, 2)));
+    assert_eq!(
+        same.check(),
+        Ok(()),
+        "the same size twice is the same picture twice"
+    );
+    let other = CanvasView::new(20, 10)
+        .image(img(1, 0, 0, 2, 2, rgba()))
+        .image(img(2, 0, 4, 3, 3, rgba()))
+        .image(CanvasImage::unchanged(1, CellRect::new(5, 5, 3, 2)));
+    assert_eq!(
+        other.check(),
+        Err(CanvasIssue::ImageSizeMismatch { index: 2 })
+    );
+    // Many sizes of one id: refused at the second.
+    let mut many = CanvasView::new(60, 30);
+    for n in 1..=40u16 {
+        many = many.image(CanvasImage::unchanged(7, CellRect::new(0, 0, n, 1)));
+    }
+    assert_eq!(
+        many.check(),
+        Err(CanvasIssue::ImageSizeMismatch { index: 1 })
+    );
+    assert!(CanvasIssue::ImageSizeMismatch { index: 9 }
+        .to_string()
+        .contains('9'));
+}
+
 #[derive(Debug)]
 struct NoLazy;
 impl LazyResource for NoLazy {

@@ -146,6 +146,11 @@ impl Drop for LongFirstFrame {
 /// is refused with a message (never reordered, never dropped silently).
 pub(crate) const MAX_QUEUED_ACTS: usize = 256;
 
+/// How much `App::plugin_session_returned` does in one call: this many rounds, or this long.
+/// The rest waits for the next turn of the run loop.
+const RETURNED_ROUNDS_PER_CALL: usize = 8;
+const RETURNED_BUDGET: Duration = Duration::from_millis(16);
+
 /// How many colors the terminal shows, from the values of `COLORTERM` and `TERM` (pure: the
 /// caller reads the environment).
 ///
@@ -1090,6 +1095,15 @@ impl App {
                 .is_some_and(|p| matches!(p.phase, PluginPhase::Loading))
     }
 
+    /// Whether the show already holds an answered view while a request is out (a refit, a
+    /// reopen that keeps the previous one): the host keeps drawing it instead of the full-screen
+    /// loading view, which would flash on every refit of a picture plugin that answers with text.
+    pub(crate) fn plugin_keeps_view_while_loading(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| matches!(p.phase, PluginPhase::Ready) && p.view.is_some())
+    }
+
     /// Whether the show holds a text view.
     fn plugin_view_is_text(&self) -> bool {
         matches!(
@@ -1263,9 +1277,9 @@ impl App {
         // The size of the area the view is drawn into, as the last frame measured it
         // (`ui::preview::render`). Before the first frame there is no measure: the width is the
         // old 80, the height one row, and a canvas is asked again once it is drawn
-        // (`App::refit_canvas`). **Only a canvas is asked again after a resize**; the other
-        // displays (a text view, a table, a picture) are laid out by the host at the width it
-        // has, and a text plugin's `ViewReq::cols` is the bordered area's width (every preview
+        // (`App::refit_canvas`). **Only a canvas, and a plugin that declares `Manifest::sized`, are
+        // asked again after a resize**; the other displays (a text view, a table, a picture) are
+        // laid out by the host at the width it has, and a text plugin's `ViewReq::cols` is the bordered area's width (every preview
         // frame is `Block::bordered()`, so there is no view without a border to correct for).
         let rows = self.tab.preview_viewport.max(1);
         let cols = if self.tab.preview_cols == 0 {
@@ -1344,7 +1358,7 @@ impl App {
         if show.session.is_none() || (show.req.cols, show.req.rows) == (want.cols, want.rows) {
             return false;
         }
-        self.plugin_request_view(want)
+        self.plugin_request_view_waiting(want, Wait::Nothing)
     }
 
     /// [`App::refit_canvas`] for the other plugins that declare their views depend on the size
@@ -1372,7 +1386,7 @@ impl App {
         if (show.req.cols, show.req.rows) == (want.cols, want.rows) {
             return false;
         }
-        self.plugin_request_view(want)
+        self.plugin_request_view_waiting(want, Wait::Nothing)
     }
 
     /// What a worker needs when the plugin `id` declares it shows a document (`shows(Document)`):
@@ -1759,7 +1773,15 @@ impl App {
 
     /// Ask the open session for another `view` (a new page, a new size...). Returns false when
     /// there is no session to ask (none open, or a job still holds it).
-    pub(super) fn plugin_request_view(&mut self, mut req: ViewReq) -> bool {
+    pub(super) fn plugin_request_view(&mut self, req: ViewReq) -> bool {
+        self.plugin_request_view_waiting(req, Wait::Result(Duration::ZERO))
+    }
+
+    /// [`App::plugin_request_view`] with the way the answer is awaited. A refit is asked from
+    /// inside the draw of a frame: its answer must come through the channel (`Wait::Nothing`),
+    /// so the run loop applies it and draws again; taken on the spot, it would land after the
+    /// body was drawn and nothing would redraw until the next key.
+    fn plugin_request_view_waiting(&mut self, mut req: ViewReq, wait: Wait) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
@@ -1771,7 +1793,7 @@ impl App {
             req = self.plugin_view_req();
         }
         let work = self.plugin_work(id, path, PluginJob::View { session }, req);
-        self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.dispatch_plugin_work(work, wait);
         true
     }
 
@@ -1827,14 +1849,47 @@ impl App {
             return;
         }
         self.plugin_returning = 1;
+        self.plugin_returned_pending = false;
+        let started = std::time::Instant::now();
+        let mut rounds = 0;
         loop {
             self.plugin_session_returned_once();
+            rounds += 1;
             if self.plugin_returning != 2 {
+                break;
+            }
+            // A bounded amount per call (the UI thread must stay responsive: each round may read
+            // a file again): the rest is left for the next turn of the run loop.
+            if rounds >= RETURNED_ROUNDS_PER_CALL || started.elapsed() >= RETURNED_BUDGET {
+                self.plugin_returned_pending = true;
                 break;
             }
             self.plugin_returning = 1;
         }
         self.plugin_returning = 0;
+    }
+
+    /// Whether `plugin_session_returned` stopped at its bound with work left: the run loop comes
+    /// back soon ([`App::plugin_returned_continue`], a short poll).
+    pub fn plugin_returned_pending(&self) -> bool {
+        self.plugin_returned_pending
+    }
+
+    /// Test-only: pretend `plugin_session_returned` stopped at its bound.
+    #[cfg(test)]
+    pub fn set_plugin_returned_pending_for_test(&mut self, on: bool) {
+        self.plugin_returned_pending = on;
+    }
+
+    /// The next turn of what `plugin_session_returned` left (see its bound). Returns whether
+    /// anything was pending (the caller redraws).
+    pub fn plugin_returned_continue(&mut self) -> bool {
+        if !self.plugin_returned_pending {
+            return false;
+        }
+        self.plugin_returned_pending = false;
+        self.plugin_session_returned();
+        true
     }
 
     fn plugin_session_returned_once(&mut self) {
