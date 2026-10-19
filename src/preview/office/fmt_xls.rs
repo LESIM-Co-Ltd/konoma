@@ -33,7 +33,6 @@
 //! column 65,535, so one far-flung cell would otherwise ask for 4 G cells.
 
 use std::collections::HashMap;
-use std::io::Read;
 
 use super::container::Limits;
 use super::fmt_xlsx::{
@@ -71,30 +70,9 @@ pub fn read(
     limits: &Limits,
     cancel: Option<&Cancel>,
 ) -> Result<XlsxFormats, OfficeError> {
-    let stream = read_workbook_stream(path, limits)?;
+    // Exactly the stream `calamine` will parse (see `cfb_flat`), not the one a tree walk finds.
+    let stream = super::cfb_flat::read_workbook_stream(path, limits.max_part_bytes)?;
     parse_stream_cancellable(&stream, limits, cancel)
-}
-
-/// The `Workbook` / `Book` stream, read through a cap on the expanded size.
-fn read_workbook_stream(path: &std::path::Path, limits: &Limits) -> Result<Vec<u8>, OfficeError> {
-    let mut cf =
-        cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
-    let name = ["/Workbook", "/Book", "/WORKBOOK", "/BOOK"]
-        .into_iter()
-        .find(|n| cf.exists(n))
-        .ok_or_else(|| OfficeError::Corrupt("missing Workbook stream".into()))?;
-    let stream = cf
-        .open_stream(name)
-        .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
-    let mut out = Vec::new();
-    stream
-        .take(limits.max_part_bytes + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
-    if out.len() as u64 > limits.max_part_bytes {
-        return Err(OfficeError::TooLarge { what: "entry" });
-    }
-    Ok(out)
 }
 
 /// One BIFF record.
@@ -382,10 +360,17 @@ pub(crate) fn parse_stream_cancellable(
     // Each sheet is read from its position to its own EOF, and `calamine` does the same for
     // every sheet. Substreams that overlap (BOUNDSHEETs pointing at one body, or into the middle
     // of another sheet) would make the work the number of sheets times the length of the body,
-    // so the sheets are taken in stream order and each must start where the previous one ended:
-    // the total work is then at most the length of the stream. No real file does otherwise.
+    // so the sheets are taken in stream order and each must start where the previous *closed*
+    // sheet ended: the total work is then at most the length of the stream. No real file does
+    // otherwise.
+    // A sheet that never closes (a nested substream without its EOF) runs to the end of the
+    // stream, and `calamine` still opens the sheets after it, each from its own BOUNDSHEET
+    // position; so such a sheet does not move `prev_end`, and the records visited over all the
+    // sheets are capped instead (one pass over the stream is `len / 4` records at most).
     sheets.sort_by_key(|&(pos, _)| pos);
     let mut prev_end = 0usize;
+    let mut visited = 0u64;
+    let visit_budget = (stream.len() as u64 / 4) * 2 + 16;
     for (pos, name) in sheets {
         if pos < prev_end {
             return Err(OfficeError::Corrupt(
@@ -395,8 +380,17 @@ pub(crate) fn parse_stream_cancellable(
         let sub = stream
             .get(pos..)
             .ok_or_else(|| OfficeError::Corrupt("sheet position past the stream".into()))?;
-        let (sf, used) = parse_sheet_span(sub, &styles.xf_to_format, &sst_lens, limits, cancel)?;
-        prev_end = pos + used;
+        let (sf, used, ended, seen) =
+            parse_sheet_span(sub, &styles.xf_to_format, &sst_lens, limits, cancel)?;
+        if ended {
+            prev_end = pos + used;
+        }
+        visited += u64::from(seen);
+        if visited > visit_budget {
+            return Err(OfficeError::Corrupt(
+                "xls sheets share the same records".into(),
+            ));
+        }
         text_total = text_total.saturating_add(sf.text_bytes);
         if text_total > limits.max_text_bytes {
             return Err(OfficeError::TooLarge { what: "text" });
@@ -453,14 +447,15 @@ fn string_cost(data: &[u8], cch_at: usize, flags_at: usize, biff8: bool) -> u64 
 }
 
 /// The format information of one sheet substream, and how many bytes of `stream` its records
-/// took (up to and including its own depth-0 `EOF`; nested substreams are skipped).
+/// took (up to and including its own depth-0 `EOF`; nested substreams are skipped), whether it
+/// closed with that `EOF`, and how many records were visited.
 fn parse_sheet_span(
     stream: &[u8],
     xf_to_format: &[u16],
     sst_lens: &[u32],
     limits: &Limits,
     cancel: Option<&Cancel>,
-) -> Result<(SheetFormats, usize), OfficeError> {
+) -> Result<(SheetFormats, usize, bool, u32), OfficeError> {
     let mut out = SheetFormats::default();
     // Where `calamine` puts a formula's `STRING` result: the last FORMULA's cell, A1 before any.
     let mut formula_pos = (0u32, 0u32);
@@ -475,6 +470,9 @@ fn parse_sheet_span(
     // skipped up to its matching EOF, and the sheet ends at its own depth-0 EOF.
     let mut seen_sheet_bof = false;
     let mut depth = 0usize;
+    // Positions that got a non-General format, so that a later record for the same cell with
+    // General can replace it (the last record wins, as in `calamine`'s matrix).
+    let mut non_general: std::collections::HashSet<(u32, u16)> = std::collections::HashSet::new();
     for rec in records.by_ref() {
         let r = rec?;
         seen += 1;
@@ -523,9 +521,17 @@ fn parse_sheet_span(
                 };
                 out.add_text(cost, limits)?;
                 out.note_value(u32::from(row), u32::from(col), fmt_of(ixfe), limits)?;
+                out.keep_last_format(
+                    &mut non_general,
+                    u32::from(row),
+                    u32::from(col),
+                    fmt_of(ixfe),
+                    limits,
+                );
             }
             FORMULA_STRING => {
                 out.add_text(string_cost(r.data, 0, 2, biff8), limits)?;
+                // The text result of the formula before it: the FORMULA's own format stays.
                 out.note_value(formula_pos.0, formula_pos.1, 0, limits)?;
             }
             MULRK => {
@@ -543,12 +549,15 @@ fn parse_sheet_span(
                 }
                 for i in 0..n {
                     let ixfe = u16_at(r.data, 4 + 6 * i).ok_or_else(short)?;
-                    out.note_value(
+                    let col = u32::from(first) + i as u32;
+                    out.note_value(u32::from(row), col, fmt_of(ixfe), limits)?;
+                    out.keep_last_format(
+                        &mut non_general,
                         u32::from(row),
-                        u32::from(first) + i as u32,
+                        col,
                         fmt_of(ixfe),
                         limits,
-                    )?;
+                    );
                 }
             }
             _ => {}
@@ -560,5 +569,5 @@ fn parse_sheet_span(
     } else {
         stream.len()
     };
-    Ok((out, used))
+    Ok((out, used, ended, seen))
 }

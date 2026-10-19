@@ -116,6 +116,30 @@ impl SheetFormats {
         Ok(())
     }
 
+    /// Makes "the last record at a cell wins" hold for the format too: [`Self::note_value`] keeps
+    /// only non-`General` formats, so a later record for a cell whose earlier record had a format
+    /// is written down as `General` explicitly. `non_general` is the set of positions that got a
+    /// format (the caller owns it, one per sheet). Call it right after `note_value`; not for a
+    /// formula's `STRING` result, which belongs to the `FORMULA` before it and keeps its format.
+    pub(crate) fn keep_last_format(
+        &mut self,
+        non_general: &mut std::collections::HashSet<(u32, u16)>,
+        row: u32,
+        col: u32,
+        fmt: u16,
+        limits: &Limits,
+    ) {
+        if (col as usize) >= limits.max_cols {
+            return;
+        }
+        let key = (row, col as u16);
+        if fmt != 0 {
+            non_general.insert(key);
+        } else if non_general.contains(&key) {
+            self.cells.push((row, col as u16, 0));
+        }
+    }
+
     /// Charges `bytes` of text to the sheet's budget.
     pub(crate) fn add_text(&mut self, bytes: u64, limits: &Limits) -> Result<(), OfficeError> {
         self.text_bytes = self.text_bytes.saturating_add(bytes);
@@ -156,7 +180,8 @@ impl SheetFormats {
             return 0;
         };
         // `cells` is sorted by position with a *stable* sort, so duplicates of one position stay in
-        // record order; the last one wins, as it does in `calamine`'s matrix.
+        // record order; the last one wins, as it does in `calamine`'s matrix (a later `General`
+        // record is stored as an explicit 0 where an earlier one had a format).
         let end = self
             .cells
             .partition_point(|&(r, c, _)| (r, c) <= (row, col));

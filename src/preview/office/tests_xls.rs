@@ -8,6 +8,7 @@ use super::tests::{
     assert_inner_does_not_panic, load, load_with, mutate, small_limits, tmp, write_cfb, xorshift,
 };
 use super::*;
+use std::io::Write as _;
 
 // ---------------------------------------------------------------------------------------------
 // a tiny BIFF8 writer
@@ -1430,4 +1431,411 @@ fn a_16_byte_dimensions_record_is_read_like_the_14_byte_one() {
     let too_large = Err(OfficeError::TooLarge { what: "sheet area" });
     assert_eq!(parse_with_dimensions(dim.clone(), 30), Ok(()));
     assert_eq!(parse_with_dimensions(dim, 29), too_large);
+}
+
+// ---------------------------------------------------------------------------------------------
+// which stream of the compound file is the workbook: the one `calamine` reads
+// ---------------------------------------------------------------------------------------------
+
+/// A one-sheet book with a cell at `(row, col)` as well as A1.
+fn book_with_far_cell(row: u16, col: u16) -> Book {
+    Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![number(0, 0, 3, 1.0), number(row, col, 3, 2.0)],
+        )],
+    }
+}
+
+fn harmless_book() -> Book {
+    Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet("S", vec![number(0, 0, 3, 7.0)])],
+    }
+}
+
+#[test]
+fn a_workbook_in_a_sub_storage_is_scanned_when_calamine_will_read_it() {
+    // `calamine` takes the first directory entry named `Workbook` wherever it sits; a root
+    // `Book` is only its fallback. The far cell in `X/Workbook` is refused here, not allocated.
+    let dir = tmp("xls_substorage");
+    let p = dir.join("s.xls");
+    let mut cf = cfb::create(&p).unwrap();
+    cf.create_storage("/X").unwrap();
+    cf.create_stream("/X/Workbook")
+        .unwrap()
+        .write_all(&book_with_far_cell(3000, 20).stream())
+        .unwrap();
+    cf.create_stream("/Book")
+        .unwrap()
+        .write_all(&harmless_book().stream())
+        .unwrap();
+    cf.flush().unwrap();
+    drop(cf);
+    assert_eq!(
+        load_with(&p, small_limits()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn the_first_workbook_entry_in_the_directory_wins_as_it_does_in_calamine() {
+    // The root `Workbook` is created before `X/Workbook`, so it is the earlier directory entry:
+    // `calamine` reads it, and so does the pass. The far cell in the other is never read.
+    let dir = tmp("xls_first_entry");
+    let p = dir.join("f.xls");
+    let mut cf = cfb::create(&p).unwrap();
+    cf.create_stream("/Workbook")
+        .unwrap()
+        .write_all(&harmless_book().stream())
+        .unwrap();
+    cf.create_storage("/X").unwrap();
+    cf.create_stream("/X/Workbook")
+        .unwrap()
+        .write_all(&book_with_far_cell(3000, 20).stream())
+        .unwrap();
+    cf.flush().unwrap();
+    drop(cf);
+    let wb = load_with(&p, small_limits()).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "7.00");
+}
+
+/// Renames the stream entry called `victim` to `Workbook` and unlinks it from the directory tree
+/// (its parent now points at the victim's only child, if any), so it is an orphan that only a flat
+/// scan of the directory array finds. The directory must fit in the sector with the root entry.
+fn make_orphan_workbook(bytes: &mut [u8], victim: &str) {
+    const NO: u32 = 0xFFFF_FFFF;
+    let name16 = |s: &str| -> Vec<u8> {
+        let mut v: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        v.extend([0, 0]);
+        v
+    };
+    let find = |bytes: &[u8], name: &str| -> usize {
+        let n = name16(name);
+        let hits: Vec<usize> = (0..bytes.len() - 128)
+            .step_by(128)
+            .filter(|&o| {
+                bytes[o..o + n.len()] == n[..]
+                    && bytes[o + n.len()..o + 64].iter().all(|&b| b == 0)
+                    && u16::from_le_bytes([bytes[o + 64], bytes[o + 65]]) as usize == n.len()
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "{name}: {hits:?}");
+        hits[0]
+    };
+    let root = find(bytes, "Root Entry");
+    let at = find(bytes, victim);
+    assert!(at > root && (at - root) / 128 < 32);
+    let idx = ((at - root) / 128) as u32;
+    let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let (l, r) = (u32_at(bytes, at + 68), u32_at(bytes, at + 72));
+    assert!(l == NO || r == NO, "the victim has two children");
+    let replacement = if l == NO { r } else { l };
+    for e in 0..32 {
+        let o = root + e * 128;
+        if o == at || o + 128 > bytes.len() {
+            continue;
+        }
+        for field in [68, 72, 76] {
+            if u32_at(bytes, o + field) == idx {
+                bytes[o + field..o + field + 4].copy_from_slice(&replacement.to_le_bytes());
+            }
+        }
+    }
+    bytes[at + 68..at + 76].copy_from_slice(&[0xFF; 8]);
+    let mut name = name16("Workbook");
+    let len = name.len() as u16;
+    name.resize(64, 0);
+    bytes[at..at + 64].copy_from_slice(&name);
+    bytes[at + 64..at + 66].copy_from_slice(&len.to_le_bytes());
+}
+
+#[test]
+fn an_orphan_workbook_entry_before_the_real_one_is_the_one_scanned() {
+    // `A` (a far cell) is created first, so it has the smaller directory index; it is then renamed
+    // `Workbook` and cut out of the tree. The tree walk finds the harmless root `Workbook`;
+    // `calamine`'s flat scan finds the orphan first.
+    let dir = tmp("xls_orphan");
+    let p = dir.join("o.xls");
+    write_cfb(
+        &p,
+        &[
+            ("/A", &book_with_far_cell(3000, 20).stream()),
+            ("/Workbook", &harmless_book().stream()),
+        ],
+    );
+    let mut bytes = std::fs::read(&p).unwrap();
+    make_orphan_workbook(&mut bytes, "A");
+    // The tree no longer reaches the orphan: only the real `Workbook` is left in it.
+    let cf = cfb::CompoundFile::open(std::io::Cursor::new(bytes.clone())).unwrap();
+    assert_eq!(cf.walk().filter(|e| e.is_stream()).count(), 1);
+    drop(cf);
+    std::fs::write(&p, &bytes).unwrap();
+    assert_eq!(
+        load_with(&p, small_limits()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn a_huge_dimensions_in_the_stream_calamine_picks_is_refused() {
+    let dir = tmp("xls_substorage_dims");
+    let p = dir.join("d.xls");
+    let big = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![dimensions(0, 5000, 0, 100), number(0, 0, 3, 1.0)],
+        )],
+    };
+    let mut cf = cfb::create(&p).unwrap();
+    cf.create_storage("/X").unwrap();
+    cf.create_stream("/X/Workbook")
+        .unwrap()
+        .write_all(&big.stream())
+        .unwrap();
+    cf.create_stream("/Book")
+        .unwrap()
+        .write_all(&harmless_book().stream())
+        .unwrap();
+    cf.flush().unwrap();
+    drop(cf);
+    assert_eq!(
+        load_with(&p, small_limits()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn only_the_exact_spellings_calamine_tries_name_the_workbook() {
+    // `calamine` compares names exactly (`Workbook`, `Book`, `WORKBOOK`, `BOOK`).
+    let dir = tmp("xls_names");
+    for (name, ok) in [
+        ("/Workbook", true),
+        ("/Book", true),
+        ("/WORKBOOK", true),
+        ("/BOOK", true),
+        ("/workbook", false),
+        ("/WorkBook", false),
+    ] {
+        let p = dir.join(format!("{}.xls", name.trim_start_matches('/')));
+        write_cfb(&p, &[(name, &harmless_book().stream())]);
+        assert_eq!(load(&p).is_ok(), ok, "{name}");
+    }
+}
+
+#[test]
+fn small_and_large_streams_in_both_sector_sizes_are_read_byte_for_byte() {
+    use cfb::Version;
+    let dir = tmp("xls_cfb_sizes");
+    for version in [Version::V3, Version::V4] {
+        for n in [1usize, 63, 64, 65, 4095, 4096, 4097, 20_000, 150_000] {
+            let data: Vec<u8> = (0..n).map(|i| (i * 7 + i / 251) as u8).collect();
+            let p = dir.join(format!("s{n}.xls"));
+            let mut cf =
+                cfb::CompoundFile::create_with_version(version, std::fs::File::create(&p).unwrap())
+                    .unwrap();
+            cf.create_stream("/Workbook")
+                .unwrap()
+                .write_all(&data)
+                .unwrap();
+            // A second stream so that the chains are not trivially contiguous.
+            cf.create_stream("/Other")
+                .unwrap()
+                .write_all(&data)
+                .unwrap();
+            cf.flush().unwrap();
+            drop(cf);
+            let got = super::cfb_flat::read_workbook_stream(&p, 1 << 30).unwrap();
+            assert_eq!(got, data, "{version:?} {n}");
+            assert_eq!(
+                super::cfb_flat::read_workbook_stream(&p, n as u64 - 1).unwrap_err(),
+                OfficeError::TooLarge { what: "entry" }
+            );
+        }
+    }
+}
+
+#[test]
+fn a_looping_sector_chain_is_refused_not_followed() {
+    // The directory's own chain points back at itself: `calamine` would grow without end.
+    let dir = tmp("xls_cfb_loop");
+    let p = dir.join("l.xls");
+    write_cfb(&p, &[("/Workbook", &harmless_book().stream())]);
+    let mut bytes = std::fs::read(&p).unwrap();
+    // Header: dir start sector at 48; point the FAT entry of that sector at itself. The FAT is in
+    // the first DIFAT sector listed at 76.
+    let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let ss = if u16::from_le_bytes([bytes[30], bytes[31]]) == 9 {
+        512
+    } else {
+        4096
+    };
+    let dir_start = u32_at(&bytes, 48) as usize;
+    let fat_sector = u32_at(&bytes, 76) as usize;
+    let at = ss + fat_sector * ss + dir_start * 4;
+    bytes[at..at + 4].copy_from_slice(&(dir_start as u32).to_le_bytes());
+    // Make the directory longer than one sector would hold so the chain is followed past it.
+    std::fs::write(&p, &bytes).unwrap();
+    let t = std::time::Instant::now();
+    // The chain ends only if it is cut by the `len` of a stream; the directory has none.
+    let r = super::cfb_flat::read_workbook_stream(&p, 1 << 20);
+    assert!(
+        matches!(&r, Err(OfficeError::Corrupt(m)) if m.contains("loops")),
+        "{r:?}"
+    );
+    assert!(t.elapsed().as_secs() < 5);
+}
+
+// ---------------------------------------------------------------------------------------------
+// the last record at a cell wins, for the format too
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_later_general_record_replaces_an_earlier_format_at_the_same_cell() {
+    // Cell xf 3 has a format, xf 0 is General (ixfe 0 -> format 0).
+    let dated_then_general = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet("S", vec![number(0, 0, 3, 1.0), number(0, 0, 0, 2.0)])],
+    };
+    let fm = fmt_xls::parse_stream(&dated_then_general.stream(), &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].format_at(0, 0), 0);
+    // The other way round, the format stays.
+    let general_then_dated = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet("S", vec![number(0, 0, 0, 2.0), number(0, 0, 3, 1.0)])],
+    };
+    let fm = fmt_xls::parse_stream(&general_then_dated.stream(), &Limits::default()).unwrap();
+    assert_ne!(fm.sheets["S"].format_at(0, 0), 0);
+    // And through MULRK: a RK run over a cell that had a format, and a format over a run.
+    let mulrk_over = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![number(0, 1, 3, 1.0), mulrk(0, 0, &[(0, 1), (0, 2)])],
+        )],
+    };
+    let fm = fmt_xls::parse_stream(&mulrk_over.stream(), &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].format_at(0, 1), 0);
+}
+
+#[test]
+fn a_formula_string_keeps_the_format_of_its_formula() {
+    let book = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            vec![formula_num(0, 0, 3, 1.0), formula_string("text")],
+        )],
+    };
+    let fm = fmt_xls::parse_stream(&book.stream(), &Limits::default()).unwrap();
+    assert_ne!(fm.sheets["S"].format_at(0, 0), 0);
+}
+
+#[test]
+fn duplicates_resolve_to_the_last_record_over_a_long_reversed_run() {
+    // 100 rows in descending order (so the sort has real work to do), two records each with
+    // different formats, the last one alternating: an unstable sort swaps some duplicates.
+    let mut recs = Vec::new();
+    let mut last_only = Vec::new();
+    for r in (0..100u16).rev() {
+        let (first, last) = if r % 2 == 0 { (3, 4) } else { (4, 3) };
+        recs.push(number(r, 0, first, 1.0));
+        recs.push(number(r, 0, last, 2.0));
+        last_only.push(number(r, 0, last, 2.0));
+    }
+    let make = |recs: Vec<Vec<u8>>| Book {
+        globals: globals(&[], &[4, 5]),
+        sheets: vec![sheet("S", recs)],
+    };
+    let both = fmt_xls::parse_stream(&make(recs).stream(), &Limits::default()).unwrap();
+    let only = fmt_xls::parse_stream(&make(last_only).stream(), &Limits::default()).unwrap();
+    for r in 0..100 {
+        assert_eq!(
+            both.sheets["S"].format_at(r, 0),
+            only.sheets["S"].format_at(r, 0),
+            "row {r}"
+        );
+    }
+    assert_ne!(
+        only.sheets["S"].format_at(0, 0),
+        only.sheets["S"].format_at(1, 0)
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// a sheet after a sheet whose nested substream never closes
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_sheet_after_a_chart_without_its_eof_is_read_like_calamine_does() {
+    // Sheet 1: BOF, a cell, a chart BOF that never gets its EOF. `calamine` skips from the chart
+    // BOF to the end of the stream (sheet 2's BOF/EOF nest inside) and still opens sheet 2 from
+    // its own BOUNDSHEET position.
+    let mut body1 = bof(0x0600, 0x0010);
+    body1.extend(number(0, 0, 0, 1.0));
+    body1.extend(bof(0x0600, 0x0020));
+    let body2 = body_with_numbers(3);
+    let s = stream_with_sheet_positions(&[0, body1.len()], &[body1, body2]);
+    let fm = fmt_xls::parse_stream(&s, &Limits::default()).unwrap();
+    assert_eq!(fm.sheets.len(), 2);
+    assert_eq!(fm.sheets["S0"].value_cells, 1);
+    assert_eq!(fm.sheets["S1"].value_cells, 3);
+    // End to end (calamine opens it too).
+    let dir = tmp("xls_open_chart");
+    let p = dir.join("c.xls");
+    write_cfb(&p, &[("/Workbook", &s)]);
+    let wb = load(&p).unwrap();
+    assert_eq!(wb.sheets.len(), 2);
+}
+
+#[test]
+fn a_far_cell_in_a_sheet_after_an_unclosed_chart_is_still_refused() {
+    let mut body1 = bof(0x0600, 0x0010);
+    body1.extend(bof(0x0600, 0x0020));
+    let mut body2 = bof(0x0600, 0x0010);
+    body2.extend(number(0, 0, 0, 1.0));
+    body2.extend(number(65535, 255, 0, 1.0));
+    body2.extend(eof());
+    let s = stream_with_sheet_positions(&[0, body1.len()], &[body1, body2]);
+    assert_eq!(
+        fmt_xls::parse_stream(&s, &Limits::default()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn a_sheet_pointing_into_a_closed_chart_of_another_is_refused() {
+    let mut body1 = bof(0x0600, 0x0010);
+    body1.extend(number(0, 0, 0, 1.0));
+    let chart_at = body1.len();
+    body1.extend(bof(0x0600, 0x0020));
+    body1.extend(number(0, 1, 0, 1.0));
+    body1.extend(eof());
+    body1.extend(eof());
+    let s = stream_with_sheet_positions(&[0, chart_at], &[body1]);
+    assert!(matches!(
+        fmt_xls::parse_stream(&s, &Limits::default()),
+        Err(OfficeError::Corrupt(m)) if m.contains("share")
+    ));
+}
+
+#[test]
+fn many_sheets_over_one_unclosed_body_are_refused_by_the_visit_budget() {
+    // Each sheet is a nested substream that never closes, 20,000 records long; 3,000 of them at
+    // one position would be 60 million record visits.
+    let mut body = bof(0x0600, 0x0010);
+    body.extend(bof(0x0600, 0x0020));
+    for i in 0..20_000 {
+        body.extend(number(0, (i % 200) as u16, 0, 1.0));
+    }
+    let s = stream_with_sheet_positions(&vec![0usize; 3_000], &[body]);
+    let t = std::time::Instant::now();
+    let r = fmt_xls::parse_stream(&s, &Limits::default());
+    assert!(
+        matches!(&r, Err(OfficeError::Corrupt(m)) if m.contains("share")),
+        "{r:?}"
+    );
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }

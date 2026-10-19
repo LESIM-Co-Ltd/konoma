@@ -11,6 +11,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ### Fixed
 - An `.xls` workbook with an embedded chart: the memory check before opening walked a sheet only up to the first end-of-stream record (the chart's), while `calamine` 0.37 skips the chart and reads on to the sheet's own end. A crafted file could hide a far-away cell or a huge declared size after the chart and get past the check; the check now walks the sheet exactly as `calamine` does. Cached values inside the chart no longer take part in the cell formats, and a 16-byte dimensions record (written by some producers) is accepted.
+- An `.xls` workbook whose compound file holds more than one stream that looks like the workbook: the memory check read the stream a tree walk finds, while `calamine` 0.37 reads the first directory entry named `Workbook` (then `Book`, `WORKBOOK`, `BOOK`) wherever it sits, including inside a sub-storage or cut out of the tree. A crafted file could show the check a harmless stream and `calamine` a hostile one. The check now reads the directory itself and scans exactly the stream `calamine` will read; a looping sector chain is refused.
+- In `.xls` and `.xlsb`, a later record for a cell with the General format now replaces an earlier record with a number format (the last record at a cell wins, as in the values). A sheet that follows a sheet whose embedded chart never closes is no longer refused, as `calamine` opens it; the work over such overlapping sheets is capped.
 - A formula's text result in an `.xlsx` (`t="str"`) is now decoded for Excel's `_xHHHH_` escapes (`CHAR(13)` is stored as `_x000D_`), as Excel and `calamine` do; it showed the escape as written.
 
 ## [0.31.1] - 2026-10-14
