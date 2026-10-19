@@ -120,6 +120,13 @@ pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
     }
 }
 
+/// The most the pictures of one canvas may cover, as a multiple of the canvas area, counting every
+/// placement (overlapping ones too): beyond it the placements, in the plugin's order, keep their
+/// cells instead of being encoded. An honest canvas covers a part of its area; the bound only
+/// stops a plugin that stacks many pictures over all of it from making the host encode (and a
+/// terminal store) hundreds of screens of pixels.
+pub(crate) const MAX_PICTURE_AREA_FACTOR: u64 = 4;
+
 /// Draw the pictures of the canvas over the cells already painted (see the module comment).
 fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     let count = app.canvas_place_count();
@@ -131,6 +138,10 @@ fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     app.begin_md_image_frame();
     let mut sig = OverlaySig::new(inner);
     let mut drawn = 0usize;
+    // The total area the pictures may be encoded at: each placement is its own encoding (a
+    // protocol payload the size of its cells), and the plugin may stack many ids over the whole
+    // area. Placements past the budget, in the plugin's order, keep their cells.
+    let mut area_left = u64::from(inner.width) * u64::from(inner.height) * MAX_PICTURE_AREA_FACTOR;
     for n in 0..count {
         // The placement and its key were made when the answer landed: no string is built here.
         let Some(place) = app.canvas_place(n) else {
@@ -144,6 +155,11 @@ fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             Some(t) => t,
             None => continue,
         };
+        let area = u64::from(target.width) * u64::from(target.height);
+        if area > area_left {
+            continue; // over the budget: the cells stay
+        }
+        area_left -= area;
         // Asked every frame (cheap when settled): decoding is already done, the encode is the
         // worker's.
         app.ensure_md_image(&wanted, r.cols, r.rows, 0, target.height);

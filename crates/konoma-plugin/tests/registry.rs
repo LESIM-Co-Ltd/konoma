@@ -5,7 +5,7 @@ use std::sync::Arc;
 use konoma_plugin::manifest::Target;
 use konoma_plugin::prelude::*;
 use konoma_plugin::registry::{
-    FileFacts, PluginOrigin, Registry, RegistryError, Resolution, UserRule,
+    FileFacts, NoteKind, PluginOrigin, Registry, RegistryError, Resolution, UserRule,
 };
 
 struct Stub(Manifest);
@@ -441,4 +441,129 @@ fn a_content_type_is_taken_by_the_plugin_that_binds_that_type_only() {
     assert_eq!(r.resolve_embed("math").as_deref(), Some("m1"));
     assert_eq!(r.resolve_embed("fence:mermaid").as_deref(), Some("m2"));
     assert_eq!(r.resolve_embed("fence:dot"), None);
+}
+
+// ---- the names and counts a manifest may declare ---------------------------------------------------
+
+fn refused(m: Manifest) -> (String, String) {
+    let mut r = Registry::new();
+    match r.register(stub(m), PluginOrigin::User) {
+        Err(RegistryError::InvalidManifest { id, why }) => {
+            assert!(r.ids().is_empty(), "a refused plugin is not registered");
+            // The refusal is a note for the startup message, under a safe id.
+            let notes = r.notes();
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].plugin, id);
+            assert!(matches!(&notes[0].kind, NoteKind::Refused { why: w } if *w == why));
+            (id, why)
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn names_outside_the_allowed_characters_or_too_long_refuse_the_plugin() {
+    use konoma_plugin::registry::{is_valid_name, MAX_NAME_CHARS};
+    for ok in ["csv", "a", "x-y_z.1", &"a".repeat(MAX_NAME_CHARS)] {
+        assert!(is_valid_name(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "Upper",
+        "has space",
+        "esc\u{1b}[31m",
+        "new\nline",
+        "日本語",
+        &"a".repeat(MAX_NAME_CHARS + 1),
+    ] {
+        assert!(!is_valid_name(bad), "{bad:?}");
+    }
+    // The plugin id.
+    let (id, why) = refused(Manifest::new("evil\u{1b}[2J id", "1"));
+    assert_eq!(id, "evil??2??id");
+    assert!(
+        !id.contains('\u{1b}') && id.len() <= MAX_NAME_CHARS,
+        "{id:?}"
+    );
+    assert!(
+        why.contains("plugin id") && !why.contains('\u{1b}'),
+        "{why:?}"
+    );
+    // A very long id is cut in the message.
+    let (id, _) = refused(Manifest::new("a".repeat(10_000) + "\u{7}", "1"));
+    assert_eq!(id.len(), MAX_NAME_CHARS);
+    // Action id, the screen an action names, a setting name, a screen name, the work group.
+    let act = |id: &str| {
+        Act::new(id)
+            .label(t!(en: "x", ja: "x"))
+            .help(t!(en: "x", ja: "x"))
+    };
+    assert!(refused(Manifest::new("p", "1").action(act("Bad Id")))
+        .1
+        .contains("action id"));
+    assert!(
+        refused(Manifest::new("p", "1").action(act("ok").screen("Bad Screen")))
+            .1
+            .contains("screen")
+    );
+    let mut m = Manifest::new("p", "1");
+    m.settings.push(SettingDecl::new(
+        "Bad\u{1b}",
+        Value::Bool(true),
+        Tr::new("h"),
+    ));
+    assert!(refused(m).1.contains("setting name"));
+    let mut m = Manifest::new("p", "1");
+    m.screens.push("two words".into());
+    assert!(refused(m).1.contains("screen name"));
+    let mut m = Manifest::new("p", "1");
+    m.work_group = Some("Grp\n".into());
+    assert!(refused(m).1.contains("work group"));
+}
+
+#[test]
+fn more_declarations_than_the_host_takes_refuse_the_plugin() {
+    use konoma_plugin::registry::{MAX_ACTIONS, MAX_BINDS, MAX_SCREENS, MAX_SETTINGS};
+    let mut m = Manifest::new("p", "1");
+    m.actions = (0..=MAX_ACTIONS)
+        .map(|i| Act::new(format!("a{i}")))
+        .collect();
+    assert!(refused(m).1.contains("actions"));
+    let mut m = Manifest::new("p", "1");
+    m.settings = (0..=MAX_SETTINGS)
+        .map(|i| SettingDecl::new(format!("s{i}"), Value::Bool(true), Tr::new("h")))
+        .collect();
+    assert!(refused(m).1.contains("settings"));
+    let mut m = Manifest::new("p", "1");
+    m.binds = (0..=MAX_BINDS).map(|_| Bind::files(["*.x"])).collect();
+    assert!(refused(m).1.contains("binds"));
+    let mut m = Manifest::new("p", "1");
+    m.screens = (0..=MAX_SCREENS).map(|i| format!("s{i}")).collect();
+    assert!(refused(m).1.contains("screens"));
+    // Exactly at the limits is fine.
+    let mut m = Manifest::new("p", "1");
+    m.actions = (0..MAX_ACTIONS)
+        .map(|i| Act::new(format!("a{i}")))
+        .collect();
+    m.screens = (0..MAX_SCREENS).map(|i| format!("s{i}")).collect();
+    let mut r = Registry::new();
+    r.register(stub(m), PluginOrigin::User).unwrap();
+    assert!(r
+        .notes()
+        .iter()
+        .all(|n| !matches!(n.kind, NoteKind::Refused { .. })));
+}
+
+#[test]
+fn the_version_is_cut_and_stripped_when_registered() {
+    let mut r = Registry::new();
+    let v = format!("1.0\u{1b}[31m{}", "9".repeat(1000));
+    r.register(stub(Manifest::new("p", v)), PluginOrigin::User)
+        .unwrap();
+    let kept = &r.manifest("p").unwrap().version;
+    assert!(
+        kept.chars().count() <= 64 && !kept.contains('\u{1b}'),
+        "{kept:?}"
+    );
+    assert!(kept.starts_with("1.0[31m9"));
 }

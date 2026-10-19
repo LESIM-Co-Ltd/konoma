@@ -524,6 +524,76 @@ fn e2e_a_plugin_that_declares_billions_of_pages_is_read_as_declaring_a_bounded_n
     assert!(!s.app.page_list_usable());
 }
 
+#[test]
+fn e2e_the_page_list_of_a_huge_document_is_built_once_when_it_opens_not_per_frame_or_key() {
+    use crate::app::outline::PAGE_LIST_BUILDS;
+    use konoma_plugin::view::PageLayout;
+    struct Paged;
+    impl Plugin for Paged {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("x-paged2", "0.1.0")
+                .bind(Bind::files(["*.pgd"]))
+                .shows(ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(PagedSession))
+        }
+    }
+    struct PagedSession;
+    impl Session for PagedSession {
+        fn layout(&self) -> Layout {
+            Layout {
+                pages: Some(PageLayout::Separate {
+                    count: Some(100_000),
+                    titles: (0..100_000).map(|i| format!("title {i}")).collect(),
+                }),
+                ..Layout::default()
+            }
+        }
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Ok(View::text(["page"]))
+        }
+    }
+    let dir = sandbox("p2_paged_once");
+    std::fs::write(dir.join("a.pgd"), "x").unwrap();
+    let marker = test_plugins::register("p2_paged_once", Arc::new(Paged));
+    let mut s = Sim::with_config_sized(&canon(&dir), test_plugins::marker_config(&marker), 90, 26);
+    s.select("a.pgd");
+    s.enter();
+    // Asking whether `O` is usable builds nothing, however often.
+    let before = PAGE_LIST_BUILDS.with(std::cell::Cell::get);
+    for _ in 0..20 {
+        assert!(s.app.page_list_usable());
+        assert!(s.app.is_page_list_preview());
+    }
+    assert_eq!(
+        PAGE_LIST_BUILDS.with(std::cell::Cell::get),
+        before,
+        "a count, not a list"
+    );
+    s.key('O');
+    assert!(s.app.is_outline(), "the page list is open");
+    // Opening builds it; frames and keys while it is open reuse it.
+    let opened = PAGE_LIST_BUILDS.with(std::cell::Cell::get);
+    assert!(opened > before, "built when it opened");
+    for _ in 0..10 {
+        s.draw();
+        s.key('j');
+    }
+    s.draw();
+    assert!(s.screen().contains("title 10"), "and it is the list");
+    assert_eq!(
+        PAGE_LIST_BUILDS.with(std::cell::Cell::get),
+        opened,
+        "ten frames and ten keys built nothing more"
+    );
+    // Closing drops it; the next opening builds it again.
+    s.key('O');
+    assert!(!s.app.is_outline());
+    s.key('O');
+    assert!(PAGE_LIST_BUILDS.with(std::cell::Cell::get) > opened);
+}
+
 #[cfg(feature = "demo-canvas")]
 #[test]
 fn the_canvas_trace_line_tells_the_job_road_apart() {

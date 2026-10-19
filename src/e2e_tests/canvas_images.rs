@@ -542,6 +542,83 @@ fn e2e_canvas_image_reaching_below_the_area_is_clipped_to_the_visible_band() {
 }
 
 #[test]
+fn e2e_canvas_one_picture_clipped_at_five_heights_is_drawn_at_every_placement() {
+    // A canvas taller than the area (a terminal just shrunk, or a plugin that means it): one
+    // picture id placed five times, each reaching past the bottom edge by a different amount, so
+    // it needs five encodings (a different clipped band each). A fixed cap of three encodings left
+    // two of them to the cells, for good; the cap is the number of placements. Every placement is
+    // drawn, and once drawn nothing is sent again (no eviction loop).
+    let p = Sprites::new("cvi_clip_5", |req, _| {
+        let mut c = CanvasView::new(req.cols, req.rows + 20);
+        let (w, h) = fill_px(req, 8, 8);
+        for i in 0..5u16 {
+            let y = req.rows.saturating_sub(1 + i);
+            c.images
+                .push(placed(1, 1 + i * 10, y, 8, 8, solid(w, h, [10, 200, 90])));
+        }
+        c
+    });
+    let mut o = open_kitty("cvi_clip_5", p, 90, 26);
+    let mut heights: Vec<usize> = Vec::new();
+    {
+        let rows = o.rows();
+        for i in 0..5u16 {
+            let (ax, _, _, _) = o.area();
+            heights.push(
+                rows.iter()
+                    .filter(|(x, _, _)| *x == ax + 1 + i * 10)
+                    .count(),
+            );
+        }
+    }
+    assert_eq!(
+        heights,
+        [1, 2, 3, 4, 5],
+        "every placement shows its visible band"
+    );
+    let sent = o.transmits.len();
+    for _ in 0..6 {
+        o.draw();
+        o.pump();
+    }
+    assert_eq!(o.transmits.len(), sent, "settled: no encode is sent again");
+    assert!(!o.s.app.is_media_loading());
+    assert_eq!(o.rows().len(), 15);
+}
+
+#[test]
+fn e2e_canvas_pictures_stacked_over_the_whole_area_are_encoded_up_to_four_screens() {
+    // Eight distinct pictures, each covering the whole canvas: eight screens of pixels to encode
+    // and keep in the terminal. The total area of the placements is bounded at four times the
+    // canvas: the first four (in the plugin's order) are drawn, the rest keep their cells.
+    let p = Sprites::new("cvi_stack", |req, _| {
+        let mut c = base(req);
+        let (w, h) = fill_px(req, req.cols, req.rows);
+        for i in 0..8u64 {
+            c.images.push(placed(
+                1 + i,
+                0,
+                0,
+                req.cols,
+                req.rows,
+                solid(w, h, [10 + i as u8 * 20, 50, 90]),
+            ));
+        }
+        c
+    });
+    let mut o = open_kitty("cvi_stack", p, 90, 26);
+    assert_eq!(o.transmits.len(), 4, "{:?}", o.transmits);
+    let sent = o.transmits.len();
+    for _ in 0..5 {
+        o.draw();
+        o.pump();
+    }
+    assert_eq!(o.transmits.len(), sent, "settled");
+    // A canvas that stays within the bound is untouched: a picture over half the area, four times
+    // over, is 2 screens and all four are drawn (the other tests of this file).
+}
+
+#[test]
 fn e2e_canvas_image_starting_below_the_area_is_skipped() {
     let p = Sprites::new("cvi_out_b", |req, _| {
         let mut c = CanvasView::new(req.cols, req.rows + 10);

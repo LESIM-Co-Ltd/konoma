@@ -79,7 +79,7 @@ impl App {
         self.git_graph_picker_set.clear();
         self.git_graph_reordered = false;
         // The heading outline overlay is not carried across tabs either.
-        self.outline_open = false;
+        self.close_outline();
         // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
         self.table_cell_open = false;
         // The <details> open/closed state is also per-document = not carried across tabs.
@@ -308,7 +308,7 @@ impl App {
         self.save_active();
         // The heading outline overlay isn't carried into the new tab (prevents an empty overlay
         // on an empty tab).
-        self.outline_open = false;
+        self.close_outline();
         // Same for the table-cell full-text popup.
         self.table_cell_open = false;
         let root = self.tab.root.clone();

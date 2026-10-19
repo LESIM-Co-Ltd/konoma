@@ -1166,6 +1166,11 @@ impl App {
         // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
         let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
         let frame = self.md_frame;
+        // The most encodings a canvas picture may hold (`None`: not a canvas picture).
+        let canvas_cap = path
+            .to_str()
+            .filter(|p| crate::preview::markdown::canvas_slot_of(p).is_some())
+            .map(|p| self.canvas_slot_cap(p));
         let ids = &mut self.md_kitty_ids;
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return;
@@ -1206,13 +1211,11 @@ impl App {
             let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
             (Some((0, y0, dw, h)), vis_rows)
         };
-        // A canvas picture's family is capped for good (its plugin is not trusted to place one
-        // picture at few sizes); a document's grows by one when every slot is live.
-        let canvas = path
-            .to_str()
-            .is_some_and(|p| crate::preview::markdown::canvas_slot_of(p).is_some());
-        let slot = if canvas {
-            reserve_proto_slot_hard(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS)
+        // A canvas picture's family is capped for good at its number of placements in the canvas
+        // (its plugin is not trusted to place one picture at few sizes); a document's grows by one
+        // when every slot is live.
+        let slot = if let Some(cap) = canvas_cap {
+            reserve_proto_slot_hard(entry.slots_mut(&enc_key), enc_key, frame, cap)
         } else {
             Some(reserve_proto_slot(
                 entry.slots_mut(&enc_key),

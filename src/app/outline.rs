@@ -1,5 +1,23 @@
 use super::*;
 
+/// A page list built for the overlay, with what it was built for.
+pub(crate) type BuiltPages = (PagesKey, Arc<Vec<(u8, String)>>);
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: how many plugin page lists were built on this thread.
+    pub(crate) static PAGE_LIST_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What a built page list of the overlay was built for (see `App::outline_rows`).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PagesKey {
+    is_sheet: bool,
+    count: Option<u32>,
+    titles: (usize, usize),
+    lang: crate::i18n::Lang,
+}
+
 /// What `O` lists on a paged preview.
 enum PageListShape {
     /// The slides of a deck, named by their headings.
@@ -66,6 +84,8 @@ impl App {
                 )
             }
             PageListShape::Pages { is_sheet } => {
+                #[cfg(test)]
+                PAGE_LIST_BUILDS.with(|c| c.set(c.get() + 1));
                 let Some(n) = self.tab.page_count else {
                     return Some(Vec::new());
                 };
@@ -172,16 +192,59 @@ impl App {
         (self.tab.page as usize).saturating_sub(1)
     }
 
+    /// Closes the `O` overlay and drops the page list built for it.
+    pub(crate) fn close_outline(&mut self) {
+        self.outline_open = false;
+        *self.outline_pages.borrow_mut() = None;
+    }
+
+    /// Forgets the page list built for the overlay (the layout it was built from changed).
+    pub(crate) fn forget_outline_pages(&self) {
+        *self.outline_pages.borrow_mut() = None;
+    }
+
     /// The rows of the open overlay: `(level, text)`, the headings of the outline or the pages.
-    pub(crate) fn outline_rows(&self) -> Vec<(u8, String)> {
-        match self.page_list() {
+    /// A list of plugin pages is built once per opening of the overlay (and again when the page
+    /// count, the titles or the language change), not on every frame and key.
+    pub(crate) fn outline_rows(&self) -> Arc<Vec<(u8, String)>> {
+        let key = self.pages_key();
+        if let Some(key) = &key {
+            if let Some((built_for, rows)) = self.outline_pages.borrow().as_ref() {
+                if built_for == key {
+                    return rows.clone();
+                }
+            }
+        }
+        let rows: Arc<Vec<(u8, String)>> = Arc::new(match self.page_list() {
             Some(pages) => pages.into_iter().map(|t| (1, t)).collect(),
             None => self
                 .md_outline()
                 .into_iter()
                 .map(|(level, text, _)| (level, text))
                 .collect(),
+        });
+        if let (Some(key), true) = (key, self.outline_open) {
+            *self.outline_pages.borrow_mut() = Some((key, rows.clone()));
         }
+        rows
+    }
+
+    /// What a built page list depends on (plugin pages only; a deck's list is bounded by its
+    /// document and cheap): the kind of list, the count, the titles' allocation and the language.
+    fn pages_key(&self) -> Option<PagesKey> {
+        let PageListShape::Pages { is_sheet } = self.page_list_shape()? else {
+            return None;
+        };
+        let titles: &[String] = match self.plugin.as_ref().map(|p| &p.layout.pages) {
+            Some(Some(konoma_plugin::view::PageLayout::Separate { titles, .. })) => titles,
+            _ => &[],
+        };
+        Some(PagesKey {
+            is_sheet,
+            count: self.tab.page_count,
+            titles: (titles.as_ptr() as usize, titles.len()),
+            lang: self.lang,
+        })
     }
 
     pub(crate) fn outline_len(&self) -> usize {
@@ -202,13 +265,14 @@ impl App {
         }
         self.outline_sel = self.current_page_index();
         self.list_filter_reset(super::list_filter::ListId::Outline);
+        self.forget_outline_pages();
         self.outline_open = true;
     }
 
     /// Enter in the page list: go to the selected page.
     fn page_list_jump(&mut self) {
         let sel = self.outline_sel;
-        self.outline_open = false;
+        self.close_outline();
         if self.is_deck() {
             if !self.anchored_can_turn() {
                 return;
@@ -233,7 +297,7 @@ impl App {
     /// headings (e.g. a non-Markdown preview or a document without any).
     pub fn toggle_outline(&mut self) {
         if self.outline_open {
-            self.outline_open = false;
+            self.close_outline();
             return;
         }
         if self.is_page_list_preview() {
@@ -290,7 +354,7 @@ impl App {
             return;
         }
         let line = self.md_outline().get(self.outline_sel).map(|(_, _, l)| *l);
-        self.outline_open = false;
+        self.close_outline();
         if let Some(line) = line {
             let (row, _) = self.md_visual_span(line);
             self.tab.preview_scroll = row.min(u16::MAX as usize) as u16;

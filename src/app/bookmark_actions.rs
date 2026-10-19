@@ -1687,8 +1687,10 @@ impl App {
             // entry is keyed by path — so the entry outlives a rewrite of the bytes behind it and
             // has to be dropped by hand before the reload re-reads the document.
             self.drop_changed_md_images(changed);
-            // An event that names the shown file itself reopens a plugin's file without the
-            // stamp rule; the stamp decides only for empty / `.git`-only / other-file events.
+            // An event that names the shown file itself reopens a plugin's file without asking
+            // the stamp when the stamp cannot be trusted (the file was modified within
+            // `RACY_WINDOW` of when it was taken); the stamp decides for empty / `.git`-only /
+            // other-file events, and for a late duplicate event of a save already read.
             let named = self
                 .tab
                 .preview_path

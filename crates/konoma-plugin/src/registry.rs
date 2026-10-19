@@ -24,9 +24,91 @@ pub enum PluginOrigin {
     User,
 }
 
+/// The longest id, action id, setting name, screen name or work group a manifest may declare.
+pub const MAX_NAME_CHARS: usize = 64;
+/// The most actions a manifest may declare.
+pub const MAX_ACTIONS: usize = 256;
+/// The most settings a manifest may declare.
+pub const MAX_SETTINGS: usize = 256;
+/// The most binds a manifest may declare.
+pub const MAX_BINDS: usize = 1024;
+/// The most screens a manifest may declare.
+pub const MAX_SCREENS: usize = 64;
+/// The longest version string kept (longer is cut).
+pub const MAX_VERSION_CHARS: usize = 64;
+
+/// Whether `s` is a usable name: 1 to [`MAX_NAME_CHARS`] characters of `[a-z0-9._-]`. A name is
+/// printed by the host (`konoma --plugins`, the startup message) and used in config tables and
+/// key contexts, so it may not carry a control character, a space or a long text.
+pub fn is_valid_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= MAX_NAME_CHARS
+        && s.bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+}
+
+/// `s` as it may be shown in a message about a refusal: what is not allowed in a name becomes `?`
+/// and the length is bounded.
+fn display_name(s: &str) -> String {
+    s.chars()
+        .take(MAX_NAME_CHARS)
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+/// What is wrong with the declarations of `m` that make the host refuse the plugin: a name that is
+/// not [`is_valid_name`], or more declarations than the host takes.
+fn manifest_problem(m: &Manifest) -> Option<String> {
+    let name = |what: &str, s: &str| -> Option<String> {
+        (!is_valid_name(s)).then(|| {
+            format!(
+                "{what} `{}` is not a name ([a-z0-9._-], 1 to {MAX_NAME_CHARS} characters)",
+                display_name(s)
+            )
+        })
+    };
+    let count = |what: &str, n: usize, max: usize| -> Option<String> {
+        (n > max).then(|| format!("{n} {what} (at most {max})"))
+    };
+    name("the plugin id", &m.id)
+        .or_else(|| count("actions", m.actions.len(), MAX_ACTIONS))
+        .or_else(|| count("settings", m.settings.len(), MAX_SETTINGS))
+        .or_else(|| count("binds", m.binds.len(), MAX_BINDS))
+        .or_else(|| count("screens", m.screens.len(), MAX_SCREENS))
+        .or_else(|| {
+            m.actions.iter().find_map(|a| {
+                name("an action id", &a.id).or_else(|| {
+                    a.screen
+                        .as_deref()
+                        .and_then(|s| name("an action's screen", s))
+                })
+            })
+        })
+        .or_else(|| {
+            m.settings
+                .iter()
+                .find_map(|s| name("a setting name", &s.name))
+        })
+        .or_else(|| m.screens.iter().find_map(|s| name("a screen name", s)))
+        .or_else(|| {
+            m.work_group
+                .as_deref()
+                .and_then(|g| name("the work group", g))
+        })
+}
+
 /// Why a registration was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegistryError {
+    /// The manifest declares a name that is not usable or more than the host takes (see
+    /// [`is_valid_name`], [`MAX_ACTIONS`]...). `id` is safe to print.
+    InvalidManifest { id: String, why: String },
     /// A plugin with this id is already registered; the later one is refused.
     DuplicateId(String),
     /// A glob in the manifest does not compile.
@@ -39,6 +121,9 @@ impl fmt::Display for RegistryError {
             RegistryError::DuplicateId(id) => write!(f, "plugin id `{id}` is already registered"),
             RegistryError::InvalidGlob { id, glob } => {
                 write!(f, "plugin `{id}` declares an invalid glob `{glob}`")
+            }
+            RegistryError::InvalidManifest { id, why } => {
+                write!(f, "plugin `{id}` is refused: {why}")
             }
         }
     }
@@ -65,6 +150,10 @@ pub enum NoteKind {
     /// The plugin is given files (`binds`) but declares no `shows`, so the host attaches no
     /// screen to them.
     ShowsNotDeclared,
+    /// The registration was refused because the manifest declares a name that is not usable or
+    /// more than the host takes. The plugin is not registered; `RegistryNote::plugin` is a safe
+    /// rendering of its id.
+    Refused { why: String },
 }
 
 /// A user binding (a `[[preview.rules]]` entry read as "this target goes to that plugin").
@@ -134,6 +223,8 @@ struct Entry {
 #[derive(Default)]
 pub struct Registry {
     entries: Vec<Entry>,
+    /// The plugins whose registration was refused (the notes for the startup message).
+    refused: Vec<RegistryNote>,
 }
 
 struct Lazy<'a> {
@@ -206,10 +297,25 @@ impl Registry {
         origin: PluginOrigin,
     ) -> Result<(), RegistryError> {
         let manifest = plugin.manifest();
+        if let Some(why) = manifest_problem(&manifest) {
+            let id = display_name(&manifest.id);
+            self.refused.push(RegistryNote {
+                plugin: id.clone(),
+                kind: NoteKind::Refused { why: why.clone() },
+            });
+            return Err(RegistryError::InvalidManifest { id, why });
+        }
         // What the host registers is the sanitized manifest: an action whose key is reserved
         // (layers 0 to 3) or taken keeps the action and loses the key; one that cannot be
         // registered is dropped. Both are noted for the startup message.
-        let (manifest, key_issues) = sanitize(&manifest);
+        let (mut manifest, key_issues) = sanitize(&manifest);
+        // The version is shown (`konoma --plugins`): cut, and without control characters.
+        manifest.version = manifest
+            .version
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_VERSION_CHARS)
+            .collect();
         let mut notes: Vec<NoteKind> = key_issues.into_iter().map(NoteKind::Key).collect();
         let blocked = !manifest.api.works_with(ApiVersion::CURRENT);
         if blocked {
@@ -289,6 +395,7 @@ impl Registry {
                     kind: k.clone(),
                 })
             })
+            .chain(self.refused.iter().cloned())
             .collect()
     }
 

@@ -1035,3 +1035,40 @@ fn a_gif_file_of_the_picture_view_is_an_animation_read_from_the_opened_handle() 
         _ => panic!("two frames animate"),
     }
 }
+
+#[test]
+fn a_tga_the_content_cannot_identify_is_decoded_by_its_extension_like_before() {
+    // A TGA has no signature: `ImageReader::open` took its format from the extension, and the
+    // handle the host reads from must too (a user rule can send `*.tga` to the image plugin).
+    let dir = unique_tmp("konoma_pic_tga");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut bytes = Vec::new();
+    image::DynamicImage::new_rgba8(3, 2)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Tga,
+        )
+        .unwrap();
+    let tga = dir.join("x.tga");
+    std::fs::write(&tga, &bytes).unwrap();
+    let shown = dir.join("shown.tga");
+    match file_view(&shown, &tga) {
+        Some(MediaPayload::Static(img)) => assert_eq!((img.width(), img.height()), (3, 2)),
+        other => panic!("a TGA by its extension is a still: {:?}", other.is_some()),
+    }
+    // The extension is only the fallback: the same bytes under a name that says nothing are not
+    // guessed, and a PNG under a `.tga` name is still a PNG (the content wins).
+    let nameless = dir.join("x.bin");
+    std::fs::write(&nameless, &bytes).unwrap();
+    assert!(failed(&file_view(&shown, &nameless)));
+    let mut png = Vec::new();
+    image::DynamicImage::new_rgba8(4, 4)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let liar = dir.join("liar.tga");
+    std::fs::write(&liar, &png).unwrap();
+    match file_view(&shown, &liar) {
+        Some(MediaPayload::Static(img)) => assert_eq!(img.width(), 4),
+        _ => panic!("the content wins over the extension"),
+    }
+}

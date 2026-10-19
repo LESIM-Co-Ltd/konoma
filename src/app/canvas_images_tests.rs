@@ -2849,3 +2849,37 @@ fn a_canvas_pictures_encode_slots_never_grow_past_the_cap() {
     assert_eq!(again, Some(0));
     assert_eq!(slots.len(), MD_PROTO_SLOTS);
 }
+
+#[test]
+fn an_encoded_frame_costs_a_decode_like_a_file_and_only_a_ready_rgba_frame_costs_none() {
+    // An `Encoded` frame runs a full decode of whatever its header admits, however few bytes it
+    // is: it is counted like a file or an SVG frame; a ready `Rgba` frame is not.
+    let enc = || png_of(image::DynamicImage::new_rgba8(2, 2));
+    let d = Duration::from_millis(100);
+    let frames = |data: fn() -> ImageData, n: usize| {
+        ImageData::Frames((0..n).map(|_| (data(), d)).collect())
+    };
+    assert_eq!(
+        decode_cost(&frames(|| rgba(1, 1, 1), 50)),
+        1,
+        "at least one"
+    );
+    assert_eq!(decode_cost(&frames(enc_png, 50)), 50);
+    assert_eq!(decode_cost(&enc()), 1);
+    let _ = enc;
+    // And the budget refuses the 50-frame encoded animation for good against 32 decodes, while 50
+    // ready frames are fine.
+    let c = canvas_of(vec![im(1, frames(enc_png, 40))]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 32));
+    assert!(matches!(
+        got.fresh[0].1,
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
+    ));
+    let c = canvas_of(vec![im(1, frames(enc_png, 4))]);
+    let got = decode_within(&c, &nothing_held(), small(|l| l.decodes = 32));
+    assert!(matches!(got.fresh[0].1, CanvasDecoded::Frames(_)));
+}
+
+fn enc_png() -> ImageData {
+    png_of(image::DynamicImage::new_rgba8(2, 2))
+}

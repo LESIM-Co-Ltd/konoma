@@ -92,6 +92,8 @@ pub enum PluginNote {
     },
     /// The plugin is given files but declares no `shows`: the host attaches no screen to them.
     ShowsNotDeclared { plugin: String },
+    /// The plugin was refused: a name it declares is not usable or it declares too much.
+    Refused { plugin: String, why: String },
     /// `[keys.<plugin>]` names an action the plugin does not declare.
     UnknownAction { plugin: String, action: String },
     /// `[keys.<plugin>]` has a key that is not usable (does not parse, reserved, taken).
@@ -163,6 +165,10 @@ impl PluginKeys {
                 },
                 NoteKind::ShowsNotDeclared => PluginNote::ShowsNotDeclared {
                     plugin: note.plugin,
+                },
+                NoteKind::Refused { why } => PluginNote::Refused {
+                    plugin: note.plugin,
+                    why,
                 },
             });
         }
@@ -346,6 +352,12 @@ impl PluginKeys {
                 (PluginNote::ShowsNotDeclared { plugin }, Lang::En) => format!(
                     "{plugin}: it is given files but declares no `shows`, so it gets no screen (Manifest::shows)"
                 ),
+                (PluginNote::Refused { plugin, why }, Lang::Jp) => {
+                    format!("{plugin}: 宣言が不正なので登録しませんでした: {why}")
+                }
+                (PluginNote::Refused { plugin, why }, Lang::En) => {
+                    format!("{plugin}: not registered, its declarations are not usable: {why}")
+                }
                 (PluginNote::UnknownAction { plugin, action }, Lang::Jp) => {
                     format!("[keys.{plugin}] 未知の操作 `{action}`(無視)")
                 }
@@ -576,5 +588,34 @@ mod tests {
         ] {
             assert_eq!(keypress_of(spec), want);
         }
+    }
+
+    /// A plugin whose manifest the registry refuses (a name with an escape character) is named in
+    /// the startup message under a safe id, in both languages, and is not registered.
+    #[test]
+    fn a_refused_manifest_is_named_in_the_startup_message_with_a_safe_id() {
+        struct Evil;
+        impl konoma_plugin::Plugin for Evil {
+            fn manifest(&self) -> konoma_plugin::Manifest {
+                konoma_plugin::Manifest::new("evil\u{1b}[2J", "1")
+            }
+            fn open(
+                &self,
+                _: konoma_plugin::Input,
+                _: &konoma_plugin::OpenCx,
+            ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+                Err(konoma_plugin::Failure::unsupported(Tr::new("no")))
+            }
+        }
+        let mut r = Registry::new();
+        assert!(r.register(Arc::new(Evil), PluginOrigin::User).is_err());
+        let k = PluginKeys::build(&r, &mut HashMap::new());
+        for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+            let report = k.report(lang);
+            assert_eq!(report.len(), 1, "{report:?}");
+            assert!(report[0].starts_with("evil??2?: "), "{report:?}");
+            assert!(!report[0].contains('\u{1b}'));
+        }
+        assert!(r.ids().is_empty());
     }
 }

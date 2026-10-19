@@ -541,6 +541,12 @@ impl PluginResult {
         if let Some(Outcome::Flash(msg)) = &mut self.outcome {
             *msg = msg.clipped();
         }
+        // The one string in a view the host puts in its own chrome (the table's frame title).
+        if let Some(View::Table(t)) = &mut self.view {
+            if let Some(title) = &t.title {
+                t.title = Some(konoma_plugin::text::clip_text(title).into_owned());
+            }
+        }
     }
 
     pub(super) fn failed(gen: u64, id: String, req: ViewReq, failure: Failure) -> PluginResult {
@@ -1500,6 +1506,7 @@ impl App {
             super::canvas_trace::note_reopen();
         }
         self.plugin_stamp = file_stamp(&path);
+        self.plugin_stamp_taken = Some(std::time::SystemTime::now());
         // A Markdown or Word document is asked for in its rendered form first, whatever the tab
         // chose: the document is what the source view returns to (`land_document` asks for the
         // source once it is there).
@@ -2104,6 +2111,7 @@ impl App {
     /// Take what a session reported about its pages as the host's page state
     /// (`PerTab::page_count`, and the page clamped to it).
     fn adopt_layout(&mut self, layout: &Layout) {
+        self.forget_outline_pages();
         if let Some(count) = page_count_of(layout) {
             self.tab.page_count = count;
             if let Some(n) = count {

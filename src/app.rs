@@ -69,7 +69,7 @@ pub use office_open::OfficeOpenResult;
 pub(crate) mod canvas_images;
 #[cfg(feature = "demo-canvas")]
 mod canvas_trace;
-mod outline;
+pub(crate) mod outline;
 mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
@@ -1732,6 +1732,8 @@ pub struct App {
     /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
     /// not re-read a workbook of hundreds of megabytes.
     plugin_stamp: Option<FileStamp>,
+    /// When `plugin_stamp` was taken (the "racily clean" rule: see [`named_event_rereads`]).
+    plugin_stamp_taken: Option<std::time::SystemTime>,
     /// Set while the user's own refresh (`r`) runs: a plugin's file is read again whatever its
     /// stamp says (`plugin_file_unchanged`), because the user asked for it. Only a canvas show
     /// honours it; every other plugin keeps the stamp rule.
@@ -1855,6 +1857,10 @@ pub struct App {
     /// The placements of the canvas on screen, in the order of `CanvasView::images`, with the
     /// cache key made once when the answer landed (`app/canvas_images.rs`).
     canvas_places: Vec<canvas_images::CanvasPlace>,
+    /// How many placements of the canvas on screen each picture (by `canvas_slot_of`) has: the
+    /// number of encodings it can need at once (one per placement, a clipped one has its own).
+    /// Built with `canvas_places`; the cap of a canvas picture's encode slots.
+    canvas_slot_counts: std::collections::HashMap<String, usize>,
     /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
     /// content of the id has no protocol yet, so a changing picture does not blink.
     canvas_front: std::collections::HashMap<u64, Arc<str>>,
@@ -1955,6 +1961,10 @@ pub struct App {
     /// Heading-outline overlay (`o` in a Markdown preview): jump to any heading.
     outline_open: bool,
     outline_sel: usize,
+    /// The page list of the open `O` overlay, built once when it opens (a plugin may declare
+    /// 100,000 pages, and the overlay asks for the rows on every frame and key): the key it was
+    /// built for and the rows. Dropped when the overlay closes or the layout changes.
+    outline_pages: std::cell::RefCell<Option<outline::BuiltPages>>,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -3619,6 +3629,7 @@ impl App {
             md_overlay_moved: false,
             preview_media_mtime: None,
             plugin_stamp: None,
+            plugin_stamp_taken: None,
             plugin_reopen_forced: false,
             command_err: None,
             image_failure: None,
@@ -3650,6 +3661,7 @@ impl App {
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
             canvas_places: Vec::new(),
+            canvas_slot_counts: std::collections::HashMap::new(),
             canvas_front: std::collections::HashMap::new(),
             canvas_kept: std::collections::HashMap::new(),
             kitty_deletes: Vec::new(),
@@ -3684,6 +3696,7 @@ impl App {
             tab_list_sel: 0,
             outline_open: false,
             outline_sel: 0,
+            outline_pages: std::cell::RefCell::new(None),
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
@@ -4740,7 +4753,7 @@ impl App {
             self.md_image_cache.clear(); // A different file: also discard the inline-image cache
         }
         self.tab.focused_item = None;
-        self.outline_open = false; // A new preview closes the outline overlay
+        self.close_outline(); // A new preview closes the outline overlay
         self.table_cell_open = false; // Likewise closes the table cell full-text popup
         self.details_open.clear(); // <details> open/closed state is per document = reset on a different file
         self.tab.preview_search = None;
@@ -5129,8 +5142,9 @@ impl App {
     }
 
     /// [`App::reload_preview`]. `named` is true when the FS event names the shown file itself:
-    /// then a plugin's file is opened again without consulting its stamp (a coarse-mtime
-    /// filesystem can leave the stamp equal across a real rewrite).
+    /// then a plugin's file is opened again although its stamp is equal when the file was modified
+    /// within [`RACY_WINDOW`] of the moment the stamp was taken (a coarse-mtime filesystem can
+    /// leave the stamp equal across a real rewrite); an old file's equal stamp is believed.
     pub(crate) fn reload_preview_named(&mut self, named: bool) {
         self.md_cache = None;
         self.win_cache = None;
@@ -5149,7 +5163,7 @@ impl App {
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
                 && !self.shows_file_text_plugin()
             {
-                if named || !self.plugin_file_unchanged() {
+                if !self.plugin_file_unchanged(named) {
                     self.reload_plugin();
                 }
                 self.clamp_table_cursor();
@@ -5162,9 +5176,12 @@ impl App {
     /// unchanged since: reading it again would only repeat the work, or lose the state (an FS
     /// event for `.git`, or for another file, or of an unknown cause, reaches `reload_preview` as
     /// well). Such a plugin is opened again only when the file's stamp (mtime, size, inode, ctime)
-    /// changed. A plugin that reads cheaply and keeps nothing (a CSV, an archive listing) is
+    /// changed -- or, for an event that names the shown file itself (`named`), also when the stamp
+    /// cannot be trusted yet ([`named_event_rereads`]: the file was modified within
+    /// [`RACY_WINDOW`] of the moment the stamp was taken, so a coarse-mtime rewrite may have left
+    /// it equal). A plugin that reads cheaply and keeps nothing (a CSV, an archive listing) is
     /// opened again every time, as it always was.
-    fn plugin_file_unchanged(&self) -> bool {
+    fn plugin_file_unchanged(&self, named: bool) -> bool {
         let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
             return false;
         };
@@ -5178,13 +5195,20 @@ impl App {
             .manifest(id)
             .is_some_and(|m| m.work_group.is_some())
             || canvas;
-        heavy
+        let stamp_equal = heavy
             && self
                 .plugin
                 .as_ref()
                 .is_some_and(|p| p.id == *id && p.path == *path)
             && self.plugin_stamp.is_some()
-            && file_stamp(path) == self.plugin_stamp
+            && file_stamp(path) == self.plugin_stamp;
+        if stamp_equal && named {
+            if let (Some(stamp), Some(taken)) = (&self.plugin_stamp, self.plugin_stamp_taken) {
+                return !named_event_rereads(stamp.modified, taken, std::time::SystemTime::now());
+            }
+            return false; // no time on record: believe the event
+        }
+        stamp_equal
     }
 
     /// On an FS-driven reload, re-load media (image/svg/gif/video/pdf) **only when the previewed file
@@ -7173,6 +7197,29 @@ pub(crate) struct FileStamp {
     dev: u64,
     ino: u64,
     ctime: (i64, i64),
+}
+
+/// How close a file's modification time must be to the moment its stamp was taken (or to now) for
+/// the stamp to be unreliable: the coarsest timestamps a filesystem keeps are 2 s (FAT).
+pub(crate) const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether an FS event that names the shown file reads it again although its stamp is equal --
+/// git's "racily clean" rule. The stamp of a file modified within [`RACY_WINDOW`] of the moment it
+/// was taken (`taken`), or of `now`, proves nothing: a rewrite in the same coarse timestamp tick
+/// leaves it equal. A file whose modification time is long before both is believed: an event that
+/// reaches it late for a save already read (a second event of one save) finds the stamp equal and
+/// does not read a large workbook again.
+pub(crate) fn named_event_rereads(
+    modified: std::time::SystemTime,
+    taken: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> bool {
+    let near = |a: std::time::SystemTime, b: std::time::SystemTime| {
+        a.duration_since(b)
+            .or_else(|e| Ok::<_, ()>(e.duration()))
+            .is_ok_and(|d| d < RACY_WINDOW)
+    };
+    near(modified, taken) || near(modified, now)
 }
 
 fn file_stamp(path: &Path) -> Option<FileStamp> {

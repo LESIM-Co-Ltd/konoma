@@ -27,9 +27,13 @@ pub trait Plugin: Send + Sync + 'static {
 /// inode, change time) changed -- an edit, a rename over it -- and for a plugin without a work
 /// group that keeps no state (a table, a listing) also on an event of unknown cause. A plugin
 /// that shows a canvas, or names a work group, is opened again **only when the file's stamp
-/// changed**: an event for `.git`, for another file or of an unknown cause does not touch it. So
-/// keep in the session what may be lost with the file (the typing of a form, the state of a
-/// game); keep what must outlive it elsewhere.
+/// changed**: an event for `.git`, for another file or of an unknown cause does not touch it.
+/// Two more cases open it again with the stamp unchanged: an event that **names the file itself**
+/// when the file was modified within 2 seconds of the moment it was last read (a file system with
+/// coarse time can leave the stamp equal across a rewrite; an old file's equal stamp is believed,
+/// so a second event for a save already read does not read it again), and, for a **canvas**, the
+/// user's own `r`. So keep in the session what may be lost with the file (the typing of a form,
+/// the state of a game); keep what must outlive it elsewhere.
 ///
 /// What the user presses while the file is being read again (`R`, a declared action, typing in a
 /// canvas) waits for the new session and goes to it, in order.

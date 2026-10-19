@@ -1594,12 +1594,21 @@ fn e2e_canvas_actions_waiting_are_bounded() {
     }
     assert!(o.s.app.flash.is_some(), "the refused press is told");
     o.sh.latch.open();
-    // One action per job, each answered with a redraw: settle until the line is empty.
-    for _ in 0..(cap * 3) {
-        if !o.s.app.is_media_loading() {
+    // One action per job, each answered with a redraw: turn by turn, as the run loop does (what
+    // the host leaves at its per-call bound goes next turn), until nothing is out or pending. No
+    // wall-clock: the turns are counted.
+    // (Each action is a job and its redraw another: about two answers per action.)
+    let mut turns = 0;
+    loop {
+        o.s.app.plugin_returned_continue();
+        if !o.s.app.is_media_loading() && !o.s.app.plugin_returned_pending() {
             break;
         }
-        o.s.drain_plugin();
+        if o.s.app.is_media_loading() {
+            o.s.drain_plugin();
+        }
+        turns += 1;
+        assert!(turns < cap * 4, "still out after {turns} turns");
     }
     assert_eq!(
         o.sh.acts().len(),
@@ -2801,7 +2810,8 @@ fn e2e_canvas_an_event_naming_the_shown_file_reopens_without_asking_the_stamp() 
     });
     let root = canon(&o.dir);
     assert_eq!(o.sh.opens.load(Ordering::SeqCst), 1);
-    // Nothing about the file changed: the stamp is equal.
+    // Nothing about the file changed: the stamp is equal, but the file was written just before the
+    // stamp was taken (racily clean: a rewrite in the same timestamp tick would leave it equal).
     o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
     o.s.draw();
     assert_eq!(
@@ -2818,6 +2828,47 @@ fn e2e_canvas_an_event_naming_the_shown_file_reopens_without_asking_the_stamp() 
     // Other-file events remain quiet.
     o.s.app.refresh_fs_watched(false, &[root.join("b.typ")]);
     assert_eq!(o.sh.opens.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn e2e_canvas_a_late_duplicate_event_of_a_save_already_read_does_not_read_it_again() {
+    // The file was written long before it was read (its modification time is far from the moment
+    // the stamp was taken), and a second event for the same save arrives: the stamp is equal and
+    // believed, so a large workbook is not read twice. (A file modified just before the stamp was
+    // taken is the racy case, the test above: it is read again.)
+    let mut o = open_with("p2_late_dup", "en", false, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst)
+    });
+    let root = canon(&o.dir);
+    let a = o.dir.join("a.typ");
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    // The event for that change: the stamp differs, so it is read (and the new stamp is of an old
+    // file).
+    o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
+    o.s.draw();
+    let opens = o.sh.opens.load(Ordering::SeqCst);
+    assert_eq!(opens, 2, "the change itself is read");
+    // The duplicate: the same save, the stamp has not moved.
+    for _ in 0..3 {
+        o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
+        o.s.draw();
+    }
+    assert_eq!(
+        o.sh.opens.load(Ordering::SeqCst),
+        opens,
+        "a late duplicate event does not read the file again"
+    );
+    // A real rewrite (the stamp changes) is still read.
+    touch_file(&o);
+    o.s.app.refresh_fs_watched(false, &[root.join("a.typ")]);
+    o.s.draw();
+    assert_eq!(o.sh.opens.load(Ordering::SeqCst), opens + 1);
 }
 
 #[test]

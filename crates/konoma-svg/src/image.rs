@@ -665,9 +665,18 @@ pub fn decode_static_capped_why(path: &Path, max_side: u32) -> Result<DynamicIma
 }
 
 /// `decode_static_why` from a file already opened (the host opened it by its own door: a regular
-/// file only, never a second open of the path).
-pub fn decode_static_file_why(file: std::fs::File) -> Result<DynamicImage, ImageFailure> {
-    let reader = image::ImageReader::new(std::io::BufReader::new(file))
+/// file only, never a second open of the path). `named` is the path the file was opened by: its
+/// extension is the format when the content cannot tell (a TGA has no signature), as
+/// `ImageReader::open` did; a content signature that is recognised wins over it.
+pub fn decode_static_file_why(
+    file: std::fs::File,
+    named: Option<&Path>,
+) -> Result<DynamicImage, ImageFailure> {
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file));
+    if let Some(format) = named.and_then(|p| image::ImageFormat::from_path(p).ok()) {
+        reader.set_format(format);
+    }
+    let reader = reader
         .with_guessed_format()
         .map_err(|_| ImageFailure::Corrupt)?;
     decode_reader(reader, None)

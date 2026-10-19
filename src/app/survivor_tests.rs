@@ -723,3 +723,24 @@ fn follow_previews_by_the_content_being_a_video() {
     // A deleted video: nothing to judge, the diff (as in v0.31.0).
     assert!(!app.follow_previews_instead_of_diff(&dir.join("gone.webm")));
 }
+
+// ---- the racily-clean rule for an event that names the shown file --------------------------------
+
+#[test]
+fn a_named_event_rereads_only_a_file_modified_near_the_stamp_or_now() {
+    use std::time::{Duration, SystemTime};
+    let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let s = Duration::from_secs;
+    let far = t + s(100_000);
+    // Modified in the same second the stamp was taken, just before, or just after: racy.
+    assert!(named_event_rereads(t, t, far));
+    assert!(named_event_rereads(t - s(1), t, far));
+    assert!(named_event_rereads(t + s(1), t, far));
+    // Two seconds or more away from the stamp's moment and from now: believed.
+    assert!(!named_event_rereads(t - s(2), t, far));
+    assert!(!named_event_rereads(t - s(3600), t, far));
+    assert!(!named_event_rereads(t + s(2), t, far));
+    // Modified just before now: racy whatever the stamp's time.
+    assert!(named_event_rereads(far - s(1), t, far));
+    assert!(!named_event_rereads(t - s(3600), t - s(1800), far));
+}

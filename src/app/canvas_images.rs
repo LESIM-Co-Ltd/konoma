@@ -718,13 +718,14 @@ fn copy_decoded(d: &CanvasDecoded) -> CanvasDecoded {
 }
 
 /// How many decodes the picture `data` costs the budget of an answer. An animation given as
-/// `ImageData::Frames` costs one per *expensive* frame: an SVG (drawn in a child process) or a
-/// file (read, and possibly an SVG); raster frames (`Rgba`, `Encoded`) are cheap and cost
-/// nothing, bounded instead by the input budget. Any picture costs at least one.
+/// `ImageData::Frames` costs one per frame that runs a decoder: an SVG (drawn in a child
+/// process), a file (read, and possibly an SVG) or an `Encoded` image (a full decode of whatever
+/// size its header admits, however small its bytes); only a ready `Rgba` frame costs nothing
+/// (bounded by the input budget). Any picture costs at least one.
 fn decode_cost(data: &ImageData) -> usize {
     fn frame(d: &ImageData) -> usize {
         match d {
-            ImageData::Svg { .. } | ImageData::File(_) => 1,
+            ImageData::Svg { .. } | ImageData::File(_) | ImageData::Encoded(_) => 1,
             ImageData::Frames(f) => f.iter().map(|(d, _)| frame(d)).sum(),
             _ => 0,
         }
@@ -994,7 +995,7 @@ pub(super) fn decode_canvas_within(
                 || input_bytes(&t.data, path) > limits.input_bytes)
         {
             // An animation that alone costs more than one answer may do (more SVG / file frames than
-            // the decode budget, more input than the input budget; raster frames are not counted) can never be decoded: it is
+            // the decode budget, more input than the input budget; only ready `Rgba` frames are not counted) can never be decoded: it is
             // refused for good (the cells stay) instead of being decoded without a bound as "the
             // first picture of an answer" (5000 SVG frames are 5000 child processes). Every animation that is not refused here costs at most the budget
             // by itself, so the first picture of an answer always fits and an answer makes
@@ -1275,7 +1276,7 @@ impl App {
         // the last holder of a large animation: it is freed off the UI thread.
         super::table_actions::discard_in_background((before, kept));
         self.prune_canvas_to_named(&named);
-        self.canvas_places = pics.places;
+        self.set_canvas_places(pics.places);
         self.sweep_canvas_kitty_ids();
         // Ask again for what the work limits left (`more`), and for a refused picture that fits now
         // that room grew (an entry went): the next answer decodes it from the kept source.
@@ -1320,10 +1321,39 @@ impl App {
             .retain(|_, k| cache.contains_key(Path::new(&**k)));
     }
 
+    /// Replaces the placements of the canvas on screen and counts the placements of each picture.
+    fn set_canvas_places(&mut self, places: Vec<CanvasPlace>) {
+        let mut counts = std::collections::HashMap::<String, usize>::new();
+        for p in &places {
+            if let Some(slot) = p
+                .key
+                .as_deref()
+                .and_then(crate::preview::markdown::canvas_slot_of)
+            {
+                *counts.entry(slot.to_string()).or_default() += 1;
+            }
+        }
+        self.canvas_places = places;
+        self.canvas_slot_counts = counts;
+    }
+
+    /// How many encodings the canvas picture behind cache key `path` can need at once: one per
+    /// placement of it in the canvas on screen (never fewer than `MD_PROTO_SLOTS`). A picture
+    /// placed at several rows of a canvas taller than the area is clipped differently at each, and
+    /// every clip is an encoding of its own: a cap below the placements would leave some of them
+    /// to the cells for good, or evict each other every frame.
+    pub(super) fn canvas_slot_cap(&self, path: &str) -> usize {
+        let placed = crate::preview::markdown::canvas_slot_of(path)
+            .and_then(|s| self.canvas_slot_counts.get(s))
+            .copied()
+            .unwrap_or(0);
+        placed.max(super::MD_PROTO_SLOTS)
+    }
+
     /// Forget every canvas picture (the show went, or its view is not a canvas any more): the
     /// entries, the placements, and every kitty image the canvas pinned (deleted in the terminal).
     pub(super) fn forget_canvas_pictures(&mut self) {
-        self.canvas_places.clear();
+        self.set_canvas_places(Vec::new());
         self.canvas_front.clear();
         self.canvas_kept.clear();
         self.prune_canvas_pictures(&HashSet::new());

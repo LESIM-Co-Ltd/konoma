@@ -1223,3 +1223,51 @@ fn a_redraw_answer_that_carries_a_document_does_not_ask_again() {
     assert!(app.plugin.as_ref().unwrap().session.is_some());
     assert!(!app.is_media_loading());
 }
+
+#[test]
+fn a_tables_frame_title_is_cut_and_cleaned_like_every_other_text_a_plugin_says() {
+    // The title is drawn in the host's own frame, every frame: 10 MB of it must not reach the
+    // view, and a private-use placeholder character must not (it would paint as a picture).
+    let long = format!("{}\u{10EEEE}\u{1b}[31m", "x".repeat(10_000_000));
+    let mut res = PluginResult::answer(
+        1,
+        "stand",
+        None,
+        Some(View::Table(TableView {
+            grid: Arc::new(Rows(1)),
+            title: Some(long),
+            rainbow: true,
+            addressed: false,
+        })),
+        None,
+        ViewReq::new(80, 24),
+    );
+    res.clip_texts();
+    let Some(View::Table(t)) = &res.view else {
+        panic!("still a table");
+    };
+    let title = t.title.as_deref().unwrap();
+    assert!(title.chars().count() <= 512, "{}", title.chars().count());
+    assert!(!title.contains('\u{10EEEE}') && !title.contains('\u{1b}'));
+    // A short, honest title is unchanged, and no title stays none.
+    let mut ok = PluginResult::answer(
+        1,
+        "stand",
+        None,
+        Some(View::Table(TableView {
+            grid: Arc::new(Rows(1)),
+            title: Some("Sheet2 (2/3)".into()),
+            rainbow: true,
+            addressed: false,
+        })),
+        None,
+        ViewReq::new(80, 24),
+    );
+    ok.clip_texts();
+    assert_eq!(
+        ok.view
+            .as_ref()
+            .map(|v| matches!(v, View::Table(t) if t.title.as_deref() == Some("Sheet2 (2/3)"))),
+        Some(true)
+    );
+}

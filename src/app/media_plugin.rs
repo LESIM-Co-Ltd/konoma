@@ -76,7 +76,7 @@ pub(super) fn decode_image_view(
         // and decoded from that handle -- nothing opens the path a second time. (No 64 MiB read
         // cap here: a large still is bounded by the decoders' own limits, as it always was.)
         ImageData::File(p) => Some(match super::canvas_images::open_picture_file(path, &p) {
-            Ok((file, _)) => decode_picture_handle(file),
+            Ok((file, named)) => decode_picture_handle(file, &named),
             Err(why) => MediaPayload::ImageFailed(why),
         }),
         ImageData::Svg {
@@ -136,7 +136,7 @@ pub(super) fn decode_image_view(
 
 /// Decode the opened picture file: an animation when its first bytes say GIF (and it has more
 /// than one frame), otherwise a still.
-fn decode_picture_handle(mut file: std::fs::File) -> MediaPayload {
+fn decode_picture_handle(mut file: std::fs::File, named: &Path) -> MediaPayload {
     use std::io::{Read, Seek, SeekFrom};
     let mut head = [0u8; 6];
     let gif = file.read_exact(&mut head).is_ok() && &head[..4] == b"GIF8";
@@ -156,7 +156,7 @@ fn decode_picture_handle(mut file: std::fs::File) -> MediaPayload {
             return MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Corrupt);
         }
     }
-    match crate::preview::image::decode_static_file_why(file) {
+    match crate::preview::image::decode_static_file_why(file, Some(named)) {
         Ok(img) => MediaPayload::Static(img),
         Err(why) => MediaPayload::ImageFailed(why),
     }

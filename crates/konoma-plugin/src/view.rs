@@ -703,15 +703,18 @@ pub const CANVAS_MAX_FRAMES: usize = 5000;
 ///   (the pictures the canvas no longer names go first, and the old picture of an `id` goes when
 ///   its new content needs the room; the host asks you for another answer by itself when room
 ///   grew for a refused picture);
-/// - per answer it decodes at most 32 new pictures (each SVG or file frame of an animation counts;
-///   raster frames cost no decode), 64 MiB of
+/// - per answer it decodes at most 32 new pictures (each SVG, file or `Encoded` frame of an
+///   animation counts, as each runs a decoder; a ready `Rgba` frame costs none), 64 MiB of
 ///   encoded input and 128 MiB of new pixels (their decoded size); the rest follow on later
 ///   answers. A single image is decoded even when it alone is larger than the input budget;
-///   an animation that alone has more than 32 SVG / file frames or more input than 64 MiB is
-///   refused as too large (its cells stay), because no answer could take it;
+///   an animation that alone has more than 32 decoding frames or more input than 64 MiB is
+///   refused as too large (its cells stay), because no answer could take it. The cells under a
+///   picture that is not drawn (yet) stay, so draw something sensible there;
 /// - one picture `id` is placed at one size (`cols` x `rows`) everywhere on a canvas
-///   ([`CanvasIssue::ImageSizeMismatch`]); The cells under a picture that
-///   is not drawn (yet) stay, so draw something sensible there;
+///   ([`CanvasIssue::ImageSizeMismatch`]); it may be placed many times, and a placement cut by the
+///   bottom edge is encoded for its visible rows;
+/// - the placements together are encoded for at most four times the area of the canvas
+///   (overlapping ones count each); the placements past that, in your order, keep their cells;
 /// - a frame of an animation is shown for at least 20 ms;
 /// - a picture from a file must be a regular file (not a pipe or a device); a relative path is read
 ///   from the folder of the file being previewed;

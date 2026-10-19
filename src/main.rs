@@ -503,14 +503,33 @@ fn main() -> Result<()> {
     app.save_session();
     // Stops any SVG drawing process still running (it must not outlive the program that asked)
     // and removes the private temp directory.
-    preview::command::leave_for_good();
+    // (the main thread itself: the terminal guard it gets back is dropped here)
+    drop(preview::command::leave_for_good());
 
     // Fold up App, dropping every Sender, so the workers terminate.
     app.detach_image_backend();
     drop(app);
     let _ = worker.join();
 
+    // A terminal that went away (its pty closed: every write fails with EIO) is a hangup whichever
+    // of the two noticed first -- the signal thread (exit 129) or the draw that failed here. The
+    // exit code must not depend on that race: it is 128 + SIGHUP, never a plain failure.
+    if let Err(e) = &result {
+        if terminal_gone(e) {
+            std::process::exit(128 + signal_hook::consts::SIGHUP);
+        }
+    }
     result
+}
+
+/// Whether `err` is a write or read that failed because the terminal is gone (`EIO` from a pty
+/// whose other end closed, `EPIPE`, or a hangup), found anywhere in its chain.
+fn terminal_gone(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(io.raw_os_error(), Some(code) if code == libc::EIO || code == libc::EPIPE)
+        })
+    })
 }
 
 /// Handle resize requests on a current-thread tokio runtime on a dedicated thread.
@@ -1509,8 +1528,13 @@ fn run_external(
     enable_raw_mode()?;
     let _ = execute!(std::io::stdout(), BeginSynchronizedUpdate);
     execute!(std::io::stdout(), EnterAlternateScreen)?;
-    let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
-    let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
+    {
+        // A frame (a kitty transmit is a run of chunks) is written under the right to write to
+        // the terminal, like the run loop's: an exit signal must not land inside it.
+        let _writing = preview::command::terminal_write();
+        let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
+        let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
+    }
     let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
 
     // Legacy-izing the input mode + draining leftover bytes can happen after the screen is
@@ -2993,6 +3017,19 @@ mod tests {
         );
     }
 
+    /// A failed write to a closed terminal is a hangup (exit 129); other errors are not.
+    #[test]
+    fn a_terminal_that_went_away_is_told_from_other_errors() {
+        let eio = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EIO));
+        assert!(terminal_gone(&eio));
+        assert!(terminal_gone(&eio.context("drawing the frame")));
+        let pipe = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EPIPE));
+        assert!(terminal_gone(&pipe));
+        let other = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOENT));
+        assert!(!terminal_gone(&other));
+        assert!(!terminal_gone(&anyhow::anyhow!("failed to initialize")));
+    }
+
     // --- structural guard: validation must run before ratatui::init() touches the terminal --
 
     /// The property this whole fix exists for: `main`'s body must resolve+validate the startup
@@ -4061,6 +4098,37 @@ mod tests {
             .unwrap();
         let second = loop_body[flush - 200..flush].contains("preview::command::terminal_write()");
         assert!(second, "the deletes are flushed under the guard");
+    }
+
+    /// Every `terminal.draw(` and `terminal.clear(` in this file (the run loop, the return from an
+    /// editor or an external tool) has the guard within the lines before it, in the same block.
+    #[test]
+    fn every_terminal_draw_or_clear_in_main_is_under_the_terminal_guard() {
+        let src = include_str!("main.rs");
+        let production = &src[..src.find("\nmod tests {").expect("tests module")];
+        let lines: Vec<&str> = production.lines().collect();
+        let mut seen = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap();
+            if !(code.contains("terminal.draw(") || code.contains("terminal.clear(")) {
+                continue;
+            }
+            seen += 1;
+            let from = i.saturating_sub(12);
+            let guarded = lines[from..i]
+                .iter()
+                .any(|l| l.contains("preview::command::terminal_write()"));
+            assert!(
+                guarded,
+                "line {}: `{}` is not under the terminal guard",
+                i + 1,
+                line.trim()
+            );
+        }
+        assert!(
+            seen >= 4,
+            "the loop's two draws and clear and the return's two: {seen}"
+        );
     }
 
     // --- tool_command (the `!` tool-selection logic pulled out of run_git_tool) ------------
