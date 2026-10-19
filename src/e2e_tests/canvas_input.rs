@@ -2412,3 +2412,176 @@ fn e2e_canvas_the_follow_up_floor_counts_from_the_landing_of_the_previous_answer
     // The timer asks at that deadline, and an answer landing right after waits again.
     assert!(o.s.app.canvas_redraw_if_due(landed + floor));
 }
+
+/// The way a user starts it: `konoma <file>` on a config that uses an old `[ui]` name, so the
+/// footer carries the startup notice. Nothing is pressed afterwards; the run loop's timer function
+/// is driven at explicit instants. The notice lives only in the footer: it covers nothing, so the
+/// canvas is asked again at every deadline and the notice stays where it is (only a key clears it).
+#[test]
+fn e2e_canvas_timer_runs_under_the_startup_notice_without_a_key() {
+    let sh = Shared::new();
+    sh.want_input.store(false, Ordering::SeqCst);
+    *sh.after.lock().unwrap() = Some(AFTER);
+    let dir = sandbox("ct_startup_notice");
+    std::fs::write(dir.join("a.typ"), b"x").unwrap();
+    let marker = register("ct_startup_notice", &sh);
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.renamed_settings = vec![
+        (
+            "[ui] md_task_states".to_string(),
+            "[plugins.markdown] task_states".to_string(),
+        ),
+        (
+            "[ui] mermaid_rows".to_string(),
+            "[plugins.mermaid] rows".to_string(),
+        ),
+    ];
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26).with_async_plugins();
+    // As `main` does: the notice first, then the file given on the command line.
+    s.app.flash = s.app.startup_flash(None, 88);
+    let notice = s.app.flash.clone().expect("the old name is announced");
+    assert!(notice.contains("old name"), "{notice}");
+    s.app.open_startup_file(&canon(&dir).join("a.typ"));
+    assert_eq!(s.app.flash.as_deref(), Some(notice.as_str()), "kept");
+    s.draw();
+    settle(&mut s);
+    assert!(s.app.is_canvas_preview());
+    // Five deadlines in a row, no key between them: each one asks the plugin once, the answer
+    // arms the next one, and the notice is still on the footer.
+    for step in 0..5 {
+        let at = s
+            .app
+            .canvas_redraw_deadline()
+            .unwrap_or_else(|| panic!("step {step}: no deadline armed under the notice"));
+        assert!(
+            s.app.canvas_poll_timeout(at).is_some(),
+            "step {step}: the loop is told to wake up for the deadline"
+        );
+        let views = sh.views();
+        assert!(
+            !crate::animation_timers_due(&mut s.app, at - Duration::from_millis(1)),
+            "step {step}: not due yet"
+        );
+        assert_eq!(sh.views(), views);
+        assert!(
+            crate::animation_timers_due(&mut s.app, at),
+            "step {step}: due, so the loop draws again"
+        );
+        settle(&mut s);
+        s.draw();
+        assert!(
+            sh.views() > views,
+            "step {step}: the plugin was asked again"
+        );
+        assert_eq!(s.app.flash.as_deref(), Some(notice.as_str()));
+        assert!(
+            s.app.canvas_redraw_deadline().is_some(),
+            "step {step}: re-armed"
+        );
+    }
+    s.see(&notice[..20]);
+    // A key clears the notice, as always, and the timer goes on.
+    s.key('z');
+    assert!(s.app.flash.is_none());
+    settle(&mut s);
+    assert!(s.app.canvas_redraw_deadline().is_some());
+}
+
+/// `Esc` on a canvas that does not take the typing leaves for the tree (the host's key, like `q`).
+/// Whatever is in flight at that moment must neither keep the plugin on screen nor lose the
+/// session of the file opened again afterwards. The cases: a timer job held on the worker while
+/// `Esc` is pressed (it is released before and after the file is opened again), and an `Esc` while
+/// the very first `open` is still running.
+#[test]
+fn e2e_canvas_esc_with_a_job_out_leaves_and_the_file_opened_again_runs() {
+    for variant in 0..3 {
+        let mut o = open_with(&format!("ct_esc{variant}"), "en", true, |sh| {
+            sh.want_input.store(false, Ordering::SeqCst);
+            *sh.after.lock().unwrap() = Some(AFTER);
+        });
+        let at = o.s.app.canvas_redraw_deadline().unwrap();
+        o.sh.hold_views.store(true, Ordering::SeqCst);
+        assert!(o.s.app.canvas_redraw_if_due(at + AFTER));
+        assert!(o.s.app.plugin_session_is_out_for_test());
+        o.s.esc();
+        assert!(
+            !o.s.app.is_canvas_preview(),
+            "variant {variant}: left for the tree"
+        );
+        assert!(!o.s.app.plugin_session_is_out_for_test());
+        match variant {
+            0 => {
+                o.sh.hold_views.store(false, Ordering::SeqCst);
+                o.sh.latch.open();
+            }
+            1 => {
+                o.sh.hold_views.store(false, Ordering::SeqCst);
+                o.sh.latch.open();
+                o.s.enter();
+            }
+            _ => {
+                o.s.enter();
+                o.sh.hold_views.store(false, Ordering::SeqCst);
+                o.sh.latch.open();
+            }
+        }
+        settle(&mut o.s);
+        // The stale answer, if it is still on its way, lands without harm.
+        for _ in 0..3 {
+            if let Some(rx) = o.s.media_rx.as_ref() {
+                if let Ok(r) = rx.recv_timeout(Duration::from_millis(100)) {
+                    o.s.app.apply_media(r);
+                }
+            }
+        }
+        settle(&mut o.s);
+        assert!(
+            !o.s.app.is_media_loading(),
+            "variant {variant}: nothing left out"
+        );
+        assert!(!o.s.app.plugin_session_is_out_for_test());
+        if variant > 0 {
+            assert!(
+                o.s.app.is_canvas_preview(),
+                "variant {variant}: opened again"
+            );
+            let at = o.s.app.canvas_redraw_deadline().expect("armed again");
+            let views = o.sh.views();
+            assert!(crate::animation_timers_due(&mut o.s.app, at));
+            settle(&mut o.s);
+            assert!(o.sh.views() > views, "variant {variant}: asked again");
+        }
+    }
+}
+
+#[test]
+fn e2e_canvas_esc_during_the_first_open_then_open_again() {
+    let sh = Shared::new();
+    sh.want_input.store(false, Ordering::SeqCst);
+    *sh.after.lock().unwrap() = Some(AFTER);
+    let dir = sandbox("ct_esc_open");
+    std::fs::write(dir.join("a.typ"), b"x").unwrap();
+    let marker = register("ct_esc_open", &sh);
+    let cfg = test_plugins::marker_config(&marker);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26).with_async_plugins();
+    sh.hold_opens.store(true, Ordering::SeqCst);
+    s.select("a.typ");
+    s.enter();
+    assert!(s.app.plugin_session_is_out_for_test());
+    s.esc();
+    s.enter();
+    sh.hold_opens.store(false, Ordering::SeqCst);
+    sh.open_gate.open();
+    for _ in 0..8 {
+        if let Some(rx) = s.media_rx.as_ref() {
+            if let Ok(r) = rx.recv_timeout(Duration::from_millis(300)) {
+                s.app.apply_media(r);
+                s.draw();
+            }
+        }
+    }
+    assert!(!s.app.is_media_loading());
+    assert!(!s.app.plugin_session_is_out_for_test());
+    assert!(s.app.is_canvas_preview());
+    assert!(s.app.canvas_redraw_deadline().is_some());
+}

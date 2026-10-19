@@ -12,9 +12,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
-#[allow(dead_code)]
-#[path = "../examples/clock.rs"]
-mod clock;
+// The demo plugin (`demo` is on for this crate's tests through its dev-dependency on itself).
+use konoma_plugin_ratatui::demo as clock;
 
 fn buf(cols: u16, rows: u16) -> Buffer {
     Buffer::empty(Rect::new(0, 0, cols, rows))
@@ -475,4 +474,81 @@ fn a_declared_action_is_gated_by_enabled_and_clears_the_notes() {
         .iter()
         .any(|r| r.contains("- n")));
     assert_eq!(s.act("nope", &ActCx::bare()).unwrap(), Outcome::Unhandled);
+}
+
+// ---- the demo's colour action and its 64 x 32 picture ----
+
+#[test]
+fn the_demo_arrow_actions_walk_the_gauge_colours_and_wrap() {
+    use konoma_plugin::session::TermCaps;
+    use konoma_plugin::style::Color;
+    let req = ViewReq::new(30, 5);
+    let (mut s, _f) = open_clock();
+    let cx = ViewCx::bare().with_term(TermCaps::new().colors(ColorDepth::TrueColor));
+    let gauge_fg = |s: &mut dyn Session| match s.view(&req, &cx).unwrap() {
+        View::Canvas(c) => c.cells.iter().filter_map(|cell| cell.style.fg).find(|f| {
+            matches!(
+                f,
+                Color::Rgb(90, 200, 120)
+                    | Color::Rgb(210, 100, 200)
+                    | Color::Rgb(230, 190, 60)
+                    | Color::Rgb(90, 140, 240)
+            )
+        }),
+        _ => unreachable!(),
+    };
+    let first = gauge_fg(&mut *s);
+    assert_eq!(first, Some(Color::Rgb(90, 200, 120)));
+    s.act("colour_next", &ActCx::bare()).unwrap();
+    assert_eq!(gauge_fg(&mut *s), Some(Color::Rgb(210, 100, 200)));
+    s.act("colour_prev", &ActCx::bare()).unwrap();
+    s.act("colour_prev", &ActCx::bare()).unwrap();
+    assert_eq!(
+        gauge_fg(&mut *s),
+        Some(Color::Rgb(90, 140, 240)),
+        "wraps backwards"
+    );
+    for _ in 0..1 {
+        s.act("colour_next", &ActCx::bare()).unwrap();
+    }
+    assert_eq!(gauge_fg(&mut *s), Some(first.unwrap()), "wraps forwards");
+}
+
+#[test]
+fn the_demo_arrows_are_declared_on_left_and_right_and_the_picture_is_64_by_32() {
+    use konoma_plugin::session::TermCaps;
+    use konoma_plugin::Plugin as _;
+    let m = clock::Clock::default().manifest();
+    let key = |id: &str| m.actions.iter().find(|a| a.id == id).unwrap().key.clone();
+    assert_eq!(key("colour_next").as_deref(), Some("Right"));
+    assert_eq!(key("colour_prev").as_deref(), Some("Left"));
+    let (mut s, _f) = open_clock();
+    let cx = ViewCx::bare().with_term(TermCaps::new().pixels(true));
+    for (cols, rows) in [(24, 5), (30, 5), (80, 24)] {
+        let View::Canvas(c) = s.view(&ViewReq::new(cols, rows), &cx).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(c.check(), Ok(()), "{cols}x{rows}");
+        match &c.images[0].image {
+            Some(konoma_plugin::view::ImageData::Rgba {
+                width,
+                height,
+                pixels,
+            }) => {
+                assert_eq!((*width, *height), (64, 32));
+                assert_eq!(pixels.len(), 64 * 32 * 4);
+                assert_eq!(&pixels[..4], &[255, 255, 255, 255], "the border is white");
+            }
+            other => panic!("the first answer for {cols}x{rows} carries pixels: {other:?}"),
+        }
+    }
+    // Too small for the picture: none, and still a valid canvas.
+    let View::Canvas(c) = s.view(&ViewReq::new(23, 5), &cx).unwrap() else {
+        unreachable!()
+    };
+    assert!(c.images.is_empty());
+    let View::Canvas(c) = s.view(&ViewReq::new(30, 4), &cx).unwrap() else {
+        unreachable!()
+    };
+    assert!(c.images.is_empty());
 }

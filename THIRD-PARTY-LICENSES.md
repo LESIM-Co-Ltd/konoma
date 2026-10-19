@@ -5933,7 +5933,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.31.0
+- konoma 0.31.1
 - konoma-base 0.1.0
 - konoma-code 0.1.0
 - konoma-code-core 0.1.0

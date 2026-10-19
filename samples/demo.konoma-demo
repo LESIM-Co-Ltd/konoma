@@ -1,0 +1,6 @@
+konoma canvas demo
+This file is opened by a demo plugin (`demo-canvas`) that is built only with
+`cargo run --features demo-canvas`. Its first line is the title of the frame you see.
+The plugin draws every cell itself (a gauge that moves each second, a picture where the
+terminal can show pixels, a line editor on `i`). It is temporary and goes away when
+konoma can load plugins from outside. Original content for konoma, MIT like the rest.

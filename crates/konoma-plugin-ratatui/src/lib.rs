@@ -188,3 +188,6 @@ pub fn modifier_of(m: RModifier) -> Modifier {
     }
     out
 }
+
+#[cfg(feature = "demo")]
+pub mod demo;

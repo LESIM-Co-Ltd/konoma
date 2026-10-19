@@ -181,6 +181,17 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
         // The declarations are static; a refusal would be a bug that `tests` catches.
         let _ = register(&mut r, plugin_of(m), PluginOrigin::Standard);
     }
+    // TEMPORARY (feature `demo-canvas`, removed when stage 3 loads external plugins): a canvas plugin
+    // to look at in a real terminal. It is not a standard plugin (the UI-thread rule and the
+    // `standard` column do not apply): it is registered the way a user's plugin is.
+    #[cfg(feature = "demo-canvas")]
+    {
+        let _ = register(
+            &mut r,
+            Arc::new(konoma_plugin_ratatui::demo::Clock::default()),
+            PluginOrigin::User,
+        );
+    }
     for id in disabled {
         // Tests add plugins of their own through a name in the `disabled` list (the registry is
         // shared per distinct list, so a test's plugin never reaches another test): see

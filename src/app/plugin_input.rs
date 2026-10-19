@@ -371,6 +371,30 @@ impl App {
         Some(at.saturating_duration_since(now).min(IDLE_WAIT))
     }
 
+    /// TEMPORARY (feature `demo-canvas`): one line describing why the redraw timer would or would
+    /// not fire now, for tracing a stuck canvas in a real terminal (`KONOMA_CANVAS_TRACE=<file>`).
+    #[cfg(feature = "demo-canvas")]
+    pub fn canvas_trace_line(&self, now: Instant) -> String {
+        format!(
+            "surface={:?} plugin={} queued_keys={} input_left={} path={:?} deadline_in={:?} visible={} covered={} layer={:?} session_out={} loading={} mode_preview={} asks={:?} flash={}",
+            self.surface(),
+            self.plugin.is_some(),
+            self.plugin_key_queue.len(),
+            self.plugin_input_left,
+            self.tab.preview_path.as_deref().and_then(|p| p.file_name()),
+            self.canvas_redraw_at
+                .map(|a| (a.saturating_duration_since(now), a < now)),
+            self.canvas_redraw_visible(),
+            self.canvas_is_covered(),
+            self.internal_mode(),
+            self.plugin.as_ref().is_some_and(|p| p.session.is_none()),
+            self.media_loading,
+            matches!(self.tab.mode, Mode::Preview),
+            self.canvas_view().map(|c| c.redraw_after),
+            self.flash.is_some(),
+        )
+    }
+
     /// Test-only: put the deadline where a test wants it.
     #[cfg(test)]
     pub(crate) fn set_canvas_redraw_at_for_test(&mut self, at: Option<Instant>) {

@@ -20778,6 +20778,10 @@ mod canvas_input;
 #[cfg(test)]
 mod canvas_images;
 
+// The temporary demo plugin (removed with the `demo-canvas` feature).
+#[cfg(all(test, feature = "demo-canvas"))]
+mod demo_canvas;
+
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 
 /// Opening an SVG that nests 1000 levels deep: the real media worker refuses it, and the screen
