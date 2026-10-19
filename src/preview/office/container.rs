@@ -20,7 +20,7 @@
 //! ever see packages whose real expanded size is bounded.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use zip::result::ZipError;
@@ -74,7 +74,8 @@ pub struct Limits {
     /// parses through a per-cell list of its own (~40 bytes) and, with formulas, a second matrix
     /// of `String`s (24 bytes): about 100 bytes per cell at the peak. A sheet with values only at
     /// A1 and XFD1048576 would ask for ~550 GB, and an OOM abort is not a catchable panic, so the
-    /// box is checked first. 8M cells is ~800 MB at the peak; xlsx/xlsb do not use this limit.
+    /// box is checked first. 8M cells is ~800 MB at the peak (for xls plus the copies of the
+    /// stream, see `max_xls_stream_bytes`); xlsx/xlsb do not use this limit.
     pub max_dense_cells: u64,
     /// Bytes of text held *once the file is open*, which is read whole: for xlsx / xlsb the
     /// shared-string table (each string plus a fixed per-string overhead; a table over this is
@@ -84,6 +85,15 @@ pub struct Limits {
     /// 256 MiB is about 1 GB of resident memory once copied, well above any real workbook (a
     /// 4M-cell sheet of 30-byte strings is 120 MB).
     pub max_text_bytes: u64,
+    /// xls only: largest `Workbook` stream we read out of the compound file. The stream is held
+    /// several times over while `calamine` opens it: the re-built container (1x), `calamine`'s
+    /// copy of the container's sectors (1x, up to 2x in capacity while the vector grows) and the
+    /// stream it extracts (1x, up to 2x in capacity), and its dense cells (`max_dense_cells`,
+    /// ~800 MB) are built while the extracted stream is still alive. At 128 MiB that is 3 x 128 =
+    /// 384 MiB of data (about 640 MiB counting growth slack) before the cells, the same order as
+    /// the ~1 GB the text limit allows. A BIFF8 sheet is at most 65,536 x 256 cells, so real
+    /// workbooks stay well under it.
+    pub max_xls_stream_bytes: u64,
 }
 
 impl Default for Limits {
@@ -100,6 +110,7 @@ impl Default for Limits {
             max_sheet_text_bytes: 128 * MIB,
             max_dense_cells: 8_000_000,
             max_text_bytes: 256 * MIB,
+            max_xls_stream_bytes: 128 * MIB,
         }
     }
 }
@@ -251,7 +262,7 @@ pub(crate) fn inspect_word_package(
 }
 
 fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {
-    let cf = cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
+    let cf = open_cfb(path)?;
     // Password-protected OOXML (any of xlsx/docx/pptx) is wrapped in a CFB with these streams.
     if cf.exists("/EncryptedPackage") || cf.exists("/EncryptionInfo") {
         return Err(OfficeError::Encrypted);
@@ -262,6 +273,112 @@ fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {
         // doc / ppt / msg / ... — a CFB, but not a spreadsheet.
         Err(OfficeError::Unsupported)
     }
+}
+
+/// Slack on the number of FAT sectors a file may list over what its length can hold.
+const FAT_SLACK: u64 = 2;
+
+/// Opens a compound file. **The only way konoma opens one**: the `cfb` crate reads 128 FAT entries
+/// for every FAT sector id the DIFAT lists *before* it checks them, and does not reject repeated
+/// ids, so a crafted file whose sectors are all DIFAT entries naming the same sector would make
+/// its FAT ~127 times the size of the file (an out-of-memory abort, not a catchable panic). The
+/// DIFAT is therefore walked first, with work bounded by the file's length ([`check_cfb_fat`]).
+/// The file is read through a buffer because the crate reads it 4 bytes at a time.
+pub fn open_cfb(path: &Path) -> Result<cfb::CompoundFile<BufReader<File>>, OfficeError> {
+    let mut f = File::open(path).map_err(io_err)?;
+    let len = f.metadata().map_err(io_err)?.len();
+    check_cfb_fat(&mut f, len)?;
+    f.seek(SeekFrom::Start(0)).map_err(io_err)?;
+    cfb::CompoundFile::open(BufReader::new(f))
+        .map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))
+}
+
+/// Walks a compound file's header and DIFAT chain (nothing else) and refuses it when the list of
+/// FAT sector ids cannot be a real one: more ids than a file of this length can have FAT sectors
+/// for, an id twice, or an id past the end of the file. Reads at most the DIFAT sectors a valid
+/// file of this length could have, each once (a repeated DIFAT sector is refused), so the work and
+/// memory are bounded by the file's length. `cfb` is only called on what passes.
+pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeError> {
+    const FREE: u32 = 0xFFFF_FFFF;
+    const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
+    const MAX_REGULAR: u32 = 0xFFFF_FFFA;
+    const HEADER_FAT_IDS: usize = 109;
+    let bad = |what: &str| OfficeError::Corrupt(format!("compound file: {what}"));
+    let mut head = [0u8; 512];
+    r.seek(SeekFrom::Start(0)).map_err(io_err)?;
+    r.read_exact(&mut head)
+        .map_err(|_| bad("truncated header"))?;
+    let le32 = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let shift = u16::from_le_bytes([head[30], head[31]]);
+    if shift != 9 && shift != 12 {
+        return Err(bad("unsupported sector size"));
+    }
+    let ss = 1u64 << shift;
+    let per_sector = ss / 4;
+    // Sectors after the header (a partial last one counts: more generous than `cfb`).
+    let num_sectors = len.saturating_sub(ss).div_ceil(ss);
+    let max_fat = num_sectors.div_ceil(per_sector) + FAT_SLACK;
+    let max_difat = max_fat.div_ceil(per_sector - 1) + 1;
+
+    let mut ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Zeros at the end of a chained DIFAT sector are padding some writers use instead of FREE;
+    // `cfb` strips them when permissive, so they are held back until something follows them.
+    let mut pending_zeros: u64 = 0;
+    let take = |id: u32, ids: &mut std::collections::HashSet<u32>| -> Result<(), OfficeError> {
+        if u64::from(id) >= num_sectors {
+            return Err(bad("FAT sector id past the end of the file"));
+        }
+        if !ids.insert(id) {
+            return Err(bad("FAT sector listed twice"));
+        }
+        if ids.len() as u64 > max_fat {
+            return Err(bad("more FAT sectors than the file can hold"));
+        }
+        Ok(())
+    };
+    for i in 0..HEADER_FAT_IDS {
+        let id = le32(&head, 76 + 4 * i);
+        if id != FREE {
+            take(id, &mut ids)?;
+        }
+    }
+    let mut seen_difat: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut next = le32(&head, 68);
+    let mut buf = vec![0u8; ss as usize];
+    while next != FREE && next != END_OF_CHAIN {
+        if next > MAX_REGULAR || u64::from(next) >= num_sectors {
+            return Err(bad("DIFAT sector past the end of the file"));
+        }
+        if !seen_difat.insert(next) {
+            return Err(bad("DIFAT chain loops"));
+        }
+        if seen_difat.len() as u64 > max_difat {
+            return Err(bad("DIFAT chain longer than the file can hold"));
+        }
+        r.seek(SeekFrom::Start((u64::from(next) + 1) * ss))
+            .map_err(io_err)?;
+        r.read_exact(&mut buf)
+            .map_err(|_| bad("truncated DIFAT sector"))?;
+        for i in 0..(per_sector as usize - 1) {
+            let id = le32(&buf, 4 * i);
+            if id == FREE {
+                continue;
+            }
+            if id == 0 {
+                pending_zeros += 1;
+                if pending_zeros > max_fat + 1 {
+                    return Err(bad("more FAT sectors than the file can hold"));
+                }
+                continue;
+            }
+            for _ in 0..std::mem::take(&mut pending_zeros) {
+                take(0, &mut ids)?;
+            }
+            take(id, &mut ids)?;
+        }
+        next = le32(&buf, ss as usize - 4);
+    }
+    Ok(())
 }
 
 /// Opens the zip for the format passes.

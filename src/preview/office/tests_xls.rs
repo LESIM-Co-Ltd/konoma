@@ -1916,3 +1916,247 @@ fn many_sheets_over_one_unclosed_body_are_refused_by_the_visit_budget() {
     );
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }
+
+// ---------------------------------------------------------------------------------------------
+// the compound-file front door (`container::open_cfb` / `check_cfb_fat`)
+// ---------------------------------------------------------------------------------------------
+
+/// A reader that counts the bytes handed out, to pin that the check reads O(file length).
+struct Counting<R> {
+    inner: R,
+    bytes: u64,
+}
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes += n as u64;
+        Ok(n)
+    }
+}
+impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+const FREE: u32 = 0xFFFF_FFFF;
+const EOC: u32 = 0xFFFF_FFFE;
+
+/// A version-3 compound file made only of a header and `difat_sectors` DIFAT sectors chained in
+/// order; `entry(n)` gives the n-th FAT sector id listed by the chained sectors. Nothing else in
+/// it is valid: the check must refuse it from the DIFAT alone.
+fn difat_only_file(header_ids: &[u32], difat_sectors: u32, entry: impl Fn(u64) -> u32) -> Vec<u8> {
+    let mut h = vec![0u8; 512];
+    h[..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+    h[26..28].copy_from_slice(&3u16.to_le_bytes());
+    h[28..30].copy_from_slice(&0xFFFEu16.to_le_bytes());
+    h[30..32].copy_from_slice(&9u16.to_le_bytes());
+    h[32..34].copy_from_slice(&6u16.to_le_bytes());
+    h[68..72].copy_from_slice(&(if difat_sectors > 0 { 0 } else { EOC }).to_le_bytes());
+    h[72..76].copy_from_slice(&difat_sectors.to_le_bytes());
+    for i in 0..109 {
+        let id = header_ids.get(i).copied().unwrap_or(FREE);
+        h[76 + 4 * i..80 + 4 * i].copy_from_slice(&id.to_le_bytes());
+    }
+    let mut n = 0u64;
+    for k in 0..difat_sectors {
+        for _ in 0..127 {
+            h.extend(entry(n).to_le_bytes());
+            n += 1;
+        }
+        let next = if k + 1 < difat_sectors { k + 1 } else { EOC };
+        h.extend(next.to_le_bytes());
+    }
+    h
+}
+
+fn check_bytes(bytes: Vec<u8>) -> (Result<(), OfficeError>, u64, u64) {
+    let len = bytes.len() as u64;
+    let mut r = Counting {
+        inner: std::io::Cursor::new(bytes),
+        bytes: 0,
+    };
+    let res = container::check_cfb_fat(&mut r, len);
+    (res, r.bytes, len)
+}
+
+#[test]
+fn a_difat_that_lists_one_fat_sector_over_and_over_is_refused_without_the_blowup() {
+    // Every sector of the file is a DIFAT sector naming sector 1: `cfb` would read 128 entries
+    // for each of the ~38,000 ids (127 times the file) before noticing anything.
+    let bytes = difat_only_file(&[], 300, |_| 1);
+    let (res, read, len) = check_bytes(bytes.clone());
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+    assert!(
+        read <= 2 * len,
+        "the check read {read} bytes of a {len}-byte file"
+    );
+    // Through the real entry point, from a file: refused, never handed to `cfb`.
+    let dir = tmp("cfb_blowup");
+    let p = dir.join("b.xls");
+    std::fs::write(&p, &bytes).unwrap();
+    // The refusal is ours (the message says so), i.e. it came before `cfb` was called.
+    assert!(
+        matches!(container::open_cfb(&p), Err(OfficeError::Corrupt(ref m)) if m.contains("listed twice")),
+    );
+    assert!(matches!(
+        container::inspect(&p, &Limits::default()),
+        Err(OfficeError::Corrupt(_))
+    ));
+    assert!(matches!(
+        fmt_xls::read_workbook_stream(&p, &Limits::default()),
+        Err(OfficeError::Corrupt(_))
+    ));
+}
+
+#[test]
+fn more_distinct_fat_ids_than_the_file_can_hold_are_refused() {
+    // 300 sectors need at most ceil(300 / 128) = 3 FAT sectors; this lists 299 different ones.
+    let bytes = difat_only_file(&[], 300, |n| 1 + (n % 299) as u32);
+    let (res, read, len) = check_bytes(bytes);
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("more FAT sectors")),
+        "{res:?}"
+    );
+    assert!(read <= 2 * len);
+}
+
+#[test]
+fn a_repeated_id_in_the_header_difat_is_refused() {
+    let (res, _, _) = check_bytes(difat_only_file(&[1, 2, 1], 3, |_| FREE));
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("twice")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn a_fat_id_past_the_end_of_the_file_is_refused() {
+    let (res, _, _) = check_bytes(difat_only_file(&[1, 9_999], 3, |_| FREE));
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("past the end")),
+        "{res:?}"
+    );
+    let (res, _, _) = check_bytes(difat_only_file(
+        &[],
+        3,
+        |n| if n == 5 { 77_777 } else { FREE },
+    ));
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("past the end")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn a_difat_chain_that_loops_is_refused() {
+    let mut bytes = difat_only_file(&[], 2, |_| FREE);
+    // Point the last DIFAT sector (sector 1) back at sector 0.
+    let at = 512 + 512 + 508;
+    bytes[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let (res, _, _) = check_bytes(bytes);
+    assert!(
+        matches!(res, Err(OfficeError::Corrupt(ref m)) if m.contains("loops")),
+        "{res:?}"
+    );
+}
+
+#[test]
+fn a_truncated_or_odd_header_is_refused_not_panicked_on() {
+    let (res, _, _) = check_bytes(vec![0u8; 100]);
+    assert!(matches!(res, Err(OfficeError::Corrupt(_))));
+    let mut bytes = difat_only_file(&[], 0, |_| FREE);
+    bytes[30] = 7;
+    let (res, _, _) = check_bytes(bytes);
+    assert!(matches!(res, Err(OfficeError::Corrupt(_))));
+}
+
+#[test]
+fn every_real_compound_file_in_testdata_still_opens() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/office");
+    let mut n = 0;
+    for name in [
+        "date1904.xls",
+        "empty.xls",
+        "encrypted.xls",
+        "formats.xls",
+        "formulas.xls",
+        "layout.xls",
+        "objects.xls",
+        "pivot.xls",
+        "sheets.xls",
+        "encrypted.xlsx",
+    ] {
+        let p = dir.join(name);
+        container::open_cfb(&p).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        n += 1;
+    }
+    assert_eq!(n, 10);
+}
+
+#[test]
+fn a_big_valid_file_with_a_chained_difat_still_opens() {
+    // More than 109 FAT sectors (109 x 128 sectors of 512 bytes = 7 MiB) needs real DIFAT
+    // sectors: 9 MiB of stream does it.
+    let dir = tmp("cfb_big_difat");
+    let p = dir.join("big.xls");
+    let mut cf = cfb::CompoundFile::create_with_version(
+        cfb::Version::V3,
+        std::fs::File::create(&p).unwrap(),
+    )
+    .unwrap();
+    let chunk = vec![0xABu8; 1 << 20];
+    {
+        let mut s = cf.create_stream("/Workbook").unwrap();
+        for _ in 0..9 {
+            s.write_all(&chunk).unwrap();
+        }
+    }
+    cf.flush().unwrap();
+    drop(cf);
+    let len = std::fs::metadata(&p).unwrap().len();
+    let mut f = std::fs::File::open(&p).unwrap();
+    let head_difat_count = {
+        let mut h = [0u8; 76];
+        std::io::Read::read_exact(&mut f, &mut h).unwrap();
+        u32::from_le_bytes([h[72], h[73], h[74], h[75]])
+    };
+    assert!(
+        head_difat_count >= 1,
+        "the fixture must chain DIFAT sectors"
+    );
+    let mut cf = container::open_cfb(&p).unwrap();
+    let mut n = 0;
+    std::io::Read::read_to_end(&mut cf.open_stream("/Workbook").unwrap(), &mut vec![])
+        .map(|k| n = k)
+        .unwrap();
+    assert_eq!(n, 9 << 20);
+    assert!(len > 9 << 20);
+}
+
+#[test]
+fn the_xls_stream_cap_is_lower_than_the_general_part_cap() {
+    let dir = tmp("xls_stream_cap");
+    let p = dir.join("c.xls");
+    write_cfb(&p, &[("Workbook", &harmless_book().stream())]);
+    let n = harmless_book().stream().len() as u64;
+    let lim = Limits {
+        max_xls_stream_bytes: n - 1,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        fmt_xls::read_workbook_stream(&p, &lim),
+        Err(OfficeError::TooLarge { .. })
+    ));
+    let lim = Limits {
+        max_xls_stream_bytes: n,
+        ..Limits::default()
+    };
+    assert_eq!(
+        fmt_xls::read_workbook_stream(&p, &lim).unwrap().len() as u64,
+        n
+    );
+}

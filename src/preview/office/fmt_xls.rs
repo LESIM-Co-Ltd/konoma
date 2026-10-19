@@ -87,8 +87,11 @@ pub fn read_scanned(
 ) -> Result<(XlsxFormats, std::io::Cursor<Vec<u8>>), OfficeError> {
     let stream = read_workbook_stream(path, limits)?;
     let fm = parse_stream_cancellable(&stream, limits, cancel)?;
-    // Peak memory: the scanned stream plus the container built from it (about the same size, both
-    // bounded by `max_part_bytes`); the stream is dropped as soon as the container exists.
+    // Peak memory while scanning: the stream plus the container built from it, each about N bytes
+    // (N <= `max_xls_stream_bytes`; the container is shrunk to fit, the stream may hold up to 2N of
+    // capacity from growing). The stream is dropped as soon as the container exists. Afterwards
+    // `calamine` holds 3 N: the container (the reader), its own copy of the sectors, and the
+    // stream it extracts (see `Limits::max_xls_stream_bytes`).
     let container = clean_container(&stream)?;
     Ok((fm, container))
 }
@@ -106,6 +109,9 @@ pub fn clean_container(stream: &[u8]) -> Result<std::io::Cursor<Vec<u8>>, Office
     cf.flush().map_err(err)?;
     // `calamine` reads from the current position, not from the start.
     let mut c = cf.into_inner();
+    // The writer grew the buffer by doubling: give back the slack, the container lives for as long
+    // as `calamine` reads from it.
+    c.get_mut().shrink_to_fit();
     c.set_position(0);
     Ok(c)
 }
@@ -117,8 +123,7 @@ pub fn read_workbook_stream(
     path: &std::path::Path,
     limits: &Limits,
 ) -> Result<Vec<u8>, OfficeError> {
-    let mut cf =
-        cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
+    let mut cf = super::container::open_cfb(path)?;
     let name = ["/Workbook", "/Book", "/WORKBOOK", "/BOOK"]
         .into_iter()
         .find(|n| cf.exists(n))
@@ -126,14 +131,16 @@ pub fn read_workbook_stream(
     let stream = cf
         .open_stream(name)
         .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
+    let cap = limits.max_part_bytes.min(limits.max_xls_stream_bytes);
     let mut out = Vec::new();
     stream
-        .take(limits.max_part_bytes + 1)
+        .take(cap + 1)
         .read_to_end(&mut out)
         .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
-    if out.len() as u64 > limits.max_part_bytes {
+    if out.len() as u64 > cap {
         return Err(OfficeError::TooLarge { what: "entry" });
     }
+    out.shrink_to_fit();
     Ok(out)
 }
 
