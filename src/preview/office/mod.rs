@@ -10,7 +10,6 @@
 //! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
 //! (the caller maps each variant to a translated message).
 
-pub mod cfb_flat;
 pub(crate) mod chart_xml;
 pub mod container;
 pub mod docx;

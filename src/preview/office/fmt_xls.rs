@@ -33,6 +33,7 @@
 //! column 65,535, so one far-flung cell would otherwise ask for 4 G cells.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
 
 use super::container::Limits;
 use super::fmt_xlsx::{
@@ -65,14 +66,75 @@ const CANCEL_EVERY: u32 = 8_192;
 const MAX_XFS: usize = 200_000;
 
 /// Reads the workbook-level and per-cell format information of an xls file.
+#[cfg(test)]
 pub fn read(
     path: &std::path::Path,
     limits: &Limits,
     cancel: Option<&Cancel>,
 ) -> Result<XlsxFormats, OfficeError> {
-    // Exactly the stream `calamine` will parse (see `cfb_flat`), not the one a tree walk finds.
-    let stream = super::cfb_flat::read_workbook_stream(path, limits.max_part_bytes)?;
-    parse_stream_cancellable(&stream, limits, cancel)
+    read_scanned(path, limits, cancel).map(|(fm, _)| fm)
+}
+
+/// Like [`read`], and also hands back the container `calamine` must be given: a fresh compound
+/// file holding the scanned bytes and nothing else. `calamine` has its own, different rules for
+/// picking a stream out of a compound file (flat directory scan, mini-stream walks, BOM-aware
+/// names, zero-padded short sectors), so instead of imitating them every one of them is made
+/// irrelevant: it can only ever read the bytes this pass has just checked.
+pub fn read_scanned(
+    path: &std::path::Path,
+    limits: &Limits,
+    cancel: Option<&Cancel>,
+) -> Result<(XlsxFormats, std::io::Cursor<Vec<u8>>), OfficeError> {
+    let stream = read_workbook_stream(path, limits)?;
+    let fm = parse_stream_cancellable(&stream, limits, cancel)?;
+    // Peak memory: the scanned stream plus the container built from it (about the same size, both
+    // bounded by `max_part_bytes`); the stream is dropped as soon as the container exists.
+    let container = clean_container(&stream)?;
+    Ok((fm, container))
+}
+
+/// A new compound file (version 3: 512-byte sectors, what Excel writes) with a single root-level `Workbook` stream holding `stream`.
+pub fn clean_container(stream: &[u8]) -> Result<std::io::Cursor<Vec<u8>>, OfficeError> {
+    let err = |e: std::io::Error| OfficeError::Corrupt(format!("compound file: {e}"));
+    let mut cf =
+        cfb::CompoundFile::create_with_version(cfb::Version::V3, std::io::Cursor::new(Vec::new()))
+            .map_err(err)?;
+    cf.create_stream("/Workbook")
+        .map_err(err)?
+        .write_all(stream)
+        .map_err(err)?;
+    cf.flush().map_err(err)?;
+    // `calamine` reads from the current position, not from the start.
+    let mut c = cf.into_inner();
+    c.set_position(0);
+    Ok(c)
+}
+
+/// The root-level `Workbook` / `Book` stream, read through a cap on the expanded size. Which
+/// stream is picked no longer has to match `calamine`'s choice: `calamine` is given only a copy
+/// of these very bytes (see [`read_scanned`]).
+pub fn read_workbook_stream(
+    path: &std::path::Path,
+    limits: &Limits,
+) -> Result<Vec<u8>, OfficeError> {
+    let mut cf =
+        cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
+    let name = ["/Workbook", "/Book", "/WORKBOOK", "/BOOK"]
+        .into_iter()
+        .find(|n| cf.exists(n))
+        .ok_or_else(|| OfficeError::Corrupt("missing Workbook stream".into()))?;
+    let stream = cf
+        .open_stream(name)
+        .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
+    let mut out = Vec::new();
+    stream
+        .take(limits.max_part_bytes + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| OfficeError::Corrupt(format!("workbook stream: {e}")))?;
+    if out.len() as u64 > limits.max_part_bytes {
+        return Err(OfficeError::TooLarge { what: "entry" });
+    }
+    Ok(out)
 }
 
 /// One BIFF record.

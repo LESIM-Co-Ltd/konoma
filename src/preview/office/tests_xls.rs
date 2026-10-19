@@ -1456,9 +1456,10 @@ fn harmless_book() -> Book {
 }
 
 #[test]
-fn a_workbook_in_a_sub_storage_is_scanned_when_calamine_will_read_it() {
-    // `calamine` takes the first directory entry named `Workbook` wherever it sits; a root
-    // `Book` is only its fallback. The far cell in `X/Workbook` is refused here, not allocated.
+fn a_workbook_in_a_sub_storage_never_reaches_calamine() {
+    // `calamine` would take the first directory entry named `Workbook` wherever it sits, i.e. the
+    // one with the far cell. `calamine` is now given a container built from the scanned root
+    // `Book` only, so the far cell is neither allocated nor refused: it is simply not there.
     let dir = tmp("xls_substorage");
     let p = dir.join("s.xls");
     let mut cf = cfb::create(&p).unwrap();
@@ -1473,16 +1474,30 @@ fn a_workbook_in_a_sub_storage_is_scanned_when_calamine_will_read_it() {
         .unwrap();
     cf.flush().unwrap();
     drop(cf);
-    assert_eq!(
-        load_with(&p, small_limits()).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let wb = load_with(&p, small_limits()).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "7.00");
 }
 
 #[test]
-fn the_first_workbook_entry_in_the_directory_wins_as_it_does_in_calamine() {
-    // The root `Workbook` is created before `X/Workbook`, so it is the earlier directory entry:
-    // `calamine` reads it, and so does the pass. The far cell in the other is never read.
+fn calamine_is_given_a_container_of_exactly_the_scanned_bytes() {
+    // The seam: whatever the file looked like, the container is one root `Workbook` stream with
+    // the scanned bytes, and nothing else.
+    let stream = harmless_book().stream();
+    let c = fmt_xls::clean_container(&stream).unwrap();
+    let mut cf = cfb::CompoundFile::open(c).unwrap();
+    let entries: Vec<String> = cf
+        .walk()
+        .filter(|e| e.is_stream())
+        .map(|e| e.path().display().to_string())
+        .collect();
+    assert_eq!(entries, ["/Workbook"]);
+    let mut got = Vec::new();
+    std::io::Read::read_to_end(&mut cf.open_stream("/Workbook").unwrap(), &mut got).unwrap();
+    assert_eq!(got, stream);
+}
+
+#[test]
+fn the_first_workbook_entry_in_the_directory_wins() {
     let dir = tmp("xls_first_entry");
     let p = dir.join("f.xls");
     let mut cf = cfb::create(&p).unwrap();
@@ -1572,14 +1587,13 @@ fn an_orphan_workbook_entry_before_the_real_one_is_the_one_scanned() {
     assert_eq!(cf.walk().filter(|e| e.is_stream()).count(), 1);
     drop(cf);
     std::fs::write(&p, &bytes).unwrap();
-    assert_eq!(
-        load_with(&p, small_limits()).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    // `calamine`'s flat scan would find the orphan; it is given the real `Workbook` only.
+    let wb = load_with(&p, small_limits()).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "7.00");
 }
 
 #[test]
-fn a_huge_dimensions_in_the_stream_calamine_picks_is_refused() {
+fn a_huge_dimensions_in_a_stream_calamine_is_never_given() {
     let dir = tmp("xls_substorage_dims");
     let p = dir.join("d.xls");
     let big = Book {
@@ -1601,28 +1615,22 @@ fn a_huge_dimensions_in_the_stream_calamine_picks_is_refused() {
         .unwrap();
     cf.flush().unwrap();
     drop(cf);
-    assert_eq!(
-        load_with(&p, small_limits()).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let wb = load_with(&p, small_limits()).unwrap();
+    assert_eq!(cell_text(&wb, 0, 0), "7.00");
 }
 
 #[test]
-fn only_the_exact_spellings_calamine_tries_name_the_workbook() {
-    // `calamine` compares names exactly (`Workbook`, `Book`, `WORKBOOK`, `BOOK`).
+fn the_four_stream_names_are_found_at_the_root() {
+    // Whatever the spelling in the file, `calamine` gets the stream as `Workbook`.
     let dir = tmp("xls_names");
-    for (name, ok) in [
-        ("/Workbook", true),
-        ("/Book", true),
-        ("/WORKBOOK", true),
-        ("/BOOK", true),
-        ("/workbook", false),
-        ("/WorkBook", false),
-    ] {
+    for name in ["/Workbook", "/Book", "/WORKBOOK", "/BOOK"] {
         let p = dir.join(format!("{}.xls", name.trim_start_matches('/')));
         write_cfb(&p, &[(name, &harmless_book().stream())]);
-        assert_eq!(load(&p).is_ok(), ok, "{name}");
+        assert!(load(&p).is_ok(), "{name}");
     }
+    let p = dir.join("none.xls");
+    write_cfb(&p, &[("/Other", &harmless_book().stream())]);
+    assert!(load(&p).is_err());
 }
 
 #[test]
@@ -1647,25 +1655,42 @@ fn small_and_large_streams_in_both_sector_sizes_are_read_byte_for_byte() {
                 .unwrap();
             cf.flush().unwrap();
             drop(cf);
-            let got = super::cfb_flat::read_workbook_stream(&p, 1 << 30).unwrap();
+            let lim = |n: u64| Limits {
+                max_part_bytes: n,
+                ..Limits::default()
+            };
+            let got = fmt_xls::read_workbook_stream(&p, &lim(1 << 30)).unwrap();
             assert_eq!(got, data, "{version:?} {n}");
             assert_eq!(
-                super::cfb_flat::read_workbook_stream(&p, n as u64 - 1).unwrap_err(),
+                fmt_xls::read_workbook_stream(&p, &lim(n as u64 - 1)).unwrap_err(),
                 OfficeError::TooLarge { what: "entry" }
             );
+            // And the container rebuilt from them holds the same bytes.
+            let mut cf = cfb::CompoundFile::open(fmt_xls::clean_container(&got).unwrap()).unwrap();
+            let mut again = Vec::new();
+            std::io::Read::read_to_end(&mut cf.open_stream("/Workbook").unwrap(), &mut again)
+                .unwrap();
+            assert_eq!(again, data, "{version:?} {n} rebuilt");
         }
     }
 }
 
 #[test]
-fn a_looping_sector_chain_is_refused_not_followed() {
-    // The directory's own chain points back at itself: `calamine` would grow without end.
+fn a_looping_root_chain_with_huge_lengths_is_harmless() {
+    // The root entry's (mini stream) chain loops on itself with a 4 GiB length and the header
+    // claims a mini FAT: `calamine`'s own reader would append sectors until it ran out of memory.
+    // Whatever the container reader here makes of it, `calamine` never sees the file.
     let dir = tmp("xls_cfb_loop");
     let p = dir.join("l.xls");
-    write_cfb(&p, &[("/Workbook", &harmless_book().stream())]);
+    let big = Book {
+        globals: globals(&[], &[4]),
+        sheets: vec![sheet(
+            "S",
+            (0..2000u16).map(|i| number(i, 0, 3, 1.0)).collect(),
+        )],
+    };
+    write_cfb(&p, &[("/Workbook", &big.stream())]);
     let mut bytes = std::fs::read(&p).unwrap();
-    // Header: dir start sector at 48; point the FAT entry of that sector at itself. The FAT is in
-    // the first DIFAT sector listed at 76.
     let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     let ss = if u16::from_le_bytes([bytes[30], bytes[31]]) == 9 {
         512
@@ -1673,19 +1698,71 @@ fn a_looping_sector_chain_is_refused_not_followed() {
         4096
     };
     let dir_start = u32_at(&bytes, 48) as usize;
+    let root = ss + dir_start * ss;
+    // Root entry: start sector at 116, size at 120.
+    let root_start = u32_at(&bytes, root + 116) as usize;
     let fat_sector = u32_at(&bytes, 76) as usize;
-    let at = ss + fat_sector * ss + dir_start * 4;
-    bytes[at..at + 4].copy_from_slice(&(dir_start as u32).to_le_bytes());
-    // Make the directory longer than one sector would hold so the chain is followed past it.
+    if root_start < 0xFFFF_FFF0 {
+        let at = ss + fat_sector * ss + root_start * 4;
+        bytes[at..at + 4].copy_from_slice(&(root_start as u32).to_le_bytes());
+    }
+    bytes[root + 120..root + 124].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[64..68].copy_from_slice(&1u32.to_le_bytes()); // mini FAT sector count
     std::fs::write(&p, &bytes).unwrap();
     let t = std::time::Instant::now();
-    // The chain ends only if it is cut by the `len` of a stream; the directory has none.
-    let r = super::cfb_flat::read_workbook_stream(&p, 1 << 20);
-    assert!(
-        matches!(&r, Err(OfficeError::Corrupt(m)) if m.contains("loops")),
-        "{r:?}"
-    );
+    let r = std::panic::catch_unwind(|| load_with(&p, small_limits()));
+    assert!(r.is_ok(), "panicked");
     assert!(t.elapsed().as_secs() < 5);
+}
+
+#[test]
+fn a_short_last_sector_cannot_make_calamine_read_other_bytes() {
+    // A file whose last sector is cut short: calamine's reader zero-pads it on later reads. It
+    // never reads the file; the scanned stream is either complete or the load is refused.
+    let dir = tmp("xls_cfb_short");
+    let p = dir.join("t.xls");
+    write_cfb(&p, &[("/Workbook", &book_with_far_cell(3000, 20).stream())]);
+    let bytes = std::fs::read(&p).unwrap();
+    for cut in [1usize, 7, 100, 300] {
+        std::fs::write(&p, &bytes[..bytes.len() - cut]).unwrap();
+        // Either refused, or loaded with exactly the scanned content (far cell => too large).
+        assert!(load_with(&p, small_limits()).is_err(), "cut {cut}");
+    }
+}
+
+#[test]
+fn a_bom_prefixed_workbook_entry_never_reaches_calamine() {
+    // `calamine` decodes entry names with a BOM-sniffing decoder, so `FF FE "Workbook"` is
+    // `Workbook` to it. Only the scanned stream is handed over, whatever the names decode to.
+    let dir = tmp("xls_cfb_bom");
+    let p = dir.join("b.xls");
+    write_cfb(
+        &p,
+        &[
+            ("/A", &book_with_far_cell(3000, 20).stream()),
+            ("/Workbook", &harmless_book().stream()),
+        ],
+    );
+    let mut bytes = std::fs::read(&p).unwrap();
+    let name: Vec<u8> = "A".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let at = (0..bytes.len() - 128)
+        .step_by(128)
+        .find(|&o| bytes[o..o + 2] == name[..] && bytes[o + 2..o + 4] == [0, 0] && o > 512)
+        .expect("entry A");
+    let mut n = vec![0xFF, 0xFE];
+    n.extend("Workbook".encode_utf16().flat_map(u16::to_le_bytes));
+    n.extend([0, 0]);
+    let len = n.len() as u16;
+    n.resize(64, 0);
+    bytes[at..at + 64].copy_from_slice(&n);
+    bytes[at + 64..at + 66].copy_from_slice(&len.to_le_bytes());
+    std::fs::write(&p, &bytes).unwrap();
+    // The container reader refuses the out-of-order names, or the real `Workbook` is the one
+    // loaded; never the entry with the far cell.
+    match load_with(&p, small_limits()) {
+        Ok(wb) => assert_eq!(cell_text(&wb, 0, 0), "7.00"),
+        Err(e) => assert!(matches!(e, OfficeError::Corrupt(_)), "{e:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
