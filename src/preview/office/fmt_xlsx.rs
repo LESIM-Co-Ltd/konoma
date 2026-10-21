@@ -110,10 +110,46 @@ impl SheetFormats {
             None => (row, col, row, col),
             Some((r0, c0, r1, c1)) => (r0.min(row), c0.min(col), r1.max(row), c1.max(col)),
         });
-        if fmt != 0 && (col as usize) < limits.max_cols {
-            self.cells.push((row, col as u16, fmt));
+        // A column past `u16` is not a cell the format table can hold (never wrap it onto another).
+        if let Ok(col) = u16::try_from(col) {
+            if fmt != 0 && (col as usize) < limits.max_cols {
+                self.cells.push((row, col, fmt));
+            }
         }
         Ok(())
+    }
+
+    /// Makes "the last record at a cell wins" hold for the format too: [`Self::note_value`] keeps
+    /// only non-`General` formats, so a later `General` record for a cell that an earlier record
+    /// may have given a format is written down as `General` explicitly. Real producers write
+    /// records in row-major order, so `last` (the greatest position seen so far, one per sheet,
+    /// owned by the caller) says whether an earlier record at this position can exist at all: only
+    /// a record at or before it needs the explicit entry, and a normal sheet pays nothing. (An
+    /// explicit `General` for a cell with no earlier record is harmless.) Call it right after
+    /// `note_value`; not for a formula's `STRING` result, which belongs to the `FORMULA` before it
+    /// and keeps its format.
+    pub(crate) fn keep_last_format(
+        &mut self,
+        last: &mut Option<(u32, u16)>,
+        row: u32,
+        col: u32,
+        fmt: u16,
+        limits: &Limits,
+    ) {
+        // Past the last column the format table holds, or past `u16`: not a cell (no wrapping).
+        let Ok(col) = u16::try_from(col) else {
+            return;
+        };
+        if (col as usize) >= limits.max_cols {
+            return;
+        }
+        let key = (row, col);
+        if fmt == 0 && last.is_some_and(|l| key <= l) {
+            self.cells.push((row, col, 0));
+        }
+        if last.is_none_or(|l| key > l) {
+            *last = Some(key);
+        }
     }
 
     /// Charges `bytes` of text to the sheet's budget.
@@ -155,10 +191,16 @@ impl SheetFormats {
         let Ok(col) = u16::try_from(col) else {
             return 0;
         };
-        self.cells
-            .binary_search_by_key(&(row, col), |&(r, c, _)| (r, c))
-            .map(|i| self.cells[i].2)
-            .unwrap_or(0)
+        // `cells` is sorted by position with a *stable* sort, so duplicates of one position stay in
+        // record order; the last one wins, as it does in `calamine`'s matrix (a later `General`
+        // record is stored as an explicit 0 where an earlier one had a format).
+        let end = self
+            .cells
+            .partition_point(|&(r, c, _)| (r, c) <= (row, col));
+        match end.checked_sub(1).map(|i| self.cells[i]) {
+            Some((r, c, f)) if (r, c) == (row, col) => f,
+            _ => 0,
+        }
     }
 }
 

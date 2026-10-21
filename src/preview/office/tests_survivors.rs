@@ -441,6 +441,35 @@ fn non_worksheet_sheets_are_neither_listed_nor_counted() {
     );
 }
 
+/// A zip from a tool that stores names in CP437 without the UTF-8 flag: the sheet is
+/// `xl/worksheets/\x82\x82.xml` on disk and `éé.xml` once decoded, which is what the (UTF-8)
+/// relationship says. `ZipArchive::by_name` looks raw bytes up, so the entry is read by index.
+#[test]
+fn a_sheet_part_whose_name_is_not_utf8_is_found_again_by_its_index() {
+    let dir = tmp("surv_cp437_name");
+    let wb = workbook_xml(false, &[("S", "visible", "rId1")]);
+    let rels = rels_of(&[("rId1", "worksheet", "worksheets/éé.xml")]);
+    let sheet = sheet_xml(r#"<row r="1"><c r="A1"><v>41</v></c></row>"#, "");
+    let bytes = deflated(&[
+        ("xl/workbook.xml", wb.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", rels.as_bytes()),
+        ("xl/worksheets/AA.xml", sheet.as_bytes()),
+    ]);
+    let mut bytes = bytes;
+    let (from, to) = (b"xl/worksheets/AA.xml", b"xl/worksheets/\x82\x82.xml");
+    let mut n = 0;
+    for i in 0..bytes.len() - from.len() {
+        if &bytes[i..i + from.len()] == from {
+            bytes[i..i + from.len()].copy_from_slice(to);
+            n += 1;
+        }
+    }
+    assert_eq!(n, 2);
+    let p = write(&dir, "c.xlsx", &bytes);
+    let wb = load(&p).unwrap();
+    assert_eq!(wb.sheets[0].display(0, 0), "41");
+}
+
 /// `TargetMode="External"` is compared without regard to case; an external target is not a part
 /// of the package.
 #[test]

@@ -84,7 +84,7 @@ fn deck_of(src: &std::path::Path, dst: &std::path::Path, n: usize) {
         .compression_method(zip::CompressionMethod::Deflated);
     for i in 0..zr.len() {
         let mut f = zr.by_index(i).unwrap();
-        let name = f.name().to_string();
+        let name = f.name().unwrap().to_string();
         let mut bytes = Vec::new();
         f.read_to_end(&mut bytes).unwrap();
         if name == "ppt/presentation.xml" {
@@ -133,7 +133,7 @@ fn deck_with_slides(src: &std::path::Path, dst: &std::path::Path, keep: usize) {
         .compression_method(zip::CompressionMethod::Deflated);
     for i in 0..zr.len() {
         let mut f = zr.by_index(i).unwrap();
-        let name = f.name().to_string();
+        let name = f.name().unwrap().to_string();
         let mut bytes = Vec::new();
         f.read_to_end(&mut bytes).unwrap();
         if name == "ppt/presentation.xml" {
@@ -1049,7 +1049,7 @@ fn edit_zip(src: &std::path::Path, dst: &std::path::Path, f: impl Fn(&str, Vec<u
         .compression_method(zip::CompressionMethod::Deflated);
     for i in 0..zr.len() {
         let mut e = zr.by_index(i).unwrap();
-        let name = e.name().to_string();
+        let name = e.name().unwrap().to_string();
         let mut bytes = Vec::new();
         e.read_to_end(&mut bytes).unwrap();
         let bytes = f(&name, bytes);

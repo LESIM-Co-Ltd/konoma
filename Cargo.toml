@@ -225,7 +225,7 @@ csv = "1"
 # 読む(preview/archive.rs のモジュール doc に安全境界の詳細)。zip の既定 feature は任意の展開コーデック
 # (bzip2 等・C ライブラリを引きうる)を有効化するが、`by_index_raw` はエントリの圧縮方式に関わらず
 # 非展開の生リーダーでメタデータを返すため default-features=false で足りる(実機検証済)。
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # default-features=false で既定 feature の xattr(展開時の拡張属性復元。unpack 専用)を落とす。
 # エントリ列挙(`Archive::entries`)はこれを使わない。>=0.4.45 は過去の展開時シンボリックリンク/
 # パストラバーサル勧告(RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068)の修正版だが、
@@ -238,7 +238,7 @@ tar = { version = "0.4.45", default-features = false }
 # not expose) are read by konoma's own "format pass" (preview/office/). In the tests calamine is also
 # the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
 # arithmetic lives in konoma's own numfmt).
-calamine = { version = "0.36", default-features = false }
+calamine = { version = "0.37", default-features = false }
 # Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
 # through calamine; the PowerPoint EMF/WMF pictures need it directly.
 encoding_rs = "0.8"
@@ -248,7 +248,8 @@ encoding_rs = "0.8"
 cfb = "0.15"
 # XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
-# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
+# billion-laughs path. Same 0.41 line as plist. calamine 0.37 pulls 0.42, so two copies are in the graph;
+# moving konoma to 0.42 needs the chart_xml reader ported to the new API.
 quick-xml = "0.41"
 
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)

@@ -174,7 +174,7 @@ pub(crate) struct XlsxBook {
     zip: ZipArchive<BufReader<File>>,
     /// Zip entry names by lower-cased, `/`-separated name: parts are found without regard to case
     /// or `\` separators (some producers write them).
-    names: HashMap<String, String>,
+    names: HashMap<String, usize>,
     pub date1904: bool,
     pub sheets: Vec<SheetInfo>,
     /// The deduplicated number formats the cells refer to (index 0 is General).
@@ -190,21 +190,22 @@ fn norm_name(n: &str) -> String {
 /// at `cap` expanded bytes. `None` when the package has no such part.
 fn read_part<'z>(
     zip: &'z mut ZipArchive<BufReader<File>>,
-    names: &HashMap<String, String>,
+    names: &HashMap<String, usize>,
     p: &str,
     cap: u64,
 ) -> Result<Option<BufReader<impl Read + 'z>>, OfficeError> {
-    let name = names.get(&norm_name(p)).map_or(p, String::as_str);
-    Ok(container::part_reader(zip, name, cap)?.map(|r| BufReader::with_capacity(64 * 1024, r)))
+    let index = names
+        .get(&norm_name(p))
+        .copied()
+        .or_else(|| zip.index_for_name(p));
+    let Some(index) = index else { return Ok(None) };
+    Ok(container::part_reader_at(zip, index, cap)?.map(|r| BufReader::with_capacity(64 * 1024, r)))
 }
 
 /// Opens the package: workbook, relationships, styles and shared strings are read; sheets are not.
 pub(crate) fn open(path: &Path, limits: &Limits) -> Result<XlsxBook, OfficeError> {
     let mut zip = container::open_zip(path)?;
-    let names: HashMap<String, String> = zip
-        .file_names()
-        .map(|n| (norm_name(n), n.to_string()))
-        .collect();
+    let names = container::entry_index(&zip);
     let cap = limits.max_part_bytes;
 
     let (date1904, decls) = {
@@ -297,12 +298,16 @@ impl XlsxBook {
         cancel: Option<&Cancel>,
         sink: impl FnMut(CellOut<'_>) -> bool,
     ) -> Result<Vec<MergeRange>, OfficeError> {
-        let actual = self
+        let index = self
             .names
             .get(&norm_name(part))
-            .cloned()
-            .unwrap_or_else(|| part.to_string());
-        let Some(r) = container::part_reader(&mut self.zip, &actual, limits.max_part_bytes)? else {
+            .copied()
+            .or_else(|| self.zip.index_for_name(part));
+        let Some(r) = index
+            .map(|i| container::part_reader_at(&mut self.zip, i, limits.max_part_bytes))
+            .transpose()?
+            .flatten()
+        else {
             return Err(OfficeError::Corrupt(format!("missing sheet part {part}")));
         };
         parse_sheet(
@@ -1137,6 +1142,12 @@ fn read_v<R: BufRead>(
         T::Str | T::Iso => {
             text.clear();
             read_text_into(rd, closing, ev, text, cap)?;
+            if t == T::Str && text.contains("_x") {
+                // A formula's text result is stored with Excel's `_xHHHH_` escapes (`CHAR(13)`
+                // is `_x000D_`), exactly like a shared string.
+                let raw = std::mem::take(text);
+                push_unescaped(&raw, text);
+            }
             Ok(if t == T::Iso { Pv::Iso } else { Pv::Str })
         }
         T::Number | T::Shared | T::Bool | T::Error => {

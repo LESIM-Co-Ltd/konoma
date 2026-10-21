@@ -195,7 +195,10 @@ fn list_zip(path: &Path) -> Result<(Vec<Entry>, bool)> {
             .by_index_raw(i)
             .with_context(|| format!("zip entry {i}"))?;
         out.push(Entry {
-            name: file.name().to_string(),
+            name: file.name().map_or_else(
+                |_| String::from_utf8_lossy(file.name_raw()).into_owned(),
+                |n| n.into_owned(),
+            ),
             size: file.size(),
             is_dir: file.is_dir(),
             // zip's DOS-epoch timestamp has no timezone (ambiguous by spec — whatever the
