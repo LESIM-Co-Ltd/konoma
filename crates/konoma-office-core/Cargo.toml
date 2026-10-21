@@ -30,7 +30,9 @@ encoding_rs.workspace = true
 cfb.workspace = true
 # XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
-# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
+# billion-laughs path. calamine 0.37 pulls the same 0.42; plist (via syntect) still pulls 0.41, so two copies are in the graph.
+# Every Office reader sits behind `LossyUtf8` (src/lossy_utf8.rs): 0.42 rejects invalid UTF-8 that 0.41 let
+# through. The `encoding` feature is on through calamine but unused here (only `DecodingReader` transcodes).
 quick-xml.workspace = true
 # The package container (ooxml / odf) is a zip.
 zip.workspace = true

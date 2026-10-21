@@ -199,6 +199,27 @@ All notable changes to konoma are documented in this file. The format is based o
 - A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
   and when it is not a regular file, with the reason shown.
 
+## [0.31.2] - 2026-10-21
+
+### Security
+- Updated `rustls-webpki` to 0.103.16 (RUSTSEC-2026-0382: certificate verification could accept distrusted intermediates) and `webpki-roots` to 1.0.10 (RUSTSEC-2026-0381: the bundled roots trusted distrusted emSign intermediates). Both are used when konoma fetches remote Markdown images over HTTPS.
+- Updated `rustls` to 0.23.46 (the TLS library used to fetch remote Markdown images over HTTPS; RUSTSEC-2026-0346 to 0349) and `zip` to 9 (RUSTSEC-2026-0367 to 0369; `calamine` moved to 0.37 because it pulls `zip`). konoma only reads archives and never extracts them, so the zip extraction advisories did not affect it. `zip` 9 decodes entry names as UTF-8 first, even without the UTF-8 flag (zip 8 used CP437), so the archive listing shows such names correctly instead of as mojibake. `calamine` 0.37 also reads the East Asian built-in date formats (27 to 36 and 50 to 58, the Japanese era formats among them) of `.xls` and `.xlsb` as dates: the grid looks the same, the cell detail now says date/time like it does for `.xlsx`. `zip` 9 also enforces an entry's declared size while reading, so a crafted package whose entries inflate past what they declare is now shown as a damaged file (`zip entry: File is larger than its declared uncompressed size`) instead of "too large"; konoma's own byte count stays as a second line of defence.
+- Moved `quick-xml` (the XML reader of the Office previews) to 0.42, so konoma and `calamine` share one copy (`plist`, through the syntax highlighter, still pulls 0.41). quick-xml 0.42 refuses input that is not valid UTF-8, where 0.41 passed it through; a part with a stray byte (a single bad character in a cell, a run of text or a name) is still shown, with a replacement character in place of the byte, because every Office XML reader now goes through one lossy-UTF-8 adapter. Entity handling is unchanged: a DTD-defined entity is never expanded.
+
+### Fixed
+- A crafted compound file (`.xls`, or any Office file inside one) is refused before it can blow up memory: the `cfb` crate reads 128 FAT entries for every FAT sector the file lists before checking them and accepts the same sector listed again and again, so a file made of DIFAT sectors all naming one sector made its FAT ~127 times the file's size (an out-of-memory abort). konoma now walks the header and the DIFAT chain itself first (bounded by the file's length) and refuses a file listing more FAT sectors than it can hold, a sector twice, or one past its end; every compound file is opened through that one check, through a buffer (the crate read it 4 bytes at a time). The check refuses only what makes the FAT out of proportion to the file (an id twice, an id at or past the end, a DIFAT chain that loops or leaves the file); everything `cfb` itself accepts still opens, including a zero-padded DIFAT sector (the trailing zeros are stripped exactly when and in the order `cfb` strips them, so a forged header count cannot keep them as repeated references to sector 0) and ids after the first free slot of the header. The size limit of the `Workbook` stream of an `.xls` is unchanged (256 MiB); the container handed to `calamine` is built at its final size, so no extra copy is held while it opens.
+- An `.xls` workbook with an embedded chart: the memory check before opening walked a sheet only up to the first end-of-stream record (the chart's), while `calamine` 0.37 skips the chart and reads on to the sheet's own end. A crafted file could hide a far-away cell or a huge declared size after the chart and get past the check; the check now walks the sheet exactly as `calamine` does. Cached values inside the chart no longer take part in the cell formats, and a 16-byte dimensions record (written by some producers) is accepted.
+- An `.xls` workbook whose compound file holds more than one stream that looks like the workbook (or a malformed one): the memory check and `calamine` 0.37 each have their own rules for picking a stream out of a compound file (first directory entry by name wherever it sits, mini-stream walks, BOM-aware names, zero-padded short sectors), so a crafted file could show the check a harmless stream and `calamine` a hostile one. Instead of imitating those rules, konoma now reads the root `Workbook`/`Book` stream itself, runs the check on it, and hands `calamine` a fresh in-memory compound file holding only those bytes; `calamine` can no longer read anything that was not checked.
+- In `.xls` and `.xlsb`, a later record for a cell with the General format now replaces an earlier record with a number format (the last record at a cell wins, as in the values). A sheet that follows a sheet whose embedded chart never closes is no longer refused, as `calamine` opens it; the work over such overlapping sheets is capped.
+- A crafted `.xls` could make `calamine` 0.37 print gigabytes of formula text or spend minutes copying it (it turns every formula into a string while opening, with no limit: a 5-byte `PtgName` token can print a 765-byte name, and `PtgAttrSpace` inserts up to 255 spaces at the start of the text per 4-byte token, which is quadratic). konoma now works out, token by token and before `calamine` runs, how much text and how many byte moves each formula costs, and hands `calamine` a formula that prints nothing in place of one that is over a per-formula cap or over the workbook's budget (128 MiB of text, about 8.6 GB of byte moves; strings are counted at their worst case for any code page, 6 bytes per character; sheet-name prefixes of defined names, whatever the reference token, share a quarter of the text budget). The cell keeps its value; only its formula text in the cell detail is lost. Real workbooks are far under the budget and read exactly as before.
+- In an `.xls`, a sheet is read with the BIFF version of the workbook globals' last `BOF`, and a version word of 0 or an unknown one is BIFF8, as `calamine` does (a sheet's own `BOF` was used before).
+- An Office package whose part names are stored in a legacy code page (no UTF-8 flag) could not be read: the part was looked up by its decoded name but the archive looks up raw bytes. Parts of `.xlsx` and Word packages are now read by index.
+- A formula's text result in an `.xlsx` (`t="str"`) is now decoded for Excel's `_xHHHH_` escapes (`CHAR(13)` is stored as `_x000D_`), as Excel and `calamine` do; it showed the escape as written.
+
+### Changed
+- Routine dependency updates with no visible change: `signal-hook` 0.4 (only its low-level pipe API changed, which konoma
+  does not use), `tokio` 1.53.3, `libc` 0.2.191 and `ratex-katex-fonts` 0.1.15.
+
 ## [0.31.1] - 2026-10-14
 
 ### Fixed
@@ -2914,7 +2935,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...HEAD
+[0.31.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...v0.31.2
 [0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...v0.30.0

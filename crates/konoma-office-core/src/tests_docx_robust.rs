@@ -155,7 +155,7 @@ fn mutated_documents_never_panic() {
                 let mut f = z.by_index(k).unwrap();
                 let mut b = Vec::new();
                 f.read_to_end(&mut b).unwrap();
-                let name = f.name().to_string();
+                let name = f.name().unwrap().to_string();
                 let b = match name.as_str() {
                     "word/document.xml" => mutated_doc.clone(),
                     "word/styles.xml" if target == 1 => mutate(&styles, &mut rng),

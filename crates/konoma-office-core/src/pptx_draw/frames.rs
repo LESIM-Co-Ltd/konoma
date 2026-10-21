@@ -113,7 +113,7 @@ fn chart_clr_ovr(bytes: &[u8]) -> Option<Node> {
             Event::Eof => return None,
             _ => continue,
         };
-        if e.local_name().as_ref() == b"clrMapOvr" {
+        if e.local_name().as_ref() == "clrMapOvr" {
             return match read_element(&mut rd, &e, empty, &mut budget) {
                 Ok(Tree::Ok(n)) => Some(n),
                 _ => None,
@@ -131,8 +131,8 @@ fn drawing_rel_id(data: &[u8]) -> Option<String> {
         buf.clear();
         match rd.read_event_into(&mut buf).ok()? {
             Event::Start(e) | Event::Empty(e) => {
-                if e.local_name().as_ref() == b"dataModelExt" {
-                    return attr(&e, b"relId", false).filter(|v| !v.is_empty());
+                if e.local_name().as_ref() == "dataModelExt" {
+                    return attr(&e, "relId", false).filter(|v| !v.is_empty());
                 }
             }
             Event::Eof => return None,

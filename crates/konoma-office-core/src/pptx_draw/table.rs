@@ -157,7 +157,7 @@ impl TableStyles {
                 Ok(Event::Eof) | Err(_) => break,
                 _ => continue,
             };
-            if e.local_name().as_ref() != b"tblStyle" {
+            if e.local_name().as_ref() != "tblStyle" {
                 continue;
             }
             if out.styles.len() >= MAX_TABLE_STYLES {

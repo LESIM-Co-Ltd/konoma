@@ -28,7 +28,7 @@ const NS: &str = concat!(
 // fixtures
 // ---------------------------------------------------------------------------------------------
 
-fn content_xml(auto: &str, tables: &str) -> String {
+pub(super) fn content_xml(auto: &str, tables: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {NS} office:version="1.3"><office:automatic-styles>{auto}</office:automatic-styles><office:body><office:spreadsheet>{tables}</office:spreadsheet></office:body></office:document-content>"#
     )

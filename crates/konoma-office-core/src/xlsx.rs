@@ -174,7 +174,7 @@ pub(crate) struct XlsxBook {
     zip: ZipArchive<BufReader<File>>,
     /// Zip entry names by lower-cased, `/`-separated name: parts are found without regard to case
     /// or `\` separators (some producers write them).
-    names: HashMap<String, String>,
+    names: HashMap<String, usize>,
     pub date1904: bool,
     pub sheets: Vec<SheetInfo>,
     /// The deduplicated number formats the cells refer to (index 0 is General).
@@ -190,21 +190,22 @@ fn norm_name(n: &str) -> String {
 /// at `cap` expanded bytes. `None` when the package has no such part.
 fn read_part<'z>(
     zip: &'z mut ZipArchive<BufReader<File>>,
-    names: &HashMap<String, String>,
+    names: &HashMap<String, usize>,
     p: &str,
     cap: u64,
 ) -> Result<Option<BufReader<impl Read + 'z>>, OfficeError> {
-    let name = names.get(&norm_name(p)).map_or(p, String::as_str);
-    Ok(container::part_reader(zip, name, cap)?.map(|r| BufReader::with_capacity(64 * 1024, r)))
+    let index = names
+        .get(&norm_name(p))
+        .copied()
+        .or_else(|| zip.index_for_name(p));
+    let Some(index) = index else { return Ok(None) };
+    Ok(container::part_reader_at(zip, index, cap)?.map(|r| BufReader::with_capacity(64 * 1024, r)))
 }
 
 /// Opens the package: workbook, relationships, styles and shared strings are read; sheets are not.
 pub(crate) fn open(path: &Path, limits: &Limits) -> Result<XlsxBook, OfficeError> {
     let mut zip = container::open_zip(path)?;
-    let names: HashMap<String, String> = zip
-        .file_names()
-        .map(|n| (norm_name(n), n.to_string()))
-        .collect();
+    let names = container::entry_index(&zip);
     let cap = limits.max_part_bytes;
 
     let (date1904, decls) = {
@@ -297,12 +298,16 @@ impl XlsxBook {
         cancel: Option<&Cancel>,
         sink: impl FnMut(CellOut<'_>) -> bool,
     ) -> Result<Vec<MergeRange>, OfficeError> {
-        let actual = self
+        let index = self
             .names
             .get(&norm_name(part))
-            .cloned()
-            .unwrap_or_else(|| part.to_string());
-        let Some(r) = container::part_reader(&mut self.zip, &actual, limits.max_part_bytes)? else {
+            .copied()
+            .or_else(|| self.zip.index_for_name(part));
+        let Some(r) = index
+            .map(|i| container::part_reader_at(&mut self.zip, i, limits.max_part_bytes))
+            .transpose()?
+            .flatten()
+        else {
             return Err(OfficeError::Corrupt(format!("missing sheet part {part}")));
         };
         parse_sheet(
@@ -337,15 +342,15 @@ pub(crate) fn parse_workbook(src: impl BufRead) -> Result<(bool, Vec<SheetDecl>)
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
             Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
-                b"workbookPr" => {
-                    if let Some(v) = attr(&e, b"date1904", false) {
+                "workbookPr" => {
+                    if let Some(v) = attr(&e, "date1904", false) {
                         date1904 = is_true(&v);
                     }
                 }
-                b"sheet" => {
-                    let name = attr(&e, b"name", false);
-                    let rid = attr(&e, b"id", true);
-                    let visible = match attr(&e, b"state", false).as_deref() {
+                "sheet" => {
+                    let name = attr(&e, "name", false);
+                    let rid = attr(&e, "id", true);
+                    let visible = match attr(&e, "state", false).as_deref() {
                         Some("hidden") => Visibility::Hidden,
                         Some("veryHidden") => Visibility::VeryHidden,
                         _ => Visibility::Visible,
@@ -384,16 +389,14 @@ pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, Rel>, Offi
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
-                if attr(&e, b"TargetMode", false)
-                    .is_some_and(|m| m.eq_ignore_ascii_case("External"))
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
+                if attr(&e, "TargetMode", false).is_some_and(|m| m.eq_ignore_ascii_case("External"))
                 {
                     continue;
                 }
-                if let (Some(id), Some(target)) =
-                    (attr(&e, b"Id", false), attr(&e, b"Target", false))
+                if let (Some(id), Some(target)) = (attr(&e, "Id", false), attr(&e, "Target", false))
                 {
-                    let kind = attr(&e, b"Type", false)
+                    let kind = attr(&e, "Type", false)
                         .and_then(|t| t.rsplit('/').next().map(str::to_string))
                         .unwrap_or_default();
                     map.insert(
@@ -467,16 +470,14 @@ struct Scratch {
 /// Appends an entity or character reference. An unknown entity is kept as written (never
 /// expanded: a DTD `<!ENTITY>` is not honoured).
 fn push_ref(e: &BytesRef<'_>, out: &mut String) {
-    let Ok(name) = e.decode() else {
-        return;
-    };
-    if let Some(s) = quick_xml::escape::resolve_xml_entity(&name) {
+    let name: &str = e;
+    if let Some(s) = quick_xml::escape::resolve_xml_entity(name) {
         out.push_str(s);
     } else if let Ok(Some(c)) = e.resolve_char_ref() {
         out.push(c);
     } else {
         out.push('&');
-        out.push_str(&name);
+        out.push_str(name);
         out.push(';');
     }
 }
@@ -488,7 +489,7 @@ fn push_ref(e: &BytesRef<'_>, out: &mut String) {
 /// bad sheet.
 fn read_text_into<R: BufRead>(
     rd: &mut XmlReader<R>,
-    closing: &[u8],
+    closing: &str,
     buf: &mut Vec<u8>,
     out: &mut String,
     cap: usize,
@@ -498,18 +499,12 @@ fn read_text_into<R: BufRead>(
         match rd.read_event_into(buf).map_err(xml_err)? {
             Event::Text(t) => {
                 if out.len() < cap {
-                    match t.xml10_content() {
-                        Ok(s) => push_capped(out, &s, cap),
-                        Err(_) => push_capped(out, &String::from_utf8_lossy(&t), cap),
-                    }
+                    push_capped(out, &t.xml10_content(), cap);
                 }
             }
             Event::CData(t) => {
                 if out.len() < cap {
-                    match t.xml10_content() {
-                        Ok(s) => push_capped(out, &s, cap),
-                        Err(_) => push_capped(out, &String::from_utf8_lossy(&t), cap),
-                    }
+                    push_capped(out, &t.xml10_content(), cap);
                 }
             }
             Event::GeneralRef(e) => {
@@ -543,7 +538,7 @@ fn push_capped(out: &mut String, s: &str, cap: usize) {
 /// unless it says `xml:space="preserve"`, and `_xHHHH_` escapes are decoded.
 fn read_rich<R: BufRead>(
     rd: &mut XmlReader<R>,
-    closing: &[u8],
+    closing: &str,
     bufs: (&mut Vec<u8>, &mut Vec<u8>),
     piece: &mut String,
     out: &mut String,
@@ -555,11 +550,11 @@ fn read_rich<R: BufRead>(
         ev.clear();
         match rd.read_event_into(ev).map_err(xml_err)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"rPh" => in_phonetic = true,
-                b"t" if !in_phonetic => {
+                "rPh" => in_phonetic = true,
+                "t" if !in_phonetic => {
                     let preserve =
                         e.attributes().with_checks(false).flatten().any(|a| {
-                            a.key.as_ref() == b"xml:space" && a.value.as_ref() == b"preserve"
+                            a.key.as_ref() == "xml:space" && a.value.as_ref() == "preserve"
                         });
                     piece.clear();
                     read_text_into(rd, e.name().as_ref(), ev2, piece, cap)?;
@@ -578,7 +573,7 @@ fn read_rich<R: BufRead>(
                 if e.name().as_ref() == closing {
                     return Ok(());
                 }
-                if e.local_name().as_ref() == b"rPh" {
+                if e.local_name().as_ref() == "rPh" {
                     in_phonetic = false;
                 }
             }
@@ -633,15 +628,15 @@ fn read_shared_strings(src: impl BufRead, limits: &Limits) -> Result<SharedStrin
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"sst" => {
-                    let unique = attr(&e, b"uniqueCount", false)
+                "sst" => {
+                    let unique = attr(&e, "uniqueCount", false)
                         .and_then(|v| v.trim().parse::<u64>().ok())
                         .unwrap_or(0);
                     if unique.saturating_mul(STRING_OVERHEAD) > limits.max_text_bytes {
                         return Err(too_large());
                     }
                 }
-                b"si" => {
+                "si" => {
                     item.clear();
                     read_rich(
                         &mut rd,
@@ -664,7 +659,7 @@ fn read_shared_strings(src: impl BufRead, limits: &Limits) -> Result<SharedStrin
                 }
                 _ => {}
             },
-            Event::End(e) if e.local_name().as_ref() == b"sst" => break,
+            Event::End(e) if e.local_name().as_ref() == "sst" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -873,8 +868,8 @@ pub(crate) fn parse_sheet(
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"sheetData" => in_data = true,
-                b"row" if in_data => {
+                "sheetData" => in_data = true,
+                "row" if in_data => {
                     cur_row = row_attr(&e).unwrap_or(next_row);
                     next_col = 0;
                     // The builder asks `cancel` per row that holds cells; this covers rows that
@@ -884,12 +879,12 @@ pub(crate) fn parse_sheet(
                         break;
                     }
                 }
-                b"c" if in_data => {
+                "c" if in_data => {
                     let a = cell_attrs(&e);
                     let (row, col) = match a.r.as_deref() {
-                        Some(raw) => match std::str::from_utf8(raw).ok().and_then(parse_a1) {
+                        Some(raw) => match parse_a1(raw) {
                             Some(pos) => pos,
-                            None if absurd_ref(raw) => (u32::MAX, 0),
+                            None if absurd_ref(raw.as_bytes()) => (u32::MAX, 0),
                             None => (cur_row, next_col),
                         },
                         None => (cur_row, next_col),
@@ -900,15 +895,18 @@ pub(crate) fn parse_sheet(
                     if cells_seen.is_multiple_of(1024) && cancel.is_some_and(Cancel::is_cancelled) {
                         break;
                     }
-                    let t = type_of(a.t.as_deref());
+                    let t = type_of(a.t.as_deref().map(str::as_bytes));
                     let kind =
                         a.s.as_deref()
                             .map(|s| {
-                                let id = parse_uint(s).unwrap_or(0);
+                                let id = parse_uint(s.as_bytes()).unwrap_or(0);
                                 tables.xf_kind.get(id).copied().unwrap_or(DateKind::Plain)
                             })
                             .unwrap_or(DateKind::Plain);
-                    let xf = a.s.as_deref().and_then(parse_uint).unwrap_or(0);
+                    let xf =
+                        a.s.as_deref()
+                            .and_then(|s| parse_uint(s.as_bytes()))
+                            .unwrap_or(0);
                     let fmt = tables.xf_to_format.get(xf).copied().unwrap_or(0);
                     let (pv, formula) = read_cell(
                         &mut rd,
@@ -948,16 +946,16 @@ pub(crate) fn parse_sheet(
                         break;
                     }
                 }
-                b"mergeCell" if merges.len() < MAX_MERGES => {
-                    if let Some(m) = attr(&e, b"ref", false).and_then(|v| parse_merge(&v)) {
+                "mergeCell" if merges.len() < MAX_MERGES => {
+                    if let Some(m) = attr(&e, "ref", false).and_then(|v| parse_merge(&v)) {
                         merges.push(m);
                     }
                 }
                 _ => {}
             },
             Event::End(e) => match e.local_name().as_ref() {
-                b"sheetData" => in_data = false,
-                b"row" if in_data => next_row = cur_row.saturating_add(1),
+                "sheetData" => in_data = false,
+                "row" if in_data => next_row = cur_row.saturating_add(1),
                 _ => {}
             },
             Event::Eof => break,
@@ -971,14 +969,14 @@ fn row_attr(e: &BytesStart<'_>) -> Option<u32> {
     e.attributes()
         .with_checks(false)
         .flatten()
-        .find(|a| a.key.as_ref() == b"r")
-        .and_then(|a| parse_row_ref(&a.value))
+        .find(|a| a.key.as_ref() == "r")
+        .and_then(|a| parse_row_ref(a.value.as_bytes()))
 }
 
 struct CellAttrs<'a> {
-    r: Option<std::borrow::Cow<'a, [u8]>>,
-    s: Option<std::borrow::Cow<'a, [u8]>>,
-    t: Option<std::borrow::Cow<'a, [u8]>>,
+    r: Option<std::borrow::Cow<'a, str>>,
+    s: Option<std::borrow::Cow<'a, str>>,
+    t: Option<std::borrow::Cow<'a, str>>,
 }
 
 fn cell_attrs<'a>(e: &'a BytesStart<'_>) -> CellAttrs<'a> {
@@ -989,9 +987,9 @@ fn cell_attrs<'a>(e: &'a BytesStart<'_>) -> CellAttrs<'a> {
     };
     for a in e.attributes().with_checks(false).flatten() {
         match a.key.as_ref() {
-            b"r" => out.r = Some(a.value),
-            b"s" => out.s = Some(a.value),
-            b"t" => out.t = Some(a.value),
+            "r" => out.r = Some(a.value),
+            "s" => out.s = Some(a.value),
+            "t" => out.t = Some(a.value),
             _ => {}
         }
     }
@@ -1033,12 +1031,12 @@ fn read_cell<R: BufRead>(
         sc.ev.clear();
         match rd.read_event_into(&mut sc.ev).map_err(xml_err)? {
             Event::Start(e) if skip => {
-                had |= matches!(e.local_name().as_ref(), b"f" | b"v" | b"is");
+                had |= matches!(e.local_name().as_ref(), "f" | "v" | "is");
                 rd.read_to_end_into(e.name(), &mut sc.ev2)
                     .map_err(xml_err)?;
             }
             Event::Start(e) => match e.local_name().as_ref() {
-                b"f" => {
+                "f" => {
                     let (shared, si, has_ref) = formula_attrs(&e);
                     sc.f.clear();
                     read_text_into(rd, e.name().as_ref(), &mut sc.ev2, &mut sc.f, cap)?;
@@ -1059,7 +1057,7 @@ fn read_cell<R: BufRead>(
                         }
                     }
                 }
-                b"is" => {
+                "is" => {
                     sc.inline.clear();
                     read_rich(
                         rd,
@@ -1071,7 +1069,7 @@ fn read_cell<R: BufRead>(
                     )?;
                     pv = Pv::Inline;
                 }
-                b"v" => {
+                "v" => {
                     pv = read_v(
                         rd,
                         e.name().as_ref(),
@@ -1087,7 +1085,7 @@ fn read_cell<R: BufRead>(
                         .map_err(xml_err)?;
                 }
             },
-            Event::End(e) if e.local_name().as_ref() == b"c" => break,
+            Event::End(e) if e.local_name().as_ref() == "c" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1105,9 +1103,9 @@ fn formula_attrs(e: &BytesStart<'_>) -> (bool, Option<u32>, bool) {
     let mut has_ref = false;
     for a in e.attributes().with_checks(false).flatten() {
         match a.key.as_ref() {
-            b"t" => shared = a.value.as_ref() == b"shared",
-            b"si" => si = parse_uint(&a.value).and_then(|n| u32::try_from(n).ok()),
-            b"ref" => has_ref = !a.value.is_empty(),
+            "t" => shared = a.value.as_ref() == "shared",
+            "si" => si = parse_uint(a.value.as_bytes()).and_then(|n| u32::try_from(n).ok()),
+            "ref" => has_ref = !a.value.is_empty(),
             _ => {}
         }
     }
@@ -1120,7 +1118,7 @@ fn formula_attrs(e: &BytesStart<'_>) -> (bool, Option<u32>, bool) {
 /// inline string is redundant and ignored (it also replaces a value read before it).
 fn read_v<R: BufRead>(
     rd: &mut XmlReader<R>,
-    closing: &[u8],
+    closing: &str,
     bufs: (&mut Vec<u8>, &mut Vec<u8>),
     text: &mut String,
     (t, kind): (T, DateKind),
@@ -1137,12 +1135,18 @@ fn read_v<R: BufRead>(
         T::Str | T::Iso => {
             text.clear();
             read_text_into(rd, closing, ev, text, cap)?;
+            if t == T::Str && text.contains("_x") {
+                // A formula's text result is stored with Excel's `_xHHHH_` escapes (`CHAR(13)`
+                // is `_x000D_`), exactly like a shared string.
+                let raw = std::mem::take(text);
+                push_unescaped(&raw, text);
+            }
             Ok(if t == T::Iso { Pv::Iso } else { Pv::Str })
         }
         T::Number | T::Shared | T::Bool | T::Error => {
             ev.clear();
             let pv = match rd.read_event_into(ev).map_err(xml_err)? {
-                Event::Text(raw) => plain_value(&raw, t, kind, tables, text),
+                Event::Text(raw) => plain_value(raw.as_bytes(), t, kind, tables, text),
                 Event::End(e) if e.name().as_ref() == closing => return Ok(Pv::Empty),
                 Event::Eof => return Ok(Pv::Empty),
                 _ => Pv::Empty,

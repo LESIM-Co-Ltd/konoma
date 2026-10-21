@@ -1,6 +1,6 @@
 [package]
 name = "konoma"
-version = "0.31.1"
+version = "0.31.2"
 edition = "2021"
 # 依存 mermaid-text 0.57 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
 rust-version = "1.92"
@@ -94,12 +94,12 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 globset = "0.4"
 infer = "0.22"
 csv = "1"
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 tar = { version = "0.4.45", default-features = false }
-calamine = { version = "0.36", default-features = false }
+calamine = { version = "0.37", default-features = false }
 encoding_rs = "0.8"
 cfb = "0.15"
-quick-xml = "0.41"
+quick-xml = "0.42"
 git2 = "0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
 anyhow = "1"
@@ -115,7 +115,7 @@ nucleo-matcher = "0.3"
 ignore = "0.4.33"
 log = "0.4"
 libc = "0.2"
-signal-hook = "0.3"
+signal-hook = "0.4"
 serde_json = "1"
 
 [dependencies]

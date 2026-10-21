@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (387)
+- MIT License (390)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -1406,7 +1406,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 ## Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.9
+- webpki-roots 1.0.10
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -1563,7 +1563,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- rustls-webpki 0.103.15
+- rustls-webpki 0.103.16
 
 ```
 Except as otherwise noted, this project is licensed under the following
@@ -2449,7 +2449,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- rustls 0.23.45
+- rustls 0.23.46
 
 ```
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
@@ -2864,6 +2864,7 @@ Used by:
 - signal-hook-mio 0.2.5
 - signal-hook-registry 1.4.8
 - signal-hook 0.3.18
+- signal-hook 0.4.5
 
 ```
 Copyright (c) 2017 tokio-jsonrpc developers
@@ -4330,7 +4331,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## MIT License
 
 Used by:
-- libc 0.2.189
+- libc 0.2.191
 
 ```
 Copyright (c) The Rust Project Developers
@@ -5933,7 +5934,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.31.1
+- konoma 0.31.2
 - konoma-base 0.1.0
 - konoma-code 0.1.0
 - konoma-code-core 0.1.0
@@ -5999,7 +6000,7 @@ Used by:
 - quantette 0.6.0
 - ratex-font-loader 0.1.14
 - ratex-font 0.1.14
-- ratex-katex-fonts 0.1.14
+- ratex-katex-fonts 0.1.15
 - ratex-layout 0.1.14
 - ratex-lexer 0.1.14
 - ratex-parser 0.1.14
@@ -6036,7 +6037,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- tokio 1.53.2
+- tokio 1.53.3
 
 ```
 MIT License
@@ -6665,7 +6666,7 @@ THE SOFTWARE.
 ## MIT License
 
 Used by:
-- zip 8.6.0
+- zip 9.0.5
 
 ```
 The MIT License (MIT)
@@ -6805,6 +6806,36 @@ Used by:
 The MIT License (MIT)
 
 Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+- nix 0.31.3
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl Lerche + nix-rust Authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -7106,7 +7137,8 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- calamine 0.36.1
+- calamine 0.37.0
+- quick-xml 0.42.0
 
 ```
 The MIT License (MIT)

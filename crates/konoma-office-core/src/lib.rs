@@ -23,8 +23,10 @@ mod docx_symbols;
 mod docx_xml;
 pub mod fmt_ods;
 pub mod fmt_xls;
+mod fmt_xls_formula;
 pub mod fmt_xlsb;
 pub mod fmt_xlsx;
+mod lossy_utf8;
 // (`pub` and hidden only for the host's tests; feature `test-hooks`)
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -231,3 +233,5 @@ mod tests_xls;
 mod tests_xlsb;
 #[cfg(test)]
 mod tests_xlsx;
+#[cfg(test)]
+mod tests_xml_bytes;
