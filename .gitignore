@@ -66,3 +66,7 @@ Icon?
 
 # ローカルに落ちた作業スクリーンショット(公開アセットは assets/ に置く)
 /スクリーンショット*.png
+
+# Handoff notes written by the global /handoff command (local only)
+/docs/handoff/
+/docs/notes/
