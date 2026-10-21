@@ -250,7 +250,7 @@ cfb = "0.15"
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
 # billion-laughs path. Same 0.41 line as plist. calamine 0.37 pulls 0.42, so two copies are in the graph;
 # moving konoma to 0.42 needs the chart_xml reader ported to the new API.
-quick-xml = "0.41"
+quick-xml = "0.42"
 
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { version = "0.21", optional = true }
