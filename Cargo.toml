@@ -248,9 +248,10 @@ encoding_rs = "0.8"
 cfb = "0.15"
 # XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
-# billion-laughs path. Same 0.41 line as plist. calamine 0.37 pulls 0.42, so two copies are in the graph;
-# moving konoma to 0.42 needs the chart_xml reader ported to the new API.
-quick-xml = "0.41"
+# billion-laughs path. calamine 0.37 pulls the same 0.42; plist (via syntect) still pulls 0.41, so two copies are in the graph.
+# Every Office reader sits behind `LossyUtf8` (src/preview/office/lossy_utf8.rs): 0.42 rejects invalid UTF-8 that 0.41 let
+# through. The `encoding` feature is on through calamine but unused here (only `DecodingReader` transcodes).
+quick-xml = "0.42"
 
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { version = "0.21", optional = true }

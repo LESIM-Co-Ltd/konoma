@@ -107,7 +107,7 @@ impl Theme {
                 Ok(Event::Eof) | Err(_) => break,
                 _ => continue,
             };
-            let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+            let name = e.local_name().as_ref().to_owned();
             let want = match name.as_str() {
                 "clrScheme" => !got_clr,
                 "fontScheme" => !got_font,

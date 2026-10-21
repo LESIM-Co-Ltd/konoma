@@ -124,7 +124,7 @@ fn attrs_of(e: &BytesStart<'_>) -> Vec<(String, String)> {
         if attrs.len() >= 24 {
             break;
         }
-        let key = String::from_utf8_lossy(a.key.as_ref()).into_owned();
+        let key = a.key.as_ref().to_string();
         if key == "xmlns" || key.starts_with("xmlns:") {
             continue;
         }
@@ -133,7 +133,7 @@ fn attrs_of(e: &BytesStart<'_>) -> Vec<(String, String)> {
         } else {
             match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
-                Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+                Err(_) => a.value.to_string(),
             }
         };
         let mut val = val;
@@ -150,7 +150,7 @@ fn attrs_of(e: &BytesStart<'_>) -> Vec<(String, String)> {
 }
 
 fn node_of(e: &BytesStart<'_>) -> Node {
-    let full = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+    let full = e.name().as_ref().to_string();
     let (prefix, name) = match full.split_once(':') {
         Some((p, n)) => (p.to_string(), n.to_string()),
         None => (String::new(), full),
@@ -218,7 +218,7 @@ fn build_tree(xml: &[u8]) -> Result<(Node, bool), OfficeError> {
                     break;
                 }
                 if !stack.is_empty() && lim.skip(&n) {
-                    skip_element(&mut rd, e.name().as_ref())?;
+                    skip_element(&mut rd, e.name())?;
                     continue;
                 }
                 if lim.nodes == 0 {
@@ -263,10 +263,7 @@ fn build_tree(xml: &[u8]) -> Result<(Node, bool), OfficeError> {
             Event::Text(t) => {
                 if let Some(top) = stack.last_mut() {
                     if keeps_text(&top.name) {
-                        let s = match t.xml10_content() {
-                            Ok(s) => s.into_owned(),
-                            Err(_) => String::from_utf8_lossy(&t).into_owned(),
-                        };
+                        let s = t.xml10_content().into_owned();
                         push_text(top, &s, &mut lim);
                     }
                 }
@@ -274,7 +271,7 @@ fn build_tree(xml: &[u8]) -> Result<(Node, bool), OfficeError> {
             Event::CData(t) => {
                 if let Some(top) = stack.last_mut() {
                     if keeps_text(&top.name) {
-                        let s = String::from_utf8_lossy(&t).into_owned();
+                        let s = t.to_string();
                         push_text(top, &s, &mut lim);
                     }
                 }
@@ -283,12 +280,11 @@ fn build_tree(xml: &[u8]) -> Result<(Node, bool), OfficeError> {
                 if let Some(top) = stack.last_mut() {
                     if keeps_text(&top.name) {
                         let mut s = String::new();
-                        if let Ok(name) = r.decode() {
-                            if let Some(x) = quick_xml::escape::resolve_xml_entity(&name) {
-                                s.push_str(x);
-                            } else if let Ok(Some(c)) = r.resolve_char_ref() {
-                                s.push(c);
-                            }
+                        let name: &str = &r;
+                        if let Some(x) = quick_xml::escape::resolve_xml_entity(name) {
+                            s.push_str(x);
+                        } else if let Ok(Some(c)) = r.resolve_char_ref() {
+                            s.push(c);
                         }
                         push_text(top, &s, &mut lim);
                     }
@@ -321,10 +317,12 @@ fn push_text(top: &mut Node, s: &str, lim: &mut Limits) {
 }
 
 /// Reads to the end of the element whose start tag was just read.
-fn skip_element<R: BufRead>(rd: &mut XmlReader<R>, name: &[u8]) -> Result<(), OfficeError> {
+fn skip_element<R: BufRead>(
+    rd: &mut XmlReader<R>,
+    name: quick_xml::name::QName<'_>,
+) -> Result<(), OfficeError> {
     let mut buf = Vec::new();
-    rd.read_to_end_into(quick_xml::name::QName(name), &mut buf)
-        .map_err(xml_err)
+    rd.read_to_end_into(name, &mut buf).map_err(xml_err)
 }
 
 // ---------------------------------------------------------------------------------------------

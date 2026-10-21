@@ -412,13 +412,13 @@ impl OdStyles {
                 continue;
             }
             match e.local_name().as_ref() {
-                b"styles" | b"automatic-styles" => {
+                "styles" | "automatic-styles" => {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
                     if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
                         self.add(&node);
                     }
                 }
-                b"font-face-decls" if self.draw.is_some() => {
+                "font-face-decls" if self.draw.is_some() => {
                     let mut budget = Budget::odf(100_000, 4 * 1024 * 1024);
                     if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
                         if let Some(d) = &mut self.draw {
@@ -769,7 +769,7 @@ impl<'a> Od<'a> {
                 Event::Eof => return Ok(false),
                 _ => continue,
             };
-            let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+            let name = e.local_name().as_ref().to_owned();
             if !root {
                 root = true;
                 if name != "document-content" {
@@ -844,9 +844,9 @@ impl<'a> Od<'a> {
                 self.c.truncated = true;
                 return Ok(());
             }
-            let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+            let name = e.local_name().as_ref().to_owned();
             let hidden_section =
-                name == "section" && attr(&e, b"display", true).is_some_and(|v| v.trim() == "none");
+                name == "section" && attr(&e, "display", true).is_some_and(|v| v.trim() == "none");
             if !empty && BLOCK_CONTAINERS.contains(&name.as_str()) && !hidden_section {
                 entered += 1;
                 continue;

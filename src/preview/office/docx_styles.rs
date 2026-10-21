@@ -156,7 +156,7 @@ impl Styles {
                 Event::Eof => break,
                 _ => continue,
             };
-            if e.local_name().as_ref() == b"docDefaults" {
+            if e.local_name().as_ref() == "docDefaults" {
                 let mut budget = Budget::new(2_000, 16 * 1024);
                 if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
                     if let Some(rpr) = node.child("rPrDefault").and_then(|d| d.child("rPr")) {
@@ -165,7 +165,7 @@ impl Styles {
                 }
                 continue;
             }
-            if e.local_name().as_ref() != b"style" {
+            if e.local_name().as_ref() != "style" {
                 continue;
             }
             let mut budget = Budget::new(20_000, 64 * 1024);
@@ -468,8 +468,8 @@ impl Numbering {
                 Event::Eof => break,
                 _ => continue,
             };
-            let local = e.local_name().as_ref().to_vec();
-            if local != b"abstractNum" && local != b"num" {
+            let local = e.local_name().as_ref().to_owned();
+            if local != "abstractNum" && local != "num" {
                 continue;
             }
             let mut budget = Budget::new(20_000, 64 * 1024);
