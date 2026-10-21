@@ -7,6 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Security
+- Updated `rustls-webpki` to 0.103.16 (RUSTSEC-2026-0382: certificate verification could accept distrusted intermediates) and `webpki-roots` to 1.0.10 (RUSTSEC-2026-0381: the bundled roots trusted distrusted emSign intermediates). Both are used when konoma fetches remote Markdown images over HTTPS.
 - Updated `rustls` to 0.23.46 (the TLS library used to fetch remote Markdown images over HTTPS; RUSTSEC-2026-0346 to 0349) and `zip` to 9 (RUSTSEC-2026-0367 to 0369; `calamine` moved to 0.37 because it pulls `zip`). konoma only reads archives and never extracts them, so the zip extraction advisories did not affect it. `zip` 9 decodes entry names as UTF-8 first, even without the UTF-8 flag (zip 8 used CP437), so the archive listing shows such names correctly instead of as mojibake. `calamine` 0.37 also reads the East Asian built-in date formats (27 to 36 and 50 to 58, the Japanese era formats among them) of `.xls` and `.xlsb` as dates: the grid looks the same, the cell detail now says date/time like it does for `.xlsx`. `zip` 9 also enforces an entry's declared size while reading, so a crafted package whose entries inflate past what they declare is now shown as a damaged file (`zip entry: File is larger than its declared uncompressed size`) instead of "too large"; konoma's own byte count stays as a second line of defence.
 
 ### Fixed
