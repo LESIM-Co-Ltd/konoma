@@ -8,6 +8,8 @@
 
 # ── Rust ビルド成果物 ──
 /target/
+# 重いキャッシュの置き場（作業ごとの CARGO_TARGET_DIR・コーパス・レンダ出力。`.cache/<branch>/<用途>/`）
+/.cache/
 # vendor したフォーク crate のビルド成果物 (数百MB)。source は追跡・target だけ無視。
 vendor/**/target/
 # rustfmt のバックアップ / デバッグシンボル
