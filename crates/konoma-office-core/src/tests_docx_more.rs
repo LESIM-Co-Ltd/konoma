@@ -1077,6 +1077,46 @@ fn the_main_part_is_the_one_the_package_relationships_name() {
     assert_eq!(load_bytes("a.docx", &bytes).unwrap().markdown, "renamed");
 }
 
+/// Replaces every occurrence of `from` in a zip (the name is in the local header and in the
+/// central directory) by `to`, which has the same length.
+fn patch_zip_name(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {
+    assert_eq!(from.len(), to.len());
+    let mut n = 0;
+    let mut i = 0;
+    while i + from.len() <= bytes.len() {
+        if &bytes[i..i + from.len()] == from {
+            bytes[i..i + from.len()].copy_from_slice(to);
+            n += 1;
+            i += from.len();
+        } else {
+            i += 1;
+        }
+    }
+    assert_eq!(n, 2, "the name is in both directories");
+    bytes
+}
+
+#[test]
+fn a_part_whose_name_is_not_utf8_is_found_again_by_its_index() {
+    // A zip from a tool that stores names in CP437 without the UTF-8 flag: the main part is
+    // `word/docum\x82nt.xml` on disk, `word/documént.xml` once decoded, and the package
+    // relationships (UTF-8 XML) say so. `ZipArchive::by_name` looks raw bytes up, so the decoded
+    // name finds nothing; the entry has to be read by its index.
+    let doc = Dx::new(&p("legacy name")).document_xml();
+    let root = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL_BASE}/officeDocument" Target="/word/documént.xml"/></Relationships>"#
+    );
+    let bytes = super::tests::deflated(&[
+        ("_rels/.rels", root.as_bytes()),
+        ("word/documAnt.xml", doc.as_bytes()),
+    ]);
+    let bytes = patch_zip_name(bytes, b"word/documAnt.xml", b"word/docum\x82nt.xml");
+    assert_eq!(
+        load_bytes("a.docx", &bytes).unwrap().markdown,
+        "legacy name"
+    );
+}
+
 #[test]
 fn part_names_are_matched_without_regard_to_case_and_the_usual_name_is_the_fallback() {
     let doc = Dx::new(&p("fallback")).document_xml();

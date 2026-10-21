@@ -6,18 +6,21 @@
 //! reader and the format passes, `fmt_*.rs`) read them only through [`part_reader`], so one place
 //! decides what is "too large".
 //!
-//! **Why declared zip sizes are not trusted.** `zip` 8.6 does *not* stop a deflate stream at the
-//! `uncompressed_size` written in the central directory: `Decompressor::Deflated` is a bare
-//! `flate2::bufread::DeflateDecoder` and the `Crc32Reader` around it only compares a checksum at
-//! EOF. A forged zip that declares 100 bytes and inflates to gigabytes therefore decompresses in
-//! full (the test `zip_does_not_stop_at_declared_size` below pins this against the real crate).
-//! So [`scan_zip`] decompresses every entry once through `Read::take(limit + 1)` and counts the
-//! bytes that actually come out. The cost is one extra inflate pass over the package (a worker
-//! thread, ~1 s per GiB); in exchange the readers only ever see packages whose real expanded size
-//! is bounded.
+//! **Declared zip sizes.** `zip` 9 enforces the `uncompressed_size` written in the central
+//! directory while reading an entry: the `Crc32Reader` around the decompressor fails with "File is
+//! larger than its declared uncompressed size" as soon as more bytes come out (the test
+//! `zip_stops_at_the_declared_size` pins this against the real crate; zip 8.6 inflated such a
+//! stream in full). A forged size therefore cannot hide a bomb: an entry that *declares* more than
+//! the part limit is refused up front, and one that declares less but inflates past it is
+//! `Corrupt`. [`scan_zip`] still inflates every entry once through [`count_real_bytes`] and counts
+//! the bytes that actually come out, as a backstop that does not depend on the zip crate keeping
+//! that behaviour (with zip 9 the count can only equal the declared size, so it is unreachable
+//! from a file and is covered by a unit test on the counting function). The cost is one extra
+//! inflate pass over the package (a worker thread, ~1 s per GiB); in exchange the readers only
+//! ever see packages whose real expanded size is bounded.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use zip::result::ZipError;
@@ -72,6 +75,8 @@ pub struct Limits {
     /// of `String`s (24 bytes): about 100 bytes per cell at the peak. A sheet with values only at
     /// A1 and XFD1048576 would ask for ~550 GB, and an OOM abort is not a catchable panic, so the
     /// box is checked first. 8M cells is ~800 MB at the peak; xlsx/xlsb do not use this limit.
+    /// For xls the `Workbook` stream (up to `max_part_bytes`) is held on top of that: see
+    /// `fmt_xls::read_scanned` for the real peak.
     pub max_dense_cells: u64,
     /// Bytes of text held *once the file is open*, which is read whole: for xlsx / xlsb the
     /// shared-string table (each string plus a fixed per-string overhead; a table over this is
@@ -81,6 +86,17 @@ pub struct Limits {
     /// 256 MiB is about 1 GB of resident memory once copied, well above any real workbook (a
     /// 4M-cell sheet of 30-byte strings is 120 MB).
     pub max_text_bytes: u64,
+    /// xls only: formula text `calamine` is allowed to build over the whole workbook. It prints
+    /// every formula into a `String` while it opens the file and a record of a few KB can print
+    /// a megabyte (`fmt_xls_formula`); a formula past this, or past a per-formula cap, is
+    /// replaced by an empty one in the stream `calamine` reads (the cell keeps its value, its
+    /// detail lacks the formula). Real workbooks are far under it: a formula is ~30 bytes.
+    pub max_formula_text_bytes: u64,
+    /// xls only: bytes `calamine` may copy or move while it prints the formulas (a few
+    /// operators copy the text built so far; one record can ask for 10^11 moves), counted by
+    /// `fmt_xls_formula` before it starts. Over it, formulas are dropped as above. About a second
+    /// of memory moves; 8M plain formulas use half of it.
+    pub max_formula_work: u64,
 }
 
 /// The default of [`Limits::max_rows`]: the number of rows the table preview shows at most (the
@@ -101,6 +117,8 @@ impl Default for Limits {
             max_sheet_text_bytes: 128 * MIB,
             max_dense_cells: 8_000_000,
             max_text_bytes: 256 * MIB,
+            max_formula_text_bytes: 128 * MIB,
+            max_formula_work: 1 << 33,
         }
     }
 }
@@ -252,7 +270,7 @@ pub(crate) fn inspect_word_package(
 }
 
 fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {
-    let cf = cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
+    let cf = open_cfb(path)?;
     // Password-protected OOXML (any of xlsx/docx/pptx) is wrapped in a CFB with these streams.
     if cf.exists("/EncryptedPackage") || cf.exists("/EncryptionInfo") {
         return Err(OfficeError::Encrypted);
@@ -263,6 +281,131 @@ fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {
         // doc / ppt / msg / ... — a CFB, but not a spreadsheet.
         Err(OfficeError::Unsupported)
     }
+}
+
+/// Opens a compound file. **The only way konoma opens one**: the `cfb` crate reads 128 FAT entries
+/// for every FAT sector id the DIFAT lists *before* it checks them, and does not reject repeated
+/// ids, so a crafted file whose sectors are all DIFAT entries naming the same sector would make
+/// its FAT ~127 times the size of the file (an out-of-memory abort, not a catchable panic). The
+/// DIFAT is therefore walked first, with work bounded by the file's length ([`check_cfb_fat`]).
+/// The file is read through a buffer because the crate reads it 4 bytes at a time.
+pub fn open_cfb(path: &Path) -> Result<cfb::CompoundFile<BufReader<File>>, OfficeError> {
+    let mut f = File::open(path).map_err(io_err)?;
+    let len = f.metadata().map_err(io_err)?.len();
+    check_cfb_fat(&mut f, len)?;
+    f.seek(SeekFrom::Start(0)).map_err(io_err)?;
+    cfb::CompoundFile::open(BufReader::new(f))
+        .map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))
+}
+
+/// The list of FAT sector ids `cfb` 0.15 (permissive) will read the FAT from (and the sector
+/// count), worked out the way its `open_internal` does, in the same order and with the same
+/// quirks:
+///
+/// 1. the header's 109 slots (everything after the first FREE one is FREE: `cfb` stops reading
+///    there), then **every** slot (FREE ones too) of each sector of the DIFAT chain;
+/// 2. while the list is longer than 109 *and* longer than the header's `num_fat_sectors` *and*
+///    ends in a 0, the last entry is dropped (writers that pad with 0 instead of FREE, `cfb`
+///    issue 41; the header field is not validated, so a forged one stops this);
+/// 3. then, and only then, trailing FREE entries are dropped.
+///
+/// The result is what `cfb` will turn into FAT, 128 entries per id, before it looks at any of
+/// them. The chain is walked once per sector (a repeated or out-of-file one is refused), so the
+/// work and the list are bounded by the length of the file.
+pub(crate) fn cfb_fat_sector_list<R: Read + Seek>(
+    r: &mut R,
+    len: u64,
+) -> Result<(Vec<u32>, u64), OfficeError> {
+    const FREE: u32 = 0xFFFF_FFFF;
+    const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
+    const MAX_REGULAR: u32 = 0xFFFF_FFFA;
+    const HEADER_FAT_IDS: usize = 109;
+    let bad = |what: &str| OfficeError::Corrupt(format!("compound file: {what}"));
+    let mut head = [0u8; 512];
+    r.seek(SeekFrom::Start(0)).map_err(io_err)?;
+    r.read_exact(&mut head)
+        .map_err(|_| bad("truncated header"))?;
+    let le32 = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let shift = u16::from_le_bytes([head[30], head[31]]);
+    if shift != 9 && shift != 12 {
+        return Err(bad("unsupported sector size"));
+    }
+    let ss = 1u64 << shift;
+    let per_sector = (ss / 4) as usize;
+    // Sectors after the header (a partial last one counts, as it does for `cfb`).
+    let num_sectors = len.saturating_sub(ss).div_ceil(ss);
+    let num_fat_sectors = le32(&head, 44) as usize;
+
+    let mut list: Vec<u32> = Vec::with_capacity(HEADER_FAT_IDS);
+    let mut free_from_here = false;
+    for i in 0..HEADER_FAT_IDS {
+        let id = if free_from_here {
+            FREE
+        } else {
+            le32(&head, 76 + 4 * i)
+        };
+        if id == FREE {
+            free_from_here = true;
+        } else if id > MAX_REGULAR {
+            return Err(bad("FAT sector id out of range"));
+        }
+        list.push(id);
+    }
+    let mut seen_difat: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut next = le32(&head, 68);
+    // `cfb` takes FREE here for the end of the chain too.
+    let mut buf = vec![0u8; ss as usize];
+    while next != FREE && next != END_OF_CHAIN {
+        if next > MAX_REGULAR || u64::from(next) >= num_sectors {
+            return Err(bad("DIFAT sector past the end of the file"));
+        }
+        if !seen_difat.insert(next) {
+            return Err(bad("DIFAT chain loops"));
+        }
+        r.seek(SeekFrom::Start((u64::from(next) + 1) * ss))
+            .map_err(io_err)?;
+        r.read_exact(&mut buf)
+            .map_err(|_| bad("truncated DIFAT sector"))?;
+        for i in 0..per_sector - 1 {
+            let id = le32(&buf, 4 * i);
+            if id != FREE && id > MAX_REGULAR {
+                return Err(bad("FAT sector id out of range"));
+            }
+            list.push(id);
+        }
+        next = le32(&buf, ss as usize - 4);
+    }
+    while list.len() > HEADER_FAT_IDS && list.len() > num_fat_sectors && list.last() == Some(&0) {
+        list.pop();
+    }
+    while list.last() == Some(&FREE) {
+        list.pop();
+    }
+    Ok((list, num_sectors))
+}
+
+/// Refuses a compound file whose list of FAT sector ids ([`cfb_fat_sector_list`]) would make
+/// `cfb`'s FAT out of proportion to the file: an id (0 included) listed twice, or an id (FREE
+/// included) at or past the end of the file, which `cfb` refuses itself, but only after it has
+/// read the FAT sectors before it. Distinct ids below the sector count are at most as many as the
+/// file has sectors, so the FAT (128 entries per id) is then no larger than the file. A DIFAT
+/// chain that loops or leaves the file is refused on the way. `cfb` is only called on what passes.
+pub fn check_cfb_fat<R: Read + Seek>(r: &mut R, len: u64) -> Result<(), OfficeError> {
+    let bad = |what: &str| OfficeError::Corrupt(format!("compound file: {what}"));
+    let (list, num_sectors) = cfb_fat_sector_list(r, len)?;
+    // One bit per sector: an id is below the sector count, which is bounded by the file's length.
+    let mut seen = vec![0u64; (num_sectors as usize).div_ceil(64)];
+    for id in list {
+        if u64::from(id) >= num_sectors {
+            return Err(bad("FAT sector id past the end of the file"));
+        }
+        let (w, b) = (id as usize / 64, id % 64);
+        if seen[w] >> b & 1 == 1 {
+            return Err(bad("FAT sector listed twice"));
+        }
+        seen[w] |= 1 << b;
+    }
+    Ok(())
 }
 
 /// Opens the zip for the format passes.
@@ -286,6 +429,32 @@ pub fn part_reader<'a>(
     }
 }
 
+/// Like [`part_reader`], for the entry at `index`. A name that is not UTF-8 (Shift_JIS written
+/// without the UTF-8 flag) reaches the callers decoded as CP437, and `ZipArchive::by_name` looks
+/// the raw bytes up, so such an entry can only be found again by its index.
+pub fn part_reader_at<'a>(
+    zip: &'a mut ZipArchive<BufReader<File>>,
+    index: usize,
+    limit: u64,
+) -> Result<Option<impl Read + 'a>, OfficeError> {
+    match zip.by_index(index) {
+        Ok(f) => Ok(Some(f.take(limit))),
+        Err(ZipError::FileNotFound) => Ok(None),
+        Err(e) => Err(zip_err(e)),
+    }
+}
+
+/// Entry indexes by lower-cased, `/`-separated name (found without regard to case or `\\`
+/// separators): the names are decoded, the indexes are what [`part_reader_at`] reads by.
+pub fn entry_index(zip: &ZipArchive<BufReader<File>>) -> std::collections::HashMap<String, usize> {
+    (0..zip.len())
+        .filter_map(|i| {
+            let n = zip.name_for_index(i)?.ok()?;
+            Some((n.replace('\\', "/").to_ascii_lowercase(), i))
+        })
+        .collect()
+}
+
 /// Checks every entry against the limits by *actually inflating it* and returns the entry names.
 fn scan_zip(path: &Path, limits: &Limits) -> Result<Vec<String>, OfficeError> {
     let mut zip = open_zip(path)?;
@@ -297,31 +466,42 @@ fn scan_zip(path: &Path, limits: &Limits) -> Result<Vec<String>, OfficeError> {
     for i in 0..zip.len() {
         {
             let raw = zip.by_index_raw(i).map_err(zip_err)?;
-            names.push(raw.name().to_string());
+            names.push(raw.name().map_or_else(
+                |_| String::from_utf8_lossy(raw.name_raw()).into_owned(),
+                |n| n.into_owned(),
+            ));
             if raw.is_dir() {
                 continue;
             }
             if raw.encrypted() {
                 return Err(OfficeError::Encrypted);
             }
-            // The declared size is only an early exit; the real count below is what is enforced.
+            // The declared size is an early exit (and what zip 9 itself enforces while reading);
+            // the real count below is a backstop that does not rely on that.
             if raw.size() > limits.max_part_bytes {
                 return Err(OfficeError::TooLarge { what: "entry" });
             }
         }
         let entry = zip.by_index(i).map_err(zip_err)?;
-        let mut limited = entry.take(limits.max_part_bytes + 1);
-        let n = io::copy(&mut limited, &mut io::sink())
-            .map_err(|e| OfficeError::Corrupt(format!("zip entry: {e}")))?;
-        if n > limits.max_part_bytes {
-            return Err(OfficeError::TooLarge { what: "entry" });
-        }
+        let n = count_real_bytes(entry, limits.max_part_bytes)?;
         total = total.saturating_add(n);
         if total > limits.max_total_bytes {
             return Err(OfficeError::TooLarge { what: "package" });
         }
     }
     Ok(names)
+}
+
+/// Inflates `entry` into a sink and returns how many bytes it really holds, refusing more than
+/// `max` (it never reads past `max + 1`). Errors from the decompressor are `Corrupt`.
+pub(crate) fn count_real_bytes(entry: impl Read, max: u64) -> Result<u64, OfficeError> {
+    let mut limited = entry.take(max.saturating_add(1));
+    let n = io::copy(&mut limited, &mut io::sink())
+        .map_err(|e| OfficeError::Corrupt(format!("zip entry: {e}")))?;
+    if n > max {
+        return Err(OfficeError::TooLarge { what: "entry" });
+    }
+    Ok(n)
 }
 
 pub(crate) fn zip_err(e: ZipError) -> OfficeError {

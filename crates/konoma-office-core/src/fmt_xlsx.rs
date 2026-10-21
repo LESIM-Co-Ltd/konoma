@@ -110,10 +110,46 @@ impl SheetFormats {
             None => (row, col, row, col),
             Some((r0, c0, r1, c1)) => (r0.min(row), c0.min(col), r1.max(row), c1.max(col)),
         });
-        if fmt != 0 && (col as usize) < limits.max_cols {
-            self.cells.push((row, col as u16, fmt));
+        // A column past `u16` is not a cell the format table can hold (never wrap it onto another).
+        if let Ok(col) = u16::try_from(col) {
+            if fmt != 0 && (col as usize) < limits.max_cols {
+                self.cells.push((row, col, fmt));
+            }
         }
         Ok(())
+    }
+
+    /// Makes "the last record at a cell wins" hold for the format too: [`Self::note_value`] keeps
+    /// only non-`General` formats, so a later `General` record for a cell that an earlier record
+    /// may have given a format is written down as `General` explicitly. Real producers write
+    /// records in row-major order, so `last` (the greatest position seen so far, one per sheet,
+    /// owned by the caller) says whether an earlier record at this position can exist at all: only
+    /// a record at or before it needs the explicit entry, and a normal sheet pays nothing. (An
+    /// explicit `General` for a cell with no earlier record is harmless.) Call it right after
+    /// `note_value`; not for a formula's `STRING` result, which belongs to the `FORMULA` before it
+    /// and keeps its format.
+    pub(crate) fn keep_last_format(
+        &mut self,
+        last: &mut Option<(u32, u16)>,
+        row: u32,
+        col: u32,
+        fmt: u16,
+        limits: &Limits,
+    ) {
+        // Past the last column the format table holds, or past `u16`: not a cell (no wrapping).
+        let Ok(col) = u16::try_from(col) else {
+            return;
+        };
+        if (col as usize) >= limits.max_cols {
+            return;
+        }
+        let key = (row, col);
+        if fmt == 0 && last.is_some_and(|l| key <= l) {
+            self.cells.push((row, col, 0));
+        }
+        if last.is_none_or(|l| key > l) {
+            *last = Some(key);
+        }
     }
 
     /// Charges `bytes` of text to the sheet's budget.
@@ -155,10 +191,16 @@ impl SheetFormats {
         let Ok(col) = u16::try_from(col) else {
             return 0;
         };
-        self.cells
-            .binary_search_by_key(&(row, col), |&(r, c, _)| (r, c))
-            .map(|i| self.cells[i].2)
-            .unwrap_or(0)
+        // `cells` is sorted by position with a *stable* sort, so duplicates of one position stay in
+        // record order; the last one wins, as it does in `calamine`'s matrix (a later `General`
+        // record is stored as an explicit 0 where an earlier one had a format).
+        let end = self
+            .cells
+            .partition_point(|&(r, c, _)| (r, c) <= (row, col));
+        match end.checked_sub(1).map(|i| self.cells[i]) {
+            Some((r, c, f)) if (r, c) == (row, col) => f,
+            _ => 0,
+        }
     }
 }
 
@@ -203,14 +245,12 @@ pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, String>, O
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
-                if attr(&e, b"TargetMode", false)
-                    .is_some_and(|m| m.eq_ignore_ascii_case("External"))
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
+                if attr(&e, "TargetMode", false).is_some_and(|m| m.eq_ignore_ascii_case("External"))
                 {
                     continue;
                 }
-                if let (Some(id), Some(target)) =
-                    (attr(&e, b"Id", false), attr(&e, b"Target", false))
+                if let (Some(id), Some(target)) = (attr(&e, "Id", false), attr(&e, "Target", false))
                 {
                     map.insert(id, resolve_target("xl", &target));
                 }
@@ -281,19 +321,19 @@ pub(crate) fn parse_styles(src: impl BufRead) -> Result<Styles, OfficeError> {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"cellXfs" => in_cell_xfs = true,
-                b"numFmts" => in_num_fmts = true,
-                b"xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e)),
-                b"numFmt" if in_num_fmts => note_num_fmt(&e, &mut custom),
+                "cellXfs" => in_cell_xfs = true,
+                "numFmts" => in_num_fmts = true,
+                "xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e)),
+                "numFmt" if in_num_fmts => note_num_fmt(&e, &mut custom),
                 _ => {}
             },
             Event::Empty(e) => match e.local_name().as_ref() {
-                b"xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e)),
-                b"numFmt" if in_num_fmts => note_num_fmt(&e, &mut custom),
+                "xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e)),
+                "numFmt" if in_num_fmts => note_num_fmt(&e, &mut custom),
                 _ => {}
             },
-            Event::End(e) if e.local_name().as_ref() == b"cellXfs" => in_cell_xfs = false,
-            Event::End(e) if e.local_name().as_ref() == b"numFmts" => in_num_fmts = false,
+            Event::End(e) if e.local_name().as_ref() == "cellXfs" => in_cell_xfs = false,
+            Event::End(e) if e.local_name().as_ref() == "numFmts" => in_num_fmts = false,
             Event::Eof => break,
             _ => {}
         }
@@ -332,14 +372,14 @@ pub(crate) fn styles_from(xf_ids: &[u32], custom: &HashMap<u32, String>) -> Styl
 }
 
 fn xf_num_fmt_id(e: &BytesStart<'_>) -> u32 {
-    attr(e, b"numFmtId", false)
+    attr(e, "numFmtId", false)
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(0)
 }
 
 fn note_num_fmt(e: &BytesStart<'_>, custom: &mut HashMap<u32, String>) {
-    let id = attr(e, b"numFmtId", false).and_then(|v| v.trim().parse::<u32>().ok());
-    let code = attr_bounded(e, b"formatCode", MAX_RAW_FORMAT_CODE);
+    let id = attr(e, "numFmtId", false).and_then(|v| v.trim().parse::<u32>().ok());
+    let code = attr_bounded(e, "formatCode", MAX_RAW_FORMAT_CODE);
     if let (Some(id), Some(code)) = (id, code) {
         if keep_format_code(&code) {
             custom.insert(id, code);
@@ -404,13 +444,13 @@ pub(crate) fn parse_a1(s: &str) -> Option<(u32, u32)> {
 /// The value of the attribute whose *local* name is `local` (`prefixed`: it must carry a
 /// namespace prefix, e.g. `r:id`; otherwise it must not). Entity references that do not resolve
 /// (an undefined `&x;`) fall back to the raw text — never expanded.
-pub(crate) fn attr(e: &BytesStart<'_>, local: &[u8], prefixed: bool) -> Option<String> {
+pub(crate) fn attr(e: &BytesStart<'_>, local: &str, prefixed: bool) -> Option<String> {
     for a in e.attributes().with_checks(false).flatten() {
         let key = a.key;
         if key.local_name().as_ref() == local && key.prefix().is_some() == prefixed {
             return Some(match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
-                Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+                Err(_) => a.value.to_string(),
             });
         }
     }
@@ -419,7 +459,7 @@ pub(crate) fn attr(e: &BytesStart<'_>, local: &[u8], prefixed: bool) -> Option<S
 
 /// [`attr`] for an unprefixed attribute, but `None` (without decoding or copying it) when the
 /// raw value is longer than `max_raw` bytes.
-pub(crate) fn attr_bounded(e: &BytesStart<'_>, local: &[u8], max_raw: usize) -> Option<String> {
+pub(crate) fn attr_bounded(e: &BytesStart<'_>, local: &str, max_raw: usize) -> Option<String> {
     for a in e.attributes().with_checks(false).flatten() {
         let key = a.key;
         if key.local_name().as_ref() == local && key.prefix().is_none() {
@@ -428,7 +468,7 @@ pub(crate) fn attr_bounded(e: &BytesStart<'_>, local: &[u8], max_raw: usize) -> 
             }
             return Some(match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
-                Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+                Err(_) => a.value.to_string(),
             });
         }
     }
@@ -477,14 +517,14 @@ impl std::error::Error for TooDeep {}
 /// including those inside [`XmlReader::read_to_end_into`] (which `quick_xml` runs through the same
 /// open-element stack).
 pub(crate) struct XmlReader<R> {
-    rd: Reader<R>,
+    rd: Reader<super::lossy_utf8::LossyUtf8<R>>,
     depth: usize,
 }
 
 impl<R: BufRead> XmlReader<R> {
     pub(crate) fn new(src: R) -> XmlReader<R> {
         XmlReader {
-            rd: Reader::from_reader(src),
+            rd: Reader::from_reader(super::lossy_utf8::LossyUtf8::new(src)),
             depth: 0,
         }
     }
@@ -539,7 +579,7 @@ impl<R: BufRead> XmlReader<R> {
                 }
                 Event::Eof => {
                     return Err(quick_xml::errors::IllFormedError::MissingEndTag(
-                        String::from_utf8_lossy(end.as_ref()).into_owned(),
+                        end.as_ref().to_owned(),
                     )
                     .into())
                 }

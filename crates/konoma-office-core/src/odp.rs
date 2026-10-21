@@ -425,7 +425,7 @@ fn read_page_layouts(
             }
             _ => continue,
         };
-        if e.local_name().as_ref() != b"page-layout" {
+        if e.local_name().as_ref() != "page-layout" {
             if !empty {
                 skip_rest(rd)?;
             }
@@ -498,7 +498,7 @@ fn read_master_pages(
             }
             _ => continue,
         };
-        if e.local_name().as_ref() != b"master-page" {
+        if e.local_name().as_ref() != "master-page" {
             if !empty {
                 skip_rest(rd)?;
             }
@@ -578,7 +578,7 @@ fn read_masters(src: impl BufRead, opts: &DocOptions) -> Masters {
             root = true;
             continue;
         }
-        if e.local_name().as_ref() == b"automatic-styles" {
+        if e.local_name().as_ref() == "automatic-styles" {
             // Only the page layouts matter (the size of a slide), and each one is read on its own
             // under a small budget: a part with a huge pile of other automatic styles, or one
             // oversized layout, costs that element and not the master pages after it.
@@ -587,7 +587,7 @@ fn read_masters(src: impl BufRead, opts: &DocOptions) -> Masters {
             }
             continue;
         }
-        if e.local_name().as_ref() != b"master-styles" {
+        if e.local_name().as_ref() != "master-styles" {
             if !empty && skip_rest(&mut rd).is_err() {
                 return out;
             }
@@ -717,7 +717,7 @@ impl Od<'_> {
             };
             if matches!(
                 e.local_name().as_ref(),
-                b"footer-decl" | b"header-decl" | b"date-time-decl"
+                "footer-decl" | "header-decl" | "date-time-decl"
             ) {
                 let mut budget = Budget::odf(100, 64 * 1024);
                 if let Tree::Ok(n) = read_element(&mut rd, &e, empty, &mut budget)? {
@@ -725,7 +725,7 @@ impl Od<'_> {
                 }
                 continue;
             }
-            if e.local_name().as_ref() != b"page" {
+            if e.local_name().as_ref() != "page" {
                 if !empty {
                     skip_rest(&mut rd)?;
                 }
@@ -981,7 +981,7 @@ impl Od<'_> {
                 Ok(Event::Eof) | Err(_) => return chart.then_some(None),
                 _ => continue,
             };
-            let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+            let name = e.local_name().as_ref().to_owned();
             path.push(name);
             // A root that is not `office:document-content` (a formula is `math:math`) or a body
             // whose content is not a chart: not a chart.

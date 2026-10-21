@@ -243,6 +243,8 @@ pub fn small_limits() -> Limits {
         max_sheet_text_bytes: 1 << 20,
         max_dense_cells: 10_000,
         max_text_bytes: 1 << 20,
+        max_formula_text_bytes: 1 << 20,
+        max_formula_work: 1 << 28,
     }
 }
 
@@ -2049,11 +2051,11 @@ fn forge_declared_size(mut z: Vec<u8>, declared: u32) -> Vec<u8> {
 }
 
 #[test]
-fn zip_does_not_stop_at_declared_size() {
-    // Pins the behaviour the safety design depends on: zip 8.6 inflates past a *forged* declared
-    // size (the central directory says 100 bytes; the stream holds 5 MiB). If a future zip starts
-    // enforcing the declared size, this test fails and the extra counting in `container::scan_zip`
-    // can be revisited.
+fn zip_stops_at_the_declared_size() {
+    // Pins the behaviour the safety design now relies on: zip 9 stops a stream at a *forged*
+    // declared size (the central directory says 100 bytes; the stream holds 5 MiB) and reports an
+    // error instead of inflating further. (zip 8.6 inflated all 5 MiB.) The extra counting in
+    // `container::scan_zip` stays as the second line of defence.
     let real = vec![0u8; 5 << 20];
     let z = forge_declared_size(deflated(&[("a.bin", &real)]), 100);
     let mut ar = zip::ZipArchive::new(Cursor::new(z)).unwrap();
@@ -2063,13 +2065,48 @@ fn zip_does_not_stop_at_declared_size() {
         "the lie took effect"
     );
     let mut out = Vec::new();
-    // Reading may or may not end in an error at EOF, but the data comes out in full first.
-    let _ = ar.by_index(0).unwrap().read_to_end(&mut out);
-    assert_eq!(out.len(), 5 << 20, "zip inflated past the declared size");
+    let read = ar.by_index(0).unwrap().read_to_end(&mut out);
+    assert!(read.is_err(), "zip reports the oversized stream");
+    // zip 9 stops at declared size + 1: the one byte that crosses the line is still delivered to
+    // the caller's buffer before the error, and nothing after it.
+    assert!(
+        out.len() <= 101,
+        "zip did not inflate past the declared size: {}",
+        out.len()
+    );
 }
 
 #[test]
-fn a_zip_bomb_with_a_forged_size_is_stopped_by_counting_real_bytes() {
+fn the_real_byte_count_backstop_stops_at_the_limit_and_does_not_read_past_it() {
+    // Unreachable from a zip file with zip 9 (its own declared-size stop comes first), so it is
+    // pinned directly on the counting function `scan_zip` uses.
+    struct Endless(u64);
+    impl std::io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            buf.fill(0);
+            Ok(buf.len())
+        }
+    }
+    assert_eq!(container::count_real_bytes(&[0u8; 10][..], 10), Ok(10));
+    assert_eq!(
+        container::count_real_bytes(&[0u8; 11][..], 10),
+        Err(OfficeError::TooLarge { what: "entry" })
+    );
+    let mut endless = Endless(0);
+    assert_eq!(
+        container::count_real_bytes(&mut endless, 1000),
+        Err(OfficeError::TooLarge { what: "entry" })
+    );
+    assert!(
+        endless.0 < 1000 + 64 * 1024,
+        "stopped promptly: {}",
+        endless.0
+    );
+}
+
+#[test]
+fn a_zip_bomb_with_a_forged_size_is_refused_as_corrupt_by_the_declared_size() {
     let dir = tmp("bomb");
     let bomb = vec![0u8; 8 << 20];
     let z = forge_declared_size(
@@ -2081,14 +2118,17 @@ fn a_zip_bomb_with_a_forged_size_is_stopped_by_counting_real_bytes() {
         max_part_bytes: 1 << 20,
         ..small_limits()
     };
-    assert_eq!(
+    // zip 9 enforces the declared size itself, so the forged entry is refused as corrupt before
+    // konoma's own byte counting (still there as a backstop) is reached.
+    for err in [
         load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "entry" }
-    );
-    assert_eq!(
         container::inspect(&p, &limits).unwrap_err(),
-        OfficeError::TooLarge { what: "entry" }
-    );
+    ] {
+        assert!(
+            matches!(&err, OfficeError::Corrupt(m) if m.contains("declared uncompressed size")),
+            "{err:?}"
+        );
+    }
 }
 
 #[test]
@@ -2393,7 +2433,7 @@ pub fn read_parts(path: &Path) -> Vec<(String, Vec<u8>)> {
         let mut f = ar.by_index(i).unwrap();
         let mut b = Vec::new();
         f.read_to_end(&mut b).unwrap();
-        parts.push((f.name().to_string(), b));
+        parts.push((f.name().unwrap().to_string(), b));
     }
     parts
 }

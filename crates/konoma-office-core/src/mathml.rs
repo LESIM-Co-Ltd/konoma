@@ -100,16 +100,16 @@ fn keeps_text(name: &str) -> bool {
 }
 
 fn node_of(e: &BytesStart<'_>) -> Node {
-    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+    let name = e.local_name().as_ref().to_owned();
     let mut attrs = Vec::new();
     for a in e.attributes().with_checks(false).flatten() {
-        let key = String::from_utf8_lossy(a.key.local_name().as_ref()).into_owned();
+        let key = a.key.local_name().as_ref().to_owned();
         if !KEPT_ATTRS.contains(&key.as_str()) || a.value.len() > MAX_ATTR {
             continue;
         }
         let v = match a.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
             Ok(v) => v.into_owned(),
-            Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+            Err(_) => a.value.to_string(),
         };
         attrs.push((key, v));
     }
@@ -159,18 +159,18 @@ fn parse(src: &str) -> Option<Node> {
             }
             Event::Text(t) => {
                 if let Some(top) = stack.last_mut() {
-                    push_token_text(top, &t.decode().ok()?);
+                    push_token_text(top, &t);
                 }
             }
             Event::CData(c) => {
                 if let Some(top) = stack.last_mut() {
-                    push_token_text(top, &c.decode().ok()?);
+                    push_token_text(top, &c);
                 }
             }
             Event::GeneralRef(r) => {
                 if let Some(top) = stack.last_mut() {
-                    let name = r.decode().ok()?;
-                    let s = match &*name {
+                    let name: &str = &r;
+                    let s = match name {
                         "lt" => "<".to_string(),
                         "gt" => ">".to_string(),
                         "amp" => "&".to_string(),

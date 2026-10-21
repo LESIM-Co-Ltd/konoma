@@ -1199,3 +1199,34 @@ fn the_formula_of_the_last_row_that_fits_is_kept_and_the_next_is_not() {
     assert!(!wb.sheets[0].rows_truncated);
     assert_eq!(wb.sheets[0].formula(5, 0), Some("15"));
 }
+
+#[test]
+fn a_later_record_wins_for_the_format_over_a_long_reversed_run() {
+    // Styles 1 and 2 map to two formats, 0 is General. 100 rows in descending order, two records
+    // each, the last alternating (and one General last): an unstable sort would swap duplicates.
+    let xf_to_format = [0u16, 7, 8];
+    let mut rows = Vec::new();
+    let mut last_only = Vec::new();
+    for r in (0..100u32).rev() {
+        let (first, last) = match r % 3 {
+            0 => (1, 2),
+            1 => (2, 1),
+            _ => (1, 0),
+        };
+        rows.push((r, vec![real(0, first, 1.0), real(0, last, 2.0)]));
+        last_only.push((r, vec![real(0, last, 2.0)]));
+    }
+    let both =
+        fmt_xlsb::parse_sheet(&sheet_bin(&rows)[..], &xf_to_format, &Limits::default()).unwrap();
+    let only = fmt_xlsb::parse_sheet(
+        &sheet_bin(&last_only)[..],
+        &xf_to_format,
+        &Limits::default(),
+    )
+    .unwrap();
+    for r in 0..100 {
+        assert_eq!(both.format_at(r, 0), only.format_at(r, 0), "row {r}");
+    }
+    assert_eq!(only.format_at(2, 0), 0);
+    assert_eq!(only.format_at(0, 0), 8);
+}

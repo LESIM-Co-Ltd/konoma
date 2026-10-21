@@ -156,7 +156,7 @@ fn charge(n: &Node, budget: &mut Budget) -> bool {
 
 fn start_to_node(e: &BytesStart<'_>) -> Node {
     let qn = e.name();
-    let full = String::from_utf8_lossy(qn.as_ref()).into_owned();
+    let full = qn.as_ref().to_string();
     let (prefix, name) = match full.split_once(':') {
         Some((p, n)) => (p.to_string(), n.to_string()),
         None => (String::new(), full),
@@ -166,7 +166,7 @@ fn start_to_node(e: &BytesStart<'_>) -> Node {
         if attrs.len() >= MAX_ATTRS {
             break;
         }
-        let key = String::from_utf8_lossy(a.key.as_ref()).into_owned();
+        let key = a.key.as_ref().to_string();
         // `xmlns` declarations are not data.
         if key == "xmlns" || key.starts_with("xmlns:") {
             continue;
@@ -177,7 +177,7 @@ fn start_to_node(e: &BytesStart<'_>) -> Node {
         } else {
             match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
-                Err(_) => String::from_utf8_lossy(raw).into_owned(),
+                Err(_) => raw.to_string(),
             }
         };
         attrs.push((key, cut(val, MAX_ATTR_BYTES)));
@@ -281,10 +281,7 @@ pub(crate) fn read_element<R: BufRead>(
             Event::Text(t) => {
                 if let Some(top) = stack.last_mut() {
                     if budget.all_text || keeps_text(&top.name) {
-                        let s = match t.xml10_content() {
-                            Ok(s) => s.into_owned(),
-                            Err(_) => String::from_utf8_lossy(&t).into_owned(),
-                        };
+                        let s = t.xml10_content().into_owned();
                         push_text(top, &s, budget);
                     }
                 }
@@ -292,7 +289,7 @@ pub(crate) fn read_element<R: BufRead>(
             Event::CData(t) => {
                 if let Some(top) = stack.last_mut() {
                     if budget.all_text || keeps_text(&top.name) {
-                        let s = String::from_utf8_lossy(&t).into_owned();
+                        let s = t.to_string();
                         push_text(top, &s, budget);
                     }
                 }
@@ -333,16 +330,14 @@ fn push_text(top: &mut Node, s: &str, budget: &mut Budget) {
 }
 
 fn push_ref(e: &quick_xml::events::BytesRef<'_>, out: &mut String) {
-    let Ok(name) = e.decode() else {
-        return;
-    };
-    if let Some(s) = quick_xml::escape::resolve_xml_entity(&name) {
+    let name: &str = e;
+    if let Some(s) = quick_xml::escape::resolve_xml_entity(name) {
         out.push_str(s);
     } else if let Ok(Some(c)) = e.resolve_char_ref() {
         out.push(c);
     } else {
         out.push('&');
-        out.push_str(&name);
+        out.push_str(name);
         out.push(';');
     }
 }

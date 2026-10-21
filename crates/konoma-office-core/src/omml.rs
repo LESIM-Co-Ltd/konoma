@@ -87,15 +87,15 @@ fn parse(src: &str) -> Option<Node> {
             Event::Text(t) => {
                 if let Some(top) = stack.last_mut() {
                     if top.name == "t" && top.text.len() < MAX_RUN_TEXT {
-                        top.text.push_str(&t.decode().ok()?);
+                        top.text.push_str(&t);
                     }
                 }
             }
             Event::GeneralRef(r) => {
                 if let Some(top) = stack.last_mut() {
                     if top.name == "t" && top.text.len() < MAX_RUN_TEXT {
-                        let name = r.decode().ok()?;
-                        match &*name {
+                        let name: &str = &r;
+                        match name {
                             "lt" => top.text.push('<'),
                             "gt" => top.text.push('>'),
                             "amp" => top.text.push('&'),
@@ -113,7 +113,7 @@ fn parse(src: &str) -> Option<Node> {
             Event::CData(c) => {
                 if let Some(top) = stack.last_mut() {
                     if top.name == "t" && top.text.len() < MAX_RUN_TEXT {
-                        top.text.push_str(&c.decode().ok()?);
+                        top.text.push_str(&c);
                     }
                 }
             }
@@ -128,16 +128,16 @@ fn parse(src: &str) -> Option<Node> {
 }
 
 fn node_of(e: &BytesStart<'_>) -> Node {
-    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+    let name = e.local_name().as_ref().to_owned();
     let mut val = None;
     // Only `val` is read, and only from the small elements that carry it (a long attribute is
     // never a character or a keyword).
     for a in e.attributes().with_checks(false).flatten() {
-        if a.key.local_name().as_ref() == b"val" && a.value.len() <= 64 {
+        if a.key.local_name().as_ref() == "val" && a.value.len() <= 64 {
             val = Some(
                 match a.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
                     Ok(v) => v.into_owned(),
-                    Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+                    Err(_) => a.value.to_string(),
                 },
             );
         }

@@ -649,13 +649,14 @@ fn load_xls(
     which: Which,
     cancel: Option<Cancel>,
 ) -> Result<Workbook, OfficeError> {
-    let fm = fmt_xls::read(path, &opts.limits, cancel.as_ref())?;
+    // `calamine` is given a clean container made of the scanned bytes only, never the file.
+    let (fm, container) = fmt_xls::read_scanned(path, &opts.limits, cancel.as_ref())?;
     // `calamine` parses every sheet and cannot be stopped: not even started for a load nobody
     // waits for any more.
     if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
         return Err(OfficeError::Corrupt("cancelled".into()));
     }
-    let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
+    let mut wb: calamine::Xls<_> = calamine::Xls::new(container).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
     assemble(&ctx, metas, which, cancel.as_ref(), |name| {
