@@ -733,6 +733,16 @@ mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
 
+    /// `TERMINAL_WRITE` is process-global, so the tests that take it (directly or through the exit
+    /// paths) must not overlap: one test holding it would make another test's "free now" or
+    /// "refused for 20 ms" check meet the wrong holder. Poison is ignored so one failure does not
+    /// cascade.
+    static TERMINAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serialize_terminal_tests() -> std::sync::MutexGuard<'static, ()> {
+        TERMINAL_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     // ---- build_argv ---------------------------------------------------------------------------
 
     #[test]
@@ -1327,6 +1337,7 @@ mod tests {
     /// terminal teardown.
     #[test]
     fn every_way_out_runs_the_whole_exit_cleanup() {
+        let _serial = serialize_terminal_tests();
         let all = vec![
             ExitStep::StopSvgProcesses,
             ExitStep::RemoveTempDir,
@@ -1355,6 +1366,7 @@ mod tests {
     /// of them is taken for part of the transmit and the picture stays in the terminal.)
     #[test]
     fn the_exit_path_waits_for_the_frame_being_written_and_never_lands_inside_it() {
+        let _serial = serialize_terminal_tests();
         use std::sync::mpsc::channel;
         use std::sync::{Arc, Mutex};
         let wire = Arc::new(Mutex::new(Vec::<&'static str>::new()));
@@ -1403,6 +1415,7 @@ mod tests {
     /// and it is given the terminal only once the guard is dropped.
     #[test]
     fn the_signal_and_panic_exits_keep_the_terminal_until_the_process_is_gone() {
+        let _serial = serialize_terminal_tests();
         let refused_elsewhere = || {
             std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none())
                 .join()
