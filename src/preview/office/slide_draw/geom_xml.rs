@@ -144,7 +144,7 @@ fn load_presets() -> Presets {
             }
             continue;
         }
-        let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let name = e.local_name().as_ref().to_owned();
         let mut budget = Budget::new(PRESET_NODES, PRESET_BYTES);
         match read_element(&mut rd, &e, empty, &mut budget) {
             Ok(Tree::Ok(node)) => {

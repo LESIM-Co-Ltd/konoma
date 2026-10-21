@@ -21,6 +21,7 @@ pub mod fmt_xls;
 mod fmt_xls_formula;
 pub mod fmt_xlsb;
 pub mod fmt_xlsx;
+mod lossy_utf8;
 pub(crate) mod mathml;
 pub mod numfmt;
 mod ods_formula;
@@ -196,3 +197,5 @@ mod tests_xls;
 mod tests_xlsb;
 #[cfg(test)]
 mod tests_xlsx;
+#[cfg(test)]
+mod tests_xml_bytes;

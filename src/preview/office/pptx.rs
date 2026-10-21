@@ -480,14 +480,14 @@ fn walk_part(
             Event::Eof => break,
             _ => continue,
         };
-        let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let name = e.local_name().as_ref().to_owned();
         match path.len() {
             0 => {
                 if name != root {
                     return Err(OfficeError::Unsupported);
                 }
-                out.show = attr(&e, b"show", false);
-                out.show_master_sp = attr(&e, b"showMasterSp", false);
+                out.show = attr(&e, "show", false);
+                out.show_master_sp = attr(&e, "showMasterSp", false);
                 if empty {
                     break;
                 }
@@ -1017,23 +1017,23 @@ fn convert(
                     if !root_seen {
                         root_seen = true;
                         // An xlsx / docx renamed .pptx is not a presentation.
-                        if local.as_ref() != b"presentation" {
+                        if local.as_ref() != "presentation" {
                             return Err(OfficeError::Unsupported);
                         }
-                        first_num = attr(&e, b"firstSlideNum", false)
+                        first_num = attr(&e, "firstSlideNum", false)
                             .and_then(|v| v.trim().parse::<i64>().ok())
                             .unwrap_or(1)
                             .clamp(0, 1_000_000);
-                    } else if local.as_ref() == b"sldSz" {
-                        let n = |k: &[u8]| attr(&e, k, false).and_then(|v| v.trim().parse().ok());
+                    } else if local.as_ref() == "sldSz" {
+                        let n = |k: &str| attr(&e, k, false).and_then(|v| v.trim().parse().ok());
                         // (A size of zero or less is no size: it would put every shape off
                         // the slide.)
-                        if let (Some(w), Some(h)) = (n(b"cx"), n(b"cy")) {
+                        if let (Some(w), Some(h)) = (n("cx"), n("cy")) {
                             if w > 0 && h > 0 {
                                 slide_rect = Some(Rect::new(0, 0, w, h));
                             }
                         }
-                    } else if local.as_ref() == b"defaultTextStyle"
+                    } else if local.as_ref() == "defaultTextStyle"
                         && !empty_el
                         && default_text.is_none()
                     {
@@ -1042,8 +1042,8 @@ fn convert(
                         if let Ok(Tree::Ok(n)) = read_element(&mut rd, &e, false, &mut b) {
                             default_text = Some(n);
                         }
-                    } else if local.as_ref() == b"sldId" {
-                        if let Some(id) = attr(&e, b"id", true) {
+                    } else if local.as_ref() == "sldId" {
+                        if let Some(id) = attr(&e, "id", true) {
                             if ids.len() >= opts.max_slides {
                                 over = true;
                                 break;
@@ -2126,12 +2126,12 @@ fn scan_diagram_data(bytes: &[u8]) -> (Vec<Vec<String>>, Option<String>) {
             _ => continue,
         };
         match e.local_name().as_ref() {
-            b"dataModelExt" => {
+            "dataModelExt" => {
                 if drawing.is_none() {
-                    drawing = attr(&e, b"relId", false);
+                    drawing = attr(&e, "relId", false);
                 }
             }
-            b"pt" if budget_points > 0 => {
+            "pt" if budget_points > 0 => {
                 let mut b = Budget::new(SMART_NODES, 256 * 1024);
                 match read_element(&mut rd, &e, empty, &mut b) {
                     Ok(Tree::Ok(n)) => {
@@ -2172,7 +2172,7 @@ fn scan_diagram_drawing(bytes: &[u8]) -> Vec<(Option<Rect>, Vec<String>)> {
             Event::Eof => break,
             _ => continue,
         };
-        if e.local_name().as_ref() != b"sp" || out.len() >= SMART_SHAPES {
+        if e.local_name().as_ref() != "sp" || out.len() >= SMART_SHAPES {
             continue;
         }
         let mut b = Budget::new(SMART_NODES, 256 * 1024);

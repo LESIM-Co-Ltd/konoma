@@ -1745,7 +1745,7 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "pulldown-cmark",
- "quick-xml 0.41.0",
+ "quick-xml 0.42.0",
  "ratatui",
  "ratatui-image",
  "ratex-katex-fonts",

@@ -207,30 +207,30 @@ fn xml_err(e: quick_xml::Error) -> OfficeError {
 
 /// The attribute with the exact qualified name `key` (`table:style-name`). An undefined entity
 /// falls back to the raw text; nothing is ever expanded.
-fn qattr(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+fn qattr(e: &BytesStart<'_>, key: &str) -> Option<String> {
     for a in e.attributes().with_checks(false).flatten() {
         if a.key.as_ref() == key {
             return Some(match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
-                Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+                Err(_) => a.value.to_string(),
             });
         }
     }
     None
 }
 
-fn has_attr(e: &BytesStart<'_>, key: &[u8]) -> bool {
+fn has_attr(e: &BytesStart<'_>, key: &str) -> bool {
     e.attributes()
         .with_checks(false)
         .flatten()
         .any(|a| a.key.as_ref() == key)
 }
 
-fn attr_usize(e: &BytesStart<'_>, key: &[u8]) -> Option<usize> {
+fn attr_usize(e: &BytesStart<'_>, key: &str) -> Option<usize> {
     qattr(e, key).and_then(|v| v.trim().parse().ok())
 }
 
-fn attr_true(e: &BytesStart<'_>, key: &[u8]) -> bool {
+fn attr_true(e: &BytesStart<'_>, key: &str) -> bool {
     qattr(e, key).is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
 }
 
@@ -238,22 +238,19 @@ fn attr_true(e: &BytesStart<'_>, key: &[u8]) -> bool {
 fn push_text(ev: &Event<'_>, out: &mut String) {
     match ev {
         Event::Text(t) => {
-            if let Ok(s) = t.xml10_content() {
-                out.push_str(&s);
-            }
+            out.push_str(&t.xml10_content());
         }
         Event::GeneralRef(r) => {
-            if let Ok(name) = r.decode() {
-                match &*name {
-                    "lt" => out.push('<'),
-                    "gt" => out.push('>'),
-                    "amp" => out.push('&'),
-                    "apos" => out.push('\''),
-                    "quot" => out.push('"'),
-                    _ => {
-                        if let Ok(Some(c)) = r.resolve_char_ref() {
-                            out.push(c);
-                        }
+            let name: &str = r;
+            match name {
+                "lt" => out.push('<'),
+                "gt" => out.push('>'),
+                "amp" => out.push('&'),
+                "apos" => out.push('\''),
+                "quot" => out.push('"'),
+                _ => {
+                    if let Ok(Some(c)) = r.resolve_char_ref() {
+                        out.push(c);
                     }
                 }
             }
@@ -272,7 +269,7 @@ pub(crate) fn manifest_is_encrypted(src: impl BufRead) -> Result<bool, OfficeErr
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
-            Event::Start(e) if e.local_name().as_ref() == b"encryption-data" => return Ok(true),
+            Event::Start(e) if e.local_name().as_ref() == "encryption-data" => return Ok(true),
             Event::Eof => return Ok(false),
             _ => {}
         }
@@ -488,10 +485,10 @@ fn excel_color(hex: &str) -> Option<&'static str> {
 type Embeds = [(usize, String)];
 
 fn number_token(e: &BytesStart<'_>, embeds: &Embeds, kind: Kind) -> String {
-    let decimals = attr_usize(e, b"number:decimal-places");
-    let min_dec = attr_usize(e, b"number:min-decimal-places");
-    let min_int = attr_usize(e, b"number:min-integer-digits").unwrap_or(1);
-    let grouping = attr_true(e, b"number:grouping");
+    let decimals = attr_usize(e, "number:decimal-places");
+    let min_dec = attr_usize(e, "number:min-decimal-places");
+    let min_int = attr_usize(e, "number:min-integer-digits").unwrap_or(1);
+    let grouping = attr_true(e, "number:grouping");
     let (dec, opt) = match (decimals, min_dec) {
         (None, None) => {
             // No decimal-places: the style is "as many as needed".
@@ -541,7 +538,7 @@ fn number_token(e: &BytesStart<'_>, embeds: &Embeds, kind: Kind) -> String {
         out.push_str(&"#".repeat(opt));
     }
     // `number:display-factor` 1000^k scales down: one trailing comma per factor of 1000.
-    if let Some(f) = qattr(e, b"number:display-factor").and_then(|v| v.trim().parse::<u64>().ok()) {
+    if let Some(f) = qattr(e, "number:display-factor").and_then(|v| v.trim().parse::<u64>().ok()) {
         let (mut n, mut commas) = (f, 0);
         while n >= 1000 && n % 1000 == 0 && commas < 4 {
             n /= 1000;
@@ -555,16 +552,16 @@ fn number_token(e: &BytesStart<'_>, embeds: &Embeds, kind: Kind) -> String {
 }
 
 fn scientific_token(e: &BytesStart<'_>) -> String {
-    let dec = attr_usize(e, b"number:decimal-places").unwrap_or(2).min(30);
-    let min_int = attr_usize(e, b"number:min-integer-digits")
+    let dec = attr_usize(e, "number:decimal-places").unwrap_or(2).min(30);
+    let min_int = attr_usize(e, "number:min-integer-digits")
         .unwrap_or(1)
         .clamp(1, 30);
     // Engineering notation (`##0.0E+0`): the exponent is a multiple of the interval and the
     // integer part has up to `interval` digits.
-    let interval = attr_usize(e, b"number:exponent-interval")
+    let interval = attr_usize(e, "number:exponent-interval")
         .unwrap_or(1)
         .clamp(1, 30);
-    let exp = attr_usize(e, b"number:min-exponent-digits")
+    let exp = attr_usize(e, "number:min-exponent-digits")
         .unwrap_or(2)
         .clamp(1, 5);
     let digits = interval.max(min_int);
@@ -575,8 +572,8 @@ fn scientific_token(e: &BytesStart<'_>) -> String {
         out.push_str(&"0".repeat(dec));
     }
     // The sign is always shown unless the file says it is not forced.
-    let forced = qattr(e, b"number:forced-exponent-sign")
-        .or_else(|| qattr(e, b"loext:forced-exponent-sign"))
+    let forced = qattr(e, "number:forced-exponent-sign")
+        .or_else(|| qattr(e, "loext:forced-exponent-sign"))
         .is_none_or(|v| !v.trim().eq_ignore_ascii_case("false"));
     out.push_str(if forced { "E+" } else { "E-" });
     out.push_str(&"0".repeat(exp));
@@ -586,16 +583,16 @@ fn scientific_token(e: &BytesStart<'_>) -> String {
 fn fraction_token(e: &BytesStart<'_>) -> String {
     // An integer part exists when `min-integer-digits` is written at all (LibreOffice writes `0`
     // for `# ?/?`, and leaves the attribute out of an improper fraction `?/?`).
-    let min_int = attr_usize(e, b"number:min-integer-digits");
-    let num = attr_usize(e, b"number:min-numerator-digits")
+    let min_int = attr_usize(e, "number:min-integer-digits");
+    let num = attr_usize(e, "number:min-numerator-digits")
         .unwrap_or(1)
         .clamp(1, 10);
     // The denominator is as wide as the larger of its minimum digits and the digits of the
     // largest denominator allowed.
-    let max_den_digits = attr_usize(e, b"number:max-denominator-value")
+    let max_den_digits = attr_usize(e, "number:max-denominator-value")
         .filter(|&d| d > 0)
         .map_or(0, |d| d.to_string().len());
-    let den = attr_usize(e, b"number:min-denominator-digits")
+    let den = attr_usize(e, "number:min-denominator-digits")
         .unwrap_or(1)
         .max(max_den_digits)
         .clamp(1, 10);
@@ -609,7 +606,7 @@ fn fraction_token(e: &BytesStart<'_>) -> String {
     }
     out.push_str(&"?".repeat(num));
     out.push('/');
-    match attr_usize(e, b"number:denominator-value").filter(|&d| d > 0) {
+    match attr_usize(e, "number:denominator-value").filter(|&d| d > 0) {
         Some(d) => out.push_str(&d.to_string()),
         None => out.push_str(&"?".repeat(den)),
     }
@@ -617,15 +614,12 @@ fn fraction_token(e: &BytesStart<'_>) -> String {
 }
 
 /// A date/time element -> its code token. `None` for elements that have no Excel equivalent.
-fn date_token(name: &[u8], e: &BytesStart<'_>, style_elapsed: &mut bool) -> Option<String> {
-    let long = qattr(e, b"number:style").is_some_and(|s| s == "long");
-    let gengou = qattr(e, b"number:calendar").is_some_and(|c| c == "gengou");
-    let mut elapsed = qattr(e, b"number:truncate-on-overflow").is_some_and(|v| v == "false");
+fn date_token(name: &str, e: &BytesStart<'_>, style_elapsed: &mut bool) -> Option<String> {
+    let long = qattr(e, "number:style").is_some_and(|s| s == "long");
+    let gengou = qattr(e, "number:calendar").is_some_and(|c| c == "gengou");
+    let mut elapsed = qattr(e, "number:truncate-on-overflow").is_some_and(|v| v == "false");
     // LibreOffice writes the flag on the style: its first time unit is the unbounded one.
-    if matches!(
-        name,
-        b"number:hours" | b"number:minutes" | b"number:seconds"
-    ) {
+    if matches!(name, "number:hours" | "number:minutes" | "number:seconds") {
         elapsed |= std::mem::take(style_elapsed);
     }
     let pick = |s: &str, l: &str| if long { l } else { s }.to_string();
@@ -638,47 +632,47 @@ fn date_token(name: &[u8], e: &BytesStart<'_>, style_elapsed: &mut bool) -> Opti
         }
     };
     Some(match name {
-        b"number:year" => {
+        "number:year" => {
             if gengou {
                 pick("e", "ee")
             } else {
                 pick("yy", "yyyy")
             }
         }
-        b"number:era" => pick("gg", "ggg"),
-        b"number:month" => {
-            if attr_true(e, b"number:textual") {
+        "number:era" => pick("gg", "ggg"),
+        "number:month" => {
+            if attr_true(e, "number:textual") {
                 pick("mmm", "mmmm")
             } else {
                 pick("m", "mm")
             }
         }
-        b"number:day" => pick("d", "dd"),
-        b"number:day-of-week" => pick("ddd", "dddd"),
-        b"number:hours" => unit("h", "hh"),
-        b"number:minutes" => unit("m", "mm"),
-        b"number:seconds" => {
+        "number:day" => pick("d", "dd"),
+        "number:day-of-week" => pick("ddd", "dddd"),
+        "number:hours" => unit("h", "hh"),
+        "number:minutes" => unit("m", "mm"),
+        "number:seconds" => {
             let mut s = unit("s", "ss");
-            if let Some(d) = attr_usize(e, b"number:decimal-places").filter(|&d| d > 0) {
+            if let Some(d) = attr_usize(e, "number:decimal-places").filter(|&d| d > 0) {
                 s.push('.');
                 s.push_str(&"0".repeat(d.min(6)));
             }
             s
         }
-        b"number:am-pm" => "AM/PM".to_string(),
+        "number:am-pm" => "AM/PM".to_string(),
         _ => return None,
     })
 }
 
-fn kind_of(name: &[u8]) -> Option<Kind> {
+fn kind_of(name: &str) -> Option<Kind> {
     Some(match name {
-        b"number:number-style" => Kind::Number,
-        b"number:percentage-style" => Kind::Percentage,
-        b"number:currency-style" => Kind::Currency,
-        b"number:date-style" => Kind::Date,
-        b"number:time-style" => Kind::Time,
-        b"number:boolean-style" => Kind::Boolean,
-        b"number:text-style" => Kind::Text,
+        "number:number-style" => Kind::Number,
+        "number:percentage-style" => Kind::Percentage,
+        "number:currency-style" => Kind::Currency,
+        "number:date-style" => Kind::Date,
+        "number:time-style" => Kind::Time,
+        "number:boolean-style" => Kind::Boolean,
+        "number:text-style" => Kind::Text,
         _ => return None,
     })
 }
@@ -710,18 +704,18 @@ pub(crate) fn parse_styles(
             Event::Start(e) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"office:body" && stop_at_body {
+                if name == "office:body" && stop_at_body {
                     break;
                 }
                 if let Some(kind) = kind_of(name) {
-                    if let Some(n) = qattr(e, b"style:name") {
+                    if let Some(n) = qattr(e, "style:name") {
                         number = None;
                         cur = Some((
                             n,
                             DataStyle {
                                 kind,
                                 elapsed_pending: kind == Kind::Time
-                                    && qattr(e, b"number:truncate-on-overflow")
+                                    && qattr(e, "number:truncate-on-overflow")
                                         .is_some_and(|v| v.trim() == "false"),
                                 toks: Vec::new(),
                                 maps: Vec::new(),
@@ -731,16 +725,16 @@ pub(crate) fn parse_styles(
                     }
                     continue;
                 }
-                if name == b"style:style" {
-                    if qattr(e, b"style:family").is_some_and(|f| f == "table-cell")
+                if name == "style:style" {
+                    if qattr(e, "style:family").is_some_and(|f| f == "table-cell")
                         && out.cells.len() < MAX_STYLES
                     {
-                        if let Some(n) = qattr(e, b"style:name") {
+                        if let Some(n) = qattr(e, "style:name") {
                             out.cells.insert(
                                 n,
                                 CellStyle {
-                                    parent: qattr(e, b"style:parent-style-name"),
-                                    data_style: qattr(e, b"style:data-style-name"),
+                                    parent: qattr(e, "style:parent-style-name"),
+                                    data_style: qattr(e, "style:data-style-name"),
                                 },
                             );
                         }
@@ -751,34 +745,34 @@ pub(crate) fn parse_styles(
                     continue;
                 };
                 match name {
-                    b"style:map" => {
+                    "style:map" => {
                         if let (Some(c), Some(a)) = (
-                            qattr(e, b"style:condition")
+                            qattr(e, "style:condition")
                                 .as_deref()
                                 .and_then(parse_condition),
-                            qattr(e, b"style:apply-style-name"),
+                            qattr(e, "style:apply-style-name"),
                         ) {
                             if ds.maps.len() < 8 {
                                 ds.maps.push((c, a));
                             }
                         }
                     }
-                    b"style:text-properties" => {
-                        if let Some(c) = qattr(e, b"fo:color").as_deref().and_then(excel_color) {
+                    "style:text-properties" => {
+                        if let Some(c) = qattr(e, "fo:color").as_deref().and_then(excel_color) {
                             ds.color = Some(c);
                         }
                     }
-                    b"number:text" | b"number:currency-symbol" => text = Some(String::new()),
-                    b"number:embedded-text" => {
-                        embed_pos = attr_usize(e, b"number:position").unwrap_or(0);
+                    "number:text" | "number:currency-symbol" => text = Some(String::new()),
+                    "number:embedded-text" => {
+                        embed_pos = attr_usize(e, "number:position").unwrap_or(0);
                         text = Some(String::new());
                     }
                     _ if ds.toks.len() >= MAX_PARTS => {}
-                    b"number:number" => number = Some((e.to_owned(), Vec::new())),
-                    b"number:scientific-number" => ds.toks.push(Tok::Code(scientific_token(e))),
-                    b"number:fraction" => ds.toks.push(Tok::Code(fraction_token(e))),
-                    b"number:text-content" => ds.toks.push(Tok::Code("@".into())),
-                    b"number:boolean" => ds.toks.push(Tok::Code("General".into())),
+                    "number:number" => number = Some((e.to_owned(), Vec::new())),
+                    "number:scientific-number" => ds.toks.push(Tok::Code(scientific_token(e))),
+                    "number:fraction" => ds.toks.push(Tok::Code(fraction_token(e))),
+                    "number:text-content" => ds.toks.push(Tok::Code("@".into())),
+                    "number:boolean" => ds.toks.push(Tok::Code("General".into())),
                     _ => {
                         if let Some(t) = date_token(name, e, &mut ds.elapsed_pending) {
                             ds.toks.push(Tok::Code(t));
@@ -796,18 +790,18 @@ pub(crate) fn parse_styles(
             Event::End(e) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"number:embedded-text" {
+                if name == "number:embedded-text" {
                     if let (Some(t), Some((_, embeds))) = (text.take(), number.as_mut()) {
                         if !t.is_empty() && embeds.len() < MAX_PARTS {
                             embeds.push((embed_pos, t));
                         }
                     }
-                } else if name == b"number:number" {
+                } else if name == "number:number" {
                     if let (Some((start, embeds)), Some((_, ds))) = (number.take(), cur.as_mut()) {
                         let tok = number_token(&start, &embeds, ds.kind);
                         ds.toks.push(Tok::Code(tok));
                     }
-                } else if name == b"number:text" || name == b"number:currency-symbol" {
+                } else if name == "number:text" || name == "number:currency-symbol" {
                     if let (Some(t), Some((_, ds))) = (text.take(), cur.as_mut()) {
                         if !t.is_empty() && ds.toks.len() < MAX_PARTS {
                             ds.toks.push(Tok::Lit(t));
@@ -1025,10 +1019,10 @@ fn parse_body(
             Event::Start(e) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"table:table" {
+                if name == "table:table" {
                     if cur.is_some() {
                         nested += 1;
-                    } else if let Some(n) = qattr(e, b"table:name") {
+                    } else if let Some(n) = qattr(e, "table:name") {
                         tables_seen += 1;
                         if tables_seen > super::fmt_xlsx::MAX_SHEETS {
                             return Err(OfficeError::TooLarge { what: "sheets" });
@@ -1048,8 +1042,8 @@ fn parse_body(
                     }
                     continue;
                 }
-                if name == b"table:null-date" && cur.is_none() {
-                    totals.null_day = qattr(e, b"table:date-value")
+                if name == "table:null-date" && cur.is_none() {
+                    totals.null_day = qattr(e, "table:date-value")
                         .as_deref()
                         .and_then(numfmt::iso_days_since_1970);
                     continue;
@@ -1059,12 +1053,12 @@ fn parse_body(
                     continue;
                 }
                 match name {
-                    b"office:annotation" => {
+                    "office:annotation" => {
                         if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
                             f.annotation += 1;
                         }
                     }
-                    b"text:p" => {
+                    "text:p" => {
                         if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
                             if f.annotation == 0 {
                                 if f.paragraph {
@@ -1074,12 +1068,12 @@ fn parse_body(
                             }
                         }
                     }
-                    b"text:s" | b"text:tab" | b"text:line-break" => {
+                    "text:s" | "text:tab" | "text:line-break" => {
                         if let Some(c) = t.cell.as_mut() {
-                            let n = qattr(e, b"text:c")
+                            let n = qattr(e, "text:c")
                                 .and_then(|v| v.trim().parse::<u64>().ok())
                                 .unwrap_or(1);
-                            if name == b"text:s" {
+                            if name == "text:s" {
                                 // Counted against the text budget as well: `calamine` allocates
                                 // this many spaces.
                                 if matches!(c.value_type.as_str(), "string" | "") {
@@ -1089,7 +1083,7 @@ fn parse_body(
                             if let Some(f) = c.fix.as_mut() {
                                 if f.annotation == 0 {
                                     match name {
-                                        b"text:s" => {
+                                        "text:s" => {
                                             let room = MAX_FIX_TEXT.saturating_sub(f.text.len());
                                             if n as usize > room {
                                                 f.overflow = true;
@@ -1098,7 +1092,7 @@ fn parse_body(
                                                 f.push_str(&" ".repeat(n as usize));
                                             }
                                         }
-                                        b"text:tab" => {
+                                        "text:tab" => {
                                             f.special = true;
                                             f.push_str("\t");
                                         }
@@ -1111,58 +1105,58 @@ fn parse_body(
                             }
                         }
                     }
-                    b"table:table-column" => {
-                        let reps = rep_attr(e, b"table:number-columns-repeated");
+                    "table:table-column" => {
+                        let reps = rep_attr(e, "table:number-columns-repeated");
                         let start = t.col_defaults.last().map_or(0, |d| d.0);
                         let end = start.saturating_add(reps).min(MAX_COLS);
                         if end > start {
                             t.col_defaults
-                                .push((end, qattr(e, b"table:default-cell-style-name")));
+                                .push((end, qattr(e, "table:default-cell-style-name")));
                         }
                     }
-                    b"table:table-row" => {
-                        let reps = rep_attr(e, b"table:number-rows-repeated");
+                    "table:table-row" => {
+                        let reps = rep_attr(e, "table:number-rows-repeated");
                         // Like calamine: the repeats of all rows together stop at Excel's last row.
                         t.row_reps = reps.min(MAX_ROWS.saturating_sub(t.row_cursor));
-                        t.row_default = qattr(e, b"table:default-cell-style-name");
+                        t.row_default = qattr(e, "table:default-cell-style-name");
                         t.row_width = 0;
                         t.col_cursor = 0;
                     }
-                    b"table:table-cell" | b"table:covered-table-cell" => {
-                        let reps = rep_attr(e, b"table:number-columns-repeated");
+                    "table:table-cell" | "table:covered-table-cell" => {
+                        let reps = rep_attr(e, "table:number-columns-repeated");
                         let start_col = t.col_cursor;
                         let reps = reps.min(MAX_COLS.saturating_sub(start_col));
                         t.col_cursor = start_col.saturating_add(reps);
-                        let value_type = qattr(e, b"office:value-type").unwrap_or_default();
+                        let value_type = qattr(e, "office:value-type").unwrap_or_default();
                         let is_string_cell = value_type == "string";
-                        let date_value = qattr(e, b"office:date-value");
+                        let date_value = qattr(e, "office:date-value");
                         let value_attr = [
-                            &b"office:value"[..],
-                            b"office:string-value",
-                            b"office:date-value",
-                            b"office:time-value",
-                            b"office:boolean-value",
+                            "office:value",
+                            "office:string-value",
+                            "office:date-value",
+                            "office:time-value",
+                            "office:boolean-value",
                         ]
                         .iter()
                         .any(|k| has_attr(e, k));
                         let has_value = value_attr || value_type == "string";
-                        let formula_len = qattr(e, b"table:formula").map_or(0, |f| f.len() as u64);
+                        let formula_len = qattr(e, "table:formula").map_or(0, |f| f.len() as u64);
                         let has_formula = formula_len > 0;
                         let value_type_is_text = matches!(value_type.as_str(), "string" | "");
                         let string_len =
-                            qattr(e, b"office:string-value").map_or(0, |v| v.len() as u64);
+                            qattr(e, "office:string-value").map_or(0, |v| v.len() as u64);
                         t.cell = Some(CellState {
                             reps,
                             start_col,
-                            style: qattr(e, b"table:style-name"),
+                            style: qattr(e, "table:style-name"),
                             value_type,
                             date_value,
                             nonempty: (has_value || has_formula) && reps > 0,
-                            is_error: qattr(e, b"calcext:value-type").is_some_and(|v| v == "error"),
+                            is_error: qattr(e, "calcext:value-type").is_some_and(|v| v == "error"),
                             text: String::new(),
-                            cols_spanned: attr_usize(e, b"table:number-columns-spanned")
+                            cols_spanned: attr_usize(e, "table:number-columns-spanned")
                                 .map_or(1, |v| v as u64),
-                            rows_spanned: attr_usize(e, b"table:number-rows-spanned")
+                            rows_spanned: attr_usize(e, "table:number-rows-spanned")
                                 .map_or(1, |v| v as u64),
                             // `calamine` takes the text of a string cell from its content when
                             // there is no value attribute.
@@ -1196,7 +1190,7 @@ fn parse_body(
             Event::End(e) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"table:table" {
+                if name == "table:table" {
                     if nested > 0 {
                         nested -= 1;
                     } else if let Some(mut t) = cur.take() {
@@ -1215,12 +1209,12 @@ fn parse_body(
                     continue;
                 }
                 match name {
-                    b"office:annotation" => {
+                    "office:annotation" => {
                         if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
                             f.annotation = f.annotation.saturating_sub(1);
                         }
                     }
-                    b"table:table-cell" | b"table:covered-table-cell" => {
+                    "table:table-cell" | "table:covered-table-cell" => {
                         if let Some(c) = t.cell.take() {
                             let mut res = StyleResolver {
                                 styles,
@@ -1232,7 +1226,7 @@ fn parse_body(
                             r?;
                         }
                     }
-                    b"table:table-row" => {
+                    "table:table-row" => {
                         t.row_cursor = t.row_cursor.saturating_add(t.row_reps);
                         // calamine builds one row of cells per physical row, repeats or not.
                         t.out.read_cost = t.out.read_cost.saturating_add(t.row_width);
@@ -1251,7 +1245,7 @@ fn parse_body(
 }
 
 /// `number-*-repeated`, at least 1 (a malformed value counts as 1).
-fn rep_attr(e: &BytesStart<'_>, key: &[u8]) -> u64 {
+fn rep_attr(e: &BytesStart<'_>, key: &str) -> u64 {
     qattr(e, key)
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(1)

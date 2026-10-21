@@ -332,14 +332,14 @@ fn parse_rels(src: impl BufRead, base: &str) -> Result<HashMap<String, Rel>, Off
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
-                let (Some(id), Some(target)) = (attr(&e, b"Id", false), attr(&e, b"Target", false))
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
+                let (Some(id), Some(target)) = (attr(&e, "Id", false), attr(&e, "Target", false))
                 else {
                     continue;
                 };
-                let external = attr(&e, b"TargetMode", false)
+                let external = attr(&e, "TargetMode", false)
                     .is_some_and(|m| m.eq_ignore_ascii_case("External"));
-                let kind = attr(&e, b"Type", false)
+                let kind = attr(&e, "Type", false)
                     .and_then(|t| t.rsplit('/').next().map(str::to_string))
                     .unwrap_or_default();
                 let target = if external {
@@ -1729,11 +1729,11 @@ impl<'a> Conv<'a> {
             match rd.read_event_into(&mut buf).map_err(xml_err)? {
                 Event::Start(e) | Event::Empty(e) if !root_seen => {
                     root_seen = true;
-                    if e.local_name().as_ref() != b"document" {
+                    if e.local_name().as_ref() != "document" {
                         return Err(OfficeError::Unsupported);
                     }
                 }
-                Event::Start(e) if e.local_name().as_ref() == b"body" => break,
+                Event::Start(e) if e.local_name().as_ref() == "body" => break,
                 Event::Eof => return Ok(()),
                 _ => {}
             }
@@ -1784,7 +1784,7 @@ impl<'a> Conv<'a> {
         is_end: bool,
         defs: &mut Vec<(usize, String)>,
     ) -> Result<(), OfficeError> {
-        let tag: &[u8] = if is_end { b"endnote" } else { b"footnote" };
+        let tag: &str = if is_end { "endnote" } else { "footnote" };
         let saved = std::mem::replace(&mut self.rels, note_rels);
         self.in_note = true;
         let mut rd = XmlReader::new(src);
@@ -3024,7 +3024,7 @@ impl<'a> Conv<'a> {
                 Event::Eof => return None,
                 _ => continue,
             };
-            if e.local_name().as_ref() != b"title" || depth != 2 {
+            if e.local_name().as_ref() != "title" || depth != 2 {
                 if !empty {
                     depth += 1;
                 }
