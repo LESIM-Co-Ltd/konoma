@@ -306,7 +306,7 @@ log = "0.4"
 # child's own limits). Both already in the tree.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [dev-dependencies]
 # Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
