@@ -1406,7 +1406,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 ## Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.9
+- webpki-roots 1.0.10
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -1563,7 +1563,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- rustls-webpki 0.103.15
+- rustls-webpki 0.103.16
 
 ```
 Except as otherwise noted, this project is licensed under the following
