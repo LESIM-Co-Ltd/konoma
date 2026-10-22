@@ -12,8 +12,12 @@ use super::super::super::pptx::load_presentation;
 use super::{DocOptions, Document};
 use crate::preview::office::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/d1";
+fn cache() -> std::path::PathBuf {
+    crate::test_support::evidence_dir()
+}
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("d1")
+}
 
 /// Where the images go: `ODP_DUMP_OUT` when set (so that parallel work does not overwrite another
 /// dump), else [`OUT`].
@@ -21,7 +25,7 @@ fn out_dir() -> PathBuf {
     std::env::var("ODP_DUMP_OUT")
         .ok()
         .filter(|s| !s.is_empty())
-        .map_or_else(|| PathBuf::from(OUT), PathBuf::from)
+        .map_or_else(out, PathBuf::from)
 }
 
 fn root() -> PathBuf {
@@ -133,9 +137,9 @@ fn odp_dump_own_and_selfmade() {
     if only.is_none() {
         clear_dir(out, false);
     }
-    let own = Path::new(CACHE).join("pptx-ref/own");
-    let selfmade = Path::new(CACHE).join("pptx-ref/selfmade");
-    let gen = Path::new(CACHE).join("slide-corpus-gen");
+    let own = cache().join("pptx-ref/own");
+    let selfmade = cache().join("pptx-ref/selfmade");
+    let gen = cache().join("slide-corpus-gen");
     let mut decks: Vec<(String, PathBuf, PathBuf)> = vec![
         (
             "sample".into(),
@@ -192,8 +196,8 @@ fn odp_dump_corpus() {
     if only.is_none() {
         clear_dir(out, true);
     }
-    let src = Path::new(CACHE).join("pptx-corpus/libreoffice");
-    let refs = Path::new(CACHE).join("pptx-ref/libreoffice");
+    let src = cache().join("pptx-corpus/libreoffice");
+    let refs = cache().join("pptx-ref/libreoffice");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&src)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))

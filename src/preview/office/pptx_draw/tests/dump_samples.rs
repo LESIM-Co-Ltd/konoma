@@ -5,9 +5,11 @@
 
 use std::path::Path;
 
-use super::dump::{clear_dir, dump_deck, root, CACHE};
+use super::dump::{cache, clear_dir, dump_deck, root};
 
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/feature-dump";
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("feature-dump")
+}
 
 fn wanted(name: &str) -> bool {
     std::env::var("DUMP_ONLY").map_or(true, |f| f.split(',').any(|p| name.contains(p)))
@@ -16,14 +18,14 @@ fn wanted(name: &str) -> bool {
 #[test]
 #[ignore = "writes docs/render-check/feature-dump/*.png for a human to look at"]
 fn dump_sample_decks() {
-    let out = Path::new(OUT);
+    let out = &out();
     if std::env::var("DUMP_ONLY").is_err() && std::env::var("DUMP_CORPUS").is_err() {
         clear_dir(out);
     }
     let _ = std::fs::create_dir_all(out);
-    let own = Path::new(CACHE).join("pptx-ref/own");
-    let selfmade = Path::new(CACHE).join("pptx-ref/selfmade");
-    let gen = Path::new(CACHE).join("slide-corpus-gen");
+    let own = cache().join("pptx-ref/own");
+    let selfmade = cache().join("pptx-ref/selfmade");
+    let gen = cache().join("slide-corpus-gen");
     let corpus_only = std::env::var("DUMP_CORPUS").is_ok() && std::env::var("DUMP_ONLY").is_err();
     if !corpus_only {
         for (name, pptx, refd) in [
@@ -74,9 +76,9 @@ fn dump_sample_decks() {
             let Some((src, file)) = item.split_once('/') else {
                 continue;
             };
-            let p = Path::new(CACHE).join("pptx-corpus").join(src).join(file);
+            let p = cache().join("pptx-corpus").join(src).join(file);
             let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
-            let refd = Path::new(CACHE).join("pptx-ref").join(src).join(stem);
+            let refd = cache().join("pptx-ref").join(src).join(stem);
             dump_deck(&format!("{src}__{stem}"), &p, &refd, out, Some(n));
         }
     }
@@ -235,7 +237,7 @@ fn dump_feature_slide() {
     let img = super::dump::draw_all(&doc, Some(1))
         .remove(0)
         .expect("rasterizes");
-    let out = Path::new(OUT);
+    let out = &out();
     let _ = std::fs::create_dir_all(out);
     img.save(out.join("synthetic-1.png")).unwrap();
 }

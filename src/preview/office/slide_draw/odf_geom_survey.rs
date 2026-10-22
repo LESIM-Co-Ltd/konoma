@@ -20,11 +20,21 @@ use crate::preview::office::docx_xml::{read_element, Budget, Tree};
 use crate::preview::office::fmt_xlsx::XmlReader;
 use quick_xml::events::Event;
 
-const CORPUS: &str = "/Users/shuhei/work/NoCode/.cache/pptx-corpus/libreoffice";
-const GEN: &str = "/Users/shuhei/work/NoCode/.cache/slide-corpus-gen/draw-shapes.odp";
-const REF_LO: &str = "/Users/shuhei/work/NoCode/.cache/pptx-ref/libreoffice";
-const REF_SELF: &str = "/Users/shuhei/work/NoCode/.cache/pptx-ref/selfmade/draw-shapes-odp";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/odf-geom";
+fn corpus() -> std::path::PathBuf {
+    crate::test_support::evidence_dir().join("pptx-corpus/libreoffice")
+}
+fn gen_odp() -> std::path::PathBuf {
+    crate::test_support::evidence_dir().join("slide-corpus-gen/draw-shapes.odp")
+}
+fn ref_lo() -> std::path::PathBuf {
+    crate::test_support::evidence_dir().join("pptx-ref/libreoffice")
+}
+fn ref_self() -> std::path::PathBuf {
+    crate::test_support::evidence_dir().join("pptx-ref/selfmade/draw-shapes-odp")
+}
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("odf-geom")
+}
 
 fn zip_part(odp: &Path, name: &str) -> Option<Node> {
     let mut z = zip::ZipArchive::new(File::open(odp).ok()?).ok()?;
@@ -55,13 +65,13 @@ fn walk<'a>(n: &'a Node, f: &mut dyn FnMut(&'a Node)) {
 }
 
 fn odps() -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(CORPUS)
+    let mut v: Vec<PathBuf> = std::fs::read_dir(corpus())
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "odp"))
         .collect();
     v.sort();
-    v.push(PathBuf::from(GEN));
+    v.push(gen_odp());
     v
 }
 
@@ -380,7 +390,7 @@ fn compare(odp: &Path, ref_dir: &Path, stem: &str) -> (usize, usize) {
         if let Some(t) = &theirs {
             image::imageops::replace(&mut canvas, t, i64::from(tw) + 12, 0);
         }
-        let out = Path::new(OUT).join(format!("{stem}-s{:02}.png", i + 1));
+        let out = out().join(format!("{stem}-s{:02}.png", i + 1));
         canvas.save(&out).expect("save");
         if !p.no_path.is_empty() {
             println!("{stem} s{}: no path for {:?}", i + 1, p.no_path);
@@ -392,24 +402,24 @@ fn compare(odp: &Path, ref_dir: &Path, stem: &str) -> (usize, usize) {
 #[test]
 #[ignore = "reads the local corpus, writes into docs/render-check/odf-geom of the main checkout"]
 fn compare_with_libreoffice() {
-    std::fs::create_dir_all(OUT).unwrap();
-    for e in std::fs::read_dir(OUT).unwrap().flatten() {
+    std::fs::create_dir_all(out()).unwrap();
+    for e in std::fs::read_dir(out()).unwrap().flatten() {
         if e.path().extension().is_some_and(|x| x == "png") {
             std::fs::remove_file(e.path()).unwrap();
         }
     }
     let jobs: Vec<(PathBuf, PathBuf, &str)> = vec![
         (
-            Path::new(CORPUS).join("odp__shapes-test.odp"),
-            Path::new(REF_LO).join("odp__shapes-test-odp"),
+            corpus().join("odp__shapes-test.odp"),
+            ref_lo().join("odp__shapes-test-odp"),
             "shapes-test",
         ),
         (
-            Path::new(CORPUS).join("odp__preset-shapes-export.odp"),
-            Path::new(REF_LO).join("odp__preset-shapes-export-odp"),
+            corpus().join("odp__preset-shapes-export.odp"),
+            ref_lo().join("odp__preset-shapes-export-odp"),
             "preset-shapes-export",
         ),
-        (PathBuf::from(GEN), PathBuf::from(REF_SELF), "draw-shapes"),
+        (gen_odp(), ref_self(), "draw-shapes"),
     ];
     for (odp, r, stem) in jobs {
         let (drawn, missing) = compare(&odp, &r, stem);

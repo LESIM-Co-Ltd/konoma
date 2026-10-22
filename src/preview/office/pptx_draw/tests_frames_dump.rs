@@ -10,8 +10,12 @@ use image::{imageops, RgbaImage};
 use super::super::{load_presentation, DocOptions};
 use crate::preview::office::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/e2";
+fn cache() -> std::path::PathBuf {
+    crate::test_support::evidence_dir()
+}
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("e2")
+}
 /// Most slides of one deck that are put in the dump.
 const PER_DECK: usize = 4;
 
@@ -42,7 +46,7 @@ fn has_group(sc: &sd::SlideScene) -> bool {
 #[test]
 #[ignore = "reads the local corpora; writes docs/render-check/e2/*.png"]
 fn frames_dump_render_check() {
-    let out = Path::new(OUT);
+    let out = &out();
     let _ = std::fs::create_dir_all(out);
     if let Ok(rd) = std::fs::read_dir(out) {
         for f in rd.flatten() {
@@ -51,7 +55,7 @@ fn frames_dump_render_check() {
             }
         }
     }
-    let cache = Path::new(CACHE);
+    let cache = cache();
     let mut decks: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = vec![(
         "draw-charts".into(),
         cache.join("slide-corpus-gen/draw-charts.pptx"),

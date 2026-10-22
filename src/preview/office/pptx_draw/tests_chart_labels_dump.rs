@@ -7,7 +7,9 @@ use std::path::Path;
 
 use crate::preview::office::slide_draw as sd;
 
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/chart-labels";
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("chart-labels")
+}
 
 /// Synthetic charts for the data-label placement (pie best fit with leader lines, overlapping
 /// point labels): `docs/render-check/chart-labels/synth-*.png`.
@@ -18,7 +20,7 @@ fn dump_synthetic_label_charts() {
     use crate::preview::office::slide_draw::chart::draw_chart;
     use crate::preview::office::slide_draw::{Fill, Rgba, SlideScene};
 
-    let out_dir = std::env::var("CHART_LABELS_OUT").unwrap_or_else(|_| OUT.to_string());
+    let out_dir = std::env::var("CHART_LABELS_OUT").unwrap_or_else(|_| out().display().to_string());
     let out = Path::new(&out_dir);
     let _ = std::fs::create_dir_all(out);
     let ns = r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
