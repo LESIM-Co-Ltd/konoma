@@ -465,13 +465,13 @@ mod in_slide {
 /// LibreOffice's rendering of the same file. Local only: the corpus is not in the repository.
 ///
 /// `cargo test -p konoma-office-core -- --ignored dump_metafile_corpus`; needs the files extracted to
-/// `NoCode/.cache/slide-c2-work/meta` and (optionally) LibreOffice's PNGs in `.../lo`.
+/// `evidence/slide-c2-work/meta` and (optionally) LibreOffice's PNGs in `.../lo`.
 #[test]
 #[ignore]
 fn dump_metafile_corpus() {
-    let meta = Path::new("/Users/shuhei/work/NoCode/.cache/slide-c2-work/meta");
-    let lo = Path::new("/Users/shuhei/work/NoCode/.cache/slide-c2-work/lo");
-    let out = Path::new("/Users/shuhei/work/konoma/docs/render-check/metafile");
+    let meta = konoma_test_support::evidence_dir().join("slide-c2-work/meta");
+    let lo = konoma_test_support::evidence_dir().join("slide-c2-work/lo");
+    let out = &konoma_test_support::render_check_dir().join("metafile");
     if let Ok(rd) = std::fs::read_dir(out) {
         for f in rd.flatten() {
             let _ = std::fs::remove_file(f.path());
@@ -499,7 +499,8 @@ fn dump_metafile_corpus() {
             continue;
         };
         let _ = std::fs::write(
-            Path::new("/Users/shuhei/work/NoCode/.cache/slide-c2-work/svg")
+            konoma_test_support::evidence_dir()
+                .join("slide-c2-work/svg")
                 .join(format!("{name}.svg")),
             &m.svg,
         );

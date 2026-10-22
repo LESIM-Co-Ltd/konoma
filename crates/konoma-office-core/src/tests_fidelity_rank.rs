@@ -3,7 +3,7 @@
 //!
 //! Run: `cargo test -p konoma-office-core --release --lib fidelity_rank -- --ignored --nocapture`
 //!
-//! Output: `NoCode/.cache/fidelity-rank/{ranking.csv,summary.md}` and the side-by-side pictures of the
+//! Output: `evidence/fidelity-rank/{ranking.csv,summary.md}` and the side-by-side pictures of the
 //! worst slides under `docs/render-check/rank/` (konoma left, LibreOffice right).
 //!
 //! Scores, all on 320 px wide pictures (reference aspect; ours is stretched to it, flag `aspect`
@@ -28,9 +28,15 @@ use super::docx::pptx::load_presentation;
 use super::docx::{DocOptions, Document};
 use crate::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT_DIR: &str = "/Users/shuhei/work/NoCode/.cache/fidelity-rank";
-const SBS_DIR: &str = "/Users/shuhei/work/konoma/docs/render-check/rank";
+fn cache() -> std::path::PathBuf {
+    konoma_test_support::evidence_dir()
+}
+fn out_dir() -> std::path::PathBuf {
+    konoma_test_support::evidence_dir().join("fidelity-rank")
+}
+fn sbs_dir() -> std::path::PathBuf {
+    konoma_test_support::render_check_dir().join("rank")
+}
 /// Slides per deck that are drawn and scored.
 const MAX_SLIDES: usize = 12;
 /// How many of the worst slides get a side-by-side picture.
@@ -195,13 +201,13 @@ fn ref_dir_for(source: &str, path: &Path) -> PathBuf {
     } else {
         stem.to_string()
     };
-    Path::new(CACHE).join("pptx-ref").join(source).join(leaf)
+    cache().join("pptx-ref").join(source).join(leaf)
 }
 
 fn collect_decks() -> Vec<Deck> {
     let mut v = Vec::new();
     let root = konoma_test_support::repo_root();
-    if let Ok(txt) = std::fs::read_to_string(Path::new(CACHE).join("pptx-corpus/index.json")) {
+    if let Ok(txt) = std::fs::read_to_string(cache().join("pptx-corpus/index.json")) {
         if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&txt)
         {
             for it in items {
@@ -211,7 +217,7 @@ fn collect_decks() -> Vec<Deck> {
                 let (Some(src), Some(file)) = (it["source"].as_str(), it["file"].as_str()) else {
                     continue;
                 };
-                let p = Path::new(CACHE).join("pptx-corpus").join(file);
+                let p = cache().join("pptx-corpus").join(file);
                 let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
                 let odp = p.extension().is_some_and(|e| e == "odp");
                 v.push(Deck {
@@ -224,7 +230,7 @@ fn collect_decks() -> Vec<Deck> {
     }
     let mut extra: Vec<(&str, PathBuf)> = Vec::new();
     for (tag, dir) in [
-        ("selfmade", Path::new(CACHE).join("slide-corpus-gen")),
+        ("selfmade", cache().join("slide-corpus-gen")),
         ("own", root.join("samples")),
         ("own", root.join("testdata/office")),
     ] {
@@ -324,7 +330,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 #[ignore = "reads the local corpus and LibreOffice references; writes fidelity-rank outputs and docs/render-check/rank/"]
 fn fidelity_rank_whole_corpus() {
     let decks = collect_decks();
-    assert!(!decks.is_empty(), "no decks under {CACHE}");
+    assert!(!decks.is_empty(), "no decks under {}", cache().display());
     let mut rows: Vec<Row> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
     let mut unref: Vec<String> = Vec::new();
@@ -396,7 +402,7 @@ fn fidelity_rank_whole_corpus() {
     }
     rows.sort_by(|a, b| b.combined.total_cmp(&a.combined));
 
-    let out = Path::new(OUT_DIR);
+    let out = &out_dir();
     let _ = std::fs::create_dir_all(out);
     let mut csv = String::from(
         "rank,deck,slide,combined,mad,ssim,hist,scene_truncated,deck_truncated,render_ms,svg_bytes,items,flags\n",
@@ -422,7 +428,7 @@ fn fidelity_rank_whole_corpus() {
     std::fs::write(out.join("ranking.csv"), csv).unwrap();
 
     // Side-by-side pictures of the worst slides (decks reloaded one at a time).
-    let sbs_dir = Path::new(SBS_DIR);
+    let sbs_dir = &sbs_dir();
     let _ = std::fs::create_dir_all(sbs_dir);
     if let Ok(rd) = std::fs::read_dir(sbs_dir) {
         for f in rd.flatten() {
@@ -539,8 +545,9 @@ fn fidelity_rank_whole_corpus() {
     }
     std::fs::write(out.join("summary.md"), md).unwrap();
     eprintln!(
-        "fidelity-rank: {} slides scored in {:.0?}; see {OUT_DIR}",
+        "fidelity-rank: {} slides scored in {:.0?}; see {}",
         rows.len(),
-        t0.elapsed()
+        t0.elapsed(),
+        out_dir().display()
     );
 }

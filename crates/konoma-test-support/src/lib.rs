@@ -167,6 +167,39 @@ pub fn repo_root() -> PathBuf {
         .unwrap_or(here)
 }
 
+/// Root of the MAIN checkout (the parent of the git common dir), falling back to [`repo_root`].
+///
+/// Linked worktrees live outside the main checkout, and the git-ignored `evidence/` and
+/// `docs/` materials exist only there, so the repository root alone would point at a checkout
+/// that lacks them.
+fn main_checkout_root() -> PathBuf {
+    let manifest = repo_root();
+    let common = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&manifest)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()));
+    common
+        .filter(|p| p.is_absolute() && p.file_name().is_some_and(|n| n == ".git"))
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or(manifest)
+}
+
+/// `<main checkout>/evidence`: local, never-committed Office materials read by the `#[ignore]`
+/// dump / survey tests (public corpus, reference renders, self-made decks, survey work).
+pub fn evidence_dir() -> PathBuf {
+    main_checkout_root().join("evidence")
+}
+
+/// `<main checkout>/docs/render-check`: where the dump tests write pictures for a human to review.
+pub fn render_check_dir() -> PathBuf {
+    main_checkout_root().join("docs/render-check")
+}
+
 /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
 /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
 /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate

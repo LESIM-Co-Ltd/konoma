@@ -1,6 +1,6 @@
 //! A human-readable check of every preset: konoma (left) next to LibreOffice (right).
 //!
-//! The reference is a self-made deck (`NoCode/.cache/slide-corpus-gen/draw-shapes.pptx`) that lays
+//! The reference is a self-made deck (`evidence/slide-corpus-gen/draw-shapes.pptx`) that lays
 //! the presets out 24 to a slide, and LibreOffice's rendering of it. This test reads the deck,
 //! draws the same shapes with [`super::preset`], and writes side-by-side images.
 
@@ -16,9 +16,15 @@ use super::{preset, preset_names};
 use crate::docx_xml::{read_element, Budget, Node, Tree};
 use crate::fmt_xlsx::XmlReader;
 
-const DECK: &str = "/Users/shuhei/work/NoCode/.cache/slide-corpus-gen/draw-shapes.pptx";
-const REF_DIR: &str = "/Users/shuhei/work/NoCode/.cache/pptx-ref/selfmade/draw-shapes";
-const OUT_DIR: &str = "/Users/shuhei/work/konoma/docs/render-check/presets";
+fn deck() -> std::path::PathBuf {
+    konoma_test_support::evidence_dir().join("slide-corpus-gen/draw-shapes.pptx")
+}
+fn ref_dir() -> std::path::PathBuf {
+    konoma_test_support::evidence_dir().join("pptx-ref/selfmade/draw-shapes")
+}
+fn out_dir() -> std::path::PathBuf {
+    konoma_test_support::render_check_dir().join("presets")
+}
 const SLIDE_W: f64 = 10_080_625.0;
 const SLIDE_H: f64 = 5_670_550.0;
 
@@ -181,14 +187,14 @@ fn side_by_side(left: &image::RgbaImage, right: Option<&image::RgbaImage>) -> im
 #[test]
 #[ignore = "writes docs/render-check/presets/*.png for a human to look at"]
 fn presets_against_libreoffice() {
-    let dir = Path::new(OUT_DIR);
+    let dir = &out_dir();
     let _ = std::fs::create_dir_all(dir);
     if let Ok(rd) = std::fs::read_dir(dir) {
         for f in rd.flatten() {
             let _ = std::fs::remove_file(f.path());
         }
     }
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(DECK).expect("the deck")).unwrap();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(deck()).expect("the deck")).unwrap();
     let mut shown: HashSet<String> = HashSet::new();
     for i in 1..=8 {
         let mut xml = Vec::new();
@@ -200,7 +206,7 @@ fn presets_against_libreoffice() {
         let sc = scene_of(&parse(&xml), &mut names);
         shown.extend(names);
         let left = raster(&sc);
-        let right = image::open(format!("{REF_DIR}/slide-{i:03}.png"))
+        let right = image::open(format!("{}/slide-{i:03}.png", ref_dir().display()))
             .ok()
             .map(|i| i.to_rgba8());
         side_by_side(&left, right.as_ref())

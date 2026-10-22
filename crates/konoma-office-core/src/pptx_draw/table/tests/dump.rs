@@ -11,8 +11,12 @@ use image::{imageops, DynamicImage, Rgba as Px, RgbaImage};
 use crate::docx::pptx::{load_presentation, DocOptions, Document};
 use crate::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/e1";
+fn cache() -> std::path::PathBuf {
+    konoma_test_support::evidence_dir()
+}
+fn out() -> std::path::PathBuf {
+    konoma_test_support::render_check_dir().join("e1")
+}
 
 fn draw(doc: &Document, n: usize) -> Option<DynamicImage> {
     let media: HashMap<String, Arc<Vec<u8>>> = doc
@@ -92,7 +96,7 @@ fn dump_deck(name: &str, pptx: &Path, ref_dir: &Path, max: usize) -> usize {
             img.as_ref(),
             reference.exists().then_some(reference.as_path()),
         );
-        sbs.save(Path::new(OUT).join(format!("{name}-{:03}.png", s + 1)))
+        sbs.save(out().join(format!("{name}-{:03}.png", s + 1)))
             .unwrap();
         n += 1;
     }
@@ -102,7 +106,7 @@ fn dump_deck(name: &str, pptx: &Path, ref_dir: &Path, max: usize) -> usize {
 #[test]
 #[ignore = "writes docs/render-check/e1/*.png for a human to look at"]
 fn tables_dump_render_check() {
-    let out = Path::new(OUT);
+    let out = &out();
     let _ = std::fs::create_dir_all(out);
     if let Ok(rd) = std::fs::read_dir(out) {
         for f in rd.flatten() {
@@ -111,7 +115,7 @@ fn tables_dump_render_check() {
             }
         }
     }
-    let cache = Path::new(CACHE);
+    let cache = cache();
     dump_deck(
         "draw-tables",
         &cache.join("slide-corpus-gen/draw-tables.pptx"),

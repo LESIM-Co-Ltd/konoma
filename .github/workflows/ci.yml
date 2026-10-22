@@ -20,10 +20,18 @@ concurrency:
 jobs:
   check:
     # konoma targets macOS on Apple Silicon; macos-14 runners are arm64.
-    name: fmt / clippy / test (macOS Apple Silicon)
+    # One leg per feature set. The two sets build and test separately anyway, and a single job
+    # running both took 12-19 minutes and hit the 20-minute limit whenever runners were busy
+    # (three cancelled runs on 2026-10-21). Each leg does about half; the limit stays at 20.
+    name: fmt / clippy / test (macOS Apple Silicon, ${{ matrix.features }})
     runs-on: macos-14
-    # Measured at ~3 minutes; a job that runs this long is hung, not slow.
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { features: default features, flags: "" }
+          - { features: no default features, flags: "--no-default-features" }
     steps:
       - uses: actions/checkout@v7
 
@@ -32,6 +40,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.flags }}
 
       # jj (Jujutsu) for the jj backend's tests. Installed here as well as on Linux because macOS is
       # the platform konoma is developed on: without it the jj tests skip silently, and the suite
@@ -46,30 +56,32 @@ jobs:
           sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
           jj --version
 
+      # Formatting does not depend on features; one leg checks it.
       - name: Format
+        if: matrix.flags == ''
         run: cargo fmt --all --check
 
       # Default features include `git`. Warnings are denied (the project's DoD is zero warnings).
-      - name: Clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (${{ matrix.features }})
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
-      - name: Clippy (no default features)
-        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-
-      - name: Test (default features)
-        run: cargo test --workspace
-
-      - name: Test (no default features)
-        run: cargo test --workspace --no-default-features
+      - name: Test (${{ matrix.features }})
+        run: cargo test --workspace ${{ matrix.flags }}
 
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
   # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
   check-linux:
-    name: clippy / test (Linux x86_64)
+    # Split by feature set like the macOS job: one job running both took 16-19 minutes.
+    name: clippy / test (Linux x86_64, ${{ matrix.features }})
     runs-on: ubuntu-latest
-    # Measured at ~3 minutes; a job that runs this long is hung, not slow.
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { features: default features, flags: "" }
+          - { features: no default features, flags: "--no-default-features" }
     steps:
       - uses: actions/checkout@v7
 
@@ -79,7 +91,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux-check
+          key: linux-check-${{ matrix.flags }}
 
       # System libraries for the C-backed dependencies (libgit2 / arboard / trash), plus fonts.
       # Each attempt is bounded: on 2026-08-19 this step hung on a mirror for 90 minutes, having
@@ -149,9 +161,15 @@ jobs:
           sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
           jj --version
 
+      # The extras below are spread over the two legs so that each runs exactly once overall.
+      # The per-crate builds do not depend on the host's default features, so they go in the
+      # `--no-default-features` leg; `demo-canvas` is the default features plus one, so its checks
+      # share the default leg's build.
+      #
       # Each crate under `crates/` must build on its own (not only as part of the whole workspace,
       # where another member's features can switch on what this one forgot to declare).
       - name: Each crate builds on its own
+        if: matrix.flags != ''
         run: |
           for d in crates/*/; do
             cargo check -p "$(basename "$d")" || exit 1
@@ -162,14 +180,11 @@ jobs:
           cargo check -p konoma-plugin-ratatui
           cargo check -p konoma-plugin-ratatui --features demo
 
-      - name: Clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (${{ matrix.features }})
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
-      - name: Clippy (no default features)
-        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-
-      - name: Test (default features)
-        run: cargo test --workspace
+      - name: Test (${{ matrix.features }})
+        run: cargo test --workspace ${{ matrix.flags }}
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list
@@ -179,17 +194,17 @@ jobs:
       # here it is run by name, on a host whose fonts we just chose. It reuses the binary the step
       # above built, so it costs seconds.
       - name: Check the runner really has a usable sans-serif
+        if: matrix.flags == ''
         run: cargo test -p konoma-svg -- --ignored --exact svg::tests::the_system_resolves_sans_serif_without_the_fallback
-
-      - name: Test (no default features)
-        run: cargo test --workspace --no-default-features
 
       # The temporary `demo-canvas` feature (removed in stage 3) is not in any default build; keep
       # its host side from rotting.
       - name: Clippy (demo-canvas)
+        if: matrix.flags == ''
         run: cargo clippy -p konoma --all-targets --features demo-canvas -- -D warnings
 
       - name: Test (demo-canvas)
+        if: matrix.flags == ''
         run: cargo test -p konoma --features demo-canvas demo_canvas
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
