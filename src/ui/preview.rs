@@ -152,6 +152,16 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, e: ScrollExtent) {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+    render_body(frame, app, area);
+    // The area is measured now: a plugin whose views depend on the size is asked again when the
+    // size is not the one its view was made for (`Manifest::sized`).
+    app.refit_sized_view();
+}
+
+fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
+    // The width of the content area, for the size a plugin's view is asked for
+    // (`App::plugin_view_req`). Every branch below frames its content with a one-cell border.
+    app.tab.preview_cols = Block::bordered().inner(area).width;
     // While an SVG/GIF/mermaid is loading on a separate thread: show "loading…" instead of raw XML
     // or a blank area. While an image is already displayable (PDF page paging, zoom's sharp
     // re-rasterization), keep showing the old image (replacing it with a full-screen spinner would
@@ -167,6 +177,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if app.is_media_loading()
         && !app.is_image_preview()
+        && !(app.shows_media_plugin() && app.plugin_keeps_view_while_loading())
         && (app.shows_media_plugin()
             || matches!(
                 app.tab.preview_kind,
@@ -196,6 +207,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         && app.is_image_preview()
     {
         render_image(frame, app, area);
+        return;
+    }
+
+    // A plugin's free-drawing view: its cells, copied into the frame.
+    if app.is_canvas_preview() {
+        crate::ui::canvas::render(frame, app, area);
         return;
     }
 

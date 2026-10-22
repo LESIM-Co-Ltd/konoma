@@ -153,6 +153,7 @@ fn app_with_worker() -> (
         view: None,
         req: ViewReq::default(),
         enabled: Default::default(),
+        flow: Default::default(),
     });
     (app, dir, file, rx)
 }
@@ -160,10 +161,7 @@ fn app_with_worker() -> (
 /// Asks the stand-in for page `page` as a new job of its work group (what a page key does when a
 /// job holds the session: the plugin is opened again).
 fn ask(app: &mut App, plugin: &Arc<dyn Plugin>, file: &Path, page: usize) {
-    let req = ViewReq {
-        page: Some(page),
-        ..ViewReq::default()
-    };
+    let req = ViewReq::default().page(page);
     let job = PluginJob::Open {
         plugin: Arc::clone(plugin),
         input: Input::File {
@@ -273,6 +271,7 @@ fn a_waiting_request_of_a_preview_that_is_gone_is_not_started() {
         view: None,
         req: ViewReq::default(),
         enabled: Default::default(),
+        flow: Default::default(),
     });
     ask(&mut app, &plugin, &file, 2);
     assert_eq!(app.plugin_group_dispatches, 2);
@@ -285,10 +284,7 @@ fn a_waiting_request_of_a_preview_that_is_gone_is_not_started() {
 fn a_plugin_without_a_group_starts_every_job() {
     let (mut app, _dir, file, rx) = app_with_worker();
     let (plugin, _) = heavy(false);
-    let req = |page| ViewReq {
-        page: Some(page),
-        ..ViewReq::default()
-    };
+    let req = |page| ViewReq::default().page(page);
     for page in 0..2 {
         let job = PluginJob::Open {
             plugin: Arc::clone(&plugin),

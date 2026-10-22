@@ -262,6 +262,15 @@ pub fn build_transmit(img: &RgbaImage, id: u32, is_tmux: bool) -> String {
     data
 }
 
+/// The escape that deletes the stored image `id` from a kitty-graphics terminal, with its
+/// placements (`a=d,d=I`: "delete by id and free the image data"), wrapped in tmux passthrough when
+/// `is_tmux`. `q=2` silences the reply. Only to be sent to a terminal that speaks kitty graphics,
+/// and only for an id konoma pinned itself (`App::md_kitty_ids`).
+pub fn build_delete(id: u32, is_tmux: bool) -> String {
+    let (start, escape, end) = tmux_wrap(is_tmux);
+    format!("{start}{escape}_Gq=2,a=d,d=I,i={id}{escape}\\{end}")
+}
+
 /// tmux passthrough wrapping: `(start, escape, end)`. Outside tmux these are empty / bare ESC.
 /// Mirrors ratatui-image's `Parser::tmux_start_escape_end`.
 fn tmux_wrap(is_tmux: bool) -> (&'static str, &'static str, &'static str) {
@@ -284,6 +293,21 @@ include!("kitty_diacritics.rs");
 mod tests {
     use super::*;
     use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn delete_names_the_id_and_frees_the_data() {
+        assert_eq!(build_delete(7, false), "\x1b_Gq=2,a=d,d=I,i=7\x1b\\");
+        // `d=I` (capital) also frees the image data, not only the placements.
+        assert!(build_delete(123456, false).contains("a=d,d=I,i=123456"));
+    }
+
+    #[test]
+    fn delete_in_tmux_is_wrapped_in_passthrough() {
+        assert_eq!(
+            build_delete(7, true),
+            "\x1bPtmux;\x1b\x1b_Gq=2,a=d,d=I,i=7\x1b\x1b\\\x1b\\"
+        );
+    }
 
     /// A small solid-color test image.
     fn solid(w: u32, h: u32, px: [u8; 4]) -> RgbaImage {

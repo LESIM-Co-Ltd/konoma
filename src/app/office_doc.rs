@@ -738,6 +738,7 @@ impl App {
                 view: None,
                 req: konoma_plugin::ViewReq::default(),
                 enabled: Default::default(),
+                flow: Default::default(),
             });
         }
         let mut work = self.plugin_work(
@@ -962,7 +963,7 @@ impl App {
             konoma_office::REPR_PICTURE
         };
         let before = self.tab.repr.replace(next.to_string());
-        if !self.plugin_view_now(self.plugin_view_req()) {
+        if !self.plugin_view_now_or_queue(self.plugin_view_req()) {
             // The session is busy (a read is running): the key is ignored, the choice unchanged.
             self.tab.repr = before;
         }

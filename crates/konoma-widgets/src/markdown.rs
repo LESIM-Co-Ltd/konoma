@@ -2871,6 +2871,58 @@ pub fn is_synthetic_md_url(url: &str) -> bool {
         || is_math_url(url)
         || is_media_diff_url(url)
         || is_office_image_url(url)
+        || is_canvas_url(url)
+}
+
+/// Whether an inline-image URL names a picture a plugin placed on its canvas
+/// (`canvas://<plugin id>/<image id>/<content hash>`, built by the host). Its pixels were decoded
+/// on the worker that ran the plugin and live only in the cache, never in a file.
+pub fn is_canvas_url(url: &str) -> bool {
+    url.starts_with("canvas://")
+}
+
+/// The synthetic cache key of one picture of a plugin's canvas. The same plugin, `image_id` and
+/// content hash give the same key, so a picture the plugin sends again is found in the cache
+/// (nothing is decoded, encoded or transmitted again); changed content under the same id is a
+/// different key (the entry of the old content is replaced, see [`canvas_slot_of`]).
+///
+/// The plugin id is **escaped** (`%` and `/` become `%25` and `%2F`; nothing validates a plugin id
+/// at registration, and a child-process plugin names itself), so two plugins never share a key and
+/// the last two `/`-separated parts are always the image id and the hash.
+pub fn canvas_url(plugin_id: &str, image_id: u64, content_hash: u64) -> String {
+    format!(
+        "{}/{content_hash:016x}",
+        canvas_slot_url(plugin_id, image_id)
+    )
+}
+
+/// The identity of a canvas picture, without its content: `canvas://<plugin id>/<image id>`. The
+/// terminal's stored copy (the kitty image ids) and the overlay signature belong to this, so a
+/// picture whose content changes replaces its copy in place instead of adding one.
+pub fn canvas_slot_url(plugin_id: &str, image_id: u64) -> String {
+    let mut s = String::with_capacity(plugin_id.len() + 32);
+    s.push_str("canvas://");
+    for c in plugin_id.chars() {
+        match c {
+            '%' => s.push_str("%25"),
+            '/' => s.push_str("%2F"),
+            c => s.push(c),
+        }
+    }
+    s.push('/');
+    s.push_str(&image_id.to_string());
+    s
+}
+
+/// The identity part of a canvas key made by [`canvas_url`] (everything before the content
+/// hash), or `None` for a URL that is not a canvas key.
+pub fn canvas_slot_of(url: &str) -> Option<&str> {
+    if !is_canvas_url(url) {
+        return None;
+    }
+    let cut = url.rfind('/')?;
+    // The slot needs its own `/<image id>` part after the plugin id.
+    (url[..cut].rfind('/')? >= "canvas://".len()).then_some(&url[..cut])
 }
 
 /// Whether an inline-image URL names a picture of the open Word document
@@ -12916,5 +12968,58 @@ mod block_align_tests {
             },
             "既定 = 従来の見え方"
         );
+    }
+}
+
+#[cfg(test)]
+mod canvas_key_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_is_the_slot_plus_the_content_hash() {
+        let k = canvas_url("plug", 42, 0xab);
+        assert_eq!(k, "canvas://plug/42/00000000000000ab");
+        assert_eq!(canvas_slot_url("plug", 42), "canvas://plug/42");
+        assert_eq!(canvas_slot_of(&k), Some("canvas://plug/42"));
+        // The identity does not depend on the content.
+        assert_eq!(
+            canvas_slot_of(&canvas_url("plug", 42, 1)),
+            canvas_slot_of(&canvas_url("plug", 42, 2))
+        );
+        assert_ne!(
+            canvas_slot_of(&canvas_url("plug", 42, 1)),
+            canvas_slot_of(&canvas_url("plug", 43, 1))
+        );
+    }
+
+    #[test]
+    fn a_plugin_id_cannot_break_the_parts() {
+        // `/` and `%` in a plugin id are escaped: the last two parts stay the id and the hash.
+        let k = canvas_url("a/1", 2, 3);
+        assert_eq!(k, "canvas://a%2F1/2/0000000000000003");
+        assert_eq!(canvas_slot_of(&k), Some("canvas://a%2F1/2"));
+        assert_ne!(canvas_url("a/1", 2, 3), canvas_url("a", 1, 3));
+        assert_ne!(canvas_url("a%2F1", 2, 3), canvas_url("a/1", 2, 3));
+        assert_eq!(canvas_url("a%", 2, 3), "canvas://a%25/2/0000000000000003");
+        // An id made of path-like parts never lands in another plugin's slot.
+        assert_ne!(canvas_slot_url("a/b", 1), canvas_slot_url("a", 1));
+    }
+
+    #[test]
+    fn only_canvas_keys_have_a_slot() {
+        assert_eq!(canvas_slot_of("math://x/y/z"), None);
+        assert_eq!(canvas_slot_of("/home/u/canvas://p/1/0"), None);
+        assert_eq!(canvas_slot_of("canvas://1/0"), None, "no plugin part");
+        assert_eq!(canvas_slot_of("canvas://"), None);
+    }
+
+    #[test]
+    fn a_plugin_with_an_empty_id_still_has_its_slot() {
+        // The slot starts right after `canvas://`: the plugin part may be empty (the escape of the
+        // id leaves an empty id empty), and the slot is the same for every content.
+        let k = canvas_url("", 42, 7);
+        assert_eq!(k, "canvas:///42/0000000000000007");
+        assert_eq!(canvas_slot_of(&k), Some("canvas:///42"));
+        assert_eq!(canvas_slot_of(&k), Some(canvas_slot_url("", 42).as_str()));
     }
 }

@@ -29,10 +29,19 @@ pub struct Profile {
     pub table: bool,
     /// Shows text (the host's windowed reader).
     pub text: bool,
+    /// Draws cells and pictures itself (a canvas).
+    pub canvas: bool,
+    /// One of the host's own standard plugins (not one a user added): the only ones whose `view`
+    /// the host may call on the UI thread (the cheap document representations; see
+    /// `App::plugin_view_now`).
+    pub standard: bool,
     /// Shows a converted form of the file (no file has the lines it shows).
     pub converts: bool,
     /// Its text view is the file itself.
     pub file_text: bool,
+    /// Its views depend on the request's size (`Manifest::sized`; a canvas is sized implicitly):
+    /// the host asks again when the area changes.
+    pub sized: bool,
     /// The host believes the `trusted` claim of the SVGs it returns: a **standard** plugin that
     /// draws the SVG itself, from a diagram or a formula, with konoma's own code (mermaid and
     /// math). Decided by where the plugin comes from: the plugins a user adds never have it, and
@@ -51,8 +60,11 @@ impl Profile {
             document: has(ViewKind::Document),
             table: has(ViewKind::Table),
             text: has(ViewKind::Text),
+            canvas: has(ViewKind::Canvas),
+            standard,
             converts: m.converts,
             file_text: m.file_text,
+            sized: m.sized || has(ViewKind::Canvas),
             unscreened: m.assigns_files_without_shows(),
             own_svg: standard
                 && matches!(

@@ -93,7 +93,7 @@ impl Latch {
         *self.opened.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn wait(&self) {
+    pub(crate) fn wait(&self) {
         let guard = self.opened.lock().unwrap_or_else(|e| e.into_inner());
         let _ = self
             .cv

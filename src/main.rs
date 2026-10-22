@@ -503,14 +503,33 @@ fn main() -> Result<()> {
     app.save_session();
     // Stops any SVG drawing process still running (it must not outlive the program that asked)
     // and removes the private temp directory.
-    preview::command::leave_for_good();
+    // (the main thread itself: the terminal guard it gets back is dropped here)
+    drop(preview::command::leave_for_good());
 
     // Fold up App, dropping every Sender, so the workers terminate.
     app.detach_image_backend();
     drop(app);
     let _ = worker.join();
 
+    // A terminal that went away (its pty closed: every write fails with EIO) is a hangup whichever
+    // of the two noticed first -- the signal thread (exit 129) or the draw that failed here. The
+    // exit code must not depend on that race: it is 128 + SIGHUP, never a plain failure.
+    if let Err(e) = &result {
+        if terminal_gone(e) {
+            std::process::exit(128 + signal_hook::consts::SIGHUP);
+        }
+    }
     result
+}
+
+/// Whether `err` is a write or read that failed because the terminal is gone (`EIO` from a pty
+/// whose other end closed, `EPIPE`, or a hangup), found anywhere in its chain.
+fn terminal_gone(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(io.raw_os_error(), Some(code) if code == libc::EIO || code == libc::EPIPE)
+        })
+    })
 }
 
 /// Handle resize requests on a current-thread tokio runtime on a dedicated thread.
@@ -743,14 +762,75 @@ fn poll_timeout(app: &App) -> Duration {
         || app.md_pixels_pending()
         || app.kitty_build_pending()
         || app.filter_pool_scan_in_flight()
+        || app.plugin_returned_pending()
     {
         return Duration::from_millis(16);
     }
     app.gif_poll_timeout()
         .into_iter()
         .chain(app.md_gif_poll_timeout())
+        .chain(app.canvas_poll_timeout(std::time::Instant::now()))
         .min()
         .unwrap_or(Duration::from_millis(100))
+}
+
+/// Delete from the terminal the images of the canvas pictures that went: write the escapes
+/// `App::take_kitty_deletes` returns to `out` and flush it. Nothing is written (or flushed) when
+/// there is nothing to delete.
+fn flush_kitty_deletes(app: &mut App, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    let deletes = app.take_kitty_deletes();
+    if deletes.is_empty() {
+        return Ok(());
+    }
+    for escape in deletes {
+        out.write_all(escape.as_bytes())?;
+    }
+    out.flush()
+}
+
+/// TEMPORARY (feature `demo-canvas`): see the call in `run`.
+#[cfg(feature = "demo-canvas")]
+fn canvas_trace(app: &App, last: &mut std::time::Instant) {
+    use std::io::Write;
+    let now = std::time::Instant::now();
+    if now.duration_since(*last) < Duration::from_secs(1) {
+        return;
+    }
+    *last = now;
+    let Some(path) = std::env::var_os("KONOMA_CANVAS_TRACE") else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{}", app.canvas_trace_line(now));
+    }
+}
+
+/// The animation timers of the run loop. Every one is looked at on every tick (no short-circuit),
+/// and the result says whether the screen has to be drawn again.
+fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
+    let mut redraw = false;
+    // GIF animation: once the current frame's display time has elapsed, advance to the next
+    // frame (swap image_src → the next render's prepare_image rebuilds → worker re-encodes →
+    // applied by the branch above).
+    if app.advance_gif_if_due() {
+        redraw = true;
+    }
+    // Inline Markdown GIF: likewise advance each entry independently (swap decoded → the next
+    // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
+    // md_enc branch).
+    if app.advance_md_gifs_if_due() {
+        redraw = true;
+    }
+    // A plugin canvas that asked to be drawn again after a while (`redraw_after`): when the
+    // time has come, ask the plugin for the view (async; the answer is applied by the loop).
+    if app.canvas_redraw_if_due(now) {
+        redraw = true;
+    }
+    redraw
 }
 
 fn run(
@@ -835,8 +915,13 @@ fn run(
     let mut deferred_kinds = FsBurstKinds::default();
 
     let mut needs_redraw = true;
+    #[cfg(feature = "demo-canvas")]
+    let mut trace_at = std::time::Instant::now();
     loop {
         if needs_redraw {
+            // The right to write to the terminal for the whole frame (a signal's exit cleanup
+            // waits for it, so its escapes never land between the chunks of a transmit).
+            let _writing = preview::command::terminal_write();
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
             // On a frame where an inline image's (kitty unicode placeholder) display position
@@ -850,6 +935,11 @@ fn run(
                 terminal.clear()?;
                 terminal.draw(|frame| ui::render(frame, app))?;
             }
+        }
+        // Canvas pictures that went: free their stored images in the (kitty) terminal.
+        {
+            let _writing = preview::command::terminal_write();
+            flush_kitty_deletes(app, terminal.backend_mut())?;
         }
 
         // Waiting on heavy code highlighting (the first time for a cold language): offload the
@@ -955,6 +1045,12 @@ fn run(
             }
         }
 
+        // What `plugin_session_returned` left at its per-call bound (queued keys and actions
+        // answered on the spot): the next bounded turn of it.
+        if app.plugin_returned_continue() {
+            needs_redraw = true;
+        }
+
         // Apply the separate thread's media load (SVG/GIF) completion(s) (all of them, if there
         // are several; discard stale generations).
         while let Ok(result) = rx.media.try_recv() {
@@ -1056,18 +1152,14 @@ fn run(
             }
         }
 
-        // GIF animation: once the current frame's display time has elapsed, advance to the next
-        // frame (swap image_src → the next render's prepare_image rebuilds → worker re-encodes →
-        // applied by the branch above).
-        if app.advance_gif_if_due() {
+        // GIF animations and the plugin canvas timer (see `animation_timers_due`).
+        if animation_timers_due(app, std::time::Instant::now()) {
             needs_redraw = true;
         }
-        // Inline Markdown GIF: likewise advance each entry independently (swap decoded → the next
-        // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
-        // md_enc branch).
-        if app.advance_md_gifs_if_due() {
-            needs_redraw = true;
-        }
+        // TEMPORARY (feature `demo-canvas`): `KONOMA_CANVAS_TRACE=<file>` appends the state of the
+        // canvas timer about once a second, to find out why a canvas stops redrawing.
+        #[cfg(feature = "demo-canvas")]
+        canvas_trace(app, &mut trace_at);
 
         // Pick up file changes and auto-update (a burst is coalesced into one).
         // If even one event changed an ignore rule (.gitignore / .git/info/exclude), also rebuild
@@ -1436,8 +1528,13 @@ fn run_external(
     enable_raw_mode()?;
     let _ = execute!(std::io::stdout(), BeginSynchronizedUpdate);
     execute!(std::io::stdout(), EnterAlternateScreen)?;
-    let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
-    let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
+    {
+        // A frame (a kitty transmit is a run of chunks) is written under the right to write to
+        // the terminal, like the run loop's: an exit signal must not land inside it.
+        let _writing = preview::command::terminal_write();
+        let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
+        let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
+    }
     let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
 
     // Legacy-izing the input mode + draining leftover bytes can happen after the screen is
@@ -1531,6 +1628,9 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Right => app.image_pan(1.0, 0.0),
             _ => {}
         },
+        // A plugin's canvas has nothing the host scrolls or pans: no key is a motion there (the
+        // keys are the plugin's).
+        Surface::PreviewCanvas | Surface::PluginInput => {}
         // Table (csv/tsv): hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last
         // column / paging.
         Surface::PreviewTable => match m {
@@ -1765,7 +1865,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::OpenExternal => app.open_in_other_app(),
         Action::OpenGitView => app.open_git_view(),
         Action::Refresh => {
-            app.refresh()?;
+            app.refresh_explicit()?;
             // The log, the graph, the branch and worktree lists read again too.
             #[cfg(feature = "git")]
             app.reload_front_list();
@@ -2074,6 +2174,8 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.search_input_push(c),
             _ => {}
         },
+        // Every key but `Esc` is the plugin's (the layer-0 keys are text here); `Esc` leaves.
+        Surface::PluginInput => app.plugin_input_key(&key),
         Surface::Mark => match (code, ctrl) {
             (KeyCode::Esc, _) => app.cancel_mark(),
             (KeyCode::Char(c), false) => app.mark_input(c),
@@ -2213,7 +2315,10 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         // Tables also have search, so use the same convention as text/image (previously Esc did
         // nothing here = the search highlight couldn't be cleared, and you couldn't return to the
         // tree either).
-        Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable => {
+        Surface::PreviewText
+        | Surface::PreviewImage
+        | Surface::PreviewTable
+        | Surface::PreviewCanvas => {
             // If a search is active, clear it; otherwise return to the tree.
             if app.preview_search_query().is_some() {
                 app.search_clear();
@@ -2304,6 +2409,13 @@ fn handle_fixed_key(
     };
     if !ops::keys::is_fixed_code(key.code) {
         return Ok(None);
+    }
+    // A canvas hands the navigation fixed keys to the plugin: the key runs the plugin's action
+    // when it declares one on it (the same lookup the footer and help use), else nothing.
+    if ctx == keymap::Context::Canvas {
+        if let Some(a) = app.plugin_action_for_key(ctx, KeyPress::norm(&key)) {
+            return dispatch_action(app, a, sfc).map(Some);
+        }
     }
     // A fixed key with no operation on this screen simply does nothing.
     let Some(action) = ops::keys::fixed_action(ctx, key.code) else {
@@ -2903,6 +3015,19 @@ mod tests {
             }),
             "mark_app_main must be the first statement of main, found: {before:?}"
         );
+    }
+
+    /// A failed write to a closed terminal is a hangup (exit 129); other errors are not.
+    #[test]
+    fn a_terminal_that_went_away_is_told_from_other_errors() {
+        let eio = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EIO));
+        assert!(terminal_gone(&eio));
+        assert!(terminal_gone(&eio.context("drawing the frame")));
+        let pipe = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EPIPE));
+        assert!(terminal_gone(&pipe));
+        let other = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOENT));
+        assert!(!terminal_gone(&other));
+        assert!(!terminal_gone(&anyhow::anyhow!("failed to initialize")));
     }
 
     // --- structural guard: validation must run before ratatui::init() touches the terminal --
@@ -3934,6 +4059,76 @@ mod tests {
         assert!(!app.filter_pool_scan_in_flight());
         assert_eq!(poll_timeout(&app), idle, "着地したら元の待ちに戻る");
         app::set_filter_scan_budget(None);
+    }
+
+    /// Work that `plugin_session_returned` left at its per-call bound must shorten the loop's wait,
+    /// or the rest of a queue would wait a whole idle timeout per turn.
+    #[test]
+    fn poll_is_fast_while_returned_plugin_work_is_pending() {
+        let dir = unique_tmp("konoma_poll_returned");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        let idle = poll_timeout(&app);
+        assert!(idle > Duration::from_millis(16), "{idle:?}");
+        app.set_plugin_returned_pending_for_test(true);
+        assert_eq!(poll_timeout(&app), Duration::from_millis(16));
+        assert!(app.plugin_returned_continue());
+        assert_eq!(poll_timeout(&app), idle);
+    }
+
+    /// Every write of a frame (and of the canvas-picture deletes) in the run loop holds the right
+    /// to write to the terminal, so the signal thread's exit cleanup cannot land inside a kitty
+    /// transmit. The loop cannot be driven here, so this reads the source: the draws and the
+    /// delete flush are each preceded by the guard.
+    #[test]
+    fn the_run_loop_writes_frames_and_deletes_under_the_terminal_guard() {
+        let src = include_str!("main.rs");
+        let run = &src[src.find("\nfn run(").expect("fn run")..];
+        let loop_body = &run[run.find("    loop {").expect("the loop")..];
+        let draw = loop_body
+            .find("terminal.draw(|frame| ui::render(frame, app))?;")
+            .unwrap();
+        let guard = loop_body
+            .find("preview::command::terminal_write()")
+            .unwrap();
+        assert!(guard < draw, "the frame is drawn under the guard");
+        let flush = loop_body
+            .find("flush_kitty_deletes(app, terminal.backend_mut())")
+            .unwrap();
+        let second = loop_body[flush - 200..flush].contains("preview::command::terminal_write()");
+        assert!(second, "the deletes are flushed under the guard");
+    }
+
+    /// Every `terminal.draw(` and `terminal.clear(` in this file (the run loop, the return from an
+    /// editor or an external tool) has the guard within the lines before it, in the same block.
+    #[test]
+    fn every_terminal_draw_or_clear_in_main_is_under_the_terminal_guard() {
+        let src = include_str!("main.rs");
+        let production = &src[..src.find("\nmod tests {").expect("tests module")];
+        let lines: Vec<&str> = production.lines().collect();
+        let mut seen = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap();
+            if !(code.contains("terminal.draw(") || code.contains("terminal.clear(")) {
+                continue;
+            }
+            seen += 1;
+            let from = i.saturating_sub(12);
+            let guarded = lines[from..i]
+                .iter()
+                .any(|l| l.contains("preview::command::terminal_write()"));
+            assert!(
+                guarded,
+                "line {}: `{}` is not under the terminal guard",
+                i + 1,
+                line.trim()
+            );
+        }
+        assert!(
+            seen >= 4,
+            "the loop's two draws and clear and the return's two: {seen}"
+        );
     }
 
     // --- tool_command (the `!` tool-selection logic pulled out of run_git_tool) ------------

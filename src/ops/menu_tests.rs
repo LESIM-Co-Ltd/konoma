@@ -314,7 +314,7 @@ fn a_pair_of_operations_is_zipped_and_any_other_group_is_one_key_per_column() {
 }
 
 /// The screens that write `Enter` as `↵` in the footer are the previews of text, documents,
-/// pictures and tables, and no others.
+/// pictures, tables and a plugin's canvas, and no others.
 #[test]
 fn only_the_preview_screens_write_enter_short() {
     for (ctx, want) in [
@@ -322,6 +322,7 @@ fn only_the_preview_screens_write_enter_short() {
         (Context::Document, true),
         (Context::Image, true),
         (Context::Table, true),
+        (Context::Canvas, true),
         (Context::Tree, false),
         (Context::Bookmarks, false),
         (Context::Tabs, false),

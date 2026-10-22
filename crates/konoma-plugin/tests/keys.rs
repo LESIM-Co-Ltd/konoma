@@ -1,5 +1,5 @@
 use konoma_plugin::keys::{
-    forbidden_defaults, parse_key, reserved, validate, Effect, KeyCode, KeyError, KeyIssueKind,
+    forbidden_defaults, parse_key, reserved, validate, Effect, KeyError, KeyIssueKind, KeyName,
     KeySpec, Layer,
 };
 use konoma_plugin::prelude::*;
@@ -11,22 +11,22 @@ fn parses_the_notations() {
     assert_eq!(parse_key("Ctrl-t").unwrap(), KeySpec::ctrl('t'));
     assert_eq!(parse_key("ctrl-t").unwrap(), KeySpec::ctrl('t'));
     assert_eq!(parse_key("c-t").unwrap(), KeySpec::ctrl('t'));
-    assert_eq!(parse_key("Enter").unwrap(), KeySpec::key(KeyCode::Enter));
-    assert_eq!(parse_key("enter").unwrap(), KeySpec::key(KeyCode::Enter));
-    assert_eq!(parse_key("Tab").unwrap(), KeySpec::key(KeyCode::Tab));
+    assert_eq!(parse_key("Enter").unwrap(), KeySpec::key(KeyName::Enter));
+    assert_eq!(parse_key("enter").unwrap(), KeySpec::key(KeyName::Enter));
+    assert_eq!(parse_key("Tab").unwrap(), KeySpec::key(KeyName::Tab));
     assert_eq!(
         parse_key("Shift-Tab").unwrap(),
-        KeySpec::key(KeyCode::BackTab)
+        KeySpec::key(KeyName::BackTab)
     );
     assert_eq!(
         parse_key("backtab").unwrap(),
-        KeySpec::key(KeyCode::BackTab)
+        KeySpec::key(KeyName::BackTab)
     );
     assert_eq!(parse_key("Shift-w").unwrap(), KeySpec::ch('W'));
-    assert_eq!(parse_key("Esc").unwrap(), KeySpec::key(KeyCode::Esc));
+    assert_eq!(parse_key("Esc").unwrap(), KeySpec::key(KeyName::Esc));
     assert_eq!(parse_key("Space").unwrap(), KeySpec::ch(' '));
-    assert_eq!(parse_key("Up").unwrap(), KeySpec::key(KeyCode::Up));
-    assert_eq!(parse_key("PgDn").unwrap(), KeySpec::key(KeyCode::PageDown));
+    assert_eq!(parse_key("Up").unwrap(), KeySpec::key(KeyName::Up));
+    assert_eq!(parse_key("PgDn").unwrap(), KeySpec::key(KeyName::PageDown));
     assert_eq!(parse_key("$").unwrap(), KeySpec::ch('$'));
     assert_eq!(parse_key("-").unwrap(), KeySpec::ch('-'));
 }
@@ -322,9 +322,24 @@ fn every_context_table_is_exactly_the_shared_part_plus_its_own_layer_two() {
 }
 
 #[test]
+fn the_canvas_table_is_layer_zero_the_non_motion_base_keys_the_verbs_and_the_page_keys() {
+    // A key means the same thing everywhere: a canvas gives up only the type layer (scrolling,
+    // searching, selecting) and the navigation fixed keys.
+    assert_eq!(
+        table("canvas"),
+        expected(&[
+            ("Global", "? Q F P t T [ ] 1 2 3 4 5 6 7 8 9"),
+            ("Base", "q , Space y Y r m ' Ctrl-t Ctrl-n Ctrl-p Esc"),
+            ("Verb", "e o p !"),
+            ("Type", "R J K O"),
+        ])
+    );
+}
+
+#[test]
 fn no_context_table_lists_a_key_twice() {
     for ctx in [
-        "global", "tree", "text", "document", "table", "image", "diff", "list",
+        "global", "tree", "text", "document", "table", "image", "diff", "list", "canvas",
     ] {
         let r = reserved(ctx);
         for (i, (a, _)) in r.iter().enumerate() {
@@ -341,24 +356,24 @@ fn the_notation_aliases_parse_to_one_key_each() {
     for s in ["pagedown", "PgDn", "pagedn", "PAGEDN"] {
         assert_eq!(
             parse_key(s).unwrap(),
-            KeySpec::key(KeyCode::PageDown),
+            KeySpec::key(KeyName::PageDown),
             "{s}"
         );
     }
     for s in ["pageup", "PgUp"] {
-        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::PageUp), "{s}");
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyName::PageUp), "{s}");
     }
     for s in ["esc", "Escape", "ESCAPE"] {
-        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Esc), "{s}");
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyName::Esc), "{s}");
     }
     for s in ["enter", "Return"] {
-        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Enter), "{s}");
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyName::Enter), "{s}");
     }
     for s in ["delete", "Del"] {
-        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyCode::Delete), "{s}");
+        assert_eq!(parse_key(s).unwrap(), KeySpec::key(KeyName::Delete), "{s}");
     }
-    assert_eq!(parse_key("F1").unwrap(), KeySpec::key(KeyCode::F(1)));
-    assert_eq!(parse_key("f12").unwrap(), KeySpec::key(KeyCode::F(12)));
+    assert_eq!(parse_key("F1").unwrap(), KeySpec::key(KeyName::F(1)));
+    assert_eq!(parse_key("f12").unwrap(), KeySpec::key(KeyName::F(12)));
     assert!(parse_key("F13").is_err());
     assert!(parse_key("F0").is_err());
 }
@@ -368,32 +383,32 @@ fn ctrl_keeps_its_modifier_on_shift_tab_and_shift_letters() {
     assert_eq!(
         parse_key("Ctrl-Shift-Tab").unwrap(),
         KeySpec {
-            code: KeyCode::BackTab,
+            code: KeyName::BackTab,
             ctrl: true
         }
     );
     assert_eq!(
         parse_key("c-shift-tab").unwrap(),
         KeySpec {
-            code: KeyCode::BackTab,
+            code: KeyName::BackTab,
             ctrl: true
         }
     );
     assert_eq!(
         parse_key("Ctrl-Shift-w").unwrap(),
         KeySpec {
-            code: KeyCode::Char('W'),
+            code: KeyName::Char('W'),
             ctrl: true
         }
     );
     assert_eq!(
         parse_key("Shift-Tab").unwrap(),
-        KeySpec::key(KeyCode::BackTab)
+        KeySpec::key(KeyName::BackTab)
     );
     assert_eq!(
         parse_key("Ctrl-Tab").unwrap(),
         KeySpec {
-            code: KeyCode::Tab,
+            code: KeyName::Tab,
             ctrl: true
         }
     );

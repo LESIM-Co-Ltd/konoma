@@ -40,6 +40,7 @@ impl std::fmt::Display for ApiVersion {
 /// in that view (the keys of the display type: see [`crate::keys::reserved`]), so a plugin that
 /// shows only text is not refused the keys a table would need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ViewKind {
     /// Windowed text (source, hex dumps, logs).
     Text,
@@ -50,11 +51,20 @@ pub enum ViewKind {
     Diff,
     /// A list of rows.
     List,
+    /// Cells and pictures the plugin draws itself (see [`crate::view::CanvasView`]). The key
+    /// context is `canvas`. The host provides no scrolling, search or selection here and keeps
+    /// only the keys that mean the same everywhere: layer 0 (`? Q F P t T [ ] 1`-`9`), `q`,
+    /// `Esc`, `,` and `Space` (the menus), `y Y r m '` and `Ctrl-n Ctrl-p` (and `Ctrl-t`, which is only reserved: it does nothing in a canvas), the launch
+    /// verbs `e o p !`, and `R J K O` (representation and page). Every other key is free for a
+    /// declared [`Act`]; the exact set is [`crate::keys::reserved`]`("canvas")`. A plugin gets raw
+    /// keys through [`crate::Session::key`] while its view asks for text input
+    /// ([`crate::view::CanvasView::text_input`]).
+    Canvas,
 }
 
 impl ViewKind {
     /// The name of the key context of this kind (`text`, `document`, `table`, `image`, `diff`,
-    /// `list`).
+    /// `list`, `canvas`).
     pub fn context(self) -> &'static str {
         match self {
             ViewKind::Text => "text",
@@ -63,6 +73,7 @@ impl ViewKind {
             ViewKind::Image => "image",
             ViewKind::Diff => "diff",
             ViewKind::List => "list",
+            ViewKind::Canvas => "canvas",
         }
     }
 }
@@ -111,6 +122,8 @@ pub struct Manifest {
     pub converts: bool,
     /// Whether a text view is the file itself. See [`Manifest::file_text`].
     pub file_text: bool,
+    /// Whether the plugin's views depend on the size of the request. See [`Manifest::sized`].
+    pub sized: bool,
     /// What the host shows when the plugin shows nothing. See [`Unavailable`].
     pub unavailable: Unavailable,
 }
@@ -133,6 +146,7 @@ impl Manifest {
             work_group: None,
             converts: false,
             file_text: false,
+            sized: false,
             unavailable: Unavailable::Message,
         }
     }
@@ -175,6 +189,20 @@ impl Manifest {
     /// [`TextSource::File`]: crate::view::TextSource::File
     pub fn file_text(mut self) -> Manifest {
         self.file_text = true;
+        self
+    }
+
+    /// Declare that the plugin's views depend on the size of the request ([`ViewReq::cols`] and
+    /// [`ViewReq::rows`]): a text diagram laid out to the width of the area, a view that fills it.
+    /// The host then asks for the view again when the area changes (a resize, the first frame
+    /// that measured it, another tab's size), **once per answer and always for the newest size**.
+    /// A plugin that shows a canvas is sized without saying so. Pictures are scaled by the host,
+    /// so a picture view is never asked again for a size.
+    ///
+    /// [`ViewReq::cols`]: crate::view::ViewReq::cols
+    /// [`ViewReq::rows`]: crate::view::ViewReq::rows
+    pub fn sized(mut self) -> Manifest {
+        self.sized = true;
         self
     }
 
@@ -382,8 +410,9 @@ impl Act {
         self
     }
 
-    /// The context the key lives in: a host context name (`text`, `table`, `image`, `document`)
-    /// or a screen of the plugin.
+    /// The context the key lives in: a host context name (`text`, `table`, `image`, `document`,
+    /// `canvas`) or a screen of the plugin. When it is not set, the action lives in the context of
+    /// the view types the plugin `shows` (a plugin that shows `ViewKind::Canvas` gets `canvas`).
     pub fn context(mut self, context: impl Into<String>) -> Act {
         self.screen = Some(context.into());
         self

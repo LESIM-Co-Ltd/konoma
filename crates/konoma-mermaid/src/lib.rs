@@ -56,6 +56,8 @@ pub fn mermaid_manifest() -> Manifest {
         .bind(Bind::files(["*.{mmd,mermaid}"]))
         .bind(Bind::embed(FENCE_KIND))
         .shows(ViewKind::Image)
+        // Its text diagram is laid out to the width of the request.
+        .sized()
         .unavailable(Unavailable::RawText { with_reason: false })
         .setting(SettingDecl::new(
             "mode",

@@ -35,6 +35,8 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::PreviewTextVisual,
         Surface::PreviewImage,
         Surface::PreviewTable,
+        Surface::PreviewCanvas,
+        Surface::PluginInput,
         Surface::ListFilter,
     ];
     #[cfg(feature = "git")]
@@ -77,26 +79,28 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::PreviewImage => 19,
         Surface::PreviewTable => 20,
         Surface::ListFilter => 21,
+        Surface::PreviewCanvas => 22,
+        Surface::PluginInput => 23,
         #[cfg(feature = "git")]
-        Surface::BranchFilter => 22,
+        Surface::BranchFilter => 24,
         #[cfg(feature = "git")]
-        Surface::WorktreeFilter => 23,
+        Surface::WorktreeFilter => 25,
         #[cfg(feature = "git")]
-        Surface::GitDetail => 24,
+        Surface::GitDetail => 26,
         #[cfg(feature = "git")]
-        Surface::GitLog => 25,
+        Surface::GitLog => 27,
         #[cfg(feature = "git")]
-        Surface::GitGraph => 26,
+        Surface::GitGraph => 28,
         #[cfg(feature = "git")]
-        Surface::GitGraphPicker => 27,
+        Surface::GitGraphPicker => 29,
         #[cfg(feature = "git")]
-        Surface::GitBranches => 28,
+        Surface::GitBranches => 30,
         #[cfg(feature = "git")]
-        Surface::GitChanges => 29,
+        Surface::GitChanges => 31,
         #[cfg(feature = "git")]
-        Surface::GitWorktrees => 30,
+        Surface::GitWorktrees => 32,
         #[cfg(feature = "git")]
-        Surface::PreviewGitDiff => 31,
+        Surface::PreviewGitDiff => 33,
     }
 }
 
@@ -106,9 +110,9 @@ fn the_surface_list_is_complete() {
     let mut ords: Vec<usize> = all.iter().map(|&s| surface_ordinal(s)).collect();
     ords.sort_unstable();
     let expected: Vec<usize> = if cfg!(feature = "git") {
-        (0..32).collect()
+        (0..34).collect()
     } else {
-        (0..22).collect()
+        (0..24).collect()
     };
     assert_eq!(ords, expected, "all_surfaces() misses or repeats a Surface");
 }
@@ -443,7 +447,7 @@ fn the_keys_that_terminals_cannot_tell_apart_are_not_defaults() {
     let theirs: Vec<char> = konoma_plugin::keys::forbidden_defaults()
         .iter()
         .filter_map(|k| match k.code {
-            konoma_plugin::keys::KeyCode::Char(c) if k.ctrl => Some(c),
+            konoma_plugin::keys::KeyName::Char(c) if k.ctrl => Some(c),
             _ => None,
         })
         .collect();
@@ -1120,7 +1124,7 @@ fn several_git_tables_at_once_merge_each_into_its_own_contexts() {
 /// crate's names (tree, text, document, table, image, diff, list).
 #[test]
 fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
-    use konoma_plugin::keys::{reserved, KeyCode as PKey, KeySpec};
+    use konoma_plugin::keys::{reserved, KeyName as PKey, KeySpec};
     use Action as A;
     // The operations that are the meaning of a layer-0-to-3 key (or of the display type's own).
     let layered = |a: Action| -> bool {

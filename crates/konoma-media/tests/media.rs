@@ -182,10 +182,8 @@ fn a_pdf_reports_its_pages_and_draws_the_one_asked_for() {
         })
     );
     let dims = |s: &mut Box<dyn Session>, page: Option<usize>| {
-        let req = ViewReq {
-            page,
-            ..ViewReq::default()
-        };
+        let mut req = ViewReq::new(80, 24);
+        req.page = page;
         match image_of(s.view(&req, &ViewCx::bare()).unwrap()).data {
             ImageData::Rgba {
                 width,

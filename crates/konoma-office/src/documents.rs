@@ -508,13 +508,11 @@ mod tests {
         pixels: bool,
     ) -> Result<View, Failure> {
         let settings = Settings::empty();
-        let req = ViewReq {
-            repr: repr.map(str::to_string),
-            ..ViewReq::default()
-        };
+        let mut req = ViewReq::new(80, 24);
+        req.repr = repr.map(str::to_string);
         session.view(
             &req,
-            &ViewCx::new(settings, "en").with_term(TermCaps { pixels }),
+            &ViewCx::new(settings, "en").with_term(TermCaps::new().pixels(pixels)),
         )
     }
 
@@ -772,14 +770,8 @@ mod tests {
         if let Some(p) = testdata("slides.pptx") {
             let mut s = open(&PresentationPlugin, &p);
             let d = document_of(
-                s.view(
-                    &ViewReq {
-                        repr: Some(REPR_TEXT.into()),
-                        ..ViewReq::default()
-                    },
-                    &ViewCx::bare(),
-                )
-                .unwrap(),
+                s.view(&ViewReq::default().repr(REPR_TEXT), &ViewCx::bare())
+                    .unwrap(),
             );
             assert!(d.markdown.contains("## "));
             let Some(PageLayout::Anchored {
@@ -804,10 +796,7 @@ mod tests {
             let settings = Settings::empty();
             document_of(
                 s.view(
-                    &ViewReq {
-                        repr: Some(REPR_TEXT.into()),
-                        ..ViewReq::default()
-                    },
+                    &ViewReq::default().repr(REPR_TEXT),
                     &ViewCx::new(settings, lang),
                 )
                 .unwrap(),

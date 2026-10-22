@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use crossterm::event::KeyCode;
-use konoma_plugin::keys::{self, KeyCode as PKeyCode, KeyIssue, KeySpec};
+use konoma_plugin::keys::{self, KeyIssue, KeyName as PKeyName, KeySpec};
 use konoma_plugin::registry::{NoteKind, Registry};
 use konoma_plugin::{ApiVersion, Tr};
 
@@ -92,6 +92,8 @@ pub enum PluginNote {
     },
     /// The plugin is given files but declares no `shows`: the host attaches no screen to them.
     ShowsNotDeclared { plugin: String },
+    /// The plugin was refused: a name it declares is not usable or it declares too much.
+    Refused { plugin: String, why: String },
     /// `[keys.<plugin>]` names an action the plugin does not declare.
     UnknownAction { plugin: String, action: String },
     /// `[keys.<plugin>]` has a key that is not usable (does not parse, reserved, taken).
@@ -118,22 +120,22 @@ struct PluginEntry {
 /// The key a plugin's `KeySpec` is on the host side.
 pub fn keypress_of(spec: KeySpec) -> KeyPress {
     let code = match spec.code {
-        PKeyCode::Char(c) => KeyCode::Char(c),
-        PKeyCode::Enter => KeyCode::Enter,
-        PKeyCode::Tab => KeyCode::Tab,
-        PKeyCode::BackTab => KeyCode::BackTab,
-        PKeyCode::Esc => KeyCode::Esc,
-        PKeyCode::Backspace => KeyCode::Backspace,
-        PKeyCode::Delete => KeyCode::Delete,
-        PKeyCode::Up => KeyCode::Up,
-        PKeyCode::Down => KeyCode::Down,
-        PKeyCode::Left => KeyCode::Left,
-        PKeyCode::Right => KeyCode::Right,
-        PKeyCode::Home => KeyCode::Home,
-        PKeyCode::End => KeyCode::End,
-        PKeyCode::PageUp => KeyCode::PageUp,
-        PKeyCode::PageDown => KeyCode::PageDown,
-        PKeyCode::F(n) => KeyCode::F(n),
+        PKeyName::Char(c) => KeyCode::Char(c),
+        PKeyName::Enter => KeyCode::Enter,
+        PKeyName::Tab => KeyCode::Tab,
+        PKeyName::BackTab => KeyCode::BackTab,
+        PKeyName::Esc => KeyCode::Esc,
+        PKeyName::Backspace => KeyCode::Backspace,
+        PKeyName::Delete => KeyCode::Delete,
+        PKeyName::Up => KeyCode::Up,
+        PKeyName::Down => KeyCode::Down,
+        PKeyName::Left => KeyCode::Left,
+        PKeyName::Right => KeyCode::Right,
+        PKeyName::Home => KeyCode::Home,
+        PKeyName::End => KeyCode::End,
+        PKeyName::PageUp => KeyCode::PageUp,
+        PKeyName::PageDown => KeyCode::PageDown,
+        PKeyName::F(n) => KeyCode::F(n),
     };
     KeyPress {
         code,
@@ -163,6 +165,10 @@ impl PluginKeys {
                 },
                 NoteKind::ShowsNotDeclared => PluginNote::ShowsNotDeclared {
                     plugin: note.plugin,
+                },
+                NoteKind::Refused { why } => PluginNote::Refused {
+                    plugin: note.plugin,
+                    why,
                 },
             });
         }
@@ -346,6 +352,12 @@ impl PluginKeys {
                 (PluginNote::ShowsNotDeclared { plugin }, Lang::En) => format!(
                     "{plugin}: it is given files but declares no `shows`, so it gets no screen (Manifest::shows)"
                 ),
+                (PluginNote::Refused { plugin, why }, Lang::Jp) => {
+                    format!("{plugin}: 宣言が不正なので登録しませんでした: {why}")
+                }
+                (PluginNote::Refused { plugin, why }, Lang::En) => {
+                    format!("{plugin}: not registered, its declarations are not usable: {why}")
+                }
                 (PluginNote::UnknownAction { plugin, action }, Lang::Jp) => {
                     format!("[keys.{plugin}] 未知の操作 `{action}`(無視)")
                 }
@@ -563,18 +575,47 @@ mod tests {
         for (spec, want) in [
             (KeySpec::ch('a'), KeyPress::ch('a')),
             (KeySpec::ctrl('a'), KeyPress::ctrl_ch('a')),
-            (KeySpec::key(PKeyCode::Enter), KeyPress::key(KeyCode::Enter)),
+            (KeySpec::key(PKeyName::Enter), KeyPress::key(KeyCode::Enter)),
             (
-                KeySpec::key(PKeyCode::BackTab),
+                KeySpec::key(PKeyName::BackTab),
                 KeyPress::key(KeyCode::BackTab),
             ),
             (
-                KeySpec::key(PKeyCode::PageDown),
+                KeySpec::key(PKeyName::PageDown),
                 KeyPress::key(KeyCode::PageDown),
             ),
-            (KeySpec::key(PKeyCode::F(12)), KeyPress::key(KeyCode::F(12))),
+            (KeySpec::key(PKeyName::F(12)), KeyPress::key(KeyCode::F(12))),
         ] {
             assert_eq!(keypress_of(spec), want);
         }
+    }
+
+    /// A plugin whose manifest the registry refuses (a name with an escape character) is named in
+    /// the startup message under a safe id, in both languages, and is not registered.
+    #[test]
+    fn a_refused_manifest_is_named_in_the_startup_message_with_a_safe_id() {
+        struct Evil;
+        impl konoma_plugin::Plugin for Evil {
+            fn manifest(&self) -> konoma_plugin::Manifest {
+                konoma_plugin::Manifest::new("evil\u{1b}[2J", "1")
+            }
+            fn open(
+                &self,
+                _: konoma_plugin::Input,
+                _: &konoma_plugin::OpenCx,
+            ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+                Err(konoma_plugin::Failure::unsupported(Tr::new("no")))
+            }
+        }
+        let mut r = Registry::new();
+        assert!(r.register(Arc::new(Evil), PluginOrigin::User).is_err());
+        let k = PluginKeys::build(&r, &mut HashMap::new());
+        for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+            let report = k.report(lang);
+            assert_eq!(report.len(), 1, "{report:?}");
+            assert!(report[0].starts_with("evil??2?: "), "{report:?}");
+            assert!(!report[0].contains('\u{1b}'));
+        }
+        assert!(r.ids().is_empty());
     }
 }

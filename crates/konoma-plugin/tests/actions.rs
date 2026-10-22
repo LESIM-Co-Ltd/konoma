@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use konoma_plugin::hints::hints;
-use konoma_plugin::keys::{parse_key, validate, Effect, KeyCode, KeyIssueKind, KeySpec, Layer};
+use konoma_plugin::keys::{parse_key, validate, Effect, KeyIssueKind, KeyName, KeySpec, Layer};
 use konoma_plugin::manifest::ApiVersion;
 use konoma_plugin::prelude::*;
 use konoma_plugin::registry::{NoteKind, PluginOrigin, Registry};
@@ -77,14 +77,14 @@ fn context_is_the_new_name_of_screen() {
 fn function_keys_parse_and_print() {
     for n in 1..=12u8 {
         let k = parse_key(&format!("F{n}")).unwrap();
-        assert_eq!(k, KeySpec::key(KeyCode::F(n)));
+        assert_eq!(k, KeySpec::key(KeyName::F(n)));
         assert_eq!(k.to_string(), format!("F{n}"));
         assert_eq!(parse_key(&format!("f{n}")).unwrap(), k);
     }
     assert_eq!(
         parse_key("Ctrl-F5").unwrap(),
         KeySpec {
-            code: KeyCode::F(5),
+            code: KeyName::F(5),
             ctrl: true
         }
     );
@@ -350,10 +350,7 @@ impl Session for ViewsSession {
 }
 
 fn req(repr: &str) -> ViewReq {
-    ViewReq {
-        repr: Some(repr.into()),
-        ..ViewReq::default()
-    }
+    ViewReq::default().repr(repr)
 }
 
 #[test]

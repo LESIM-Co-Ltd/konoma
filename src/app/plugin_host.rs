@@ -39,7 +39,9 @@
 //!   the worker turns the document into the host's `LoadedDocument` (`office_doc.rs`) in the same
 //!   job, so the sizes of the pictures are read off the UI thread and the view itself is not kept.
 //!   Their other representation (`R`: a presentation's text, a Markdown file's or Word document's
-//!   source) is asked for on the spot ([`App::plugin_view_now`]). The Markdown plugin is waited
+//!   source) is asked for on the spot ([`App::plugin_view_now`]) **for the host's own standard
+//!   plugins only** (`Profile::standard`); a plugin a user added is asked on a worker whatever
+//!   it declares. The Markdown plugin is waited
 //!   for longer on the first frame ([`MARKDOWN_FIRST_FRAME_BUDGET`]): it only reads a file.
 //! - **Pages.** A table plugin with pages (a workbook's sheets) is turned with
 //!   [`App::plugin_turn_page`]: the grid of the page being left is released off the UI thread and
@@ -50,7 +52,8 @@ use std::time::Duration;
 
 use konoma_plugin::view::{DocOptions, DocumentView, Layout, PageLayout, TableView, View, ViewReq};
 use konoma_plugin::{
-    t, ActCx, Cancel, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings, TermCaps, ViewCx,
+    t, ActCx, Cancel, ColorDepth, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings,
+    TermCaps, ViewCx,
 };
 
 use super::media_plugin::image_failure_of;
@@ -105,10 +108,80 @@ impl LongFirstFrame {
 }
 
 #[cfg(test)]
+thread_local! {
+    static RESULT_WAIT_FLOOR: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: while it lives, every `Wait::Result` and `Wait::Layout` of this test's UI thread waits at least
+/// `floor`, so a worker that answers quickly is *always* taken on the spot (nothing goes through
+/// the channel). It forces the fast side of the race between "the worker answers inside the wait"
+/// and "it answers after it" -- the side a slow runner rarely shows -- so a test that waits on the
+/// channel unconditionally can be shown to fail, and the ones that do not can be shown to hold.
+#[cfg(test)]
+pub(crate) struct InlineAnswers;
+
+#[cfg(test)]
+impl InlineAnswers {
+    pub(crate) fn force() -> InlineAnswers {
+        RESULT_WAIT_FLOOR.with(|c| c.set(Some(Duration::from_secs(30))));
+        InlineAnswers
+    }
+}
+
+#[cfg(test)]
+impl Drop for InlineAnswers {
+    fn drop(&mut self) {
+        RESULT_WAIT_FLOOR.with(|c| c.set(None));
+    }
+}
+
+#[cfg(test)]
 impl Drop for LongFirstFrame {
     fn drop(&mut self) {
         BUDGET_OVERRIDE.with(|c| c.set(None));
     }
+}
+
+/// How many declared-action presses wait for the session of a canvas at most; past it the press
+/// is refused with a message (never reordered, never dropped silently).
+pub(crate) const MAX_QUEUED_ACTS: usize = 256;
+
+/// How much `App::plugin_session_returned` does in one call: this many rounds, or this long.
+/// The rest waits for the next turn of the run loop.
+const RETURNED_ROUNDS_PER_CALL: usize = 8;
+const RETURNED_BUDGET: Duration = Duration::from_millis(16);
+
+/// How many colors the terminal shows, from the values of `COLORTERM` and `TERM` (pure: the
+/// caller reads the environment).
+///
+/// `COLORTERM=truecolor|24bit` is the standard claim of 24-bit color; failing that, a `TERM` that
+/// names a terminal known to draw 24-bit color without saying so (kitty, Ghostty, WezTerm) is
+/// true color too; a `TERM` with `256color` is the 256-color palette; anything else (or nothing
+/// known) promises the 16 named colors only.
+pub(crate) fn color_depth_from(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
+    let colorterm = colorterm.unwrap_or("").trim().to_ascii_lowercase();
+    if colorterm == "truecolor" || colorterm == "24bit" {
+        return ColorDepth::TrueColor;
+    }
+    let term = term.unwrap_or("").trim().to_ascii_lowercase();
+    if matches!(
+        term.as_str(),
+        "xterm-kitty" | "xterm-ghostty" | "wezterm" | "ghostty" | "kitty"
+    ) {
+        return ColorDepth::TrueColor;
+    }
+    if term.contains("256color") {
+        return ColorDepth::Ansi256;
+    }
+    ColorDepth::Ansi16
+}
+
+/// [`color_depth_from`] for the environment of this process. Read once, at startup.
+pub(crate) fn detect_color_depth() -> ColorDepth {
+    color_depth_from(
+        std::env::var("COLORTERM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    )
 }
 
 /// Where the plugin show stands.
@@ -143,6 +216,50 @@ pub(crate) struct PluginShow {
     /// the `Space` menu all read this one answer, so they cannot disagree, and the UI thread
     /// never waits for a session that a job holds.
     pub enabled: std::collections::HashMap<String, bool>,
+    /// What the host owes the session when it comes back from a job (see [`ShowFlow`]).
+    pub flow: ShowFlow,
+}
+
+/// The bookkeeping of a show whose session is not always at hand (a job holds it, or the file is
+/// being read again).
+#[derive(Default)]
+pub(crate) struct ShowFlow {
+    /// The generation of the newest `Open` started for this show. A session that comes back from a
+    /// job started before it is older than the one the `Open` brings, and is never put back over
+    /// it (`App::reclaim_plugin_session`).
+    pub open_gen: u64,
+    /// A `view` was asked for while no session was at hand (`R`, a page turn): it is asked when the
+    /// session returns, with the request the tab then makes (so it carries the newest choice).
+    pub wants_view: bool,
+    /// The file is being read again with the previous view kept on screen: the old session was
+    /// taken out of reach, and the `Open` in flight brings the new one. What the user presses
+    /// meanwhile (`R`, a declared action) waits for it instead of being ignored.
+    pub reopening: bool,
+    /// Declared actions pressed while a job held the session of a canvas, in the order pressed;
+    /// each runs, one job at a time, when the session returns. Never dropped, never reordered --
+    /// and never reordered against the queued keys either ([`QueuedAct::after_keys`]).
+    pub acts: Vec<QueuedAct>,
+}
+
+/// A declared action waiting for the session, with its place among the queued keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedAct {
+    /// The action id.
+    pub action: String,
+    /// How many queued keys were pressed before this action and are still waiting: they go first
+    /// (the keys and the actions are one line, in the order pressed).
+    pub after_keys: usize,
+}
+
+impl QueuedAct {
+    /// An action with no key queued ahead of it.
+    #[cfg(test)]
+    pub(crate) fn now(action: &str) -> QueuedAct {
+        QueuedAct {
+            action: action.to_string(),
+            after_keys: 0,
+        }
+    }
 }
 
 /// The view itself, or the failure that says the plugin returned a display type it did not declare
@@ -162,7 +279,7 @@ fn undeclared_view(
     };
     let checked = !declared.is_empty() || unscreened;
     if !checked || crate::plugins::is_internal(id) || view.fits(declared) {
-        return Ok(view);
+        return well_formed(id, view);
     }
     let kind = got.context();
     let tr = if declared.is_empty() {
@@ -188,6 +305,29 @@ fn undeclared_view(
     Err(Failure::unsupported(tr))
 }
 
+/// The view, or the failure that says a canvas it holds is malformed (`CanvasView::check`: the cell
+/// count does not match the size, a picture reaches outside, a lazy picture). The host refuses
+/// such a canvas with a message instead of drawing it. Any other view passes.
+fn well_formed(id: &str, view: View) -> Result<View, Failure> {
+    use crate::i18n::{tr, Lang, Msg};
+    let View::Canvas(c) = &view else {
+        return Ok(view);
+    };
+    match c.check() {
+        Ok(()) => Ok(view),
+        Err(issue) => Err(Failure::corrupt(
+            konoma_plugin::Tr::new(format!(
+                "{} ({id}): {issue}",
+                tr(Lang::En, Msg::PluginCanvasInvalid)
+            ))
+            .ja(format!(
+                "{}（{id}）: {issue}",
+                tr(Lang::Jp, Msg::PluginCanvasInvalid)
+            )),
+        )),
+    }
+}
+
 /// What a worker is asked to do.
 pub(crate) enum PluginJob {
     /// `open`, then the first `view`.
@@ -201,6 +341,14 @@ pub(crate) enum PluginJob {
     Act {
         session: Box<dyn Session>,
         action: String,
+    },
+    /// The keys typed into a canvas that asked for text input (`CanvasView::text_input`), in the
+    /// order they were pressed. Each goes to `Session::key`; when any answer asks for a redraw the
+    /// worker takes the new view in the same job. Never replaced by a newer job: keys are not
+    /// dropped (`App::flush_plugin_keys`).
+    Keys {
+        session: Box<dyn Session>,
+        keys: Vec<konoma_plugin::Key>,
     },
 }
 
@@ -238,6 +386,8 @@ pub(crate) struct PluginWork {
     pub(super) settings: Settings,
     pub(super) lang: String,
     pub(super) pixels: bool,
+    /// How many colors the terminal shows (`TermCaps::colors`).
+    pub(super) colors: ColorDepth,
     /// The file shown (a picture's relative references resolve from it).
     pub(super) path: PathBuf,
     /// Whether the plugin may start an external program (`[external] pdf` / `video`).
@@ -261,6 +411,10 @@ pub(crate) struct PluginWork {
     /// The ids of the actions the plugin declares: the worker asks the session which of them work
     /// now before it hands the session back.
     pub(super) act_ids: Vec<String>,
+    /// The cache keys of the canvas pictures the app already holds: a canvas answer is decoded
+    /// only for the pictures not in it (`canvas_images.rs`). `None` = pictures cannot be shown
+    /// (no image backend): nothing of a canvas is decoded.
+    pub(super) canvas_known: Option<super::canvas_images::CanvasHeld>,
 }
 
 /// What became of a picture a worker decoded.
@@ -271,6 +425,9 @@ pub(super) enum Picture {
     Decoded(Box<MediaPayload>),
     /// The view was a picture that could not be made into pixels, with no reason to show.
     Failed,
+    /// The view was a canvas: the pictures it places, decoded (`canvas_images.rs`). `None` when
+    /// pictures cannot be shown (no image backend), so the plugin's cells stay.
+    Canvas(Option<Box<super::canvas_images::CanvasPictures>>),
 }
 
 /// The text a plugin made, written by the worker to a private temp file the host's windowed reader
@@ -357,6 +514,10 @@ pub struct PluginResult {
     pub(super) enabled: Vec<(String, bool)>,
     /// The text of a text view, written to a temp file on the worker (`write_made_text`).
     pub(super) made_text: Option<std::io::Result<MadeText>>,
+    /// The keys of a canvas asked for a redraw **and** said something (`outcome` is then the
+    /// message): the message is the outcome, the redraw is carried here, so that a result that is
+    /// stale and drops its view still has the view drawn again.
+    pub(super) redraw: bool,
 }
 
 /// The layout a worker learned from `open`, sent ahead of the (slower) first picture when the UI
@@ -367,6 +528,27 @@ pub struct PluginLayoutMsg {
 }
 
 impl PluginResult {
+    /// The texts a plugin handed over, as the interface keeps them: a message, a label or a page
+    /// name past `MAX_TEXT_CHARS` is cut with an ellipsis. Done where the answer is taken in (on
+    /// the worker, once), so no frame ever copies or measures a text of any length.
+    pub(super) fn clip_texts(&mut self) {
+        if let Some(f) = &mut self.failure {
+            *f = f.clipped();
+        }
+        if let Some(l) = &mut self.layout {
+            *l = l.clipped();
+        }
+        if let Some(Outcome::Flash(msg)) = &mut self.outcome {
+            *msg = msg.clipped();
+        }
+        // The one string in a view the host puts in its own chrome (the table's frame title).
+        if let Some(View::Table(t)) = &mut self.view {
+            if let Some(title) = &t.title {
+                t.title = Some(konoma_plugin::text::clip_text(title).into_owned());
+            }
+        }
+    }
+
     pub(super) fn failed(gen: u64, id: String, req: ViewReq, failure: Failure) -> PluginResult {
         PluginResult {
             gen,
@@ -383,6 +565,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            redraw: false,
         }
     }
 }
@@ -413,6 +596,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            redraw: false,
         }
     }
 
@@ -422,7 +606,7 @@ impl PluginResult {
     pub(super) fn into_image_payload(self) -> Option<MediaPayload> {
         match self.picture {
             Picture::Decoded(p) => Some(*p),
-            Picture::Failed => None,
+            Picture::Failed | Picture::Canvas(_) => None,
             Picture::None => self
                 .failure
                 .and_then(|f| super::media_plugin::image_failure_of(&self.id, &f))
@@ -517,6 +701,7 @@ impl PluginWork {
                 )
             });
         res.path = path;
+        res.clip_texts();
         res
     }
 
@@ -529,6 +714,7 @@ impl PluginWork {
             settings,
             lang,
             pixels,
+            colors,
             path,
             external,
             default_raster_px,
@@ -538,6 +724,7 @@ impl PluginWork {
             on_layout,
             group: _,
             act_ids,
+            canvas_known,
         } = self;
         let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
             act_ids
@@ -545,7 +732,7 @@ impl PluginWork {
                 .map(|id| (id.clone(), session.enabled(id)))
                 .collect()
         };
-        let term = TermCaps { pixels };
+        let term = TermCaps::new().pixels(pixels).colors(colors);
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
         let profile = crate::plugins::profile_of(&id);
@@ -600,6 +787,22 @@ impl PluginWork {
                     document = Some(Box::new(document_of(d, display)));
                     (None, None)
                 }
+                // A canvas: the pictures it places that the app does not hold yet are decoded here,
+                // on the worker, in the same job (the view itself is kept as it is).
+                Ok(View::Canvas(c)) => {
+                    picture = Picture::Canvas(canvas_known.as_ref().map(|known| {
+                        Box::new(super::canvas_images::decode_canvas(
+                            &id,
+                            &c,
+                            known,
+                            &path,
+                            default_raster_px,
+                            decode_cancel.as_ref(),
+                            trust_own_svg,
+                        ))
+                    }));
+                    (Some(View::Canvas(c)), None)
+                }
                 Ok(_) if expects_picture => (
                     None,
                     Some(Failure::unsupported(t!(
@@ -631,6 +834,7 @@ impl PluginWork {
                 group: None,
                 enabled,
                 made_text,
+                redraw: false,
             }
         };
         match job {
@@ -644,7 +848,7 @@ impl PluginWork {
                         // What `open` learned (a PDF's page count) goes to the host now, before the
                         // first page is drawn.
                         if let Some(announce) = &on_layout {
-                            announce(&session.layout());
+                            announce(&session.layout().clipped());
                         }
                         view_of(session, req)
                     }
@@ -682,6 +886,62 @@ impl PluginWork {
                     group: None,
                     enabled,
                     made_text: None,
+                    redraw: false,
+                }
+            }
+            PluginJob::Keys { mut session, keys } => {
+                let cx = ActCx::new(&settings, &lang)
+                    .with_cancel(cancel.clone())
+                    .with_term(term);
+                // Every key is delivered, in order, even when the generation moved meanwhile (a
+                // typed key is not a request that a newer one replaces). What the answers ask for
+                // is merged: a reload beats everything, a redraw is one new view for all the keys,
+                // and a message is the last one said (a failed key is told like a failed action).
+                let (mut redraw, mut reload, mut flash) = (false, false, None);
+                for key in &keys {
+                    match session.key(key, &cx) {
+                        Ok(Outcome::Redraw) => redraw = true,
+                        Ok(Outcome::Reload) => reload = true,
+                        Ok(Outcome::Flash(msg)) => flash = Some(msg),
+                        // An outcome this host does not know (`Outcome` is non-exhaustive) asks
+                        // for nothing.
+                        Ok(Outcome::Unhandled) | Ok(_) => {}
+                        Err(f) => flash = Some(f.message.clone()),
+                    }
+                }
+                if redraw && !reload {
+                    // The same request as the view on screen. The outcome tells the host whether
+                    // it still has to ask (a stale answer, whose view is dropped, does).
+                    let mut res = view_of(session, req);
+                    res.redraw = true;
+                    res.outcome = Some(match flash {
+                        Some(msg) => Outcome::Flash(msg),
+                        None => Outcome::Redraw,
+                    });
+                    return res;
+                }
+                let outcome = if reload {
+                    Outcome::Reload
+                } else {
+                    flash.map_or(Outcome::Unhandled, Outcome::Flash)
+                };
+                let enabled = enabled_of(session.as_ref());
+                PluginResult {
+                    gen,
+                    id,
+                    path: PathBuf::new(),
+                    layout: Some(session.layout()),
+                    session: Some(session),
+                    view: None,
+                    outcome: Some(outcome),
+                    failure: None,
+                    req,
+                    picture: Picture::None,
+                    document: None,
+                    group: None,
+                    enabled,
+                    made_text: None,
+                    redraw: false,
                 }
             }
         }
@@ -841,6 +1101,15 @@ impl App {
                 .is_some_and(|p| matches!(p.phase, PluginPhase::Loading))
     }
 
+    /// Whether the show already holds an answered view while a request is out (a refit, a
+    /// reopen that keeps the previous one): the host keeps drawing it instead of the full-screen
+    /// loading view, which would flash on every refit of a picture plugin that answers with text.
+    pub(crate) fn plugin_keeps_view_while_loading(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| matches!(p.phase, PluginPhase::Ready) && p.view.is_some())
+    }
+
     /// Whether the show holds a text view.
     fn plugin_view_is_text(&self) -> bool {
         matches!(
@@ -930,6 +1199,10 @@ impl App {
 
     /// Release the plugin show (off the UI thread: a session can hold a large table).
     pub(super) fn drop_plugin(&mut self) {
+        // The keys, the `Esc` that left a text input and the redraw deadline belong to the show
+        // that is going: whatever opens next starts clean.
+        self.forget_canvas_state();
+        self.forget_canvas_pictures();
         if let Some(old) = self.plugin.take() {
             super::table_actions::discard_in_background(old);
         }
@@ -996,6 +1269,7 @@ impl App {
                 view: None,
                 req: ViewReq::default(),
                 enabled: Default::default(),
+                flow: Default::default(),
             });
             return;
         };
@@ -1006,7 +1280,19 @@ impl App {
     /// The request a view is asked with: the size of the preview area as far as it is known, and
     /// the page the tab is on (counted from 0; a plugin without pages ignores it).
     pub(super) fn plugin_view_req(&self) -> ViewReq {
+        // The size of the area the view is drawn into, as the last frame measured it
+        // (`ui::preview::render`). Before the first frame there is no measure: the width is the
+        // old 80, the height one row, and a canvas is asked again once it is drawn
+        // (`App::refit_canvas`). **Only a canvas, and a plugin that declares `Manifest::sized`, are
+        // asked again after a resize**; the other displays (a text view, a table, a picture) are
+        // laid out by the host at the width it has, and a text plugin's `ViewReq::cols` is the bordered area's width (every preview
+        // frame is `Block::bordered()`, so there is no view without a border to correct for).
         let rows = self.tab.preview_viewport.max(1);
+        let cols = if self.tab.preview_cols == 0 {
+            80
+        } else {
+            self.tab.preview_cols
+        };
         // The source view is the host's own for a standalone diagram file (no plugin round trip);
         // any other `source` is a representation the plugin declared, asked for like the rest.
         let repr = self.tab.repr.clone().filter(|r| {
@@ -1014,11 +1300,99 @@ impl App {
                 && self.host_source_view()
                 && !self.holds_document())
         });
-        ViewReq {
-            repr,
-            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
-            ..ViewReq::new(80, rows)
+        let mut req = ViewReq::new(cols, rows);
+        req.repr = repr;
+        req.page = Some(self.tab.page.max(1).saturating_sub(1) as usize);
+        req.cell_px = self.plugin_cell_px();
+        req
+    }
+
+    /// Test-only: pretend the terminal shows `colors` (the real value is read from the
+    /// environment once, at startup).
+    #[cfg(test)]
+    pub(crate) fn set_plugin_colors_for_test(&mut self, colors: ColorDepth) {
+        self.plugin_colors = colors;
+    }
+
+    /// The size of one terminal cell in pixels, for the plugins that draw pictures; `None` when
+    /// the terminal draws no pixels (no image backend, or half blocks).
+    fn plugin_cell_px(&self) -> Option<(u16, u16)> {
+        if !self.terminal_draws_pixels() {
+            return None;
         }
+        self.picker.as_ref().map(|p| {
+            let f = p.font_size();
+            (f.width, f.height)
+        })
+    }
+
+    /// Whether the preview on screen is a canvas a plugin drew (`View::Canvas`) for this file.
+    pub fn is_canvas_preview(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+            && self.plugin.as_ref().is_some_and(|p| {
+                matches!(p.phase, PluginPhase::Ready)
+                    && matches!(p.view, Some(View::Canvas(_)))
+                    && self.shows_plugin_file(p)
+            })
+    }
+
+    /// The canvas the plugin show holds, if it is the one on screen.
+    pub(crate) fn canvas_view(&self) -> Option<&konoma_plugin::view::CanvasView> {
+        if !self.is_canvas_preview() {
+            return None;
+        }
+        match self.plugin.as_ref()?.view.as_ref()? {
+            View::Canvas(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Ask the plugin for the canvas again when the area it is drawn into is not the size of the
+    /// request that produced it (the terminal was resized, the first frame measured the area).
+    /// Called by the frame that drew the canvas. At most one request is out: while a job holds the
+    /// session nothing is asked, and the job's result is compared with the size at the next
+    /// frame, so a drag that resizes many times asks the plugin once per answer, always for the
+    /// newest size (latest wins). Returns whether a request was started.
+    pub(crate) fn refit_canvas(&mut self) -> bool {
+        if !self.is_canvas_preview() {
+            return false;
+        }
+        let want = self.plugin_view_req();
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        if show.session.is_none() || (show.req.cols, show.req.rows) == (want.cols, want.rows) {
+            return false;
+        }
+        self.plugin_request_view_waiting(want, Wait::Nothing)
+    }
+
+    /// [`App::refit_canvas`] for the other plugins that declare their views depend on the size
+    /// (`Manifest::sized`: a text diagram laid out to the width): ask again when the area is not
+    /// the size of the request that produced the view. The same rules -- one request at a time
+    /// (nothing is asked while a job holds the session), so a drag that resizes many times asks
+    /// once per answer and always for the newest size. A picture is scaled by the host, so a view
+    /// that is a picture is never asked again for a size. Called after a frame was drawn.
+    pub(crate) fn refit_sized_view(&mut self) -> bool {
+        if self.is_canvas_preview() {
+            return false;
+        }
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        if !self.shows_plugin_file(show)
+            || !matches!(show.phase, PluginPhase::Ready)
+            || show.session.is_none()
+            || !crate::plugins::profile_of(&show.id).sized
+            || matches!(show.view, None | Some(View::Image(_)))
+        {
+            return false;
+        }
+        let want = self.plugin_view_req();
+        if (show.req.cols, show.req.rows) == (want.cols, want.rows) {
+            return false;
+        }
+        self.plugin_request_view_waiting(want, Wait::Nothing)
     }
 
     /// What a worker needs when the plugin `id` declares it shows a document (`shows(Document)`):
@@ -1059,12 +1433,24 @@ impl App {
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
+            colors: self.plugin_colors,
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
             document: self.document_job(&id),
             id,
             path,
             external,
             default_raster_px: self.cfg.ui.svg_max_px,
+            canvas_known: self.canvas_known_keys().map(|mut held| {
+                // The first answer of a session knows nothing of the pictures of the one before
+                // (a file read again keeps the previous view on screen): its `unchanged` must not
+                // resolve to the old file's picture or to a source kept for it. The cache itself
+                // is by content, and stays true.
+                if matches!(job, PluginJob::Open { .. }) {
+                    held.by_id.clear();
+                    held.kept.clear();
+                }
+                held
+            }),
             decode_cancel: None,
             on_layout: None,
             gen: 0,
@@ -1104,9 +1490,23 @@ impl App {
                 view: None,
                 req: ViewReq::default(),
                 enabled: Default::default(),
+                flow: Default::default(),
             });
+        } else if let Some(show) = self.plugin.as_mut() {
+            // The file is read again with the previous view kept on screen. The old session is
+            // out of reach from here on: nothing may take it (the timer, the keys, a refit, `R`,
+            // an action), because whatever it answered would be taken for the new session's and
+            // the new one -- the `Open` below -- would arrive stale. It is freed off the UI
+            // thread; keys and actions wait for the new session (`flush_plugin_keys`).
+            if let Some(old) = show.session.take() {
+                super::table_actions::discard_in_background(old);
+            }
+            show.flow.reopening = true;
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_reopen();
         }
         self.plugin_stamp = file_stamp(&path);
+        self.plugin_stamp_taken = Some(std::time::SystemTime::now());
         // A Markdown or Word document is asked for in its rendered form first, whatever the tab
         // chose: the document is what the source view returns to (`land_document` asks for the
         // source once it is there).
@@ -1127,6 +1527,11 @@ impl App {
         };
         let work = self.plugin_work(id, path, PluginJob::Open { plugin, input }, req);
         self.dispatch_plugin_work(work, Wait::Result(budget));
+        // The generation the `Open` runs under: a session from a job older than this is stale.
+        let gen = self.media_gen;
+        if let Some(show) = self.plugin.as_mut() {
+            show.flow.open_gen = gen;
+        }
     }
 
     /// Start a delegated command (`PreviewKind::Command`) through the built-in `command` plugin,
@@ -1159,6 +1564,7 @@ impl App {
             view: None,
             req: ViewReq::default(),
             enabled: Default::default(),
+            flow: Default::default(),
         });
         let input = Input::File {
             path: path.to_path_buf(),
@@ -1278,6 +1684,8 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("konoma-plugin".into())
             .spawn(move || {
+                #[cfg(feature = "demo-canvas")]
+                let _alive = super::canvas_trace::WorkerGuard::new();
                 let (work, handoff, gate, tx, cancel, group) = worker;
                 let taken = work.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(work) = taken {
@@ -1311,7 +1719,13 @@ impl App {
         }
         match wait {
             Wait::Nothing => false,
-            Wait::Result(budget) => match handoff.and_then(|h| h.wait(budget)) {
+            Wait::Result(budget) => match handoff.and_then(|h| {
+                #[cfg(test)]
+                let budget = RESULT_WAIT_FLOOR
+                    .with(|c| c.get())
+                    .map_or(budget, |f| budget.max(f));
+                h.wait(budget)
+            }) {
                 // A job of a work group is never waited for (`wait` is `Nothing` above), so a
                 // result handed over here has no group to release.
                 Some(result) => {
@@ -1321,6 +1735,10 @@ impl App {
                 None => false,
             },
             Wait::Layout(budget) => {
+                #[cfg(test)]
+                let budget = RESULT_WAIT_FLOOR
+                    .with(|c| c.get())
+                    .map_or(budget, |f| budget.max(f));
                 if let Some(layout) = gate.and_then(|g| g.wait(budget)) {
                     self.adopt_plugin_layout(&layout);
                 }
@@ -1362,7 +1780,15 @@ impl App {
 
     /// Ask the open session for another `view` (a new page, a new size...). Returns false when
     /// there is no session to ask (none open, or a job still holds it).
-    pub(super) fn plugin_request_view(&mut self, mut req: ViewReq) -> bool {
+    pub(super) fn plugin_request_view(&mut self, req: ViewReq) -> bool {
+        self.plugin_request_view_waiting(req, Wait::Result(Duration::ZERO))
+    }
+
+    /// [`App::plugin_request_view`] with the way the answer is awaited. A refit is asked from
+    /// inside the draw of a frame: its answer must come through the channel (`Wait::Nothing`),
+    /// so the run loop applies it and draws again; taken on the spot, it would land after the
+    /// body was drawn and nothing would redraw until the next key.
+    fn plugin_request_view_waiting(&mut self, mut req: ViewReq, wait: Wait) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
@@ -1374,21 +1800,187 @@ impl App {
             req = self.plugin_view_req();
         }
         let work = self.plugin_work(id, path, PluginJob::View { session }, req);
-        self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.dispatch_plugin_work(work, wait);
         true
     }
 
-    /// Ask the open session for another representation (`R`) and apply the answer **at once, on
+    /// Ask the open session for a `view` with the request the tab makes now (its page, its
+    /// representation), on a worker. When no session is at hand (a job holds it, or the file is
+    /// being read again) the wish is remembered and asked when the session returns
+    /// (`plugin_session_returned`): `R` and a page turn are never lost and never run on the UI
+    /// thread. The request is made at that time, so it carries the newest choice.
+    pub(super) fn plugin_view_when_free(&mut self) {
+        let req = self.plugin_view_req();
+        if self.plugin_request_view(req) {
+            return;
+        }
+        if let Some(show) = self.plugin.as_mut() {
+            show.flow.wants_view = true;
+        }
+    }
+
+    /// Whether the file is being read again with the previous view on screen (the session comes
+    /// with the `Open` in flight): a press that needs the session waits for it.
+    pub(crate) fn plugin_is_reopening(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| p.flow.reopening && p.session.is_none())
+    }
+
+    /// [`App::plugin_view_now`], but while the file is read again the wish is remembered and asked
+    /// when the new session lands (`plugin_session_returned`), with the request the tab then
+    /// makes: `R` of a document is not lost to the reload. Returns false only when the press has
+    /// to be ignored (no show, or a job that is not an `Open` holds the session).
+    pub(super) fn plugin_view_now_or_queue(&mut self, req: ViewReq) -> bool {
+        if self.plugin_view_now(req) {
+            return true;
+        }
+        if !self.plugin_is_reopening() {
+            return false;
+        }
+        if let Some(show) = self.plugin.as_mut() {
+            show.flow.wants_view = true;
+        }
+        true
+    }
+
+    /// The session of the show is back at the app (a job answered, or a stale answer gave it
+    /// back): what waited for it goes now, in this order -- the keys typed meanwhile (one job,
+    /// in order), the actions pressed meanwhile (one job at a time), a view asked for.
+    pub(super) fn plugin_session_returned(&mut self) {
+        // Answers taken on the spot call this again from inside the work it starts: that must not
+        // recurse once per queued item (the stack would overflow). The inner call only marks
+        // "again"; the outermost one loops while the session is home and something was asked.
+        if self.plugin_returning != 0 {
+            self.plugin_returning = 2;
+            return;
+        }
+        self.plugin_returning = 1;
+        self.plugin_returned_pending = false;
+        let started = std::time::Instant::now();
+        let mut rounds = 0;
+        loop {
+            self.plugin_session_returned_once();
+            rounds += 1;
+            if self.plugin_returning != 2 {
+                break;
+            }
+            // A bounded amount per call (the UI thread must stay responsive: each round may read
+            // a file again): the rest is left for the next turn of the run loop.
+            if rounds >= RETURNED_ROUNDS_PER_CALL || started.elapsed() >= RETURNED_BUDGET {
+                self.plugin_returned_pending = true;
+                break;
+            }
+            self.plugin_returning = 1;
+        }
+        self.plugin_returning = 0;
+    }
+
+    /// Whether `plugin_session_returned` stopped at its bound with work left: the run loop comes
+    /// back soon ([`App::plugin_returned_continue`], a short poll).
+    pub fn plugin_returned_pending(&self) -> bool {
+        self.plugin_returned_pending
+    }
+
+    /// Test-only: pretend `plugin_session_returned` stopped at its bound.
+    #[cfg(test)]
+    pub fn set_plugin_returned_pending_for_test(&mut self, on: bool) {
+        self.plugin_returned_pending = on;
+    }
+
+    /// The next turn of what `plugin_session_returned` left (see its bound). Returns whether
+    /// anything was pending (the caller redraws).
+    pub fn plugin_returned_continue(&mut self) -> bool {
+        if !self.plugin_returned_pending {
+            return false;
+        }
+        self.plugin_returned_pending = false;
+        self.plugin_session_returned();
+        true
+    }
+
+    fn plugin_session_returned_once(&mut self) {
+        self.flush_plugin_keys();
+        let wanted = self.plugin.as_ref().is_some_and(|p| {
+            p.flow.wants_view && p.session.is_some() && matches!(p.phase, PluginPhase::Ready)
+        });
+        if wanted {
+            if let Some(show) = self.plugin.as_mut() {
+                show.flow.wants_view = false;
+            }
+            let req = self.plugin_view_req();
+            self.plugin_request_view(req);
+        }
+    }
+
+    /// Run the oldest queued action (the session is free and no queued key goes before it:
+    /// `flush_plugin_keys` decides). One at a time: each answer may change what works, and the
+    /// next press then goes in its turn.
+    pub(super) fn send_first_queued_act(&mut self) {
+        let Some(show) = self.plugin.as_mut() else {
+            return;
+        };
+        if show.flow.acts.is_empty() {
+            return;
+        }
+        let action = show.flow.acts.remove(0).action;
+        let Some(session) = show.session.take() else {
+            return;
+        };
+        let (id, path, req) = (show.id.clone(), show.path.clone(), show.req.clone());
+        let work = self.plugin_work(id, path, PluginJob::Act { session, action }, req);
+        self.plugin_user_act = true;
+        self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.plugin_user_act_gen = self.media_gen;
+    }
+
+    /// A plugin answer was discarded as stale (it is not applied): if it is the answer to the
+    /// action the user pressed, or to something asked after it, the mark "this is the user's
+    /// doing" goes with it -- a later answer to something else (a file reloaded) must not be taken
+    /// for the answer to the action and take the typing back.
+    pub(super) fn discard_stale_answer(&mut self, gen: u64) {
+        if self.plugin_user_act && gen >= self.plugin_user_act_gen {
+            self.plugin_user_act = false;
+        }
+    }
+
+    /// Whether the show has its session at hand and nothing keeps a job from being sent now: the
+    /// show is ready and its plugin's work group is not running a job (a job parked in the
+    /// group's slot could be replaced, and keys and actions are never replaced).
+    pub(super) fn plugin_session_is_free(&self) -> bool {
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        if show.session.is_none() || !matches!(show.phase, PluginPhase::Ready) {
+            return false;
+        }
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        !registry
+            .manifest(&show.id)
+            .and_then(|m| m.work_group.as_ref())
+            .and_then(|g| self.plugin_groups.get(g))
+            .is_some_and(|slot| slot.busy)
+    }
+
+    /// Ask the open session for another representation and apply the answer **at once, on
     /// this thread**, under the generation in force (nothing else in flight is cancelled by it).
     /// For the sessions that hold what the other representation is made of (the Word and
     /// presentation plugins: it is a copy of the text and a handful of `Arc`s), so the key is
     /// answered the way it always was, without a round trip through a worker; a plugin whose other
-    /// representation is a real read asks with [`App::plugin_request_view`]. Returns false when
-    /// there is no session to ask (none open, or a job holds it).
+    /// representation is a real read asks with [`App::plugin_request_view`]. **Only the host's
+    /// own standard document plugins are called on the spot** (`R` of a document, the source
+    /// view; `Profile::standard`): a plugin's `view` is arbitrary code, so every other plugin --
+    /// a canvas above all, and a third-party plugin that declares `shows(Document)` too -- goes
+    /// through a worker ([`App::plugin_view_when_free`]; this returns true: the answer is on its
+    /// way). Returns false when there is no session to ask (none open, or a job holds it).
     pub(super) fn plugin_view_now(&mut self, req: ViewReq) -> bool {
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
+        if !crate::plugins::profile_of(&show.id).standard {
+            // Asked on a worker; false (the choice is taken back) when no session is at hand.
+            return self.plugin_request_view(req);
+        }
         let Some(session) = show.session.take() else {
             return false;
         };
@@ -1419,6 +2011,14 @@ impl App {
         let Some(plugin) = plugin else {
             return false;
         };
+        // A canvas keeps its view on screen (a new page is one more `view`, not a "Loading..."
+        // screen) and never opens the plugin again for a page: with a job holding the session
+        // the wanted page waits for it. (A table keeps its way below: opening again is how a
+        // slow read of another sheet is cancelled.)
+        if self.is_canvas_preview() {
+            self.plugin_view_when_free();
+            return false;
+        }
         let kept = self
             .plugin
             .as_mut()
@@ -1451,6 +2051,41 @@ impl App {
 
     /// Run a declared action of the open session. Returns false when there is no session to ask.
     pub(super) fn plugin_act(&mut self, action: &str) -> bool {
+        // A canvas whose session a job holds (the redraw timer's tick, a key, a refit, the file
+        // being read again): the press waits in line and goes, in order, when the session comes
+        // back -- it is not dropped, and its hint did not flicker meanwhile
+        // (`plugin_act_enabled`). Other displays keep ignoring the press while a job holds it.
+        // Also when the session is at hand but presses are already waiting, or the work group is
+        // busy: a press never overtakes the ones before it.
+        // While the file is read again, any display waits for the new session (`reopening`).
+        if self.plugin_is_reopening()
+            || (self.is_canvas_preview()
+                && (self
+                    .plugin
+                    .as_ref()
+                    .is_some_and(|p| !p.flow.acts.is_empty())
+                    || !self.plugin_session_is_free()))
+        {
+            let queued_keys = self.plugin_key_queue.len();
+            let full = self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.flow.acts.len() >= MAX_QUEUED_ACTS);
+            if full {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::PluginInputFull).to_string());
+                return false;
+            }
+            if let Some(show) = self.plugin.as_mut() {
+                show.flow.acts.push(QueuedAct {
+                    action: action.to_string(),
+                    after_keys: queued_keys,
+                });
+            }
+            // The session may be at hand (the presses before this one were waiting for a group).
+            self.flush_plugin_keys();
+            return true;
+        }
         let Some(show) = self.plugin.as_mut() else {
             return false;
         };
@@ -1467,13 +2102,16 @@ impl App {
             },
             req,
         );
+        self.plugin_user_act = true;
         self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
+        self.plugin_user_act_gen = self.media_gen;
         true
     }
 
     /// Take what a session reported about its pages as the host's page state
     /// (`PerTab::page_count`, and the page clamped to it).
     fn adopt_layout(&mut self, layout: &Layout) {
+        self.forget_outline_pages();
         if let Some(count) = page_count_of(layout) {
             self.tab.page_count = count;
             if let Some(n) = count {
@@ -1523,10 +2161,27 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.id == res.id && self.shows_plugin_file(p));
         if !current || !belongs {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(
+                res.gen,
+                if current {
+                    "not the show on screen"
+                } else {
+                    "not the newest generation"
+                },
+            );
+            self.discard_stale_answer(res.gen);
             super::table_actions::discard_in_background(res);
             return false;
         }
         let outcome = res.outcome.clone();
+        let outcome_kind = outcome.clone();
+        // Whether this very result carries the answer of a `view` (a keys job takes the view in
+        // the same job when an answer asked for a redraw): an action's result carries none.
+        let viewed = res.view.is_some()
+            || res.failure.is_some()
+            || res.document.is_some()
+            || !matches!(res.picture, Picture::None);
         let asked = res.req.repr.clone();
         // The temp file of the text the worker wrote: used below, or removed when this is dropped.
         let made_text = res.made_text;
@@ -1536,6 +2191,8 @@ impl App {
         // The session being replaced (a read again) holds the pictures of a document: it is
         // freed off the UI thread.
         let session_back = res.session.is_some();
+        // The `Open` of a read again has answered (a session, or a failure): nothing waits for it.
+        show.flow.reopening = false;
         if let Some(old) = std::mem::replace(&mut show.session, res.session) {
             super::table_actions::discard_in_background(old);
         }
@@ -1564,9 +2221,16 @@ impl App {
         // Whether this very result carried a text view (the source of a document): a text view
         // that was already there, kept while a document landed, is not "landed" again.
         let mut text_landed = false;
+        // What the canvas state follows from this result: `Some(None)` = the view went (a failure,
+        // or a view that is not a canvas), `Some(Some((text_input, redraw_after)))` = a canvas.
+        let mut canvas_now: Option<Option<(bool, Option<Duration>)>> = None;
         match (res.view, res.failure) {
             (Some(view), _) => {
                 text_landed = matches!(view, View::Text(_));
+                canvas_now = Some(match &view {
+                    View::Canvas(c) => Some((c.text_input, c.redraw_after)),
+                    _ => None,
+                });
                 // The view replaced may hold a big grid: it is freed off the UI thread.
                 if let Some(old) = show.view.replace(view) {
                     super::table_actions::discard_in_background(old);
@@ -1580,6 +2244,7 @@ impl App {
                 }
                 image_failure = image_failure_of(&id, &failure);
                 show.phase = PluginPhase::Failed(failure);
+                canvas_now = Some(None);
             }
             // A picture was drawn from the view, a document was made from it, or an action's
             // result: the view is what it was.
@@ -1613,8 +2278,11 @@ impl App {
                 self.apply_payload(MediaPayload::ImageFailed(why));
             }
         }
-        if let Picture::Decoded(payload) = res.picture {
-            self.apply_payload(*payload);
+        let mut canvas_pictures = Picture::None;
+        match res.picture {
+            Picture::Decoded(payload) => self.apply_payload(*payload),
+            p @ Picture::Canvas(_) => canvas_pictures = p,
+            Picture::None | Picture::Failed => {}
         }
         // The delegated command: its text output opens the windowed reader, a failure is the reason
         // the `[can not preview]` screen gives.
@@ -1642,14 +2310,50 @@ impl App {
             Some(Outcome::Reload) => self.reload_plugin(),
             // The action changed what the session shows: ask it again with the same request.
             // (The result of this job is applied and the show holds the session again.)
-            Some(Outcome::Redraw) => {
+            Some(Outcome::Redraw) if !viewed => {
                 if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
                     self.plugin_request_view(req);
                 }
             }
-            Some(Outcome::Unhandled) | None => {}
+            Some(Outcome::Redraw) | Some(Outcome::Unhandled) | Some(_) | None => {}
         }
+        // The pictures of the canvas this result carried: decoded on the worker, now put into the
+        // cache (the entries of pictures the canvas dropped go). A view that is not a canvas, or a
+        // failure, leaves none.
+        let mut ask_more = false;
+        match (&canvas_now, canvas_pictures) {
+            (Some(Some(_)), Picture::Canvas(Some(pics))) => {
+                // Pictures waiting for a later answer (the work limits of one): ask for it.
+                ask_more = self.canvas_pictures_landed(*pics);
+            }
+            (Some(_), _) => self.forget_canvas_pictures(),
+            (None, _) => {}
+        }
+        // The canvas this result left on screen: what text input and the redraw timer follow.
+        let by_user = self.settle_user_act(viewed, outcome_kind);
+        self.canvas_landed(canvas_now, by_user);
+        if ask_more {
+            // After the deadline was set: the follow-up is throttled with the timer's floor.
+            self.canvas_ask_more_after_landing(std::time::Instant::now());
+        }
+        // What waited for the session goes now: the keys typed while it was out (in order, in one
+        // job), the actions pressed meanwhile, a view asked for.
+        self.plugin_session_returned();
         true
+    }
+
+    /// Whether the answer that just landed is "the user's": the answer of a declared action they
+    /// pressed, or the `view` / reading that action asked for (`plugin_user_act`). A result that
+    /// carries a view takes the mark; one that does not (the action's own result) keeps it only
+    /// when it asked for a redraw or a reload, whose answer follows.
+    pub(super) fn settle_user_act(&mut self, carried_view: bool, outcome: Option<Outcome>) -> bool {
+        if carried_view {
+            return std::mem::take(&mut self.plugin_user_act);
+        }
+        if !matches!(outcome, Some(Outcome::Redraw | Outcome::Reload)) {
+            self.plugin_user_act = false;
+        }
+        false
     }
 
     /// Whether the preview on screen is the file `show` was opened for.

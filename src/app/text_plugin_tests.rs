@@ -291,6 +291,7 @@ fn a_result_landing_colors_the_window_and_leaves_the_text_search_alone() {
         group: None,
         enabled: Vec::new(),
         made_text: None,
+        redraw: false,
     });
     assert!(landed);
     assert!(!app.is_media_loading());

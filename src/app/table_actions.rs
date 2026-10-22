@@ -20,6 +20,8 @@ fn grid_of(plugin: &Option<PluginShow>) -> Option<Grid<'_>> {
 /// thread cannot be had the value is freed here, as it would have been.
 pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
     use std::sync::{mpsc, Mutex, OnceLock};
+    #[cfg(test)]
+    DISCARDED.with(|d| d.borrow_mut().push(std::any::type_name::<T>()));
     type Junk = Box<dyn Send>;
     static REAPER: OnceLock<Option<Mutex<mpsc::Sender<Junk>>>> = OnceLock::new();
     let reaper = REAPER.get_or_init(|| {
@@ -43,6 +45,14 @@ pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
         }
     }
     drop(value);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the type of every value handed to [`discard_in_background`] on this thread, so a
+    /// test can say that a large value was not freed on the calling (UI) thread.
+    pub(super) static DISCARDED: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A table lighter than this (see [`row_weight`]) is searched on the calling thread: starting
@@ -477,8 +487,15 @@ impl App {
     pub fn is_table_preview(&self) -> bool {
         match self.tab.preview_kind {
             Some(PreviewKind::Plugin { .. }) => {
+                // A plugin that declares a canvas is a table only when the view it shows is one
+                // (`plugin_table`): its pages do not make it a table, before its first view
+                // (loading) or when it shows a message or a failure. A canvas with pages is a
+                // canvas: its keys, footer, help and chip are the canvas's, and `j`/`Enter` are
+                // the plugin's.
                 self.plugin_table().is_some()
-                    || (!self.shows_media_plugin() && self.plugin_is_paged())
+                    || (!self.shows_media_plugin()
+                        && !self.plugin_declares_canvas()
+                        && self.plugin_is_paged())
             }
             Some(
                 PreviewKind::Text(_)
@@ -489,6 +506,13 @@ impl App {
             )
             | None => false,
         }
+    }
+
+    /// Whether the open plugin declares that it draws a canvas.
+    fn plugin_declares_canvas(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|p| crate::plugins::profile_of(&p.id).canvas)
     }
 
     /// Whether the open plugin show has reported separate pages (a workbook's sheets).

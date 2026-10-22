@@ -31,9 +31,13 @@ use konoma_plugin::{
     Failure, Input, LaunchMode, Launcher, Manifest, OpenCx, Plugin, Settings, Verb, VerbDecl,
 };
 
+#[cfg(test)]
+pub(crate) use acts::PluginNote;
 pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
+#[cfg(test)]
+pub(crate) use profile::record as record_for_test;
 pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 
@@ -178,6 +182,17 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
     for m in standard_manifests().into_iter().chain(internal_manifests()) {
         // The declarations are static; a refusal would be a bug that `tests` catches.
         let _ = register(&mut r, plugin_of(m), PluginOrigin::Standard);
+    }
+    // TEMPORARY (feature `demo-canvas`, removed when stage 3 loads external plugins): a canvas plugin
+    // to look at in a real terminal. It is not a standard plugin (the UI-thread rule and the
+    // `standard` column do not apply): it is registered the way a user's plugin is.
+    #[cfg(feature = "demo-canvas")]
+    {
+        let _ = register(
+            &mut r,
+            Arc::new(konoma_plugin_ratatui::demo::Clock::default()),
+            PluginOrigin::User,
+        );
     }
     for id in disabled {
         // Tests add plugins of their own through a name in the `disabled` list (the registry is

@@ -292,6 +292,18 @@ impl App {
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
+        let changed = self.apply_media_result(result);
+        // Whatever the result was (current, stale, another plugin's that freed a work group), what
+        // waited for the session -- the keys typed meanwhile, the actions pressed, a view asked
+        // for -- goes now. (Not when the install above already stopped at its per-call bound:
+        // the run loop continues that next turn, and a second call here would double the bound.)
+        if !self.plugin_returned_pending() {
+            self.plugin_session_returned();
+        }
+        changed
+    }
+
+    fn apply_media_result(&mut self, result: MediaResult) -> bool {
         // The work group of a plugin whose job just answered (the Office plugins share one) is
         // free again, current result or not; what was asked for meanwhile starts now (and is
         // dropped if the preview moved on since).
@@ -339,15 +351,40 @@ impl App {
     /// applied; its outcome is.
     fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
         let Some(show) = self.plugin.as_ref() else {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(res.gen, "stale: no show");
+            self.discard_stale_answer(res.gen);
             return;
         };
         if res.session.is_none()
             || show.id != res.id
             || show.path != res.path
             || show.session.is_some()
+            // Older than the newest `Open` of the show (the file was read again meanwhile): the
+            // `Open` brings the session of the show, and this one must never take its place.
+            || res.gen < show.flow.open_gen
             || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
             || !self.shows_plugin_file(show)
         {
+            #[cfg(feature = "demo-canvas")]
+            super::canvas_trace::note_discard(
+                res.gen,
+                if res.session.is_none() {
+                    "stale: no session in the answer"
+                } else if show.id != res.id
+                    || show.path != res.path
+                    || !self.shows_plugin_file(show)
+                {
+                    "stale: another show"
+                } else if show.session.is_some() {
+                    "stale: the show already has a session"
+                } else if res.gen < show.flow.open_gen {
+                    "stale: older than the newest Open"
+                } else {
+                    "stale: the show is not ready"
+                },
+            );
+            self.discard_stale_answer(res.gen);
             return;
         }
         if let Some(show) = self.plugin.as_mut() {
@@ -356,9 +393,20 @@ impl App {
         }
         // What an action asked for is still true of the session it ran on (its state changed): a
         // view that no longer matches is drawn again, a file to read again is read again.
+        let redraw = std::mem::take(&mut res.redraw);
+        // A stale action's answer is not a canvas, but the redraw / reload it asks for is still
+        // the user's doing.
+        self.settle_user_act(false, res.outcome.clone());
         match res.outcome.take() {
             Some(konoma_plugin::Outcome::Flash(msg)) => {
                 self.flash = Some(msg.get(self.plugin_lang()).to_string());
+                // The keys also asked for a redraw: the message is the outcome, the redraw is
+                // carried beside it, and it is not lost with the view of the stale answer.
+                if redraw {
+                    if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
+                        self.plugin_request_view(req);
+                    }
+                }
             }
             Some(konoma_plugin::Outcome::Reload) => self.reload_plugin(),
             Some(konoma_plugin::Outcome::Redraw) => {
@@ -366,8 +414,14 @@ impl App {
                     self.plugin_request_view(req);
                 }
             }
-            Some(konoma_plugin::Outcome::Unhandled) | None => {}
+            // `Outcome` is non-exhaustive: an outcome this host does not know asks for nothing.
+            Some(konoma_plugin::Outcome::Unhandled) | Some(_) | None => {}
         }
+        // The session is back. The redraw timer is armed again as for a landed answer (a tick
+        // skipped while this job was out would otherwise stop the animation), and what waited for
+        // the session goes now.
+        self.canvas_landed(None, false);
+        self.plugin_session_returned();
     }
 
     pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
@@ -450,7 +504,9 @@ impl App {
     /// Decide whether it is a GIF by the leading bytes (looks at the magic, not the extension).
     pub(super) fn looks_like_gif(path: &Path) -> bool {
         use std::io::Read;
-        let Ok(mut f) = std::fs::File::open(path) else {
+        // The previewed file itself, which may be a FIFO or a device the user selected in the
+        // tree: only a regular file is opened (and never blocking), on the UI thread too.
+        let Ok(mut f) = super::canvas_images::open_regular_picture(path) else {
             return false;
         };
         let mut head = [0u8; 6];

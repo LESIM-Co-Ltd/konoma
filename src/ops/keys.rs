@@ -61,6 +61,12 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
         action,
         alias: false,
     };
+    // A canvas has nothing to move: the navigation fixed keys (arrows, `Home` / `End`, `Enter`,
+    // `Tab`) are the plugin's (`handle_fixed_key` runs its action on one and otherwise does
+    // nothing), so the host keeps only `Esc` (`keys::reserved("canvas")`).
+    if ctx == Context::Canvas {
+        return vec![own(KeyCode::Esc, Action::Cancel)];
+    }
     let mut v = vec![
         alias(KeyCode::Up, Motion::Up),
         alias(KeyCode::Down, Motion::Down),
@@ -208,6 +214,6 @@ pub fn footer_key(kp: KeyPress, short_enter: bool) -> String {
 pub fn short_enter(ctx: Context) -> bool {
     matches!(
         ctx,
-        Context::Text | Context::Document | Context::Image | Context::Table
+        Context::Text | Context::Document | Context::Image | Context::Table | Context::Canvas
     )
 }

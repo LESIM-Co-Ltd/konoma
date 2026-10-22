@@ -485,6 +485,11 @@ pub enum Surface {
     PreviewImage,
     /// CSV/TSV table preview (cell cursor + `y→` cell/row/column copy).
     PreviewTable,
+    /// A plugin's free-drawing view (`View::Canvas`): the host keeps only a few keys here.
+    PreviewCanvas,
+    /// A plugin's canvas that asked for text input (`CanvasView::text_input`): every key but
+    /// `Esc` (and every paste) goes to the plugin, none is looked up in the keymap.
+    PluginInput,
     #[cfg(feature = "git")]
     PreviewGitDiff,
 }
@@ -493,7 +498,11 @@ impl Surface {
     /// Whether this is a text-input surface (intercepts character/editing keys and does not apply the keymap).
     pub fn is_text_input(self) -> bool {
         match self {
-            Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
+            Surface::DialogInput
+            | Surface::Filter
+            | Surface::Search
+            | Surface::Mark
+            | Surface::PluginInput => true,
             #[cfg(feature = "git")]
             Surface::BranchFilter => true,
             Surface::ListFilter => true,
@@ -955,6 +964,12 @@ pub enum Context {
     TextVisual,
     Image,
     Table,
+    /// A view the plugin draws itself (cells and pictures). The host keeps layer 0, the verbs,
+    /// `q`, `Esc`, `Space`, `,`, `R` / `J` / `K` / `O` and the base keys that are not motion
+    /// (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p` `Ctrl-t`: `keys::reserved("canvas")`), bound in its
+    /// own table. It inherits neither the motion keys of layer 1 (`j` `k` are the plugin's) nor a
+    /// layer-2 table.
+    Canvas,
     TableCell,
     Bookmarks,
     Tabs,
@@ -1016,6 +1031,7 @@ impl Context {
             Context::TextVisual,
             Context::Image,
             Context::Table,
+            Context::Canvas,
             Context::TableCell,
             Context::Bookmarks,
             Context::Tabs,
@@ -1046,6 +1062,7 @@ impl Context {
             Context::TextVisual => "text_visual".into(),
             Context::Image => "image".into(),
             Context::Table => "table".into(),
+            Context::Canvas => "canvas".into(),
             Context::TableCell => "table_cell".into(),
             Context::Bookmarks => "bookmarks".into(),
             Context::Tabs => "tabs".into(),
@@ -1084,6 +1101,7 @@ impl Context {
             Context::Table => &[ViewType::Table],
             Context::Tree
             | Context::TreeVisual
+            | Context::Canvas
             | Context::TableCell
             | Context::Bookmarks
             | Context::Tabs
@@ -1102,7 +1120,7 @@ impl Context {
     /// Whether the basic table (layer 1) applies. Everything that has a cursor does; the info
     /// popup is a one-shot picker without one.
     pub fn inherits_basic(self) -> bool {
-        !matches!(self, Context::Info)
+        !matches!(self, Context::Info | Context::Canvas)
     }
 
     /// The keymap [`Surface`] this context is a refinement of (the surface that [`Context::of_surface`]
@@ -1115,6 +1133,7 @@ impl Context {
             Context::TextVisual => Surface::PreviewTextVisual,
             Context::Image => Surface::PreviewImage,
             Context::Table => Surface::PreviewTable,
+            Context::Canvas => Surface::PreviewCanvas,
             Context::TableCell => Surface::TableCell,
             Context::Bookmarks => Surface::Bookmarks,
             Context::Tabs => Surface::Tabs,
@@ -1151,6 +1170,7 @@ impl Context {
             | Surface::Filter
             | Surface::Search
             | Surface::Mark
+            | Surface::PluginInput
             | Surface::DialogConfirmDelete
             | Surface::DialogConfirmDrop
             | Surface::DialogRenamePreview
@@ -1191,6 +1211,7 @@ impl Context {
             Surface::PreviewTextVisual => Context::TextVisual,
             Surface::PreviewImage => Context::Image,
             Surface::PreviewTable => Context::Table,
+            Surface::PreviewCanvas => Context::Canvas,
             #[cfg(feature = "git")]
             Surface::PreviewGitDiff => Context::Diff,
         })
@@ -1509,6 +1530,38 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
         contexts.insert(Context::Table, ptbl);
+
+        // --- Preview: a plugin's canvas ---
+        // A key means the same thing everywhere: the host keeps layer 0 (the `global` table), the
+        // base keys every file preview shares that are not motion (`y` `Y` copy, `m` `'`
+        // bookmarks, `r` reload, `Ctrl-n` / `Ctrl-p` file paging, `Ctrl-t`), the verbs (`e` `o` `p`
+        // `!`), `q`, `Esc` (a fixed key), `Space` (the menu of the plugin's operations), `,`, and
+        // `R` `J` `K` `O` (a canvas that is one representation or one page can be left). It gives
+        // up the type layer (scrolling, searching, selecting) and the navigation fixed keys
+        // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
+        // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
+        // the plugin's).
+        let mut pcvs: ContextMap = HashMap::new();
+        pcvs.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        pcvs.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::Actions));
+        pcvs.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
+        pcvs.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        pcvs.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+        pcvs.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        #[cfg(feature = "git")]
+        pcvs.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+        pcvs.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
+        pcvs.insert(KeyPress::ch('J'), run(Action::PageNext));
+        pcvs.insert(KeyPress::ch('K'), run(Action::PagePrev));
+        pcvs.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
+        pcvs.insert(KeyPress::ch('r'), run(Action::Refresh));
+        pcvs.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
+        pcvs.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
+        pcvs.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+        pcvs.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
+        pcvs.insert(KeyPress::ch('m'), run(Action::MarkSet));
+        pcvs.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        contexts.insert(Context::Canvas, pcvs);
 
         // --- Version-control contexts (feature gate) ---
         #[cfg(feature = "git")]
@@ -2600,6 +2653,7 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
         menu(Context::Document, vec![path(), wrap()]),
         menu(Context::Image, vec![path()]),
         menu(Context::Table, vec![path()]),
+        menu(Context::Canvas, vec![path()]),
     ];
     #[cfg(feature = "git")]
     v.push(menu(

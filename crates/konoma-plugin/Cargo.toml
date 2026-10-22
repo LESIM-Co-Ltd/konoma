@@ -10,6 +10,10 @@ description = "Plugin API of konoma: the entry traits, display types, declaratio
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
 globset.workspace = true
+# Display widths of the text a canvas writes.
+unicode-width.workspace = true
+# One grapheme per canvas cell.
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }

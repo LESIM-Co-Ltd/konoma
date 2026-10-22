@@ -485,6 +485,29 @@ fn a_heavy_plugin_is_read_again_only_when_its_file_changed() {
     );
 }
 
+/// The user's own `r` forces a reopen for a canvas only: a heavy (work group) plugin whose file did
+/// not change is not read again (an Office workbook of hundreds of megabytes), as before.
+#[test]
+fn r_does_not_read_an_unchanged_heavy_plugin_file_again() {
+    let dir = sandbox("repl_heavy_r");
+    let file = dir.join("big.xsheet");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+    let plugin = TableLike {
+        heavy: true,
+        ..TableLike::new("x-heavy-r", "xsheet", true)
+    };
+    let opens = plugin.opens.clone();
+    let cfg = cfg_with(&[("repl_heavy_r", Arc::new(plugin))], &[]);
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("big.xsheet");
+    s.enter();
+    let count = || opens.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(count(), 1);
+    s.key('r');
+    s.draw();
+    assert_eq!(count(), 1, "`r` on an unchanged heavy file reads nothing");
+}
+
 /// A file rewritten with the same length and its modification time put back (`touch -r`) is still
 /// another file: its change time and, for a replacement by rename, its inode, differ.
 #[test]

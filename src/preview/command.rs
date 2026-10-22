@@ -132,6 +132,8 @@ pub fn exit_cleanup() {
 pub(crate) enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    HoldTerminal,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
@@ -140,6 +142,8 @@ pub(crate) enum ExitStep {
 enum ExitStep {
     StopSvgProcesses,
     RemoveTempDir,
+    HoldTerminal,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
@@ -181,37 +185,149 @@ pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>
     (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
 }
 
+/// Serializes what the program writes to the terminal in one go: a frame (a kitty transmit is a
+/// run of chunks that must not have anything written between them) and the deletes of canvas
+/// pictures. The main thread holds it for the length of a draw and of a delete flush
+/// ([`terminal_write`]); the signal thread takes it, boundedly, before it deletes pictures and
+/// restores the terminal ([`leave_for_good`]), so its escapes never land inside a transmit.
+static TERMINAL_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// This thread holds [`TERMINAL_WRITE`] (a panic hook that runs on it must not wait for itself).
+    static HOLDS_TERMINAL_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The right to write to the terminal; released on drop. Hold it for a whole draw.
+pub(crate) struct TerminalWrite {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for TerminalWrite {
+    fn drop(&mut self) {
+        HOLDS_TERMINAL_WRITE.with(|h| h.set(false));
+    }
+}
+
+/// Wait for the right to write to the terminal (the main thread's draws).
+pub(crate) fn terminal_write() -> TerminalWrite {
+    let guard = TERMINAL_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+    TerminalWrite { _guard: guard }
+}
+
+/// The same, for at most `wait`, and `None` when it was not given in time -- or when this very
+/// thread already holds it (a panic inside a draw): the exit path then goes on without it. A
+/// draw is a few milliseconds, so a signal normally waits a frame; if the main thread is stuck the
+/// exit does not wait for it for good.
+pub(crate) fn terminal_write_within(wait: Duration) -> Option<TerminalWrite> {
+    if HOLDS_TERMINAL_WRITE.with(std::cell::Cell::get) {
+        return None;
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        match TERMINAL_WRITE.try_lock() {
+            Ok(guard) => {
+                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+                return Some(TerminalWrite { _guard: guard });
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
+                return Some(TerminalWrite {
+                    _guard: e.into_inner(),
+                });
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+/// How long the exit path waits for a frame in the middle of being written.
+const EXIT_TERMINAL_WAIT: Duration = Duration::from_millis(500);
+
 /// Leaving the program for good: `exit_cleanup`, then the terminal teardown. The one thing the
 /// normal exit, the signal thread and the fatal-panic hook all call, so none of them can stop
 /// short of the SVG drawing processes.
-pub fn leave_for_good() {
+///
+/// Returns the right to write to the terminal that it took (`None` when it was not given in time):
+/// the caller on the signal and fatal-panic paths keeps it until the process is gone
+/// ([`hold_until_exit`]), so the main thread, queued behind it, cannot draw onto the restored
+/// terminal in the moment before `exit`. The normal exit is the main thread itself and drops it.
+#[must_use]
+pub(crate) fn leave_for_good() -> Option<TerminalWrite> {
     exit_cleanup();
+    // Not in the middle of a frame (a transmit in chunks): wait for the draw that holds the
+    // terminal, and keep it through the deletes and the restore so the main thread cannot draw
+    // after the terminal is given back. (The restore of the terminal was always racy against a
+    // draw in progress; with this it no longer is, apart from a main thread stuck for longer than
+    // the wait, where the exit goes on without it.)
+    note_exit_step(ExitStep::HoldTerminal);
+    let terminal = terminal_write_within(EXIT_TERMINAL_WAIT);
+    // The pictures a plugin's canvas put on a kitty-graphics terminal stay in the terminal's image
+    // storage after the program is gone: delete them while the terminal is still ours.
+    if dry_run() {
+        note_exit_step(ExitStep::DeleteCanvasImages);
+    } else {
+        crate::app::canvas_images::delete_canvas_kitty_images(&mut std::io::stdout());
+    }
     if dry_run() {
         note_exit_step(ExitStep::RestoreTerminal);
     } else {
         restore_terminal_quietly();
     }
+    terminal
+}
+
+/// Keeps the right to write to the terminal until the process is gone: the guard is forgotten, so
+/// the lock is never released. (Under the exit-step recorder of the tests it is dropped instead,
+/// or one test would hold the lock for every other test of the process.)
+pub(crate) fn hold_until_exit(guard: Option<TerminalWrite>) {
+    if dry_run() {
+        drop(guard);
+    } else {
+        std::mem::forget(guard);
+    }
 }
 
 /// The panic hook's part: a panic that ends the process (see `panic_ends_process`) leaves for
-/// good before the previous hook prints its message. Returns whether it did.
+/// good before the previous hook prints its message, and keeps the terminal to the end. Returns
+/// whether it did.
 pub fn leave_if_panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
-    if panic_ends_process(thread_name, caught) {
-        leave_for_good();
-        true
-    } else {
-        false
+    match leave_if_panic_ends_process_holding(thread_name, caught) {
+        Some(guard) => {
+            hold_until_exit(guard);
+            true
+        }
+        None => false,
     }
+}
+
+/// [`leave_if_panic_ends_process`] handing the terminal guard back instead of keeping it:
+/// `None` when the panic does not end the process.
+pub(crate) fn leave_if_panic_ends_process_holding(
+    thread_name: Option<&str>,
+    caught: bool,
+) -> Option<Option<TerminalWrite>> {
+    panic_ends_process(thread_name, caught).then(leave_for_good)
 }
 
 /// The signal thread's part: `Some(exit code)` after leaving for good, `None` for a signal that is
 /// ignored (SIGINT while a foreground child owns the terminal).
-pub(crate) fn leave_on_signal(sig: i32, child_running: bool) -> Option<i32> {
+///
+/// Returns the exit code together with the terminal guard, which the caller keeps through `exit`.
+pub(crate) fn leave_on_signal(
+    sig: i32,
+    child_running: bool,
+) -> Option<(i32, Option<TerminalWrite>)> {
     if ignore_signal(sig, child_running) {
         return None;
     }
-    leave_for_good();
-    Some(128 + sig)
+    let terminal = leave_for_good();
+    Some((128 + sig, terminal))
 }
 
 /// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
@@ -293,7 +409,9 @@ pub fn install_exit_cleanup_signals() {
         .spawn(move || {
             for sig in signals.forever() {
                 let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
-                if let Some(code) = leave_on_signal(sig, running) {
+                if let Some((code, terminal)) = leave_on_signal(sig, running) {
+                    // The terminal stays ours until the process is gone.
+                    hold_until_exit(terminal);
                     std::process::exit(code);
                 }
             }
@@ -614,6 +732,16 @@ mod tests {
 
     use super::*;
     use crate::test_support::unique_tmp;
+
+    /// `TERMINAL_WRITE` is process-global, so the tests that take it (directly or through the exit
+    /// paths) must not overlap: one test holding it would make another test's "free now" or
+    /// "refused for 20 ms" check meet the wrong holder. Poison is ignored so one failure does not
+    /// cascade.
+    static TERMINAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serialize_terminal_tests() -> std::sync::MutexGuard<'static, ()> {
+        TERMINAL_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     // ---- build_argv ---------------------------------------------------------------------------
 
@@ -1167,16 +1295,57 @@ mod tests {
         assert!(!temp.exists(), "the private temp directory was not removed");
     }
 
+    /// The real `leave_for_good`, in a process of its own (it is one-way and process-wide): the
+    /// deletes of the canvas pictures still on the terminal are written to stdout, **before** the
+    /// terminal is restored. The recorded steps above cannot tell a step that was noted from one
+    /// that was done.
+    #[cfg(unix)]
+    #[test]
+    fn leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore() {
+        const ENV: &str = "KONOMA_TEST_LEAVE_DELETES_CHILD";
+        const ID: u32 = 4_242_424;
+        let name = "preview::command::tests::leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore";
+        if std::env::var_os(ENV).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact", "--test-threads=1", "--nocapture"])
+                .env(ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let wire = String::from_utf8_lossy(&out.stdout).into_owned();
+            let delete = format!("\x1b_Gq=2,a=d,d=I,i={ID}\x1b\\");
+            let at = wire
+                .find(&delete)
+                .unwrap_or_else(|| panic!("no delete in {wire:?}"));
+            let restore = wire.find("\x1b[?1049l").expect("the terminal was restored");
+            assert!(
+                at < restore,
+                "the delete comes before the restore: {wire:?}"
+            );
+            assert_eq!(wire.matches(&delete).count(), 1, "once");
+            return;
+        }
+        crate::app::canvas_images::LIVE_CANVAS_KITTY.note(ID);
+        let _ = leave_for_good();
+    }
+
     /// Every way out runs the whole exit cleanup (not just the temp-dir removal), and then the
     /// terminal teardown.
     #[test]
     fn every_way_out_runs_the_whole_exit_cleanup() {
+        let _serial = serialize_terminal_tests();
         let all = vec![
             ExitStep::StopSvgProcesses,
             ExitStep::RemoveTempDir,
+            ExitStep::HoldTerminal,
+            ExitStep::DeleteCanvasImages,
             ExitStep::RestoreTerminal,
         ];
-        let ((), steps) = recorded_exit_steps(leave_for_good);
+        let (_, steps) = recorded_exit_steps(leave_for_good);
         assert_eq!(steps, all, "normal exit");
         let (r, steps) = recorded_exit_steps(|| leave_if_panic_ends_process(Some("main"), false));
         assert!(r);
@@ -1186,10 +1355,117 @@ mod tests {
             signal_hook::consts::SIGHUP,
             signal_hook::consts::SIGINT,
         ] {
-            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false));
+            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false).map(|(c, _)| c));
             assert_eq!(code, Some(128 + sig));
             assert_eq!(steps, all, "signal {sig}");
         }
+    }
+
+    /// The signal thread's escapes never land inside a frame the main thread is writing: it waits
+    /// for the draw that holds the terminal. (A transmit is a run of chunks; a delete between two
+    /// of them is taken for part of the transmit and the picture stays in the terminal.)
+    #[test]
+    fn the_exit_path_waits_for_the_frame_being_written_and_never_lands_inside_it() {
+        let _serial = serialize_terminal_tests();
+        use std::sync::mpsc::channel;
+        use std::sync::{Arc, Mutex};
+        let wire = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (go_tx, go_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel::<()>();
+        let w = wire.clone();
+        let exit = std::thread::spawn(move || {
+            go_rx.recv().unwrap();
+            // The signal thread: waits for the frame, then writes its delete.
+            let held = terminal_write_within(Duration::from_secs(30));
+            assert!(held.is_some(), "given the terminal once the frame is done");
+            w.lock().unwrap().push("delete");
+            drop(held);
+            done_tx.send(()).unwrap();
+        });
+        {
+            // The main thread: a frame in chunks.
+            let _frame = terminal_write();
+            wire.lock().unwrap().push("chunk 1");
+            go_tx.send(()).unwrap();
+            // Had the exit path not waited, it would be done well within this time.
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+                "the exit path wrote while a frame was being written"
+            );
+            wire.lock().unwrap().push("chunk 2");
+        }
+        done_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        exit.join().unwrap();
+        assert_eq!(*wire.lock().unwrap(), ["chunk 1", "chunk 2", "delete"]);
+        // A thread that holds the terminal itself (a panic inside a draw) does not wait for
+        // itself, and a stuck holder is given up on after the wait.
+        let _mine = terminal_write();
+        assert!(terminal_write_within(Duration::from_secs(30)).is_none());
+        let stuck =
+            std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none());
+        assert!(
+            stuck.join().unwrap(),
+            "the exit goes on without a stuck frame"
+        );
+    }
+
+    /// The signal and fatal-panic exits keep the right to write to the terminal after the restore
+    /// (the caller holds it to the end of the process), so a main thread queued behind it cannot
+    /// draw onto the restored terminal: while the returned guard lives another thread is refused,
+    /// and it is given the terminal only once the guard is dropped.
+    #[test]
+    fn the_signal_and_panic_exits_keep_the_terminal_until_the_process_is_gone() {
+        let _serial = serialize_terminal_tests();
+        let refused_elsewhere = || {
+            std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none())
+                .join()
+                .unwrap()
+        };
+        let (held, _) = recorded_exit_steps(|| {
+            leave_on_signal(signal_hook::consts::SIGTERM, false).map(|(_, g)| g)
+        });
+        let held = held
+            .expect("a SIGTERM leaves")
+            .expect("the terminal was given in time");
+        assert!(
+            refused_elsewhere(),
+            "signal exit: another thread is kept out"
+        );
+        drop(held);
+        assert!(!refused_elsewhere(), "released once the guard is dropped");
+
+        let (held, _) =
+            recorded_exit_steps(|| leave_if_panic_ends_process_holding(Some("main"), false));
+        let held = held.expect("a fatal panic leaves").expect("given in time");
+        assert!(
+            refused_elsewhere(),
+            "panic exit: another thread is kept out"
+        );
+        drop(held);
+        assert!(!refused_elsewhere());
+
+        // The normal exit hands it back too (the main thread drops it).
+        let (held, _) = recorded_exit_steps(leave_for_good);
+        assert!(held.is_some());
+        assert!(refused_elsewhere());
+        drop(held);
+
+        // The wrappers that end the process keep it for good rather than dropping it.
+        let this = include_str!("command.rs");
+        let signal = this
+            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .nth(1)
+            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .unwrap();
+        assert!(
+            signal.find("hold_until_exit(terminal)").unwrap()
+                < signal.find("process::exit(").unwrap()
+        );
+        assert!(this.contains("std::mem::forget(guard)"));
+        assert!(
+            this.contains("hold_until_exit(guard);\n            true"),
+            "panic path"
+        );
     }
 
     /// What does not end the process does not clean up: a caught panic or a worker's panic, and
@@ -1200,7 +1476,7 @@ mod tests {
             (
                 leave_if_panic_ends_process(Some("main"), true),
                 leave_if_panic_ends_process(Some("konoma-md-decode"), false),
-                leave_on_signal(signal_hook::consts::SIGINT, true),
+                leave_on_signal(signal_hook::consts::SIGINT, true).map(|(c, _)| c),
             )
         });
         assert_eq!(r, (false, false, None));

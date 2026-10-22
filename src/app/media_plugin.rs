@@ -70,15 +70,14 @@ pub(super) fn decode_image_view(
     let max_px = iv.raster_max_px.unwrap_or(default_raster_px);
     match iv.data {
         // A file: the host tells an animation from a still by the first bytes, and decodes it
-        // under its size limits and the shared decode gate.
-        ImageData::File(p) => Some(if App::looks_like_gif(&p) {
-            match crate::preview::image::decode_gif(&p) {
-                Some(frames) => MediaPayload::Gif(frames),
-                // A single-frame / non-animated GIF is shown as a still image.
-                None => still_payload(&p),
-            }
-        } else {
-            still_payload(&p)
+        // under its size limits and the shared decode gate. It is opened by the one door every
+        // plugin-named picture file goes through (a regular file only, never a FIFO or a device,
+        // opened without blocking; a relative path is relative to the previewed file's folder),
+        // and decoded from that handle -- nothing opens the path a second time. (No 64 MiB read
+        // cap here: a large still is bounded by the decoders' own limits, as it always was.)
+        ImageData::File(p) => Some(match super::canvas_images::open_picture_file(path, &p) {
+            Ok((file, named)) => decode_picture_handle(file, &named),
+            Err(why) => MediaPayload::ImageFailed(why),
         }),
         ImageData::Svg {
             data,
@@ -130,9 +129,36 @@ pub(super) fn decode_image_view(
             Some(MediaPayload::Static(image::DynamicImage::ImageRgba8(img)))
         }
         // Not made by the picture plugins; a plugin that returns them gets the honest reason.
-        ImageData::Encoded(_) | ImageData::Frames(_) | ImageData::Lazy(_) => {
-            Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat))
+        // (`ImageData` is non-exhaustive: a kind this host does not know is refused the same way.)
+        _ => Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat)),
+    }
+}
+
+/// Decode the opened picture file: an animation when its first bytes say GIF (and it has more
+/// than one frame), otherwise a still.
+fn decode_picture_handle(mut file: std::fs::File, named: &Path) -> MediaPayload {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut head = [0u8; 6];
+    let gif = file.read_exact(&mut head).is_ok() && &head[..4] == b"GIF8";
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Corrupt);
+    }
+    if gif {
+        // A single-frame / non-animated GIF is shown as a still image.
+        let frames = file
+            .try_clone()
+            .ok()
+            .and_then(crate::preview::image::decode_gif_file);
+        if let Some(frames) = frames {
+            return MediaPayload::Gif(frames);
         }
+        if file.seek(SeekFrom::Start(0)).is_err() {
+            return MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Corrupt);
+        }
+    }
+    match crate::preview::image::decode_static_file_why(file, Some(named)) {
+        Ok(img) => MediaPayload::Static(img),
+        Err(why) => MediaPayload::ImageFailed(why),
     }
 }
 
@@ -202,15 +228,15 @@ impl App {
                     view: None,
                     req: ViewReq::default(),
                     enabled: Default::default(),
+                    flow: Default::default(),
                 });
                 None
             }
         };
         // The page asked for, counted from 0 in the request.
-        let req = ViewReq {
-            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
-            ..self.plugin_view_req()
-        };
+        let req = self
+            .plugin_view_req()
+            .page(self.tab.page.max(1).saturating_sub(1) as usize);
         let (job, wait) = match session {
             Some(session) => (PluginJob::View { session }, Wait::Nothing),
             None => (

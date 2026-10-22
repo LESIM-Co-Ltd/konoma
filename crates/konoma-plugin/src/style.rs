@@ -80,6 +80,7 @@ impl BitOrAssign for Modifier {
 /// A style: colors plus added and removed modifiers (the same meaning as ratatui's
 /// `add_modifier` / `sub_modifier`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Style {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
@@ -91,6 +92,12 @@ impl Style {
     /// The empty style.
     pub fn new() -> Style {
         Style::default()
+    }
+
+    /// A style from all four parts (`Style` is `#[non_exhaustive]`, so it cannot be built with a
+    /// struct expression outside this crate).
+    pub fn from_parts(fg: Option<Color>, bg: Option<Color>, add: Modifier, sub: Modifier) -> Style {
+        Style { fg, bg, add, sub }
     }
 
     pub fn fg(mut self, c: Color) -> Style {

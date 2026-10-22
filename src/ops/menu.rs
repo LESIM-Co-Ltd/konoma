@@ -130,7 +130,7 @@ fn unkeyed(ctx: Context) -> Vec<Action> {
             Action::ToggleWrap,
             Action::ToggleFocusedItem,
         ]),
-        Context::Image | Context::Table => v.push(Action::CyclePathStyle),
+        Context::Image | Context::Table | Context::Canvas => v.push(Action::CyclePathStyle),
         Context::Bookmarks => v.push(Action::BookmarkDelete),
         #[cfg(feature = "git")]
         Context::Diff => v.extend([Action::ToggleFollowDiffScope, Action::CyclePathStyle]),

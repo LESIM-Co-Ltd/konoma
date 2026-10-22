@@ -409,6 +409,7 @@ keys (`j`/`k`/`Space`), then in `global`. The context names:
 | `text_visual` | the character / line selection of a text or document preview (`v` / `V`) |
 | `image` | images, SVG, PDF pages and video thumbnails |
 | `table` | CSV / TSV / archive / spreadsheet tables; `table_cell` is the full-cell popup (`Enter`) |
+| `canvas` | a view a plugin draws itself (cells and pictures). The host keeps the global keys (layer 0), `q`, `Esc`, `Space` and `,` (the menus), `e` `o` `p` `!`, `R` `J` `K` `O`, and the keys every file preview shares (`y` `Y` copy, `m` `'` bookmarks, `r` reload, `Ctrl-n` `Ctrl-p` next / previous file; `Ctrl-t` is only reserved: it does nothing in a canvas). Scrolling, search, selection, the arrows, `Home` / `End`, `PageUp` / `PageDown`, `Enter` and `Tab` belong to the plugin, which gets them only through the actions it declares (or as text while it asks for text input, where only `Esc` is the host's) |
 | `sort` | the old sort menu (see below), `bookmarks`, `tabs` (the tab list), `outline`, `info`, `help` |
 | `diff` | a file's git / jj diff (git builds) |
 | `git.changes`, `git.log`, `git.graph`, `git.graph_picker`, `git.branches`, `git.worktrees`, `git.detail` | the version-control screens of a git repository (git builds). `git.worktrees` is the linked-worktree list, `git.graph_picker` the graph's branch panel, `git.detail` a commit's detail |

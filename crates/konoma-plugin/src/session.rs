@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::input::Input;
+use crate::key::Key;
 use crate::manifest::Manifest;
 use crate::settings::Settings;
 use crate::text::Tr;
@@ -20,6 +21,22 @@ pub trait Plugin: Send + Sync + 'static {
 }
 
 /// One opened input.
+///
+/// **A session lasts as long as the file it was opened on is unchanged.** The host opens the file
+/// again (a new session, the old one dropped) when the file's stamp (modification time, size,
+/// inode, change time) changed -- an edit, a rename over it -- and for a plugin without a work
+/// group that keeps no state (a table, a listing) also on an event of unknown cause. A plugin
+/// that shows a canvas, or names a work group, is opened again **only when the file's stamp
+/// changed**: an event for `.git`, for another file or of an unknown cause does not touch it.
+/// Two more cases open it again with the stamp unchanged: an event that **names the file itself**
+/// when the file was modified within 2 seconds of the moment it was last read (a file system with
+/// coarse time can leave the stamp equal across a rewrite; an old file's equal stamp is believed,
+/// so a second event for a save already read does not read it again), and, for a **canvas**, the
+/// user's own `r`. So keep in the session what may be lost with the file (the typing of a form,
+/// the state of a game); keep what must outlive it elsewhere.
+///
+/// What the user presses while the file is being read again (`R`, a declared action, typing in a
+/// canvas) waits for the new session and goes to it, in order.
 pub trait Session: Send {
     /// The representations and pages this content has.
     fn layout(&self) -> Layout {
@@ -32,6 +49,28 @@ pub trait Session: Send {
         let _ = (action, cx);
         Ok(Outcome::Unhandled)
     }
+    /// A key press, while the view asked for text input ([`crate::view::CanvasView::text_input`]).
+    ///
+    /// - Every key but `Esc` comes here, layer-0 keys (`?`, `Q`, `t`...) and `Ctrl-C` included,
+    ///   as ordinary keys; a paste is one [`crate::key::KeyCode::Paste`]. Keys the API has no name
+    ///   for (`Insert`, media keys) are dropped.
+    /// - `Esc` is the host's: it leaves the input state whatever the plugin answers, and arrives
+    ///   here too as a notice that cannot be refused (it gets through even when the backlog below
+    ///   is full: the last place is kept for it). After it the host does not give the typing
+    ///   back because a later view asks for it again: only an answer to something the user did
+    ///   does (a declared action they pressed, or opening the file again). See
+    ///   [`crate::view::CanvasView::text_input`].
+    /// - [`Outcome::Unhandled`] does nothing: the key does not fall back to the host's keymap or to
+    ///   the plugin's declared actions. Return `Unhandled` for keys you do not use, for example
+    ///   those with `CTRL` or `ALT` ([`crate::key::KeyMods`]).
+    /// - Return [`Outcome::Redraw`] to have the view asked for again. Keys are never dropped:
+    ///   those that came while a call was running arrive one by one in order. The host holds a
+    ///   bounded backlog (4096 keys, a paste cut at 1 MiB, 4 MiB of waiting pastes in total) and refuses new input past it, so a
+    ///   call that never returns does not grow memory without bound.
+    fn key(&mut self, key: &Key, cx: &ActCx) -> Result<Outcome, Failure> {
+        let _ = (key, cx);
+        Ok(Outcome::Unhandled)
+    }
     /// Whether a declared action works now. The host uses one answer for the key handler, the
     /// footer and the help, so a hint is shown only while the key acts.
     fn enabled(&self, action: &str) -> bool {
@@ -40,11 +79,53 @@ pub trait Session: Send {
     }
 }
 
+/// How many colors the terminal shows. The host does not convert a plugin's colors: a plugin
+/// that draws its own cells ([`crate::view::CanvasView`]) picks colors by this.
+///
+/// The variants are ordered by capability, the fewest colors first, so `depth >= ColorDepth::Ansi256`
+/// means "at least 256 colors". A new variant keeps this order (a lesser one goes before
+/// `Ansi16`, a richer one after `TrueColor`), so such a comparison stays right.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum ColorDepth {
+    /// The 16 named colors. The default: when nothing is known, promise the least.
+    #[default]
+    Ansi16,
+    /// The 256-color palette ([`crate::Color::Indexed`]).
+    Ansi256,
+    /// 24-bit color ([`crate::Color::Rgb`]).
+    TrueColor,
+}
+
 /// What the terminal can do.
+///
+/// Build one with [`TermCaps::new`] and the builders (more fields may be added later).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TermCaps {
     /// Whether real pixels can be drawn (a graphics protocol).
     pub pixels: bool,
+    /// How many colors can be shown.
+    pub colors: ColorDepth,
+}
+
+impl TermCaps {
+    /// The least a terminal promises: no pixels, 16 colors.
+    pub fn new() -> TermCaps {
+        TermCaps::default()
+    }
+
+    /// The same with `pixels` set.
+    pub fn pixels(mut self, on: bool) -> TermCaps {
+        self.pixels = on;
+        self
+    }
+
+    /// The same with `colors` set.
+    pub fn colors(mut self, depth: ColorDepth) -> TermCaps {
+        self.colors = depth;
+        self
+    }
 }
 
 /// A cancellation check the host passes to long work.
@@ -136,8 +217,11 @@ context!(
     ActCx
 );
 
-/// The result of an action.
+/// The result of an action ([`Session::act`]) or of a key ([`Session::key`]).
+///
+/// More may be added later: match with a `_` arm (an outcome you do not know asks for nothing).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// Not an action of this session.
     Unhandled,
@@ -185,6 +269,19 @@ macro_rules! failure_ctor {
 }
 
 impl Failure {
+    /// The failure as the host keeps it: the message and the detail cut to
+    /// [`crate::text::MAX_TEXT_CHARS`].
+    pub fn clipped(&self) -> Failure {
+        Failure {
+            kind: self.kind,
+            message: self.message.clipped(),
+            detail: self
+                .detail
+                .as_deref()
+                .map(|d| crate::text::clip_text(d).into_owned()),
+        }
+    }
+
     pub fn new(kind: FailureKind, message: impl Into<Tr>) -> Failure {
         Failure {
             kind,

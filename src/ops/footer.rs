@@ -131,6 +131,7 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
         ],
         Context::Image => image(app),
         Context::Table => table(app),
+        Context::Canvas => canvas(app),
         Context::TableCell => vec![
             Foot::Group(SCROLL, Msg::Scroll),
             Foot::Group(ENDS, Msg::FtTopBottom),
@@ -224,6 +225,23 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Group(ENDS, Msg::HintEnds),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
         Foot::Op(Action::PreviewBack),
+        Foot::Op(Action::ToggleHelp),
+        Foot::Op(Action::RequestEdit),
+        Foot::Op(Action::OpenExternal),
+        Foot::Group(TABS, Msg::HintTab),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
+    ]
+}
+
+/// A plugin's canvas: only the keys the host keeps (`keys::reserved("canvas")`). The plugin's own
+/// operations are spliced in after the first entry (`plan`), so they come right after `q:back`.
+fn canvas(_app: &App) -> Vec<Foot> {
+    vec![
+        Foot::Op(Action::PreviewBack),
+        Foot::GroupOp(PAGE_TURN),
+        Foot::Op(Action::ToggleOutline),
+        Foot::Op(Action::CycleRepresentation),
+        Foot::Group(FILE_JUMP, Msg::HintFileJump),
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
         Foot::Op(Action::OpenExternal),

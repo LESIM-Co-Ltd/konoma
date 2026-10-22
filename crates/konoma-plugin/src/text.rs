@@ -10,7 +10,64 @@ pub struct Tr {
     others: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
+/// The longest user-visible text the host keeps from a plugin, in characters: a message, a label,
+/// a help line, a page name. Longer ones are cut at this length with a trailing `…` when the host
+/// takes them in, so a plugin cannot hand the interface a text it has to copy and measure on
+/// every frame.
+pub const MAX_TEXT_CHARS: usize = 512;
+
+/// The most languages besides English a [`Tr`] keeps when the host takes it in.
+pub const MAX_TR_LANGUAGES: usize = 16;
+
+/// Whether `c` is dropped from a text when the host takes it in: a control character other than
+/// a newline or a tab (C0, DEL, C1: they would reach the terminal), and U+10EEEE, the character
+/// the kitty graphics protocol uses for its Unicode placeholders (it would show an image the host
+/// has placed).
+fn is_stripped(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t') || c == '\u{10EEEE}'
+}
+
+/// `s` as the host keeps it: control characters (other than a newline and a tab) and U+10EEEE
+/// removed, at most [`MAX_TEXT_CHARS`] characters, the last of a cut one an ellipsis. Whole
+/// characters are kept (a cut never lands inside one).
+pub fn clip_text(s: &str) -> std::borrow::Cow<'_, str> {
+    let clean: std::borrow::Cow<'_, str> = if s.chars().any(is_stripped) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !is_stripped(*c)).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    };
+    match clean.char_indices().nth(MAX_TEXT_CHARS) {
+        None => clean,
+        Some((end, _)) => {
+            let keep = clean[..end]
+                .char_indices()
+                .nth(MAX_TEXT_CHARS - 1)
+                .map_or(end, |(i, _)| i);
+            std::borrow::Cow::Owned(format!("{}…", &clean[..keep]))
+        }
+    }
+}
+
 impl Tr {
+    /// The same text with every language cut to [`MAX_TEXT_CHARS`] (see [`clip_text`]).
+    pub fn clipped(&self) -> Tr {
+        Tr {
+            en: clip_text(&self.en).into_owned().into(),
+            // At most MAX_TR_LANGUAGES besides English, each language name short: `get` walks them.
+            others: self
+                .others
+                .iter()
+                .take(MAX_TR_LANGUAGES)
+                .map(|(l, t)| {
+                    (
+                        l.chars().take(35).collect::<String>().into(),
+                        clip_text(t).into_owned().into(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
     /// A string with only the English text.
     pub fn new(en: impl Into<Cow<'static, str>>) -> Tr {
         Tr {

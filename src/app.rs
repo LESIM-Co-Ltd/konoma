@@ -50,15 +50,32 @@ pub(crate) use embed_plugin::probe_fence_picture;
 pub(crate) use md_media::redraw_svg;
 #[cfg(test)]
 pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
+#[cfg(test)]
+pub(crate) use plugin_host::color_depth_from as color_depth_from_for_test;
+#[cfg(test)]
+pub(crate) use plugin_host::MAX_QUEUED_ACTS;
+#[cfg(test)]
+pub(crate) use plugin_input::plugin_key_of;
+#[cfg(test)]
+pub(crate) use plugin_input::{
+    MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_QUEUED_PASTE_BYTES, MAX_REDRAW_AFTER, MIN_REDRAW_AFTER,
+};
+pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
-mod outline;
+pub(crate) mod canvas_images;
+#[cfg(feature = "demo-canvas")]
+mod canvas_trace;
+pub(crate) mod outline;
 mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
+#[cfg(test)]
+pub(crate) use plugin_host::InlineAnswers;
+mod plugin_input;
 mod preview_visual;
 mod repr_cycle;
 mod search;
@@ -112,6 +129,8 @@ pub enum InternalMode {
     ChangedFilter,
     Search,
     Mark,
+    /// A plugin's canvas is taking the typing (`CanvasView::text_input`).
+    PluginInput,
     Bookmarks,
     Tabs,
     Outline,
@@ -147,6 +166,8 @@ pub enum BaseKind {
     PreviewText,
     PreviewImage,
     PreviewTable,
+    /// A plugin's free-drawing view (`View::Canvas`).
+    PreviewCanvas,
 }
 
 /// The bottom layer of the UI stack, plus the two facts that decorate it.
@@ -237,6 +258,9 @@ pub enum UiLayer {
     Info,
     TableCell,
     Visual,
+    /// A plugin's canvas that asked for text input is on screen and has not been left with
+    /// `Esc`. Just above the base: every overlay and dialog sits in front of it.
+    PluginInput,
 
     /// The base full screen. Always active, so the walk ends here.
     Base(BaseLayer),
@@ -249,6 +273,7 @@ impl BaseLayer {
             BaseKind::Tree => S::Tree,
             BaseKind::PreviewImage => S::PreviewImage,
             BaseKind::PreviewTable => S::PreviewTable,
+            BaseKind::PreviewCanvas => S::PreviewCanvas,
             BaseKind::PreviewText => {
                 if self.preview_visual {
                     S::PreviewTextVisual
@@ -333,6 +358,7 @@ impl UiLayer {
             Self::Filter => S::Filter,
             Self::Search => S::Search,
             Self::Mark => S::Mark,
+            Self::PluginInput => S::PluginInput,
             Self::BookmarksFilter | Self::TabsFilter | Self::OutlineFilter => S::ListFilter,
             Self::Bookmarks => S::Bookmarks,
             Self::Tabs => S::Tabs,
@@ -382,6 +408,7 @@ impl UiLayer {
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
             Self::Mark => InternalMode::Mark,
+            Self::PluginInput => InternalMode::PluginInput,
             // The overlay lists' `/` filter keeps the overlay's own chip (as the git lists do).
             Self::BookmarksFilter | Self::Bookmarks => InternalMode::Bookmarks,
             Self::TabsFilter | Self::Tabs => InternalMode::Tabs,
@@ -420,6 +447,7 @@ impl crate::keymap::Surface {
             S::Filter => UiLayer::Filter,
             S::Search => UiLayer::Search,
             S::Mark => UiLayer::Mark,
+            S::PluginInput => UiLayer::PluginInput,
             #[cfg(feature = "git")]
             S::BranchFilter => UiLayer::GitBranchFilter,
             #[cfg(feature = "git")]
@@ -461,6 +489,7 @@ impl crate::keymap::Surface {
             S::PreviewTextVisual => base(BaseKind::PreviewText, true),
             S::PreviewImage => base(BaseKind::PreviewImage, false),
             S::PreviewTable => base(BaseKind::PreviewTable, false),
+            S::PreviewCanvas => base(BaseKind::PreviewCanvas, false),
         }
     }
 }
@@ -993,14 +1022,6 @@ pub(crate) fn run_command_job(
         as_image,
     }
     .run()
-}
-
-/// Decode a still image for the full-screen preview: the picture, or why there is none.
-fn still_payload(path: &Path) -> MediaPayload {
-    match crate::preview::image::decode_static_why(path) {
-        Ok(img) => MediaPayload::Static(img),
-        Err(why) => MediaPayload::ImageFailed(why),
-    }
 }
 
 /// Result of the **heavy ignored set (`git::ignored`)** computed on a separate thread. Staleness is judged by `gen`, and
@@ -1619,6 +1640,34 @@ pub struct App {
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
     /// offloaded to a separate thread via `img_tx`, and the result is applied in apply_image_resize.
     picker: Option<Picker>,
+    /// How many colors the terminal shows, read once from `COLORTERM` / `TERM` at startup and
+    /// handed to the plugins (`TermCaps::colors`); the host never converts a plugin's colors.
+    plugin_colors: konoma_plugin::ColorDepth,
+    /// Keys typed into a canvas that asked for text input and not yet handed to the plugin: they
+    /// wait here while a job holds the session and go, in order, in the next job
+    /// (`app/plugin_input.rs`).
+    plugin_key_queue: Vec<konoma_plugin::Key>,
+    /// `Esc` left the plugin's text input: the host does not take the typing again until the
+    /// plugin shows a canvas that does not ask for it (so a plugin cannot trap the user).
+    plugin_input_left: bool,
+    /// A declared action the user pressed is out (or its follow-up `view` is): the canvas that
+    /// answers it is "the user's" and may take the typing back after `Esc`
+    /// (`App::canvas_landed`). Cleared as the answer lands, and with the show.
+    plugin_user_act: bool,
+    /// The generation of the job `plugin_user_act` was set for: a stale answer of that job or of a
+    /// later one that is discarded takes the mark away (it is no longer the answer to the action).
+    plugin_user_act_gen: u64,
+    /// `plugin_session_returned` is running (0 = no, 1 = running, 2 = running and asked again):
+    /// an answer taken on the spot inside it only marks "more to do", the outer loop goes on.
+    plugin_returning: u8,
+    /// `plugin_session_returned` stopped at its per-call bound with work left (answers taken on
+    /// the spot keep asking for more): the run loop continues it next turn.
+    plugin_returned_pending: bool,
+    /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
+    canvas_redraw_at: Option<std::time::Instant>,
+    /// When the host last asked the plugin again because canvas pictures were left for later (the
+    /// follow-up asks are at most one per `MIN_REDRAW_AFTER`).
+    canvas_more_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     pub image: Option<ThreadProtocol>,
     /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
@@ -1683,6 +1732,12 @@ pub struct App {
     /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
     /// not re-read a workbook of hundreds of megabytes.
     plugin_stamp: Option<FileStamp>,
+    /// When `plugin_stamp` was taken (the "racily clean" rule: see [`named_event_rereads`]).
+    plugin_stamp_taken: Option<std::time::SystemTime>,
+    /// Set while the user's own refresh (`r`) runs: a plugin's file is read again whatever its
+    /// stamp says (`plugin_file_unchanged`), because the user asked for it. Only a canvas show
+    /// honours it; every other plugin keeps the stamp rule.
+    plugin_reopen_forced: bool,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -1799,6 +1854,22 @@ pub struct App {
     /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
     /// is by construction the cheaper of the two.
     md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
+    /// The placements of the canvas on screen, in the order of `CanvasView::images`, with the
+    /// cache key made once when the answer landed (`app/canvas_images.rs`).
+    canvas_places: Vec<canvas_images::CanvasPlace>,
+    /// How many placements of the canvas on screen each picture (by `canvas_slot_of`) has: the
+    /// number of encodings it can need at once (one per placement, a clipped one has its own).
+    /// Built with `canvas_places`; the cap of a canvas picture's encode slots.
+    canvas_slot_counts: std::collections::HashMap<String, usize>,
+    /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
+    /// content of the id has no protocol yet, so a changing picture does not blink.
+    canvas_front: std::collections::HashMap<u64, Arc<str>>,
+    /// The sources of the canvas pictures deferred or refused and not decoded yet, by id (kept
+    /// from the answer that sent them, so the plugin need not send them again).
+    canvas_kept: std::collections::HashMap<u64, canvas_images::KeptPicture>,
+    /// Kitty image ids of canvas pictures that are gone, waiting to be deleted from the terminal
+    /// (`App::take_kitty_deletes`).
+    kitty_deletes: Vec<u32>,
     /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
     /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
     /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
@@ -1890,6 +1961,10 @@ pub struct App {
     /// Heading-outline overlay (`o` in a Markdown preview): jump to any heading.
     outline_open: bool,
     outline_sel: usize,
+    /// The page list of the open `O` overlay, built once when it opens (a plugin may declare
+    /// 100,000 pages, and the overlay asks for the rows on every frame and key): the key it was
+    /// built for and the rows. Dropped when the overlay closes or the layout changes.
+    outline_pages: std::cell::RefCell<Option<outline::BuiltPages>>,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -2778,9 +2853,33 @@ fn reserve_proto_slot(
     frame: u64,
     cap: usize,
 ) -> usize {
+    reserve_proto_slot_inner(slots, key, frame, cap, false).expect("the soft family always grows")
+}
+
+/// [`reserve_proto_slot`] with a **hard** ceiling: when every slot of the family is live in this
+/// frame (and the family is already at `cap`), there is no slot to give (`None`) instead of the
+/// family growing. For a canvas picture, whose plugin is not trusted to place one picture at few
+/// sizes: its encodes can never outgrow `MD_PROTO_SLOTS`. (An honest canvas places an id at one
+/// size, `CanvasView::check`, so it never gets here.)
+fn reserve_proto_slot_hard(
+    slots: &mut Vec<MdProtoSlot>,
+    key: MdEncodeKey,
+    frame: u64,
+    cap: usize,
+) -> Option<usize> {
+    reserve_proto_slot_inner(slots, key, frame, cap, true)
+}
+
+fn reserve_proto_slot_inner(
+    slots: &mut Vec<MdProtoSlot>,
+    key: MdEncodeKey,
+    frame: u64,
+    cap: usize,
+    hard: bool,
+) -> Option<usize> {
     if let Some(i) = slots.iter().position(|s| s.key == key) {
         slots[i].used = frame;
-        return i;
+        return Some(i);
     }
     let fresh = MdProtoSlot {
         key,
@@ -2797,11 +2896,14 @@ fn reserve_proto_slot(
             .map(|(i, _)| i);
         if let Some(i) = lru {
             slots[i] = fresh;
-            return i;
+            return Some(i);
+        }
+        if hard {
+            return None;
         }
     }
     slots.push(fresh);
-    slots.len() - 1
+    Some(slots.len() - 1)
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -3122,6 +3224,9 @@ pub(crate) struct PerTab {
     pub(crate) preview_hscroll: u16,
     /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
     pub(crate) preview_viewport: u16,
+    /// Width (in columns) of the preview content area at the last render that measured it
+    /// (`ui::preview::render`); 0 until the preview has been drawn. A plugin's `ViewReq::cols`.
+    pub(crate) preview_cols: u16,
     table_cur_row: usize,
     table_cur_col: usize,
     table_top_row: usize,
@@ -3338,6 +3443,7 @@ impl Default for PerTab {
             preview_scroll: 0,
             preview_hscroll: 0,
             preview_viewport: 0,
+            preview_cols: 0,
             table_cur_row: 0,
             table_cur_col: 0,
             table_top_row: 0,
@@ -3493,6 +3599,15 @@ impl App {
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
             picker: None,
+            plugin_colors: plugin_host::detect_color_depth(),
+            plugin_key_queue: Vec::new(),
+            plugin_input_left: false,
+            plugin_user_act: false,
+            plugin_user_act_gen: 0,
+            plugin_returning: 0,
+            plugin_returned_pending: false,
+            canvas_redraw_at: None,
+            canvas_more_at: None,
             img_tx: None,
             image: None,
             use_kitty: false,
@@ -3514,6 +3629,8 @@ impl App {
             md_overlay_moved: false,
             preview_media_mtime: None,
             plugin_stamp: None,
+            plugin_stamp_taken: None,
+            plugin_reopen_forced: false,
             command_err: None,
             image_failure: None,
             #[cfg(test)]
@@ -3543,6 +3660,11 @@ impl App {
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
+            canvas_places: Vec::new(),
+            canvas_slot_counts: std::collections::HashMap::new(),
+            canvas_front: std::collections::HashMap::new(),
+            canvas_kept: std::collections::HashMap::new(),
+            kitty_deletes: Vec::new(),
             md_frame: 0,
             md_request_seq: 0,
             draw_seq: 0,
@@ -3574,6 +3696,7 @@ impl App {
             tab_list_sel: 0,
             outline_open: false,
             outline_sel: 0,
+            outline_pages: std::cell::RefCell::new(None),
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
@@ -3952,6 +4075,7 @@ impl App {
             kind: match self.tab.mode {
                 Mode::Preview if self.is_image_preview() => BaseKind::PreviewImage,
                 Mode::Preview if self.is_table_preview() => BaseKind::PreviewTable,
+                Mode::Preview if self.is_canvas_preview() => BaseKind::PreviewCanvas,
                 Mode::Preview => BaseKind::PreviewText,
                 Mode::Tree => BaseKind::Tree,
             },
@@ -4070,6 +4194,7 @@ impl App {
         layer!(self.is_info(), UiLayer::Info);
         layer!(self.is_table_cell_open(), UiLayer::TableCell);
         layer!(self.is_visual(), UiLayer::Visual);
+        layer!(self.is_plugin_input(), UiLayer::PluginInput);
 
         UiLayer::Base(self.base_layer())
     }
@@ -4628,7 +4753,7 @@ impl App {
             self.md_image_cache.clear(); // A different file: also discard the inline-image cache
         }
         self.tab.focused_item = None;
-        self.outline_open = false; // A new preview closes the outline overlay
+        self.close_outline(); // A new preview closes the outline overlay
         self.table_cell_open = false; // Likewise closes the table cell full-text popup
         self.details_open.clear(); // <details> open/closed state is per document = reset on a different file
         self.tab.preview_search = None;
@@ -5013,6 +5138,14 @@ impl App {
     /// Reopen the preview after the external editor exits (reflect the edited content). Caches are also discarded.
     /// Even if the editor replaces the file (temp→rename), the FileWindow is reopened so the latest is read.
     pub fn reload_preview(&mut self) {
+        self.reload_preview_named(false);
+    }
+
+    /// [`App::reload_preview`]. `named` is true when the FS event names the shown file itself:
+    /// then a plugin's file is opened again although its stamp is equal when the file was modified
+    /// within [`RACY_WINDOW`] of the moment the stamp was taken (a coarse-mtime filesystem can
+    /// leave the stamp equal across a real rewrite); an old file's equal stamp is believed.
+    pub(crate) fn reload_preview_named(&mut self, named: bool) {
         self.md_cache = None;
         self.win_cache = None;
         // The ordinary preview's own change-gutter baseline (`docs/STATUS.md` ★未修正 item 4) is a
@@ -5030,7 +5163,7 @@ impl App {
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
                 && !self.shows_file_text_plugin()
             {
-                if !self.plugin_file_unchanged() {
+                if !self.plugin_file_unchanged(named) {
                     self.reload_plugin();
                 }
                 self.clamp_table_cursor();
@@ -5038,25 +5171,44 @@ impl App {
         }
     }
 
-    /// Whether the open plugin show reads heavily (its manifest names a work group) and the file it
-    /// shows is the one it was opened on, unchanged since: reading it again would only repeat the
-    /// work (an FS event for `.git`, or for another file, reaches `reload_preview` as well).
-    /// A plugin that reads cheaply (a CSV, an archive listing) is opened again every time, as it
-    /// always was.
-    fn plugin_file_unchanged(&self) -> bool {
+    /// Whether the open plugin show reads heavily (its manifest names a work group) or keeps a
+    /// state of its own (it declares a canvas), and the file it shows is the one it was opened on,
+    /// unchanged since: reading it again would only repeat the work, or lose the state (an FS
+    /// event for `.git`, or for another file, or of an unknown cause, reaches `reload_preview` as
+    /// well). Such a plugin is opened again only when the file's stamp (mtime, size, inode, ctime)
+    /// changed -- or, for an event that names the shown file itself (`named`), also when the stamp
+    /// cannot be trusted yet ([`named_event_rereads`]: the file was modified within
+    /// [`RACY_WINDOW`] of the moment the stamp was taken, so a coarse-mtime rewrite may have left
+    /// it equal). A plugin that reads cheaply and keeps nothing (a CSV, an archive listing) is
+    /// opened again every time, as it always was.
+    fn plugin_file_unchanged(&self, named: bool) -> bool {
         let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
             return false;
         };
+        let canvas = crate::plugins::profile_of(id).canvas;
+        // The user's own `r` forces a reopen only for a canvas (a state of its own the user may
+        // want rebuilt); every other plugin keeps the stamp rule, as before.
+        if self.plugin_reopen_forced && canvas {
+            return false;
+        }
         let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
             .manifest(id)
-            .is_some_and(|m| m.work_group.is_some());
-        heavy
+            .is_some_and(|m| m.work_group.is_some())
+            || canvas;
+        let stamp_equal = heavy
             && self
                 .plugin
                 .as_ref()
                 .is_some_and(|p| p.id == *id && p.path == *path)
             && self.plugin_stamp.is_some()
-            && file_stamp(path) == self.plugin_stamp
+            && file_stamp(path) == self.plugin_stamp;
+        if stamp_equal && named {
+            if let (Some(stamp), Some(taken)) = (&self.plugin_stamp, self.plugin_stamp_taken) {
+                return !named_event_rereads(stamp.modified, taken, std::time::SystemTime::now());
+            }
+            return false; // no time on record: believe the event
+        }
+        stamp_equal
     }
 
     /// On an FS-driven reload, re-load media (image/svg/gif/video/pdf) **only when the previewed file
@@ -7047,6 +7199,29 @@ pub(crate) struct FileStamp {
     ctime: (i64, i64),
 }
 
+/// How close a file's modification time must be to the moment its stamp was taken (or to now) for
+/// the stamp to be unreliable: the coarsest timestamps a filesystem keeps are 2 s (FAT).
+pub(crate) const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether an FS event that names the shown file reads it again although its stamp is equal --
+/// git's "racily clean" rule. The stamp of a file modified within [`RACY_WINDOW`] of the moment it
+/// was taken (`taken`), or of `now`, proves nothing: a rewrite in the same coarse timestamp tick
+/// leaves it equal. A file whose modification time is long before both is believed: an event that
+/// reaches it late for a save already read (a second event of one save) finds the stamp equal and
+/// does not read a large workbook again.
+pub(crate) fn named_event_rereads(
+    modified: std::time::SystemTime,
+    taken: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> bool {
+    let near = |a: std::time::SystemTime, b: std::time::SystemTime| {
+        a.duration_since(b)
+            .or_else(|e| Ok::<_, ()>(e.duration()))
+            .is_ok_and(|d| d < RACY_WINDOW)
+    };
+    near(modified, taken) || near(modified, now)
+}
+
 fn file_stamp(path: &Path) -> Option<FileStamp> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path).ok()?;
@@ -7666,6 +7841,10 @@ mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+// Rules of the canvas road that need state no key reaches (mutation audit, stage 2.5).
+#[cfg(test)]
+mod canvas_survivor_tests;
 
 // The built-in `command` plugin: a delegated command through the plugin road.
 #[cfg(test)]

@@ -1125,3 +1125,149 @@ fn the_page_count_follows_the_layout_the_session_reports() {
     assert!(app.install_plugin_result(answer(&app, Layout::single(), false)));
     assert_eq!(app.tab.page_count, None);
 }
+
+// ---- a key's Redraw is asked again only when the very result did not carry a view ----------------
+//
+// A keys job takes the new view in the same job when an answer asked for a redraw. The host asks
+// the plugin again only when that result carries no answer of a `view` (`viewed`). When the view
+// failed, or came back as a document or a picture, the result is the answer: asking again would
+// make the same failing call again, for ever.
+
+/// The stand-in open and ready, its session taken the way a job takes it, and a result of the
+/// current generation that gives the session back with `Outcome::Redraw` and no view.
+fn redraw_answer(app: &mut App, file: &Path) -> (Arc<Seen>, PluginResult) {
+    let (plugin, seen) = stand(Script {
+        rows: 2,
+        ..Script::default()
+    });
+    open_stand(app, plugin, file);
+    assert_eq!(seen.views.load(Ordering::SeqCst), 1, "the open drew once");
+    let session = app.plugin.as_mut().unwrap().session.take();
+    assert!(session.is_some(), "the show was ready with its session");
+    let mut res = answer_of(app.media_gen, 2);
+    res.view = None;
+    res.session = session;
+    res.outcome = Some(Outcome::Redraw);
+    (seen, res)
+}
+
+/// Install `res` as the answer of the current job; how many times the plugin was asked for a view
+/// because of it, and whether the session is back in the show.
+fn views_asked_by(app: &mut App, seen: &Seen, res: PluginResult) -> usize {
+    let before = seen.views.load(Ordering::SeqCst);
+    assert!(
+        app.install_plugin_result(res),
+        "the current result is applied"
+    );
+    seen.views.load(Ordering::SeqCst) - before
+}
+
+/// The control: a Redraw that carries no view at all (an action's own result) is asked for.
+#[test]
+fn a_redraw_answer_without_a_view_asks_the_plugin_for_one() {
+    let (dir, file) = sandbox("konoma_plugin_host_viewed_none");
+    let mut app = app_on(&dir, &file);
+    let (seen, res) = redraw_answer(&mut app, &file);
+    assert_eq!(views_asked_by(&mut app, &seen, res), 1);
+    assert!(app.plugin.as_ref().unwrap().session.is_some());
+}
+
+/// The view the keys job asked for failed: the failure is the answer. Asking again would fail
+/// again, and again (an endless loop of requests); the show is failed and stays so.
+#[test]
+fn a_redraw_answer_whose_view_failed_does_not_ask_again() {
+    let (dir, file) = sandbox("konoma_plugin_host_viewed_failure");
+    let mut app = app_on(&dir, &file);
+    let (seen, mut res) = redraw_answer(&mut app, &file);
+    res.failure = Some(Failure::external(t!(en: "the view failed")));
+    assert_eq!(views_asked_by(&mut app, &seen, res), 0, "no second request");
+    assert!(app.plugin_failure().is_some(), "the failure is shown");
+    assert!(
+        app.plugin.as_ref().unwrap().session.is_some(),
+        "and the session was given back, not taken by a new request"
+    );
+    assert!(!app.is_media_loading(), "nothing is out");
+}
+
+/// The view came back as a picture (decoded or failed to decode): the result is the answer.
+#[test]
+fn a_redraw_answer_that_carries_a_picture_does_not_ask_again() {
+    for picture in [
+        plugin_host::Picture::Failed,
+        plugin_host::Picture::Canvas(None),
+    ] {
+        let (dir, file) = sandbox("konoma_plugin_host_viewed_picture");
+        let mut app = app_on(&dir, &file);
+        let (seen, mut res) = redraw_answer(&mut app, &file);
+        res.picture = picture;
+        assert_eq!(views_asked_by(&mut app, &seen, res), 0, "no second request");
+        assert!(app.plugin.as_ref().unwrap().session.is_some());
+        assert!(!app.is_media_loading());
+    }
+}
+
+/// The view came back as a document: the result is the answer.
+#[test]
+fn a_redraw_answer_that_carries_a_document_does_not_ask_again() {
+    let (dir, file) = sandbox("konoma_plugin_host_viewed_document");
+    let mut app = app_on(&dir, &file);
+    let (seen, mut res) = redraw_answer(&mut app, &file);
+    res.document = Some(Box::new(super::office_doc::LoadedDocument::from_view(
+        "# doc".into(),
+        false,
+        Default::default(),
+        Default::default(),
+        konoma_plugin::Origin::File(file.clone()),
+    )));
+    assert_eq!(views_asked_by(&mut app, &seen, res), 0, "no second request");
+    assert!(app.plugin.as_ref().unwrap().session.is_some());
+    assert!(!app.is_media_loading());
+}
+
+#[test]
+fn a_tables_frame_title_is_cut_and_cleaned_like_every_other_text_a_plugin_says() {
+    // The title is drawn in the host's own frame, every frame: 10 MB of it must not reach the
+    // view, and a private-use placeholder character must not (it would paint as a picture).
+    let long = format!("{}\u{10EEEE}\u{1b}[31m", "x".repeat(10_000_000));
+    let mut res = PluginResult::answer(
+        1,
+        "stand",
+        None,
+        Some(View::Table(TableView {
+            grid: Arc::new(Rows(1)),
+            title: Some(long),
+            rainbow: true,
+            addressed: false,
+        })),
+        None,
+        ViewReq::new(80, 24),
+    );
+    res.clip_texts();
+    let Some(View::Table(t)) = &res.view else {
+        panic!("still a table");
+    };
+    let title = t.title.as_deref().unwrap();
+    assert!(title.chars().count() <= 512, "{}", title.chars().count());
+    assert!(!title.contains('\u{10EEEE}') && !title.contains('\u{1b}'));
+    // A short, honest title is unchanged, and no title stays none.
+    let mut ok = PluginResult::answer(
+        1,
+        "stand",
+        None,
+        Some(View::Table(TableView {
+            grid: Arc::new(Rows(1)),
+            title: Some("Sheet2 (2/3)".into()),
+            rainbow: true,
+            addressed: false,
+        })),
+        None,
+        ViewReq::new(80, 24),
+    );
+    ok.clip_texts();
+    assert_eq!(
+        ok.view
+            .as_ref()
+            .map(|v| matches!(v, View::Table(t) if t.title.as_deref() == Some("Sheet2 (2/3)"))),
+        Some(true)
+    );
+}

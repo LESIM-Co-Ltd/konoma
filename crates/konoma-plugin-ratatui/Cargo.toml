@@ -1,0 +1,30 @@
+[package]
+name = "konoma-plugin-ratatui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Draw a konoma plugin's canvas with ratatui widgets: converts a ratatui Buffer into a konoma_plugin::CanvasView (plain data, so konoma's own ratatui is not involved; draw with the ratatui this crate re-exports, 0.30.x)"
+keywords = ["konoma-plugin", "konoma", "ratatui", "tui", "canvas"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+
+[dependencies]
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+# Only `Buffer`, `Style` and the widgets are used, not a terminal backend. (Cargo unifies features
+# across the workspace, so the host's build still has the defaults on.)
+ratatui = { version = "0.30.1", default-features = false }
+
+[features]
+# A complete demo plugin (`demo::Clock`) for looking at a canvas in a real terminal. Temporary: it
+# is removed with konoma's `demo-canvas` feature when stage 3 can load external plugins.
+demo = []
+
+[dev-dependencies]
+# Turns the demo on for this crate's own tests and the `clock` example.
+konoma-plugin-ratatui = { path = ".", features = ["demo"] }
+
+[[example]]
+name = "clock"
+required-features = ["demo"]

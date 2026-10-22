@@ -194,12 +194,12 @@ fn modifier_of(m: ratatui::style::Modifier) -> Modifier {
 }
 
 fn style_of(s: ratatui::style::Style) -> Style {
-    Style {
-        fg: s.fg.map(color_of),
-        bg: s.bg.map(color_of),
-        add: modifier_of(s.add_modifier),
-        sub: modifier_of(s.sub_modifier),
-    }
+    Style::from_parts(
+        s.fg.map(color_of),
+        s.bg.map(color_of),
+        modifier_of(s.add_modifier),
+        modifier_of(s.sub_modifier),
+    )
 }
 
 fn line_of(l: &ratatui::text::Line<'_>) -> Line {

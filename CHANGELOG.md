@@ -35,7 +35,8 @@ All notable changes to konoma are documented in this file. The format is based o
   plugin of your own comes in a later stage. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
   plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
   is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
-  its file changed (its modification time, size, inode or change time). A plugin that assigns files but declares no `shows` is
+  its file changed (its modification time, size, inode or change time), or when an event names the file itself and the file was
+  modified within 2 seconds of when it was last read (see *Reading again* below). A plugin that assigns files but declares no `shows` is
   named at startup (and by `testing::check_manifest`), and a view of a type it did not declare is explained on screen. The
   side-by-side image diff and follow's handling of videos go by what a plugin declares and the file's format, so they work for
   a plugin that stands in for a standard one too. `R` cycles any representations a plugin declares, whatever they are called;
@@ -76,6 +77,54 @@ All notable changes to konoma are documented in this file. The format is based o
   block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
   that file in a new tab.
 - **Line wrapping can be switched while running**: `,` then `w` in a text or document preview (action `toggle_wrap`).
+- **Canvas views for plugin authors (free drawing).** A plugin that needs more than konoma's display types (a chart, a game, a form)
+  can answer `View::Canvas(CanvasView)`: a grid of styled cells plus picture placements, as plain data that konoma copies to the
+  screen (a plugin never draws into konoma's own buffer, so it works the same as a child process later). The size is the real one
+  (`ViewReq::cols` / `rows` / `cell_px`, asked again after a resize) and the terminal's colour depth is in `TermCaps::colors`
+  (konoma does not convert colours). A new key context `canvas`: konoma keeps the global keys, `q`, `Esc`, the menus (`Space`,
+  `,`), `e` `o` `p` `!`, `R` `J` `K` `O` and the keys every file preview shares (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p`, and `Ctrl-t`, which is only reserved: it does nothing in a canvas);
+  everything else is the plugin's, through the actions it declares (they show in the footer, the `?` help and the `Space` menu
+  like any plugin action). A canvas can ask for text input (`CanvasView::text_input`): every key but `Esc` then goes to the new
+  `Session::key`, and `Esc` always leaves. It can ask to be drawn again (`redraw_after`, 33 ms to 24 h, only while it is fully
+  visible) and place pictures over the cells (`CanvasImage`: raw pixels, encoded images, SVG in the supervised child process,
+  files, animations; the plugin's `id` is the picture's identity, so a redraw that only moves it sends nothing and `None` means
+  unchanged), decoded on the worker with memory and count limits. `CanvasView::check` is the one contract of "plain data is safe",
+  and a canvas that fails it is refused with a message. The new crate `konoma-plugin-ratatui` converts a ratatui `Buffer`
+  into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). None of the standard plugins draws a canvas, and what they show does not change, with one
+  exception: the text mermaid diagram (`[ui] mermaid = "text"`, and `R` on a `.mmd` file) is laid out at the preview's real
+  width again, as it was in v0.31.0, instead of a fixed 80 columns (it is laid out again at the new width when the window is
+  resized).
+- **How a canvas and the plugin API behave around it (details for plugin authors).**
+  - *Reading again.* A plugin that keeps a state of its own (a canvas) or reads heavily (a work group) is opened again only when
+    its file's stamp (modification time, size, inode, change time) changed, so an event for `.git`, another file or an unknown
+    cause no longer throws a canvas's state away. An FS event that names the shown file itself reads it again too when the stamp
+    cannot be trusted yet -- the file was modified within 2 seconds of the moment the stamp was taken (git's "racily clean" rule: a
+    file system with coarse time cannot hide a rewrite made in the same tick). A late second event for a save that was already
+    read finds an old modification time and an equal stamp, and does not read a large workbook again. `r` reads a **canvas** file again even when nothing changed (it is you
+    asking); every other plugin keeps the rule above, so `r` on an unchanged workbook reads nothing.
+  - *`Manifest::sized`.* A plugin whose view depends on the width (a text diagram) says so and is asked again after a resize;
+    the answer comes through the worker and is drawn without another key.
+  - *Texts.* What a plugin says to the interface at run time (a failure's message and detail, a flash, a representation or page
+    name, a table's frame title) and the texts of its declarations that are shown (its name, an action's label and help, a
+    setting's help, a verb label) is cut at 512 characters and has its control characters (a newline and a tab stay) and the
+    kitty placeholder character U+10EEEE removed; a `Tr` keeps at most 16 other languages, a layout at most 64 representations
+    and 100,000 pages (a bigger count is read as that).
+  - *Declarations.* A manifest whose plugin id, action id, setting name, screen name, the screen an action names or work group is
+    not 1 to 64 characters of `[a-z0-9._-]`, or that declares more than 256 actions, 256 settings, 1,024 binds or 64 screens, is
+    refused when it is registered (the plugin does not run) and named in the startup message; the version string is cut at 64
+    characters and loses control characters.
+  - *Pictures.* `ImageData::File` is opened by one door for a canvas and for `View::Image`: a regular file only (checked before
+    and after opening, never a pipe or a device), opened without blocking, a relative path read from the folder of the file being
+    previewed. One picture id is placed at one size on a canvas (`CanvasIssue::ImageSizeMismatch`), and an animation that alone
+    costs more than one answer may do (over 32 SVG or file frames, which are decoded one by one; over 64 MiB of input) is
+    refused as too large, while ready `Rgba` frames are not counted, so a 100-frame animation of them runs (an `Encoded` frame is a decode like a file's,
+    however few bytes it is). At most four screens' worth of picture area (the sum of the placements, overlapping ones too) is
+    encoded per canvas; the placements past it, in the plugin's order, keep their cells. A picture placed several times on a canvas
+    taller than the area (each clipped differently) gets an encoding per placement. Leaving konoma (a quit, a
+    signal, a panic) deletes the canvas pictures from a kitty terminal, without landing inside a frame being written.
+  - *API.* `testing::send_keys` returns a `KeyRun` and goes on after a failed key; `Key`, `CanvasCell`, `Outcome`, `ImageData`
+    and `Style` are `#[non_exhaustive]`, so a plugin matches them with a `_` arm.
+- **Temporary `demo-canvas` build feature.** `cargo run --features demo-canvas -- samples/demo.konoma-demo` shows a canvas plugin (a ratatui clock with a gauge, a picture and a line editor) in a real terminal; `KONOMA_CANVAS_TRACE=<file>` logs what the canvas does. It is not in any default build, is not a supported option, and is removed when plugins can be loaded from outside (stage 3).
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
