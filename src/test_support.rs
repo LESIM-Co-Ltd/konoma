@@ -705,6 +705,29 @@ pub(crate) fn evidence_dir() -> PathBuf {
     main_checkout_root().join("evidence")
 }
 
+/// `<main checkout>/.cache/<branch>/<purpose>`: where tests put heavy or regenerable output
+/// (git-ignored, may be deleted at any time). `<branch>` is the branch of the checkout being
+/// built, with `/` replaced by `-`; `detached` when git fails or HEAD is detached.
+/// `evidence/` is read-only for tests: never write there.
+pub(crate) fn cache_dir(purpose: &str) -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let branch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&manifest)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().replace('/', "-"))
+        .filter(|b| !b.is_empty() && b != "HEAD")
+        .unwrap_or_else(|| "detached".to_string());
+    main_checkout_root()
+        .join(".cache")
+        .join(branch)
+        .join(purpose)
+}
+
 /// `<main checkout>/docs/render-check`: where the dump tests write pictures for a human to review.
 pub(crate) fn render_check_dir() -> PathBuf {
     main_checkout_root().join("docs/render-check")
