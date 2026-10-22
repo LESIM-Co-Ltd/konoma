@@ -3,8 +3,9 @@
 //!
 //! Run: `cargo test -p konoma-office-core --release --lib fidelity_rank -- --ignored --nocapture`
 //!
-//! Output: `evidence/fidelity-rank/{ranking.csv,summary.md}` and the side-by-side pictures of the
-//! worst slides under `docs/render-check/rank/` (konoma left, LibreOffice right).
+//! Output: `.cache/<branch>/fidelity-rank/{ranking.csv,summary.md}` (main checkout, git-ignored)
+//! and the side-by-side pictures of the worst slides under `docs/render-check/rank/` (konoma left,
+//! LibreOffice right).
 //!
 //! Scores, all on 320 px wide pictures (reference aspect; ours is stretched to it, flag `aspect`
 //! when the two differ by more than 2 %), composited on white:
@@ -32,7 +33,7 @@ fn cache() -> std::path::PathBuf {
     konoma_test_support::evidence_dir()
 }
 fn out_dir() -> std::path::PathBuf {
-    konoma_test_support::evidence_dir().join("fidelity-rank")
+    konoma_test_support::cache_dir("fidelity-rank")
 }
 fn sbs_dir() -> std::path::PathBuf {
     konoma_test_support::render_check_dir().join("rank")
@@ -327,7 +328,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 #[test]
-#[ignore = "reads the local corpus and LibreOffice references; writes fidelity-rank outputs and docs/render-check/rank/"]
+#[ignore = "reads the local corpus and LibreOffice references; writes .cache/<branch>/fidelity-rank/ and docs/render-check/rank/"]
 fn fidelity_rank_whole_corpus() {
     let decks = collect_decks();
     assert!(!decks.is_empty(), "no decks under {}", cache().display());
