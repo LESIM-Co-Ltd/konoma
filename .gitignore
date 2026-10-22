@@ -10,6 +10,8 @@
 /target/
 # 重いキャッシュの置き場（作業ごとの CARGO_TARGET_DIR・コーパス・レンダ出力。`.cache/<branch>/<用途>/`）
 /.cache/
+# 作り直せない手元の資料（Office の公開コーパス・参照レンダ・順位表・調査の作業物）。コミットしない
+/evidence/
 # vendor したフォーク crate のビルド成果物 (数百MB)。source は追跡・target だけ無視。
 vendor/**/target/
 # rustfmt のバックアップ / デバッグシンボル
