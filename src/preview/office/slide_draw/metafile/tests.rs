@@ -465,7 +465,9 @@ mod in_slide {
 /// LibreOffice's rendering of the same file. Local only: the corpus is not in the repository.
 ///
 /// `cargo test -- --ignored dump_metafile_corpus`; needs the files extracted to
-/// `evidence/slide-c2-work/meta` and (optionally) LibreOffice's PNGs in `.../lo`.
+/// `evidence/slide-c2-work/meta` and (optionally) LibreOffice's PNGs in `.../lo` (both read only).
+/// The per-metafile SVGs go to `.cache/<branch>/metafile-svg/`, the pictures and REPORT to
+/// `docs/render-check/metafile/`.
 #[test]
 #[ignore]
 fn dump_metafile_corpus() {
@@ -478,6 +480,8 @@ fn dump_metafile_corpus() {
         }
     }
     std::fs::create_dir_all(out).unwrap();
+    let svg_dir = crate::test_support::cache_dir("metafile-svg");
+    std::fs::create_dir_all(&svg_dir).unwrap();
     let mut names: Vec<_> = std::fs::read_dir(meta)
         .unwrap()
         .flatten()
@@ -498,12 +502,7 @@ fn dump_metafile_corpus() {
             report.push_str(&format!("{name}: NONE ({} bytes)\n", bytes.len()));
             continue;
         };
-        let _ = std::fs::write(
-            crate::test_support::evidence_dir()
-                .join("slide-c2-work/svg")
-                .join(format!("{name}.svg")),
-            &m.svg,
-        );
+        let _ = std::fs::write(svg_dir.join(format!("{name}.svg")), &m.svg);
         let ours =
             crate::preview::svg::rasterize_trusted(m.svg.as_bytes(), Path::new("/m.svg"), 400)
                 .map(|i| i.to_rgba8());
