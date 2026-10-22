@@ -2310,7 +2310,7 @@ fn dump_scenes() -> Vec<(&'static str, SlideScene, Vec<u8>)> {
 #[test]
 #[ignore = "writes docs/render-check/slide-draw/*.png for a human to look at"]
 fn slide_draw_dump_render_check() {
-    let dir = Path::new("/Users/shuhei/work/konoma/docs/render-check/slide-draw");
+    let dir = &crate::test_support::render_check_dir().join("slide-draw");
     let _ = std::fs::create_dir_all(dir);
     if let Ok(rd) = std::fs::read_dir(dir) {
         for f in rd.flatten() {

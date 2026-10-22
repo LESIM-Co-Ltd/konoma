@@ -12,7 +12,7 @@
 //!
 //! Environment:
 //! - `SLIDE_DUMP_SLIDES` (required): comma-separated `source/stem:N`. `source` is a folder of
-//!   `NoCode/.cache/pptx-corpus/` (`poi`, `libreoffice`, `python-pptx`, ..); `stem` is the file name
+//!   `evidence/pptx-corpus/` (`poi`, `libreoffice`, `python-pptx`, ..); `stem` is the file name
 //!   without `.pptx` / `.odp` (the LibreOffice-made ODP decks are named `odp__<name>`), also looked up in
 //!   `slide-corpus-gen/` (self-made decks, give any `source`, e.g. `selfmade/draw-shapes:3`),
 //!   `samples/` and `testdata/office/`. `N` is the slide number (1-based); `*` is the first 12
@@ -29,7 +29,7 @@
 //! Each picture also prints `SCORE <deck> <n> <combined>` (0 = identical to the LibreOffice
 //! reference, 1 = unrelated; the same score as `tests_fidelity_rank`) and the item count.
 //! The LibreOffice reference pictures are those of `docs/render-check/tools/lo_export_slides.py`
-//! in `NoCode/.cache/pptx-ref/<source>/<stem>[-odp]/slide-NNN.png`; a slide without one is written
+//! in `evidence/pptx-ref/<source>/<stem>[-odp]/slide-NNN.png`; a slide without one is written
 //! with an empty right half and no score.
 
 use std::collections::HashMap;
@@ -42,8 +42,12 @@ use super::docx::pptx::load_presentation;
 use super::docx::DocOptions;
 use crate::preview::office::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const DEFAULT_OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/slide-dump";
+fn cache() -> std::path::PathBuf {
+    crate::test_support::evidence_dir()
+}
+fn default_out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("slide-dump")
+}
 /// Slides drawn for `N = *`.
 const ALL_SLIDES: usize = 12;
 /// Most slides of one deck that `C` / `@charts` picks.
@@ -96,7 +100,7 @@ fn parse_spec(item: &str) -> Result<Spec<'_>, String> {
 
 /// The deck file: the corpus folder of `source`, the self-made decks, the samples, the test data.
 fn find_deck(source: &str, stem: &str) -> Option<PathBuf> {
-    let c = Path::new(CACHE);
+    let c = cache();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for dir in [
         c.join("pptx-corpus").join(source),
@@ -116,7 +120,7 @@ fn find_deck(source: &str, stem: &str) -> Option<PathBuf> {
 
 /// The `source/stem:C` specs of `@charts`: every `.pptx` of the corpus index with charts or SmartArt.
 fn chart_decks() -> Vec<String> {
-    let path = Path::new(CACHE).join("pptx-corpus/index.json");
+    let path = cache().join("pptx-corpus/index.json");
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path).expect("pptx-corpus/index.json"))
             .expect("index.json parses");
@@ -184,11 +188,11 @@ fn a_spec_names_a_source_a_deck_and_a_slide_or_all() {
 }
 
 #[test]
-#[ignore = "reads the local corpus (NoCode/.cache/pptx-corpus, pptx-ref) and writes SLIDE_DUMP_OUT / SLIDE_DUMP_SVG"]
+#[ignore = "reads the local corpus (evidence/pptx-corpus, pptx-ref) and writes SLIDE_DUMP_OUT / SLIDE_DUMP_SVG"]
 fn slide_dump() {
     let list = std::env::var("SLIDE_DUMP_SLIDES").expect("SLIDE_DUMP_SLIDES=source/stem:N,..");
     let tag = std::env::var("SLIDE_DUMP_TAG").unwrap_or_else(|_| "after".into());
-    let out = PathBuf::from(std::env::var("SLIDE_DUMP_OUT").unwrap_or_else(|_| DEFAULT_OUT.into()));
+    let out = std::env::var("SLIDE_DUMP_OUT").map_or_else(|_| default_out(), PathBuf::from);
     let svg_dir = std::env::var("SLIDE_DUMP_SVG").ok().map(PathBuf::from);
     std::fs::create_dir_all(&out).expect("SLIDE_DUMP_OUT");
     if let Some(d) = &svg_dir {
@@ -265,7 +269,7 @@ fn slide_dump() {
                 continue;
             }
             let reference = image::open(
-                Path::new(CACHE)
+                cache()
                     .join("pptx-ref")
                     .join(source)
                     .join(&leaf)

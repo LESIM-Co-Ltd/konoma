@@ -11,9 +11,15 @@ use image::{imageops, DynamicImage, Rgba as Px, RgbaImage};
 use super::super::super::{load_presentation, DocOptions, Document};
 use crate::preview::office::slide_draw as sd;
 
-pub(super) const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/pptx-a";
-const OUT_CORPUS: &str = "/Users/shuhei/work/konoma/docs/render-check/pptx-a-corpus";
+pub(super) fn cache() -> std::path::PathBuf {
+    crate::test_support::evidence_dir()
+}
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("pptx-a")
+}
+fn out_corpus() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("pptx-a-corpus")
+}
 
 pub(super) fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -110,11 +116,11 @@ pub(super) fn dump_deck(name: &str, pptx: &Path, ref_dir: &Path, out: &Path, onl
 #[test]
 #[ignore = "writes docs/render-check/pptx-a/*.png for a human to look at"]
 fn pptx_a_dump_render_check() {
-    let out = Path::new(OUT);
+    let out = &out();
     clear_dir(out);
-    let own = Path::new(CACHE).join("pptx-ref/own");
-    let selfmade = Path::new(CACHE).join("pptx-ref/selfmade");
-    let gen = Path::new(CACHE).join("slide-corpus-gen");
+    let own = cache().join("pptx-ref/own");
+    let selfmade = cache().join("pptx-ref/selfmade");
+    let gen = cache().join("slide-corpus-gen");
     for (name, pptx, refd) in [
         (
             "sample",
@@ -168,7 +174,7 @@ const PICKS: &[(&str, &str)] = &[
 pub(super) fn corpus_files() -> Vec<(String, PathBuf)> {
     let mut v = Vec::new();
     for src in ["poi", "python-pptx", "libreoffice"] {
-        let Ok(rd) = std::fs::read_dir(Path::new(CACHE).join("pptx-corpus").join(src)) else {
+        let Ok(rd) = std::fs::read_dir(cache().join("pptx-corpus").join(src)) else {
             continue;
         };
         for f in rd.flatten() {
@@ -191,7 +197,11 @@ pub(super) fn corpus_files() -> Vec<(String, PathBuf)> {
 #[ignore = "reads the local PowerPoint corpus; writes docs/render-check/pptx-a-corpus/*.png"]
 fn pptx_a_corpus_run() {
     let files = corpus_files();
-    assert!(!files.is_empty(), "no corpus at {CACHE}/pptx-corpus");
+    assert!(
+        !files.is_empty(),
+        "no corpus at {}/pptx-corpus",
+        cache().display()
+    );
     let (mut ok, mut failed, mut panics, mut slow) = (0, 0, 0, Vec::new());
     let t0 = Instant::now();
     for (src, p) in &files {
@@ -229,12 +239,12 @@ fn pptx_a_corpus_run() {
     );
     assert_eq!(panics, 0);
 
-    let out = Path::new(OUT_CORPUS);
+    let out = &out_corpus();
     clear_dir(out);
     for (src, file) in PICKS {
-        let p = Path::new(CACHE).join("pptx-corpus").join(src).join(file);
+        let p = cache().join("pptx-corpus").join(src).join(file);
         let stem = file.rsplit_once('.').map_or(*file, |(s, _)| s);
-        let refd = Path::new(CACHE).join("pptx-ref").join(src).join(stem);
+        let refd = cache().join("pptx-ref").join(src).join(stem);
         dump_deck(&format!("{src}__{stem}"), &p, &refd, out, Some(3));
     }
 }

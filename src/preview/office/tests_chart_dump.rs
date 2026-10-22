@@ -1,17 +1,21 @@
 //! `#[ignore]` dump of every chart of the local corpora next to the LibreOffice reference, for
-//! looking at (`cargo test chart_dump -- --ignored`). Needs files under `NoCode/.cache` that are
+//! looking at (`cargo test chart_dump -- --ignored`). Needs files under `evidence/` (repo root) that are
 //! not in the repository; the images go to `docs/render-check/charts/` of the main tree.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::chart_xml::{parse_chart, ChartEnv};
 use super::docx_xml::Node;
 use super::slide_draw::color::{apply_mods, preset_color, system_color, ColorMod};
 use super::slide_draw::{chart::draw_chart, render_svg, Fill, Item, Rgba, SlideScene};
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/charts";
+fn cache() -> std::path::PathBuf {
+    crate::test_support::evidence_dir()
+}
+fn out() -> std::path::PathBuf {
+    crate::test_support::render_check_dir().join("charts")
+}
 
 fn read(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
     let mut f = zip.by_name(name).ok()?;
@@ -351,7 +355,7 @@ fn dump_deck(pptx: &Path, refdir: &Path, tag: &str) -> usize {
             image::imageops::overlay(&mut canvas, &crop, (cw + 12) as i64, 0);
         }
         let name = format!("{tag}-s{}-{}.png", f.slide, k + 1);
-        let _ = canvas.save(PathBuf::from(OUT).join(name));
+        let _ = canvas.save(out().join(name));
         n += 1;
         if trunc || parsed.truncated || parsed.approximated {
             eprintln!(
@@ -366,18 +370,24 @@ fn dump_deck(pptx: &Path, refdir: &Path, tag: &str) -> usize {
 #[test]
 #[ignore]
 fn chart_dump() {
-    let _ = std::fs::remove_dir_all(OUT);
-    std::fs::create_dir_all(OUT).unwrap();
+    let _ = std::fs::remove_dir_all(out());
+    std::fs::create_dir_all(out()).unwrap();
     let mut total = 0;
     // Self-made deck.
     total += dump_deck(
-        Path::new(&format!("{CACHE}/slide-corpus-gen/draw-charts.pptx")),
-        Path::new(&format!("{CACHE}/pptx-ref/selfmade/draw-charts")),
+        Path::new(&format!(
+            "{}/slide-corpus-gen/draw-charts.pptx",
+            cache().display()
+        )),
+        Path::new(&format!(
+            "{}/pptx-ref/selfmade/draw-charts",
+            cache().display()
+        )),
         "own",
     );
     // PowerPoint-made decks with charts.
-    let index =
-        std::fs::read_to_string(format!("{CACHE}/pptx-corpus/INDEX.md")).unwrap_or_default();
+    let index = std::fs::read_to_string(format!("{}/pptx-corpus/INDEX.md", cache().display()))
+        .unwrap_or_default();
     for line in index.lines() {
         let cols: Vec<&str> = line.split('|').map(str::trim).collect();
         if cols.len() < 8 || cols[5] != "x" {
@@ -397,11 +407,11 @@ fn chart_dump() {
             .rev()
             .collect();
         total += dump_deck(
-            Path::new(&format!("{CACHE}/pptx-corpus/{src}/{file}")),
-            Path::new(&format!("{CACHE}/pptx-ref/{src}/{stem}")),
+            Path::new(&format!("{}/pptx-corpus/{src}/{file}", cache().display())),
+            Path::new(&format!("{}/pptx-ref/{src}/{stem}", cache().display())),
             &format!("{src}-{short}"),
         );
     }
-    eprintln!("dumped {total} charts to {OUT}");
+    eprintln!("dumped {total} charts to {}", out().display());
     assert!(total > 0);
 }
