@@ -32,7 +32,16 @@ fn nothing_held() -> CanvasHeld {
 }
 
 fn decode(plugin: &str, c: &CanvasView, held: &CanvasHeld) -> CanvasPictures {
-    decode_canvas(plugin, c, held, Path::new("/x/a.spr"), 800, None, false)
+    decode_canvas(
+        plugin,
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    )
 }
 
 fn small(limits: impl FnOnce(&mut CanvasLimits)) -> CanvasLimits {
@@ -42,7 +51,17 @@ fn small(limits: impl FnOnce(&mut CanvasLimits)) -> CanvasLimits {
 }
 
 fn decode_within(c: &CanvasView, held: &CanvasHeld, l: CanvasLimits) -> CanvasPictures {
-    decode_canvas_within("pw", c, held, Path::new("/x/a.spr"), 800, None, false, l)
+    decode_canvas_within(
+        "pw",
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+        l,
+    )
 }
 
 /// What a cache would hold after `got` landed: its fresh keys with their decoded bytes.
@@ -789,6 +808,7 @@ fn a_cancelled_job_decodes_nothing() {
         800,
         Some(&cancel),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     // Cancelled while the content was hashed: nothing is decoded, nothing is named.
     assert!(got.fresh.is_empty());
@@ -818,6 +838,7 @@ fn a_cancel_between_frames_stops_an_animation() {
         800,
         Some(&cancel),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(matches!(
         got.fresh[0].1,
@@ -884,6 +905,7 @@ fn a_cancelled_picture_leaves_no_entry_behind() {
     let (mut app, _dir) = new_app("cvi_cancelled");
     let key = PathBuf::from("canvas://p/1/00000000000000aa");
     app.canvas_pictures_landed(CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 1, 1),
@@ -912,6 +934,7 @@ fn a_cancelled_picture_is_neither_progress_nor_a_failure_on_landing() {
     let (mut app, _dir) = new_app("cvi_cancelled_progress");
     let key = PathBuf::from("canvas://p/1/00000000000000ab");
     let more = app.canvas_pictures_landed(CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 1, 1),
@@ -1497,6 +1520,7 @@ fn hashing_looks_at_the_cancellation_while_a_large_buffer_is_read() {
         800,
         Some(&crate::preview::office::Cancel::new(|| true)),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(got.fresh.is_empty() && got.sources.is_empty());
     assert!(got.places[0].key.is_none());
@@ -1743,6 +1767,7 @@ fn landing_asks_again_when_room_grew_for_a_refused_picture() {
     let (mut app, _dir) = new_app("cvi_ask_room");
     let key: Arc<str> = Arc::from("canvas://pa/0/00000000000000c1");
     let pics = |needs: u64| CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 0,
             rect: CellRect::new(0, 0, 1, 1),
@@ -1889,6 +1914,7 @@ fn the_oldest_kept_source_goes_first_whatever_the_order_the_worker_listed_them_i
         })
         .collect();
     let pics = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: Vec::new(),
         waiting: 3,
@@ -2149,6 +2175,7 @@ fn a_decoded_picture_for_a_key_already_held_leaves_the_entry_as_it_is() {
     // A job that was out before that landing answers with the same key (decoded bigger here, to
     // see whether it replaces the entry).
     let second = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: vec![(
             key.clone(),
@@ -2246,6 +2273,7 @@ fn landing_asks_again_when_the_room_is_exactly_what_a_refused_picture_needs() {
         )
     };
     let pics = |needs: u64| CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 2, 2),
@@ -2289,6 +2317,7 @@ fn kept_sources_exactly_at_their_bound_are_all_kept() {
         })
         .collect();
     let pics = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: Vec::new(),
         waiting: 2,
@@ -2666,7 +2695,16 @@ fn a_relative_picture_path_is_relative_to_the_previewed_files_directory() {
     let shown = dir.join("a.spr");
     // The process's own directory is somewhere else: the path must not be looked for there.
     let c = canvas_of(vec![im(1, ImageData::File("sub/pic.png".into()))]);
-    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(
         matches!(got.fresh[0].1, CanvasDecoded::Still(_)),
         "found next to the shown file"
@@ -2684,11 +2722,21 @@ fn a_relative_picture_path_is_relative_to_the_previewed_files_directory() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(matches!(got.fresh[0].1, CanvasDecoded::Still(_)));
     // A relative path that is not there fails (it is not looked for in the working directory).
     let missing = canvas_of(vec![im(1, ImageData::File("nothing.png".into()))]);
-    let got = decode_canvas("pr", &missing, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &missing,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
 }
 
@@ -2707,6 +2755,7 @@ fn the_hash_of_a_relative_file_follows_the_file_next_to_the_shown_one() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     ));
     // The file changed under the same name: another picture (its size/mtime are of that file, not
     // of whatever the working directory holds under that name).
@@ -2725,6 +2774,7 @@ fn the_hash_of_a_relative_file_follows_the_file_next_to_the_shown_one() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     ));
     assert_ne!(first, second);
 }
@@ -2742,7 +2792,16 @@ fn a_device_a_directory_and_an_oversized_file_are_refused_on_the_opened_handle()
         dir.to_path_buf(),
     ] {
         let c = canvas_of(vec![im(1, ImageData::File(special.clone()))]);
-        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        let got = decode_canvas(
+            "pr",
+            &c,
+            &nothing_held(),
+            &shown,
+            800,
+            None,
+            false,
+            &konoma_plugin::ReadScope::unrestricted(),
+        );
         assert!(
             matches!(
                 got.fresh[0].1,
@@ -2756,7 +2815,16 @@ fn a_device_a_directory_and_an_oversized_file_are_refused_on_the_opened_handle()
     let f = std::fs::File::create(&big).unwrap();
     f.set_len(MAX_PICTURE_FILE_BYTES + 1).unwrap();
     let c = canvas_of(vec![im(1, ImageData::File(big))]);
-    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(matches!(
         got.fresh[0].1,
         CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
@@ -2780,7 +2848,16 @@ fn a_fifo_that_nobody_writes_to_is_refused_without_blocking_inside_frames_too() 
     let shown = dir.join("a.spr");
     std::thread::spawn(move || {
         let c = canvas_of(vec![im(1, ImageData::File(fifo))]);
-        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        let got = decode_canvas(
+            "pr",
+            &c,
+            &nothing_held(),
+            &shown,
+            800,
+            None,
+            false,
+            &konoma_plugin::ReadScope::unrestricted(),
+        );
         let _ = tx.send(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
     });
     assert!(
@@ -2816,6 +2893,7 @@ fn a_gif_file_is_an_animation_read_from_the_opened_handle() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     let CanvasDecoded::Frames(f) = &got.fresh[0].1 else {
         panic!("a GIF file with two frames is an animation");
@@ -2882,4 +2960,304 @@ fn an_encoded_frame_costs_a_decode_like_a_file_and_only_a_ready_rgba_frame_costs
 
 fn enc_png() -> ImageData {
     png_of(image::DynamicImage::new_rgba8(2, 2))
+}
+
+// ---- the read scope of a plugin the user added (canvas pictures) ------------------------------------
+
+fn scoped(dirs: &[&Path]) -> konoma_plugin::ReadScope {
+    konoma_plugin::ReadScope::within(dirs.iter().copied())
+}
+
+fn canvas_file(p: &Path, shown: &Path, scope: &konoma_plugin::ReadScope) -> CanvasDecoded {
+    let c = canvas_of(vec![im(1, ImageData::File(p.to_path_buf()))]);
+    let mut got = decode_canvas("pr", &c, &nothing_held(), shown, 800, None, false, scope);
+    assert_eq!(got.fresh.len(), 1);
+    got.fresh.remove(0).1
+}
+
+#[test]
+fn a_canvas_picture_outside_the_scope_is_refused_with_its_own_reason() {
+    let dir = crate::test_support::unique_tmp("cvi_scope");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&root.join("in.png"), 1);
+    write_png(&out.join("out.png"), 2);
+    let scope = scoped(&[&root]);
+    let shown = root.join("a.spr");
+    assert!(matches!(
+        canvas_file(&root.join("in.png"), &shown, &scope),
+        CanvasDecoded::Still(_)
+    ));
+    assert!(matches!(
+        canvas_file(&out.join("out.png"), &shown, &scope),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+    // The same file under a widened scope.
+    let wide = scoped(&[&root, &out]);
+    assert!(matches!(
+        canvas_file(&out.join("out.png"), &shown, &wide),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_that_is_the_previewed_file_is_read_whatever_the_scope() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_self");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&out.join("shown.png"), 3);
+    let shown = out.join("shown.png");
+    let scope = scoped(&[&root]);
+    assert!(matches!(
+        canvas_file(&shown, &shown, &scope),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_link_out_is_refused_and_the_scope_does_not_touch_a_standard_plugin() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_link");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&out.join("out.png"), 4);
+    let link = root.join("l.png");
+    std::os::unix::fs::symlink(out.join("out.png"), &link).unwrap();
+    let shown = root.join("a.spr");
+    assert!(matches!(
+        canvas_file(&link, &shown, &scoped(&[&root])),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+    // Unrestricted (a standard plugin): the same link is followed, as ever.
+    assert!(matches!(
+        canvas_file(&link, &shown, &konoma_plugin::ReadScope::unrestricted()),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_naming_a_sibling_with_the_same_start_is_outside() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_prefix");
+    let (b, bc) = (dir.join("b"), dir.join("bc"));
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::create_dir_all(&bc).unwrap();
+    write_png(&bc.join("p.png"), 5);
+    assert!(matches!(
+        canvas_file(&bc.join("p.png"), &b.join("a.spr"), &scoped(&[&b])),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+}
+
+#[test]
+fn a_canvas_frame_list_is_judged_frame_by_frame() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_frames");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&root.join("a.png"), 6);
+    write_png(&out.join("b.png"), 7);
+    let frames = ImageData::Frames(vec![
+        (
+            ImageData::File(root.join("a.png")),
+            Duration::from_millis(100),
+        ),
+        (
+            ImageData::File(out.join("b.png")),
+            Duration::from_millis(100),
+        ),
+    ]);
+    let c = canvas_of(vec![im(1, frames)]);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &root.join("a.spr"),
+        800,
+        None,
+        false,
+        &scoped(&[&root]),
+    );
+    assert!(matches!(
+        got.fresh[0].1,
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+}
+
+// ---- read scope ------------------------------------------------------------------------------------
+
+fn scope_files(name: &str) -> (crate::test_support::TmpDir, PathBuf, PathBuf) {
+    let dir = crate::test_support::unique_tmp(name);
+    let (inside, outside) = (dir.join("in"), dir.join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (a, b) = (inside.join("a.png"), outside.join("b.png"));
+    for p in [&a, &b] {
+        image::RgbaImage::from_pixel(3, 3, image::Rgba([1, 2, 3, 255]))
+            .save(p)
+            .unwrap();
+    }
+    (dir, a, b)
+}
+
+fn decode_scoped(
+    c: &CanvasView,
+    held: &CanvasHeld,
+    scope: &konoma_plugin::ReadScope,
+) -> CanvasPictures {
+    decode_canvas(
+        "demo",
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        scope,
+    )
+}
+
+fn is_outside(p: &CanvasPictures) -> bool {
+    p.fresh.iter().any(|(_, d)| {
+        matches!(
+            d,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+        )
+    })
+}
+
+#[test]
+fn a_picture_judged_under_one_scope_is_not_served_to_another() {
+    let (_dir, a, _b) = scope_files("cvi_scope_switch");
+    let c = canvas_of(vec![im(1, ImageData::File(a.clone()))]);
+    let wide = konoma_plugin::ReadScope::within([a.parent().unwrap()]);
+    let narrow =
+        konoma_plugin::ReadScope::within([a.parent().unwrap().parent().unwrap().join("out")]);
+    let (mut app, _d) = new_app("cvi_scope_switch_app");
+    let first = decode_scoped(&c, &nothing_held(), &wide);
+    assert!(matches!(first.fresh[0].1, CanvasDecoded::Still(_)));
+    app.canvas_pictures_landed(first);
+    // The same file, the same content, but the scope no longer holds it: the held key of the
+    // first answer must not be reused.
+    let held = app.canvas_known_keys_for_test();
+    let second = decode_scoped(&c, &held, &narrow);
+    assert!(is_outside(&second), "refused, not served from the cache");
+    assert_ne!(keys(&second)[0], None);
+}
+
+#[test]
+fn a_refused_picture_flashes_the_reason_once_per_plugin() {
+    let (_dir, a, _b) = scope_files("cvi_flash");
+    let c = canvas_of(vec![im(1, ImageData::File(a.clone()))]);
+    let none_ok = konoma_plugin::ReadScope::within(Vec::<PathBuf>::new());
+    let pics = decode_scoped(&c, &nothing_held(), &none_ok);
+    assert!(is_outside(&pics));
+    let (mut app, _d) = new_app("cvi_flash_app");
+    app.canvas_flash_refusals("demo", &pics);
+    let msg = app.flash.clone().expect("flashed");
+    assert!(msg.contains("read_dirs") && msg.contains("demo"), "{msg}");
+    assert!(!msg.contains("<id>"), "{msg}");
+    // Not again for the same plugin.
+    app.flash = None;
+    app.canvas_flash_refusals("demo", &pics);
+    assert!(app.flash.is_none(), "no re-flash");
+    // Another plugin is told.
+    app.canvas_flash_refusals("other", &pics);
+    assert!(app.flash.as_deref().is_some_and(|m| m.contains("other")));
+    // An answer without a refusal flashes nothing.
+    let (mut app2, _d2) = new_app("cvi_flash_ok");
+    let ok = decode_scoped(
+        &c,
+        &nothing_held(),
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
+    app2.canvas_flash_refusals("demo", &ok);
+    assert!(app2.flash.is_none());
+}
+
+#[test]
+fn the_refusal_text_names_the_plugin_in_both_languages() {
+    use crate::i18n::Lang;
+    use crate::preview::image::{ImageFailure, ImageFailureMessage};
+    for lang in [Lang::En, Lang::Jp] {
+        let t = ImageFailure::OutsideReadDirs.message(lang, "demo").unwrap();
+        assert!(
+            t.contains("[plugins.demo]") && t.contains("read_dirs"),
+            "{t}"
+        );
+        assert!(!t.contains("<id>"), "{t}");
+        // Other reasons are untouched.
+        let o = ImageFailure::Corrupt.message(lang, "demo").unwrap();
+        assert!(!o.contains("demo"));
+    }
+}
+
+#[test]
+fn an_svg_file_in_scope_cannot_read_a_file_outside_through_its_href() {
+    // A canvas picture `ImageData::File(in-scope evil.svg)` whose SVG names an absolute file
+    // outside the scope: the host reads the SVG (allowed) but not what it points at.
+    let dir = crate::test_support::unique_tmp("konoma_canvas_svg_href");
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let secret = elsewhere.join("secret.png");
+    image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+        .save(&secret)
+        .unwrap();
+    let evil = root.join("evil.svg");
+    std::fs::write(
+        &evil,
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{}" width="20" height="20"/></svg>"#,
+            secret.display()
+        ),
+    )
+    .unwrap();
+    let shown = root.join("a.spr");
+    let alpha = |scope: &konoma_plugin::ReadScope| match super::decode_one(
+        &ImageData::File(evil.clone()),
+        &shown,
+        64,
+        None,
+        false,
+        scope,
+    ) {
+        super::CanvasDecoded::Still(img) => {
+            let px = img.to_rgba8();
+            px.get_pixel(px.width() / 2, px.height() / 2)[3]
+        }
+        _ => panic!("the SVG is drawn"),
+    };
+    let scope = konoma_plugin::ReadScope::within([root.as_path()]);
+    assert_eq!(alpha(&scope), 0, "the file outside is not read");
+    // The same file as a frame of an animation goes through the same judgement.
+    let framed = super::decode_one(
+        &ImageData::Frames(vec![(
+            ImageData::File(evil.clone()),
+            std::time::Duration::from_millis(50),
+        )]),
+        &shown,
+        64,
+        None,
+        false,
+        &scope,
+    );
+    match framed {
+        super::CanvasDecoded::Frames(f) => {
+            let px = f[0].0.to_rgba8();
+            assert_eq!(
+                px.get_pixel(px.width() / 2, px.height() / 2)[3],
+                0,
+                "a frame"
+            );
+        }
+        _ => panic!("the frames are drawn"),
+    }
+    assert_eq!(
+        alpha(&konoma_plugin::ReadScope::unrestricted()),
+        255,
+        "unrestricted reads it"
+    );
 }

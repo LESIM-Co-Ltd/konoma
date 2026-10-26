@@ -227,6 +227,10 @@ pub(crate) struct CanvasPlace {
 
 /// The pictures of a canvas, decoded on the worker.
 pub(super) struct CanvasPictures {
+    /// The identity of the read scope these keys were made under ([`konoma_plugin::ReadScope::
+    /// fingerprint`]); `0` for no limit. The app remembers it so a job under another scope does
+    /// not resolve an `unchanged` picture to a key judged under the old one.
+    pub(super) scope_fp: u64,
     /// The placements of the canvas, in the order of `CanvasView::images`.
     pub(super) places: Vec<CanvasPlace>,
     /// The pictures decoded for this answer (the keys the cache did not hold yet), each once.
@@ -278,6 +282,13 @@ pub(super) struct CanvasHeld {
     pub(super) front: HashMap<u64, Arc<str>>,
     /// The pictures deferred or refused earlier, by id (what `unchanged` resolves to for them).
     pub(super) kept: HashMap<u64, KeptPicture>,
+}
+
+/// The hash part of a canvas cache key: the content hash with the identity of the read scope
+/// ([`konoma_plugin::ReadScope::fingerprint`]) mixed in. An involution (`mix_scope(mix_scope(h, f),
+/// f) == h`), and the identity for no limit (`f == 0`).
+pub(crate) fn mix_scope(content_hash: u64, scope_fp: u64) -> u64 {
+    content_hash ^ scope_fp.rotate_left(17)
 }
 
 /// FNV-1a 64 over several pieces (the same constants as `media_diff_url`'s hash).
@@ -539,13 +550,42 @@ pub(super) fn open_regular_picture(
 
 /// [`open_regular_picture`] for the file `p` a plugin named, resolved against `shown`
 /// ([`resolve_picture_path`]): the handle and the resolved path.
+///
+/// **The read scope** (`scope`, see [`konoma_plugin::ReadScope`]): for a plugin that is not a
+/// standard one the file must be inside the folders the host may read for it. It is judged on the
+/// real path (symbolic links and `..` resolved), and **the real path is what is opened**, so the
+/// file judged is the file read; the regular-file / no-blocking rules of
+/// [`open_regular_picture`] still apply to it. The previewed file itself (`shown`, however it is
+/// spelled) is always allowed: the user chose it, and the standard image plugin hands its own path
+/// back. A file outside the scope is refused with [`ImageFailure::OutsideReadDirs`] and not opened.
 pub(super) fn open_picture_file(
     shown: &Path,
     p: &Path,
+    scope: &konoma_plugin::ReadScope,
 ) -> Result<(std::fs::File, PathBuf), crate::preview::image::ImageFailure> {
+    use crate::preview::image::ImageFailure;
+    use konoma_plugin::ScopeError;
     let abs = resolve_picture_path(shown, p);
-    let file = open_regular_picture(&abs)?;
-    Ok((file, abs))
+    if !scope.is_restricted() {
+        let file = open_regular_picture(&abs)?;
+        return Ok((file, abs));
+    }
+    let is_shown = abs == shown
+        || matches!(
+            (std::fs::canonicalize(&abs), std::fs::canonicalize(shown)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    let real = if is_shown {
+        std::fs::canonicalize(&abs).map_err(|_| ImageFailure::Corrupt)?
+    } else {
+        match scope.resolve(&abs) {
+            Ok(real) => real,
+            Err(ScopeError::Outside) => return Err(ImageFailure::OutsideReadDirs),
+            Err(_) => return Err(ImageFailure::Corrupt),
+        }
+    };
+    let file = open_regular_picture(&real)?;
+    Ok((file, real))
 }
 
 /// Read the picture file `p` (resolved against `shown`, see [`resolve_picture_path`]) that a plugin
@@ -563,10 +603,11 @@ pub(super) fn open_picture_file(
 fn read_picture_file(
     shown: &Path,
     p: &Path,
+    scope: &konoma_plugin::ReadScope,
 ) -> Result<ImageData, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     use std::io::Read;
-    let (file, abs) = open_picture_file(shown, p)?;
+    let (file, abs) = open_picture_file(shown, p, scope)?;
     let meta = file.metadata().map_err(|_| ImageFailure::Corrupt)?;
     if meta.len() > MAX_PICTURE_FILE_BYTES {
         return Err(ImageFailure::TooLarge);
@@ -598,12 +639,16 @@ fn decode_still(
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
     trust_own_svg: bool,
+    scope: &konoma_plugin::ReadScope,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     match data {
         ImageData::File(p) => {
-            let read = read_picture_file(path, p)?;
-            decode_still(&read, path, default_raster_px, cancel, trust_own_svg)
+            let read = read_picture_file(path, p, scope)?;
+            // What was read is the host's own (the file passed the scope above): its `base_dir`
+            // is the folder of that file, inside the scope. The scope still goes on, because the
+            // SVG's own references are judged against it as the drawing reads them.
+            decode_still(&read, path, default_raster_px, cancel, trust_own_svg, scope)
         }
         ImageData::Encoded(b) => {
             crate::preview::image::decode_static_bytes_capped_why(b, MD_IMAGE_MAX_SIDE)
@@ -615,6 +660,7 @@ fn decode_still(
                 default_raster_px,
                 cancel,
                 trust_own_svg,
+                scope,
             ) {
                 Some(MediaPayload::Static(img)) => Ok(img),
                 Some(MediaPayload::Vector { img, .. }) => Ok(img),
@@ -634,13 +680,14 @@ fn decode_one(
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
     trust_own_svg: bool,
+    scope: &konoma_plugin::ReadScope,
 ) -> CanvasDecoded {
     use crate::preview::image::ImageFailure;
     // A file is read once, from the handle that was opened (`read_picture_file`), and decoded from
     // memory: a GIF file is an animation like GIF bytes are.
     let read;
     let data = if let ImageData::File(p) = data {
-        match read_picture_file(path, p) {
+        match read_picture_file(path, p, scope) {
             Ok(d) => {
                 read = d;
                 &read
@@ -671,7 +718,7 @@ fn decode_one(
             if cancel.is_some_and(|c| c.is_cancelled()) {
                 return CanvasDecoded::Failed(ImageFailure::Cancelled);
             }
-            match decode_still(f, path, default_raster_px, cancel, trust_own_svg) {
+            match decode_still(f, path, default_raster_px, cancel, trust_own_svg, scope) {
                 Ok(img) => {
                     bytes += pixel_bytes_of(&img);
                     if bytes > crate::preview::image::MAX_GIF_BYTES_INLINE as u64 {
@@ -684,7 +731,7 @@ fn decode_one(
         }
         return CanvasDecoded::Frames(frames);
     }
-    match decode_still(data, path, default_raster_px, cancel, trust_own_svg) {
+    match decode_still(data, path, default_raster_px, cancel, trust_own_svg, scope) {
         Ok(img) => CanvasDecoded::Still(img),
         Err(why) => CanvasDecoded::Failed(why),
     }
@@ -771,6 +818,7 @@ fn source_bytes(data: &ImageData) -> u64 {
 /// Two passes: the first names every placement (hashing each id's content once; an `unchanged`
 /// picture resolves through `held` and is not hashed), which also tells how much of the memory
 /// bound the canvas keeps anyway; the second decodes what is new within the limits of one answer.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn decode_canvas(
     plugin_id: &str,
     canvas: &CanvasView,
@@ -779,6 +827,7 @@ pub(super) fn decode_canvas(
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
     trust_own_svg: bool,
+    scope: &konoma_plugin::ReadScope,
 ) -> CanvasPictures {
     decode_canvas_within(
         plugin_id,
@@ -788,6 +837,7 @@ pub(super) fn decode_canvas(
         default_raster_px,
         cancel,
         trust_own_svg,
+        scope,
         CanvasLimits::PRODUCTION,
     )
 }
@@ -802,6 +852,7 @@ pub(super) fn decode_canvas_within(
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
     trust_own_svg: bool,
+    scope: &konoma_plugin::ReadScope,
     limits: CanvasLimits,
 ) -> CanvasPictures {
     use crate::preview::image::ImageFailure;
@@ -811,6 +862,7 @@ pub(super) fn decode_canvas_within(
     // decode (`todo`), or one left for later. The pictures the host kept from an earlier answer
     // go first, so a picture deferred before is not starved by the new ones.
     let mut hasher = Hasher::new(cancel).relative_to(path);
+    let scope_fp = scope.fingerprint();
     // (order of appearance, id, the placement that decided it)
     let mut ids: Vec<(usize, u64, &konoma_plugin::view::CanvasImage)> = Vec::new();
     {
@@ -882,6 +934,7 @@ pub(super) fn decode_canvas_within(
                     None => {
                         // Cancelled while hashing: the answer is dropped on arrival.
                         return CanvasPictures {
+                            scope_fp: scope.fingerprint(),
                             places: canvas
                                 .images
                                 .iter()
@@ -901,7 +954,11 @@ pub(super) fn decode_canvas_within(
                 }
             }
         };
-        let key: Arc<str> = crate::preview::markdown::canvas_url(plugin_id, id, hash).into();
+        // The scope is part of the key: a file judged under one scope is never served from the
+        // cache for another (the tab root moved, `read_dirs` changed). `0` (no limit) leaves the
+        // content hash as it is.
+        let key: Arc<str> =
+            crate::preview::markdown::canvas_url(plugin_id, id, mix_scope(hash, scope_fp)).into();
         key_of.insert(id, key.clone());
         if !held.keys.contains_key(Path::new(&*key)) {
             // The refusal of the memory bound is remembered with the picture, so it is not decoded
@@ -1021,7 +1078,14 @@ pub(super) fn decode_canvas_within(
             seen_for_tests::note(t.hash);
             decodes += decode_cost(&t.data);
             input += input_bytes(&t.data, path);
-            let d = decode_one(&t.data, path, default_raster_px, cancel, trust_own_svg);
+            let d = decode_one(
+                &t.data,
+                path,
+                default_raster_px,
+                cancel,
+                trust_own_svg,
+                scope,
+            );
             let bytes = decoded_bytes(&d);
             if bytes > limits.held_bytes {
                 // It can never fit.
@@ -1048,6 +1112,7 @@ pub(super) fn decode_canvas_within(
     // next answer always moves on, whether or not this one decoded anything.
     let more = (waiting > 0 && !fresh.is_empty()) || unhashed > 0;
     CanvasPictures {
+        scope_fp: scope.fingerprint(),
         places,
         fresh,
         more,
@@ -1089,6 +1154,45 @@ pub(crate) mod seen_for_tests {
 }
 
 impl App {
+    /// Tell the user, once per (plugin id, reason), that the read scope refused a file the plugin
+    /// named. The reason names the plugin and the `read_dirs` key to change. Repeated redraws and
+    /// further refused pictures of the same plugin do not flash again.
+    pub(super) fn flash_scope_refusal(&mut self, plugin_id: &str) {
+        use crate::preview::image::{ImageFailure, ImageFailureMessage};
+        let why = ImageFailure::OutsideReadDirs;
+        if !self
+            .scope_flashed
+            .insert((plugin_id.to_string(), why.code()))
+        {
+            return;
+        }
+        if let Some(t) = why.message(self.lang, plugin_id) {
+            self.flash = Some(t);
+        }
+    }
+
+    /// Flash the document pictures the read scope refused while the page was built.
+    pub(super) fn flash_md_scope_refusals(&mut self) {
+        let ids = std::mem::take(&mut *self.md_scope_refusals.borrow_mut());
+        for id in ids {
+            self.flash_scope_refusal(&id);
+        }
+    }
+
+    /// Flash the read-scope refusals among the pictures a canvas answer decoded (see
+    /// [`Self::flash_scope_refusal`]).
+    pub(super) fn canvas_flash_refusals(&mut self, plugin_id: &str, pics: &CanvasPictures) {
+        let refused = pics.fresh.iter().any(|(_, d)| {
+            matches!(
+                d,
+                CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+            )
+        });
+        if refused {
+            self.flash_scope_refusal(plugin_id);
+        }
+    }
+
     /// Whether canvas pictures can be shown at all: an image backend and the encode worker are
     /// attached. Without them no picture is decoded and the plugin's cells stay.
     pub(super) fn canvas_pictures_drawable(&self) -> bool {
@@ -1150,6 +1254,7 @@ impl App {
         held_bytes: u64,
         kept_source_bytes: u64,
     ) -> bool {
+        self.canvas_scope_fp = pics.scope_fp;
         // The ids of the canvas, the entries it names and the entries its ids are drawn from.
         let ids: HashSet<u64> = pics.places.iter().map(|p| p.id).collect();
         self.canvas_front.retain(|id, _| ids.contains(id));
@@ -1492,6 +1597,12 @@ impl App {
             self.md_frame,
             self.md_image_cache.get(key).map(|e| e.last_used),
         )
+    }
+
+    /// Test-only: the identity of the read scope the held canvas pictures were made under.
+    #[cfg(test)]
+    pub(crate) fn canvas_scope_fp_for_test(&self) -> u64 {
+        self.canvas_scope_fp
     }
 
     /// Test-only: what the next job would be told about the cache (as `canvas_known_keys`, which

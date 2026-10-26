@@ -19,8 +19,8 @@ use image::DynamicImage;
 
 use super::svg_guard::SvgFail;
 use super::svg_proc::{
-    busy_children, idle_children, kill_live, live_children, live_pids, run_with, Limits, Request,
-    RunError,
+    busy_children, idle_children, kill_live, live_children, live_pids, run_with, run_with_roots,
+    Limits, Request, RunError,
 };
 use crate::test_support::TmpDir;
 
@@ -1437,9 +1437,11 @@ fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut wire = Vec::new();
-    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(b"KSV2");
     wire.extend_from_slice(&800u32.to_le_bytes());
     wire.extend_from_slice(&0u32.to_le_bytes());
+    // no read scope
+    wire.extend_from_slice(&u32::MAX.to_le_bytes());
     wire.extend_from_slice(&(doc.len() as u64).to_le_bytes());
     wire.extend_from_slice(doc.as_bytes());
     stdin.write_all(&wire).unwrap();
@@ -2513,9 +2515,11 @@ fn the_real_child_arms_its_backstop_from_the_limit_it_is_given() {
     assert_eq!(&ready, b"KSRDY");
     let data = endless_drawing();
     let mut wire = Vec::new();
-    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(b"KSV2");
     wire.extend_from_slice(&800u32.to_le_bytes());
     wire.extend_from_slice(&0u32.to_le_bytes());
+    // no read scope
+    wire.extend_from_slice(&u32::MAX.to_le_bytes());
     wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
     wire.extend_from_slice(data.as_bytes());
     std::io::Write::write_all(&mut stdin, &wire).unwrap();
@@ -2578,9 +2582,11 @@ fn the_childs_backstop_rings_after_the_limit_it_is_given_not_with_it() {
     assert_eq!(&ready, b"KSRDY");
     let data = endless_drawing();
     let mut wire = Vec::new();
-    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(b"KSV2");
     wire.extend_from_slice(&800u32.to_le_bytes());
     wire.extend_from_slice(&0u32.to_le_bytes());
+    // no read scope
+    wire.extend_from_slice(&u32::MAX.to_le_bytes());
     wire.extend_from_slice(&(data.len() as u64).to_le_bytes());
     wire.extend_from_slice(data.as_bytes());
     std::io::Write::write_all(&mut stdin, &wire).unwrap();
@@ -2667,5 +2673,106 @@ fn an_svg_of_unstated_origin_is_drawn_as_embedded_and_reads_no_file() {
         assert_eq!(img.to_rgba8().get_pixel(400, 300).0, [0, 170, 0, 255]);
         assert_eq!(live_children(), 1, "drawn by a child process");
     });
+    no_children_left();
+}
+
+#[test]
+fn the_child_reads_a_file_named_by_the_svg_only_inside_the_scope_it_was_given() {
+    let _g = serial();
+    let dir = unique_tmp("konoma_svg_child_scope");
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let (inside, outside) = (base.join("in"), base.join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    for p in [inside.join("a.png"), outside.join("b.png")] {
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+            .save(&p)
+            .unwrap();
+    }
+    let svg_of = |href: &Path| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{}" width="20" height="20"/></svg>"#,
+            href.display()
+        )
+    };
+    let alpha = |href: &Path, roots: Option<&[PathBuf]>| {
+        let svg = svg_of(href);
+        let img = run_with_roots(
+            &bin(),
+            Limits::default(),
+            &Request {
+                data: svg.as_bytes(),
+                base: Some(&inside),
+                max_px: 100,
+            },
+            roots,
+            &never,
+        )
+        .unwrap()
+        .to_rgba8();
+        img.get_pixel(img.width() / 2, img.height() / 2)[3]
+    };
+    let scope = vec![inside.clone()];
+    assert_eq!(
+        alpha(&outside.join("b.png"), Some(&scope)),
+        0,
+        "outside: not read"
+    );
+    assert_eq!(
+        alpha(&inside.join("a.png"), Some(&scope)),
+        255,
+        "inside: read"
+    );
+    assert_eq!(
+        alpha(&outside.join("b.png"), None),
+        255,
+        "no scope: as before"
+    );
+    assert_eq!(
+        alpha(&inside.join("a.png"), Some(&[])),
+        0,
+        "an empty scope reads nothing"
+    );
+    no_children_left();
+}
+
+#[test]
+fn a_japanese_folder_in_the_scope_is_read_and_one_outside_it_is_refused_by_the_real_child() {
+    // The roots travel as bytes on the wire and are compared as paths in the child: a
+    // non-ASCII folder name must survive both.
+    let _g = serial();
+    let dir = unique_tmp("konoma_svg_child_cjk");
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let (inside, outside) = (base.join("資料フォルダ"), base.join("外部フォルダ"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    for p in [inside.join("画像.png"), outside.join("秘密.png")] {
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+            .save(&p)
+            .unwrap();
+    }
+    let alpha = |href: &Path| {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{}" width="20" height="20"/></svg>"#,
+            href.display()
+        );
+        let scope = vec![inside.clone()];
+        let img = run_with_roots(
+            &bin(),
+            Limits::default(),
+            &Request {
+                data: svg.as_bytes(),
+                base: Some(&inside),
+                max_px: 100,
+            },
+            Some(&scope),
+            &never,
+        )
+        .unwrap()
+        .to_rgba8();
+        img.get_pixel(img.width() / 2, img.height() / 2)[3]
+    };
+    assert_eq!(alpha(&inside.join("画像.png")), 255, "inside: read");
+    assert_eq!(alpha(&outside.join("秘密.png")), 0, "outside: not read");
     no_children_left();
 }

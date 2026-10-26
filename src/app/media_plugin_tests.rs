@@ -33,6 +33,8 @@ struct Seen {
     pages: Mutex<Vec<Option<usize>>>,
     settings: Mutex<Option<Settings>>,
     lang: Mutex<String>,
+    /// The read scope the `view` context carried.
+    scope: Mutex<Option<konoma_plugin::ReadScope>>,
 }
 
 #[derive(Clone)]
@@ -46,6 +48,8 @@ enum Reply {
     /// An SVG that asks for no sharp zoom.
     PlainSvg,
     Fail(FailureKind),
+    /// A picture file the host is asked to read.
+    File(PathBuf),
 }
 
 struct Stand {
@@ -112,6 +116,7 @@ impl Session for StandSession {
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
         self.seen.views.fetch_add(1, Ordering::SeqCst);
         self.seen.view_external.store(cx.external, Ordering::SeqCst);
+        *self.seen.scope.lock().unwrap() = Some(cx.read_scope.clone());
         *self.seen.view_thread.lock().unwrap() = Some(std::thread::current().id());
         self.seen.pages.lock().unwrap().push(req.page);
         std::thread::sleep(self.view_delay);
@@ -136,6 +141,7 @@ impl Session for StandSession {
                 sharp_zoom: false,
                 raster_max_px: Some(64),
             })),
+            Reply::File(p) => Ok(View::Image(ImageView::new(ImageData::File(p.clone())))),
             Reply::Fail(kind) => Err(Failure::new(*kind, t!(en: "nope", ja: "だめ"))),
         }
     }
@@ -216,6 +222,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
         group: None,
         act_ids: Vec::new(),
         canvas_known: None,
+        read_scope: konoma_plugin::ReadScope::unrestricted(),
     }
 }
 
@@ -526,6 +533,27 @@ fn an_image_that_cannot_be_decoded_records_why() {
     show(&mut app, PreviewKind::image(p.clone()), &p);
     assert!(app.image_src.is_none());
     assert!(app.image_failure().is_some(), "{:?}", app.image_failure());
+}
+
+#[test]
+fn the_raw_text_notice_of_a_scope_refusal_names_the_plugin_in_both_languages() {
+    // `svg` shows its file as text with the reason (`RawText { with_reason: true }`): the reason
+    // of a read-scope refusal carries the plugin's id, never the raw `<id>` placeholder.
+    let dir = unique_tmp("konoma_media_rawtext_reason");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("a.svg");
+    std::fs::write(&p, "<svg/>").unwrap();
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut app = app_in(&dir);
+        app.lang = lang;
+        app.image_failure = Some(crate::preview::image::ImageFailure::OutsideReadDirs);
+        let (body, _) = crate::ui::preview::unavailable_body(&app, "svg", &p);
+        assert!(!body.contains("<id>"), "{body}");
+        assert!(
+            body.contains("[plugins.svg]") && body.contains("read_dirs"),
+            "{body}"
+        );
+    }
 }
 
 #[test]
@@ -929,6 +957,7 @@ fn file_view(shown: &Path, p: &Path) -> Option<MediaPayload> {
         100,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     )
 }
 
@@ -1070,5 +1099,429 @@ fn a_tga_the_content_cannot_identify_is_decoded_by_its_extension_like_before() {
     match file_view(&shown, &liar) {
         Some(MediaPayload::Static(img)) => assert_eq!(img.width(), 4),
         _ => panic!("the content wins over the extension"),
+    }
+}
+
+// ---- the read scope of a plugin the user added ----------------------------------------------------
+
+mod read_scope {
+    use super::*;
+    use konoma_plugin::ReadScope;
+
+    fn scope_of(dirs: &[&Path]) -> ReadScope {
+        ReadScope::within(dirs.iter().copied())
+    }
+
+    fn ok(p: &Option<MediaPayload>) -> bool {
+        matches!(p, Some(MediaPayload::Static(_)))
+    }
+
+    fn refused(p: &Option<MediaPayload>) -> bool {
+        matches!(
+            p,
+            Some(MediaPayload::ImageFailed(
+                crate::preview::image::ImageFailure::OutsideReadDirs
+            ))
+        )
+    }
+
+    fn view(scope: &ReadScope, shown: &Path, p: &Path) -> Option<MediaPayload> {
+        decode_image_view(
+            ImageView::new(ImageData::File(p.to_path_buf())),
+            shown,
+            100,
+            None,
+            false,
+            scope,
+        )
+    }
+
+    /// root / preview dir / elsewhere, each with one picture.
+    struct Tree {
+        _dir: crate::test_support::TmpDir,
+        root: PathBuf,
+        preview_dir: PathBuf,
+        elsewhere: PathBuf,
+    }
+
+    fn tree(name: &str) -> Tree {
+        let dir = unique_tmp(name);
+        let root = dir.join("root");
+        let preview_dir = dir.join("preview");
+        let elsewhere = dir.join("elsewhere");
+        for d in [&root, &preview_dir, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+            png(&d.join("pic.png"), 4, 3);
+        }
+        std::fs::write(preview_dir.join("a.spr"), b"x").unwrap();
+        Tree {
+            root: std::fs::canonicalize(&root).unwrap(),
+            preview_dir: std::fs::canonicalize(&preview_dir).unwrap(),
+            elsewhere: std::fs::canonicalize(&elsewhere).unwrap(),
+            _dir: dir,
+        }
+    }
+
+    #[test]
+    fn a_file_inside_the_root_is_read() {
+        let t = tree("rs_root");
+        let scope = scope_of(&[&t.root, &t.preview_dir]);
+        let shown = t.preview_dir.join("a.spr");
+        assert!(ok(&view(&scope, &shown, &t.root.join("pic.png"))));
+    }
+
+    #[test]
+    fn a_file_in_the_preview_folder_outside_the_root_is_read() {
+        let t = tree("rs_preview");
+        let scope = scope_of(&[&t.root, &t.preview_dir]);
+        let shown = t.preview_dir.join("a.spr");
+        assert!(ok(&view(&scope, &shown, &t.preview_dir.join("pic.png"))));
+        // The relative spelling lands in the same folder.
+        assert!(ok(&view(&scope, &shown, Path::new("pic.png"))));
+    }
+
+    #[test]
+    fn a_file_outside_both_is_refused_and_the_reason_is_the_scope() {
+        let t = tree("rs_outside");
+        let scope = scope_of(&[&t.root, &t.preview_dir]);
+        let shown = t.preview_dir.join("a.spr");
+        assert!(refused(&view(&scope, &shown, &t.elsewhere.join("pic.png"))));
+    }
+
+    #[test]
+    fn read_dirs_widens_the_scope() {
+        let t = tree("rs_widen");
+        let shown = t.preview_dir.join("a.spr");
+        let narrow = scope_of(&[&t.root, &t.preview_dir]);
+        let wide = scope_of(&[&t.root, &t.preview_dir, &t.elsewhere]);
+        let pic = t.elsewhere.join("pic.png");
+        assert!(refused(&view(&narrow, &shown, &pic)));
+        assert!(ok(&view(&wide, &shown, &pic)));
+    }
+
+    #[test]
+    fn the_previewed_file_itself_is_always_readable() {
+        // A plugin that hands back exactly the file being previewed works, even when that file
+        // is in none of the folders of the scope (a file opened by `konoma <file>` elsewhere).
+        let t = tree("rs_self");
+        let shown = t.elsewhere.join("pic.png");
+        let scope = scope_of(&[&t.root]);
+        assert!(ok(&view(&scope, &shown, &shown)));
+        // Spelled relative to itself too.
+        assert!(ok(&view(&scope, &shown, Path::new("pic.png"))));
+        // A symbolic link to the previewed file is the same file.
+        let link = t.root.join("link.png");
+        std::os::unix::fs::symlink(&shown, &link).unwrap();
+        assert!(ok(&view(&scope, &shown, &link)));
+    }
+
+    #[test]
+    fn the_previewed_file_works_for_a_whole_job() {
+        // End to end through the worker job: a user plugin whose `view` returns the previewed
+        // file as its picture.
+        let t = tree("rs_job");
+        let shown = t.elsewhere.join("pic.png");
+        let (plugin, seen) = stand(Reply::File(shown.clone()), None);
+        let mut j = job(plugin, "stand");
+        j.path = shown.clone();
+        j.read_scope = scope_of(&[&t.root]);
+        let got = image_payload(j.run_on_the_spot());
+        assert!(ok(&got));
+        // The plugin was told the scope it works under.
+        let told = seen.scope.lock().unwrap().clone().expect("a view context");
+        assert_eq!(told.dirs(), Some(&[t.root.clone()][..]));
+    }
+
+    #[test]
+    fn a_whole_job_refuses_a_file_outside_the_scope() {
+        let t = tree("rs_job_out");
+        let (plugin, _) = stand(Reply::File(t.elsewhere.join("pic.png")), None);
+        let mut j = job(plugin, "stand");
+        j.path = t.preview_dir.join("a.spr");
+        j.read_scope = scope_of(&[&t.root, &t.preview_dir]);
+        assert!(refused(&image_payload(j.run_on_the_spot())));
+    }
+
+    #[test]
+    fn the_prefix_trap_a_sibling_with_the_same_start_is_outside() {
+        let dir = unique_tmp("rs_prefix");
+        let b = dir.join("b");
+        let bc = dir.join("bc");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::create_dir_all(&bc).unwrap();
+        png(&bc.join("pic.png"), 2, 2);
+        let scope = scope_of(&[&b]);
+        let shown = b.join("a.spr");
+        assert!(refused(&view(&scope, &shown, &bc.join("pic.png"))));
+    }
+
+    #[test]
+    fn dot_dot_cannot_climb_out() {
+        let t = tree("rs_dotdot");
+        let scope = scope_of(&[&t.root]);
+        let shown = t.root.join("a.spr");
+        let climbing = t.root.join("..").join("elsewhere").join("pic.png");
+        assert!(refused(&view(&scope, &shown, &climbing)));
+        // A relative spelling climbs the same way.
+        let rel = Path::new("../elsewhere/pic.png");
+        assert!(refused(&view(&scope, &shown, rel)));
+        // A `..` that stays inside is fine.
+        std::fs::create_dir_all(t.root.join("sub")).unwrap();
+        let inside = t.root.join("sub").join("..").join("pic.png");
+        assert!(ok(&view(&scope, &shown, &inside)));
+    }
+
+    #[test]
+    fn a_link_inside_that_points_out_is_refused() {
+        let t = tree("rs_link_out");
+        let scope = scope_of(&[&t.root]);
+        let link = t.root.join("out.png");
+        std::os::unix::fs::symlink(t.elsewhere.join("pic.png"), &link).unwrap();
+        let shown = t.root.join("a.spr");
+        assert!(refused(&view(&scope, &shown, &link)));
+        // A linked folder too.
+        let dir_link = t.root.join("dirlink");
+        std::os::unix::fs::symlink(&t.elsewhere, &dir_link).unwrap();
+        assert!(refused(&view(&scope, &shown, &dir_link.join("pic.png"))));
+    }
+
+    #[test]
+    fn a_link_outside_that_points_in_is_allowed() {
+        let t = tree("rs_link_in");
+        let scope = scope_of(&[&t.root]);
+        let link = t.elsewhere.join("in.png");
+        std::os::unix::fs::symlink(t.root.join("pic.png"), &link).unwrap();
+        let shown = t.root.join("a.spr");
+        assert!(ok(&view(&scope, &shown, &link)));
+    }
+
+    #[test]
+    fn a_link_that_leads_nowhere_is_not_a_scope_matter() {
+        let t = tree("rs_dangling");
+        let scope = scope_of(&[&t.root]);
+        let link = t.root.join("gone.png");
+        std::os::unix::fs::symlink(t.root.join("nothing.png"), &link).unwrap();
+        let shown = t.root.join("a.spr");
+        // Cannot be read, but it is not blamed on the scope.
+        assert!(!refused(&view(&scope, &shown, &link)));
+        assert!(failed(&view(&scope, &shown, &link)));
+    }
+
+    #[test]
+    fn a_standard_plugin_reads_anywhere() {
+        // The scope a standard plugin gets is no scope: Markdown and the image plugin read
+        // absolute paths anywhere, as they always did.
+        let t = tree("rs_standard");
+        let shown = t.root.join("a.md");
+        let free = ReadScope::unrestricted();
+        assert!(ok(&view(&free, &shown, &t.elsewhere.join("pic.png"))));
+        let scope = crate::plugins::read_scope::scope_for(true, None, &t.root, &shown, None);
+        assert!(!scope.is_restricted());
+        assert!(ok(&view(&scope, &shown, &t.elsewhere.join("pic.png"))));
+    }
+
+    fn svg_view(base: &Path, scope: &ReadScope, svg: &str) -> Option<MediaPayload> {
+        decode_image_view(
+            ImageView {
+                data: ImageData::Svg {
+                    data: svg.as_bytes().into(),
+                    base_dir: Some(base.to_path_buf()),
+                    trusted: false,
+                },
+                sharp_zoom: true,
+                raster_max_px: Some(64),
+            },
+            &base.join("a.spr"),
+            64,
+            None,
+            false,
+            scope,
+        )
+    }
+
+    #[test]
+    fn an_svg_naming_a_folder_outside_is_refused_with_the_reason() {
+        // The folder an SVG reads its references from is a path the plugin gave: outside the
+        // scope the picture is refused (the same reason as any other picture outside), not
+        // silently drawn without its files; inside it the SVG is drawn and redrawn within the scope.
+        let t = tree("rs_svg_base");
+        let scope = scope_of(&[&t.root]);
+        assert!(refused(&svg_view(&t.elsewhere, &scope, SVG)));
+        match svg_view(&t.root, &scope, SVG) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::FileWithin(..)), "kept in scope");
+            }
+            _ => panic!("the SVG is drawn"),
+        }
+        // A folder that does not exist is not a scope matter.
+        let gone = t.root.join("gone");
+        assert!(!refused(&svg_view(&gone, &scope, SVG)));
+        // No limit: the old behaviour (the plain file trust).
+        match svg_view(&t.elsewhere, &ReadScope::unrestricted(), SVG) {
+            Some(MediaPayload::Vector { trust, .. }) => {
+                assert!(matches!(trust, SvgTrust::File(_)));
+            }
+            _ => panic!("the SVG is drawn"),
+        }
+    }
+
+    fn red_png(p: &Path) {
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+            .save(p)
+            .unwrap();
+    }
+
+    fn svg_image(href: &Path) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{}" width="20" height="20"/></svg>"#,
+            href.display()
+        )
+    }
+
+    fn centre_alpha(p: &Option<MediaPayload>) -> u8 {
+        let img = match p {
+            Some(MediaPayload::Vector { img, .. }) => img.to_rgba8(),
+            Some(MediaPayload::Static(img)) => img.to_rgba8(),
+            _ => panic!("the SVG is drawn"),
+        };
+        img.get_pixel(img.width() / 2, img.height() / 2)[3]
+    }
+
+    #[test]
+    fn drawing_a_retained_svg_again_still_refuses_a_file_outside_the_scope() {
+        // Zoom / resize re-rasterise through `SvgTrust::draw`: the `FileWithin` arm must judge
+        // every href against the roots, like the first drawing, and `File` must not.
+        let t = tree("rs_svg_redraw");
+        let secret = t.elsewhere.join("secret.png");
+        red_png(&secret);
+        let inside = t.root.join("ok.png");
+        red_png(&inside);
+        let alpha = |img: Option<image::DynamicImage>| {
+            let img = img.expect("the SVG is drawn").to_rgba8();
+            img.get_pixel(img.width() / 2, img.height() / 2)[3]
+        };
+        let base = t.root.join("a.svg");
+        let within = SvgTrust::FileWithin(base.clone(), vec![t.root.clone()].into());
+        let never = || false;
+        assert_eq!(
+            alpha(within.draw(svg_image(&secret).as_bytes(), 64, &never)),
+            0,
+            "outside href refused on redraw"
+        );
+        assert_eq!(
+            alpha(within.draw(svg_image(&inside).as_bytes(), 64, &never)),
+            255,
+            "inside href still drawn on redraw"
+        );
+        // The plain file trust has no scope and reads it (so the test tells the arms apart).
+        assert_eq!(
+            alpha(SvgTrust::File(base).draw(svg_image(&secret).as_bytes(), 64, &never)),
+            255
+        );
+    }
+
+    #[test]
+    fn an_svg_preview_through_a_link_out_of_the_root_is_not_refused() {
+        // The previewed file is a link to a file outside the root; the plugin names the real
+        // parent as the SVG's folder. The default scope holds that folder.
+        let t = tree("rs_svg_link");
+        let real = t.elsewhere.join("t.svg");
+        std::fs::write(&real, SVG).unwrap();
+        let link = t.root.join("l.svg");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let scope = crate::plugins::read_scope::scope_for(false, None, &t.root, &link, None);
+        assert!(!refused(&svg_view(&t.elsewhere, &scope, SVG)));
+        match svg_view(&t.elsewhere, &scope, SVG) {
+            Some(MediaPayload::Vector { .. }) => {}
+            _ => panic!("the SVG is drawn"),
+        }
+        // A folder that is neither the link's nor its target's is still refused.
+        assert!(refused(&svg_view(&t.preview_dir, &scope, SVG)));
+    }
+
+    #[test]
+    fn a_file_named_inside_an_svg_is_read_only_within_the_scope() {
+        // Scenario (a): the plugin hands the SVG bytes; the href inside names an absolute file
+        // outside the scope. It is not read (the picture comes out empty). An href inside is.
+        let t = tree("rs_svg_href");
+        let scope = scope_of(&[&t.root]);
+        let secret = t.elsewhere.join("secret.png");
+        red_png(&secret);
+        let inside = t.root.join("ok.png");
+        red_png(&inside);
+        assert_eq!(
+            centre_alpha(&svg_view(&t.root, &scope, &svg_image(&secret))),
+            0
+        );
+        assert_eq!(
+            centre_alpha(&svg_view(&t.root, &scope, &svg_image(&inside))),
+            255,
+            "an href inside the scope still draws"
+        );
+        // A relative href climbing out of the scope is judged the same way.
+        std::fs::create_dir_all(t.root.join("sub")).unwrap();
+        let climbing = svg_image(Path::new("../../elsewhere/secret.png"));
+        assert_eq!(
+            centre_alpha(&svg_view(&t.root.join("sub"), &scope, &climbing)),
+            0
+        );
+        // Without a limit the same SVG reads the file (the test is about the scope).
+        assert_eq!(
+            centre_alpha(&svg_view(
+                &t.root,
+                &ReadScope::unrestricted(),
+                &svg_image(&secret)
+            )),
+            255
+        );
+    }
+
+    #[test]
+    fn the_refusal_message_names_the_key_in_both_languages() {
+        use crate::i18n::Lang;
+        use crate::preview::image::{ImageFailure, ImageFailureMessage};
+        for lang in [Lang::En, Lang::Jp] {
+            let why = ImageFailure::OutsideReadDirs.message(lang, "demo").unwrap();
+            assert!(why.contains("read_dirs"), "{why}");
+        }
+        assert_ne!(
+            ImageFailure::OutsideReadDirs.message(Lang::En, "demo"),
+            ImageFailure::OutsideReadDirs.message(Lang::Jp, "demo")
+        );
+    }
+
+    #[test]
+    fn the_refusal_is_not_taken_for_a_damaged_file() {
+        // A distinct reason: the user is told what to change.
+        let t = tree("rs_distinct");
+        let scope = scope_of(&[&t.root]);
+        let shown = t.root.join("a.spr");
+        let got = view(&scope, &shown, &t.elsewhere.join("pic.png"));
+        assert!(!matches!(
+            got,
+            Some(MediaPayload::ImageFailed(
+                crate::preview::image::ImageFailure::Corrupt
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_file_in_scope_still_obeys_the_regular_file_rules() {
+        // The judged path is opened with the same rules: a FIFO inside the scope is refused
+        // without blocking.
+        let t = tree("rs_fifo");
+        let fifo = t.root.join("pipe.png");
+        if !std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return;
+        }
+        let scope = scope_of(&[&t.root]);
+        let shown = t.root.join("a.spr");
+        let s = scope.clone();
+        let got = within_ten_seconds(move || view(&s, &shown, &fifo));
+        assert!(failed(&got) && !refused(&got));
     }
 }

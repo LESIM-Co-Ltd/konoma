@@ -2905,7 +2905,7 @@ fn render_image_group(w: &mut Writer<'_>, images: &[(String, String)]) {
             }
             ImageSlot::Failed(why) => {
                 flush_row_group(w, &mut group);
-                w.lines.extend(image_failed_line(alt, url, why, w.width));
+                w.lines.extend(image_failed_line(alt, url, &why, w.width));
             }
         }
     }

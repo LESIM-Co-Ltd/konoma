@@ -281,7 +281,10 @@ fn every_shown_reason_has_an_english_and_a_japanese_text() {
         ImageFailure::Corrupt,
         ImageFailure::UnsupportedFormat,
     ] {
-        let (en, jp) = (f.message(Lang::En).unwrap(), f.message(Lang::Jp).unwrap());
+        let (en, jp) = (
+            f.message(Lang::En, "").unwrap(),
+            f.message(Lang::Jp, "").unwrap(),
+        );
         assert!(!en.is_empty() && !jp.is_empty() && en != jp, "{f:?}");
         assert!(
             !jp.is_ascii(),
@@ -289,13 +292,13 @@ fn every_shown_reason_has_an_english_and_a_japanese_text() {
         );
     }
     assert_eq!(
-        ImageFailure::Cancelled.message(Lang::En),
+        ImageFailure::Cancelled.message(Lang::En, ""),
         None,
         "never shown"
     );
-    let en = ImageFailure::TooLarge.message(Lang::En).unwrap();
-    let jp = ImageFailure::TooLarge.message(Lang::Jp).unwrap();
-    for t in [en, jp] {
+    let en = ImageFailure::TooLarge.message(Lang::En, "").unwrap();
+    let jp = ImageFailure::TooLarge.message(Lang::Jp, "").unwrap();
+    for t in [&en, &jp] {
         assert!(t.contains("32,768"), "{t}");
         assert!(t.contains("512 MiB"), "{t}");
     }

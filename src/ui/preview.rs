@@ -1565,9 +1565,10 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
     let lang = app.lang;
     // A load that failed says why (too large / damaged / unsupported format); only when nothing
     // is known — no image backend, a decode still pending — is the terminal the suspect.
-    let why = app.image_failure().and_then(|f| f.message(lang));
+    let plugin_id = app.shown_plugin_id().unwrap_or("");
+    let why = app.image_failure().and_then(|f| f.message(lang, plugin_id));
     let fallback = |frame: &mut Frame| {
-        let msg = match why {
+        let msg = match &why {
             Some(why) => format!("[image] {why}"),
             None => tr(lang, crate::i18n::Msg::ImageUnsupported).to_string(),
         };
@@ -1613,7 +1614,7 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// What the host shows in place of a plugin's content when the plugin declared how
 /// (`Manifest::unavailable`): the body, and whether it is text (wrapped per `[ui] wrap`).
-fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, bool) {
+pub(crate) fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, bool) {
     use konoma_plugin::Unavailable;
     let lang_code = match app.lang {
         crate::i18n::Lang::Jp => "ja",
@@ -1625,7 +1626,7 @@ fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, bool) {
             // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
             match app
                 .image_failure()
-                .and_then(|f| f.message(app.lang))
+                .and_then(|f| f.message(app.lang, id))
                 .filter(|_| with_reason)
             {
                 Some(why) => (format!("{why}\n\n{body}"), true),

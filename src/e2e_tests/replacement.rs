@@ -613,7 +613,11 @@ fn an_svg_a_user_plugin_claims_is_trusted_is_drawn_as_untrusted_and_redrawn_so()
     s.enter();
     s.drain_media();
     assert!(
-        matches!(s.app.vector_trust_for_test(), Some(SvgTrust::File(_))),
+        // A plugin the user added: the SVG is redrawn within its read scope.
+        matches!(
+            s.app.vector_trust_for_test(),
+            Some(SvgTrust::FileWithin(..))
+        ),
         "{:?}",
         s.app.vector_trust_for_test()
     );

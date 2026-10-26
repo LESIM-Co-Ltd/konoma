@@ -65,10 +65,12 @@ fn konoma() -> Command {
 }
 
 fn request(data: &[u8], base: &[u8], max_px: u32) -> Vec<u8> {
-    let mut r = b"KSV1".to_vec();
+    let mut r = b"KSV2".to_vec();
     r.extend_from_slice(&max_px.to_le_bytes());
     r.extend_from_slice(&(base.len() as u32).to_le_bytes());
     r.extend_from_slice(base);
+    // no read scope (the count that means "unrestricted")
+    r.extend_from_slice(&u32::MAX.to_le_bytes());
     r.extend_from_slice(&(data.len() as u64).to_le_bytes());
     r.extend_from_slice(data);
     r
@@ -171,11 +173,21 @@ fn an_empty_input_is_a_clean_end() {
 }
 
 #[test]
+fn a_request_of_the_previous_wire_version_is_refused_by_the_child() {
+    // An old parent talking to this child: the old magic, the old layout (no roots field).
+    let mut old = request(b"<svg/>", b"", 64);
+    old[..4].copy_from_slice(b"KSV1");
+    let (ok, out) = run(&old);
+    assert!(!ok);
+    assert!(out.is_empty(), "no picture is made from a misread request");
+}
+
+#[test]
 fn a_malformed_request_is_refused_quickly_without_a_picture() {
     for input in [
-        &b"KSV1"[..],
+        &b"KSV2"[..],
         b"garbage garbage garbage",
-        b"KSV1\0\0\0\0\xff\xff\xff\xff",
+        b"KSV2\0\0\0\0\xff\xff\xff\xff",
     ] {
         let t = Instant::now();
         let (ok, out) = run(input);

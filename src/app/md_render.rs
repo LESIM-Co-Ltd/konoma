@@ -187,7 +187,9 @@ impl App {
             width
         };
 
+        self.forget_scope_verdicts();
         let decorated = self.build_decorated(&path, render_width, &source, &align);
+        self.flash_md_scope_refusals();
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
         // A *synchronous* failure (remote images disabled: `ensure_remote_md_fetch` returns true
@@ -244,7 +246,10 @@ impl App {
             });
         }
         let mut decorated = if resync {
-            self.build_decorated(&path, render_width, &source, &align)
+            self.forget_scope_verdicts();
+            let d = self.build_decorated(&path, render_width, &source, &align);
+            self.flash_md_scope_refusals();
+            d
         } else {
             decorated
         };
@@ -709,6 +714,7 @@ impl App {
             // when the document was converted, so there is no file to resolve or stat.
             if crate::preview::markdown::is_office_image_url(url) {
                 let lang = self.lang;
+                let pid = self.shown_plugin_id().unwrap_or("").to_string();
                 // Said once, like a file picture: a decode that failed keeps its reason, and a
                 // picture whose header is already over the limits is refused before any decode.
                 if let Some(e) = self
@@ -716,7 +722,7 @@ impl App {
                     .get(&PathBuf::from(url))
                     .filter(|e| e.failed)
                 {
-                    return match e.fail.and_then(|f| f.message(lang)) {
+                    return match e.fail.and_then(|f| f.message(lang, &pid)) {
                         Some(why) => ImageSlot::Failed(why),
                         None => ImageSlot::Unavailable,
                     };
@@ -742,7 +748,7 @@ impl App {
                         if self.document_picture_is_raster(url)
                             && !crate::preview::image::dimensions_within_limits(d) =>
                     {
-                        match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                        match crate::preview::image::ImageFailure::TooLarge.message(lang, &pid) {
                             Some(why) => ImageSlot::Failed(why),
                             None => ImageSlot::Unavailable,
                         }
@@ -763,9 +769,22 @@ impl App {
             }
             if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
                 let lang = self.lang;
+                let pid = self.shown_plugin_id().unwrap_or("").to_string();
+                // A document a plugin the user added returned: its pictures are read only inside
+                // that plugin's read scope. Nothing of a refused file (not even its header) is
+                // read; the line says why, and the page build flashes it once.
+                if let Some(id) = self.md_image_refused(url, &p) {
+                    self.md_scope_refusals.borrow_mut().push(id.clone());
+                    return match crate::preview::image::ImageFailure::OutsideReadDirs
+                        .message(lang, &id)
+                    {
+                        Some(why) => ImageSlot::Failed(why),
+                        None => ImageSlot::Unavailable,
+                    };
+                }
                 // A picture that already failed to decode says why (the entry keeps the reason).
                 if let Some(e) = self.md_image_cache.get(&p).filter(|e| e.failed) {
-                    return match e.fail.and_then(|f| f.message(lang)) {
+                    return match e.fail.and_then(|f| f.message(lang, &pid)) {
                         Some(why) => ImageSlot::Failed(why),
                         None => ImageSlot::Unavailable,
                     };
@@ -774,7 +793,9 @@ impl App {
                 // decode is queued for it (the decoder would refuse it from the same header).
                 if let Some(d) = crate::preview::image::dimensions(&p) {
                     if !crate::preview::image::dimensions_within_limits(d) {
-                        return match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                        return match crate::preview::image::ImageFailure::TooLarge
+                            .message(lang, &pid)
+                        {
                             Some(why) => ImageSlot::Failed(why),
                             None => ImageSlot::Unavailable,
                         };
@@ -794,7 +815,7 @@ impl App {
                     }
                     // An SVG refused from its size or its file (too large, a pipe): say why.
                     Err(Some(why)) => {
-                        match crate::preview::image::ImageFailure::Svg(why).message(lang) {
+                        match crate::preview::image::ImageFailure::Svg(why).message(lang, &pid) {
                             Some(m) => ImageSlot::Failed(m),
                             None => ImageSlot::Unavailable,
                         }

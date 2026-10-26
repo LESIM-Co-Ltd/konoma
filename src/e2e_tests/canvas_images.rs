@@ -249,10 +249,12 @@ impl Opened {
     }
 }
 
-/// The content hash a canvas cache key ends with.
-fn hash_of_key(key: &std::path::Path) -> u64 {
+/// The content hash a canvas cache key ends with (the read scope's identity mixed into the key
+/// is taken out again).
+fn hash_of_key(app: &App, key: &std::path::Path) -> u64 {
     let s = key.to_string_lossy();
-    u64::from_str_radix(s.rsplit('/').next().unwrap(), 16).unwrap()
+    let keyed = u64::from_str_radix(s.rsplit('/').next().unwrap(), 16).unwrap();
+    crate::app::canvas_images::mix_scope(keyed, app.canvas_scope_fp_for_test())
 }
 
 /// The preview frame's content area: (x, y, cols, rows), found from the corner glyphs.
@@ -724,7 +726,7 @@ fn e2e_canvas_same_id_and_content_is_not_decoded_encoded_or_transmitted_again() 
         26,
     );
     let key = o.canvas_keys()[0].clone();
-    let hash = hash_of_key(&key);
+    let hash = hash_of_key(&o.s.app, &key);
     assert_eq!(decoded_count(hash), 1, "decoded once on the worker");
     let request = o.s.app.md_request_for_test(&key);
     let first_ids = o.transmits.clone();
@@ -887,7 +889,7 @@ fn e2e_canvas_an_unchanged_picture_is_kept_without_its_pixels_being_sent_again()
     });
     let mut o = open_kitty("cvi_unch", p, 90, 26);
     let key = o.canvas_keys()[0].clone();
-    let hash = hash_of_key(&key);
+    let hash = hash_of_key(&o.s.app, &key);
     let (ax, _, _, _) = o.area();
     assert_eq!(o.rows()[0].0, ax + 5);
     for n in 1..=3 {
@@ -1412,4 +1414,35 @@ fn e2e_canvas_pictures_sent_once_and_deferred_arrive_although_the_plugin_says_un
     assert!(o.views() >= 3, "asked again: {}", o.views());
     assert_eq!(o.rows().len(), 40, "every picture was drawn");
     assert_eq!(o.s.app.md_image_cache_len(), 40);
+}
+
+// ---- the read scope -------------------------------------------------------------------------
+
+////// the footer says which setting to change, once. A file inside the opened folder is drawn.
+#[test]
+fn e2e_canvas_file_outside_the_read_scope_is_refused_and_flashed() {
+    let elsewhere = crate::test_support::unique_tmp("cvi_scope_out");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let outside = elsewhere.join("o.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([5, 6, 7, 255]))
+        .save(&outside)
+        .unwrap();
+    let out2 = outside.clone();
+    let p = Sprites::new("cvi_scope", move |_req, _| {
+        let mut c = CanvasView::new(40, 10);
+        c.images
+            .push(placed(1, 5, 3, 8, 4, ImageData::File(out2.clone())));
+        c
+    });
+    let o = open_kitty("cvi_scope", p, 90, 26);
+    assert!(
+        o.transmits.is_empty(),
+        "nothing outside the scope is read and sent: {:?}",
+        o.transmits
+    );
+    let flash = o.s.app.flash.clone().expect("the refusal is said");
+    assert!(
+        flash.contains("read_dirs") && flash.contains("cvi_scope") && !flash.contains("<id>"),
+        "{flash}"
+    );
 }

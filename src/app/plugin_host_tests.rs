@@ -1271,3 +1271,245 @@ fn a_tables_frame_title_is_cut_and_cleaned_like_every_other_text_a_plugin_says()
         Some(true)
     );
 }
+
+// ---- the read scope on a text file a plugin names (`TextSource::File`) --------------------------------
+
+mod text_scope {
+    use super::super::plugin_host::gate_text_file;
+    use crate::test_support::unique_tmp;
+    use konoma_plugin::view::{TextSource, TextView, View};
+    use konoma_plugin::{FailureKind, ReadScope};
+    use std::path::{Path, PathBuf};
+
+    fn text_of(p: &Path) -> View {
+        View::Text(TextView {
+            source: TextSource::File(p.to_path_buf()),
+            styler: None,
+            file_lines: false,
+            syntax_name: None,
+        })
+    }
+
+    fn named(v: &View) -> PathBuf {
+        match v {
+            View::Text(TextView {
+                source: TextSource::File(p),
+                ..
+            }) => p.clone(),
+            _ => panic!("not a file text"),
+        }
+    }
+
+    #[test]
+    fn a_file_outside_the_scope_is_refused_and_the_message_names_the_key() {
+        let dir = unique_tmp("ts_out");
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out/t.txt"), "x").unwrap();
+        let scope = ReadScope::within([dir.join("root")]);
+        let mut v = text_of(&dir.join("out/t.txt"));
+        let f = gate_text_file(&mut v, "demo", &dir.join("root/a.x"), &scope).unwrap_err();
+        assert_eq!(f.kind, FailureKind::Io);
+        assert!(f.message.en().contains("read_dirs"));
+        assert!(f.message.en().contains("[plugins.demo]"));
+        assert!(f.message.get("ja").contains("read_dirs"));
+    }
+
+    #[test]
+    fn a_file_inside_is_read_through_its_real_path() {
+        let dir = unique_tmp("ts_in");
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::write(dir.join("root/t.txt"), "x").unwrap();
+        let scope = ReadScope::within([dir.join("root")]);
+        let mut v = text_of(&dir.join("root/../root/t.txt"));
+        gate_text_file(&mut v, "demo", &dir.join("root/a.x"), &scope).unwrap();
+        // The path windowed is the one that was judged.
+        assert_eq!(
+            named(&v),
+            std::fs::canonicalize(dir.join("root/t.txt")).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_link_out_is_refused_and_the_previewed_file_is_allowed() {
+        let dir = unique_tmp("ts_link");
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out/t.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("out/t.txt"), dir.join("root/l.txt")).unwrap();
+        let scope = ReadScope::within([dir.join("root")]);
+        let mut v = text_of(&dir.join("root/l.txt"));
+        assert!(gate_text_file(&mut v, "demo", &dir.join("root/a.x"), &scope).is_err());
+        // The previewed file itself, wherever it is.
+        let shown = dir.join("out/t.txt");
+        let mut v = text_of(&shown);
+        gate_text_file(&mut v, "demo", &shown, &scope).unwrap();
+    }
+
+    #[test]
+    fn the_prefix_trap_and_dot_dot() {
+        let dir = unique_tmp("ts_trap");
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::create_dir_all(dir.join("bc")).unwrap();
+        std::fs::write(dir.join("bc/t.txt"), "x").unwrap();
+        let scope = ReadScope::within([dir.join("b")]);
+        let shown = dir.join("b/a.x");
+        let mut v = text_of(&dir.join("bc/t.txt"));
+        assert!(gate_text_file(&mut v, "demo", &shown, &scope).is_err());
+        let mut v = text_of(&dir.join("b/../bc/t.txt"));
+        assert!(gate_text_file(&mut v, "demo", &shown, &scope).is_err());
+    }
+
+    #[test]
+    fn an_unrestricted_scope_and_other_sources_are_left_alone() {
+        let free = ReadScope::unrestricted();
+        let mut v = text_of(Path::new("/etc/hosts"));
+        gate_text_file(&mut v, "demo", Path::new("/x/a"), &free).unwrap();
+        assert_eq!(named(&v), Path::new("/etc/hosts"));
+        let scope = ReadScope::within([Path::new("/nonexistent-scope")]);
+        let mut lines = View::text(["a"]);
+        gate_text_file(&mut lines, "demo", Path::new("/x/a"), &scope).unwrap();
+    }
+
+    #[test]
+    fn a_vanished_file_is_not_blamed_on_the_scope() {
+        let dir = unique_tmp("ts_gone");
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        let scope = ReadScope::within([dir.join("root")]);
+        let mut v = text_of(&dir.join("root/none.txt"));
+        let f = gate_text_file(&mut v, "demo", &dir.join("root/a.x"), &scope).unwrap_err();
+        assert!(!f.message.en().contains("read_dirs"));
+    }
+}
+
+// ---- the scope the host settles for a job -----------------------------------------------------------
+
+mod job_scope {
+    use super::*;
+
+    fn scope_dirs(app: &App, id: &str, file: &Path) -> Option<Vec<PathBuf>> {
+        let (plugin, _) = stand(Script::default());
+        let job = plugin_host::PluginJob::Open {
+            plugin,
+            input: Input::File {
+                path: file.to_path_buf(),
+                hint: None,
+            },
+        };
+        let work = app.plugin_work(id.to_string(), file.to_path_buf(), job, ViewReq::default());
+        work.read_scope.dirs().map(<[PathBuf]>::to_vec)
+    }
+
+    #[test]
+    fn a_user_plugin_gets_the_root_and_the_previewed_folder() {
+        let (dir, file) = sandbox("konoma_job_scope");
+        let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        let got = scope_dirs(&app, "stand", &file).expect("a user plugin is limited");
+        let real = std::fs::canonicalize(&*dir).unwrap();
+        assert!(got.contains(&real), "{got:?}");
+    }
+
+    #[test]
+    fn the_standard_plugins_are_not_limited() {
+        let (dir, file) = sandbox("konoma_job_scope_std");
+        let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        for id in [
+            konoma_markdown::MARKDOWN_ID,
+            konoma_media::IMAGE_ID,
+            konoma_media::PDF_ID,
+            konoma_table::CSV_ID,
+            // The host's internal pseudo plugins: the command plugin names the private file its
+            // output went to.
+            crate::plugins::COMMAND_ID,
+            crate::plugins::TEXT_ID,
+            crate::plugins::UNSUPPORTED_ID,
+        ] {
+            assert!(scope_dirs(&app, id, &file).is_none(), "{id} is limited");
+        }
+    }
+
+    #[test]
+    fn read_dirs_in_the_config_widens_the_job_scope() {
+        let (dir, file) = sandbox("konoma_job_scope_cfg");
+        let extra = dir.join("extra");
+        std::fs::create_dir_all(&extra).unwrap();
+        let cfg = cfg_from(&format!(
+            "[plugins.stand]\nread_dirs = [{:?}]\nlevel = 2\n",
+            extra.to_str().unwrap()
+        ));
+        let app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let got = scope_dirs(&app, "stand", &file).unwrap();
+        assert!(
+            got.contains(&std::fs::canonicalize(&extra).unwrap()),
+            "{got:?}"
+        );
+        // The plugin's own settings are untouched and do not carry the host key.
+        let s = crate::plugins::effective_settings(&app.cfg, "stand");
+        assert_eq!(s.int("level", 0), 2);
+        assert!(s.get("read_dirs").is_none());
+    }
+}
+
+// ---- the read scope of a job ------------------------------------------------------------------
+
+/// A job for plugin `id` on `path`, as every key press and timed redraw builds one on the UI thread.
+fn scoped_job(app: &App, id: &str, path: &Path) -> super::plugin_host::PluginWork {
+    let (plugin, _) = stand(Script::default());
+    let input = Input::File {
+        path: path.to_path_buf(),
+        hint: None,
+    };
+    app.plugin_work(
+        id.to_string(),
+        path.to_path_buf(),
+        super::plugin_host::PluginJob::Open { plugin, input },
+        ViewReq::new(80, 24),
+    )
+}
+
+#[test]
+fn a_user_plugins_scope_is_built_once_for_many_jobs() {
+    use crate::plugins::read_scope::SCOPE_BUILDS;
+    let (dir, file) = sandbox("konoma_plugin_scope_memo");
+    let other = dir.join("g.stand");
+    std::fs::write(&other, "y").unwrap();
+    let app = app_on(&dir, &file);
+    let first = scoped_job(&app, "demo", &file);
+    assert!(first.read_scope.is_restricted());
+    let before = SCOPE_BUILDS.with(|c| c.get());
+    for _ in 0..30 {
+        let w = scoped_job(&app, "demo", &file);
+        assert_eq!(w.read_scope.fingerprint(), first.read_scope.fingerprint());
+    }
+    assert_eq!(
+        SCOPE_BUILDS.with(|c| c.get()),
+        before,
+        "jobs reuse the scope"
+    );
+    // Another shown file, another plugin and another root are each judged anew (once).
+    let _ = scoped_job(&app, "demo", &other);
+    assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before + 1);
+    let _ = scoped_job(&app, "demo", &other);
+    assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before + 1);
+    let _ = scoped_job(&app, "demo2", &other);
+    assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before + 2);
+    let mut app = app;
+    app.tab.root = dir.join("sub");
+    let _ = scoped_job(&app, "demo2", &other);
+    assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before + 3);
+}
+
+#[test]
+fn a_standard_plugins_job_does_no_scope_work() {
+    use crate::plugins::read_scope::SCOPE_BUILDS;
+    let (dir, file) = sandbox("konoma_plugin_scope_standard");
+    let app = app_on(&dir, &file);
+    let before = SCOPE_BUILDS.with(|c| c.get());
+    for _ in 0..10 {
+        assert!(!scoped_job(&app, "markdown", &file)
+            .read_scope
+            .is_restricted());
+    }
+    assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before);
+    assert!(app.read_scope_memo.borrow().is_none());
+}

@@ -830,6 +830,12 @@ impl App {
             return true;
         };
         let svg_max_px = self.cfg.ui.svg_max_px;
+        // A document of a plugin the user added: an SVG picture reads only files in its scope.
+        let roots: Option<Vec<PathBuf>> = self
+            .md_image_scope()
+            .and_then(|(_, s)| s.dirs().map(<[PathBuf]>::to_vec));
+        // The file read is the real path the scope judged, not the spelling that was asked for.
+        let read_path = self.md_decode_read_path(&path);
         let ticket = self
             .md_image_cache
             .get(&path)
@@ -854,15 +860,19 @@ impl App {
                 // Catch a panic (pathological image/SVG) too and always return a result
                 // (not returning would latch busy).
                 let p = path;
+                let rp = read_path;
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
-                        if App::looks_like_gif(&p) {
-                            if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
+                        if App::looks_like_gif(&rp) {
+                            if let Some(frames) = crate::preview::image::decode_gif_inline(&rp) {
                                 let first = frames[0].0.clone();
                                 return (Ok(first), Some(frames));
                             }
                         }
-                        (md_decode_image_why(&p, svg_max_px, &moved_on), None)
+                        (
+                            md_decode_image_within(&rp, svg_max_px, roots.as_deref(), &moved_on),
+                            None,
+                        )
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
@@ -1078,6 +1088,91 @@ impl App {
             .sum()
     }
 
+    /// Run `f` on the read-scope memo of the plugin whose document is on screen: `None` for
+    /// konoma's own Markdown preview and the standard plugins (unrestricted, nothing to build).
+    /// The scope is built once and kept until what it is made from changes (the plugin, the tab
+    /// root, the shown file), so a redraw never walks the disk for it again.
+    fn with_scope_memo<R>(&self, f: impl FnOnce(&mut ScopeMemo) -> R) -> Option<R> {
+        let show = self.plugin.as_ref()?;
+        if crate::plugins::read_scope::is_host_owned(&show.id) {
+            return None;
+        }
+        Some(self.scope_memo_for(&show.id, &show.path, f))
+    }
+
+    /// Run `f` on the memo of the (non-standard) plugin `id` for the file `shown`, building the
+    /// scope only when the plugin, the tab root or the file differs from what is memoised. Shared
+    /// by the Markdown pictures and by every job sent to a plugin (a key press, a timed redraw).
+    pub(super) fn scope_memo_for<R>(
+        &self,
+        id: &str,
+        shown: &Path,
+        f: impl FnOnce(&mut ScopeMemo) -> R,
+    ) -> R {
+        use crate::plugins::read_scope::{home_dir, scope_for};
+        let mut slot = self.read_scope_memo.borrow_mut();
+        let fresh = slot
+            .as_ref()
+            .is_some_and(|m| m.id == id && m.root == self.tab.root && m.shown == shown);
+        if !fresh {
+            *slot = Some(ScopeMemo {
+                id: id.to_string(),
+                root: self.tab.root.clone(),
+                shown: shown.to_path_buf(),
+                scope: scope_for(
+                    false,
+                    self.cfg.plugins.get(id),
+                    &self.tab.root,
+                    shown,
+                    home_dir().as_deref(),
+                ),
+                verdicts: std::collections::HashMap::new(),
+            });
+        }
+        f(slot.as_mut().expect("memo was just filled"))
+    }
+
+    /// The path a decode of the local picture `p` must read: the real path the scope judged
+    /// (so the file judged is the file read), or `p` itself when no scope applies or `p` cannot
+    /// be resolved (the ordinary missing-picture treatment shows that).
+    pub(super) fn md_decode_read_path(&self, p: &Path) -> PathBuf {
+        self.with_scope_memo(|m| match m.judge(p) {
+            Ok(real) => real,
+            Err(_) => p.to_path_buf(),
+        })
+        .unwrap_or_else(|| p.to_path_buf())
+    }
+
+    /// The read scope for the local pictures a document names, when the document is a plugin's:
+    /// the plugin's id and its scope. `None` for konoma's own Markdown preview and the standard
+    /// plugins (unrestricted).
+    pub(super) fn md_image_scope(&self) -> Option<(String, konoma_plugin::ReadScope)> {
+        self.with_scope_memo(|m| (m.id.clone(), m.scope.clone()))
+    }
+
+    /// Forget the verdicts on single pictures (the page is built again, so a file that was
+    /// replaced by a link meanwhile is judged anew). The scope itself stays.
+    pub(super) fn forget_scope_verdicts(&self) {
+        if let Some(m) = self.read_scope_memo.borrow_mut().as_mut() {
+            m.verdicts.clear();
+        }
+    }
+
+    /// Whether the read scope refuses the local picture `p` that `url` of the open document named:
+    /// the id of the plugin whose scope refuses it. Only a file that is really **outside** the
+    /// scope is refused here: one that does not exist or cannot be resolved is not a scope matter
+    /// (the ordinary missing-picture treatment shows it). A remote picture (konoma's own download
+    /// cache) is never refused. The verdict is kept per path until the page is built again.
+    pub(super) fn md_image_refused(&self, url: &str, p: &Path) -> Option<String> {
+        if crate::preview::markdown::is_remote_image_url(url.trim()) {
+            return None;
+        }
+        self.with_scope_memo(|m| {
+            (m.judge(p) == Err(konoma_plugin::ScopeError::Outside)).then(|| m.id.clone())
+        })
+        .flatten()
+    }
+
     /// Ensure the inline image for `url` is decoding in the background and that the protocol for the
     /// currently-visible portion (whole image, or a cropped band when partially scrolled) is encoding on
     /// the worker thread. Called from the renderer for each visible inline image. Both decoding and
@@ -1114,6 +1209,13 @@ impl App {
             let Some(p) = resolve_md_image_path(url, base.as_deref()) else {
                 return;
             };
+            // A plugin's document: a picture outside its read scope is not read. (The path is
+            // resolved once, here, and `md_image_refused` does nothing at all when no scope
+            // applies, so konoma's own Markdown pays no extra file access per frame.)
+            if let Some(id) = self.md_image_refused(url, &p) {
+                self.flash_scope_refusal(&id);
+                return;
+            }
             p
         };
         // A slide is drawn at the size of the frame it is placed in (`cols` x `full_rows` cells).
@@ -1514,7 +1616,8 @@ impl App {
                 .as_ref()
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf());
-            resolve_md_image_path(url, base.as_deref())?
+            let p = resolve_md_image_path(url, base.as_deref())?;
+            self.md_image_refused(url, &p).is_none().then_some(p)?
         };
         let entry = self.md_image_cache.get(&path)?;
         // Exact match for the current position, at this placement's own cell size.
@@ -1745,6 +1848,28 @@ mod mutation_tests;
 #[cfg(test)]
 #[path = "md_media_slide_cap_tests.rs"]
 mod slide_cap_tests;
+
+/// The read scope of the plugin whose document is on screen, kept between frames (see
+/// `App::with_scope_memo`), with the verdicts on single pictures judged under it.
+pub(super) struct ScopeMemo {
+    id: String,
+    root: PathBuf,
+    shown: PathBuf,
+    pub(super) scope: konoma_plugin::ReadScope,
+    verdicts: std::collections::HashMap<PathBuf, Result<PathBuf, konoma_plugin::ScopeError>>,
+}
+
+impl ScopeMemo {
+    /// The scope's verdict on `p` (the real path, or why not), judged once per path.
+    fn judge(&mut self, p: &Path) -> Result<PathBuf, konoma_plugin::ScopeError> {
+        if let Some(v) = self.verdicts.get(p) {
+            return v.clone();
+        }
+        let v = self.scope.resolve(p);
+        self.verdicts.insert(p.to_path_buf(), v.clone());
+        v
+    }
+}
 
 #[cfg(test)]
 mod tmux_detection_tests {

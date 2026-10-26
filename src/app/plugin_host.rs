@@ -415,6 +415,9 @@ pub(crate) struct PluginWork {
     /// only for the pictures not in it (`canvas_images.rs`). `None` = pictures cannot be shown
     /// (no image backend): nothing of a canvas is decoded.
     pub(super) canvas_known: Option<super::canvas_images::CanvasHeld>,
+    /// Where the host reads files for this plugin when it names a path (see
+    /// `plugins::read_scope`): unrestricted for a standard plugin.
+    pub(super) read_scope: konoma_plugin::ReadScope,
 }
 
 /// What became of a picture a worker decoded.
@@ -462,6 +465,56 @@ impl Drop for MadeText {
         if let Some(p) = self.path.take() {
             let _ = std::fs::remove_file(p);
         }
+    }
+}
+
+/// The read scope applied to a text view whose text is a file the plugin names
+/// (`TextSource::File`): the host windows that file, so it must be inside the plugin's scope.
+/// The previewed file itself is always allowed. The path is replaced by the real path that was
+/// judged, so the file windowed is the file checked. A file outside the scope is refused with a
+/// failure that names the `read_dirs` key.
+pub(super) fn gate_text_file(
+    view: &mut View,
+    plugin: &str,
+    shown: &Path,
+    scope: &konoma_plugin::ReadScope,
+) -> Result<(), Failure> {
+    use konoma_plugin::view::TextSource;
+    use konoma_plugin::ScopeError;
+    let View::Text(t) = view else {
+        return Ok(());
+    };
+    let TextSource::File(p) = &mut t.source else {
+        return Ok(());
+    };
+    if !scope.is_restricted() {
+        return Ok(());
+    }
+    let same = p.as_path() == shown
+        || matches!(
+            (std::fs::canonicalize(&*p), std::fs::canonicalize(shown)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if same {
+        return Ok(());
+    }
+    match scope.resolve(p) {
+        Ok(real) => {
+            *p = real;
+            Ok(())
+        }
+        Err(ScopeError::Outside) => Err(Failure::io(t!(
+            en: format!(
+                "the file is outside the folders this plugin may read (add its folder to read_dirs in [plugins.{plugin}])"
+            ),
+            ja: format!(
+                "このプラグインが読めるフォルダの外のファイルです([plugins.{plugin}] の read_dirs にフォルダを追加)"
+            ),
+        ))),
+        Err(ScopeError::Unresolved) => Err(Failure::io(t!(
+            en: "the file the plugin named cannot be read",
+            ja: "プラグインが示したファイルを読めません",
+        ))),
     }
 }
 
@@ -725,6 +778,7 @@ impl PluginWork {
             group: _,
             act_ids,
             canvas_known,
+            read_scope,
         } = self;
         let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
             act_ids
@@ -742,7 +796,8 @@ impl PluginWork {
             let cx = ViewCx::new(&settings, &lang)
                 .with_cancel(cancel.clone())
                 .with_term(term)
-                .with_external(external);
+                .with_external(external)
+                .with_read_scope(read_scope.clone());
             let mut picture = Picture::None;
             let mut document = None;
             let mut made_text = None;
@@ -757,6 +812,7 @@ impl PluginWork {
                         default_raster_px,
                         decode_cancel.as_ref(),
                         trust_own_svg,
+                        &read_scope,
                     ) {
                         Some(p) => Picture::Decoded(Box::new(p)),
                         None => Picture::Failed,
@@ -799,6 +855,7 @@ impl PluginWork {
                             default_raster_px,
                             decode_cancel.as_ref(),
                             trust_own_svg,
+                            &read_scope,
                         ))
                     }));
                     (Some(View::Canvas(c)), None)
@@ -810,10 +867,13 @@ impl PluginWork {
                         ja: "プラグインが画像を返しませんでした",
                     ))),
                 ),
-                Ok(mut v) => {
-                    made_text = write_made_text(&mut v, &id);
-                    (Some(v), None)
-                }
+                Ok(mut v) => match gate_text_file(&mut v, &id, &path, &read_scope) {
+                    Ok(()) => {
+                        made_text = write_made_text(&mut v, &id);
+                        (Some(v), None)
+                    }
+                    Err(f) => (None, Some(f)),
+                },
                 Err(f) => (None, Some(f)),
             };
             // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
@@ -842,7 +902,8 @@ impl PluginWork {
                 let cx = OpenCx::new(&settings, &lang)
                     .with_cancel(cancel.clone())
                     .with_term(term)
-                    .with_external(external);
+                    .with_external(external)
+                    .with_read_scope(read_scope.clone());
                 match plugin.open(input, &cx) {
                     Ok(session) => {
                         // What `open` learned (a PDF's page count) goes to the host now, before the
@@ -862,7 +923,8 @@ impl PluginWork {
             } => {
                 let cx = ActCx::new(&settings, &lang)
                     .with_cancel(cancel.clone())
-                    .with_term(term);
+                    .with_term(term)
+                    .with_read_scope(read_scope.clone());
                 // A failed action is told to the user and leaves the view as it was.
                 let (outcome, failure) = match session.act(&action, &cx) {
                     Ok(o) => (Some(o), None),
@@ -1427,9 +1489,18 @@ impl App {
         let act_ids = manifest
             .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
             .unwrap_or_default();
+        // Standard plugins read freely (no scope IO). A user plugin's scope is memoised on the
+        // app, so a key press or a timed redraw does not walk the disk again.
+        let read_scope = if crate::plugins::read_scope::is_host_owned(&id) {
+            konoma_plugin::ReadScope::unrestricted()
+        } else {
+            self.scope_memo_for(&id, &path, |m| m.scope.clone())
+        };
+        let scope_fp = read_scope.fingerprint();
         PluginWork {
             group,
             act_ids,
+            read_scope,
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
@@ -1446,6 +1517,13 @@ impl App {
                 // resolve to the old file's picture or to a source kept for it. The cache itself
                 // is by content, and stays true.
                 if matches!(job, PluginJob::Open { .. }) {
+                    held.by_id.clear();
+                    held.kept.clear();
+                }
+                // Pictures held under another read scope are not what `unchanged` may resolve to:
+                // the key of a picture carries the scope it was judged under, and the new scope
+                // judges again.
+                if self.canvas_scope_fp != scope_fp {
                     held.by_id.clear();
                     held.kept.clear();
                 }
@@ -2324,6 +2402,7 @@ impl App {
         match (&canvas_now, canvas_pictures) {
             (Some(Some(_)), Picture::Canvas(Some(pics))) => {
                 // Pictures waiting for a later answer (the work limits of one): ask for it.
+                self.canvas_flash_refusals(&id, &pics);
                 ask_more = self.canvas_pictures_landed(*pics);
             }
             (Some(_), _) => self.forget_canvas_pictures(),
@@ -2354,6 +2433,11 @@ impl App {
             self.plugin_user_act = false;
         }
         false
+    }
+
+    /// The id of the plugin whose view is on screen, if any.
+    pub fn shown_plugin_id(&self) -> Option<&str> {
+        self.plugin.as_ref().map(|p| p.id.as_str())
     }
 
     /// Whether the preview on screen is the file `show` was opened for.

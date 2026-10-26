@@ -808,6 +808,9 @@ pub enum SvgTrust {
     Trusted(PathBuf),
     /// From a file: drawn by the supervised child process, reading files relative to this path.
     File(PathBuf),
+    /// From a file of a plugin the user added: like `File`, but every file the drawing reads must
+    /// be inside these real directories (the plugin's read scope), whatever the SVG references.
+    FileWithin(PathBuf, std::sync::Arc<[PathBuf]>),
     /// From a document, a plugin or git, with no file to be relative to: drawn by the supervised
     /// child process, which reads no file.
     Embedded,
@@ -842,6 +845,14 @@ impl SvgTrust {
             SvgTrust::File(p) => {
                 crate::preview::svg::rasterize_untrusted(svg, p, max_px, cancelled).ok()
             }
+            SvgTrust::FileWithin(p, roots) => crate::preview::svg::rasterize_untrusted_within(
+                svg,
+                p,
+                Some(roots),
+                max_px,
+                cancelled,
+            )
+            .ok(),
             SvgTrust::Embedded => {
                 crate::preview::svg::rasterize_embedded(svg, max_px, cancelled).ok()
             }
@@ -1864,6 +1875,18 @@ pub struct App {
     /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
     /// content of the id has no protocol yet, so a changing picture does not blink.
     canvas_front: std::collections::HashMap<u64, Arc<str>>,
+    /// The read scope identity ([`konoma_plugin::ReadScope::fingerprint`]) the canvas pictures
+    /// held were made under; a job under another scope does not resolve `unchanged` to them.
+    canvas_scope_fp: u64,
+    /// The (plugin id, reason) pairs of read-scope refusals already flashed, so a refusal is told
+    /// once and not at every redraw.
+    scope_flashed: std::collections::HashSet<(String, &'static str)>,
+    /// Plugin ids whose document pictures the read scope refused while a page was being built
+    /// (`build_decorated` only reads `&self`); `ensure_md_cache` flashes them once built.
+    md_scope_refusals: std::cell::RefCell<Vec<String>>,
+    /// The read scope of the plugin document on screen, built once and reused between frames
+    /// (see `App::with_scope_memo`); rebuilt when its inputs change.
+    read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
     /// The sources of the canvas pictures deferred or refused and not decoded yet, by id (kept
     /// from the answer that sent them, so the plugin need not send them again).
     canvas_kept: std::collections::HashMap<u64, canvas_images::KeptPicture>,
@@ -3663,6 +3686,10 @@ impl App {
             canvas_places: Vec::new(),
             canvas_slot_counts: std::collections::HashMap::new(),
             canvas_front: std::collections::HashMap::new(),
+            canvas_scope_fp: 0,
+            scope_flashed: std::collections::HashSet::new(),
+            md_scope_refusals: std::cell::RefCell::new(Vec::new()),
+            read_scope_memo: std::cell::RefCell::new(None),
             canvas_kept: std::collections::HashMap::new(),
             kitty_deletes: Vec::new(),
             md_frame: 0,
@@ -6540,11 +6567,20 @@ fn md_image_local_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread resolved a document picture to a file (each is a stat): lets a
+    /// test hold konoma's own Markdown preview to one resolve per picture per frame.
+    static MD_IMAGE_RESOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
 /// download-cache path, but only once it has been fetched (so callers treat a cached remote image
 /// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
 /// Markdown file's directory. Returns the path only if the file exists.
 fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
+    #[cfg(test)]
+    MD_IMAGE_RESOLVES.with(|c| c.set(c.get() + 1));
     let u = url.trim();
     if u.is_empty() {
         return None;
@@ -6605,9 +6641,21 @@ fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> 
 /// raster decoder's reason stands when the file is not a valid SVG either. An SVG is drawn by a
 /// supervised child process (`svg_proc`), so this blocks for as long as that takes (at most its
 /// time limit): call it from a worker. `cancelled` stops that drawing.
+#[cfg(test)]
 fn md_decode_image_why(
     path: &Path,
     svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    md_decode_image_within(path, svg_max_px, None, cancelled)
+}
+
+/// [`md_decode_image_why`] for a picture of a document a plugin the user added returned: an SVG
+/// reads only files inside `roots` (the plugin's read scope; `None` is no limit).
+fn md_decode_image_within(
+    path: &Path,
+    svg_max_px: u32,
+    roots: Option<&[PathBuf]>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
@@ -6618,7 +6666,7 @@ fn md_decode_image_why(
         Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
         // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
         Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
+        Err(e) => match crate::preview::svg::rasterize_within(path, roots, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
             Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
             Err(f) => Err(f.into()),
@@ -6741,7 +6789,8 @@ fn cap_lesson(failure: crate::preview::image::ImageFailure) -> CapLesson {
         )
         | ImageFailure::TooLarge
         | ImageFailure::Corrupt
-        | ImageFailure::UnsupportedFormat => CapLesson::SizeIndependent,
+        | ImageFailure::UnsupportedFormat
+        | ImageFailure::OutsideReadDirs => CapLesson::SizeIndependent,
         ImageFailure::Cancelled => CapLesson::Nothing,
     }
 }
@@ -7841,6 +7890,10 @@ mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+// The read scope of the pictures in a document a plugin the user added returned.
+#[cfg(test)]
+mod md_read_scope_tests;
 
 // Rules of the canvas road that need state no key reaches (mutation audit, stage 2.5).
 #[cfg(test)]

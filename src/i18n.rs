@@ -797,6 +797,7 @@ pub enum Msg {
     ImageReasonTooLarge,
     ImageReasonCorrupt,
     ImageReasonUnsupportedFormat,
+    ImageReasonOutsideReadDirs,
     PreviewTruncated,
     SvgTooDeep,
     SvgTooLarge,
@@ -1543,6 +1544,7 @@ fn en(msg: Msg) -> &'static str {
         }
         ImageReasonCorrupt => "the file is damaged or could not be read",
         ImageReasonUnsupportedFormat => "unsupported image format",
+        ImageReasonOutsideReadDirs => "outside what plugin <id> may read: add its folder to read_dirs in [plugins.<id>]",
         PreviewTruncated => "\n\n— (truncated: display limit reached) —",
         SvgTooDeep => "[svg] not drawn: its elements are nested too deeply",
         SvgTooLarge => "[svg] not drawn: the file is too large",
@@ -2186,6 +2188,7 @@ fn jp(msg: Msg) -> &'static str {
         }
         ImageReasonCorrupt => "ファイルが壊れているか、読み込めません",
         ImageReasonUnsupportedFormat => "対応していない画像形式です",
+        ImageReasonOutsideReadDirs => "プラグイン <id> が読める範囲の外です: [plugins.<id>] の read_dirs にフォルダを追加",
         PreviewTruncated => "\n\n— (省略: 表示上限に達しました) —",
         SvgTooDeep => "[svg] 描画しません: 要素の入れ子が深すぎます",
         SvgTooLarge => "[svg] 描画しません: ファイルが大きすぎます",
@@ -2911,6 +2914,7 @@ mod tests {
         Msg::ImageReasonTooLarge,
         Msg::ImageReasonCorrupt,
         Msg::ImageReasonUnsupportedFormat,
+        Msg::ImageReasonOutsideReadDirs,
         Msg::PreviewTruncated,
         Msg::SvgTooDeep,
         Msg::SvgTooLarge,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::input::Input;
 use crate::key::Key;
 use crate::manifest::Manifest;
+use crate::scope::ReadScope;
 use crate::settings::Settings;
 use crate::text::Tr;
 use crate::view::{Layout, View, ViewReq};
@@ -168,6 +169,11 @@ macro_rules! context {
             /// for what the plugin shows). Off by default: a plugin that has an external fallback
             /// must stay silent unless the host says yes.
             pub external: bool,
+            /// Where the host reads files for this plugin (the files it names in a view: a
+            /// picture file, a text file). A plugin that reads files itself can keep to it with
+            /// [`ReadScope::allows`]; the host enforces it on what it reads for the plugin either
+            /// way.
+            pub read_scope: ReadScope,
         }
 
         impl<'a> $name<'a> {
@@ -178,6 +184,7 @@ macro_rules! context {
                     cancel: Cancel::never(),
                     term: TermCaps::default(),
                     external: false,
+                    read_scope: ReadScope::unrestricted(),
                 }
             }
 
@@ -198,6 +205,11 @@ macro_rules! context {
 
             pub fn with_external(mut self, external: bool) -> $name<'a> {
                 self.external = external;
+                self
+            }
+
+            pub fn with_read_scope(mut self, read_scope: ReadScope) -> $name<'a> {
+                self.read_scope = read_scope;
                 self
             }
         }

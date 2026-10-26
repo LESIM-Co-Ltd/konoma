@@ -244,6 +244,38 @@ impl From<RasterError> for super::image::ImageFailure {
 pub type UntrustedRunner<'a> =
     &'a dyn Fn(&[u8], Option<&Path>, u32, &dyn Fn() -> bool) -> Result<DynamicImage, RasterError>;
 
+/// [`UntrustedRunner`] for a drawing whose file reads are limited: the extra argument is the list
+/// of real directories every `<image href>` must resolve into (`None`: no limit).
+pub type ScopedRunner<'a> = &'a dyn Fn(
+    &[u8],
+    Option<&Path>,
+    Option<&[PathBuf]>,
+    u32,
+    &dyn Fn() -> bool,
+) -> Result<DynamicImage, RasterError>;
+
+/// [`rasterize_untrusted_via`] for SVG bytes of a plugin the user added: besides `path`'s folder
+/// being where relative references start, **every** file the drawing reads (relative or absolute
+/// reference, in this document or in an SVG it references) must be inside one of `roots`.
+pub fn rasterize_untrusted_within_via(
+    data: &[u8],
+    path: &Path,
+    roots: Option<&[PathBuf]>,
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+    remote_cache_dir: Option<&Path>,
+    run: ScopedRunner,
+) -> Result<DynamicImage, RasterError> {
+    svg_guard::precheck(data)?;
+    run(
+        data,
+        resources_dir_of(path, remote_cache_dir).as_deref(),
+        roots,
+        max_px,
+        cancelled,
+    )
+}
+
 /// Rasterize the SVG file at `path` with a max side of `max_px` in a supervised child process
 /// (`run`). Blocks: call from a worker thread. `cancelled` is polled while waiting; when it turns
 /// true the child is stopped and the result is `Err(RasterError::Cancelled)`.
@@ -423,7 +455,19 @@ pub fn rasterize_guarded(
     base: Option<&Path>,
     max_px: u32,
 ) -> Result<DynamicImage, SvgFail> {
-    svg_guard::load_tree(data, base.map(Path::to_path_buf), |tree| {
+    rasterize_guarded_within(data, base, None, max_px)
+}
+
+/// [`rasterize_guarded`] with the files the drawing may read limited to `roots` (real
+/// directories; `None` is no limit). See [`svg_guard::options_within`].
+pub fn rasterize_guarded_within(
+    data: &[u8],
+    base: Option<&Path>,
+    roots: Option<&[PathBuf]>,
+    max_px: u32,
+) -> Result<DynamicImage, SvgFail> {
+    let roots = roots.map(|r| std::sync::Arc::<[PathBuf]>::from(r.to_vec()));
+    svg_guard::load_tree_within(data, base.map(Path::to_path_buf), roots, |tree| {
         let size = tree.size();
         let (w0, h0) = (size.width(), size.height());
         if !(w0 > 0.0 && h0 > 0.0) {
@@ -847,6 +891,39 @@ mod tests {
 
     fn never() -> bool {
         false
+    }
+
+    #[test]
+    fn a_scoped_drawing_reads_a_file_only_inside_its_folders() {
+        let dir = unique_tmp("konoma_svg_scope");
+        // The folders of a scope are real paths (`ReadScope` canonicalizes them).
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = std::fs::canonicalize(&dir).unwrap_or(dir.to_path_buf());
+        let (inside, outside) = (base.join("in"), base.join("out"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let a = red_png(&inside, "a.png");
+        let b = red_png(&outside, "b.png");
+        let draw = |href: &str, roots: &[PathBuf]| {
+            let svg = svg_with_image(href);
+            center_alpha(
+                &rasterize_guarded_within(svg.as_bytes(), Some(&inside), Some(roots), 100).unwrap(),
+            )
+        };
+        let scope = vec![inside.clone()];
+        assert_eq!(draw(&a.display().to_string(), &scope), 255);
+        assert_eq!(draw(&b.display().to_string(), &scope), 0, "outside");
+        // A relative href climbing out, and a link inside that points out, are judged by the
+        // real path.
+        assert_eq!(draw("../out/b.png", &scope), 0, "dot-dot");
+        std::os::unix::fs::symlink(&b, inside.join("l.png")).unwrap();
+        assert_eq!(draw("l.png", &scope), 0, "symlink out");
+        // A folder whose name only starts like the scope's is outside it.
+        let sibling = base.join("in2");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let c = red_png(&sibling, "c.png");
+        assert_eq!(draw(&c.display().to_string(), &scope), 0, "prefix trap");
+        // A nested SVG needs no case: usvg gives a referenced SVG no image loading of its own.
     }
 
     #[test]
