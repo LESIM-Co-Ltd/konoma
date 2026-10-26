@@ -1513,3 +1513,61 @@ fn a_standard_plugins_job_does_no_scope_work() {
     assert_eq!(SCOPE_BUILDS.with(|c| c.get()), before);
     assert!(app.read_scope_memo.borrow().is_none());
 }
+
+// ---- the `O` list's popup width and a layout reported again ------------------------------------
+
+fn paged(count: usize, tag: &str) -> Layout {
+    Layout {
+        pages: Some(konoma_plugin::view::PageLayout::Separate {
+            count: Some(count),
+            titles: (0..count).map(|i| format!("{tag}{i}")).collect(),
+        }),
+        ..Layout::default()
+    }
+}
+
+/// A session that reports the same layout again while `O` is open leaves the width floor alone
+/// (the popup never shrinks while open); a layout whose list differs starts the width afresh.
+#[test]
+fn a_layout_reported_again_keeps_the_page_list_width_floor_and_a_changed_list_resets_it() {
+    let (dir, file) = sandbox("konoma_plugin_host_outline_width");
+    let _budget = LongFirstFrame::of(Duration::from_secs(5));
+    let mut app = app_on(&dir, &file);
+    let (tx, _rx) = channel();
+    app.attach_media_loader(tx);
+    let (plugin, _) = stand(Script {
+        rows: 3,
+        ..Script::default()
+    });
+    open_stand(&mut app, plugin, &file);
+    let a = paged(3, "t");
+    app.plugin.as_mut().unwrap().layout = a.clone();
+    app.tab.page_count = Some(3);
+    assert!(app.is_page_list_preview());
+    app.outline_open = true;
+    app.reset_outline_width_for_open();
+    app.outline_width_seen("", 60);
+    // The same layout, as a new allocation with the same content: nothing changed.
+    let again = paged(3, "t");
+    app.plugin.as_mut().unwrap().layout = again.clone();
+    app.adopt_layout(&again);
+    assert_eq!(app.outline_width_floor(""), 60, "the floor survives");
+    // The titles differ: a different list, sized afresh.
+    let b = paged(3, "u");
+    app.plugin.as_mut().unwrap().layout = b.clone();
+    app.adopt_layout(&b);
+    assert_eq!(app.outline_width_floor(""), 0);
+    app.outline_width_seen("", 40);
+    // The count differs: the same.
+    let c = paged(4, "u");
+    app.plugin.as_mut().unwrap().layout = c.clone();
+    app.adopt_layout(&c);
+    assert_eq!(app.outline_width_floor(""), 0);
+    // Closed: a layout does not touch anything.
+    app.outline_width_seen("", 30);
+    app.outline_open = false;
+    let d = paged(4, "w");
+    app.plugin.as_mut().unwrap().layout = d.clone();
+    app.adopt_layout(&d);
+    assert_eq!(app.outline_width_floor(""), 30);
+}

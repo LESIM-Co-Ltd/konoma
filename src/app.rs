@@ -1988,6 +1988,10 @@ pub struct App {
     /// 100,000 pages, and the overlay asks for the rows on every frame and key): the key it was
     /// built for and the rows. Dropped when the overlay closes or the layout changes.
     outline_pages: std::cell::RefCell<Option<outline::BuiltPages>>,
+    /// The widest window of a long `O` list drawn in this opening, for the filter query it was
+    /// drawn under, and the signature of the list it was measured for (the popup does not shrink
+    /// while it scrolls, and starts afresh when the list itself changes).
+    outline_width: std::cell::RefCell<(String, usize, u64)>,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -3724,6 +3728,7 @@ impl App {
             outline_open: false,
             outline_sel: 0,
             outline_pages: std::cell::RefCell::new(None),
+            outline_width: std::cell::RefCell::new((String::new(), 0, 0)),
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,

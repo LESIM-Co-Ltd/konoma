@@ -2188,7 +2188,7 @@ impl App {
 
     /// Take what a session reported about its pages as the host's page state
     /// (`PerTab::page_count`, and the page clamped to it).
-    fn adopt_layout(&mut self, layout: &Layout) {
+    pub(super) fn adopt_layout(&mut self, layout: &Layout) {
         self.forget_outline_pages();
         if let Some(count) = page_count_of(layout) {
             self.tab.page_count = count;
@@ -2200,6 +2200,7 @@ impl App {
             // between): the page keys have nothing to turn.
             self.tab.page_count = None;
         }
+        self.outline_layout_adopted();
     }
 
     /// The layout `open` reported reached the host before the first picture did.
