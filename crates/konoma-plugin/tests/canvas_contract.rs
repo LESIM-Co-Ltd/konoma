@@ -635,3 +635,224 @@ fn every_ascii_control_character_is_refused_and_every_printable_one_accepted() {
         }
     }
 }
+
+// ---- clipped: what the host keeps of a canvas is bounded by the size it asked for ----
+
+fn text_at(c: &CanvasView, x: u16, y: u16) -> String {
+    c.cells[y as usize * c.cols as usize + x as usize]
+        .symbol
+        .clone()
+}
+
+#[test]
+fn clipped_keeps_the_top_left_part_and_the_cells_in_it() {
+    let mut c = CanvasView::new(10, 6);
+    c.set_string(0, 0, "ab", Style::default());
+    c.set_string(3, 2, "x", Style::default());
+    c.set_string(9, 5, "z", Style::default());
+    let cut = c.clipped(4, 3).unwrap();
+    assert_eq!((cut.cols, cut.rows), (4, 3));
+    assert_eq!(
+        cut.cells.len(),
+        12,
+        "the cell vector is cut, not only the size"
+    );
+    assert_eq!(text_at(&cut, 0, 0), "a");
+    assert_eq!(text_at(&cut, 1, 0), "b");
+    assert_eq!(text_at(&cut, 3, 2), "x");
+    assert_eq!(cut.check(), Ok(()));
+}
+
+#[test]
+fn clipped_returns_a_canvas_that_fits_as_it_is() {
+    let mut c = CanvasView::new(5, 2);
+    c.set_string(0, 0, "hi", Style::default());
+    c.redraw_after = Some(ms(100));
+    c.text_input = true;
+    let same = c.clone().clipped(5, 2).unwrap();
+    assert_eq!(same.cells, c.cells);
+    assert_eq!((same.cols, same.rows), (5, 2));
+    let wider = c.clone().clipped(500, 500).unwrap();
+    assert_eq!(wider.cells, c.cells);
+    // The other fields of a cut canvas are kept too.
+    let cut = c.clipped(3, 1).unwrap();
+    assert_eq!(cut.redraw_after, Some(ms(100)));
+    assert!(cut.text_input);
+}
+
+#[test]
+fn clipped_to_nothing_is_an_empty_canvas() {
+    let c = CanvasView::new(8, 8);
+    for (mc, mr) in [(0, 5), (5, 0), (0, 0)] {
+        let cut = c.clone().clipped(mc, mr).unwrap();
+        assert_eq!(cut.cells.len(), mc as usize * mr as usize);
+        assert_eq!(cut.check(), Ok(()), "{mc}x{mr}");
+    }
+}
+
+#[test]
+fn clipped_blanks_a_wide_character_cut_by_the_right_edge() {
+    let mut c = CanvasView::new(6, 1);
+    // Wide characters at columns 0-1, 2-3 and 4-5.
+    c.set_string(0, 0, "世界語", Style::default());
+    assert_eq!(c.check(), Ok(()));
+    // Keeping 3 columns cuts "界" (2-3) in half: its left half cannot stay alone.
+    let cut = c.clone().clipped(3, 1).unwrap();
+    assert_eq!(text_at(&cut, 0, 0), "世");
+    assert_eq!(text_at(&cut, 1, 0), "");
+    assert_eq!(
+        text_at(&cut, 2, 0),
+        " ",
+        "the half-cut wide character is blank"
+    );
+    assert_eq!(
+        cut.check(),
+        Ok(()),
+        "never a wide character without its continuation"
+    );
+    // Keeping 4 columns cuts between characters: nothing is blanked.
+    let even = c.clipped(4, 1).unwrap();
+    assert_eq!(text_at(&even, 2, 0), "界");
+    assert_eq!(even.check(), Ok(()));
+}
+
+#[test]
+fn clipped_keeps_the_placements_that_start_inside_whole_and_drops_those_wholly_outside() {
+    let mut c = CanvasView::new(20, 10);
+    c.images = vec![
+        CanvasImage::new(1, CellRect::new(0, 0, 4, 2), one_by_one()),
+        CanvasImage::new(2, CellRect::new(6, 0, 4, 2), one_by_one()), // runs past the right edge
+        CanvasImage::new(3, CellRect::new(0, 4, 4, 4), one_by_one()), // runs past the bottom
+        CanvasImage::new(4, CellRect::new(15, 8, 2, 2), one_by_one()), // wholly outside
+        CanvasImage::unchanged(5, CellRect::new(6, 3, 2, 2)),         // exactly at the corner
+        CanvasImage::new(6, CellRect::new(8, 5, 2, 2), one_by_one()), // starts on the edge: outside
+    ];
+    let cut = c.clipped(8, 5).unwrap();
+    let ids: Vec<u64> = cut.images.iter().map(|i| i.id).collect();
+    assert_eq!(ids, vec![1, 2, 3, 5]);
+    // Kept whole, rectangles untouched.
+    assert_eq!(cut.images[1].rows, 2);
+    assert_eq!(cut.images[2].rows, 4);
+    // `clipped` validated it already; plain `check` still wants every placement inside.
+    assert!(matches!(
+        cut.check(),
+        Err(CanvasIssue::ImageOutOfBounds { .. })
+    ));
+}
+
+#[test]
+fn clipped_judges_the_placement_bounds_on_the_canvas_as_sent() {
+    let mut c = CanvasView::new(20, 10);
+    c.images = vec![CanvasImage::new(
+        1,
+        CellRect::new(18, 0, 4, 2),
+        one_by_one(),
+    )];
+    assert!(matches!(
+        c.clone().clipped(8, 5),
+        Err(CanvasIssue::ImageOutOfBounds { index: 0 })
+    ));
+    // Also when the canvas already fits the cut.
+    assert!(matches!(
+        c.clipped(50, 50),
+        Err(CanvasIssue::ImageOutOfBounds { index: 0 })
+    ));
+}
+
+#[test]
+fn clipped_still_refuses_what_is_wrong_with_the_size_of_what_was_sent() {
+    // The size-only rules are judged on the canvas as it was sent, before anything is cut.
+    let mut c = CanvasView::new(4, 4);
+    c.cells.pop();
+    assert!(matches!(
+        c.clipped(2, 2),
+        Err(CanvasIssue::CellCount {
+            expected: 16,
+            actual: 15
+        })
+    ));
+    let mut big = CanvasView::new(0, 0);
+    big.cols = 4097;
+    big.rows = 1;
+    assert_eq!(
+        big.clipped(10, 10).unwrap_err(),
+        CanvasIssue::AreaTooLarge {
+            cols: 4097,
+            rows: 1
+        }
+    );
+    let mut many = CanvasView::new(4, 4);
+    many.images = (0..=CANVAS_MAX_PLACEMENTS as u64)
+        .map(|i| CanvasImage::unchanged(i % 8, CellRect::new(0, 0, 1, 1)))
+        .collect();
+    assert!(matches!(
+        many.clipped(2, 2),
+        Err(CanvasIssue::TooManyPlacements { .. })
+    ));
+}
+
+#[test]
+fn clipped_leaves_bad_cells_outside_the_cut_unjudged_and_refuses_those_inside() {
+    let mut c = CanvasView::new(100, 100);
+    c.cell_mut(90, 90).unwrap().symbol = "\u{1b}".to_string();
+    let cut = c.clone().clipped(10, 10).unwrap();
+    assert_eq!(cut.check(), Ok(()), "a bad cell that was cut away is gone");
+    c.cell_mut(5, 5).unwrap().symbol = "\u{1b}".to_string();
+    assert_eq!(
+        c.clone().clipped(10, 10).unwrap_err(),
+        CanvasIssue::CellControl { x: 5, y: 5 },
+        "clipped validates the kept cells itself"
+    );
+    // Also when nothing is cut.
+    assert_eq!(
+        c.clipped(500, 500).unwrap_err(),
+        CanvasIssue::CellControl { x: 5, y: 5 }
+    );
+}
+
+/// A canvas 20x10 cut to 8x5, with `bad` placed wholly outside the kept part (at x = 12).
+fn cut_with_outside(bad: Vec<CanvasImage>) -> Result<CanvasView, CanvasIssue> {
+    let mut c = CanvasView::new(20, 10);
+    c.images = bad;
+    c.clipped(8, 5)
+}
+
+#[test]
+fn a_violation_only_in_a_placement_starting_outside_the_kept_part_is_refused() {
+    let zero = cut_with_outside(vec![CanvasImage::unchanged(1, CellRect::new(12, 0, 0, 2))]);
+    assert!(matches!(zero, Err(CanvasIssue::ImageZeroSize { index: 0 })));
+    let mismatch = cut_with_outside(vec![
+        CanvasImage::unchanged(1, CellRect::new(0, 0, 2, 2)),
+        CanvasImage::unchanged(1, CellRect::new(12, 0, 3, 2)),
+    ]);
+    assert!(matches!(
+        mismatch,
+        Err(CanvasIssue::ImageSizeMismatch { index: 1 })
+    ));
+    let oob = cut_with_outside(vec![CanvasImage::unchanged(1, CellRect::new(18, 0, 4, 2))]);
+    assert!(matches!(
+        oob,
+        Err(CanvasIssue::ImageOutOfBounds { index: 0 })
+    ));
+    let bad_data = cut_with_outside(vec![CanvasImage::new(
+        1,
+        CellRect::new(12, 0, 2, 2),
+        ImageData::Rgba {
+            width: 4,
+            height: 4,
+            pixels: std::sync::Arc::new(vec![0; 3]),
+        },
+    )]);
+    assert!(bad_data.is_err(), "bad picture data outside is refused");
+}
+
+#[test]
+fn too_many_pictures_counts_the_placements_as_sent() {
+    let imgs = (0..=CANVAS_MAX_PICTURES as u64)
+        .map(|i| CanvasImage::unchanged(i, CellRect::new(12, 0, 1, 1)))
+        .collect();
+    assert!(matches!(
+        cut_with_outside(imgs),
+        Err(CanvasIssue::TooManyPictures { .. })
+    ));
+}

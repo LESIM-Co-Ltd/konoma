@@ -272,6 +272,7 @@ fn undeclared_view(
     id: &str,
     declared: &[konoma_plugin::ViewKind],
     unscreened: bool,
+    req: &ViewReq,
     view: View,
 ) -> Result<View, Failure> {
     let Some(got) = view.kind() else {
@@ -279,7 +280,7 @@ fn undeclared_view(
     };
     let checked = !declared.is_empty() || unscreened;
     if !checked || crate::plugins::is_internal(id) || view.fits(declared) {
-        return well_formed(id, view);
+        return well_formed(id, req, view);
     }
     let kind = got.context();
     let tr = if declared.is_empty() {
@@ -305,16 +306,39 @@ fn undeclared_view(
     Err(Failure::unsupported(tr))
 }
 
+/// The least width and height (in cells) a canvas answer is kept at, whatever the request said.
+/// The request before the first frame is a placeholder (80 x 1) and the answer to it is shown
+/// until the refit answer lands; the floor keeps that first answer whole on any ordinary terminal.
+/// Together with the request it bounds what the host holds and checks to the viewport (at least
+/// this many cells, so 320 x 128 = 40960 at the floor) instead of the 4M cells a plugin may send.
+pub(crate) const CANVAS_KEEP_MIN_COLS: u16 = 320;
+pub(crate) const CANVAS_KEEP_MIN_ROWS: u16 = 128;
+
+/// The size a canvas answer to `req` is cut to before it lands: the request, but not under the
+/// floor above. Cells outside it are dropped and never asked for from the cut canvas again: a
+/// resize changes the request, and the host asks the plugin again for the new size
+/// (`App::refit_canvas` compares the area with the request that produced the answer, not with the
+/// answer's size).
+pub(crate) fn canvas_keep_size(req: &ViewReq) -> (u16, u16) {
+    (
+        req.cols.max(CANVAS_KEEP_MIN_COLS),
+        req.rows.max(CANVAS_KEEP_MIN_ROWS),
+    )
+}
+
 /// The view, or the failure that says a canvas it holds is malformed (`CanvasView::check`: the cell
 /// count does not match the size, a picture reaches outside, a lazy picture). The host refuses
-/// such a canvas with a message instead of drawing it. Any other view passes.
-fn well_formed(id: &str, view: View) -> Result<View, Failure> {
+/// such a canvas with a message instead of drawing it. Any other view passes. A canvas is cut to
+/// [`canvas_keep_size`] first (`CanvasView::clipped`), so the memory and the checking work are
+/// bounded by the viewport, not by what the plugin sent.
+pub(super) fn well_formed(id: &str, req: &ViewReq, view: View) -> Result<View, Failure> {
     use crate::i18n::{tr, Lang, Msg};
-    let View::Canvas(c) = &view else {
+    let View::Canvas(c) = view else {
         return Ok(view);
     };
-    match c.check() {
-        Ok(()) => Ok(view),
+    let (keep_cols, keep_rows) = canvas_keep_size(req);
+    match c.clipped(keep_cols, keep_rows) {
+        Ok(c) => Ok(View::Canvas(c)),
         Err(issue) => Err(Failure::corrupt(
             konoma_plugin::Tr::new(format!(
                 "{} ({id}): {issue}",
@@ -803,7 +827,7 @@ impl PluginWork {
             let mut made_text = None;
             let viewed = session
                 .view(&req, &cx)
-                .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, v));
+                .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, &req, v));
             let (view, failure) = match viewed {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(

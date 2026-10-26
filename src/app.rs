@@ -7904,6 +7904,10 @@ mod md_read_scope_tests;
 #[cfg(test)]
 mod canvas_survivor_tests;
 
+// What the host keeps of a canvas answer is bounded by the request (stage-3 carry-over).
+#[cfg(test)]
+mod canvas_bounds_tests;
+
 // The built-in `command` plugin: a delegated command through the plugin road.
 #[cfg(test)]
 mod command_plugin_tests;
