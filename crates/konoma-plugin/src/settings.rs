@@ -13,6 +13,22 @@ pub enum Value {
     Table(BTreeMap<String, Value>),
 }
 
+impl Value {
+    /// The value as the host keeps it when it takes a plugin's declared default in: every string
+    /// (not a table's keys: those are identifiers, and the registry refuses a bad one) has control characters other than a newline and a tab and
+    /// U+10EEEE removed and is cut to [`crate::text::MAX_TEXT_CHARS`] (see [`crate::text::clip_text`]).
+    pub fn cleaned(&self) -> Value {
+        match self {
+            Value::Str(s) => Value::Str(crate::text::clip_text(s).into_owned()),
+            Value::List(l) => Value::List(l.iter().map(Value::cleaned).collect()),
+            Value::Table(t) => {
+                Value::Table(t.iter().map(|(k, v)| (k.clone(), v.cleaned())).collect())
+            }
+            other => other.clone(),
+        }
+    }
+}
+
 /// The settings of one plugin: the table under `[plugins.<id>]`.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Settings(BTreeMap<String, Value>);
