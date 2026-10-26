@@ -1515,7 +1515,7 @@ impl App {
             .unwrap_or_default();
         // Standard plugins read freely (no scope IO). A user plugin's scope is memoised on the
         // app, so a key press or a timed redraw does not walk the disk again.
-        let read_scope = if crate::plugins::read_scope::is_host_owned(&id) {
+        let read_scope = if crate::plugins::read_scope::is_host_owned(&registry, &id) {
             konoma_plugin::ReadScope::unrestricted()
         } else {
             self.scope_memo_for(&id, &path, |m| m.scope.clone())

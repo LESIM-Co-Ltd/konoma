@@ -577,29 +577,54 @@ pub(super) fn open_picture_file(
     p: &Path,
     scope: &konoma_plugin::ReadScope,
 ) -> Result<(std::fs::File, PathBuf), crate::preview::image::ImageFailure> {
+    let real = judge_picture_file(shown, p, scope)?;
+    let file = open_regular_picture(&real)?;
+    Ok((file, real))
+}
+
+/// The scope's verdict on the file `p` a plugin named (resolved against `shown`): the path to
+/// open (the real path when the scope limits, the resolved spelling otherwise), or the refusal.
+/// **Nothing is opened or read** -- this is the one place the verdict is made, for the opening
+/// ([`open_picture_file`]) and for the budget ([`refused_by_scope`]) alike.
+fn judge_picture_file(
+    shown: &Path,
+    p: &Path,
+    scope: &konoma_plugin::ReadScope,
+) -> Result<PathBuf, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
     use konoma_plugin::ScopeError;
     let abs = resolve_picture_path(shown, p);
     if !scope.is_restricted() {
-        let file = open_regular_picture(&abs)?;
-        return Ok((file, abs));
+        return Ok(abs);
     }
     let is_shown = abs == shown
         || matches!(
             (std::fs::canonicalize(&abs), std::fs::canonicalize(shown)),
             (Ok(a), Ok(b)) if a == b
         );
-    let real = if is_shown {
-        std::fs::canonicalize(&abs).map_err(|_| ImageFailure::Corrupt)?
-    } else {
-        match scope.resolve(&abs) {
-            Ok(real) => real,
-            Err(ScopeError::Outside) => return Err(ImageFailure::OutsideReadDirs),
-            Err(_) => return Err(ImageFailure::Corrupt),
-        }
-    };
-    let file = open_regular_picture(&real)?;
-    Ok((file, real))
+    if is_shown {
+        return std::fs::canonicalize(&abs).map_err(|_| ImageFailure::Corrupt);
+    }
+    match scope.resolve(&abs) {
+        Ok(real) => Ok(real),
+        Err(ScopeError::Outside) => Err(ImageFailure::OutsideReadDirs),
+        Err(_) => Err(ImageFailure::Corrupt),
+    }
+}
+
+/// Whether the scope refuses `data` (a file outside it, or an animation with such a file among
+/// its frames). Such a picture is refused **before** any budget is looked at: it will never be
+/// opened, so it costs nothing -- not a decode, not input, not header pixels -- and cannot make
+/// the in-scope pictures after it wait.
+fn refused_by_scope(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScope) -> bool {
+    match data {
+        ImageData::File(p) => matches!(
+            judge_picture_file(shown, p, scope),
+            Err(crate::preview::image::ImageFailure::OutsideReadDirs)
+        ),
+        ImageData::Frames(f) => f.iter().any(|(d, _)| refused_by_scope(d, shown, scope)),
+        _ => false,
+    }
 }
 
 /// Read the picture file `p` (resolved against `shown`, see [`resolve_picture_path`]) that a plugin
@@ -827,9 +852,21 @@ fn input_bytes(data: &ImageData, shown: &Path) -> u64 {
 /// - `Svg` (and a file that is an SVG): **unknown before drawing** -- its size is not in a header
 ///   but in the drawing, which the supervised child process bounds (`raster_max_px` per side). The
 ///   second value is `true` for it: the caller adds the pixels of the picture it got back.
+#[cfg(test)]
 fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScope) -> (u64, bool) {
+    header_pixels_within(data, shown, scope, &|| false)
+}
+
+/// [`header_pixels`] that stops counting the frames of a GIF once `stale` says the answer was
+/// superseded (the count then falls back to one frame).
+fn header_pixels_within(
+    data: &ImageData,
+    shown: &Path,
+    scope: &konoma_plugin::ReadScope,
+    stale: &dyn Fn() -> bool,
+) -> (u64, bool) {
     use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-    fn reader_px<R: std::io::BufRead + Seek>(mut r: R) -> u64 {
+    fn reader_px<R: std::io::BufRead + Seek>(mut r: R, stale: &dyn Fn() -> bool) -> u64 {
         let mut head = [0u8; 10];
         let n = r.read(&mut head).unwrap_or(0);
         let gif = head[..n].starts_with(b"GIF8");
@@ -843,7 +880,7 @@ fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScop
             }
             let px = u64::from(u16::from_le_bytes([head[6], head[7]]))
                 * u64::from(u16::from_le_bytes([head[8], head[9]]));
-            let frames = crate::preview::image::count_gif_frames(&mut r, 5_000, &|| false);
+            let frames = crate::preview::image::count_gif_frames(&mut r, 5_000, stale);
             return px.saturating_mul(frames.map_or(1, |f| f.max(1)) as u64);
         }
         let Ok(reader) = image::ImageReader::new(&mut r).with_guessed_format() else {
@@ -855,7 +892,7 @@ fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScop
         u64::from(w) * u64::from(h)
     }
     match data {
-        ImageData::Encoded(b) => (reader_px(Cursor::new(&b[..])), false),
+        ImageData::Encoded(b) => (reader_px(Cursor::new(&b[..]), stale), false),
         ImageData::File(p) => match open_picture_file(shown, p, scope) {
             Ok((file, _)) => {
                 let mut r = BufReader::new(file);
@@ -867,7 +904,7 @@ fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScop
                 if r.seek(SeekFrom::Start(0)).is_err() {
                     return (0, false);
                 }
-                (reader_px(r), false)
+                (reader_px(r, stale), false)
             }
             Err(_) => (0, false),
         },
@@ -877,7 +914,7 @@ fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScop
             // is "unknown before drawing" as soon as one frame is.
             let parts: Vec<(u64, bool)> = f
                 .iter()
-                .map(|(d, _)| header_pixels(d, shown, scope))
+                .map(|(d, _)| header_pixels_within(d, shown, scope, stale))
                 .collect();
             (
                 parts.iter().map(|p| p.0).fold(0u64, u64::saturating_add),
@@ -1137,14 +1174,20 @@ pub(super) fn decode_canvas_within(
         let room = limits.held_bytes.saturating_sub(kept_bytes + added);
         // What the decode would cost by its header, asked before anything is decoded (not for a
         // picture that is a copy of one decoded already).
-        let (hp, hp_after) = if cancelled || by_hash.contains_key(&t.hash) {
+        let out_of_scope = !cancelled && refused_by_scope(&t.data, path, scope);
+        let (hp, hp_after) = if cancelled || out_of_scope || by_hash.contains_key(&t.hash) {
             (0, false)
         } else {
-            header_pixels(&t.data, path, scope)
+            header_pixels_within(&t.data, path, scope, &is_cancelled)
         };
         let decoded = if cancelled {
             // The preview moved on: the answer is dropped on arrival; do not spend time on it.
             CanvasDecoded::Failed(ImageFailure::Cancelled)
+        } else if out_of_scope {
+            // Outside the read scope: refused before any budget is looked at and without opening
+            // a byte of it. It counts for nothing (no decode, no input, no header pixels, no
+            // answer bytes), so it never makes the in-scope pictures after it wait.
+            CanvasDecoded::Failed(ImageFailure::OutsideReadDirs)
         } else if let Some(&i) = by_hash.get(&t.hash) {
             let d = copy_decoded(&fresh[i].1);
             let bytes = decoded_bytes(&d);

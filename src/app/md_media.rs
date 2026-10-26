@@ -860,7 +860,18 @@ impl App {
                 // Catch a panic (pathological image/SVG) too and always return a result
                 // (not returning would latch busy).
                 let p = path;
-                let rp = read_path;
+                let Some(rp) = read_path else {
+                    // Outside the read scope: nothing is opened, the refusal is the answer.
+                    let _ = tx.send(MdImageResult {
+                        path: p,
+                        image: Err(ImageFailure::OutsideReadDirs.code().to_string()),
+                        svg: None,
+                        reraster: false,
+                        frames: None,
+                        request,
+                    });
+                    return;
+                };
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
                         if App::looks_like_gif(&rp) {
@@ -1094,7 +1105,8 @@ impl App {
     /// root, the shown file), so a redraw never walks the disk for it again.
     fn with_scope_memo<R>(&self, f: impl FnOnce(&mut ScopeMemo) -> R) -> Option<R> {
         let show = self.plugin.as_ref()?;
-        if crate::plugins::read_scope::is_host_owned(&show.id) {
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        if crate::plugins::read_scope::is_host_owned(&registry, &show.id) {
             return None;
         }
         Some(self.scope_memo_for(&show.id, &show.path, f))
@@ -1134,13 +1146,16 @@ impl App {
 
     /// The path a decode of the local picture `p` must read: the real path the scope judged
     /// (so the file judged is the file read), or `p` itself when no scope applies or `p` cannot
-    /// be resolved (the ordinary missing-picture treatment shows that).
-    pub(super) fn md_decode_read_path(&self, p: &Path) -> PathBuf {
+    /// be resolved (reading it fails the same way; the ordinary missing-picture treatment shows
+    /// that). `None` when the scope says the file is outside: **nothing may be read** for it, so
+    /// the caller has no path to read.
+    pub(super) fn md_decode_read_path(&self, p: &Path) -> Option<PathBuf> {
         self.with_scope_memo(|m| match m.judge(p) {
-            Ok(real) => real,
-            Err(_) => p.to_path_buf(),
+            Ok(real) => Some(real),
+            Err(konoma_plugin::ScopeError::Outside) => None,
+            Err(konoma_plugin::ScopeError::Unresolved) => Some(p.to_path_buf()),
         })
-        .unwrap_or_else(|| p.to_path_buf())
+        .unwrap_or_else(|| Some(p.to_path_buf()))
     }
 
     /// The read scope for the local pictures a document names, when the document is a plugin's:

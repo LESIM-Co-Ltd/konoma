@@ -331,9 +331,12 @@ fn konoma_own_markdown_does_no_scope_work_and_one_resolve_per_picture_per_frame(
     app.tab.preview_viewport = 20;
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     assert!(
-        app.plugin
-            .as_ref()
-            .is_some_and(|p| crate::plugins::read_scope::is_host_owned(&p.id)),
+        app.plugin.as_ref().is_some_and(|p| {
+            crate::plugins::read_scope::is_host_owned(
+                &crate::plugins::shared_registry(&app.cfg.plugin_disabled()),
+                &p.id,
+            )
+        }),
         "the Markdown preview is konoma's own"
     );
     let builds = crate::plugins::read_scope::SCOPE_BUILDS.with(|c| c.get());
@@ -364,13 +367,19 @@ fn the_decode_of_a_user_plugins_picture_reads_the_real_path_that_was_judged() {
     assert_ne!(link, real);
     assert_eq!(
         f.app.md_decode_read_path(&link),
-        real,
+        Some(real),
         "the judged file is the file read"
     );
     // An unresolvable path is handed on as it is (the missing-picture treatment shows it).
     let gone = docs.join("gone.png");
-    assert_eq!(f.app.md_decode_read_path(&gone), gone);
+    assert_eq!(f.app.md_decode_read_path(&gone), Some(gone));
+    // A file outside the scope has no path to read at all (never the spelling that was asked).
+    assert_eq!(f.app.md_decode_read_path(&f.out), None);
     // A standard plugin's document is read as it is spelled.
     let std_app = fx("markdown", Config::default(), outside);
-    assert_eq!(std_app.app.md_decode_read_path(&link), link);
+    assert_eq!(std_app.app.md_decode_read_path(&link), Some(link.clone()));
+    assert_eq!(
+        std_app.app.md_decode_read_path(&std_app.out),
+        Some(std_app.out.clone())
+    );
 }

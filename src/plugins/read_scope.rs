@@ -65,8 +65,13 @@ pub(crate) fn parse_read_dirs(value: &toml::Value, home: Option<&Path>) -> ReadD
 /// Whether plugin `id` is one of the host's own (a standard plugin, or one of the three internal
 /// ones: plain text, the external command, the unsupported notice). Those are not limited: they
 /// are konoma's own code, and the command plugin names the private file its output went to.
-pub(crate) fn is_host_owned(id: &str) -> bool {
-    super::profile_of(id).standard || super::is_internal(id)
+///
+/// Decided by **how the plugin was registered** (`registry`), never by its id: the profile table
+/// is keyed by id, so a plugin the user added under a standard id in a registry that does not
+/// hold the standard one would otherwise read as the standard plugin. An id the registry does not
+/// hold is not host-owned (limited).
+pub(crate) fn is_host_owned(registry: &konoma_plugin::registry::Registry, id: &str) -> bool {
+    registry.origin(id) == Some(konoma_plugin::registry::PluginOrigin::Standard)
 }
 
 /// The user's home, for `~` (the `HOME` variable; tests give their own to the pure functions).
@@ -123,6 +128,65 @@ mod tests {
 
     fn list(items: &[&str]) -> Value {
         Value::Array(items.iter().map(|s| Value::String((*s).into())).collect())
+    }
+
+    /// A plugin that names `id`, for the origin tests.
+    struct Named(&'static str);
+    impl konoma_plugin::Plugin for Named {
+        fn manifest(&self) -> konoma_plugin::Manifest {
+            konoma_plugin::Manifest::new(self.0, "0.1.0").shows(konoma_plugin::ViewKind::Text)
+        }
+        fn open(
+            &self,
+            _: konoma_plugin::Input,
+            _: &konoma_plugin::OpenCx,
+        ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+            Err(konoma_plugin::Failure::unsupported(
+                konoma_plugin::t!(en: "no"),
+            ))
+        }
+    }
+
+    #[test]
+    fn host_owned_follows_the_origin_not_the_id() {
+        use konoma_plugin::registry::{PluginOrigin, Registry};
+        // A user plugin under a standard id in a registry that does not hold the standard one is
+        // registered (nothing refuses it there) and the profile table still says "standard" for
+        // that id -- it must stay limited.
+        let mut r = Registry::new();
+        crate::plugins::register(
+            &mut r,
+            std::sync::Arc::new(Named("markdown")),
+            PluginOrigin::User,
+        )
+        .unwrap();
+        assert!(crate::plugins::profile_of("markdown").standard);
+        assert!(!is_host_owned(&r, "markdown"), "origin User: limited");
+        // An id the registry does not hold is limited too.
+        assert!(!is_host_owned(&r, "nobody"));
+        // The ones konoma registers itself are not limited (standard and internal).
+        let own = crate::plugins::build_registry(&[]);
+        for id in ["markdown", "image", "text", "command", "can-not-preview"] {
+            assert!(is_host_owned(&own, id), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_user_plugin_cannot_take_a_standard_id_in_the_real_registry() {
+        use konoma_plugin::registry::{PluginOrigin, RegistryError};
+        // The standard plugins are registered first and a second plugin with the same id is
+        // refused (registry.rs `DuplicateId`), even with the standard one switched off.
+        for disabled in [vec![], vec!["markdown".to_string()]] {
+            let mut r = crate::plugins::build_registry(&disabled);
+            let got = crate::plugins::register(
+                &mut r,
+                std::sync::Arc::new(Named("markdown")),
+                PluginOrigin::User,
+            );
+            assert!(matches!(got, Err(RegistryError::DuplicateId(_))), "{got:?}");
+            assert_eq!(r.origin("markdown"), Some(PluginOrigin::Standard));
+            assert!(is_host_owned(&r, "markdown"));
+        }
     }
 
     fn mkdirs(root: &Path, names: &[&str]) {

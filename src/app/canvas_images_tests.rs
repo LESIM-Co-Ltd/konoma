@@ -3810,3 +3810,93 @@ fn a_picture_outside_the_read_scope_costs_no_header_pixels_and_is_never_opened()
     assert!(matches!(got.fresh[1].1, CanvasDecoded::Still(_)));
     assert!(matches!(got.fresh[2].1, CanvasDecoded::Still(_)));
 }
+
+#[test]
+fn a_picture_outside_the_read_scope_consumes_no_budget_of_the_answer() {
+    // A huge file outside the scope (sparse: larger than the input budget below, no disk used)
+    // and an animation with such a file among its frames come first; in-scope pictures follow.
+    // The refused ones are never opened, so they must not use the decode limit (2) or the input
+    // budget (64 KiB), and the in-scope pictures after them all decode in this very answer.
+    // The folders and the files are named in CJK (a path is bytes, not ASCII).
+    let dir = crate::test_support::unique_tmp("cvi_scope_budget");
+    let (root, out) = (dir.join("作業"), dir.join("外部"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let huge = out.join("巨大.png");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(10 * 1024 * 1024)
+        .unwrap();
+    write_png(&root.join("一.png"), 21);
+    write_png(&root.join("二.png"), 22);
+    let shown = root.join("a.spr");
+    let scope = scoped(&[&root]);
+    let anim = ImageData::Frames(vec![
+        (
+            ImageData::File(root.join("一.png")),
+            Duration::from_millis(50),
+        ),
+        (ImageData::File(huge.clone()), Duration::from_millis(50)),
+    ]);
+    let c = canvas_of(vec![
+        im(1, ImageData::File(huge)),
+        im(2, anim),
+        im(3, ImageData::File(root.join("一.png"))),
+        im(4, ImageData::File(root.join("二.png"))),
+    ]);
+    let got = decode_canvas_within(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &scope,
+        small(|l| {
+            l.decodes = 2;
+            l.input_bytes = 64 * 1024;
+        }),
+    );
+    let outside = |d: &CanvasDecoded| {
+        matches!(
+            d,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+        )
+    };
+    assert_eq!(got.waiting, 0, "nothing waits behind a refused picture");
+    assert!(!got.more, "no further answer is needed");
+    assert_eq!(got.fresh.len(), 4);
+    assert!(outside(&got.fresh[0].1), "the huge file is refused");
+    assert!(outside(&got.fresh[1].1), "so is the animation holding it");
+    assert!(matches!(got.fresh[2].1, CanvasDecoded::Still(_)));
+    assert!(matches!(got.fresh[3].1, CanvasDecoded::Still(_)));
+}
+
+#[test]
+fn a_stale_answer_stops_counting_the_frames_of_a_gif() {
+    let mut g = b"GIF89a".to_vec();
+    g.extend_from_slice(&[100, 0, 50, 0, 0, 0, 0]);
+    // A comment extension of 70,000 one-byte sub-blocks: the counter looks at `stale` only every
+    // 65,536 sub-blocks, so a superseded answer is noticed inside it.
+    g.extend_from_slice(&[0x21, 0xFE]);
+    for _ in 0..70_000 {
+        g.extend_from_slice(&[1, b'x']);
+    }
+    g.push(0);
+    for _ in 0..3 {
+        g.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x4C, 0x01, 0]);
+    }
+    g.push(0x3B);
+    let (data, shown) = (encoded(g), Path::new("/x"));
+    let scope = konoma_plugin::ReadScope::unrestricted();
+    assert_eq!(
+        header_pixels_within(&data, shown, &scope, &|| false),
+        (100 * 50 * 3, false)
+    );
+    // Superseded: the count is abandoned (one frame's worth), not finished.
+    assert_eq!(
+        header_pixels_within(&data, shown, &scope, &|| true),
+        (100 * 50, false)
+    );
+}
