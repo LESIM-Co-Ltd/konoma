@@ -175,6 +175,17 @@ pub(super) const MAX_DECODES_PER_ANSWER: usize = 32;
 /// decodes; the rest waits. A first picture is always decoded, however large, so an answer makes
 /// progress.
 pub(super) const MAX_INPUT_BYTES_PER_ANSWER: u64 = 64 * 1024 * 1024;
+/// How many pixels of work, **read from the headers before any decode** (width x height of each
+/// picture, times the frames of a GIF), one answer may start. A picture is decoded at full size and
+/// only then shrunk to the cache's bound, so the work of a decode follows the header, not the
+/// shrunk result an answer used to be counted by (`MAX_CANVAS_BYTES`): a 1.5e8-pixel PNG of a few
+/// KB costs the decoder about a second and ends up a few MB. The number is the one the GIF decoder
+/// is calibrated with (`MAX_GIF_WORK_PIXELS`, 12-25 ns a pixel: the worst answer is 5-10 s on the
+/// worker); it is more than twice the largest still image (`MAX_IMAGE_PIXELS`), so an ordinary
+/// answer (a few screenfuls of pictures) never meets it. As for the other work limits, the first
+/// picture of an answer is decoded whatever it costs (an answer makes progress); a picture that
+/// does not fit next to what the answer has already started waits for the next answer.
+pub(super) const MAX_HEADER_PIXELS_PER_ANSWER: u64 = 400_000_000;
 /// The shortest time a frame of an animation given as `ImageData::Frames` is shown (the GIF
 /// rule, so an animation cannot ask for a re-encode every few milliseconds).
 pub(super) const MIN_FRAME_DELAY: Duration = Duration::from_millis(20);
@@ -190,6 +201,8 @@ pub(super) struct CanvasLimits {
     pub(super) decodes: usize,
     /// [`MAX_INPUT_BYTES_PER_ANSWER`]
     pub(super) input_bytes: u64,
+    /// [`MAX_HEADER_PIXELS_PER_ANSWER`]
+    pub(super) header_pixels: u64,
 }
 
 impl CanvasLimits {
@@ -198,6 +211,7 @@ impl CanvasLimits {
         answer_bytes: MAX_CANVAS_BYTES,
         decodes: MAX_DECODES_PER_ANSWER,
         input_bytes: MAX_INPUT_BYTES_PER_ANSWER,
+        header_pixels: MAX_HEADER_PIXELS_PER_ANSWER,
     };
 }
 
@@ -798,6 +812,96 @@ fn input_bytes(data: &ImageData, shown: &Path) -> u64 {
     }
 }
 
+/// The pixels of work a decode of `data` is announced to cost by its **header alone** (nothing is
+/// decoded: `ImageReader::into_dimensions` reads the first bytes, and the frames of a GIF are
+/// counted from its block structure), and whether that is all there is to know:
+///
+/// A `File` outside the read `scope` (or one that does not open) costs `(0, false)` and is never
+/// opened: konoma reads no byte of it, not even for the budget.
+///
+/// - `Encoded` / `File` (PNG, JPEG, GIF, WebP and the rest the `image` crate sniffs): width x
+///   height, times the frame count for a GIF. A damaged header costs 0 here -- the decoder refuses
+///   it cheaply and says why.
+/// - `Rgba`: 0, there is nothing to decode (a copy, bounded by the input budget).
+/// - `Frames`: the sum over the frames.
+/// - `Svg` (and a file that is an SVG): **unknown before drawing** -- its size is not in a header
+///   but in the drawing, which the supervised child process bounds (`raster_max_px` per side). The
+///   second value is `true` for it: the caller adds the pixels of the picture it got back.
+fn header_pixels(data: &ImageData, shown: &Path, scope: &konoma_plugin::ReadScope) -> (u64, bool) {
+    use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+    fn reader_px<R: std::io::BufRead + Seek>(mut r: R) -> u64 {
+        let mut head = [0u8; 10];
+        let n = r.read(&mut head).unwrap_or(0);
+        let gif = head[..n].starts_with(b"GIF8");
+        if r.seek(SeekFrom::Start(0)).is_err() {
+            return 0;
+        }
+        if gif {
+            // The logical screen size sits at a fixed place; the frames are counted below.
+            if n < 10 {
+                return 0;
+            }
+            let px = u64::from(u16::from_le_bytes([head[6], head[7]]))
+                * u64::from(u16::from_le_bytes([head[8], head[9]]));
+            let frames = crate::preview::image::count_gif_frames(&mut r, 5_000, &|| false);
+            return px.saturating_mul(frames.map_or(1, |f| f.max(1)) as u64);
+        }
+        let Ok(reader) = image::ImageReader::new(&mut r).with_guessed_format() else {
+            return 0;
+        };
+        let Ok((w, h)) = reader.into_dimensions() else {
+            return 0;
+        };
+        u64::from(w) * u64::from(h)
+    }
+    match data {
+        ImageData::Encoded(b) => (reader_px(Cursor::new(&b[..])), false),
+        ImageData::File(p) => match open_picture_file(shown, p, scope) {
+            Ok((file, _)) => {
+                let mut r = BufReader::new(file);
+                let mut head = [0u8; 512];
+                let n = r.read(&mut head).unwrap_or(0);
+                if crate::preview::svg::can_begin_svg(&head[..n]) {
+                    return (0, true);
+                }
+                if r.seek(SeekFrom::Start(0)).is_err() {
+                    return (0, false);
+                }
+                (reader_px(r), false)
+            }
+            Err(_) => (0, false),
+        },
+        ImageData::Svg { .. } => (0, true),
+        ImageData::Frames(f) => {
+            // The sum of the frames; the pixels of an SVG frame are still unknown, so the whole
+            // is "unknown before drawing" as soon as one frame is.
+            let parts: Vec<(u64, bool)> = f
+                .iter()
+                .map(|(d, _)| header_pixels(d, shown, scope))
+                .collect();
+            (
+                parts.iter().map(|p| p.0).fold(0u64, u64::saturating_add),
+                parts.iter().any(|p| p.1),
+            )
+        }
+        _ => (0, false),
+    }
+}
+
+/// The pixels a decoded picture holds (what an SVG costs once it is drawn).
+fn decoded_pixels(d: &CanvasDecoded) -> u64 {
+    use image::GenericImageView;
+    let px = |i: &image::DynamicImage| {
+        let (w, h) = i.dimensions();
+        u64::from(w) * u64::from(h)
+    };
+    match d {
+        CanvasDecoded::Still(i) => px(i),
+        CanvasDecoded::Frames(f) => f.iter().map(|(i, _)| px(i)).sum(),
+        CanvasDecoded::Failed(_) => 0,
+    }
+}
+
 /// The bytes of memory the source `data` of a picture holds (a file is not held: it is read when
 /// decoded).
 fn source_bytes(data: &ImageData) -> u64 {
@@ -1013,6 +1117,8 @@ pub(super) fn decode_canvas_within(
     let mut by_hash: HashMap<u64, usize> = HashMap::new();
     let mut added = 0u64;
     let (mut decodes, mut input) = (0usize, 0u64);
+    // The header pixels of the pictures this answer started to decode (`header_pixels`).
+    let mut header_px = 0u64;
     // Left for a following answer by the work limits / refused for the memory bound for now.
     let (mut waiting, mut refused) = (unhashed, 0usize);
     let keep = |t: Todo, needs: Option<u64>| {
@@ -1029,6 +1135,13 @@ pub(super) fn decode_canvas_within(
     for t in todo {
         let cancelled = is_cancelled();
         let room = limits.held_bytes.saturating_sub(kept_bytes + added);
+        // What the decode would cost by its header, asked before anything is decoded (not for a
+        // picture that is a copy of one decoded already).
+        let (hp, hp_after) = if cancelled || by_hash.contains_key(&t.hash) {
+            (0, false)
+        } else {
+            header_pixels(&t.data, path, scope)
+        };
         let decoded = if cancelled {
             // The preview moved on: the answer is dropped on arrival; do not spend time on it.
             CanvasDecoded::Failed(ImageFailure::Cancelled)
@@ -1049,7 +1162,8 @@ pub(super) fn decode_canvas_within(
             continue;
         } else if matches!(t.data.as_ref(), ImageData::Frames(_))
             && (decode_cost(&t.data) > limits.decodes
-                || input_bytes(&t.data, path) > limits.input_bytes)
+                || input_bytes(&t.data, path) > limits.input_bytes
+                || hp > limits.header_pixels)
         {
             // An animation that alone costs more than one answer may do (more SVG / file frames than
             // the decode budget, more input than the input budget; only ready `Rgba` frames are not counted) can never be decoded: it is
@@ -1068,6 +1182,10 @@ pub(super) fn decode_canvas_within(
             || decodes + decode_cost(&t.data) > limits.decodes
             || input >= limits.input_bytes
             || added >= limits.answer_bytes
+            // The header pixels (`MAX_HEADER_PIXELS_PER_ANSWER`), judged before the decode: a
+            // picture whose header announces more work than is left waits, unless it is the
+            // first of the answer.
+            || (decodes > 0 && header_px.saturating_add(hp) > limits.header_pixels)
         {
             waiting += 1;
             let needs = t.needs;
@@ -1078,6 +1196,7 @@ pub(super) fn decode_canvas_within(
             seen_for_tests::note(t.hash);
             decodes += decode_cost(&t.data);
             input += input_bytes(&t.data, path);
+            header_px = header_px.saturating_add(hp);
             let d = decode_one(
                 &t.data,
                 path,
@@ -1086,6 +1205,10 @@ pub(super) fn decode_canvas_within(
                 trust_own_svg,
                 scope,
             );
+            if hp_after {
+                // The header part was counted above; add what the drawing made of the rest.
+                header_px = header_px.saturating_add(decoded_pixels(&d).saturating_sub(hp));
+            }
             let bytes = decoded_bytes(&d);
             if bytes > limits.held_bytes {
                 // It can never fit.
