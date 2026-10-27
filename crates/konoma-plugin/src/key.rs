@@ -44,6 +44,12 @@ impl KeyMods {
     pub const SHIFT: KeyMods = KeyMods(4);
 
     /// The raw bits.
+    /// The modifiers named by `bits`; bits that are no modifier are dropped (a key that crossed a
+    /// process boundary is untrusted data).
+    pub const fn from_bits_truncate(bits: u8) -> KeyMods {
+        KeyMods(bits & (KeyMods::CTRL.0 | KeyMods::ALT.0 | KeyMods::SHIFT.0))
+    }
+
     pub const fn bits(self) -> u8 {
         self.0
     }

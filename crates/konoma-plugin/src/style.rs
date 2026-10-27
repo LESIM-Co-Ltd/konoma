@@ -44,6 +44,12 @@ impl Modifier {
     pub const CROSSED_OUT: Modifier = Modifier(1 << 8);
 
     /// The raw bits.
+    /// The modifiers named by `bits`; bits that are no modifier are dropped (a style that crossed
+    /// a process boundary is untrusted data).
+    pub const fn from_bits_truncate(bits: u16) -> Modifier {
+        Modifier(bits & ((1 << 9) - 1))
+    }
+
     pub const fn bits(self) -> u16 {
         self.0
     }
