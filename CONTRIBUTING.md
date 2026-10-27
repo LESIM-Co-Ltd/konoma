@@ -17,8 +17,13 @@ else they fall back to half-blocks, which is too coarse to judge a rendering cha
 
 ## Before submitting a PR
 
-The definition of done is **zero warnings and all tests green** for both feature
-configurations:
+While you work, run only the tests related to your change — `cargo nextest run -p <crate>`,
+narrowed with `-E 'test(<name>)'` if you like — and `cargo clippy -p <crate> --all-targets`.
+Repeating the whole suite after every edit is the largest cost in waiting time.
+
+Run the whole suite once, before the PR is merged, on a branch brought up to date with the
+branch it merges into. The definition of done is **zero warnings and all tests green** for both
+feature configurations:
 
 ```bash
 cargo fmt --all

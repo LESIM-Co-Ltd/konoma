@@ -6,6 +6,7 @@
 
 ## Checklist
 
+- [ ] Brought up to date with the target branch, then the whole suite run once (below)
 - [ ] `cargo fmt --all` is clean
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` (git feature) passes
 - [ ] `cargo clippy --workspace --all-targets --no-default-features -- -D warnings` passes
