@@ -45,7 +45,7 @@ jobs:
 
       # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
       # it does not run doctests, so those are a separate step.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest
 
@@ -156,7 +156,7 @@ jobs:
 
       # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
       # it does not run doctests, so those are a separate step.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest
 
@@ -281,7 +281,7 @@ jobs:
 
       # Prebuilt binary rather than `cargo install cargo-audit`, which compiles for minutes. Same
       # publisher as the release workflow's `taiki-e/upload-rust-binary-action`.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-audit
 
