@@ -7,12 +7,6 @@ license.workspace = true
 repository.workspace = true
 description = "konoma's own mermaid renderer: parsers for every diagram kind, a vendored dagre layout engine, and the SVG writer"
 
-[lib]
-# The tree used to be modules of the `konoma` binary, where rustdoc examples are never run. Some
-# doc comments (the vendored dagre's) still carry upstream's examples, which name the `dagre`
-# crate and cannot compile here.
-doctest = false
-
 [dependencies]
 # The SVG colour parser usvg itself uses: a `classDef` / `style` colour is accepted only if usvg
 # would not fall back to black for it (`render/style.rs`). Same version as in the `konoma` package.

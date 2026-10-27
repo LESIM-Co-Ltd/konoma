@@ -17,16 +17,26 @@ else they fall back to half-blocks, which is too coarse to judge a rendering cha
 
 ## Before submitting a PR
 
-The definition of done is **zero warnings and all tests green** for both feature
-configurations:
+While you work, run only the tests related to your change — `cargo nextest run -p <crate>`,
+narrowed with `-E 'test(<name>)'` if you like — and `cargo clippy -p <crate> --all-targets`.
+Repeating the whole suite after every edit is the largest cost in waiting time.
+
+Run the whole suite once, before the PR is merged, on a branch brought up to date with the
+branch it merges into. The definition of done is **zero warnings and all tests green** for both
+feature configurations:
 
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-cargo test --workspace
-cargo test --workspace --no-default-features
+cargo nextest run --workspace               # install once: cargo install cargo-nextest --locked
+cargo test --workspace --doc                # nextest does not run doctests
+cargo nextest run --no-default-features -p konoma -p konoma-vcs-core -p konoma-widgets
 ```
+
+`--no-default-features` changes only `konoma`, `konoma-vcs-core` and `konoma-widgets` (the crates
+that see the `git` feature); every other crate builds the same test binary either way, so the
+no-git tests are run for those three. CI runs the whole suite for both feature sets.
 
 The repository is a Cargo workspace: the `konoma` binary at the root (`src/`) plus the
 host-independent engines under `crates/` — `konoma-base` (small shared utilities),
