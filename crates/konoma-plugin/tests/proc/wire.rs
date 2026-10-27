@@ -747,7 +747,7 @@ fn canvas_wire(c: WCanvas) -> WView {
 }
 
 fn run(style: &WStyle, text: &str) -> (WStyle, String) {
-    (style.clone(), text.to_string())
+    (*style, text.to_string())
 }
 
 fn plain_style() -> WStyle {
@@ -920,7 +920,7 @@ fn tables_from_the_wire_are_bounded() {
         Err(WireError::Bad(_))
     ));
     assert!(matches!(go(mk(1, 2, vec![])), Err(WireError::Bad(_))));
-    assert!(matches!(go(mk(u64::MAX, 0, vec![])), Err(_)));
+    assert!(go(mk(u64::MAX, 0, vec![])).is_err());
     assert!(matches!(
         go(mk(70_000, 0, vec![])),
         Err(WireError::TooLarge(_))

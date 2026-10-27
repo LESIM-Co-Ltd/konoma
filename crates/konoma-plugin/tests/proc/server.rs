@@ -125,7 +125,7 @@ impl Host {
 
 fn err_kind(a: &FromChild) -> WFailureKind {
     match &a.answer {
-        Answer::Err(f) => f.kind.clone(),
+        Answer::Err(f) => f.kind,
         other => panic!("not a failure: {other:?}"),
     }
 }

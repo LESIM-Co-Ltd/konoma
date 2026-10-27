@@ -375,9 +375,7 @@ impl Rig {
                 };
                 let _ = serve_io(plugin, child_r, child_w, &opts);
                 // The program has exited: its ends of the pipes close.
-                for s in [&child_err] {
-                    let _ = s.shutdown(std::net::Shutdown::Both);
-                }
+                let _ = child_err.shutdown(std::net::Shutdown::Both);
                 let _ = end;
             })?;
         let k = Arc::clone(&kill_all);
