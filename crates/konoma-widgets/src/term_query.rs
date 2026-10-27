@@ -29,12 +29,12 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::FontSize;
 
 /// How long the terminal gets to answer, measured from the moment the query is written.
-pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_millis(2000);
+pub const QUERY_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// What the environment says about the terminal, resolved once from a lookup function (so tests
 /// never touch the real environment).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TermEnv {
+pub struct TermEnv {
     /// Running inside tmux (the query and any later image sequences must be wrapped).
     pub is_tmux: bool,
     /// The outer terminal's protocol guessed from variables tmux passes through (only inside tmux).
@@ -47,7 +47,7 @@ pub(crate) struct TermEnv {
 }
 
 impl TermEnv {
-    pub(crate) fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> Self {
+    pub fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> Self {
         let non_empty = |k: &str| get(k).is_some_and(|s| !s.is_empty());
         let is_tmux = get("TERM").is_some_and(|t| t.starts_with("tmux"))
             || get("TERM_PROGRAM").is_some_and(|t| t == "tmux");
@@ -87,7 +87,7 @@ impl TermEnv {
     }
 
     /// The query to send (identical to what `from_query_stdio` writes).
-    pub(crate) fn query(&self) -> String {
+    pub fn query(&self) -> String {
         let options = QueryStdioOptions {
             blacklist_protocols: if self.skip_kitty_and_sixel {
                 vec![ProtocolType::Kitty, ProtocolType::Sixel]
@@ -102,7 +102,7 @@ impl TermEnv {
 
 /// What came back from the terminal.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Answer {
+pub enum Answer {
     /// The reply stream ended with the Device Status Report; these are the replies before it.
     Replied(Vec<Response>),
     /// Nothing usable before the deadline (or the input closed).
@@ -110,7 +110,7 @@ pub(crate) enum Answer {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Reply {
+pub struct Reply {
     pub answer: Answer,
     /// Bytes read during the query that are not part of any escape sequence (the user's keys).
     pub stray: Vec<u8>,
@@ -279,7 +279,7 @@ fn read_byte(fd: RawFd) -> io::Result<Option<u8>> {
 /// pty whose terminal side is gone: `tcsetattr` then fails with EIO, which is returned as `Err` on
 /// purpose since there is no terminal to ask) — the same cases
 /// in which `from_query_stdio` returned `Err`, which konoma turns into "no image backend".
-pub(crate) fn query_terminal(
+pub fn query_terminal(
     in_fd: RawFd,
     out: &mut dyn Write,
     query: &str,
@@ -327,7 +327,7 @@ pub(crate) fn query_terminal(
 /// a payload, then `ESC \`. Only that exact prefix starts a drop; anything else goes through
 /// untouched, including a held `Alt+'_'`.
 #[derive(Debug)]
-pub(crate) struct LateKittyReply {
+pub struct LateKittyReply {
     /// Replies still expected (the query sends at most two kitty probes). 0 = pass everything.
     replies_left: u8,
     /// Keys held back while the prefix is being matched (`Alt+'_'` first).
@@ -340,12 +340,12 @@ pub(crate) struct LateKittyReply {
 
 impl LateKittyReply {
     /// Longest reply swallowed (prefix + payload + terminator), in keys.
-    pub(crate) const MAX_KEYS: usize = 64;
+    pub const MAX_KEYS: usize = 64;
     /// `G i = 3 {1,2} ;` after the leading `Alt+'_'`.
     const PREFIX_LEN: usize = 6;
 
     /// A filter that passes everything.
-    pub(crate) fn off() -> Self {
+    pub fn off() -> Self {
         Self {
             replies_left: 0,
             held: Vec::new(),
@@ -355,7 +355,7 @@ impl LateKittyReply {
     }
 
     /// Armed when the query ended without the terminal's final report and a kitty probe was sent.
-    pub(crate) fn for_query(env: &TermEnv, answer: &Answer) -> Self {
+    pub fn for_query(env: &TermEnv, answer: &Answer) -> Self {
         let armed = matches!(answer, Answer::Silent) && !env.skip_kitty_and_sixel;
         Self {
             replies_left: if armed { 2 } else { 0 },
@@ -363,7 +363,7 @@ impl LateKittyReply {
         }
     }
 
-    pub(crate) fn is_armed(&self) -> bool {
+    pub fn is_armed(&self) -> bool {
         self.replies_left > 0
     }
 
@@ -379,10 +379,7 @@ impl LateKittyReply {
 
     /// Feeds one key; returns the keys that should reach the key handler (possibly none, possibly
     /// the held ones plus this one).
-    pub(crate) fn feed(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> Vec<crossterm::event::KeyEvent> {
+    pub fn feed(&mut self, key: crossterm::event::KeyEvent) -> Vec<crossterm::event::KeyEvent> {
         if !self.is_armed() {
             return vec![key];
         }
@@ -431,7 +428,7 @@ impl LateKittyReply {
 
 /// What to build the `Picker` from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PickerSpec {
+pub struct PickerSpec {
     /// Cell size in pixels, `None` = the halfblocks default.
     pub font: Option<(u16, u16)>,
     pub proto: ProtocolType,
@@ -439,7 +436,7 @@ pub(crate) struct PickerSpec {
 
 /// The decision `Picker::from_query_stdio_with_options` makes. `ioctl_font` is the cell size from
 /// the tty's window size (the fallback used when the terminal does not answer the `16t` query).
-pub(crate) fn decide(env: &TermEnv, answer: &Answer, ioctl_font: Option<(u16, u16)>) -> PickerSpec {
+pub fn decide(env: &TermEnv, answer: &Answer, ioctl_font: Option<(u16, u16)>) -> PickerSpec {
     let halfblocks = PickerSpec {
         font: None,
         proto: ProtocolType::Halfblocks,
@@ -482,7 +479,7 @@ pub(crate) fn decide(env: &TermEnv, answer: &Answer, ioctl_font: Option<(u16, u1
 }
 
 /// Cell size from the tty's window size, `None` when the terminal reports no pixel size.
-pub(crate) fn ioctl_cell_size(fd: RawFd) -> Option<(u16, u16)> {
+pub fn ioctl_cell_size(fd: RawFd) -> Option<(u16, u16)> {
     // SAFETY: `winsize` is plain old data; TIOCGWINSZ fills it on success.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: valid out-pointer for TIOCGWINSZ.
@@ -495,7 +492,7 @@ pub(crate) fn ioctl_cell_size(fd: RawFd) -> Option<(u16, u16)> {
     Some((ws.ws_xpixel / ws.ws_col, ws.ws_ypixel / ws.ws_row))
 }
 
-pub(crate) fn build_picker(spec: PickerSpec) -> Picker {
+pub fn build_picker(spec: PickerSpec) -> Picker {
     match spec.font {
         None => Picker::halfblocks(),
         Some((w, h)) => {
@@ -521,7 +518,7 @@ fn allow_tmux_passthrough() {
 }
 
 /// Result of the startup query.
-pub(crate) struct Startup {
+pub struct Startup {
     /// `None` when the tty cannot be queried.
     pub picker: Option<Picker>,
     /// Bytes the user typed while the query was in flight.
@@ -531,7 +528,7 @@ pub(crate) struct Startup {
 }
 
 /// Replaces `Picker::from_query_stdio().ok()`.
-pub(crate) fn picker_from_terminal() -> Startup {
+pub fn picker_from_terminal() -> Startup {
     let env = TermEnv::from_lookup(&|k| std::env::var(k).ok());
     if env.is_tmux {
         allow_tmux_passthrough();
@@ -556,7 +553,7 @@ pub(crate) fn picker_from_terminal() -> Startup {
 
 /// Key events for bytes that were typed during the query (plain text, Enter, Tab, Backspace,
 /// Ctrl+letter). Escape sequences were already dropped by the filter.
-pub(crate) fn replay_keys(stray: &[u8]) -> Vec<crossterm::event::KeyEvent> {
+pub fn replay_keys(stray: &[u8]) -> Vec<crossterm::event::KeyEvent> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     String::from_utf8_lossy(stray)
         .chars()
@@ -572,6 +569,80 @@ pub(crate) fn replay_keys(stray: &[u8]) -> Vec<crossterm::event::KeyEvent> {
             c => Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
         })
         .collect()
+}
+
+/// The font size `Picker::from_query_stdio` falls back to (`picker.rs`'s private `DEFAULT_PICKER`)
+/// whenever the terminal answered the graphics-capability query but not the font-size query, or
+/// didn't answer stdio queries at all. Every pixel-size calculation derived from
+/// `Picker::font_size()` (still images, and the inline Markdown mermaid/math image pipeline)
+/// inherits this fixed 10/20 = 0.5000 cell aspect ratio, which is off by several percent on real
+/// fonts (measured via `fontTools`' cmap + advance-width dump: HackGen Console NF ≈0.4704,
+/// HackGen35 ≈0.5176, Menlo ≈0.5172), skewing the displayed image.
+pub const DEFAULT_PICKER_FONT_SIZE: (u16, u16) = (10, 20);
+
+/// Derive a terminal cell's pixel size `(width, height)` from `crossterm::terminal::window_size()`'s
+/// raw fields — a pure function (no I/O) so it's testable without a real terminal. `columns`/`rows`
+/// is the character grid, `width_px`/`height_px` is the same window measured in pixels.
+///
+/// Returns `None` when the terminal didn't report usable pixel dimensions: crossterm's own doc for
+/// `window_size()` warns "the width and height in pixels may not be reliably implemented or default
+/// to 0" (true on plenty of unix ttys/terminals, and unimplemented on Windows) — dividing by a zero
+/// column/row count would panic, and a zero pixel size can't be turned into a sane cell size either,
+/// so any zero input is treated as "unknown" rather than producing a bogus `(0, 0)` cell.
+pub fn cell_px_from_window_size(
+    columns: u16,
+    rows: u16,
+    width_px: u16,
+    height_px: u16,
+) -> Option<(u16, u16)> {
+    if columns == 0 || rows == 0 || width_px == 0 || height_px == 0 {
+        return None;
+    }
+    // max(1): guard the (unreachable in practice — width_px/height_px are already checked non-zero
+    // above, and integer division only rounds down) case of a window narrower than its own column
+    // count, so callers never receive a 0-pixel cell.
+    let cell_w = (width_px / columns).max(1);
+    let cell_h = (height_px / rows).max(1);
+    Some((cell_w, cell_h))
+}
+
+/// Replace `picker`'s font size with the real cell size derived from `window_size` — but **only**
+/// when `picker.font_size()` still holds the exact `DEFAULT_PICKER_FONT_SIZE` sentinel (a picker
+/// with any other font size came from a real capability response and is left untouched) **and**
+/// `window_size` (the caller's `crossterm::terminal::window_size()` result, pre-flattened to a plain
+/// tuple so this function needs no terminal / stays a pure transform of its inputs) yields a usable
+/// cell size via `cell_px_from_window_size`. Otherwise `picker` is returned unchanged.
+///
+/// This only ever replaces the font size — never `protocol_type` (Halfblocks/Kitty/Sixel/...): that
+/// field is decided from a *different*, private signal inside ratatui-image (`capability_proto`,
+/// local to `Picker::from_query_stdio_with_options`) that a caller outside the crate cannot recover,
+/// so a terminal that answered the graphics-capability query but not the font-size query still
+/// renders via whatever protocol it already fell back to (typically Halfblocks) even after this
+/// fix — fixing that is out of scope here (see `docs/STATUS.md`).
+pub fn fix_picker_font_size(picker: Picker, window_size: Option<(u16, u16, u16, u16)>) -> Picker {
+    let fs = picker.font_size();
+    if (fs.width, fs.height) != DEFAULT_PICKER_FONT_SIZE {
+        return picker;
+    }
+    let Some((columns, rows, width_px, height_px)) = window_size else {
+        return picker;
+    };
+    let Some((cell_w, cell_h)) = cell_px_from_window_size(columns, rows, width_px, height_px)
+    else {
+        return picker;
+    };
+    // `Picker` has no public setter for its (private) `font_size` field, so the only way to build
+    // one with a chosen font size is the deprecated `from_fontsize` constructor (deprecated in favor
+    // of `from_query_stdio`/`halfblocks`, neither of which accepts a custom font size — there is no
+    // non-deprecated alternative). `set_protocol_type` right after restores the protocol the
+    // original `picker` already had, so nothing but the font size actually changes; `background_color`
+    // and `capabilities` are always empty/`None` on a picker that reached the default font size in
+    // the first place (every code path that produces the sentinel also produces those as its
+    // defaults), so nothing is lost by rebuilding via `from_fontsize` instead of mutating in place.
+    #[allow(deprecated)]
+    let mut fixed = Picker::from_fontsize(ratatui_image::FontSize::new(cell_w, cell_h));
+    fixed.set_protocol_type(picker.protocol_type());
+    fixed
 }
 
 #[cfg(test)]
@@ -816,7 +887,7 @@ mod tests {
 
     #[test]
     fn a_non_tty_input_is_an_error_like_before() {
-        let dir = crate::test_support::unique_tmp("tq-nontty");
+        let dir = konoma_test_support::unique_tmp("tq-nontty");
         std::fs::create_dir_all(&dir).unwrap();
         let f = File::create(dir.join("f")).unwrap();
         assert!(query_terminal(f.as_raw_fd(), &mut io::sink(), "q", SHORT).is_err());
@@ -1168,5 +1239,81 @@ mod tests {
         assert_eq!(ioctl_cell_size(p.slave.as_raw_fd()), Some((10, 20)));
         set(0, 0);
         assert_eq!(ioctl_cell_size(p.slave.as_raw_fd()), None);
+    }
+
+    // --- picker font-size fix (recovering the real cell ratio from window_size) ------------
+
+    #[test]
+    fn cell_px_from_window_size_computes_the_real_cell_ratio() {
+        // A plausible real terminal: 80x24 characters over 752x816 pixels → 9.4x34 per cell,
+        // floored to 9x34 (not the arbitrary 10x20 fallback, and not a 1:2 ratio either).
+        assert_eq!(cell_px_from_window_size(80, 24, 752, 816), Some((9, 34)));
+
+        // Any zero input (columns/rows/width_px/height_px) means "the terminal didn't report
+        // usable pixel dimensions" (crossterm's own doc for `window_size()`) → None, not a
+        // division panic or a bogus (0, 0)/(_, 0)/(0, _) cell.
+        assert_eq!(cell_px_from_window_size(0, 24, 752, 816), None);
+        assert_eq!(cell_px_from_window_size(80, 0, 752, 816), None);
+        assert_eq!(cell_px_from_window_size(80, 24, 0, 816), None);
+        assert_eq!(cell_px_from_window_size(80, 24, 752, 0), None);
+        assert_eq!(cell_px_from_window_size(0, 0, 0, 0), None);
+
+        // A window narrower than its own column count would floor-divide to 0 without the
+        // `max(1)` guard — still never a 0-pixel cell.
+        assert_eq!(cell_px_from_window_size(100, 10, 5, 5), Some((1, 1)));
+    }
+
+    #[test]
+    fn fix_picker_font_size_leaves_non_default_font_size_untouched() {
+        // A picker whose font size came from a real capability response (anything other than the
+        // exact (10, 20) sentinel) is left alone — it's not "the query failed" — even when
+        // window_size offers a different value.
+        #[allow(deprecated)]
+        let picker = Picker::from_fontsize(ratatui_image::FontSize::new(8, 16));
+        let fixed = fix_picker_font_size(picker, Some((80, 24, 752, 816)));
+        assert_eq!((fixed.font_size().width, fixed.font_size().height), (8, 16));
+    }
+
+    #[test]
+    fn fix_picker_font_size_leaves_default_untouched_without_a_usable_window_size() {
+        // Picker::halfblocks() carries the exact same (10, 20) sentinel `from_query_stdio`'s
+        // fallback does, without touching stdio — safe to construct in a test.
+        let picker = Picker::halfblocks();
+        // window_size() itself failed (crossterm returned Err) → None passed through by main.
+        let fixed = fix_picker_font_size(picker, None);
+        assert_eq!(
+            (fixed.font_size().width, fixed.font_size().height),
+            (10, 20)
+        );
+
+        // window_size() succeeded but reported zero pixels (crossterm's own doc: "may not be
+        // reliably implemented or default to 0") → still untouched.
+        let picker2 = Picker::halfblocks();
+        let fixed2 = fix_picker_font_size(picker2, Some((80, 24, 0, 0)));
+        assert_eq!(
+            (fixed2.font_size().width, fixed2.font_size().height),
+            (10, 20)
+        );
+    }
+
+    #[test]
+    fn fix_picker_font_size_replaces_default_with_the_real_cell_ratio() {
+        let picker = Picker::halfblocks();
+        let fixed = fix_picker_font_size(picker, Some((80, 24, 752, 816)));
+        assert_eq!((fixed.font_size().width, fixed.font_size().height), (9, 34));
+    }
+
+    #[test]
+    fn fix_picker_font_size_preserves_protocol_type() {
+        use ratatui_image::picker::ProtocolType;
+        // A picker that reached the default font size but was still detected as e.g. Kitty
+        // (font-size query failed, graphics-capability query didn't) must keep that protocol —
+        // only the font size may change, never the protocol.
+        #[allow(deprecated)]
+        let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(10, 20));
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let fixed = fix_picker_font_size(picker, Some((80, 24, 752, 816)));
+        assert_eq!(fixed.protocol_type(), ProtocolType::Kitty);
+        assert_eq!((fixed.font_size().width, fixed.font_size().height), (9, 34));
     }
 }

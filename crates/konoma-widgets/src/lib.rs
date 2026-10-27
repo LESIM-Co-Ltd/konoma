@@ -7,11 +7,14 @@
 #![allow(rustdoc::invalid_codeblock_attributes)]
 
 pub mod colors;
+pub mod gif_player;
 pub mod gitdiff;
 pub mod icons;
+pub mod image_view;
 pub mod kitty;
 pub mod layout;
 pub mod markdown;
 pub mod table;
+pub mod term_query;
 pub mod text;
 pub mod window;

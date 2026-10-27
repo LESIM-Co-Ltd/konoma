@@ -419,13 +419,13 @@ mod repr {
     fn a_new_representation_of_a_picture_is_shown_whole_again() {
         let (mut app, _d, _r) = open("f8b_repr_reset_img", "a.ximg", Shape::Image, 3, None, true);
         assert!(app.shows_media_plugin());
-        app.tab.image_zoom = 3.0;
-        app.tab.image_center = (0.2, 0.9);
-        app.image_crop = Some((1, 2, 3, 4));
+        app.tab.image_view.zoom = 3.0;
+        app.tab.image_view.center = (0.2, 0.9);
+        app.image_viewer.set_crop(Some((1, 2, 3, 4)));
         assert!(app.cycle_repr());
-        assert_eq!(app.tab.image_zoom, 1.0);
-        assert_eq!(app.tab.image_center, (0.5, 0.5));
-        assert_eq!(app.image_crop, None);
+        assert_eq!(app.tab.image_view.zoom, 1.0);
+        assert_eq!(app.tab.image_view.center, (0.5, 0.5));
+        assert_eq!(app.image_viewer.crop(), None);
         assert_eq!(app.tab.repr.as_deref(), Some("beta"));
     }
 }

@@ -116,9 +116,9 @@ impl App {
             self.reset_view_for_repr_change();
         } else if self.shows_media_plugin() {
             // A picture: shown whole again, drawn on the worker like a turned page.
-            self.tab.image_zoom = 1.0;
-            self.tab.image_center = (0.5, 0.5);
-            self.image_crop = None;
+            self.tab.image_view.zoom = 1.0;
+            self.tab.image_view.center = (0.5, 0.5);
+            self.image_viewer.set_crop(None);
             if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
                 self.start_media_plugin(&id, &path);
             }

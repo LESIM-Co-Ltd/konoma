@@ -2035,6 +2035,7 @@ name = "konoma-widgets"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "crossterm",
  "flate2",
  "image",
  "konoma-base",
@@ -2044,10 +2045,12 @@ dependencies = [
  "konoma-svg",
  "konoma-test-support",
  "konoma-vcs-core",
+ "libc",
  "mermaid-text",
  "pulldown-cmark",
  "ratatui",
  "ratatui-image",
+ "tokio",
  "unicode-width",
 ]
 

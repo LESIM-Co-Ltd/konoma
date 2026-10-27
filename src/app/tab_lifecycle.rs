@@ -101,7 +101,7 @@ impl App {
         self.diff_follow_scope = false;
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
         // image-type preview, restore it by reloading instead.
-        // (clear_image also resets tab.image_center/tab.page/tab.page_count to their defaults,
+        // (clear_image also resets tab.image_view.center/tab.page/tab.page_count to their defaults,
         // but `self.tab = t` at the end of this function overwrites them with the restored values,
         // so this is harmless as long as nothing in between reads them.)
         self.clear_image();
@@ -142,10 +142,10 @@ impl App {
                         t.page_count = self.tab.page_count;
                     }
                 }
-                self.tab.image_zoom = t.image_zoom;
+                self.tab.image_view.zoom = t.image_view.zoom;
                 // image_center: a plain copy with no transformation. Not read here, so leave it to
                 // the bulk restore at the end.
-                self.image_crop = None;
+                self.image_viewer.set_crop(None);
                 // Carry a synchronously-regenerated command_out (the sync-fallback path used by
                 // tests without a media_tx) back into `t`, or the bulk `self.tab = t` below would
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the

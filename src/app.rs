@@ -14,10 +14,10 @@ use ratatui_image::picker::Picker;
 
 use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
-use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
+use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use ratatui_image::{FilterType, Resize};
 
-use konoma_widgets::layout::{fence_crop, image_layout, ImageLayout, PxRect};
+use konoma_widgets::layout::{fence_crop, PxRect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
@@ -865,7 +865,7 @@ impl SvgTrust {
 pub enum MediaPayload {
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
     Static(image::DynamicImage),
-    /// All GIF frames (composited RGBA + delay) → goes to gif_frames.
+    /// All GIF frames (composited RGBA + delay) → goes to the GIF player (`App::gif`).
     Gif(Vec<(image::DynamicImage, std::time::Duration)>),
     /// A raster of a vector source (SVG file / mermaid diagram). The SVG is retained so zooming
     /// re-rasterizes at the needed density (sharp zoom) instead of blowing up pixels.
@@ -915,15 +915,7 @@ impl MediaResult {
     }
 }
 
-/// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
-type KittyGeom = ((u32, u32, u32, u32), u16, u16);
-
-/// Result of an async kitty image build (resize + `o=z` compress) from a worker thread. Matched by
-/// `gen` (latest-wins): a build superseded by a newer zoom/pan is discarded. None = build failed.
-pub struct KittyResult {
-    gen: u64,
-    image: Option<crate::preview::kitty::KittyImage>,
-}
+pub use konoma_widgets::image_view::KittyResult;
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
@@ -1681,37 +1673,24 @@ pub struct App {
     /// follow-up asks are at most one per `MIN_REDRAW_AFTER`).
     canvas_more_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
-    pub image: Option<ThreadProtocol>,
+    /// The drawing state of the full-screen still image (zoom/pan crop, the protocol built for it).
+    pub image_viewer: konoma_widgets::image_view::ImageViewer,
     /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
     /// ratatui-image's `image`/`ThreadProtocol`: the pixels are **zlib-compressed** (`o=z`), which
     /// shrinks the terminal transfer 2×–50× (the real latency; see docs/PERF-IMAGE-TRANSFER-2026-07).
     /// `use_kitty` is set from the picker's protocol type; on other terminals (sixel/iterm2/
-    /// halfblocks) `kitty_image` stays None and the `image` path is used unchanged.
+    /// halfblocks) the viewer's kitty image stays None and its ratatui-image protocol is used.
     use_kitty: bool,
     kitty_is_tmux: bool,
-    /// The prepared compressed image for the current crop (None until built / on non-kitty terminals).
-    kitty_image: Option<crate::preview::kitty::KittyImage>,
     /// Offloads the kitty resize+compress (~30–50 ms) to a worker thread so rapid zoom/pan does not
     /// hitch the UI. The **first** build after opening a file stays synchronous (so the image appears
     /// without a blank frame); subsequent rebuilds (zoom/pan/resize) go async and the previous image
     /// keeps showing until the new one arrives. None in tests → everything runs synchronously.
     kitty_tx: Option<std::sync::mpsc::Sender<KittyResult>>,
-    /// Latest-wins generation for async kitty builds: only the newest spawn's result is applied.
-    kitty_gen: u64,
-    /// The (crop, cols, rows) the current kitty image (or in-flight build) targets. Prevents
-    /// re-spawning the same build every frame while the geometry is unchanged.
-    kitty_want: Option<KittyGeom>,
-    /// The geometry the **currently shown** kitty image was actually built for. A build is in flight
-    /// exactly when this differs from `kitty_want` (covers pan, where the cell size is unchanged).
-    kitty_shown: Option<KittyGeom>,
     /// The source image (decoded). Zoom/pan crops this at render time and rebuilds the protocol
     /// (because ratatui-image has no offset pan). Held in an `Arc` so the async kitty-build worker
     /// can share it without copying the (potentially large) pixels.
     image_src: Option<std::sync::Arc<image::DynamicImage>>,
-    /// The most recently built crop rectangle (source-image px: x,y,w,h). The protocol is rebuilt only when it changes.
-    image_crop: Option<(u32, u32, u32, u32)>,
-    /// The most recent visible fraction (0..1, w/h). Less than 1 = the image overflows the viewport and is clipped = pan is possible.
-    image_vis_frac: (f64, f64),
     /// SVG source of the current image preview when it is vector-backed (SVG file / mermaid diagram).
     /// Zooming past the raster's density re-rasterizes this at the needed scale on a worker thread
     /// ("sharp zoom"); raster images leave it None (pixel zoom only).
@@ -1811,19 +1790,9 @@ pub struct App {
     /// Whether the active selection is linewise (`V`, whole lines) rather than charwise (`v`, exact character range).
     preview_visual_linewise: bool,
 
-    /// GIF animation (M6). All frames (composited RGBA) + each display duration. Empty means no animation (still image).
-    /// A separate path from the still-image asynchronous ThreadProtocol: to avoid the "render an unencoded
-    /// new protocol → nothing shows" churn in an animation whose frame changes each time, the current frame is **synchronously encoded**
-    /// and atomically swapped into `gif_protocol` (see below). Zoom/pan share image_zoom/image_center.
-    gif_frames: Vec<(image::DynamicImage, std::time::Duration)>,
-    /// Index of the currently displayed GIF frame.
-    gif_idx: usize,
-    /// The time the current frame began showing (the start point for the next-frame deadline). None=before the first tick.
-    gif_shown_at: Option<std::time::Instant>,
-    /// The render protocol (kitty, etc.) of the current frame synchronously encoded to the display size. Drawn with the Image widget.
-    gif_protocol: Option<Protocol>,
-    /// The (frame index, crop rectangle) gif_protocol was built from. Re-encoded only when it changes (avoids wasteful re-encode).
-    gif_proto_key: Option<(usize, (u32, u32, u32, u32))>,
+    /// Full-screen GIF animation: frames, playback position and the synchronously encoded current
+    /// frame (see `konoma_widgets::gif_player`). Zoom/pan are shared with `tab.image_view`.
+    gif: konoma_widgets::gif_player::GifPlayer,
 
     /// Sending end that offloads heavy media loading (SVG rasterize / GIF full-frame decode) to a separate thread.
     /// The result is received by main's poll loop and applied in apply_media. None=synchronous fallback (tests, etc.).
@@ -2673,12 +2642,12 @@ struct MdImgEntry {
     /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
     /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
     /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
-    /// `decoded` rather than a full image copy — mirrors the full-screen `gif_frames` mechanism
+    /// `decoded` rather than a full image copy — mirrors the full-screen `GifPlayer` mechanism
     /// (`App::advance_gif_if_due`) but per cache entry, since several inline GIFs can animate at once.
     frames: Vec<(Arc<image::DynamicImage>, std::time::Duration)>,
     /// Index of the currently-displayed frame within `frames`.
     idx: usize,
-    /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
+    /// The time the current frame began showing (mirrors the player's `shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
     /// `App::md_frame` of the last overlay pass that asked for this picture. The cache evicts the
@@ -3382,9 +3351,9 @@ pub(crate) struct PerTab {
     preview_cursor_line: usize,
     preview_cursor_col: usize,
     // --- Image/PDF pan and page position ---
-    /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
-    pub(crate) image_zoom: f64,
-    image_center: (f64, f64),
+    /// Zoom (1.0=the whole image fits, >1.0 zooms in; overflowing the viewport clips and enables
+    /// pan) and the center of the visible window. The drawing state is `App::image_viewer`.
+    pub(crate) image_view: konoma_widgets::image_view::ImageViewState,
     /// The page on screen, counted from 1, of a preview made of separate pages (a PDF today; the
     /// spreadsheet's sheets and the slides keep their own numbers until they move onto this).
     /// 1 for anything else.
@@ -3526,10 +3495,8 @@ impl Default for PerTab {
             command_out: None,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
-            // App::new used to initialize image_zoom to 1.0 (whole image fits), not 0.0.
-            image_zoom: 1.0,
-            // The image/fence center's initial value is "centered" (same as App::new used to set it to (0.5, 0.5)).
-            image_center: (0.5, 0.5),
+            // Zoom 1.0 (the whole image fits), centered.
+            image_view: konoma_widgets::image_view::ImageViewState::default(),
             // PDF pages are 1-based (same as App::new used to set it to 1).
             page: 1,
             page_count: None,
@@ -3637,17 +3604,11 @@ impl App {
             canvas_redraw_at: None,
             canvas_more_at: None,
             img_tx: None,
-            image: None,
+            image_viewer: konoma_widgets::image_view::ImageViewer::new(),
             use_kitty: false,
             kitty_is_tmux: false,
-            kitty_image: None,
             kitty_tx: None,
-            kitty_gen: 0,
-            kitty_want: None,
-            kitty_shown: None,
             image_src: None,
-            image_crop: None,
-            image_vis_frac: (1.0, 1.0),
             vector_svg: None,
             vector_trust: None,
             image_logical: None,
@@ -3680,11 +3641,7 @@ impl App {
             table_cell_viewport: 0,
             preview_visual_anchor: None,
             preview_visual_linewise: false,
-            gif_frames: Vec::new(),
-            gif_idx: 0,
-            gif_shown_at: None,
-            gif_protocol: None,
-            gif_proto_key: None,
+            gif: konoma_widgets::gif_player::GifPlayer::new(),
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
@@ -5270,12 +5227,16 @@ impl App {
         // Preserve the display state (zoom/center/page) and reload. The page count is the
         // plugin's to report again (the file may have gained or lost pages); until it lands the
         // page asked for is the one the user was on.
-        let (zoom, center, page) = (self.tab.image_zoom, self.tab.image_center, self.tab.page);
+        let (zoom, center, page) = (
+            self.tab.image_view.zoom,
+            self.tab.image_view.center,
+            self.tab.page,
+        );
         self.clear_image(); // reset zoom/center/page/media generation
         self.tab.page = page.max(1);
         self.start_media_load(&kind, &path); // also updates preview_media_mtime
-        self.tab.image_zoom = zoom;
-        self.tab.image_center = center;
+        self.tab.image_view.zoom = zoom;
+        self.tab.image_view.center = center;
     }
 
     /// The directory to watch **in addition** to the tree root so external (agent) edits to the
@@ -5544,7 +5505,7 @@ impl App {
     /// Remember the media currently on screen before a tab switch discards it, so switching back can
     /// reuse it. Skips animated GIFs (frames live in separate state) and anything without a source image.
     fn stash_media_cache(&mut self) {
-        if !self.gif_frames.is_empty() {
+        if self.gif.has_frames() {
             return;
         }
         let (Some(path), Some(src)) = (self.tab.preview_path.clone(), self.image_src.clone())
@@ -5628,10 +5589,10 @@ impl App {
         self.vector_trust = c.vector_trust.clone();
         self.preview_media_mtime = c.mtime;
         // The Arc's contents are shared, so the image is not duplicated. protocol was already
-        // dropped by the preceding `clear_image`, and `image_crop = None` is the signal to rebuild
+        // dropped by the preceding `clear_image`, and `image_viewer.set_crop(None)` is the signal to rebuild
         // it on the next render (clear_image also handles sweeping kitty-side ghost artifacts).
         self.image_src = Some(c.src.clone());
-        self.image_crop = None;
+        self.image_viewer.set_crop(None);
         true
     }
 
@@ -5652,26 +5613,15 @@ impl App {
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
     fn clear_image(&mut self) {
-        self.image = None;
-        self.kitty_image = None;
-        // Discard any in-flight kitty build from the file we are leaving (gen bump) and clear the
+        // Also discards any in-flight kitty build from the file we are leaving and clears the
         // wanted geometry so the next image triggers a fresh (synchronous first) build.
-        self.kitty_gen = self.kitty_gen.wrapping_add(1);
-        self.kitty_want = None;
-        self.kitty_shown = None;
+        self.image_viewer.clear();
         self.image_src = None;
-        self.tab.image_zoom = 1.0;
-        self.tab.image_center = (0.5, 0.5);
-        self.image_crop = None;
-        self.image_vis_frac = (1.0, 1.0);
+        self.tab.image_view.reset();
         self.vector_svg = None;
         self.vector_trust = None;
         self.image_logical = None;
-        self.gif_frames = Vec::new();
-        self.gif_idx = 0;
-        self.gif_shown_at = None;
-        self.gif_protocol = None;
-        self.gif_proto_key = None;
+        self.gif.clear();
         self.tab.page = 1;
         self.tab.page_count = None;
         // The plugin's show (its session and view) goes with the picture it made, and with a
@@ -5847,10 +5797,7 @@ impl App {
         let Ok(resp) = resp else {
             return false; // ignore an encode failure (does not crash)
         };
-        match self.image.as_mut() {
-            Some(state) => state.update_resized_protocol(resp),
-            None => false,
-        }
+        self.image_viewer.apply_resize(resp)
     }
 
     pub fn preview_scroll(&mut self, delta: i32) {
