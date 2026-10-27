@@ -194,26 +194,50 @@ impl Drop for InputMode {
     }
 }
 
-/// Waits until `fd` is readable or `remaining` elapses. `Ok(false)` = deadline.
+/// Whole milliseconds for `poll(2)`, rounded up so a sub-millisecond remainder cannot become a
+/// busy loop of 0 ms polls.
+fn poll_millis(remaining: Duration) -> i32 {
+    remaining
+        .as_millis()
+        .saturating_add(u128::from(
+            !remaining.subsec_nanos().is_multiple_of(1_000_000),
+        ))
+        .min(i32::MAX as u128) as i32
+}
+
+/// Waits until `fd` is readable or `remaining` elapses. `Ok(false)` = deadline. After a signal
+/// interrupts the wait, the time left is recomputed from the absolute deadline, so a stream of
+/// signals cannot stretch the wait.
 fn wait_readable(fd: RawFd, remaining: Duration) -> io::Result<bool> {
+    wait_readable_with(fd, remaining, |p, ms| {
+        // SAFETY: one valid pollfd.
+        unsafe { libc::poll(p, 1, ms) }
+    })
+}
+
+/// `wait_readable` with the `poll(2)` call injected (a test makes it fail with EINTR).
+fn wait_readable_with(
+    fd: RawFd,
+    remaining: Duration,
+    mut poll: impl FnMut(&mut libc::pollfd, i32) -> i32,
+) -> io::Result<bool> {
     let mut p = libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
     };
-    // Round up so a sub-millisecond remainder cannot become a busy loop of 0 ms polls.
-    let ms = remaining
-        .as_millis()
-        .saturating_add(u128::from(
-            !remaining.subsec_nanos().is_multiple_of(1_000_000),
-        ))
-        .min(i32::MAX as u128) as i32;
+    let deadline = Instant::now() + remaining;
+    let mut ms = poll_millis(remaining);
     loop {
-        // SAFETY: one valid pollfd.
-        let n = unsafe { libc::poll(&mut p, 1, ms) };
+        let n = poll(&mut p, ms);
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(false);
+                }
+                ms = poll_millis(left);
                 continue;
             }
             return Err(e);
@@ -249,7 +273,9 @@ fn read_byte(fd: RawFd) -> io::Result<Option<u8>> {
 /// Report that ends them or until `timeout` after the write. Never reads past that report and
 /// never leaves anything running when it returns.
 ///
-/// `Err` is for a tty that cannot be driven at all (not a terminal, write failure) — the same cases
+/// `Err` is for a tty that cannot be driven at all (not a terminal, write failure, and on Linux a
+/// pty whose terminal side is gone: `tcsetattr` then fails with EIO, which is returned as `Err` on
+/// purpose since there is no terminal to ask) — the same cases
 /// in which `from_query_stdio` returned `Err`, which konoma turns into "no image backend".
 pub(crate) fn query_terminal(
     in_fd: RawFd,
@@ -287,6 +313,117 @@ pub(crate) fn query_terminal(
             });
         }
         responses.append(&mut more);
+    }
+}
+
+/// Drops a kitty graphics reply (`ESC _ G i=31;OK ESC \`) that reached the event loop after the
+/// query had already given up on it.
+///
+/// crossterm cannot parse an APC string, so such a reply arrives as ordinary key events:
+/// `Alt+'_'`, `G`, `i`, `=`, `3`, `1`, `;`, `O`, `K`, `Alt+'\'`, and would run `G`, `i`, `=`, `K`...
+/// as commands. The shape is the one `ratatui-image`'s `Parser` accepts: `_Gi=31;` or `_Gi=32;`,
+/// a payload, then `ESC \`. Only that exact prefix starts a drop; anything else goes through
+/// untouched, including a held `Alt+'_'`.
+#[derive(Debug)]
+pub(crate) struct LateKittyReply {
+    /// Replies still expected (the query sends at most two kitty probes). 0 = pass everything.
+    replies_left: u8,
+    /// Keys held back while the prefix is being matched (`Alt+'_'` first).
+    held: Vec<crossterm::event::KeyEvent>,
+    /// Inside the payload: dropping until `Alt+'\'`.
+    dropping: bool,
+    /// Keys dropped in the current reply.
+    dropped: usize,
+}
+
+impl LateKittyReply {
+    /// Longest reply swallowed (prefix + payload + terminator), in keys.
+    pub(crate) const MAX_KEYS: usize = 64;
+    /// `G i = 3 {1,2} ;` after the leading `Alt+'_'`.
+    const PREFIX_LEN: usize = 6;
+
+    /// A filter that passes everything.
+    pub(crate) fn off() -> Self {
+        Self {
+            replies_left: 0,
+            held: Vec::new(),
+            dropping: false,
+            dropped: 0,
+        }
+    }
+
+    /// Armed when the query ended without the terminal's final report and a kitty probe was sent.
+    pub(crate) fn for_query(env: &TermEnv, answer: &Answer) -> Self {
+        let armed = matches!(answer, Answer::Silent) && !env.skip_kitty_and_sixel;
+        Self {
+            replies_left: if armed { 2 } else { 0 },
+            ..Self::off()
+        }
+    }
+
+    pub(crate) fn is_armed(&self) -> bool {
+        self.replies_left > 0
+    }
+
+    fn plain(key: &crossterm::event::KeyEvent, c: char) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        key.code == KeyCode::Char(c) && (key.modifiers - KeyModifiers::SHIFT).is_empty()
+    }
+
+    fn alt(key: &crossterm::event::KeyEvent, c: char) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        key.code == KeyCode::Char(c) && (key.modifiers - KeyModifiers::SHIFT) == KeyModifiers::ALT
+    }
+
+    /// Feeds one key; returns the keys that should reach the key handler (possibly none, possibly
+    /// the held ones plus this one).
+    pub(crate) fn feed(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Vec<crossterm::event::KeyEvent> {
+        if !self.is_armed() {
+            return vec![key];
+        }
+        if self.dropping {
+            self.dropped += 1;
+            if Self::alt(&key, '\\') {
+                self.dropping = false;
+                self.dropped = 0;
+                self.replies_left -= 1;
+            } else if self.dropped >= Self::MAX_KEYS {
+                // No terminator in sight: not a reply after all. Stop filtering.
+                *self = Self::off();
+            }
+            return Vec::new();
+        }
+        if self.held.is_empty() {
+            if Self::alt(&key, '_') {
+                self.held.push(key);
+                return Vec::new();
+            }
+            return vec![key];
+        }
+        // Matching the prefix: held = [Alt+'_', G, i, ...].
+        let matches = match self.held.len() {
+            1 => Self::plain(&key, 'G'),
+            2 => Self::plain(&key, 'i'),
+            3 => Self::plain(&key, '='),
+            4 => Self::plain(&key, '3'),
+            5 => Self::plain(&key, '1') || Self::plain(&key, '2'),
+            _ => Self::plain(&key, ';'),
+        };
+        if !matches {
+            let mut out = std::mem::take(&mut self.held);
+            out.push(key);
+            return out;
+        }
+        self.held.push(key);
+        if self.held.len() > Self::PREFIX_LEN {
+            self.dropped = self.held.len();
+            self.held.clear();
+            self.dropping = true;
+        }
+        Vec::new()
     }
 }
 
@@ -381,9 +518,18 @@ fn allow_tmux_passthrough() {
         .and_then(|mut c| c.wait());
 }
 
-/// Replaces `Picker::from_query_stdio().ok()`: the picker (`None` when the tty cannot be queried)
-/// and the bytes the user typed while the query was in flight.
-pub(crate) fn picker_from_terminal() -> (Option<Picker>, Vec<u8>) {
+/// Result of the startup query.
+pub(crate) struct Startup {
+    /// `None` when the tty cannot be queried.
+    pub picker: Option<Picker>,
+    /// Bytes the user typed while the query was in flight.
+    pub typed: Vec<u8>,
+    /// Drops a kitty reply that arrives after the deadline.
+    pub late_reply: LateKittyReply,
+}
+
+/// Replaces `Picker::from_query_stdio().ok()`.
+pub(crate) fn picker_from_terminal() -> Startup {
     let env = TermEnv::from_lookup(&|k| std::env::var(k).ok());
     if env.is_tmux {
         allow_tmux_passthrough();
@@ -392,9 +538,17 @@ pub(crate) fn picker_from_terminal() -> (Option<Picker>, Vec<u8>) {
     match query_terminal(libc::STDIN_FILENO, &mut out, &env.query(), QUERY_TIMEOUT) {
         Ok(reply) => {
             let spec = decide(&env, &reply.answer, ioctl_cell_size(libc::STDOUT_FILENO));
-            (Some(build_picker(spec)), reply.stray)
+            Startup {
+                picker: Some(build_picker(spec)),
+                typed: reply.stray,
+                late_reply: LateKittyReply::for_query(&env, &reply.answer),
+            }
         }
-        Err(_) => (None, Vec::new()),
+        Err(_) => Startup {
+            picker: None,
+            typed: Vec::new(),
+            late_reply: LateKittyReply::off(),
+        },
     }
 }
 
@@ -477,11 +631,20 @@ mod tests {
         fn terminal_says(&mut self, s: &str) {
             self.master.write_all(s.as_bytes()).unwrap();
         }
-        /// Everything currently readable on the slave (what the event loop would get).
-        fn drain_slave(&self) -> Vec<u8> {
+        /// What the event loop would get: reads from the slave until `want` bytes have arrived or
+        /// `SETTLE` has passed. Data written to the master reaches the slave asynchronously, so
+        /// "nothing readable right now" proves nothing; an extra reader that ate a key shows up
+        /// as a shortfall after the full wait.
+        fn drain_slave(&self, want: usize) -> Vec<u8> {
+            const SETTLE: Duration = Duration::from_secs(2);
             let fd = self.slave.as_raw_fd();
+            let deadline = Instant::now() + SETTLE;
             let mut got = Vec::new();
-            while wait_readable(fd, Duration::ZERO).unwrap() {
+            while got.len() < want {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() || !wait_readable(fd, left).unwrap() {
+                    break;
+                }
                 match read_byte(fd).unwrap() {
                     Some(b) => got.push(b),
                     None => break,
@@ -496,28 +659,31 @@ mod tests {
     }
 
     #[test]
-    fn query_written_is_the_one_ratatui_image_sends() {
-        for (pairs, tmux) in [
-            (vec![], false),
-            (vec![("TERM", "tmux-256color")], true),
-            (vec![("WEZTERM_EXECUTABLE", "/x")], false),
+    fn query_written_is_the_expected_byte_string() {
+        // Fixed strings (the format ratatui-image 11.1 sends), so a change in what is asked shows
+        // up here instead of being compared against itself.
+        let plain = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c\x1b[16t\x1b[5n";
+        let tmux = "\x1bPtmux;\x1b\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\x1b\\\
+                    \x1b\x1b[c\x1b\x1b[16t\x1b\x1b[5n\x1b\\";
+        let no_graphics = "\x1b[16t\x1b[5n";
+        for (pairs, tmux_expected, want) in [
+            (vec![], false, plain),
+            (vec![("TERM", "tmux-256color")], true, tmux),
+            (vec![("TERM_PROGRAM", "tmux")], true, tmux),
+            (vec![("WEZTERM_EXECUTABLE", "/x")], false, no_graphics),
+            (vec![("KONSOLE_VERSION", "1")], false, no_graphics),
         ] {
             let env = env_of(&pairs);
-            assert_eq!(env.is_tmux, tmux);
+            assert_eq!(env.is_tmux, tmux_expected);
+            assert_eq!(env.query(), want, "{pairs:?}");
+            // And that exact string is what reaches the terminal.
             let mut p = pty();
             p.terminal_says(DSR);
             p.query(&env, SHORT).unwrap();
-            let mut seen = vec![0u8; env.query().len()];
+            let mut seen = vec![0u8; want.len()];
             p.master.read_exact(&mut seen).unwrap();
-            assert_eq!(String::from_utf8(seen).unwrap(), env.query());
+            assert_eq!(String::from_utf8(seen).unwrap(), want, "{pairs:?}");
         }
-        let konsole = env_of(&[("KONSOLE_VERSION", "1")]).query();
-        assert!(!konsole.contains("_Gi=31") && !konsole.contains("[c"));
-        let plain = env_of(&[]).query();
-        assert!(plain.contains("_Gi=31") && plain.contains("[c") && plain.contains("[16t"));
-        assert!(env_of(&[("TERM_PROGRAM", "tmux")])
-            .query()
-            .starts_with("\x1bPtmux;"));
     }
 
     #[test]
@@ -561,7 +727,7 @@ mod tests {
         // The keys typed afterwards must all be readable on the slave, in order. A leftover
         // reader would have eaten the first one (the bug this module exists for).
         p.terminal_says("jk");
-        assert_eq!(p.drain_slave(), b"jk");
+        assert_eq!(p.drain_slave(2), b"jk");
     }
 
     #[test]
@@ -573,7 +739,7 @@ mod tests {
         let r = p.query(&env, SHORT).unwrap();
         assert_eq!(r.answer, Answer::Silent);
         p.terminal_says("jj");
-        assert_eq!(p.drain_slave(), b"jj");
+        assert_eq!(p.drain_slave(2), b"jj");
         assert_eq!(
             decide(&env, &r.answer, Some((9, 18))),
             PickerSpec {
@@ -590,7 +756,7 @@ mod tests {
         let r = p.query(&env_of(&[]), SHORT).unwrap();
         assert!(matches!(r.answer, Answer::Replied(_)));
         assert!(r.stray.is_empty());
-        assert_eq!(p.drain_slave(), b"jjx");
+        assert_eq!(p.drain_slave(3), b"jjx");
     }
 
     #[test]
@@ -603,7 +769,7 @@ mod tests {
         let r = p.query(&env, SHORT).unwrap();
         assert_eq!(r.stray, b"jk");
         assert_eq!(decide(&env, &r.answer, None).proto, ProtocolType::Kitty);
-        assert_eq!(p.drain_slave(), b"l");
+        assert_eq!(p.drain_slave(1), b"l");
         assert_eq!(replay_keys(&r.stray).len(), 2);
     }
 
@@ -655,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_up_terminal_is_silent_without_waiting_for_the_deadline() {
+    fn a_hung_up_terminal_returns_without_waiting_for_the_deadline() {
         let Pty { master, slave } = pty();
         drop(master);
         let started = Instant::now();
@@ -664,9 +830,14 @@ mod tests {
             &mut io::sink(),
             &env_of(&[]).query(),
             Duration::from_secs(30),
-        )
-        .unwrap();
-        assert_eq!(r.answer, Answer::Silent);
+        );
+        // macOS lets the termios calls succeed on a hung-up pty (silence); Linux fails them with
+        // EIO (an error, which production maps to "no image backend"). Both are fine; what must
+        // not happen is waiting out the deadline or failing for any other reason.
+        match r {
+            Ok(reply) => assert_eq!(reply.answer, Answer::Silent),
+            Err(e) => assert_eq!(e.raw_os_error(), Some(libc::EIO), "{e}"),
+        }
         assert!(started.elapsed() < Duration::from_secs(20));
     }
 
@@ -788,6 +959,175 @@ mod tests {
             f.push(b);
         }
         assert_eq!(f.stray, b"abcde");
+    }
+
+    #[test]
+    fn stray_filter_keeps_multibyte_text_around_a_reply() {
+        let mut f = StrayFilter::default();
+        for b in format!("あい{KITTY_OK}{DA1_SIXEL}う{CELL_8X16}え{DSR}").bytes() {
+            f.push(b);
+        }
+        assert_eq!(String::from_utf8(f.stray).unwrap(), "あいうえ");
+    }
+
+    #[test]
+    fn multibyte_keys_around_the_replies_are_replayed_whole() {
+        let mut p = pty();
+        p.terminal_says(&format!("あい{KITTY_OK}{CELL_8X16}{DSR}"));
+        let r = p.query(&env_of(&[]), SHORT).unwrap();
+        let keys: Vec<_> = replay_keys(&r.stray).iter().map(|k| k.code).collect();
+        assert_eq!(
+            keys,
+            vec![
+                crossterm::event::KeyCode::Char('あ'),
+                crossterm::event::KeyCode::Char('い')
+            ]
+        );
+    }
+
+    // ---- a kitty reply that arrives after the deadline ----
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// The key events crossterm's parser makes of `ESC _ G i=31;OK ESC \` (read from
+    /// `event/sys/unix/parse.rs`: `ESC <c>` is `Alt+c`, an upper-case letter carries SHIFT).
+    fn late_reply_keys(id: char, payload: &str) -> Vec<KeyEvent> {
+        let ch = |c: char| {
+            let m = if c.is_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            KeyEvent::new(KeyCode::Char(c), m)
+        };
+        let mut v = vec![KeyEvent::new(KeyCode::Char('_'), KeyModifiers::ALT)];
+        for c in ['G', 'i', '=', '3', id, ';'] {
+            v.push(ch(c));
+        }
+        v.extend(payload.chars().map(ch));
+        v.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT));
+        v
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn run_through(f: &mut LateKittyReply, keys: &[KeyEvent]) -> Vec<KeyEvent> {
+        keys.iter().flat_map(|k| f.feed(*k)).collect()
+    }
+
+    fn armed() -> LateKittyReply {
+        LateKittyReply::for_query(&env_of(&[]), &Answer::Silent)
+    }
+
+    #[test]
+    fn late_reply_is_dropped_whole_and_following_keys_pass() {
+        for (id, payload) in [('1', "OK"), ('2', "OK"), ('1', "EINVAL:bad")] {
+            let mut f = armed();
+            let mut input = late_reply_keys(id, payload);
+            input.extend([key('j'), key('k')]);
+            assert_eq!(run_through(&mut f, &input), vec![key('j'), key('k')]);
+        }
+        // Keys before it pass too.
+        let mut f = armed();
+        let mut input = vec![key('j')];
+        input.extend(late_reply_keys('1', "OK"));
+        input.push(key('k'));
+        assert_eq!(run_through(&mut f, &input), vec![key('j'), key('k')]);
+    }
+
+    #[test]
+    fn two_late_replies_are_dropped_then_the_filter_is_spent() {
+        let mut f = armed();
+        let mut input = late_reply_keys('1', "OK");
+        input.extend(late_reply_keys('2', "OK"));
+        assert!(run_through(&mut f, &input).is_empty());
+        assert!(!f.is_armed());
+        // A third one is not ours to drop.
+        let third = late_reply_keys('1', "OK");
+        assert_eq!(run_through(&mut f, &third), third);
+    }
+
+    #[test]
+    fn alt_underscore_not_followed_by_g_passes_both_keys() {
+        let mut f = armed();
+        let alt_ = KeyEvent::new(KeyCode::Char('_'), KeyModifiers::ALT);
+        assert_eq!(run_through(&mut f, &[alt_, key('x')]), vec![alt_, key('x')]);
+        // A partial prefix is handed back in full, then normal keys flow.
+        let partial = &late_reply_keys('1', "OK")[..4]; // Alt+_, G, i, =
+        let mut input = partial.to_vec();
+        input.push(key('9'));
+        assert_eq!(run_through(&mut f, &input), input);
+        // A wrong id digit ('3' then '7') is not a reply either.
+        let mut wrong = late_reply_keys('7', "OK");
+        wrong.truncate(6);
+        assert_eq!(run_through(&mut f, &wrong), wrong);
+        // And a later genuine reply is still recognised.
+        assert!(run_through(&mut f, &late_reply_keys('1', "OK")).is_empty());
+    }
+
+    #[test]
+    fn a_reply_without_terminator_is_cut_off_at_the_cap() {
+        let mut f = armed();
+        let mut input = late_reply_keys('1', &"a".repeat(200));
+        input.pop(); // no terminator
+        input.extend([key('j'), key('k')]);
+        let out = run_through(&mut f, &input);
+        // Prefix (7 keys) counts toward the cap; everything past it flows again.
+        let dropped = input.len() - out.len();
+        assert_eq!(dropped, LateKittyReply::MAX_KEYS);
+        assert_eq!(&out[out.len() - 2..], &[key('j'), key('k')]);
+        assert!(!f.is_armed());
+    }
+
+    #[test]
+    fn filter_does_nothing_unless_the_query_timed_out_with_kitty_asked() {
+        let reply = late_reply_keys('1', "OK");
+        for (env, answer) in [
+            (env_of(&[]), Answer::Replied(vec![])),
+            (env_of(&[("WEZTERM_EXECUTABLE", "x")]), Answer::Silent),
+            (env_of(&[("KONSOLE_VERSION", "1")]), Answer::Silent),
+        ] {
+            let mut f = LateKittyReply::for_query(&env, &answer);
+            assert!(!f.is_armed());
+            assert_eq!(run_through(&mut f, &reply), reply);
+        }
+        let mut off = LateKittyReply::off();
+        assert_eq!(run_through(&mut off, &reply), reply);
+        assert!(armed().is_armed());
+    }
+
+    #[test]
+    fn eintr_does_not_stretch_the_deadline() {
+        // Every poll is "interrupted" and takes 40 ms; with a 150 ms budget the wait must give up
+        // after about four calls, not retry the full budget each time.
+        let mut calls = 0;
+        let mut asked = Vec::new();
+        let started = Instant::now();
+        let r = wait_readable_with(0, Duration::from_millis(150), |_, ms| {
+            calls += 1;
+            asked.push(ms);
+            std::thread::sleep(Duration::from_millis(40));
+            // SAFETY: sets errno for the caller's last_os_error().
+            unsafe { *errno_ptr() = libc::EINTR };
+            -1
+        })
+        .unwrap();
+        assert!(!r);
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        assert!((3..=5).contains(&calls), "{calls} calls");
+        // Each retry asks for what is left, not the original budget again.
+        assert!(asked.windows(2).all(|w| w[1] + 30 <= w[0]), "{asked:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe fn errno_ptr() -> *mut i32 {
+        libc::__error()
+    }
+    #[cfg(not(target_os = "macos"))]
+    unsafe fn errno_ptr() -> *mut i32 {
+        libc::__errno_location()
     }
 
     #[test]

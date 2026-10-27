@@ -323,7 +323,11 @@ fn main() -> Result<()> {
     // preview still works.
     // Asked on this thread with a deadline (`term_query`), so nothing keeps reading stdin after it
     // returns; `typed_during_query` is whatever the user typed while the query was in flight.
-    let (picker, typed_during_query) = term_query::picker_from_terminal();
+    let term_query::Startup {
+        picker,
+        typed: typed_during_query,
+        late_reply,
+    } = term_query::picker_from_terminal();
     // The font-size query above can come back empty even when the graphics-capability query
     // succeeded (see `fix_picker_font_size`'s doc); recover the real cell aspect from the
     // terminal's actual pixel dimensions when that happened, so image/mermaid/math sizing isn't
@@ -459,6 +463,7 @@ fn main() -> Result<()> {
             pool: pool_rx,
         },
         term_query::replay_keys(&typed_during_query),
+        late_reply,
     );
 
     // Save the tab session on exit (the state at exit time is the final form. no-op when restore_tabs=false).
@@ -721,6 +726,7 @@ fn run(
     mut resp_rx: UnboundedReceiver<ResizeResult>,
     rx: WorkerRx,
     startup_keys: Vec<crossterm::event::KeyEvent>,
+    mut late_reply: term_query::LateKittyReply,
 ) -> Result<()> {
     // File watching: auto-update the tree/git status on a change under the current root.
     // notify's callback is called from a separate thread, so send changes to the run loop over a
@@ -798,13 +804,9 @@ fn run(
     let mut deferred_kinds = FsBurstKinds::default();
 
     let mut needs_redraw = true;
-    // Keys typed while the startup terminal query was in flight (see `term_query`).
-    for key in startup_keys {
-        let res = handle_key(app, key);
-        if resolve_key_result(app, res) {
-            return Ok(());
-        }
-    }
+    // Keys typed while the startup terminal query was in flight (see `term_query`); replayed after
+    // the first frame is on screen.
+    let mut startup_keys = startup_keys;
     loop {
         if needs_redraw {
             terminal.draw(|frame| ui::render(frame, app))?;
@@ -820,6 +822,13 @@ fn run(
                 terminal.clear()?;
                 terminal.draw(|frame| ui::render(frame, app))?;
             }
+        }
+        for key in std::mem::take(&mut startup_keys) {
+            let res = handle_key(app, key);
+            if resolve_key_result(app, res) {
+                return Ok(());
+            }
+            needs_redraw = true;
         }
 
         // Waiting on heavy code highlighting (the first time for a cold language): offload the
@@ -845,6 +854,9 @@ fn run(
                 let ev = event::read()?;
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // A kitty reply that came in after the startup query gave up arrives as
+                        // keys; `late_reply` swallows it (a no-op unless armed).
+                        let keys = late_reply.feed(key);
                         // Don't bring down the TUI on a recoverable failure during key handling
                         // (fs/git operations: refresh/rebuild_tree/paste/delete/rename etc.) —
                         // design principle #3, "never crash."
@@ -853,12 +865,17 @@ fn run(
                         // recoverable. Don't end run() outright with `?`, and don't swallow it
                         // either — show it to the user via flash and keep going (the truly fatal
                         // `?`s for drawing/terminal control stay in the body of run()).
-                        let res = handle_key(app, key);
-                        if resolve_key_result(app, res) {
-                            quit = true;
+                        for key in keys {
+                            let res = handle_key(app, key);
+                            needs_redraw = true;
+                            if resolve_key_result(app, res) {
+                                quit = true;
+                                break;
+                            }
+                        }
+                        if quit {
                             break;
                         }
-                        needs_redraw = true;
                     }
                     Event::Resize(_, _) => needs_redraw = true,
                     // A file drag & drop: the terminal delivers the path as a paste → receive it
