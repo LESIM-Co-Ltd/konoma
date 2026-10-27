@@ -39,7 +39,7 @@ pub struct GifPlayer {
     /// The current frame encoded to the display size.
     protocol: Option<Protocol>,
     /// The (frame index, crop) `protocol` was built from; re-encoded only when it changes.
-    proto_key: Option<(usize, PxRect)>,
+    proto_key: Option<(usize, PxRect, (u16, u16))>,
 }
 
 impl GifPlayer {
@@ -159,8 +159,10 @@ impl GifPlayer {
             render_scale,
             None, // a GIF stays at its raw raster size (it is not vector-derived)
         )?;
-        let key = (self.idx, crop_rect);
-        // Re-encode only when the frame or the crop (zoom / pan / resize) changes.
+        // The protocol is built for `target`, so its size is part of the key: at fit the crop stays
+        // the same when the terminal is resized, but the encode size does not.
+        let key = (self.idx, crop_rect, (target.width, target.height));
+        // Re-encode only when the frame, the crop (zoom / pan) or the target size changes.
         let built = if self.proto_key != Some(key) {
             let (x0, y0, cw, ch) = crop_rect;
             let crop = src.crop_imm(x0, y0, cw, ch);
@@ -436,6 +438,27 @@ mod tests {
         v.pan(&mut st, 1.0, 0.0);
         p.prepare(&mut st, &mut v, &picker, 1.0, a).unwrap();
         assert!(p.protocol().is_some(), "a pan changes the crop");
+    }
+
+    #[test]
+    fn prepare_re_encodes_when_only_the_target_size_changes() {
+        let picker = Picker::halfblocks();
+        let mut p = big_player(2, ms(10));
+        let mut st = ImageViewState::default();
+        let mut v = ImageViewer::new();
+        let t_small = p
+            .prepare(&mut st, &mut v, &picker, 1.0, area(20, 10))
+            .unwrap();
+        let crop_small = v.crop();
+        p.protocol = None;
+        // Same frame, same zoom: a bigger terminal leaves the crop (the whole frame) alone.
+        let t_big = p
+            .prepare(&mut st, &mut v, &picker, 1.0, area(40, 20))
+            .unwrap();
+        assert_eq!(v.crop(), crop_small, "the crop did not change");
+        assert_ne!((t_small.width, t_small.height), (t_big.width, t_big.height));
+        assert!(p.protocol().is_some(), "a new target size is re-encoded");
+        assert_eq!(p.proto_key.map(|k| k.2), Some((t_big.width, t_big.height)));
     }
 
     #[test]

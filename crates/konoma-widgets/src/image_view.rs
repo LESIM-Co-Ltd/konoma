@@ -296,9 +296,10 @@ impl ImageViewer {
                 self.request_kitty_build(src, crop_rect, target, font, backend);
             }
         } else {
-            // sixel / iTerm2 / halfblocks: rebuild the protocol only on a crop change, to avoid a
-            // re-encode every frame.
-            let new_tp = if crop_changed {
+            // sixel / iTerm2 / halfblocks: rebuild the protocol on a crop change, or when there is
+            // none yet (the previous prepare took the kitty path, which leaves the crop recorded
+            // but builds no protocol), to avoid a re-encode every frame.
+            let new_tp = if crop_changed || self.protocol.is_none() {
                 let (x0, y0, cw, ch) = crop_rect;
                 let crop = src.crop_imm(x0, y0, cw, ch);
                 let proto = backend.picker.new_resize_protocol(crop);
@@ -880,6 +881,61 @@ mod tests {
         assert!(
             !v.kitty_build_pending(),
             "the backend now draws without kitty"
+        );
+        // Same crop as the kitty prepare: the protocol must still be built for the new path.
+        assert!(v.protocol().is_some(), "a protocol exists after the switch");
+        let mut buf = Buffer::empty(area(20, 10));
+        let t = Rect::new(0, 0, 20, 10);
+        assert!(v.render(t, &mut buf), "the protocol path can draw");
+    }
+
+    #[test]
+    fn prepare_stores_the_backend_filter_for_drawing() {
+        let img = solid(40, 40, [1, 2, 3]);
+        let (rig, _rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let mut backend = rig.backend();
+        backend.filter = FilterType::Triangle;
+        v.prepare(&mut st, src(&img), &backend, area(20, 10))
+            .unwrap();
+        assert_eq!(v.filter, FilterType::Triangle);
+        backend.filter = FilterType::Lanczos3;
+        v.prepare(&mut st, src(&img), &backend, area(20, 10))
+            .unwrap();
+        assert_eq!(v.filter, FilterType::Lanczos3, "updated on every prepare");
+    }
+
+    #[test]
+    fn the_stored_filter_reaches_the_drawn_pixels() {
+        // A 1-px checkerboard shrunk to a few cells: nearest-neighbor keeps one sample per
+        // pixel (pure black or white), a smoothing filter averages to grey.
+        let mut raw = RgbaImage::new(400, 400);
+        for (x, y, p) in raw.enumerate_pixels_mut() {
+            let v = if (x + y) % 2 == 0 { 0 } else { 255 };
+            *p = Rgba([v, v, v, 255]);
+        }
+        let img = Arc::new(DynamicImage::ImageRgba8(raw));
+        let draw = |filter: FilterType| {
+            let (rig, mut rx) = Rig::halfblocks();
+            let mut v = ImageViewer::new();
+            let mut st = ImageViewState::default();
+            let mut backend = rig.backend();
+            backend.filter = filter;
+            let inner = area(20, 10);
+            let t = v.prepare(&mut st, src(&img), &backend, inner).unwrap();
+            let mut buf = Buffer::empty(inner);
+            v.render(t, &mut buf);
+            let resp = rx.try_recv().unwrap().resize_encode().unwrap();
+            assert!(v.apply_resize(resp));
+            let mut buf = Buffer::empty(inner);
+            v.render(t, &mut buf);
+            cell_colors(&buf, t)
+        };
+        assert_ne!(
+            draw(FilterType::Nearest),
+            draw(FilterType::Triangle),
+            "the filter given to prepare must be the one the resize uses"
         );
     }
 
