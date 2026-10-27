@@ -87,6 +87,7 @@ pub mod hints;
 pub mod input;
 pub mod key;
 pub mod keys;
+pub mod launch;
 pub mod manifest;
 pub mod prelude;
 #[cfg(feature = "proc")]
