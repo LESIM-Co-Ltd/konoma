@@ -1,5 +1,5 @@
 //! Display parts for ratatui that do not depend on the application's state: windowed file
-//! reading, kitty graphics transmit, image layout, diff rows, icon glyphs and the Markdown
+//! reading, kitty graphics transmit, image layout, diff rows, the table view, icon glyphs and the Markdown
 //! document renderer. The host (konoma) and single-purpose apps use the same parts.
 
 // The renderer's doc comments quote Markdown fences (```mermaid …) in prose; rustdoc would read them
@@ -12,5 +12,6 @@ pub mod icons;
 pub mod kitty;
 pub mod layout;
 pub mod markdown;
+pub mod table;
 pub mod text;
 pub mod window;

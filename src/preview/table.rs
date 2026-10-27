@@ -103,6 +103,21 @@ impl<'a> Grid<'a> {
     }
 }
 
+impl konoma_widgets::table::TableSource for Grid<'_> {
+    fn nrows(&self) -> usize {
+        Grid::nrows(self)
+    }
+    fn ncols(&self) -> usize {
+        Grid::ncols(self)
+    }
+    fn header(&self, col: usize) -> Cow<'_, str> {
+        Grid::header(self, col)
+    }
+    fn cell(&self, row: usize, col: usize) -> Cow<'_, str> {
+        Grid::cell(self, row, col)
+    }
+}
+
 /// Spreadsheet column letters for a 0-based column: `0 -> A`, `25 -> Z`, `26 -> AA`, `16383 -> XFD`.
 pub fn column_letters(col: usize) -> String {
     let mut n = col + 1;
