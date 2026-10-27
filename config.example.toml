@@ -538,6 +538,22 @@ code_theme = "TwoDark"
 # The keys of a plugin's own actions are rebound in [keys.<plugin id>] (W = "width" gives the action `width` the key W;
 # w = "noop" takes a key away). A key the host keeps for itself is refused and the startup message says so; the
 # action stays in the `Space` menu.
+# A plugin that is a program of its own (any language; it speaks konoma's plugin protocol on stdin/stdout):
+#   command = "my-viewer"   the program. A name without `/` is searched on PATH, a path is taken as it is. It is not run
+#                           through a shell. The id is the table's name and must be the id the program declares.
+#   args = ["--fast"]       its arguments (optional).
+# The other keys of such a table (besides enabled, read_only, read_dirs) are sent to the program as its settings.
+# konoma asks the program for its manifest once and keeps the answer (keyed by the program's real path, size, mtime
+# and inode), so a start-up does not run it; it is started when a file it takes is opened, stopped when idle, and
+# started again after it is rebuilt (press `r`). A change in what the manifest declares needs a konoma restart.
+# A program that is missing, does not start, speaks another protocol version or does not answer within 5 seconds, or
+# whose id is already taken (by a standard plugin or an earlier program), is not loaded and the start-up message says why.
+# It is a user's plugin: it reads only the folders above. `konoma --plugin PATH` loads one program for a single run
+# (repeatable; for developing it). `konoma --plugins` lists the programs and their commands.
+# [plugins.my-viewer]
+# command = "my-viewer"
+# args = ["--fast"]
+# read_dirs = ["~/Pictures"]
 # [plugins.markdown]
 # enabled = false
 # alerts = false

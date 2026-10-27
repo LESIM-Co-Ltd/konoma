@@ -119,6 +119,12 @@ pub fn exit_cleanup() {
     } else {
         super::svg_proc::shutdown();
     }
+    // The children of plugins that are programs of their own, before their directories go.
+    if dry_run() {
+        note_exit_step(ExitStep::StopPluginProcesses);
+    } else {
+        crate::plugins::external::shutdown();
+    }
     if dry_run() {
         note_exit_step(ExitStep::RemoveTempDir);
     } else {
@@ -131,6 +137,7 @@ pub fn exit_cleanup() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExitStep {
     StopSvgProcesses,
+    StopPluginProcesses,
     RemoveTempDir,
     HoldTerminal,
     DeleteCanvasImages,
@@ -141,6 +148,7 @@ pub(crate) enum ExitStep {
 #[derive(Clone, Copy)]
 enum ExitStep {
     StopSvgProcesses,
+    StopPluginProcesses,
     RemoveTempDir,
     HoldTerminal,
     DeleteCanvasImages,
@@ -1240,7 +1248,11 @@ mod tests {
         let ((), steps) = recorded_exit_steps(exit_cleanup);
         assert_eq!(
             steps,
-            vec![ExitStep::StopSvgProcesses, ExitStep::RemoveTempDir]
+            vec![
+                ExitStep::StopSvgProcesses,
+                ExitStep::StopPluginProcesses,
+                ExitStep::RemoveTempDir
+            ]
         );
     }
 
@@ -1340,6 +1352,7 @@ mod tests {
         let _serial = serialize_terminal_tests();
         let all = vec![
             ExitStep::StopSvgProcesses,
+            ExitStep::StopPluginProcesses,
             ExitStep::RemoveTempDir,
             ExitStep::HoldTerminal,
             ExitStep::DeleteCanvasImages,

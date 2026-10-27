@@ -86,6 +86,39 @@ fn parse_args(args: &[String]) -> ParsedArgs {
     }
 }
 
+/// Take every `--plugin <path>` / `--plugin=<path>` out of the process arguments (a program under
+/// development, see `plugins::external`). Returns the paths in the order given and the arguments
+/// that are left, which `parse_args` reads as before. The paths are made absolute against `cwd`
+/// (the child is started from elsewhere). `--plugin` without a value is an error.
+fn extract_dev_plugins(args: &[String], cwd: &Path) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+    let mut paths = Vec::new();
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        // The program name (args[0]) is never a flag.
+        if i > 0 && arg == "--plugin" {
+            match args.get(i + 1) {
+                Some(v) if !v.is_empty() => paths.push(cwd.join(v)),
+                _ => return Err("--plugin needs the path of a plugin program".to_string()),
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(v) = arg.strip_prefix("--plugin=").filter(|_| i > 0) {
+            if v.is_empty() {
+                return Err("--plugin needs the path of a plugin program".to_string());
+            }
+            paths.push(cwd.join(v));
+            i += 1;
+            continue;
+        }
+        rest.push(arg.clone());
+        i += 1;
+    }
+    Ok((paths, rest))
+}
+
 /// What `main` does once `resolve_startup` has run: print-and-exit, or the validated directory to
 /// browse.
 #[derive(Debug)]
@@ -184,6 +217,9 @@ fn help_text() -> String {
          q goes back to the tree.\n\
          \n\
          Options:\n\
+         \x20\x20    --plugin PATH  Load the plugin program PATH for this run (repeatable; for developing\n\
+         \x20\x20                   a plugin). A rebuilt program is started again on the next open (r);\n\
+         \x20\x20                   a changed manifest takes effect after konoma is restarted.\n\
          \x20\x20    --plugins   List which plugin shows which files and exit\n\
          \x20\x20-h, --help      Print this help and exit\n\
          \x20\x20-V, --version   Print version and exit\n\
@@ -291,6 +327,8 @@ fn main() -> Result<()> {
         std::process::exit(preview::svg_proc::child_main(&rest));
     }
     let args: Vec<String> = std::env::args().collect();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let (dev_plugins, args) = extract_dev_plugins(&args, &cwd).map_err(|e| anyhow::anyhow!(e))?;
     // Resolved — and, for `Open`, validated — **before any terminal initialization** below (see
     // `resolve_startup`/`validate_root`). `--version`/`--help` print and exit here without ever
     // touching the terminal, and a bad directory fails here too: entering raw mode + the alternate
@@ -309,15 +347,31 @@ fn main() -> Result<()> {
         }
         Startup::Plugins => {
             // Reading the config is all it needs; the terminal is never touched.
-            let (cfg, _) = config::Config::load_reporting();
+            let (mut cfg, _) = config::Config::load_reporting();
+            let lang = i18n::Lang::resolve(&cfg.ui.lang);
+            cfg.external_plugins = plugins::external::install(
+                &plugins::external::Env::production(lang),
+                &cfg.plugins,
+                &dev_plugins,
+            );
             print!("{}", plugins::plugins_table(&cfg));
+            plugins::external::shutdown();
             return Ok(());
         }
         Startup::Open(dir) => (dir, None),
         Startup::OpenFile { dir, file } => (dir, Some(file)),
     };
 
-    let (cfg, cfg_err) = config::Config::load_reporting();
+    let (mut cfg, cfg_err) = config::Config::load_reporting();
+    // Programs of their own (`[plugins.<id>] command`, `--plugin`): loaded now, before the first
+    // screen, so they are registered when the app is built. A cached program starts nothing; one
+    // that is not cached is asked for its manifest once (bounded, in parallel). What failed is
+    // said in the start-up message (`Config::plugin_report`).
+    cfg.external_plugins = plugins::external::install(
+        &plugins::external::Env::production(i18n::Lang::resolve(&cfg.ui.lang)),
+        &cfg.plugins,
+        &dev_plugins,
+    );
 
     // Loading syntect's assets + compiling a grammar's regexes (once per language, a few seconds
     // in debug) is heavy. On startup, warm it up on a separate thread — going through the current
@@ -830,6 +884,9 @@ fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
     if app.canvas_redraw_if_due(now) {
         redraw = true;
     }
+    // Children of external plugins that have been idle for long: stopped (cheap, and at most once
+    // per `external::REAP_INTERVAL`, on a thread of its own).
+    plugins::external::reap_if_due(now);
     redraw
 }
 
@@ -2881,6 +2938,66 @@ mod tests {
         let t = help_text();
         assert!(t.contains("konoma FILE"), "the file form is in --help: {t}");
         assert!(t.contains("konoma [DIR]"));
+    }
+
+    // --- --plugin -------------------------------------------------------------------------
+
+    #[test]
+    fn extract_dev_plugins_takes_every_plugin_flag_and_leaves_the_rest_alone() {
+        let cwd = Path::new("/work");
+        let (paths, rest) = extract_dev_plugins(
+            &argv(&[
+                "--plugin",
+                "a/p1",
+                "dir",
+                "--plugin=/abs/p2",
+                "--plugin",
+                "p3",
+                "-x",
+            ]),
+            cwd,
+        )
+        .unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/work/a/p1"),
+                PathBuf::from("/abs/p2"),
+                PathBuf::from("/work/p3")
+            ]
+        );
+        assert_eq!(rest, argv(&["dir", "-x"]));
+        // None given: nothing changes.
+        let (paths, rest) = extract_dev_plugins(&argv(&["d"]), cwd).unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(rest, argv(&["d"]));
+    }
+
+    #[test]
+    fn extract_dev_plugins_refuses_a_flag_without_a_path() {
+        let cwd = Path::new("/work");
+        for bad in [&["--plugin"][..], &["--plugin", ""][..], &["--plugin="][..]] {
+            assert!(extract_dev_plugins(&argv(bad), cwd).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn extract_dev_plugins_never_reads_the_program_name_as_a_flag() {
+        let (paths, rest) =
+            extract_dev_plugins(&["--plugin".to_string(), "x".to_string()], Path::new("/w"))
+                .unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(rest, vec!["--plugin".to_string(), "x".to_string()]);
+    }
+
+    #[test]
+    fn help_text_documents_the_dev_plugin_flag() {
+        let t = help_text();
+        assert!(t.contains("--plugin"), "{t}");
+        assert!(
+            t.contains("restart"),
+            "a manifest change needs a restart: {t}"
+        );
     }
 
     // --- --version / --help text -----------------------------------------------------------

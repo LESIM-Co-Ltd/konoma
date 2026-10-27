@@ -7,6 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
+  that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
+  developing a plugin). konoma asks the program for its manifest once and keeps it in its cache directory (keyed by the
+  program's real path, size, mtime and inode), so starting konoma does not run it; the program is started when a file it
+  takes is opened, stopped when idle, started again after it is rebuilt (`r`), and stopped when konoma exits. A program that
+  is missing, does not start, does not answer in 5 seconds or whose id is taken is left out, and the start-up message says
+  why. It is a user's plugin: it reads only the tab's folder, the shown file's folder and `read_dirs`. `konoma --plugins`
+  lists these programs and their commands.
 - **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
   `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
   What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,

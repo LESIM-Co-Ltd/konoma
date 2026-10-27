@@ -10,6 +10,9 @@
 
 mod acts;
 mod command;
+pub(crate) mod external;
+#[cfg(test)]
+pub(crate) mod external_testkit;
 mod listing;
 mod profile;
 pub(crate) mod read_scope;
@@ -196,6 +199,15 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
         );
     }
     for id in disabled {
+        // Programs of their own (`[plugins.<id>] command`, `--plugin`): the marker stands for the
+        // set `external::install` loaded; they are registered the way a user's plugin is.
+        if let Some(token) = external::token_of(id) {
+            for plugin in external::plugins_of(token) {
+                // A refused id (taken, malformed) was already reported by `install`.
+                let _ = register(&mut r, plugin, PluginOrigin::User);
+            }
+            continue;
+        }
         // Tests add plugins of their own through a name in the `disabled` list (the registry is
         // shared per distinct list, so a test's plugin never reaches another test): see
         // `test_plugins`.
@@ -529,7 +541,8 @@ pub(crate) fn value_type_mismatch(
 /// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
 /// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`), both booleans, and
 /// `read_dirs` (a list of folders, see [`read_scope`]).
-pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only", "read_dirs"];
+pub(crate) const HOST_PLUGIN_KEYS: &[&str] =
+    &["enabled", "read_only", "read_dirs", "command", "args"];
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.
@@ -541,6 +554,30 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
     for (id, table) in tables {
         #[cfg(test)]
         if test_plugins::lookup(id).is_some() {
+            continue;
+        }
+        // A table with a `command` names a program of its own: its id is known to the program
+        // (its manifest), not to the registry built here, and its other keys are the program's
+        // settings, which only the program can check.
+        let (external_spec, external_problems) = external::spec_of_table(id, table);
+        let is_external = table.contains_key("command");
+        if is_external {
+            for p in external_problems {
+                out.push(external::table_problem_message(id, p, lang));
+            }
+            let _ = external_spec;
+            for key in ["enabled", "read_only"] {
+                match table.get(key) {
+                    None | Some(toml::Value::Boolean(_)) => {}
+                    Some(_) => out.push(match lang {
+                        Lang::Jp => format!("[plugins.{id}] の {key} は true か false"),
+                        Lang::En => format!("[plugins.{id}] {key} must be true or false"),
+                    }),
+                }
+            }
+            if let Some(v) = table.get("read_dirs") {
+                out.extend(read_dirs_messages(id, v, lang));
+            }
             continue;
         }
         if !ids.contains(&id.as_str()) {
@@ -583,8 +620,8 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
         if let Some(v) = table.get("read_dirs") {
             out.extend(read_dirs_messages(id, v, lang));
         }
-        for key in HOST_PLUGIN_KEYS.iter().filter(|k| **k != "read_dirs") {
-            match table.get(*key) {
+        for key in ["enabled", "read_only"] {
+            match table.get(key) {
                 None | Some(toml::Value::Boolean(_)) => {}
                 Some(_) => out.push(match lang {
                     Lang::Jp => format!("[plugins.{id}] の {key} は true か false"),

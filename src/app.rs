@@ -6892,7 +6892,7 @@ fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
 /// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
 /// when neither is available — see `cache_root_from`'s doc for why).
 #[cfg(not(test))]
-fn cache_root() -> PathBuf {
+pub(crate) fn cache_root() -> PathBuf {
     cache_root_from(crate::bookmarks::xdg_base_dir(
         std::env::var_os("XDG_CACHE_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
@@ -6912,7 +6912,7 @@ fn cache_root() -> PathBuf {
 /// without an override in place — see its `#[cfg(test)]` guard — so this soft fallback can't let a
 /// test silently write under the developer's real `~/.cache/konoma/remote-images`.
 #[cfg(test)]
-fn cache_root() -> PathBuf {
+pub(crate) fn cache_root() -> PathBuf {
     crate::test_support::get_test_cache_root().unwrap_or_else(|| {
         cache_root_from(crate::bookmarks::xdg_base_dir(
             std::env::var_os("XDG_CACHE_HOME").as_deref(),
