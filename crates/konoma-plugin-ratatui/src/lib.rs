@@ -192,9 +192,3 @@ pub fn modifier_of(m: RModifier) -> Modifier {
     }
     out
 }
-
-/// A demo plugin for konoma's temporary `demo-canvas` feature. **Temporary and unstable**: it is
-/// not part of this crate's API and is removed in stage 3.
-#[cfg(feature = "demo")]
-#[doc(hidden)]
-pub mod demo;

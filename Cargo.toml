@@ -253,8 +253,6 @@ konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 # `proc`: the child-process transport (stage 3: plugins that run as programs of their own).
 konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0", features = ["proc"] }
-# TEMPORARY, only for the `demo-canvas` feature below; removed when stage 3 can load plugins.
-konoma-plugin-ratatui = { path = "crates/konoma-plugin-ratatui", version = "0.1.0", optional = true }
 konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
 konoma-office = { path = "crates/konoma-office", version = "0.1.0" }
 konoma-media = { path = "crates/konoma-media", version = "0.1.0" }
@@ -295,10 +293,6 @@ konoma-widgets = { path = "crates/konoma-widgets", features = ["test-hooks"] }
 [features]
 default = ["git"]
 git = ["konoma-vcs-core/git"]
-# TEMPORARY, not a default: registers a demo canvas plugin (`demo-canvas`, bound to `*.konoma-demo`;
-# see `samples/demo.konoma-demo`) so a free-drawing plugin can be seen in a real terminal before
-# stage 3 can load external plugins. Removed, with the optional dependency above, when it can.
-demo-canvas = ["dep:konoma-plugin-ratatui", "konoma-plugin-ratatui/demo"]
 
 [profile.release]
 opt-level = 3

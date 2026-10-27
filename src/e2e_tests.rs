@@ -20784,9 +20784,9 @@ mod part2_host;
 #[cfg(test)]
 mod external;
 
-// The temporary demo plugin (removed with the `demo-canvas` feature).
-#[cfg(all(test, feature = "demo-canvas"))]
-mod demo_canvas;
+// The clock demo, a plugin program of its own (`crates/konoma-demo-clock`) run as a child process.
+#[cfg(test)]
+mod demo_clock;
 
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 

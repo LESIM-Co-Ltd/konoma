@@ -1746,7 +1746,6 @@ dependencies = [
  "konoma-office",
  "konoma-office-core",
  "konoma-plugin",
- "konoma-plugin-ratatui",
  "konoma-svg",
  "konoma-table",
  "konoma-test-support",
@@ -1803,6 +1802,14 @@ dependencies = [
  "syntect",
  "two-face",
  "unicode-width",
+]
+
+[[package]]
+name = "konoma-demo-clock"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-plugin-ratatui",
 ]
 
 [[package]]
@@ -1954,7 +1961,6 @@ name = "konoma-plugin-ratatui"
 version = "0.1.0"
 dependencies = [
  "konoma-plugin",
- "konoma-plugin-ratatui",
  "ratatui",
 ]
 

@@ -681,20 +681,11 @@ fn other_keys_of_a_plugin_table_become_settings() {
 
 // ---- the declarations -----------------------------------------------------------------------
 
-/// The ids in `r` without the temporary demo plugin (feature `demo-canvas`), which is registered
-/// like a user's plugin and is not one of the standard declarations.
-fn standard_ids(r: &Registry) -> Vec<&str> {
-    r.ids()
-        .into_iter()
-        .filter(|id| *id != "demo-canvas")
-        .collect()
-}
-
 #[test]
 fn the_standard_declarations_register_and_keep_the_expected_order() {
     let r = build_registry(&[]);
     assert_eq!(
-        standard_ids(&r),
+        r.ids(),
         [
             "markdown",
             "mermaid",
@@ -716,7 +707,7 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
     );
     // The two orders that carry meaning: svg before `image/*`, and the mime plugins (image,
     // video) in the places the old rules had them.
-    let ids = standard_ids(&r);
+    let ids = r.ids();
     let at = |id: &str| ids.iter().position(|x| *x == id).unwrap();
     assert!(at("svg") < at("image"));
     assert!(at("image") < at("csv"));
@@ -747,7 +738,7 @@ const WIRED: &[&str] = &[
 fn the_declared_plugins_refuse_to_open_until_they_are_wired() {
     use konoma_plugin::testing::open_file;
     let r = build_registry(&[]);
-    for id in standard_ids(&r) {
+    for id in r.ids() {
         if WIRED.contains(&id) {
             continue;
         }

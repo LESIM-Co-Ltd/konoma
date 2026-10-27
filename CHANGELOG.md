@@ -132,7 +132,7 @@ All notable changes to konoma are documented in this file. The format is based o
     signal, a panic) deletes the canvas pictures from a kitty terminal, without landing inside a frame being written.
   - *API.* `testing::send_keys` returns a `KeyRun` and goes on after a failed key; `Key`, `CanvasCell`, `Outcome`, `ImageData`
     and `Style` are `#[non_exhaustive]`, so a plugin matches them with a `_` arm.
-- **Temporary `demo-canvas` build feature.** `cargo run --features demo-canvas -- samples/demo.konoma-demo` shows a canvas plugin (a ratatui clock with a gauge, a picture and a line editor) in a real terminal; `KONOMA_CANVAS_TRACE=<file>` logs what the canvas does. It is not in any default build, is not a supported option, and is removed when plugins can be loaded from outside (stage 3).
+- **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its

@@ -15,16 +15,3 @@ konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 # Only `Buffer`, `Style` and the widgets are used, not a terminal backend. (Cargo unifies features
 # across the workspace, so the host's build still has the defaults on.)
 ratatui = { version = "0.30.1", default-features = false }
-
-[features]
-# A complete demo plugin (`demo::Clock`) for looking at a canvas in a real terminal. Temporary: it
-# is removed with konoma's `demo-canvas` feature when stage 3 can load external plugins.
-demo = []
-
-[dev-dependencies]
-# Turns the demo on for this crate's own tests and the `clock` example.
-konoma-plugin-ratatui = { path = ".", features = ["demo"] }
-
-[[example]]
-name = "clock"
-required-features = ["demo"]

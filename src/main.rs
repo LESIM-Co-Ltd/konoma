@@ -842,27 +842,6 @@ fn flush_kitty_deletes(app: &mut App, out: &mut impl std::io::Write) -> std::io:
     out.flush()
 }
 
-/// TEMPORARY (feature `demo-canvas`): see the call in `run`.
-#[cfg(feature = "demo-canvas")]
-fn canvas_trace(app: &App, last: &mut std::time::Instant) {
-    use std::io::Write;
-    let now = std::time::Instant::now();
-    if now.duration_since(*last) < Duration::from_secs(1) {
-        return;
-    }
-    *last = now;
-    let Some(path) = std::env::var_os("KONOMA_CANVAS_TRACE") else {
-        return;
-    };
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{}", app.canvas_trace_line(now));
-    }
-}
-
 /// The animation timers of the run loop. Every one is looked at on every tick (no short-circuit),
 /// and the result says whether the screen has to be drawn again.
 fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
@@ -972,8 +951,6 @@ fn run(
     let mut deferred_kinds = FsBurstKinds::default();
 
     let mut needs_redraw = true;
-    #[cfg(feature = "demo-canvas")]
-    let mut trace_at = std::time::Instant::now();
     loop {
         if needs_redraw {
             // The right to write to the terminal for the whole frame (a signal's exit cleanup
@@ -1213,11 +1190,6 @@ fn run(
         if animation_timers_due(app, std::time::Instant::now()) {
             needs_redraw = true;
         }
-        // TEMPORARY (feature `demo-canvas`): `KONOMA_CANVAS_TRACE=<file>` appends the state of the
-        // canvas timer about once a second, to find out why a canvas stops redrawing.
-        #[cfg(feature = "demo-canvas")]
-        canvas_trace(app, &mut trace_at);
-
         // Pick up file changes and auto-update (a burst is coalesced into one).
         // If even one event changed an ignore rule (.gitignore / .git/info/exclude), also rebuild
         // the heavy ignored set. Otherwise just update the cheap statuses+branch.

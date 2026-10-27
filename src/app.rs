@@ -67,8 +67,6 @@ pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 pub(crate) mod canvas_images;
-#[cfg(feature = "demo-canvas")]
-mod canvas_trace;
 pub(crate) mod outline;
 mod paste_jump;
 mod plugin_acts;
