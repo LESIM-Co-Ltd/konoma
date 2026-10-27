@@ -23,6 +23,7 @@ mod preview;
 mod session;
 #[cfg(test)]
 mod speed_tests;
+mod term_query;
 #[cfg(test)]
 mod test_support;
 mod ui;
@@ -320,11 +321,13 @@ fn main() -> Result<()> {
     // screen and before reading events.
     // Held as an Option so that on failure (unsupported terminal, etc.) everything but the
     // preview still works.
-    let picker = Picker::from_query_stdio().ok();
+    // Asked on this thread with a deadline (`term_query`), so nothing keeps reading stdin after it
+    // returns; `typed_during_query` is whatever the user typed while the query was in flight.
+    let (picker, typed_during_query) = term_query::picker_from_terminal();
     // The font-size query above can come back empty even when the graphics-capability query
     // succeeded (see `fix_picker_font_size`'s doc); recover the real cell aspect from the
     // terminal's actual pixel dimensions when that happened, so image/mermaid/math sizing isn't
-    // skewed by ratatui-image's fixed 10x20 fallback. `window_size()` itself can fail or report
+    // skewed by the 10x20 fallback. `window_size()` itself can fail or report
     // zero pixels (crossterm's own doc: "may not be reliably implemented"), in which case
     // `fix_picker_font_size` leaves `picker` untouched.
     let window_size = crossterm::terminal::window_size()
@@ -455,6 +458,7 @@ fn main() -> Result<()> {
             gitop: gitop_rx,
             pool: pool_rx,
         },
+        term_query::replay_keys(&typed_during_query),
     );
 
     // Save the tab session on exit (the state at exit time is the final form. no-op when restore_tabs=false).
@@ -716,6 +720,7 @@ fn run(
     app: &mut App,
     mut resp_rx: UnboundedReceiver<ResizeResult>,
     rx: WorkerRx,
+    startup_keys: Vec<crossterm::event::KeyEvent>,
 ) -> Result<()> {
     // File watching: auto-update the tree/git status on a change under the current root.
     // notify's callback is called from a separate thread, so send changes to the run loop over a
@@ -793,6 +798,13 @@ fn run(
     let mut deferred_kinds = FsBurstKinds::default();
 
     let mut needs_redraw = true;
+    // Keys typed while the startup terminal query was in flight (see `term_query`).
+    for key in startup_keys {
+        let res = handle_key(app, key);
+        if resolve_key_result(app, res) {
+            return Ok(());
+        }
+    }
     loop {
         if needs_redraw {
             terminal.draw(|frame| ui::render(frame, app))?;
