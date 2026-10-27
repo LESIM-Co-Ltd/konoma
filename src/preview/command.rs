@@ -193,66 +193,12 @@ pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>
     (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
 }
 
-/// Serializes what the program writes to the terminal in one go: a frame (a kitty transmit is a
-/// run of chunks that must not have anything written between them) and the deletes of canvas
-/// pictures. The main thread holds it for the length of a draw and of a delete flush
-/// ([`terminal_write`]); the signal thread takes it, boundedly, before it deletes pictures and
-/// restores the terminal ([`leave_for_good`]), so its escapes never land inside a transmit.
-static TERMINAL_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-thread_local! {
-    /// This thread holds [`TERMINAL_WRITE`] (a panic hook that runs on it must not wait for itself).
-    static HOLDS_TERMINAL_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// The right to write to the terminal; released on drop. Hold it for a whole draw.
-pub(crate) struct TerminalWrite {
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-impl Drop for TerminalWrite {
-    fn drop(&mut self) {
-        HOLDS_TERMINAL_WRITE.with(|h| h.set(false));
-    }
-}
-
-/// Wait for the right to write to the terminal (the main thread's draws).
-pub(crate) fn terminal_write() -> TerminalWrite {
-    let guard = TERMINAL_WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
-    TerminalWrite { _guard: guard }
-}
-
-/// The same, for at most `wait`, and `None` when it was not given in time -- or when this very
-/// thread already holds it (a panic inside a draw): the exit path then goes on without it. A
-/// draw is a few milliseconds, so a signal normally waits a frame; if the main thread is stuck the
-/// exit does not wait for it for good.
-pub(crate) fn terminal_write_within(wait: Duration) -> Option<TerminalWrite> {
-    if HOLDS_TERMINAL_WRITE.with(std::cell::Cell::get) {
-        return None;
-    }
-    let deadline = Instant::now() + wait;
-    loop {
-        match TERMINAL_WRITE.try_lock() {
-            Ok(guard) => {
-                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
-                return Some(TerminalWrite { _guard: guard });
-            }
-            Err(std::sync::TryLockError::Poisoned(e)) => {
-                HOLDS_TERMINAL_WRITE.with(|h| h.set(true));
-                return Some(TerminalWrite {
-                    _guard: e.into_inner(),
-                });
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
-    }
-}
+// The right to write to the terminal, the foreground-child flag and the terminal restore live in
+// `konoma_host_core::term`, shared with the plugin SDK's small host: one lock for the process, so a
+// frame and an exit signal exclude each other whichever host drew the frame.
+use konoma_host_core::term::ignore_signal;
+pub use konoma_host_core::term::restore_terminal_quietly;
+pub(crate) use konoma_host_core::term::{terminal_write, terminal_write_within, TerminalWrite};
 
 /// How long the exit path waits for a frame in the middle of being written.
 const EXIT_TERMINAL_WAIT: Duration = Duration::from_millis(500);
@@ -338,29 +284,6 @@ pub(crate) fn leave_on_signal(
     Some((128 + sig, terminal))
 }
 
-/// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
-/// screen left, cursor shown (a hidden cursor would otherwise survive a signal or panic exit;
-/// showing an already visible cursor is a no-op, so the normal exit path is unaffected). Raw mode is a termios setting, not an escape sequence (see
-/// `restore_terminal_quietly`).
-pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l\x1b[?25h";
-
-/// Writes the terminal-restore sequence to `w` and flushes, ignoring every error: a terminal that
-/// is already gone (SIGHUP: the pty's other end is closed, every write fails with `EIO`) leaves
-/// nothing to restore. Never panics and never prints (`eprintln!` itself panics on a failed
-/// write, and a panic inside a panic hook aborts the process).
-pub(crate) fn write_terminal_restore(w: &mut dyn std::io::Write) {
-    let _ = w.write_all(TERMINAL_RESTORE_SEQUENCE);
-    let _ = w.flush();
-}
-
-/// The one terminal teardown shared by every way out of the TUI (normal exit, SIGTERM / SIGHUP /
-/// SIGINT, a fatal panic): raw mode off first (it has more side effects than the screen switch),
-/// then the restore sequence on stdout. Every failure is dropped, nothing is printed.
-pub fn restore_terminal_quietly() {
-    let _ = crossterm::terminal::disable_raw_mode();
-    write_terminal_restore(&mut std::io::stdout());
-}
-
 /// Whether a panic on a thread named `thread_name` ends the process, so the panic hook may remove
 /// the private temp directory. Only an uncaught panic on the main thread does: worker threads
 /// (syntect, resvg, git scans...) panic inside `catch_silent` and the app carries on, and the
@@ -371,63 +294,20 @@ pub(crate) fn panic_ends_process(thread_name: Option<&str>, caught: bool) -> boo
     thread_name == Some("main") && !caught
 }
 
-/// True while a foreground child (`$EDITOR`, a git tool, a pager) owns the terminal.
-static FOREGROUND_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// RAII marker for "a foreground child is running". The flag is cleared in `Drop`, so it comes
-/// down on every way out of the wait (an error return or a panic included).
-pub struct ForegroundChildGuard;
-
-impl ForegroundChildGuard {
-    pub fn new() -> Self {
-        FOREGROUND_CHILD.store(true, std::sync::atomic::Ordering::SeqCst);
-        ForegroundChildGuard
-    }
-}
-
-impl Drop for ForegroundChildGuard {
-    fn drop(&mut self) {
-        FOREGROUND_CHILD.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Whether a caught signal should be ignored. Like a shell or `system(3)` waiting for a child,
-/// konoma ignores SIGINT while a foreground child runs: Ctrl-C reaches the whole foreground process
-/// group, the child decides what to do with it, and exiting here would tear down the alternate
-/// screen under a child that is still drawing. SIGTERM and SIGHUP still end konoma: SIGHUP means
-/// the terminal is gone, and SIGTERM is an explicit request to stop; leaving without cleaning up
-/// would leak the temp directory.
-pub(crate) fn ignore_signal(sig: i32, child_running: bool) -> bool {
-    sig == signal_hook::consts::SIGINT && child_running
-}
-
 /// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
-/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
-/// thread waits for the signal, restores the terminal (the same teardown `main` makes on a normal
-/// exit), removes the directory and exits with the conventional `128 + signal` (SIGINT is ignored
-/// while a foreground child runs, see `ignore_signal`).
-#[cfg(unix)]
+/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). The
+/// shared signal thread (`konoma_host_core::term::install_exit_signals`) waits for the signal and
+/// calls this hook, which restores the terminal (the same teardown `main` makes on a normal exit),
+/// removes the directory and answers the conventional `128 + signal` to exit with (SIGINT is
+/// ignored while a foreground child runs, see `ignore_signal`).
 pub fn install_exit_cleanup_signals() {
-    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else {
-        return;
-    };
-    let _ = std::thread::Builder::new()
-        .name("konoma-signals".into())
-        .spawn(move || {
-            for sig in signals.forever() {
-                let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
-                if let Some((code, terminal)) = leave_on_signal(sig, running) {
-                    // The terminal stays ours until the process is gone.
-                    hold_until_exit(terminal);
-                    std::process::exit(code);
-                }
-            }
-        });
+    konoma_host_core::term::install_exit_signals(|sig, running| {
+        let (code, terminal) = leave_on_signal(sig, running)?;
+        // The terminal stays ours until the process is gone.
+        hold_until_exit(terminal);
+        Some(code)
+    });
 }
-
-#[cfg(not(unix))]
-pub fn install_exit_cleanup_signals() {}
 
 /// A fresh temp path for a delegated command's `{out}`, unique within this process (pid + an
 /// atomic counter — no dependence on randomness/time, matching `preview::video::temp_png_path`'s
@@ -698,37 +578,6 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn sigint_is_ignored_only_while_a_foreground_child_runs() {
-        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-        assert!(ignore_signal(SIGINT, true));
-        assert!(!ignore_signal(SIGINT, false));
-        assert!(
-            !ignore_signal(SIGTERM, true),
-            "a terminate request still ends konoma"
-        );
-        assert!(
-            !ignore_signal(SIGHUP, true),
-            "a closed terminal still ends konoma"
-        );
-    }
-
-    #[test]
-    fn the_foreground_child_flag_comes_down_on_drop_and_on_unwind() {
-        use std::sync::atomic::Ordering::SeqCst;
-        {
-            let _g = ForegroundChildGuard::new();
-            assert!(FOREGROUND_CHILD.load(SeqCst));
-        }
-        assert!(!FOREGROUND_CHILD.load(SeqCst));
-        let r = std::panic::catch_unwind(|| {
-            let _g = ForegroundChildGuard::new();
-            panic!("unwind");
-        });
-        assert!(r.is_err());
-        assert!(!FOREGROUND_CHILD.load(SeqCst));
-    }
-
     #[test]
     fn only_an_uncaught_main_thread_panic_removes_the_temp_dir() {
         assert!(panic_ends_process(Some("main"), false));
@@ -1466,14 +1315,22 @@ mod tests {
         // The wrappers that end the process keep it for good rather than dropping it.
         let this = include_str!("command.rs");
         let signal = this
-            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .split("pub fn install_exit_cleanup_signals() {\n")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .unwrap();
+        // The hook keeps the terminal before it hands the exit code back ...
+        assert!(
+            signal.find("hold_until_exit(terminal)").unwrap() < signal.find("Some(code)").unwrap()
+        );
+        // ... and the shared signal thread exits only with what the hook answered.
+        let shared = include_str!("../../crates/konoma-host-core/src/term.rs");
+        let thread = shared
+            .split("pub fn install_exit_signals(on_signal")
             .nth(1)
             .and_then(|r| r.split("#[cfg(not(unix))]").next())
             .unwrap();
-        assert!(
-            signal.find("hold_until_exit(terminal)").unwrap()
-                < signal.find("process::exit(").unwrap()
-        );
+        assert!(thread.find("on_signal(sig").unwrap() < thread.find("process::exit(").unwrap());
         assert!(this.contains("std::mem::forget(guard)"));
         assert!(
             this.contains("hold_until_exit(guard);\n            true"),
@@ -1515,59 +1372,12 @@ mod tests {
         );
         let this = include_str!("command.rs");
         let signal = this
-            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .split("pub fn install_exit_cleanup_signals() {\n")
             .nth(1)
-            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .and_then(|r| r.split("\n}\n").next())
             .expect("signal installer");
         assert!(signal.contains("leave_on_signal("), "signal thread");
         assert!(!signal.contains("remove_private_temp_dir"));
-    }
-
-    /// A writer whose every write and flush fails with `EIO`, like a pty whose other end closed.
-    struct DeadTty;
-    impl std::io::Write for DeadTty {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::from_raw_os_error(5))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::from_raw_os_error(5))
-        }
-    }
-
-    /// The teardown must survive a dead terminal: it runs inside signal handling and panic hooks,
-    /// where a panic aborts the process.
-    #[test]
-    fn terminal_restore_never_panics_on_a_dead_tty() {
-        let r = std::panic::catch_unwind(|| write_terminal_restore(&mut DeadTty));
-        assert!(r.is_ok());
-    }
-
-    /// It undoes bracketed paste and the alternate screen (a normal exit used to leave paste mode
-    /// on, the signal path both).
-    #[test]
-    fn terminal_restore_turns_off_paste_mode_and_leaves_the_alt_screen() {
-        let mut buf = Vec::new();
-        write_terminal_restore(&mut buf);
-        let text = String::from_utf8(buf).unwrap();
-        assert!(text.contains("\x1b[?2004l"), "{text:?}");
-        assert!(text.contains("\x1b[?1049l"), "{text:?}");
-        assert!(text.contains("\x1b[?25h"), "{text:?}");
-    }
-
-    /// The bytes match what crossterm's own commands emit (so they cannot drift from what
-    /// `EnableBracketedPaste` / `EnterAlternateScreen` turned on).
-    #[test]
-    fn terminal_restore_sequence_matches_crossterm_commands() {
-        use crossterm::Command;
-        let mut want = String::new();
-        crossterm::event::DisableBracketedPaste
-            .write_ansi(&mut want)
-            .unwrap();
-        crossterm::terminal::LeaveAlternateScreen
-            .write_ansi(&mut want)
-            .unwrap();
-        crossterm::cursor::Show.write_ansi(&mut want).unwrap();
-        assert_eq!(TERMINAL_RESTORE_SEQUENCE, want.as_bytes());
     }
 
     #[cfg(unix)]

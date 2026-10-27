@@ -63,20 +63,34 @@ pub mod proto;
 mod server;
 pub mod wire;
 
-pub use server::{cli_main, serve, serve_io, ServeOptions};
+pub use server::{cli_main, cli_main_many, serve, serve_io, ServeOptions};
 
 /// Emit `main` for a plugin program: `--serve` serves the host on stdin and stdout, `--manifest`
 /// prints the declaration, `--version` and `--help` print what they say. Given a file, the program
-/// is not yet a standalone app and says so.
+/// opens it in a terminal of its own when konoma-plugin is built with the `app` feature (and says
+/// it cannot otherwise).
+///
+/// More than one plugin may be given: `export!(A, B)`. The protocol serves one plugin per
+/// process, so `--serve`, `--manifest` and `--version` then take `--plugin <id>`; a file goes to
+/// the plugin the registry's rules pick.
 ///
 /// ```ignore
 /// konoma_plugin::export!(MyPlugin);
+/// konoma_plugin::export!(MyPlugin, MyOtherPlugin);
 /// ```
 #[macro_export]
 macro_rules! export {
-    ($plugin:expr) => {
+    ($plugin:expr $(,)?) => {
         fn main() -> ::std::process::ExitCode {
             $crate::proc::cli_main($plugin)
+        }
+    };
+    ($first:expr, $($rest:expr),+ $(,)?) => {
+        fn main() -> ::std::process::ExitCode {
+            $crate::proc::cli_main_many(::std::vec![
+                ::std::boxed::Box::new($first) as ::std::boxed::Box<dyn $crate::Plugin>,
+                $(::std::boxed::Box::new($rest) as ::std::boxed::Box<dyn $crate::Plugin>),+
+            ])
         }
     };
 }

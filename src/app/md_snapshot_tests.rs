@@ -316,7 +316,7 @@ fn render_case_with_width(
             // `lang`'s `"auto"` default: `Lang::from_os` is `Lang::En` under `#[cfg(test)]`, by that
             // function's own design, precisely so a test cannot depend on the machine's locale.
             crate::i18n::tr(
-                crate::i18n::Lang::resolve(&cfg.ui.lang),
+                crate::i18n::resolve_lang(&cfg.ui.lang),
                 crate::i18n::Msg::MermaidCaption,
             ),
             cfg.ui.md_alerts,

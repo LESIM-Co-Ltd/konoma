@@ -21,6 +21,17 @@ pub trait Plugin: Send + Sync + 'static {
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure>;
 }
 
+/// A boxed plugin is a plugin (a program that carries several, `export!(A, B)`, holds them as
+/// `Box<dyn Plugin>`).
+impl<P: Plugin + ?Sized> Plugin for Box<P> {
+    fn manifest(&self) -> Manifest {
+        (**self).manifest()
+    }
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        (**self).open(input, cx)
+    }
+}
+
 /// One opened input.
 ///
 /// **A session lasts as long as the file it was opened on is unchanged.** The host opens the file

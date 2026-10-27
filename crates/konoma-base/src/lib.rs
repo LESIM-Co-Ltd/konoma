@@ -11,3 +11,4 @@ pub mod panic;
 pub mod private_dir;
 pub mod process;
 pub mod size;
+pub mod xdg;

@@ -1,7 +1,6 @@
 // Config loading, and resolving format → preview method.
 // Works with defaults even when the config is absent/broken (robustness first).
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -166,213 +165,10 @@ impl Default for GitConfig {
     }
 }
 
-/// External editor settings (FR: delegate editing with `e`). **Configurable per extension.**
-/// Priority: per-extension `[editor.ext]` -> `editor.command` (global default) -> `$VISUAL` -> `$EDITOR` -> `vim`.
-/// Values are command + args (whitespace-separated). `{path}` is substituted with the file path (otherwise
-/// appended at the end); `{line}` with the current preview line. Without a `{line}` token, common editors
-/// still open at the line automatically (vim `+N`, VS Code `-g path:N`, Sublime/Helix `path:N`).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct EditorConfig {
-    /// Default editor when there is no per-extension match. If empty, $VISUAL -> $EDITOR -> vim.
-    pub command: String,
-    /// Map of extension (no dot) -> editor command. Example: `rs = "nvim"`, `md = "code -w"`.
-    pub ext: HashMap<String, String>,
-}
-
-impl EditorConfig {
-    /// The configured editor command (the pure part, excluding env / the default vi). Priority: per-extension -> command.
-    /// None if both are unset / whitespace-only. Extensions are matched in lowercase.
-    fn configured(&self, ext: &str) -> Option<String> {
-        let by_ext = self
-            .ext
-            .get(ext)
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        by_ext.or_else(|| {
-            let d = self.command.trim();
-            (!d.is_empty()).then(|| d.to_string())
-        })
-    }
-
-    /// Resolves the argv of the editor for editing `path`, optionally jumping to `line` (1-based).
-    /// Priority: per-extension -> command -> `$VISUAL` -> `$EDITOR` -> `vim`. `{path}` substitution or appended at the end.
-    /// `line` matches the on-screen preview position; see `build_argv`/`apply_editor_line` for how it reaches the editor.
-    pub fn resolve(&self, path: &Path, line: Option<usize>) -> Vec<String> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let tmpl = self
-            .configured(&ext)
-            .or_else(|| env_nonempty("VISUAL"))
-            .or_else(|| env_nonempty("EDITOR"))
-            .unwrap_or_else(|| "vim".to_string());
-        build_argv(&tmpl, path, line)
-    }
-}
-
-/// Reads an environment variable; None if whitespace-only / unset.
-fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Splits a command template (whitespace-separated) into argv and inserts the file path (and,
-/// optionally, a line number). A token containing `{path}` is substituted, otherwise the path is
-/// appended at the end. `{line}` is substituted with `line` (or 1 when unknown). When `line` is
-/// present but the template has no `{line}` token, `apply_editor_line` injects the right line flag
-/// for common editors. An empty template is `vim <path>`.
-fn build_argv(tmpl: &str, path: &Path, line: Option<usize>) -> Vec<String> {
-    let p = path.to_string_lossy().to_string();
-    let mut argv: Vec<String> = tmpl.split_whitespace().map(|s| s.to_string()).collect();
-    if argv.is_empty() {
-        argv.push("vim".to_string());
-    }
-    let mut path_sub = false;
-    let mut line_sub = false;
-    for a in argv.iter_mut() {
-        if a.contains("{path}") {
-            *a = a.replace("{path}", &p);
-            path_sub = true;
-        }
-        if a.contains("{line}") {
-            *a = a.replace("{line}", &line.unwrap_or(1).to_string());
-            line_sub = true;
-        }
-    }
-    if !path_sub {
-        argv.push(p);
-    }
-    if let Some(l) = line {
-        if !line_sub {
-            apply_editor_line(&mut argv, l);
-        }
-    }
-    argv
-}
-
-/// When the editor template has no explicit `{line}` token, inject a line-jump argument for common
-/// editors so the file opens at `line` (1-based). The vi/vim family also gets `+normal! zt` to scroll
-/// that line to the top of the window (matching konoma's top-of-view). Also recognizes terminal editors
-/// that accept `+N`, VS Code (`-g <path>:<line>`), and Sublime/Helix/Zed (`<path>:<line>`). Unknown
-/// editors are left unchanged (they simply open at the top — configure `{line}` for them explicitly).
-fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
-    let Some(prog) = argv.first() else {
-        return;
-    };
-    let name = Path::new(prog)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match name.as_str() {
-        // vi/vim family: `+N` positions the cursor, and `+normal! zt` scrolls that line to the top of
-        // the window so it matches konoma's top-of-view. Without `zt`, vim leaves the window at the file
-        // top when N fits on the first screen (cursor buried mid-screen — 2026-07-09 user report).
-        "vim" | "nvim" | "vi" | "view" | "gvim" | "mvim" | "vimx" | "neovim" => {
-            argv.insert(1, format!("+{line}"));
-            argv.insert(2, "+normal! zt".to_string());
-        }
-        // Other terminal editors that accept `+N` (no reliable scroll-to-top flag; open at the line).
-        "nano" | "pico" | "emacs" | "emacsclient" | "gedit" | "kak" | "kakoune" | "joe" | "jed"
-        | "ne" | "mcedit" | "micro" => {
-            argv.insert(1, format!("+{line}"));
-        }
-        // VS Code family: `-g <path>:<line>`.
-        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf" => {
-            if let Some(last) = argv.last_mut() {
-                *last = format!("{last}:{line}");
-            }
-            argv.insert(1, "-g".to_string());
-        }
-        // Sublime / Helix / Zed: `<path>:<line>`.
-        "subl" | "sublime_text" | "hx" | "helix" | "zed" => {
-            if let Some(last) = argv.last_mut() {
-                *last = format!("{last}:{line}");
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Keybinding settings (`[keys]`).
-///
-/// Two systems coexist in the same `[keys]` table:
-/// - **New form (Run2)**: subtables under `[keys.<context>]` (context name -> (chord string -> action string)).
-///   Interpreted by the `crate::keymap` layer. serde flatten collects only the subtables directly under `[keys]` into `surfaces`.
-/// - **Old form (backward-compat alias)**: the `copy_prefix`/`copy_*` scalars for path copy (FR-6). Kept for now.
-///   The named fields consume them first, so they do not end up on the flatten side (`surfaces`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct KeysConfig {
-    /// Copy prefix (default "c"; "y" for vim-style yank). [backward-compat alias]
-    pub copy_prefix: String,
-    /// Suffix key for each copy target. [backward-compat alias]
-    pub copy_name: String, // file name
-    pub copy_full: String,     // full path
-    pub copy_relative: String, // relative path
-    pub copy_parent: String,   // parent directory
-    /// The raw new-form `[keys.<context>]` table (context name -> (chord string -> action string)).
-    /// Example: `surfaces["tree"]["space d"] = "file_delete"`. Interpreted by `crate::keymap::KeyMap::from_config`.
-    #[serde(flatten)]
-    pub surfaces: HashMap<String, HashMap<String, String>>,
-}
-
-impl Default for KeysConfig {
-    fn default() -> Self {
-        Self {
-            copy_prefix: "c".into(),
-            copy_name: "n".into(),
-            copy_full: "p".into(),
-            copy_relative: "r".into(),
-            copy_parent: "d".into(),
-            surfaces: HashMap::new(),
-        }
-    }
-}
-
-impl KeysConfig {
-    /// Builds the settings interpreted by the keymap layer (`crate::keymap`).
-    /// Passes the new-form `[keys.<context>]` (`surfaces`) through as-is, while mapping the old `copy_*` aliases onto the `y` leader.
-    ///
-    /// The old aliases add `"y <suffix>"` to the Copy leader **only for suffixes the user changed from the default**
-    /// (when left at the default it respects the new defaults n/r/f/p and does not clobber them). Since leaders are surface-independent,
-    /// they are placed in the `global` table for convenience (the surface name does not matter because the keymap routes prefix `y` -> Copy). Existing chords are not broken.
-    /// The old `copy_prefix` is not mapped because the new scheme fixes it to `y` (open_risk).
-    pub fn to_keymap_config(&self) -> crate::keymap::KeysFileConfig {
-        let mut surfaces = self.surfaces.clone();
-        let defaults = KeysConfig::default();
-        let aliases: [(&str, &str, &str); 4] = [
-            (&self.copy_name, &defaults.copy_name, "copy_name"),
-            (
-                &self.copy_relative,
-                &defaults.copy_relative,
-                "copy_relative",
-            ),
-            (&self.copy_full, &defaults.copy_full, "copy_full"),
-            (&self.copy_parent, &defaults.copy_parent, "copy_parent"),
-        ];
-        for (cur, def, action) in aliases {
-            let cur = cur.trim();
-            if cur.is_empty() || cur == def {
-                continue;
-            }
-            if let Some(c) = cur.chars().next() {
-                surfaces
-                    .entry("global".to_string())
-                    .or_default()
-                    .entry(format!("y {c}"))
-                    .or_insert_with(|| action.to_string());
-            }
-        }
-        crate::keymap::KeysFileConfig { surfaces }
-    }
-}
+pub use konoma_host_core::editor::EditorConfig;
+#[cfg(test)]
+use konoma_host_core::editor::{build_argv, env_nonempty};
+pub use konoma_host_core::keys::KeysConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -1017,60 +813,11 @@ fn mime_glob_match(pattern: &str, mime: &str) -> bool {
     crate::plugins::rule_hits(&rule, Path::new("/x/file"), Some(mime))
 }
 
-/// Pure core of `dirs_config_path`: given the already-resolved config-scope base (whatever
-/// `crate::bookmarks::xdg_config_home` decided — `$XDG_CONFIG_HOME`-based or
-/// `$HOME/.config`-based, shared with bookmarks/session storage and `app::cache_root`), the config
-/// file path is `<base>/konoma/config.toml`. `None` in means `None` out — unlike bookmarks/session
-/// storage (`bookmarks::default_base`), this is read-only (`Config::load_reporting` never writes),
-/// so "no known base" safely means "no config file to read, use defaults" with nothing to guard
-/// against writing into the working directory.
-fn dirs_config_path_from(config_home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    Some(config_home?.join("konoma").join("config.toml"))
-}
+pub(crate) use konoma_base::xdg::dirs_config_path;
+#[cfg(test)]
+use konoma_base::xdg::dirs_config_path_from;
 
-/// Config file path (`$XDG_CONFIG_HOME/konoma/config.toml`, or `$HOME/.config/konoma/config.toml`,
-/// or `None`). Previously read only `$HOME` and silently ignored `$XDG_CONFIG_HOME` — now shares the
-/// same base resolution as `crate::bookmarks::default_base` (see that function's doc for the
-/// details of the rule and why the three previously disagreed).
-fn dirs_config_path() -> Option<std::path::PathBuf> {
-    dirs_config_path_from(crate::bookmarks::xdg_config_home())
-}
-
-/// Formats a `toml::from_str::<Config>` parse error into one line for `load_reporting`'s startup
-/// flash notification.
-///
-/// `toml::de::Error`'s own `Display` is multi-line — a `"TOML parse error at line N, column M"`
-/// header, an excerpt of the offending line, and the actual reason (e.g.
-/// `"invalid value: integer \`100000\`, expected u16"`) — but the flash notification this feeds
-/// (`main.rs`'s one-shot `app.flash`, cleared on the very next keypress) can only show one line.
-/// The pre-fix code kept just the *first* line (the location), which is the same
-/// `"TOML parse error at line N, column M"` for every single kind of error and never states what
-/// was actually wrong — reported as effectively silent, since the flash disappears before the user
-/// can even open the file to compare against a line number alone.
-///
-/// This keeps both: the location (still the first line of `Display`) and the reason
-/// (`Error::message()`, which — unlike `Display` — is *only* the "what went wrong" part, with no
-/// location decoration). `message()` can itself embed a newline for some error kinds (a bad table
-/// header's `"invalid table header\nexpected \`.\`, \`]\`"`), so that is collapsed too, to guarantee
-/// this whole function's result is always a single line.
-///
-/// Deliberately does *not* attempt to identify which struct **field** was the cause beyond what
-/// `toml`/`serde`'s own error already names — see the accompanying report for why a real per-field
-/// (or per-top-level-table) partial-recovery rewrite was intentionally not attempted here.
-fn format_config_load_error(e: &toml::de::Error) -> String {
-    let location = e
-        .to_string()
-        .lines()
-        .next()
-        .unwrap_or("parse error")
-        .to_string();
-    let reason = e.message().replace('\n', "; ");
-    if reason.is_empty() {
-        location
-    } else {
-        format!("{location}: {reason}")
-    }
-}
+use konoma_host_core::shared::format_load_error as format_config_load_error;
 
 #[cfg(test)]
 mod parity_tests;
@@ -1079,6 +826,7 @@ mod parity_tests;
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
+    use std::collections::HashMap;
     use std::io::Write;
 
     fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
@@ -1861,5 +1609,30 @@ mermaid_rows = 100000
             msg3.contains("unclosed table"),
             "構文エラーの理由も含まれるべき: {msg3:?}"
         );
+    }
+    /// The shared slice (`konoma_host_core::shared::SharedConfig`) must read the same values as
+    /// konoma's own `Config` from the same text: both example files, plus a file that sets every
+    /// shared field to a non-default value (the examples mostly restate defaults).
+    #[test]
+    fn shared_config_agrees_with_config_on_the_common_fields() {
+        let rich = "[ui]\nlang = \"jp\"\nkeys = \"less\"\n[editor]\ncommand = \"nvim\"\n[editor.ext]\nmd = \"code -w\"\n[keys]\ncopy_name = \"m\"\n[keys.tree]\n\"space d\" = \"file_delete\"\n[external]\nopen_links = false\noffice_apps = false\n";
+        for (name, text) in [
+            ("en", include_str!("../../config.example.toml")),
+            ("ja", include_str!("../../config.example.ja.toml")),
+            ("rich", rich),
+            ("empty", ""),
+        ] {
+            let c: Config = toml::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let s = konoma_host_core::shared::SharedConfig::parse(text)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(c.ui.lang, s.ui.lang, "{name}: ui.lang");
+            assert_eq!(c.ui.keys, s.ui.keys, "{name}: ui.keys");
+            assert_eq!(c.external.open_links, s.external.open_links, "{name}");
+            assert_eq!(c.external.office_apps, s.external.office_apps, "{name}");
+            assert_eq!(c.editor.command, s.editor.command, "{name}: editor.command");
+            assert_eq!(c.editor.ext, s.editor.ext, "{name}: editor.ext");
+            assert_eq!(c.keys.copy_name, s.keys.copy_name, "{name}");
+            assert_eq!(c.keys.surfaces, s.keys.surfaces, "{name}: key tables");
+        }
     }
 }

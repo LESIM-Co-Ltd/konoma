@@ -1735,6 +1735,7 @@ dependencies = [
  "konoma-base",
  "konoma-code",
  "konoma-code-core",
+ "konoma-host-core",
  "konoma-markdown",
  "konoma-markdown-core",
  "konoma-math",
@@ -1765,7 +1766,6 @@ dependencies = [
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "sys-locale",
  "tokio",
  "toml",
  "trash",
@@ -1810,6 +1810,19 @@ version = "0.1.0"
 dependencies = [
  "konoma-plugin",
  "konoma-plugin-ratatui",
+]
+
+[[package]]
+name = "konoma-host-core"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "konoma-base",
+ "konoma-test-support",
+ "serde",
+ "signal-hook 0.4.5",
+ "sys-locale",
+ "toml",
 ]
 
 [[package]]
@@ -1946,9 +1959,11 @@ dependencies = [
 name = "konoma-plugin"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "globset",
  "konoma-test-support",
  "libc",
+ "ratatui",
  "rmp-serde",
  "serde",
  "serde_json",

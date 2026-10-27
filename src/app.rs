@@ -3561,7 +3561,7 @@ impl Default for PerTab {
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
-        let lang = crate::i18n::Lang::resolve(&cfg.ui.lang);
+        let lang = crate::i18n::resolve_lang(&cfg.ui.lang);
         let sort = Sort::from_config(&cfg.ui.sort);
         // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
         // fresh tab's starting value (rebuild_tree, called right after construction, reads

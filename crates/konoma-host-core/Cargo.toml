@@ -1,0 +1,22 @@
+[package]
+name = "konoma-host-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The part of konoma's config.toml that every host shares (language, editor, key overrides, external switches), for konoma and the plugin SDK's small host"
+
+[dependencies]
+konoma-base = { path = "../konoma-base" }
+serde.workspace = true
+toml.workspace = true
+# The OS default language (no external process).
+sys-locale.workspace = true
+# The terminal handed to a child and taken back (raw mode, alternate screen, input modes).
+crossterm.workspace = true
+# The thread that ends the program on SIGTERM / SIGHUP / SIGINT.
+signal-hook.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

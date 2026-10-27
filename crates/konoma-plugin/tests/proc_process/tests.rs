@@ -22,6 +22,43 @@ use konoma_test_support::unique_tmp;
 use crate::child::CHILD_ENV;
 
 pub fn all() -> Vec<(&'static str, fn())> {
+    let mut all = base();
+    all.extend(multi_and_app());
+    all
+}
+
+/// The tests of a program that carries several plugins and of a file given to a program.
+fn multi_and_app() -> Vec<(&'static str, fn())> {
+    vec![
+        (
+            "several_plugins_need_the_plugin_option_to_print_a_manifest",
+            multi_manifest,
+        ),
+        (
+            "several_plugins_are_all_listed_by_version_and_one_by_id",
+            multi_version,
+        ),
+        (
+            "an_unknown_or_malformed_plugin_option_is_refused",
+            multi_bad_option,
+        ),
+        (
+            "a_program_with_several_plugins_serves_the_one_named_before_serve",
+            multi_serve,
+        ),
+        (
+            "a_single_plugin_program_works_with_and_without_the_plugin_option",
+            single_with_option,
+        ),
+        ("a_file_given_to_a_program_is_checked", file_refusals),
+        (
+            "a_file_given_to_a_program_with_several_plugins_goes_to_the_one_that_binds_it",
+            multi_file_routing,
+        ),
+    ]
+}
+
+fn base() -> Vec<(&'static str, fn())> {
     vec![
         (
             "command_launch_runs_the_child_in_the_given_working_directory_and_in_root_by_default",
@@ -103,6 +140,17 @@ fn child_command() -> Command {
     let mut c = Command::new(exe());
     c.env(CHILD_ENV, "1");
     c
+}
+
+/// The program that carries two plugins.
+fn multi_command() -> Command {
+    let mut c = Command::new(exe());
+    c.env(CHILD_ENV, "multi");
+    c
+}
+
+fn stderr_of(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
 fn alive(pid: i32) -> bool {
@@ -223,7 +271,17 @@ impl Launch for Recording {
 }
 
 fn plugin(limits: Limits, scratch: &Path, extra: &[&str]) -> (ProcPlugin, Arc<Mutex<Vec<u32>>>) {
-    std::env::set_var(CHILD_ENV, "1");
+    plugin_in(limits, scratch, extra, "1")
+}
+
+/// `plugin` for the program that runs as `mode` (`CHILD_ENV`: "1" one plugin, "multi" two).
+fn plugin_in(
+    limits: Limits,
+    scratch: &Path,
+    extra: &[&str],
+    mode: &str,
+) -> (ProcPlugin, Arc<Mutex<Vec<u32>>>) {
+    std::env::set_var(CHILD_ENV, mode);
     let pids = Arc::new(Mutex::new(Vec::new()));
     // The order the host uses: the user's arguments, then `--serve` last.
     let mut args: Vec<&str> = extra.to_vec();
@@ -934,4 +992,280 @@ fn stop_while_starting() {
         assert_eq!(started.len(), 1, "the child was started (many={many})");
         gone(started[0]);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Several plugins in one program, and a file given to a program
+// ---------------------------------------------------------------------------------------------
+
+fn multi_manifest() {
+    let plain = multi_command()
+        .arg("--manifest")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(plain.status.code(), Some(2));
+    assert!(plain.stdout.is_empty());
+    let err = stderr_of(&plain);
+    assert!(
+        err.contains("proc-test") && err.contains("proc-second"),
+        "{err}"
+    );
+    assert!(err.contains("--plugin"), "{err}");
+
+    for (id, version) in [("proc-test", "1.2.3"), ("proc-second", "4.5.6")] {
+        let o = multi_command()
+            .args(["--plugin", id, "--manifest"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{id}: {}", stderr_of(&o));
+        let m = manifest_from_json(&String::from_utf8(o.stdout).unwrap()).unwrap();
+        assert_eq!((m.id.as_str(), m.version.as_str()), (id, version));
+        // The option may stand after the mode too.
+        let o = multi_command()
+            .args(["--manifest", "--plugin", id])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let m = manifest_from_json(&String::from_utf8(o.stdout).unwrap()).unwrap();
+        assert_eq!(m.id, id);
+    }
+}
+
+fn multi_version() {
+    let all = multi_command()
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(all.status.success());
+    assert_eq!(
+        String::from_utf8(all.stdout).unwrap(),
+        "proc-test 1.2.3\nproc-second 4.5.6\n"
+    );
+    let one = multi_command()
+        .args(["--plugin", "proc-second", "--version"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(one.stdout).unwrap(),
+        "proc-second 4.5.6\n"
+    );
+    let none = multi_command()
+        .args(["--plugin", "nope", "--version"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(none.status.code(), Some(2));
+    assert!(none.stdout.is_empty());
+}
+
+fn multi_bad_option() {
+    for args in [
+        vec!["--plugin", "nope", "--manifest"],
+        vec!["--plugin", "--manifest"],
+        vec!["--manifest", "--plugin"],
+        vec![
+            "--plugin",
+            "proc-test",
+            "--plugin",
+            "proc-second",
+            "--manifest",
+        ],
+    ] {
+        let o = multi_command()
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr_of(&o));
+        assert!(o.stdout.is_empty(), "{args:?}");
+        assert!(!stderr_of(&o).contains("panicked"), "{args:?}");
+    }
+    // `--serve` without the option is refused before it reads a byte.
+    let o = multi_command()
+        .arg("--serve")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr_of(&o).contains("--plugin"));
+}
+
+fn multi_serve() {
+    let dir = unique_tmp("kpp_multi_serve");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    // The host's order: the user's arguments, then `--serve` last.
+    let (p, pids) = plugin_in(
+        limits(),
+        dir.as_path(),
+        &["--plugin", "proc-second"],
+        "multi",
+    );
+    assert_eq!(p.manifest().id, "proc-second");
+    let mut s = open(&p, dir.as_path(), "a.s");
+    match s.view(&ViewReq::new(20, 3), &ViewCx::bare()).unwrap() {
+        View::Text(t) => {
+            assert!(matches!(t.source, TextSource::Owned(ref x) if x == "from the second plugin"))
+        }
+        other => panic!("{other:?}"),
+    }
+    let pid = the_pid(&pids);
+    drop(s);
+    p.stop();
+    gone(pid);
+    // The other plugin of the same program.
+    let (p, pids) = plugin_in(limits(), dir.as_path(), &["--plugin", "proc-test"], "multi");
+    assert_eq!(p.manifest().id, "proc-test");
+    let mut s = open(&p, dir.as_path(), "a.t");
+    assert!(flash(&mut s, "info").contains("pid="));
+    let pid = the_pid(&pids);
+    drop(s);
+    p.stop();
+    gone(pid);
+}
+
+fn single_with_option() {
+    let ok = child_command()
+        .args(["--plugin", "proc-test", "--version"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(ok.stdout).unwrap().trim(),
+        "proc-test 1.2.3"
+    );
+    // Naming a plugin the program does not have is refused, one plugin or not.
+    let bad = child_command()
+        .args(["--plugin", "other", "--manifest"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+}
+
+#[cfg(feature = "app")]
+fn file_refusals() {
+    let dir = unique_tmp("kpp_app_files");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let run = |args: &[&Path]| {
+        child_command()
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    // A file that does not exist: exit 2, and the name in the message.
+    let o = run(&[&dir.as_path().join("missing.t")]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr_of(&o).contains("missing.t"), "{}", stderr_of(&o));
+    assert!(stderr_of(&o).contains("no such file"), "{}", stderr_of(&o));
+    assert!(o.stdout.is_empty());
+    // A directory.
+    let sub = dir.as_path().join("d.t");
+    std::fs::create_dir_all(&sub).unwrap();
+    let o = run(&[&sub]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr_of(&o).contains("not a file"));
+    // A form this program does not take (text, and binary): exit 2.
+    let txt = dir.as_path().join("x.unknown");
+    std::fs::write(&txt, "words").unwrap();
+    let bin = dir.as_path().join("x.bin");
+    std::fs::write(&bin, b"\0\0\0").unwrap();
+    for f in [&txt, &bin] {
+        let o = run(&[f]);
+        assert_eq!(o.status.code(), Some(2), "{f:?}");
+        assert!(stderr_of(&o).contains("does not show"), "{}", stderr_of(&o));
+    }
+    // Two files.
+    let good = dir.as_path().join("a.t");
+    std::fs::write(&good, "hi").unwrap();
+    let o = run(&[&good, &good]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr_of(&o).contains("one file"));
+    // A file the plugin takes, with no terminal: it is opened (the app was reached) and the
+    // refusal is the missing terminal, not the old "not available".
+    let o = run(&[&good]);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr_of(&o));
+    assert!(stderr_of(&o).contains("terminal"), "{}", stderr_of(&o));
+    assert!(!stderr_of(&o).contains("not available"));
+    // Not UTF-8 in the name does not panic.
+    let bad = OsString::from_vec(vec![b'f', 0xff, b'.', b't']);
+    let o = child_command()
+        .arg(&bad)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!stderr_of(&o).contains("panicked"));
+}
+
+#[cfg(not(feature = "app"))]
+fn file_refusals() {
+    // Without the `app` feature a file is refused as before.
+    let o = child_command()
+        .arg("a.t")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(stderr_of(&o).contains("not available"), "{}", stderr_of(&o));
+}
+
+#[cfg(feature = "app")]
+fn multi_file_routing() {
+    let dir = unique_tmp("kpp_app_multi");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    // `fail.s` is taken by the second plugin, whose open refuses with its own message; so the
+    // message proves which plugin the file went to.
+    let fail = dir.as_path().join("fail.s");
+    std::fs::write(&fail, "x").unwrap();
+    let o = multi_command()
+        .arg(&fail)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        stderr_of(&o).contains("second plugin refuses fail.s"),
+        "{}",
+        stderr_of(&o)
+    );
+    // `ok.s` opens (second plugin) and stops at the missing terminal; `a.t` (first plugin) too.
+    for name in ["ok.s", "a.t"] {
+        let f = dir.as_path().join(name);
+        std::fs::write(&f, "x").unwrap();
+        let o = multi_command()
+            .arg(&f)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(1), "{name}");
+        assert!(
+            stderr_of(&o).contains("terminal"),
+            "{name}: {}",
+            stderr_of(&o)
+        );
+    }
+    // A form neither takes.
+    let f = dir.as_path().join("x.zzz");
+    std::fs::write(&f, "x").unwrap();
+    let o = multi_command()
+        .arg(&f)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+}
+
+#[cfg(not(feature = "app"))]
+fn multi_file_routing() {
+    let o = multi_command()
+        .arg("a.t")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
 }

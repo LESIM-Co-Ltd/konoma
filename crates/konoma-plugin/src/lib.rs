@@ -81,10 +81,13 @@
 //! - [`keys`]: key notation, the layered reserved keys, and manifest validation
 //! - [`testing`]: checks that do not need the host
 
+#[cfg(feature = "app")]
+pub mod app;
 pub mod hints;
 pub mod input;
 pub mod key;
 pub mod keys;
+pub mod launch;
 pub mod manifest;
 pub mod prelude;
 #[cfg(feature = "proc")]

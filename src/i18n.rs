@@ -5,60 +5,22 @@
 // enforced by the compiler).
 // To add a language: add a variant to `Lang`, its corresponding table function, and a branch in `tr`.
 
-/// Display language. Selected by the `ui.lang` setting (default en).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lang {
-    En,
-    Jp,
+pub use konoma_host_core::lang::Lang;
+
+/// Resolve the `ui.lang` setting. "auto"-like values follow the OS default language, which tests
+/// must not depend on (always English there).
+pub fn resolve_lang(s: &str) -> Lang {
+    Lang::resolve_with(s, os_lang)
 }
 
-impl Lang {
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "jp" | "ja" | "japanese" | "日本語" => Self::Jp,
-            _ => Self::En, // default to English
-        }
-    }
+#[cfg(test)]
+fn os_lang() -> Lang {
+    Lang::En
+}
 
-    /// Resolve the `ui.lang` setting. Unspecified-equivalent values (empty / "auto" / "system") follow the **OS default language**,
-    /// otherwise the value is treated as an explicit choice and passed to `parse`. When there is no config file, or lang is omitted, "auto" is the default.
-    pub fn resolve(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "" | "auto" | "system" => Self::from_os(),
-            _ => Self::parse(s),
-        }
-    }
-
-    /// Determine the OS default language. Tests must not depend on the runtime environment's language (always English).
-    #[cfg(test)]
-    fn from_os() -> Self {
-        Self::En
-    }
-
-    /// Determine the OS default language via `sys-locale` (no external process: on macOS this links
-    /// CoreFoundation directly — `CFLocaleCopyPreferredLanguages`, the same source the former
-    /// `defaults read -g AppleLanguages` call read — and on Linux/BSD it reads the locale
-    /// environment variables, `LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG`, which supersedes the
-    /// previous hand-rolled `LC_ALL`/`LC_MESSAGES`/`LANG` loop here). English if undeterminable.
-    /// The returned tag may use either separator (`ja-JP` BCP-47 from sys-locale, `ja_JP` POSIX-style
-    /// from a raw env var) — `from_lang_tag` only checks the leading "ja", so both work unchanged.
-    #[cfg(not(test))]
-    fn from_os() -> Self {
-        match sys_locale::get_locale() {
-            Some(tag) => Self::from_lang_tag(&tag),
-            None => Self::En,
-        }
-    }
-
-    /// Jp if the language part of a language tag/locale string is Japanese (starts with "ja"), otherwise En.
-    /// Examples: "ja", "ja-JP", "ja_JP.UTF-8" → Jp / "en-US", "en_US.UTF-8", "C", "" → En.
-    fn from_lang_tag(s: &str) -> Self {
-        if s.trim().to_ascii_lowercase().starts_with("ja") {
-            Self::Jp
-        } else {
-            Self::En
-        }
-    }
+#[cfg(not(test))]
+fn os_lang() -> Lang {
+    Lang::from_os_locale()
 }
 
 /// Keys for display strings. The actual strings live in the per-language tables en()/jp().
@@ -2391,13 +2353,13 @@ mod tests {
     #[test]
     fn resolve_explicit_overrides_auto() {
         // An explicit specification passes through as-is.
-        assert_eq!(Lang::resolve("jp"), Lang::Jp);
-        assert_eq!(Lang::resolve("en"), Lang::En);
+        assert_eq!(resolve_lang("jp"), Lang::Jp);
+        assert_eq!(resolve_lang("en"), Lang::En);
         // Unspecified-equivalent values (empty / auto / system) go to the OS judgment. In tests,
         // from_os is fixed to En.
-        assert_eq!(Lang::resolve(""), Lang::En);
-        assert_eq!(Lang::resolve("auto"), Lang::En);
-        assert_eq!(Lang::resolve(" System "), Lang::En);
+        assert_eq!(resolve_lang(""), Lang::En);
+        assert_eq!(resolve_lang("auto"), Lang::En);
+        assert_eq!(resolve_lang(" System "), Lang::En);
     }
 
     // Gathers every Msg variant into one array and runs **every match arm** of en()/jp() as an
