@@ -101,8 +101,20 @@ pub fn facts_for(app: &App, ctx: Context) -> HelpFacts {
     facts
 }
 
-/// The shared operation of a host one, when it is one.
-#[allow(dead_code)]
-pub fn core_of(a: Action) -> Option<CoreAction> {
-    a.core()
+/// The title of the `?` help overlay, from the keys that act in it. The close keys are the ones
+/// that toggle the help from a layer every context shares (`?`); the help's own `q` closes it
+/// too, and the footer names it, so the title leaves it out. The scroll keys are the help
+/// context's `j` / `k`. `Esc` is added by the builder.
+pub fn help_title(app: &App) -> String {
+    let look = HostLookup {
+        app,
+        ctx: Context::Help,
+    };
+    let close: Vec<KeyPress> = look
+        .keys_of(HelpOp::Act(CoreAction::ToggleHelp))
+        .into_iter()
+        .filter(|k| look.layer_of(*k) == Some(KeyLayer::Global))
+        .collect();
+    let scroll = konoma_host_core::help::scroll_keys(&look, &HelpFacts::default());
+    konoma_host_core::help::help_title(&close, &scroll, app.lang)
 }

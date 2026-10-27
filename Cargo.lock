@@ -1823,6 +1823,7 @@ dependencies = [
  "signal-hook 0.4.5",
  "sys-locale",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

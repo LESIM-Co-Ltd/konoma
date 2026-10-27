@@ -46,6 +46,7 @@ pub enum CoreMsg {
     HintOpen,
     HintOpenApp,
     HelpTitle,
+    HelpTitleNoScroll,
     HintOptions,
     QuitApp,
 }
@@ -94,6 +95,7 @@ impl CoreMsg {
         CoreMsg::HintOpen,
         CoreMsg::HintOpenApp,
         CoreMsg::HelpTitle,
+        CoreMsg::HelpTitleNoScroll,
         CoreMsg::HintOptions,
         CoreMsg::QuitApp,
     ];
@@ -140,7 +142,8 @@ impl CoreMsg {
             CoreMsg::HintEdit => "edit",
             CoreMsg::HintOpen => "open",
             CoreMsg::HintOpenApp => "open in app",
-            CoreMsg::HelpTitle => " Help  (?/Esc to close, j/k to scroll) ",
+            CoreMsg::HelpTitle => " Help  ({close} to close, {scroll} to scroll) ",
+            CoreMsg::HelpTitleNoScroll => " Help  ({close} to close) ",
             CoreMsg::HintOptions => "view",
             CoreMsg::QuitApp => "quit",
         }
@@ -188,7 +191,8 @@ impl CoreMsg {
             CoreMsg::HintEdit => "編集",
             CoreMsg::HintOpen => "開く",
             CoreMsg::HintOpenApp => "アプリで開く",
-            CoreMsg::HelpTitle => " ヘルプ  (?/Esc で閉じる, j/k スクロール) ",
+            CoreMsg::HelpTitle => " ヘルプ  ({close} で閉じる, {scroll} スクロール) ",
+            CoreMsg::HelpTitleNoScroll => " ヘルプ  ({close} で閉じる) ",
             CoreMsg::HintOptions => "表示",
             CoreMsg::QuitApp => "終了",
         }

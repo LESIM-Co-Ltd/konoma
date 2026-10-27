@@ -179,6 +179,13 @@ pub fn help_key(kp: KeyPress) -> String {
     }
 }
 
+/// `s` padded with spaces on the right to `width` terminal cells (not characters: a full-width
+/// key is two cells). A string that is already as wide is returned as it is.
+pub fn pad_cells(s: &str, width: usize) -> String {
+    let w = unicode_width::UnicodeWidthStr::width(s);
+    format!("{s}{}", " ".repeat(width.saturating_sub(w)))
+}
+
 /// A key as the footer writes it, shorter than the help: `C-t`, `PgDn`, `⇧Tab`. `short_enter`
 /// writes `Enter` as `↵` (the preview screens do).
 pub fn footer_key(kp: KeyPress, short_enter: bool) -> String {
@@ -782,6 +789,31 @@ pub fn foot_priority(
         }
         FootKind::Leader(..) => Vec::new(),
     }
+}
+
+/// The title of the `?` help overlay, from the keys that really act: `close` are the keys that
+/// close it (the fixed `Esc` is always added), `scroll` the keys that scroll it (the clause is
+/// left out when none does). A rebound key changes the title and an unbound one drops out of it.
+pub fn help_title(close: &[KeyPress], scroll: &[KeyPress], lang: Lang) -> String {
+    let mut close: Vec<KeyPress> = close.to_vec();
+    let esc = KeyPress::key(KeyCode::Esc);
+    if !close.contains(&esc) {
+        close.push(esc);
+    }
+    let template = if scroll.is_empty() {
+        CoreMsg::HelpTitleNoScroll
+    } else {
+        CoreMsg::HelpTitle
+    };
+    template
+        .tr(lang)
+        .replace("{close}", &write_keys(&close, false))
+        .replace("{scroll}", &write_keys(scroll, false))
+}
+
+/// The keys that scroll an overlay: the `j` / `k` operations of `lookup`, gated by `facts`.
+pub fn scroll_keys(lookup: &dyn KeyLookup, facts: &HelpFacts) -> Vec<KeyPress> {
+    group_keys(lookup, facts, SCROLL)
 }
 
 /// The footer token of Ctrl-C, which always quits a standalone app (`C-c:quit`).

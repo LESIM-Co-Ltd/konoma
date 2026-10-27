@@ -68,10 +68,17 @@ fn line(l: &Line) -> RLine<'static> {
     .style(style(&l.style))
 }
 
-/// The footer: the keys first (a narrow terminal cuts the end), where the text is, the title.
-pub fn footer(hints: &[String], title: &str, frame: &Frame, scroll: usize) -> String {
+/// The footer: the keys first (a narrow terminal cuts the end), where the text is (only for a
+/// frame that scrolls: `scrolls`), the title.
+pub fn footer(
+    hints: &[String],
+    title: &str,
+    frame: &Frame,
+    scroll: usize,
+    scrolls: bool,
+) -> String {
     let pos = match frame {
-        Frame::Lines(l) if !l.is_empty() => format!("  line {}", scroll + 1),
+        Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
         _ => String::new(),
     };
     format!(" {}{pos}  {title}", hints.join("  "))

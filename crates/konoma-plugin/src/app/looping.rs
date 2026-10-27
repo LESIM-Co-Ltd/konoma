@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use konoma_host_core::help::{
-    core_sections, ctrl_c_token, render_foot, CoreFoot, CoreLookup, CoreSection, HelpFacts, HelpOp,
+    core_sections, ctrl_c_token, help_title, pad_cells, render_foot, scroll_keys, CoreFoot,
+    CoreLookup, CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
 };
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
@@ -106,8 +107,9 @@ impl AppKeys {
     }
 
     /// The footer's key hints: what leaves (`q` or else `Q` or else `Ctrl-C`, whichever really
-    /// quits), what scrolls, what opens the help.
-    pub fn footer_tokens(&self) -> Vec<String> {
+    /// quits), what scrolls (only when the frame on screen scrolls: `scrolls`), what opens the
+    /// help. A hint is there only when its key acts.
+    pub fn footer_hints(&self, scrolls: bool) -> Vec<CoreToken> {
         let facts = self.facts();
         let look = CoreLookup {
             keys: &self.keys,
@@ -117,10 +119,31 @@ impl AppKeys {
         let leave = tok(CoreFoot::Back)
             .or_else(|| tok(CoreFoot::Quit))
             .unwrap_or_else(|| ctrl_c_token(self.lang));
-        let mut out = vec![leave.text];
-        out.extend(tok(CoreFoot::Scroll).map(|t| t.text));
-        out.extend(tok(CoreFoot::Help).map(|t| t.text));
+        let mut out = vec![leave];
+        if scrolls {
+            out.extend(tok(CoreFoot::Scroll));
+        }
+        out.extend(tok(CoreFoot::Help));
         out
+    }
+
+    /// [`AppKeys::footer_hints`] as the text the footer shows.
+    pub fn footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        self.footer_hints(scrolls)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// Whether `key` does something: in the `?` help (`in_help`) or on the screen of a text
+    /// (`scrolls`: the frame scrolls) or of anything else (a message, a canvas: the motions do
+    /// nothing there). What the hints and the help rows name must pass this.
+    pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
+        match self.act(key) {
+            None => false,
+            Some(Act::Move(_)) => in_help || scrolls,
+            Some(_) => true,
+        }
     }
 
     /// The sections of the `?` help.
@@ -138,7 +161,7 @@ impl AppKeys {
         let w = secs
             .iter()
             .flat_map(|s| s.rows.iter())
-            .map(|(k, _)| k.chars().count())
+            .map(|(k, _)| unicode_width::UnicodeWidthStr::width(k.as_str()))
             .max()
             .unwrap_or(0);
         let mut out = Vec::new();
@@ -148,15 +171,25 @@ impl AppKeys {
             }
             out.push(Line::raw(s.title.clone()));
             for (k, d) in &s.rows {
-                out.push(Line::raw(format!("  {k:<w$}  {d}")));
+                out.push(Line::raw(format!("  {}  {d}", pad_cells(k, w))));
             }
         }
         out
     }
 
     /// The title of the `?` help, shown in the footer while it is open.
-    fn help_title(&self) -> String {
-        CoreMsg::HelpTitle.tr(self.lang).to_string()
+    ///
+    /// Named from the actual bindings: the keys that toggle the help (the fixed `Esc` is added),
+    /// and the keys that scroll it, left out when none does. The leaving key `q` closes it too
+    /// and is not named, as in the host.
+    pub fn help_title(&self) -> String {
+        let facts = self.facts();
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
+        help_title(&close, &scroll_keys(&look, &facts), self.lang)
     }
 
     /// The built-in keys (no overrides, vim paging).
@@ -178,13 +211,14 @@ impl AppKeys {
                 KeyCode::End => return Some(Act::Move(Motion::Bottom)),
                 // `Esc` is fixed (not in the keymap) and the help says `q / Esc` leaves, so it
                 // does: it closes the help, and out of the help it ends the app.
-                KeyCode::Esc => return Some(Act::Quit),
+                KeyCode::Esc => return Some(Act::Back),
                 _ => {}
             }
         }
         let kp = key_press(key)?;
         match self.keys.resolve(CoreContext::Text, kp) {
-            CoreResolution::Action(CoreAction::Quit | CoreAction::PreviewBack) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
             _ => None,
@@ -195,7 +229,12 @@ impl AppKeys {
 /// What a key does in the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Act {
+    /// Ends the app, even from the help (`Q`, `Ctrl-C`): the host's `Q` quits with its help open
+    /// too.
     Quit,
+    /// Leaves: closes the help when it is open, else ends the app (`q`, `Esc`); in the host `q`
+    /// and `Esc` close the help.
+    Back,
     Move(Motion),
     Help,
 }
@@ -282,6 +321,8 @@ struct State {
     total: usize,
     /// The `?` help while it is open: the first line shown.
     help: Option<usize>,
+    /// Whether the frame on screen scrolls (a text does; a message and a canvas do not).
+    scrolls: bool,
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
@@ -320,7 +361,13 @@ pub fn run_with<B: Backend, E: EventSource>(
                 frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
                 format!(" {}", keys.help_title().trim())
             }
-            None => draw::footer(&keys.footer_tokens(), &cx.title, &frame, st.scroll),
+            None => draw::footer(
+                &keys.footer_tokens(st.scrolls),
+                &cx.title,
+                &frame,
+                st.scroll,
+                st.scrolls,
+            ),
         };
         terminal
             .draw(|f| draw::draw(f, &frame, &footer))
@@ -331,9 +378,10 @@ pub fn run_with<B: Backend, E: EventSource>(
             Next::End => return Ok(()),
             Next::Timeout | Next::Event(AppEvent::Resize) => {}
             Next::Event(AppEvent::Key(key)) => match (keys.act(&key), st.help) {
-                // Ctrl-C leaves even from the help; the other leaving keys close it.
-                (Some(Act::Quit), Some(_)) if !is_ctrl_c(&key) => st.help = None,
-                (Some(Act::Quit), _) => return Ok(()),
+                // `Q` and Ctrl-C end the app even from the help (the host's `Q` does); `q` and
+                // `Esc` close it.
+                (Some(Act::Back), Some(_)) => st.help = None,
+                (Some(Act::Quit | Act::Back), _) => return Ok(()),
                 (Some(Act::Help), Some(_)) => st.help = None,
                 (Some(Act::Help), None) => st.help = Some(0),
                 (Some(Act::Move(m)), Some(top)) => {
@@ -349,15 +397,12 @@ pub fn run_with<B: Backend, E: EventSource>(
                         _ => top,
                     })
                 }
-                (Some(Act::Move(m)), None) => scroll_by(m, &mut st),
+                (Some(Act::Move(m)), None) if st.scrolls => scroll_by(m, &mut st),
+                (Some(Act::Move(_)), None) => {}
                 (None, _) => {}
             },
         }
     }
-}
-
-fn is_ctrl_c(key: &Key) -> bool {
-    key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c'))
 }
 
 fn scroll_by(m: Motion, st: &mut State) {
@@ -380,6 +425,7 @@ fn scroll_by(m: Motion, st: &mut State) {
 /// Turn a view into what is drawn, clamping the scroll to the text's length.
 fn frame_of(view: View, st: &mut State, rows: usize) -> (Frame, Option<Duration>) {
     use crate::view::TextSource;
+    st.scrolls = false;
     match view {
         View::Message(m) => (Frame::Lines(m.lines), None),
         View::Canvas(c) => {
@@ -433,6 +479,7 @@ fn frame_of(view: View, st: &mut State, rows: usize) -> (Frame, Option<Duration>
                     }
                 }
             };
+            st.scrolls = true;
             (frame, None)
         }
         other => (

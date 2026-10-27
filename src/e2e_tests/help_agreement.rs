@@ -21,39 +21,74 @@ const CONTEXTS: [(Context, CoreContext); 5] = [
     (Context::Canvas, CoreContext::Canvas),
 ];
 
-/// A key set: (name, `ui.keys`, `[keys.text]` pairs).
-type Variant = (
-    &'static str,
-    &'static str,
-    Vec<(&'static str, &'static str)>,
-);
+/// One key override: (config surface, key, action).
+type Pair = (&'static str, &'static str, &'static str);
 
-/// The key sets to try: (name, `ui.keys`, `[keys.text]` pairs).
+/// A key set: (name, `ui.keys`, overrides).
+type Variant = (&'static str, &'static str, Vec<Pair>);
+
+/// The key sets to try. `global` is layer 0; `image`/`table`/`text` are the surfaces of one
+/// context, so a binding there can shadow a lower layer (and the global layer cannot be shadowed
+/// by a different binding: `validate` restores it).
 fn variants() -> Vec<Variant> {
     vec![
         ("default", "vim", vec![]),
         (
-            "rebind",
+            "rebind text",
             "vim",
-            vec![("x", "toggle_help"), ("H", "navigate_down")],
+            vec![("text", "x", "toggle_help"), ("text", "H", "navigate:down")],
         ),
-        ("unbind q", "vim", vec![("q", "noop")]),
-        ("unbind q and Q", "vim", vec![("q", "noop"), ("Q", "noop")]),
+        ("unbind q", "vim", vec![("text", "q", "noop")]),
+        (
+            "unbind q and Q",
+            "vim",
+            vec![("text", "q", "noop"), ("text", "Q", "noop")],
+        ),
         ("less", "less", vec![]),
-        ("less and unbind", "less", vec![("j", "noop")]),
+        ("less and unbind", "less", vec![("text", "j", "noop")]),
+        (
+            "global rebind",
+            "vim",
+            vec![
+                ("global", "w", "toggle_help"),
+                ("global", "H", "navigate:down"),
+            ],
+        ),
+        ("global unbind help", "vim", vec![("global", "?", "noop")]),
+        (
+            "image and table surfaces",
+            "vim",
+            vec![
+                ("image", "z", "toggle_help"),
+                ("image", "j", "noop"),
+                ("table", "H", "navigate:down"),
+                ("table", "q", "noop"),
+            ],
+        ),
+        (
+            "layer shadowing",
+            "vim",
+            vec![
+                // A view-type / context binding over a basic-layer key, and a global binding.
+                ("image", "J", "navigate:down"),
+                ("table", "K", "navigate:up"),
+                ("document", "g", "noop"),
+                ("global", "w", "toggle_help"),
+            ],
+        ),
     ]
 }
 
-fn config(lang: &str, ui_keys: &str, pairs: &[(&str, &str)]) -> Config {
+fn config(lang: &str, ui_keys: &str, pairs: &[Pair]) -> Config {
     let mut cfg = Config::default();
     cfg.ui.lang = lang.into();
     cfg.ui.keys = ui_keys.into();
-    let mut t = std::collections::HashMap::new();
-    for (k, a) in pairs {
-        t.insert((*k).to_string(), (*a).to_string());
-    }
-    if !t.is_empty() {
-        cfg.keys.surfaces.insert("text".to_string(), t);
+    for (surface, k, a) in pairs {
+        cfg.keys
+            .surfaces
+            .entry((*surface).to_string())
+            .or_default()
+            .insert((*k).to_string(), (*a).to_string());
     }
     cfg
 }
@@ -86,9 +121,9 @@ fn is_subsequence(rows: &[(String, String)], host: &[(String, String)]) -> bool 
 
 #[test]
 fn the_two_lookups_agree_on_every_key_and_layer() {
-    for (lang, _) in [("en", ()), ("jp", ())] {
+    {
         for (name, ui_keys, pairs) in variants() {
-            let cfg = config(lang, ui_keys, &pairs);
+            let cfg = config("en", ui_keys, &pairs);
             let core = CoreKeys::from_keys_config(scheme_from_str(&cfg.ui.keys), &cfg.keys);
             let (s, _dir) = sim(cfg);
             for (ctx, cctx) in CONTEXTS {
@@ -100,7 +135,7 @@ fn the_two_lookups_agree_on_every_key_and_layer() {
                 let mut seen: Vec<KeyPress> = Vec::new();
                 for op in all_ops(cctx) {
                     let (h, c) = (host.keys_of(op), shared.keys_of(op));
-                    assert_eq!(h, c, "{lang} {name} {ctx:?}: keys of {op:?}");
+                    assert_eq!(h, c, "{name} {ctx:?}: keys of {op:?}");
                     seen.extend(h);
                 }
                 // Other keys: the host binds keys of its own (`m`, `y`...) that the shared tables
@@ -114,14 +149,14 @@ fn the_two_lookups_agree_on_every_key_and_layer() {
                         assert_eq!(
                             host.layer_of(kp),
                             Some(layer),
-                            "{lang} {name} {ctx:?}: layer of {kp:?}"
+                            "{name} {ctx:?}: layer of {kp:?}"
                         );
                         compared += 1;
                     }
                 }
                 assert!(
                     compared >= 3,
-                    "{lang} {name} {ctx:?}: only {compared} keys compared"
+                    "{name} {ctx:?}: only {compared} keys compared"
                 );
             }
         }
@@ -167,39 +202,91 @@ fn the_shared_sections_are_what_the_host_prints_for_layers_1_to_3() {
 
 #[test]
 fn the_shared_footer_tokens_are_in_the_host_footer_in_order() {
-    // The host orders its footer by priority; this is the order it puts these in.
-    let plan = [
-        CoreFoot::Scroll,
-        CoreFoot::Back,
-        CoreFoot::Help,
-        CoreFoot::Ends,
-        CoreFoot::PageKeys,
-    ];
     for lang in ["en", "jp"] {
         for (name, ui_keys, pairs) in variants() {
             let cfg = config(lang, ui_keys, &pairs);
             let core = CoreKeys::from_keys_config(scheme_from_str(&cfg.ui.keys), &cfg.keys);
             let (s, _dir) = sim(cfg);
-            let ctx = Context::Text;
-            let facts = facts_for(&s.app, ctx);
-            let shared = CoreLookup {
-                keys: &core,
-                ctx: CoreContext::Text,
-            };
-            let toks: Vec<String> =
-                footer_tokens(&plan, CoreContext::Text, &facts, &shared, s.app.lang)
+            for (ctx, cctx) in CONTEXTS {
+                // The shared entries of the host's own plan for this context, in its order.
+                let plan: Vec<CoreFoot> = crate::ops::footer::plan(&s.app, ctx)
+                    .into_iter()
+                    .filter_map(|f| match f {
+                        crate::ops::footer::Foot::Core(c) => Some(c),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(plan.len() >= 4, "{lang} {name} {ctx:?}: plan {plan:?}");
+                let facts = facts_for(&s.app, ctx);
+                let shared = CoreLookup {
+                    keys: &core,
+                    ctx: cctx,
+                };
+                let toks: Vec<String> = footer_tokens(&plan, cctx, &facts, &shared, s.app.lang)
                     .into_iter()
                     .map(|t| t.text)
                     .collect();
-            let host = crate::ops::footer::tokens(&s.app, ctx);
-            let mut it = host.iter();
-            for t in &toks {
-                assert!(
-                    it.any(|h| h == t),
-                    "{lang} {name}: shared token `{t}` is not in the host footer (in order) {host:?}"
-                );
+                let host = crate::ops::footer::tokens(&s.app, ctx);
+                let mut it = host.iter();
+                for t in &toks {
+                    assert!(
+                        it.any(|h| h == t),
+                        "{lang} {name} {ctx:?}: shared token `{t}` is not in the host footer (in order) {host:?}"
+                    );
+                }
+                assert!(!toks.is_empty(), "{lang} {name} {ctx:?}: no shared token");
             }
-            assert!(!toks.is_empty(), "{lang} {name}: no shared token");
+        }
+    }
+}
+
+/// The host's help overlay is the `Help` context: its title names the keys that close it.
+fn host_title(cfg: Config) -> String {
+    let (mut s, _dir) = sim(cfg);
+    s.key('?');
+    crate::ops::core_help::help_title(&s.app)
+}
+
+#[test]
+fn the_host_help_title_names_the_keys_that_close_and_scroll() {
+    assert_eq!(
+        host_title(config("en", "vim", &[])),
+        " Help  (?/Esc to close, j/k to scroll) "
+    );
+    // Rebinding the global help key renames it (`?` stays: a global key cannot lose its binding
+    // to a different one, only the added key joins).
+    let t = host_title(config("en", "vim", &[("global", "w", "toggle_help")]));
+    assert!(t.contains("w") && t.contains("Esc to close"), "{t}");
+    // Unbinding j from the help overlay drops it from the scroll keys.
+    let t = host_title(config("en", "vim", &[("help", "j", "noop")]));
+    assert!(t.contains("k to scroll") && !t.contains("j"), "{t}");
+    // Both gone: no scroll clause at all.
+    let t = host_title(config(
+        "en",
+        "vim",
+        &[("help", "j", "noop"), ("help", "k", "noop")],
+    ));
+    assert_eq!(t, " Help  (?/Esc to close) ", "{t}");
+    let t = host_title(config("jp", "vim", &[]));
+    assert!(t.contains("で閉じる"), "{t}");
+}
+
+#[test]
+fn q_with_the_help_open_quits_in_the_host_too() {
+    // The app's `Q` quits even from the help overlay; so does the host (through its confirm
+    // dialog by default).
+    for confirm in [true, false] {
+        let mut cfg = Config::default();
+        cfg.ui.confirm_quit = confirm;
+        let (mut s, _dir) = sim(cfg);
+        s.key('?');
+        assert!(s.app.show_help);
+        s.key('Q');
+        if confirm {
+            assert!(!s.quit);
+            assert_eq!(format!("{:?}", s.app.surface()), "DialogConfirmQuit");
+        } else {
+            assert!(s.quit, "Q must quit from the help");
         }
     }
 }
