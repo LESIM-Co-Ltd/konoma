@@ -9,9 +9,10 @@
 use super::canvas::{open_with, Draw, Opened, Painter};
 use super::*;
 
-/// The drawn buffer as text. Row 1 is the frame's top border with the file's path in it, and the
-/// path holds the sandbox directory name (process id), so the title text is replaced by plain
-/// border cells before dumping; the corners and the border style stay.
+/// The drawn buffer as text. Row 1 is the frame's top border with the file's path in it. The
+/// path is shown relative to the opened directory (`path:rel`), so each scenario opens a
+/// fixed-name directory (`fixed_root`) and the title never holds the sandbox name, which carries
+/// the process id and a counter.
 fn dump(s: &Sim) -> String {
     dump_masked(s, false)
 }
@@ -23,12 +24,10 @@ fn dump_masked(s: &Sim, pixels: bool) -> String {
     let mut buf = s.term.backend().buffer().clone();
     let w = buf.area.width;
     let row: String = (0..w).map(|x| buf[(x, 1)].symbol().to_string()).collect();
-    if row.contains("konoma_e2e_") {
-        let style = buf[(0, 1)].style();
-        for x in 1..w.saturating_sub(1) {
-            buf[(x, 1)].set_symbol("─").set_style(style);
-        }
-    }
+    assert!(
+        !row.contains("konoma_e2e_"),
+        "the title holds the sandbox name (pid/counter): open the files from `fixed_root`"
+    );
     if pixels {
         let h = buf.area.height;
         for y in 2..h.saturating_sub(2) {
@@ -41,6 +40,14 @@ fn dump_masked(s: &Sim, pixels: bool) -> String {
         }
     }
     crate::test_support::buffer_dump(&buf)
+}
+
+/// A fixed-name directory inside the sandbox to open the session on, so the relative path shown in
+/// the title is `proj/<file>` whatever the sandbox is called.
+fn fixed_root(dir: &std::path::Path) -> std::path::PathBuf {
+    let root = dir.join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    root
 }
 
 /// Compare with the literal; with `KONOMA_PRINT_SNAPSHOTS` set, print the dump instead.
@@ -75,10 +82,11 @@ fn open_table(lang: &str, w: u16, h: u16) -> (Sim, crate::test_support::TmpDir) 
 
 fn open_table_csv(csv: &str, lang: &str, w: u16, h: u16) -> (Sim, crate::test_support::TmpDir) {
     let dir = sandbox("render_table");
-    std::fs::write(dir.join("t.csv"), csv).unwrap();
+    let root = fixed_root(&dir);
+    std::fs::write(root.join("t.csv"), csv).unwrap();
     let mut cfg = Config::default();
     cfg.ui.lang = lang.into();
-    let mut s = Sim::with_config_sized(&canon(&dir), cfg, w, h);
+    let mut s = Sim::with_config_sized(&canon(&root), cfg, w, h);
     s.select("t.csv");
     s.enter();
     assert!(s.app.is_table_preview());
@@ -92,7 +100,7 @@ fn render_snapshot_table_opened() {
         "table_opened",
         &dump(&s),
         r####" 0|                            TABLE   path:rel|
- 1|┌──────────────────────────────────────────┐|
+ 1|┌ proj/t.csv  r1/4 c1/6  4×6 ──────────────┐|
  2|│id  name   city                           │|
  3|│────────────────                          │|
  4|│1   alpha  Tokyo                          │|
@@ -137,7 +145,7 @@ fn render_snapshot_table_selection_moved() {
         "table_moved",
         &dump(&s),
         r####" 0|                            TABLE   path:rel|
- 1|┌──────────────────────────────────────────┐|
+ 1|┌ proj/t.csv  r3/4 c2/6  4×6 ──────────────┐|
  2|│id  name   city                           │|
  3|│────────────────                          │|
  4|│1   alpha  Tokyo                          │|
@@ -183,7 +191,7 @@ fn render_snapshot_table_scrolled_right() {
         "table_scrolled",
         &dump(&s),
         r####" 0|                            TABLE   path:rel|
- 1|┌──────────────────────────────────────────┐|
+ 1|┌ proj/t.csv  r2/4 c5/6  4×6 ──────────────┐|
  2|│score extra                               │|
  3|│──────────────                            │|
  4|│10    aaaaaaaa                            │|
@@ -222,7 +230,7 @@ fn render_snapshot_table_last_cell() {
         "table_last",
         &dump(&s),
         r####" 0|                            TABLE   path:rel|
- 1|┌──────────────────────────────────────────┐|
+ 1|┌ proj/t.csv  r4/4 c6/6  4×6 ──────────────┐|
  2|│score extra                               │|
  3|│──────────────                            │|
  4|│10    aaaaaaaa                            │|
@@ -267,7 +275,7 @@ fn render_snapshot_table_cell_popup() {
         "table_popup",
         &dump(&s),
         r####" 0|                     TABLE   CELL   path:rel|
- 1|┌ ko┌ Cell · note  r3/4 c4/6 ─────────┐  r3┐|
+ 1|┌ pr┌ Cell · note  r3/4 c4/6 ─────────┐────┐|
  2|│not│a rather long value ワイド文字   │    │|
  3|│───│that does not fit                │──  │|
  4|│fir│                                 │    │|
@@ -330,7 +338,7 @@ fn render_snapshot_table_cell_popup_of_wide_text() {
         "table_popup_wide_ja",
         &dump(&s),
         r####" 0|                 テーブル   セル   パス:相対|
- 1|┌ ko┌ セル · note  r3/4 c4/6 ─────────┐  r3┐|
+ 1|┌ pr┌ セル · note  r3/4 c4/6 ─────────┐────┐|
  2|│not│a rather long value ワイド文字   │    │|
  3|│───│that does not fit                │──  │|
  4|│fir│                                 │    │|
@@ -390,7 +398,7 @@ fn render_snapshot_table_ja() {
         "table_ja",
         &dump(&s),
         r####" 0|                        テーブル   パス:相対|
- 1|┌──────────────────────────────────────────┐|
+ 1|┌ proj/t.csv  r3/4 c2/6  4×6 ──────────────┐|
  2|│id  name   city                           │|
  3|│────────────────                          │|
  4|│1   alpha  Tokyo                          │|
@@ -438,7 +446,7 @@ fn render_snapshot_canvas_pattern() {
         "canvas_pattern",
         &dump(&o.s),
         r####" 0|                      PREVIEW   path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/a.pnt ──────────────────────────┐|
  2|│ABC                                   │|
  3|│日本語                                │|
  4|│a日b                                  │|
@@ -468,7 +476,7 @@ fn render_snapshot_canvas_filled() {
         "canvas_filled",
         &dump(&o.s),
         r####" 0|                      PREVIEW   path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/a.pnt ──────────────────────────┐|
  2|│ABC                                   │|
  3|│日本語                                │|
  4|│a日b                                  │|
@@ -513,7 +521,7 @@ fn render_snapshot_canvas_wide_character_in_the_last_column() {
         "canvas_wide_edge",
         &dump(&o.s),
         r####" 0|                      PREVIEW   path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/a.pnt ──────────────────────────┐|
  2|│                                      │|
  3|│                                      │|
  4|│                                      │|
@@ -546,7 +554,7 @@ fn render_snapshot_canvas_wide_character_inside() {
         "canvas_wide_in",
         &dump(&o.s),
         r####" 0|                      PREVIEW   path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/a.pnt ──────────────────────────┐|
  2|│    日                                │|
  3|│                                      │|
  4|│                                      │|
@@ -571,7 +579,7 @@ fn render_snapshot_canvas_larger_than_the_frame() {
         "canvas_big",
         &dump(&o.s),
         r####" 0|            PREVIEW   path:rel|
- 1|┌────────────────────────────┐|
+ 1|┌ proj/a.pnt ────────────────┐|
  2|│ABC                         │|
  3|│日本語                      │|
  4|│a日b                        │|
@@ -596,8 +604,9 @@ r9 c0..7 fg=Reset bg=Reset mod=DIM |q:back …|
 
 fn open_image(w: u16, h: u16, png: (u32, u32)) -> (Sim, crate::test_support::TmpDir) {
     let dir = sandbox("render_image");
-    crate::test_support::write_solid_png(&dir.join("pic.png"), png.0, png.1, [200, 40, 40]);
-    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), w, h)
+    let root = fixed_root(&dir);
+    crate::test_support::write_solid_png(&root.join("pic.png"), png.0, png.1, [200, 40, 40]);
+    let mut s = Sim::with_config_sized(&canon(&root), cfg_en(), w, h)
         .with_picker()
         .with_media();
     // A still image paints through a resize worker: wire a real one (as the PDF/mermaid e2e tests
@@ -625,7 +634,7 @@ fn render_snapshot_image_square() {
         "image_square",
         &dump_masked(&s, true),
         r####" 0|                 IMAGE   x1.00  path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/pic.png ────────────────────────┐|
  2|│         ####################         │|
  3|│         ####################         │|
  4|│         ####################         │|
@@ -654,7 +663,7 @@ fn render_snapshot_image_wide() {
         "image_wide",
         &dump_masked(&s, true),
         r####" 0|                 IMAGE   x1.00  path:rel|
- 1|┌──────────────────────────────────────┐|
+ 1|┌ proj/pic.png ────────────────────────┐|
  2|│                                      │|
  3|│                                      │|
  4|│######################################│|

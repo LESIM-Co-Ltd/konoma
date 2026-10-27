@@ -303,11 +303,15 @@ pub(super) struct Opened {
 
 pub(super) fn open_with(name: &str, p: Painter, w: u16, h: u16, lang: &str) -> Opened {
     let dir = sandbox(name);
-    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    // Opened from a fixed-name directory: the title shows the path relative to it, so the
+    // snapshots never hold the sandbox name (process id and counter).
+    let root = dir.join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.pnt"), b"x").unwrap();
     let marker = test_plugins::register(name, Arc::new(p.clone()));
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = lang.into();
-    let mut s = Sim::with_config_sized(&canon(&dir), cfg, w, h);
+    let mut s = Sim::with_config_sized(&canon(&root), cfg, w, h);
     s.select("a.pnt");
     s.enter();
     // The first frame measured the area and asked the plugin again (without a worker the answer
