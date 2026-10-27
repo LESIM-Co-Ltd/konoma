@@ -590,22 +590,142 @@ fn every_key_the_footer_and_the_help_name_acts() {
     assert!(checked_rows > 150, "{checked_rows}");
 }
 
+/// Every kind of frame the test plugin can put on screen: (file, whether it scrolls).
+const FRAMES: [(&str, bool); 8] = [
+    ("a.t", true),
+    ("a.o", true),
+    ("a.l", true),
+    ("a.c", false),
+    ("a.big", false),
+    ("a.m", false),
+    ("a.list", false),
+    ("a.fail", false),
+];
+
+const REAL_SIZE: (u16, u16) = (100, 6);
+
+/// What a real run left: the rows of the last frame and whether the loop ended (`quit`: a
+/// trailing `Resize` was left unread).
+fn observe(
+    k: &AppKeys,
+    name: &str,
+    setup: &[AppEvent],
+    pressed: Option<&Key>,
+) -> (Vec<String>, bool) {
+    let mut ev: Vec<AppEvent> = setup.to_vec();
+    if let Some(p) = pressed {
+        ev.push(AppEvent::Key(p.clone()));
+    }
+    ev.push(AppEvent::Resize);
+    let (rows, left) = run_as(k, name, REAL_SIZE, ev);
+    assert!(left <= 1, "{left} events left");
+    (rows, left == 1)
+}
+
+/// The key that opens the help, as the footer names it (`None` when none does).
+fn help_opener(k: &AppKeys) -> Option<Key> {
+    let hint = k.footer_hints(false).pop()?;
+    let key = token_keys(&hint.text).into_iter().next()?;
+    // It must really be the help: it opens it on a real frame.
+    let (closed, _) = observe(k, "a.t", &[], None);
+    let (open, quit) = observe(k, "a.t", &[], Some(&key));
+    (!quit && open != closed).then_some(key)
+}
+
+/// Whether `key` really acts in the loop on `name`: the screen differs from the one without the
+/// key, or the loop ends. The screen is first moved off its edges (three `Down` presses: fixed
+/// keys, in the help or not) so a motion that acts changes it whichever way it goes.
+fn acts_in_the_loop(k: &AppKeys, name: &str, help: Option<&Key>, key: &Key) -> bool {
+    let mut setup: Vec<AppEvent> = Vec::new();
+    if let Some(h) = help {
+        setup.push(AppEvent::Key(h.clone()));
+    }
+    for _ in 0..3 {
+        setup.push(AppEvent::Key(Key::new(KeyCode::Down)));
+    }
+    let (before, before_quit) = observe(k, name, &setup, None);
+    assert!(!before_quit, "the set-up alone ends the loop");
+    let (after, quit) = observe(k, name, &setup, Some(key));
+    quit || after != before
+}
+
+/// Whether the footer on a real screen has the scroll form (a position after the hints).
+fn footer_scrolls(k: &AppKeys, rows: &[String], title: &str) -> bool {
+    let plain = format!(" {}  {title}", k.footer_tokens(false).join("  "));
+    *rows.last().expect("a footer row") != plain
+}
+
 #[test]
 fn what_acts_on_a_frame_is_what_the_loop_does() {
-    // `acts_on` is the property's oracle, so pin it to the loop: for a key it says acts on a
-    // text, the screen changes (or the loop ends); for a key it says does nothing on a canvas,
-    // nothing changes.
-    let k = keys("", Lang::En);
-    for c in ['j', 'k', 'g', 'G', 'x', 'e', 'o', 'z'] {
-        let key_ = Key::char(c);
-        let (before, _) = run_as(&k, "a.c", (70, 5), vec![]);
-        let (after, left) = run_as(&k, "a.c", (70, 5), vec![AppEvent::Key(key_.clone())]);
-        if k.acts_on(&key_, false, false) {
-            assert_eq!(left, 0);
-        } else {
-            assert_eq!((after, left), (before, 0), "`{c}` on a canvas");
+    // `acts_on` is the property's oracle, so pin it to the loop on every kind of frame: it
+    // says true exactly when the real loop changes the screen (or ends), in the help or not.
+    let mut extra: Vec<Key> = "jkgGxeozdufbn \u{3042}HQq?"
+        .chars()
+        .map(Key::char)
+        .collect();
+    for c in ['f', 'b', 'd', 'u', 'c'] {
+        extra.push(Key::ctrl(c));
+    }
+    for code in [
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Esc,
+        KeyCode::Enter,
+        KeyCode::Tab,
+        KeyCode::PageDown,
+        KeyCode::PageUp,
+        KeyCode::Left,
+        KeyCode::Right,
+    ] {
+        extra.push(Key::new(code));
+    }
+    let (mut checked, mut true_cases, mut false_cases, mut help_cases) = (0, 0, 0, 0);
+    for (name, cfg) in property_configs() {
+        let k = keys(cfg, Lang::En);
+        let opener = help_opener(&k);
+        // The keys to try: the extras and every key the footer and the help name.
+        let mut cands = extra.clone();
+        for t in k.footer_hints(true) {
+            cands.extend(token_keys(&t.text));
+        }
+        for sec in k.help_sections() {
+            for (keys_text, _) in &sec.rows {
+                cands.extend(row_keys(keys_text));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        cands.retain(|c| seen.insert(format!("{c:?}")));
+        for (frame, scrolls) in FRAMES {
+            for key in &cands {
+                let mut states: Vec<(bool, Option<&Key>)> = vec![(false, None)];
+                if let Some(o) = &opener {
+                    states.push((true, Some(o)));
+                }
+                for (in_help, opener) in states {
+                    let oracle = k.acts_on(key, in_help, scrolls);
+                    let real = acts_in_the_loop(&k, frame, opener, key);
+                    assert_eq!(
+                        oracle, real,
+                        "{name} {frame} help={in_help}: acts_on({key:?}) = {oracle} but the loop {}",
+                        if real { "acts" } else { "does nothing" }
+                    );
+                    checked += 1;
+                    help_cases += usize::from(in_help);
+                    true_cases += usize::from(real);
+                    false_cases += usize::from(!real);
+                }
+            }
         }
     }
+    // Not vacuous: both outcomes, in and out of the help, over many cases.
+    assert!(checked > 3000, "{checked}");
+    assert!(true_cases > 500, "{true_cases}");
+    assert!(false_cases > 500, "{false_cases}");
+    assert!(help_cases > 1000, "{help_cases}");
+    // The oracle's own fixed points.
+    let k = keys("", Lang::En);
     assert!(k.acts_on(&Key::char('j'), false, true));
     assert!(!k.acts_on(&Key::char('j'), false, false));
     assert!(k.acts_on(&Key::char('j'), true, false));
@@ -614,4 +734,32 @@ fn what_acts_on_a_frame_is_what_the_loop_does() {
         !k.acts_on(&Key::char('e'), true, true),
         "`e` edits nothing here"
     );
+}
+
+#[test]
+fn what_the_footer_names_on_a_real_frame_acts_in_the_loop() {
+    // The property over real frames: `scrolls` is read off the screen the loop drew (not
+    // passed in), then every key the footer names there must act in the loop.
+    let mut checked = 0;
+    for (name, cfg) in property_configs() {
+        for lang in [Lang::En, Lang::Jp] {
+            let k = keys(cfg, lang);
+            for (frame, expect_scrolls) in FRAMES {
+                let (rows, _) = run_as(&k, frame, REAL_SIZE, vec![]);
+                let scrolls = footer_scrolls(&k, &rows, "title");
+                assert_eq!(scrolls, expect_scrolls, "{name} {lang:?} {frame}: {rows:?}");
+                for t in k.footer_hints(scrolls) {
+                    for key in token_keys(&t.text) {
+                        assert!(
+                            acts_in_the_loop(&k, frame, None, &key),
+                            "{name} {lang:?} {frame}: the footer names {key:?} in `{}` but the loop does nothing",
+                            t.text
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 400, "{checked}");
 }
