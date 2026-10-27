@@ -37,6 +37,21 @@ struct ChildSession {
     mark: Option<PathBuf>,
 }
 
+impl ChildSession {
+    /// Append a line to the mark file (what a test reads to learn the child got somewhere).
+    fn note(&self, line: &str) {
+        if let Some(p) = &self.mark {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+}
+
 impl Drop for ChildSession {
     fn drop(&mut self) {
         if let Some(p) = &self.mark {
@@ -107,6 +122,7 @@ impl Session for ChildSession {
             }
             "hang" => {
                 // Ignores its cancel flag: only the process leaving ends it.
+                self.note("hang-started");
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }

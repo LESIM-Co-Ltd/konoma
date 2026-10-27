@@ -543,10 +543,14 @@ code_theme = "TwoDark"
 #                           through a shell. The id is the table's name and must be the id the program declares.
 #   args = ["--fast"]       its arguments (optional). konoma starts the program as `<command> <args> --serve`: it
 #                           adds `--serve` itself, last (do not write it), so `command = "python3"`,
-#                           `args = ["plugin.py"]` runs `python3 plugin.py --serve`.
+#                           `args = ["/home/me/plugin.py"]` runs `python3 /home/me/plugin.py --serve`. A path in
+#                           `args` must be absolute: the program runs in a private work folder, so a relative path
+#                           (one with a `/` that does not start with `/`, such as `./plugin.py`) would not mean what you
+#                           wrote, and such an `args` is refused with the reason. Words without a `/` and flags pass.
+#                           Editing a script named there counts as a rebuild, as editing the program does.
 # The other keys of such a table (besides enabled, read_only, read_dirs) are sent to the program as its settings.
-# konoma asks the program for its manifest once and keeps the answer (keyed by the program's real path, size, mtime
-# and inode), so a start-up does not run it; it is started when a file it takes is opened, stopped when idle, and
+# konoma asks the program for its manifest once and keeps the answer (keyed by the program's real path and its `args`; it is
+# stale when the program, or a file that `args` names, changes in size, mtime or inode), so a start-up does not run it; it is started when a file it takes is opened, stopped when idle, and
 # started again after it is rebuilt (press `r`). A change in what the manifest declares needs a konoma restart.
 # A program that is missing, does not start, speaks another protocol version or does not answer within 5 seconds, or
 # whose id is already taken (by a standard plugin or an earlier program), is not loaded and the start-up message says why.

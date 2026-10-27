@@ -462,27 +462,23 @@ impl Shared {
         if self.is_dead() {
             return;
         }
-        *lock(&self.planned) = Some((kind, message.clone(), detail.clone()));
-        if self.send_frame(&ToChild::Shutdown).is_ok() {
-            let (flag, cv) = &self.stop;
-            let mut stopped = lock(flag);
-            let until = Instant::now() + self.limits.shutdown_grace;
-            while !*stopped {
-                let left = until.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    break;
-                }
-                stopped = cv
-                    .wait_timeout(stopped, left)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
-            }
+        if self.ask_to_leave(kind, message.clone(), detail.clone()) {
+            self.wait_stopped_until(Instant::now() + self.limits.shutdown_grace);
         }
-        self.fail(kind, message, detail);
-        // If another thread ended it (the reader saw the child leave), it is done when the flag is.
+        self.finish_shutdown(kind, message, detail);
+    }
+
+    /// The first step of [`Shared::shutdown`]: note why the child is going and send it `Shutdown`.
+    /// Whether the message went out.
+    fn ask_to_leave(&self, kind: FailureKind, message: Tr, detail: Option<String>) -> bool {
+        *lock(&self.planned) = Some((kind, message, detail));
+        self.send_frame(&ToChild::Shutdown).is_ok()
+    }
+
+    /// Wait until the connection has ended or `until` has passed.
+    fn wait_stopped_until(&self, until: Instant) {
         let (flag, cv) = &self.stop;
         let mut stopped = lock(flag);
-        let until = Instant::now() + STDERR_JOIN * 4;
         while !*stopped {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -493,6 +489,14 @@ impl Shared {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+    }
+
+    /// The last step of [`Shared::shutdown`]: end the connection (killing the process group of a
+    /// child that has not left) and wait until it is done.
+    fn finish_shutdown(&self, kind: FailureKind, message: Tr, detail: Option<String>) {
+        self.fail(kind, message, detail);
+        // If another thread ended it (the reader saw the child leave), it is done when the flag is.
+        self.wait_stopped_until(Instant::now() + STDERR_JOIN * 4);
     }
 
     /// Send `build(rid)` and wait for its answer: until `deadline`, and, once `cancel` goes up,
@@ -1236,24 +1240,61 @@ impl ProcPlugin {
     /// killed if it has not within `Limits::shutdown_grace`. A start that is under way when this is
     /// called ends in a stopped child.
     pub fn stop(&self) {
-        self.stop_gen.fetch_add(1, Ordering::SeqCst);
-        let taken = {
-            let mut conn = lock(&self.conn);
-            match &*conn {
-                // The starter sees the changed count and stops what it started.
-                Slot::Starting => None,
-                _ => match std::mem::replace(&mut *conn, Slot::Idle) {
-                    Slot::Live(c) => Some(c),
-                    _ => None,
-                },
-            }
-        };
-        if let Some(c) = taken {
+        if let Some(c) = self.take_for_stop() {
             c.shutdown(
                 FailureKind::External,
                 t!(en: "the plugin was stopped", ja: "プラグインを停止しました"),
                 None,
             );
+        }
+    }
+
+    /// [`ProcPlugin::stop`] for several plugins at once: every child is asked to leave, all of
+    /// them are given one `Limits::shutdown_grace` together, and what has not left by then is
+    /// killed. The wait is that of one child however many there are (the exit path of the host,
+    /// where children that do not answer must not add their waits up).
+    pub fn stop_many(plugins: &[&ProcPlugin]) {
+        let taken: Vec<Arc<Shared>> = plugins
+            .iter()
+            .filter_map(|p| p.take_for_stop())
+            .filter(|c| !c.is_dead())
+            .collect();
+        let kind = FailureKind::External;
+        let message = || t!(en: "the plugin was stopped", ja: "プラグインを停止しました");
+        let asked: Vec<bool> = taken
+            .iter()
+            .map(|c| c.ask_to_leave(kind, message(), None))
+            .collect();
+        let grace = taken
+            .iter()
+            .map(|c| c.limits.shutdown_grace)
+            .max()
+            .unwrap_or_default();
+        let until = Instant::now() + grace;
+        for (c, asked) in taken.iter().zip(asked) {
+            if asked {
+                c.wait_stopped_until(until);
+            }
+        }
+        // Each end of a connection waits a little for the child's stderr; those waits overlap.
+        std::thread::scope(|scope| {
+            for c in &taken {
+                scope.spawn(move || c.finish_shutdown(kind, message(), None));
+            }
+        });
+    }
+
+    /// Count a stop and take the connection out of the slot, if there is a live one.
+    fn take_for_stop(&self) -> Option<Arc<Shared>> {
+        self.stop_gen.fetch_add(1, Ordering::SeqCst);
+        let mut conn = lock(&self.conn);
+        match &*conn {
+            // The starter sees the changed count and stops what it started.
+            Slot::Starting => None,
+            _ => match std::mem::replace(&mut *conn, Slot::Idle) {
+                Slot::Live(c) => Some(c),
+                _ => None,
+            },
         }
     }
 
@@ -1281,6 +1322,12 @@ impl ProcPlugin {
                 }
             }
         };
+        // A panic in the start must not leave the slot at `Starting`, where every later `open`
+        // would wait for a start that is not coming.
+        let mut guard = StartGuard {
+            plugin: self,
+            armed: true,
+        };
         let started = connect(&*self.launch, &self.cfg, self.expect_id.as_deref());
         let mut conn = lock(&self.conn);
         let result = match started {
@@ -1288,6 +1335,7 @@ impl ProcPlugin {
                 if self.stop_gen.load(Ordering::SeqCst) != gen {
                     *conn = Slot::Idle;
                     drop(conn);
+                    guard.armed = false;
                     self.conn_cv.notify_all();
                     shared.shutdown(
                         FailureKind::External,
@@ -1315,8 +1363,30 @@ impl ProcPlugin {
             }
         };
         drop(conn);
+        guard.armed = false;
         self.conn_cv.notify_all();
         result
+    }
+}
+
+/// Puts a slot that a start left at `Starting` (by panicking) back to `Idle` and wakes the opens
+/// that wait for it.
+struct StartGuard<'a> {
+    plugin: &'a ProcPlugin,
+    armed: bool,
+}
+
+impl Drop for StartGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut conn = lock(&self.plugin.conn);
+        if matches!(&*conn, Slot::Starting) {
+            *conn = Slot::Idle;
+        }
+        drop(conn);
+        self.plugin.conn_cv.notify_all();
     }
 }
 

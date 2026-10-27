@@ -14,7 +14,8 @@
 //! # Start-up
 //!
 //! Nothing is started when the manifest is known. The manifest of a program is kept in the cache
-//! directory under the program's real path, size, modification time and inode; a hit registers the
+//! directory under the program's real path and arguments, and the size, modification time and
+//! inode of the program and its script files; a hit registers the
 //! plugin without running it (the child starts at the first `open`). A miss runs the program once
 //! for its handshake, at most [`HANDSHAKE_LIMIT`], and saves what it declared. A program that cannot
 //! be found, does not start, speaks another protocol version or is too slow is **not registered**
@@ -23,11 +24,16 @@
 //!
 //! # A rebuilt program
 //!
-//! The program's size, modification time and inode are looked at on every `open`. When they have
-//! changed (a rebuild), the old child is stopped and the next one is started from the new file: the
-//! user's `r` re-opens the file, so it shows the new build. A **manifest** that changed is only
-//! picked up when konoma starts again (what the host registered, the keys, the bindings, stays as
-//! it was; the cache is brought up to date).
+//! The size, modification time and inode of the program, and of every file its `args` name by an
+//! absolute path (the script of `command = "python3", args = ["/x/plugin.py"]`), are looked at on
+//! every `open`. When they have changed (a rebuild), the old child is stopped and the next one is
+//! started from the new file: the user's `r` re-opens the file, so it shows the new build. A
+//! **manifest** that changed is only picked up when konoma starts again (what the host registered,
+//! the keys, the bindings, stays as it was; the cache is brought up to date once the new child has
+//! said what it declares). The cache entry is named after the program and all its arguments.
+//!
+//! A relative path in `args` is refused (the plugin is not loaded and the start-up line says why):
+//! the child runs in a private working directory, so the path would not mean what the user wrote.
 //!
 //! # Registries
 //!
@@ -70,7 +76,7 @@ pub(crate) const REAP_INTERVAL: Duration = Duration::from_secs(30);
 const CACHE_MAX_BYTES: u64 = 1 << 20;
 
 /// The version of the cache file's layout.
-const CACHE_FORMAT: u32 = 1;
+const CACHE_FORMAT: u32 = 2;
 
 /// The prefix of the entry `Config::plugin_disabled` ends with when external plugins were loaded.
 const MARKER_PREFIX: &str = "+external:";
@@ -219,6 +225,49 @@ pub(crate) fn stamp_of(path: &Path) -> io::Result<Stamp> {
     })
 }
 
+/// What identifies one build of a plugin: the program, and every file its arguments name. For
+/// `command = "python3", args = ["/x/plugin.py"]` the program is the interpreter and the plugin is
+/// the script, so editing the script is a new build.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Build {
+    exe: Stamp,
+    /// The argument and the stamp of the file it names, for each argument that is the absolute
+    /// path of a regular file. Other arguments (flags, words, relative names) are not files the
+    /// host can look at: a relative path is relative to the child's working directory, not to
+    /// anything the user can see (see [`relative_file_args`]).
+    files: Vec<(String, Stamp)>,
+}
+
+/// The [`Build`] of the program `exe` run with `args`.
+pub(crate) fn build_of(exe: &Path, args: &[String]) -> io::Result<Build> {
+    let mut files = Vec::new();
+    for arg in args {
+        let path = Path::new(arg);
+        if path.is_absolute() && std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+            // A file that vanishes between the two calls is the same as one that is not there.
+            if let Ok(stamp) = stamp_of(path) {
+                files.push((arg.clone(), stamp));
+            }
+        }
+    }
+    Ok(Build {
+        exe: stamp_of(exe)?,
+        files,
+    })
+}
+
+/// The arguments that are relative paths: not absolute and containing a `/` (`./x`, `../x`,
+/// `sub/x`). A child runs in a private working directory of its own, so these would not find what
+/// the user means; they are refused when the plugin is loaded, with a message that asks for an
+/// absolute path. Flags (a leading `-`) and words without a `/` pass: whether such a word names
+/// a file depends on where konoma was started, and the same config must load the same way anywhere.
+pub(crate) fn relative_file_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .filter(|a| !Path::new(a.as_str()).is_absolute() && !a.starts_with('-') && a.contains('/'))
+        .cloned()
+        .collect()
+}
+
 /// Find the program: a name without `/` is searched in `path_var`, anything else is taken relative
 /// to `cwd`. The result is the real path of an executable regular file.
 pub(crate) fn resolve_program(
@@ -260,8 +309,8 @@ pub(crate) fn resolve_program(
 struct CacheFile {
     format: u32,
     path: String,
-    #[serde(flatten)]
-    stamp: Stamp,
+    args: Vec<String>,
+    build: Build,
     manifest: serde_json::Value,
 }
 
@@ -274,15 +323,27 @@ fn fnv64(bytes: &[u8]) -> u64 {
     h
 }
 
-fn cache_file(dir: &Path, exe: &Path) -> PathBuf {
+/// The cache file of a plugin: named after the program and every argument, so that two plugins
+/// run by the same interpreter (`python3 a.py`, `python3 b.py`) do not share one.
+fn cache_file(dir: &Path, exe: &Path, args: &[String]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
-    dir.join(format!("{:016x}.json", fnv64(exe.as_os_str().as_bytes())))
+    let mut key = exe.as_os_str().as_bytes().to_vec();
+    for a in args {
+        key.push(0);
+        key.extend_from_slice(a.as_bytes());
+    }
+    dir.join(format!("{:016x}.json", fnv64(&key)))
 }
 
 /// What the cache holds for this build of the program. A file that is missing, belongs to another
 /// build, or is damaged gives `None`; a damaged one is removed so the next start writes a good one.
-pub(crate) fn cache_load(dir: &Path, exe: &Path, stamp: &Stamp) -> Option<Manifest> {
-    let file = cache_file(dir, exe);
+pub(crate) fn cache_load(
+    dir: &Path,
+    exe: &Path,
+    args: &[String],
+    build: &Build,
+) -> Option<Manifest> {
+    let file = cache_file(dir, exe, args);
     let meta = std::fs::metadata(&file).ok()?;
     let parsed = (|| -> Option<(CacheFile, Manifest)> {
         if meta.len() > CACHE_MAX_BYTES {
@@ -301,14 +362,21 @@ pub(crate) fn cache_load(dir: &Path, exe: &Path, stamp: &Stamp) -> Option<Manife
         }
         Some((cached, manifest)) => (cached.format == CACHE_FORMAT
             && Some(cached.path.as_str()) == exe.to_str()
-            && cached.stamp == *stamp)
+            && cached.args == args
+            && cached.build == *build)
             .then_some(manifest),
     }
 }
 
 /// Keep `manifest` as what this build of the program declares. A failure to write is not an error:
 /// the cache only saves a start.
-pub(crate) fn cache_store(dir: &Path, exe: &Path, stamp: &Stamp, manifest: &Manifest) {
+pub(crate) fn cache_store(
+    dir: &Path,
+    exe: &Path,
+    args: &[String],
+    build: &Build,
+    manifest: &Manifest,
+) {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let (Some(path), Ok(json)) = (
         exe.to_str(),
@@ -322,7 +390,8 @@ pub(crate) fn cache_store(dir: &Path, exe: &Path, stamp: &Stamp, manifest: &Mani
     let body = CacheFile {
         format: CACHE_FORMAT,
         path: path.to_string(),
-        stamp: *stamp,
+        args: args.to_vec(),
+        build: build.clone(),
         manifest: value,
     };
     let Ok(text) = serde_json::to_string(&body) else {
@@ -348,7 +417,7 @@ pub(crate) fn cache_store(dir: &Path, exe: &Path, stamp: &Stamp, manifest: &Mani
         .mode(0o600)
         .open(&tmp)
         .and_then(|mut f| io::Write::write_all(&mut f, text.as_bytes()))
-        .and_then(|()| std::fs::rename(&tmp, cache_file(dir, exe)));
+        .and_then(|()| std::fs::rename(&tmp, cache_file(dir, exe, args)));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -458,9 +527,13 @@ static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 struct Current {
     proc: Arc<ProcPlugin>,
-    stamp: Stamp,
-    /// The cache has to be written for this build (set when the program was rebuilt).
+    build: Build,
+    /// The cache has to be written for this build (set when the program was rebuilt, cleared once
+    /// a child of the new build has been started and the cache written).
     cache_stale: bool,
+    /// The manifest (as JSON) last written to the cache for this build, so that an `open` does not
+    /// write the same file again.
+    saved: Option<String>,
 }
 
 /// A plugin that is a program of its own, as the host registers it.
@@ -490,50 +563,79 @@ impl Plugin for ExternalPlugin {
                 ja: "konoma を終了しています",
             )));
         }
-        let (proc, store) = self.current_proc();
+        let (proc, build) = self.current_proc();
         let opened = proc.open(input, cx);
         if self.leaving() {
             // The exit path stopped the children before this call came back.
             proc.stop();
         }
-        if let Some((stamp, learned)) = store {
-            cache_store(
-                &self.env.cache_dir,
-                &self.exe,
-                &stamp,
-                learned.as_ref().unwrap_or(&self.manifest),
-            );
-        }
+        // After the open: the manifest the child declared is known only once it has started.
+        self.save_cache(&proc, build, opened.is_ok());
         opened
     }
 }
 
 impl ExternalPlugin {
-    /// The connection to use for an `open`: the existing one, or a new one when the program was
-    /// rebuilt since. The second part is what to write to the cache after the call, if anything.
-    fn current_proc(&self) -> (Arc<ProcPlugin>, Option<(Stamp, Option<Manifest>)>) {
-        let now = stamp_of(&self.exe).ok();
-        let mut cur = lock(&self.current);
-        if let Some(now) = now {
-            if now != cur.stamp {
+    /// The connection to use for an `open`: the existing one, or a new one when the program (or
+    /// a file named in its arguments) was rebuilt since. The second part is the build it belongs to.
+    fn current_proc(&self) -> (Arc<ProcPlugin>, Build) {
+        let now = build_of(&self.exe, &self.spec.args).ok();
+        let (proc, build, old) = {
+            let mut cur = lock(&self.current);
+            let mut old = None;
+            if let Some(now) = now.filter(|now| *now != cur.build) {
                 // A rebuilt program: the old child (and the sessions on it) go, the next child is
                 // the new build.
-                cur.proc.stop();
-                cur.proc = Arc::new(ProcPlugin::from_manifest(
+                let fresh = Arc::new(ProcPlugin::from_manifest(
                     self.manifest.clone(),
                     self.env.launch_of(&self.spec, &self.exe),
                     self.env.proc_config(),
                 ));
-                cur.stamp = now;
+                old = Some(std::mem::replace(&mut cur.proc, fresh));
+                cur.build = now;
                 cur.cache_stale = true;
+                cur.saved = None;
             }
+            (Arc::clone(&cur.proc), cur.build.clone(), old)
+        };
+        // Stopping waits for the child to leave (up to its grace): not with the lock held.
+        if let Some(old) = old {
+            old.stop();
         }
-        let learned = cur.proc.learned_manifest();
-        let store = (cur.cache_stale || learned.is_some()).then(|| (cur.stamp, learned));
-        if store.is_some() {
+        (proc, build)
+    }
+
+    /// Write the cache for `build` after an `open` on `proc`, if it is out of date: the program
+    /// was rebuilt and a child of the new build has started (`opened`, or it declared another
+    /// manifest), or the manifest it declared is not the one last written. What is written is the
+    /// manifest the child declared, read now (it is known only after the start).
+    fn save_cache(&self, proc: &Arc<ProcPlugin>, build: Build, opened: bool) {
+        let learned = proc.learned_manifest();
+        let started = opened || learned.is_some();
+        let manifest = learned.as_ref().unwrap_or(&self.manifest);
+        let Ok(json) = konoma_plugin::proc::manifest_to_json(manifest) else {
+            return;
+        };
+        {
+            let mut cur = lock(&self.current);
+            if !Arc::ptr_eq(&cur.proc, proc) || cur.build != build || !started {
+                // Rebuilt again meanwhile, or no child of this build has said what it declares.
+                return;
+            }
+            let changed = learned.is_some() && cur.saved.as_deref() != Some(json.as_str());
+            if !(cur.cache_stale || changed) {
+                return;
+            }
             cur.cache_stale = false;
+            cur.saved = Some(json);
         }
-        (Arc::clone(&cur.proc), store)
+        cache_store(
+            &self.env.cache_dir,
+            &self.exe,
+            &self.spec.args,
+            &build,
+            manifest,
+        );
     }
 
     fn leaving(&self) -> bool {
@@ -542,7 +644,12 @@ impl ExternalPlugin {
 
     /// Stop the child now (a later `open` starts a new one).
     pub(crate) fn stop(&self) {
-        lock(&self.current).proc.stop();
+        let proc = Arc::clone(&lock(&self.current).proc);
+        proc.stop();
+    }
+
+    fn proc(&self) -> Arc<ProcPlugin> {
+        Arc::clone(&lock(&self.current).proc)
     }
 
     /// Stop the child if it has been idle, judged at `now`. Whether it was stopped.
@@ -680,14 +787,28 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
             format!("{why}(読み込みません)"),
         )
     })?;
-    let stamp = stamp_of(&exe).map_err(|e| {
+    let relative = relative_file_args(&spec.args);
+    if !relative.is_empty() {
+        let list = relative.join("`, `");
+        return Err(fail(
+            format!(
+                "`{}`: the argument `{list}` is a relative path, but the program runs in a folder of its own; write the absolute path (not loaded)",
+                spec.command
+            ),
+            format!(
+                "`{}`: 引数 `{list}` は相対パスですが、プログラムは専用のフォルダで動きます。絶対パスで書いてください(読み込みません)",
+                spec.command
+            ),
+        ));
+    }
+    let build = build_of(&exe, &spec.args).map_err(|e| {
         fail(
             format!("`{}`: {e} (not loaded)", spec.command),
             format!("`{}`: {e}(読み込みません)", spec.command),
         )
     })?;
     let launch = env.launch_of(spec, &exe);
-    let (proc, manifest, cache_stale) = match cache_load(&env.cache_dir, &exe, &stamp) {
+    let (proc, manifest, cache_stale) = match cache_load(&env.cache_dir, &exe, &spec.args, &build) {
         Some(manifest) => (
             ProcPlugin::from_manifest(manifest.clone(), launch, env.proc_config()),
             manifest,
@@ -710,7 +831,7 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
                     )
                 })?;
             let manifest = proc.manifest();
-            cache_store(&env.cache_dir, &exe, &stamp, &manifest);
+            cache_store(&env.cache_dir, &exe, &spec.args, &build, &manifest);
             (proc, manifest, false)
         }
     };
@@ -737,8 +858,9 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
             env: env.clone(),
             current: Mutex::new(Current {
                 proc: Arc::new(proc),
-                stamp,
+                build,
                 cache_stale,
+                saved: None,
             }),
             closed: AtomicBool::new(false),
         }),
@@ -864,9 +986,14 @@ pub(crate) fn describe(token: &str) -> Vec<String> {
 
 /// Stop every child now (they start again at the next `open`).
 pub(crate) fn stop_all() {
-    for p in all_plugins() {
-        p.stop();
-    }
+    stop_plugins(&all_plugins());
+}
+
+/// Stop the children of `plugins` together: one wait for all of them (`ProcPlugin::stop_many`).
+fn stop_plugins(plugins: &[Arc<ExternalPlugin>]) {
+    let procs: Vec<Arc<ProcPlugin>> = plugins.iter().map(|p| p.proc()).collect();
+    let refs: Vec<&ProcPlugin> = procs.iter().map(|p| &**p).collect();
+    ProcPlugin::stop_many(&refs);
 }
 
 /// Konoma is leaving: stop every child and start no other. Called by every exit path
@@ -881,10 +1008,11 @@ pub(crate) fn shutdown() {
 /// that runs other tests at the same time).
 #[cfg(test)]
 pub(crate) fn shutdown_set(token: &str) {
-    for p in plugins_of(token) {
+    let plugins = plugins_of(token);
+    for p in &plugins {
         p.closed.store(true, Ordering::SeqCst);
-        p.stop();
     }
+    stop_plugins(&plugins);
 }
 
 /// Whether the process-wide shutting-down flag is up.
@@ -929,7 +1057,7 @@ pub(crate) fn reap_if_due_with_for_test(
 
 /// The throttle of [`reap_if_due`], with the work given: the thread `work` runs on, if it was
 /// started.
-fn reap_if_due_with(
+pub(crate) fn reap_if_due_with(
     now: Instant,
     work: impl FnOnce() + Send + 'static,
 ) -> Option<std::thread::JoinHandle<()>> {
@@ -951,8 +1079,15 @@ fn reap_if_due_with(
     let spawned = std::thread::Builder::new()
         .name("plugin-reap".into())
         .spawn(move || {
+            // Reset even if `work` panics, or no pass would ever run again.
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    BUSY.store(false, Ordering::SeqCst);
+                }
+            }
+            let _reset = Reset;
             work();
-            BUSY.store(false, Ordering::SeqCst);
         });
     match spawned {
         Ok(handle) => Some(handle),
@@ -1186,70 +1321,188 @@ mod tests {
     fn the_cache_round_trips_and_a_changed_stamp_is_a_miss() {
         let lab = Lab::new("cache_unit");
         let exe = exe_in(&lab, "prog", 0o755);
-        let stamp = stamp_of(&exe).unwrap();
-        assert!(cache_load(&lab.cache, &exe, &stamp).is_none());
-        cache_store(&lab.cache, &exe, &stamp, &sample_manifest());
+        let script = lab.root().join("script.py");
+        std::fs::write(&script, "print(1)").unwrap();
+        let args = vec![script.to_string_lossy().into_owned()];
+        let build = build_of(&exe, &args).unwrap();
+        assert_eq!(build.files.len(), 1, "the script is part of the build");
+        assert!(cache_load(&lab.cache, &exe, &args, &build).is_none());
+        cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
         assert_eq!(
-            cache_load(&lab.cache, &exe, &stamp).unwrap().id,
+            cache_load(&lab.cache, &exe, &args, &build).unwrap().id,
             "cache-unit"
         );
-        // Each part of the stamp, on its own, is a miss.
-        let variants = [
-            Stamp {
-                size: stamp.size + 1,
-                ..stamp
-            },
-            Stamp {
-                mtime_s: stamp.mtime_s + 1,
-                ..stamp
-            },
-            Stamp {
-                mtime_ns: stamp.mtime_ns + 1,
-                ..stamp
-            },
-            Stamp {
-                ino: stamp.ino + 1,
-                ..stamp
-            },
-        ];
+        // Each part of the stamp of the program and of the script, on its own, is a miss.
+        let parts = |s: Stamp| {
+            [
+                Stamp {
+                    size: s.size + 1,
+                    ..s
+                },
+                Stamp {
+                    mtime_s: s.mtime_s + 1,
+                    ..s
+                },
+                Stamp {
+                    mtime_ns: s.mtime_ns + 1,
+                    ..s
+                },
+                Stamp {
+                    ino: s.ino + 1,
+                    ..s
+                },
+            ]
+        };
+        let mut variants = Vec::new();
+        for v in parts(build.exe) {
+            variants.push(Build {
+                exe: v,
+                ..build.clone()
+            });
+        }
+        for v in parts(build.files[0].1) {
+            variants.push(Build {
+                files: vec![(build.files[0].0.clone(), v)],
+                ..build.clone()
+            });
+        }
+        variants.push(Build {
+            files: Vec::new(),
+            ..build.clone()
+        });
         for (i, v) in variants.iter().enumerate() {
-            cache_store(&lab.cache, &exe, &stamp, &sample_manifest());
-            assert!(cache_load(&lab.cache, &exe, v).is_none(), "part {i}");
+            cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
+            assert!(cache_load(&lab.cache, &exe, &args, v).is_none(), "part {i}");
         }
         // A program elsewhere has its own entry.
         let other = exe_in(&lab, "other", 0o755);
-        cache_store(&lab.cache, &exe, &stamp, &sample_manifest());
-        assert!(cache_load(&lab.cache, &other, &stamp_of(&other).unwrap()).is_none());
+        cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
+        let other_build = build_of(&other, &[]).unwrap();
+        assert!(cache_load(&lab.cache, &other, &[], &other_build).is_none());
+    }
+
+    #[test]
+    fn plugins_run_by_the_same_interpreter_have_their_own_cache_entries() {
+        let lab = Lab::new("cache_args");
+        let exe = exe_in(&lab, "interp", 0o755);
+        let a = lab.root().join("a.py");
+        let b = lab.root().join("b.py");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let args_a = vec![a.to_string_lossy().into_owned()];
+        let args_b = vec![b.to_string_lossy().into_owned()];
+        assert_ne!(
+            cache_file(&lab.cache, &exe, &args_a),
+            cache_file(&lab.cache, &exe, &args_b)
+        );
+        let (build_a, build_b) = (
+            build_of(&exe, &args_a).unwrap(),
+            build_of(&exe, &args_b).unwrap(),
+        );
+        cache_store(
+            &lab.cache,
+            &exe,
+            &args_a,
+            &build_a,
+            &Manifest::new("aaa", "1"),
+        );
+        cache_store(
+            &lab.cache,
+            &exe,
+            &args_b,
+            &build_b,
+            &Manifest::new("bbb", "1"),
+        );
+        assert_eq!(
+            cache_load(&lab.cache, &exe, &args_a, &build_a).unwrap().id,
+            "aaa"
+        );
+        assert_eq!(
+            cache_load(&lab.cache, &exe, &args_b, &build_b).unwrap().id,
+            "bbb"
+        );
+        // The arguments inside the file must be the plugin's too.
+        let file = cache_file(&lab.cache, &exe, &args_a);
+        let swapped = std::fs::read_to_string(&file)
+            .unwrap()
+            .replace(&args_a[0], &args_b[0]);
+        std::fs::write(&file, swapped).unwrap();
+        assert!(cache_load(&lab.cache, &exe, &args_a, &build_a).is_none());
+    }
+
+    #[test]
+    fn only_absolute_paths_of_regular_files_are_part_of_a_build() {
+        let lab = Lab::new("build_files");
+        let exe = exe_in(&lab, "interp", 0o755);
+        let script = lab.root().join("s.py");
+        std::fs::write(&script, "x").unwrap();
+        let args = vec![
+            "-u".to_string(),
+            "word".to_string(),
+            "s.py".to_string(),
+            lab.root().to_string_lossy().into_owned(),
+            lab.root().join("missing.py").to_string_lossy().into_owned(),
+            script.to_string_lossy().into_owned(),
+        ];
+        let build = build_of(&exe, &args).unwrap();
+        assert_eq!(
+            build.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+            vec![script.to_str().unwrap()]
+        );
+    }
+
+    #[test]
+    fn an_argument_with_a_slash_that_is_not_absolute_is_a_relative_path_and_a_word_is_not() {
+        let args: Vec<String> = [
+            "-u",
+            "--serve",
+            "-x/y",
+            "word",
+            "dir",
+            "here.py",
+            "/abs/x.py",
+            "~/x.py",
+            "./gone.py",
+            "../up.py",
+            "sub/x.py",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            relative_file_args(&args),
+            vec!["~/x.py", "./gone.py", "../up.py", "sub/x.py"]
+        );
     }
 
     #[test]
     fn a_cache_file_bigger_than_the_cap_or_of_another_format_is_not_used_and_goes() {
         let lab = Lab::new("cache_caps");
         let exe = exe_in(&lab, "prog", 0o755);
-        let stamp = stamp_of(&exe).unwrap();
-        cache_store(&lab.cache, &exe, &stamp, &sample_manifest());
-        let file = cache_file(&lab.cache, &exe);
+        let build = build_of(&exe, &[]).unwrap();
+        cache_store(&lab.cache, &exe, &[], &build, &sample_manifest());
+        let file = cache_file(&lab.cache, &exe, &[]);
         let good = std::fs::read_to_string(&file).unwrap();
         // Another format number.
         let other = good.replace(&format!("\"format\":{CACHE_FORMAT}"), "\"format\":999");
         assert_ne!(other, good);
         std::fs::write(&file, &other).unwrap();
-        assert!(cache_load(&lab.cache, &exe, &stamp).is_none());
+        assert!(cache_load(&lab.cache, &exe, &[], &build).is_none());
         // Padded past the cap.
         std::fs::write(
             &file,
             format!("{good}{}", " ".repeat(CACHE_MAX_BYTES as usize)),
         )
         .unwrap();
-        assert!(cache_load(&lab.cache, &exe, &stamp).is_none());
+        assert!(cache_load(&lab.cache, &exe, &[], &build).is_none());
         assert!(!file.exists(), "an unusable file is dropped");
         // The path inside must be the program's.
-        cache_store(&lab.cache, &exe, &stamp, &sample_manifest());
+        cache_store(&lab.cache, &exe, &[], &build, &sample_manifest());
         let moved = std::fs::read_to_string(&file)
             .unwrap()
             .replace(exe.to_str().unwrap(), "/somewhere/else");
         std::fs::write(&file, moved).unwrap();
-        assert!(cache_load(&lab.cache, &exe, &stamp).is_none());
+        assert!(cache_load(&lab.cache, &exe, &[], &build).is_none());
     }
 
     #[test]
@@ -1257,9 +1510,10 @@ mod tests {
         let lab = Lab::new("cache_mode");
         let exe = exe_in(&lab, "prog", 0o755);
         let dir = lab.cache.join("fresh");
-        cache_store(&dir, &exe, &stamp_of(&exe).unwrap(), &sample_manifest());
+        let build = build_of(&exe, &[]).unwrap();
+        cache_store(&dir, &exe, &[], &build, &sample_manifest());
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
-        assert_eq!(mode(&cache_file(&dir, &exe)) & 0o077, 0);
+        assert_eq!(mode(&cache_file(&dir, &exe, &[])) & 0o077, 0);
     }
 }

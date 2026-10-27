@@ -256,7 +256,7 @@ pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
 pub(crate) fn settings_of(table: &toml::Table) -> Settings {
     let mut out = Settings::new();
     for (k, v) in table {
-        if !HOST_PLUGIN_KEYS.contains(&k.as_str()) {
+        if !is_host_key(table, k) {
             out.set(k.clone(), value_of(v));
         }
     }
@@ -530,8 +530,18 @@ pub(crate) fn value_type_mismatch(
 /// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
 /// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`), both booleans, and
 /// `read_dirs` (a list of folders, see [`read_scope`]).
-pub(crate) const HOST_PLUGIN_KEYS: &[&str] =
-    &["enabled", "read_only", "read_dirs", "command", "args"];
+pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only", "read_dirs"];
+
+/// The keys that are the host's own only in the table of a program of its own (one with a
+/// `command`): the program to run and its arguments (`external::spec_of_table`). In the table of a
+/// plugin that runs in this process they are the plugin's own settings, if it declares them.
+pub(crate) const EXTERNAL_PLUGIN_KEYS: &[&str] = &["command", "args"];
+
+/// Whether `key` of `table` is read by the host rather than being a setting of the plugin.
+pub(crate) fn is_host_key(table: &toml::Table, key: &str) -> bool {
+    HOST_PLUGIN_KEYS.contains(&key)
+        || (table.contains_key("command") && EXTERNAL_PLUGIN_KEYS.contains(&key))
+}
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.

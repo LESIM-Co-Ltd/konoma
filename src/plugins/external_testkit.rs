@@ -54,6 +54,8 @@ pub(crate) struct Ctl {
 /// is shown as a text that names the settings, the language and the read scope the host sent.
 pub(crate) struct Demo {
     pub id: String,
+    /// The version the manifest declares.
+    pub version: String,
     pub ctl: Arc<Ctl>,
     /// Shows pictures (a media plugin to the host) instead of text.
     pub pictures: bool,
@@ -61,7 +63,7 @@ pub(crate) struct Demo {
 
 impl Plugin for Demo {
     fn manifest(&self) -> Manifest {
-        Manifest::new(self.id.clone(), "1.2.3")
+        Manifest::new(self.id.clone(), self.version.clone())
             .name(Tr::new("Demo child"))
             .shows(if self.pictures {
                 ViewKind::Image
@@ -139,6 +141,8 @@ pub(crate) struct Rig {
     pub kills: Arc<AtomicUsize>,
     /// The id the child declares.
     pub id: Arc<Mutex<String>>,
+    /// The version the child declares (a rebuilt program can declare another manifest).
+    pub version: Arc<Mutex<String>>,
     pub mode: Arc<Mutex<Mode>>,
     /// The child shows pictures instead of text.
     pub pictures: bool,
@@ -151,6 +155,7 @@ impl Rig {
             launches: Arc::default(),
             kills: Arc::default(),
             id: Arc::new(Mutex::new(id.to_string())),
+            version: Arc::new(Mutex::new("1.2.3".to_string())),
             mode: Arc::new(Mutex::new(Mode::Serve)),
             pictures: false,
         }
@@ -209,6 +214,7 @@ impl Rig {
         });
         let plugin = Demo {
             id: self.id.lock().unwrap().clone(),
+            version: self.version.lock().unwrap().clone(),
             ctl: Arc::clone(&self.ctl),
             pictures: self.pictures,
         };

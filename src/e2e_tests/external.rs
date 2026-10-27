@@ -962,3 +962,244 @@ fn e2e_ext_children_work_and_hand_off_under_the_hosts_private_places() {
     );
     assert!(env.cache_dir.ends_with("konoma/plugin-manifests"));
 }
+
+// ---- interpreters, rebuilt manifests, relative paths -----------------------------------------------
+
+fn args_of(items: &[&Path]) -> (&'static str, toml::Value) {
+    (
+        "args",
+        toml::Value::Array(
+            items
+                .iter()
+                .map(|p| toml::Value::String(p.to_string_lossy().into_owned()))
+                .collect(),
+        ),
+    )
+}
+
+use std::path::Path;
+
+#[test]
+fn e2e_ext_editing_the_script_of_an_interpreter_plugin_is_a_rebuild() {
+    let lab = Lab::new("script_edit");
+    let rig = Rig::new("ext-script");
+    lab.program("python-like", "interpreter");
+    let script = lab.progs.join("plugin.py");
+    std::fs::write(&script, "print(1)").unwrap();
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[(
+        "ext-script",
+        table("python-like", &[args_of(&[script.as_path()])]),
+    )]);
+    let token = external::install(&lab.env(&rig), &t, &[]);
+    let mut s = session(&lab, token, t.clone());
+    open_file(&mut s, "a.xd");
+    s.see("child says hello");
+    s.key('r');
+    assert_eq!(
+        (rig.launches(), rig.kills()),
+        (1, 0),
+        "same build: same child"
+    );
+
+    // Only the script changes; the interpreter is untouched.
+    std::fs::write(&script, "print('a longer script')").unwrap();
+    s.key('r');
+    s.see("child says hello");
+    assert_eq!(rig.launches(), 2, "started again from the edited script");
+    assert_eq!(rig.kills(), 1, "the old child was stopped");
+
+    // The cache follows the script: a restart with it unchanged is a hit.
+    let rig2 = Rig::new("ext-script");
+    let _ = external::install(&lab.env(&rig2), &t, &[]);
+    assert_eq!(rig2.launches(), 0);
+    // And a restart after one more edit is a miss.
+    std::fs::write(&script, "print('and longer still, again')").unwrap();
+    let rig3 = Rig::new("ext-script");
+    let _ = external::install(&lab.env(&rig3), &t, &[]);
+    assert_eq!(rig3.launches(), 1);
+}
+
+#[test]
+fn e2e_ext_two_plugins_of_one_interpreter_keep_their_own_cache_entries() {
+    let lab = Lab::new("two_scripts");
+    lab.program("python-like", "interpreter");
+    let (a, b) = (lab.progs.join("a.py"), lab.progs.join("b.py"));
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+    let t = tables(&[
+        (
+            "ext-two-a",
+            table("python-like", &[args_of(&[a.as_path()])]),
+        ),
+        (
+            "ext-two-b",
+            table("python-like", &[args_of(&[b.as_path()])]),
+        ),
+    ]);
+    let env_for = |ra: &Rig, rb: &Rig| {
+        let mut env = lab.env(ra);
+        let (fa, fb) = (ra.factory(), rb.factory());
+        env.launcher = Some(std::sync::Arc::new(move |spec, exe| match &spec.source {
+            external::Source::Config(id) if id == "ext-two-b" => fb(spec, exe),
+            _ => fa(spec, exe),
+        }));
+        env
+    };
+    let (ra, rb) = (Rig::new("ext-two-a"), Rig::new("ext-two-b"));
+    let token = external::install(&env_for(&ra, &rb), &t, &[]).unwrap();
+    assert_eq!(external::plugins_of(&token).len(), 2);
+    assert!(external::problems(&token, crate::i18n::Lang::En).is_empty());
+    assert_eq!(lab.cache_files().len(), 2, "{:?}", lab.cache_files());
+
+    // Both are hits the next time: neither overwrote the other's entry.
+    let (ra2, rb2) = (Rig::new("ext-two-a"), Rig::new("ext-two-b"));
+    let token2 = external::install(&env_for(&ra2, &rb2), &t, &[]).unwrap();
+    assert_eq!((ra2.launches(), rb2.launches()), (0, 0));
+    assert_eq!(external::plugins_of(&token2).len(), 2);
+    assert!(external::problems(&token2, crate::i18n::Lang::En).is_empty());
+}
+
+#[test]
+fn e2e_ext_a_relative_path_in_args_is_refused_with_the_reason() {
+    let lab = Lab::new("rel_args");
+    let rig = Rig::new("ext-rel");
+    lab.program("python-like", "interpreter");
+    for (n, arg) in ["./gone.py", "../up.py", "sub/plugin.py"]
+        .iter()
+        .enumerate()
+    {
+        let t = tables(&[(
+            "ext-rel",
+            table(
+                "python-like",
+                &[(
+                    "args",
+                    toml::Value::Array(vec![toml::Value::String((*arg).into())]),
+                )],
+            ),
+        )]);
+        let token = external::install(&lab.env(&rig), &t, &[]).unwrap();
+        assert!(external::plugins_of(&token).is_empty(), "{arg}");
+        let en = external::problems(&token, crate::i18n::Lang::En);
+        assert_eq!(en.len(), 1, "{arg}: {en:?}");
+        assert!(
+            en[0].contains("relative path") && en[0].contains(arg),
+            "{en:?}"
+        );
+        let ja = external::problems(&token, crate::i18n::Lang::Jp);
+        assert!(ja[0].contains("相対パス"), "{ja:?}");
+        assert_eq!(rig.launches(), 0, "{n}: nothing was started");
+    }
+    // Flags and plain words are not paths, even when a file of that name is in konoma's cwd (the
+    // lab's cwd is the programs folder): the same config loads the same wherever konoma starts.
+    std::fs::write(lab.progs.join("fast"), "x").unwrap();
+    let t = tables(&[(
+        "ext-rel",
+        table(
+            "python-like",
+            &[(
+                "args",
+                toml::Value::Array(vec![
+                    toml::Value::String("-u".into()),
+                    toml::Value::String("fast".into()),
+                ]),
+            )],
+        ),
+    )]);
+    let token = external::install(&lab.env(&rig), &t, &[]).unwrap();
+    assert_eq!(external::plugins_of(&token).len(), 1);
+}
+
+/// The rig's program is rebuilt and its child now declares version `9.9.9`.
+fn rebuilt_with_a_new_manifest(lab: &Lab, rig: &Rig, exe: &Path) {
+    crate::test_support::write_executable(exe, "v2 is a longer program");
+    *rig.version.lock().unwrap() = "9.9.9".into();
+    let _ = lab;
+}
+
+#[test]
+fn e2e_ext_a_rebuild_that_changes_the_manifest_saves_the_new_manifest_with_the_new_build() {
+    let lab = Lab::new("rebuild_manifest");
+    let rig = Rig::new("ext-mc");
+    let exe = lab.program("ext-mc-prog", "v1");
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[("ext-mc", table("ext-mc-prog", &[]))]);
+    let token = external::install(&lab.env(&rig), &t, &[]);
+    let mut s = session(&lab, token, t.clone());
+    open_file(&mut s, "a.xd");
+    assert_eq!(lab.cache_files().len(), 1);
+
+    rebuilt_with_a_new_manifest(&lab, &rig, &exe);
+    s.key('r');
+    s.see("child says hello");
+    assert_eq!(rig.launches(), 2);
+
+    // A restart: the entry of the new build holds what the new build declared.
+    let rig2 = Rig::new("ext-mc");
+    let token2 = external::install(&lab.env(&rig2), &t, &[]);
+    assert_eq!(rig2.launches(), 0, "a hit");
+    let s2 = session(&lab, token2, t.clone());
+    assert_eq!(
+        registry_of(&s2).manifest("ext-mc").unwrap().version,
+        "9.9.9",
+        "the new manifest, not the one of the build before"
+    );
+
+    // The cache is not written again by the opens that follow.
+    use std::os::unix::fs::MetadataExt;
+    let file = lab.cache_files().remove(0);
+    let before = std::fs::metadata(&file).unwrap().ino();
+    s.key('r');
+    s.key('r');
+    assert_eq!(rig.launches(), 2, "same child");
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().ino(),
+        before,
+        "not rewritten"
+    );
+}
+
+#[test]
+fn e2e_ext_a_rebuild_whose_child_does_not_start_leaves_the_cache_of_the_old_build() {
+    let lab = Lab::new("rebuild_broken");
+    let rig = Rig::new("ext-rbk");
+    let exe = lab.program("ext-rbk-prog", "v1");
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[("ext-rbk", table("ext-rbk-prog", &[]))]);
+    let token = external::install(&lab.env(&rig), &t, &[]);
+    let mut s = session(&lab, token, t.clone());
+    open_file(&mut s, "a.xd");
+
+    // The new build does not even say hello.
+    crate::test_support::write_executable(&exe, "v2 is a longer program");
+    *rig.mode.lock().unwrap() = Mode::Garbage;
+    s.key('r');
+    assert_eq!(rig.launches(), 2);
+
+    // Nothing is known of the new build, so the cache must not claim it declares the old manifest.
+    let rig2 = Rig::new("ext-rbk");
+    let _ = external::install(&lab.env(&rig2), &t, &[]);
+    assert_eq!(rig2.launches(), 1, "a miss: the new build is asked");
+}
+
+#[test]
+fn e2e_ext_a_panic_in_the_reap_work_does_not_stop_later_passes() {
+    let lab = Lab::new("reap_panic");
+    let rig = Rig::new("ext-rpanic");
+    lab.program("rpanic-prog", "v1");
+    let t = tables(&[("ext-rpanic", table("rpanic-prog", &[]))]);
+    let _token = external::install(&lab.env(&rig), &t, &[]).unwrap();
+    let t0 = Instant::now();
+    let h = external::reap_if_due_with(t0, || panic!("boom in the reap work")).expect("started");
+    assert!(h.join().is_err(), "the work panicked");
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let h = external::reap_if_due_with(
+        t0 + external::REAP_INTERVAL + Duration::from_secs(1),
+        move || {
+            let _ = tx.send(());
+        },
+    );
+    assert!(h.is_some(), "a later pass is not blocked for good");
+    rx.recv_timeout(PATIENCE).expect("and it ran");
+}

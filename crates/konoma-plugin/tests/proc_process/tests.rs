@@ -73,6 +73,18 @@ pub fn all() -> Vec<(&'static str, fn())> {
             no_fd_leak_to_a_grandchild,
         ),
         ("the_memory_watch_ends_a_child_over_the_limit", rss_watch),
+        (
+            "a_hung_child_and_its_grandchild_are_killed_with_the_group_after_the_grace",
+            hung_child_and_grandchild,
+        ),
+        (
+            "stopping_several_hung_children_together_takes_one_grace_not_one_each",
+            stop_many_takes_one_grace,
+        ),
+        (
+            "a_stop_while_the_child_is_starting_leaves_no_child",
+            stop_while_starting,
+        ),
     ]
 }
 
@@ -202,6 +214,14 @@ fn field(text: &str, key: &str) -> i32 {
         .find_map(|w| w.strip_prefix(&format!("{key}=")))
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| panic!("no {key} in {text:?}"))
+}
+
+/// Wait until the child has begun its `hang` call (it says so in the mark file of `<name>.t`).
+fn hang_started(dir: &Path, name: &str) {
+    let marks = dir.join(format!("{name}.marks"));
+    until("the child began to hang", 20, || {
+        std::fs::read_to_string(&marks).is_ok_and(|t| t.contains("hang-started"))
+    });
 }
 
 fn the_pid(pids: &Arc<Mutex<Vec<u32>>>) -> u32 {
@@ -531,7 +551,7 @@ fn host_gone_busy() {
     r.open(1, &dir.as_path().join("a.t"));
     // A call that never looks at its flag; the answer never comes.
     r.act(1, "hang");
-    std::thread::sleep(Duration::from_millis(300));
+    hang_started(dir.as_path(), "a");
     drop(r.to.take());
     let t0 = Instant::now();
     let s = wait_exit(&mut r.child, 30);
@@ -682,4 +702,177 @@ fn drop_panic_is_contained() {
         "drop\n"
     );
     gone(pid);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stopping children that do not leave, and a stop that meets a start
+// ---------------------------------------------------------------------------------------------
+
+/// A plugin with a short grace, one session on `<name>.t` that has started a `hang` call (on a
+/// thread of its own, which ends when the child is killed) and left a grandchild behind.
+struct Hung {
+    plugin: ProcPlugin,
+    pid: u32,
+    grandchild: i32,
+    call: std::thread::JoinHandle<()>,
+}
+
+fn hung(dir: &Path, name: &str, grace: Duration) -> Hung {
+    let (plugin, pids) = plugin(
+        Limits {
+            shutdown_grace: grace,
+            ..limits()
+        },
+        dir,
+        &[],
+    );
+    let mut s = open(&plugin, dir, &format!("{name}.t"));
+    let pid = the_pid(&pids);
+    let grandchild = field(&flash(&mut s, "grandchild"), "grandchild");
+    assert!(alive(grandchild), "the grandchild runs");
+    let call = std::thread::spawn(move || {
+        // Returns when the child is killed.
+        assert!(s.act("hang", &ActCx::bare()).is_err());
+    });
+    hang_started(dir, name);
+    Hung {
+        plugin,
+        pid,
+        grandchild,
+        call,
+    }
+}
+
+impl Hung {
+    fn assert_all_gone(self) {
+        self.call.join().expect("the call ended with the child");
+        gone(self.pid);
+        let gc = self.grandchild;
+        until("the grandchild was killed with the group", 10, || {
+            !alive(gc)
+        });
+    }
+}
+
+fn hung_child_and_grandchild() {
+    let dir = unique_tmp("kpp_hung_one");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let grace = Duration::from_millis(600);
+    let h = hung(dir.as_path(), "h", grace);
+    let t0 = Instant::now();
+    h.plugin.stop();
+    let took = t0.elapsed();
+    // The child is stuck in a call, so it did not leave on `Shutdown`: it was given the whole
+    // grace, and then the group was killed (the child and the grandchild with it).
+    assert!(took >= grace - Duration::from_millis(100), "{took:?}");
+    h.assert_all_gone();
+}
+
+fn stop_many_takes_one_grace() {
+    const N: usize = 4;
+    let dir = unique_tmp("kpp_hung_many");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let grace = Duration::from_secs(1);
+    let all: Vec<Hung> = (0..N)
+        .map(|i| hung(dir.as_path(), &format!("h{i}"), grace))
+        .collect();
+    let refs: Vec<&ProcPlugin> = all.iter().map(|h| &h.plugin).collect();
+    let t0 = Instant::now();
+    ProcPlugin::stop_many(&refs);
+    let took = t0.elapsed();
+    // One after another would be N graces. Together: one grace and the time to end each
+    // connection, which overlaps.
+    assert!(
+        took >= grace - Duration::from_millis(100),
+        "the children were given their grace: {took:?}"
+    );
+    assert!(
+        took < grace * 3,
+        "{N} hung children took {took:?}, one grace is {grace:?}"
+    );
+    for h in all {
+        h.assert_all_gone();
+    }
+}
+
+/// A launcher that tells the test it was called, then waits to be let go before it starts the
+/// real child: the plugin is in `Starting` meanwhile.
+struct Gated {
+    inner: Recording,
+    entered: std::sync::mpsc::Sender<()>,
+    go: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Launch for Gated {
+    fn launch(&self) -> std::io::Result<Spawned> {
+        let _ = self.entered.send(());
+        let _ = self
+            .go
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(20));
+        self.inner.launch()
+    }
+}
+
+fn stop_while_starting() {
+    for many in [false, true] {
+        let dir = unique_tmp("kpp_stop_starting");
+        std::fs::create_dir_all(dir.as_path()).unwrap();
+        std::env::set_var(CHILD_ENV, "1");
+        let pids = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let launch = Gated {
+            inner: Recording {
+                inner: CommandLaunch::new(exe(), ["--serve"]),
+                pids: Arc::clone(&pids),
+            },
+            entered: entered_tx,
+            go: Mutex::new(go_rx),
+        };
+        let cfg = Config {
+            limits: limits(),
+            scratch_root: dir.as_path().to_path_buf(),
+            host_version: "0.0.0-test".into(),
+            lang: "en".into(),
+        };
+        let p = Arc::new(ProcPlugin::from_manifest(
+            crate::child::ChildPlugin.manifest(),
+            launch,
+            cfg,
+        ));
+        let opener = {
+            let p = Arc::clone(&p);
+            let file = dir.as_path().join("a.t");
+            std::thread::spawn(move || {
+                p.open(
+                    Input::File {
+                        path: file,
+                        hint: None,
+                    },
+                    &OpenCx::bare(),
+                )
+                .is_err()
+            })
+        };
+        // The opener is inside the launch: the slot is `Starting`.
+        entered_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the start began");
+        if many {
+            ProcPlugin::stop_many(&[&*p]);
+        } else {
+            p.stop();
+        }
+        go_tx.send(()).unwrap();
+        assert!(
+            opener.join().unwrap(),
+            "the open that was starting ends in a failure (many={many})"
+        );
+        assert!(!p.is_running(), "many={many}");
+        let started = pids.lock().unwrap().clone();
+        assert_eq!(started.len(), 1, "the child was started (many={many})");
+        gone(started[0]);
+    }
 }

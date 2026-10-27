@@ -716,6 +716,52 @@ fn stop_ends_the_child_and_a_later_open_starts_another() {
 }
 
 #[test]
+fn a_panic_while_starting_does_not_leave_the_slot_starting_for_good() {
+    let scratch = unique_tmp("kp_start_panic");
+    let rig = Rig::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let launch = {
+        let (rig_launch, calls) = (rig.launch(), Arc::clone(&calls));
+        move || {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("the launcher panics (test)");
+            }
+            rig_launch()
+        }
+    };
+    let p = Arc::new(ProcPlugin::from_manifest(
+        test_manifest("test"),
+        launch,
+        config(patient_limits(), &scratch),
+    ));
+    // The first open panics inside the start; it must not take the slot with it.
+    let first = {
+        let p = Arc::clone(&p);
+        std::thread::spawn(move || {
+            let _ = open(&p);
+        })
+    };
+    assert!(
+        first.join().is_err(),
+        "the launcher's panic reached the opener"
+    );
+    // The second open must start a child, not wait for the one that is gone. It runs on a thread
+    // so that a hang is a failed assert, not a stuck test.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = {
+        let p = Arc::clone(&p);
+        std::thread::spawn(move || {
+            let ok = open(&p).is_ok();
+            let _ = tx.send(ok);
+        })
+    };
+    let ok = rx.recv_timeout(Duration::from_secs(20));
+    assert_eq!(ok, Ok(true), "the second open started a child");
+    second.join().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn from_manifest_launches_nothing_until_the_first_open() {
     let scratch = unique_tmp("kp_cached");
     let rig = Rig::new();
