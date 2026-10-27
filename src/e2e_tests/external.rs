@@ -765,8 +765,10 @@ fn e2e_ext_an_idle_child_is_stopped_by_reap_and_started_again_on_demand() {
     let mut s = session(&lab, Some(token.clone()), t);
     open_file(&mut s, "a.xd");
     s.see("child says hello");
-    // The file is closed: the session goes with it.
+    // The file is closed: the session goes with it, dropped on the reaper thread. Wait for that
+    // (an order, not a delay) before judging whether the child is idle.
     s.esc();
+    crate::app::flush_discards();
 
     // Judged at a moment after the idle time (no waiting): too early does nothing.
     let plugin = external::plugins_of(&token).remove(0);
@@ -829,6 +831,8 @@ fn e2e_ext_the_run_loop_entry_reaches_the_children_that_are_idle() {
     busy.join().unwrap();
     assert_eq!(rig.kills(), 0, "a live session keeps the child");
     s.esc();
+    // The session is dropped on the reaper thread: wait for that before judging idleness.
+    crate::app::flush_discards();
     let plugin = external::plugins_of(&token).remove(0);
     assert!(plugin.is_running());
     // Within the interval of the look above the entry does nothing; after it, it stops the child.

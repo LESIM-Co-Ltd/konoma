@@ -80,6 +80,9 @@ mod search;
 mod session_actions;
 mod tab_lifecycle;
 mod table_actions;
+/// Test-only: waits until the background reaper has dropped everything discarded so far.
+#[cfg(test)]
+pub(crate) use table_actions::flush_discards;
 mod text_plugin;
 
 use md_text::*;

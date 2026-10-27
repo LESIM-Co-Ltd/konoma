@@ -403,6 +403,8 @@ fn e2e_demo_clock_an_idle_child_is_reaped_and_a_new_process_serves_the_next_open
     let first = processes_of(&d.guard.exe);
     assert_eq!(first.len(), 1, "{first:?}");
     d.esc();
+    // The session is dropped on the reaper thread: wait for that before judging idleness.
+    crate::app::flush_discards();
     let idle_after = konoma_plugin::proc::client::Limits::default().idle_after;
     let later = std::time::Instant::now() + idle_after + std::time::Duration::from_secs(1);
     assert_eq!(external::reap_set_at(&d.guard.token, later), 1);
