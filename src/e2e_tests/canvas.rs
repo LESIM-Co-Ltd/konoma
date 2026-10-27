@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 /// What the stand-in draws.
 #[derive(Clone)]
-enum Draw {
+pub(super) enum Draw {
     /// A canvas of this fixed size with the test pattern (ASCII, wide characters, styles).
     Pattern { cols: u16, rows: u16 },
     /// The same pattern on a canvas filled with a blue background, so its edge can be seen.
@@ -41,7 +41,7 @@ struct Seen {
 }
 
 #[derive(Clone)]
-struct Painter {
+pub(super) struct Painter {
     id: String,
     draw: Draw,
     /// Declare `shows(Canvas)`; when false, `shows(Text)` is declared and a canvas still comes back.
@@ -65,7 +65,7 @@ struct Painter {
 }
 
 impl Painter {
-    fn new(id: &str, draw: Draw) -> Painter {
+    pub(super) fn new(id: &str, draw: Draw) -> Painter {
         Painter {
             id: id.to_string(),
             draw,
@@ -86,7 +86,7 @@ impl Painter {
         self
     }
 
-    fn with_acts(mut self) -> Painter {
+    pub(super) fn with_acts(mut self) -> Painter {
         self.acts = true;
         self
     }
@@ -295,13 +295,13 @@ impl Session for PainterSession {
 
 // ---- helpers -----------------------------------------------------------------------------------
 
-struct Opened {
-    s: Sim,
-    p: Painter,
-    _dir: crate::test_support::TmpDir,
+pub(super) struct Opened {
+    pub(super) s: Sim,
+    pub(super) p: Painter,
+    pub(super) _dir: crate::test_support::TmpDir,
 }
 
-fn open_with(name: &str, p: Painter, w: u16, h: u16, lang: &str) -> Opened {
+pub(super) fn open_with(name: &str, p: Painter, w: u16, h: u16, lang: &str) -> Opened {
     let dir = sandbox(name);
     std::fs::write(dir.join("a.pnt"), b"x").unwrap();
     let marker = test_plugins::register(name, Arc::new(p.clone()));

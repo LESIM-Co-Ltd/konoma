@@ -262,6 +262,65 @@ mod tests {
         buf
     }
 
+    /// The whole painted buffer (glyphs and styles) for a canvas that mixes plain ASCII, wide and
+    /// half-width kana, a control character, a style on a wide glyph and on its trailing cell.
+    fn mixed_canvas() -> CanvasView {
+        use konoma_plugin::{Color as C, Style as S};
+        let mut c = canvas_of(
+            12,
+            &[
+                "A", "日", "", "ｶﾞ", "", "\u{1b}", "b", "本", "", "c", "d", "e",
+            ],
+        );
+        c.cells[0].style = S::new().fg(C::Red).bold();
+        c.cells[1].style = S::new().fg(C::Rgb(10, 20, 30)).bg(C::Blue);
+        c.cells[2].style = S::new().bg(C::Red); // trailing half: must not be painted
+        c.cells[6].style = S::new().underlined();
+        c.cells[7].style = S::new().fg(C::Green);
+        c
+    }
+
+    #[test]
+    fn paint_snapshot_mixed_content_fully_inside_the_area() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 14, 3));
+        paint(&mut buf, Rect::new(1, 1, 12, 1), &mixed_canvas());
+        let got = crate::test_support::buffer_dump(&buf);
+        assert_eq!(
+            got,
+            r####" 0||
+ 1| A日ｶﾞ  b本cde|
+ 2||
+--- styles ---
+r1 c1..1 fg=Red bg=Reset mod=BOLD |A|
+r1 c2..3 fg=Rgb(10, 20, 30) bg=Blue mod=NONE |日|
+r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
+r1 c8..9 fg=Green bg=Reset mod=NONE |本|
+"####,
+            "paint output changed"
+        );
+    }
+
+    #[test]
+    fn paint_snapshot_mixed_content_cut_by_a_narrow_area() {
+        // 7 columns: the half-width kana pair ends at column 5, the wide "本" would need 2 and
+        // does not fit in the last one.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 9, 3));
+        paint(&mut buf, Rect::new(1, 1, 7, 1), &mixed_canvas());
+        let got = crate::test_support::buffer_dump(&buf);
+        assert_eq!(
+            got,
+            r####" 0||
+ 1| A日ｶﾞ  b|
+ 2||
+--- styles ---
+r1 c1..1 fg=Red bg=Reset mod=BOLD |A|
+r1 c2..3 fg=Rgb(10, 20, 30) bg=Blue mod=NONE |日|
+r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
+"####,
+            "paint output changed"
+        );
+    }
+
     #[test]
     fn paint_never_writes_a_control_character_even_if_check_was_bypassed() {
         // None of these would pass `CanvasView::check`; the host paints them anyway as spaces.

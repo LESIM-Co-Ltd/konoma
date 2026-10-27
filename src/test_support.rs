@@ -347,6 +347,53 @@ pub(crate) fn clear_test_trashed() {
     TRASHED.with(|t| t.borrow_mut().clear());
 }
 
+/// A buffer as text a snapshot test can pin: the rows as the terminal shows them (a wide glyph
+/// takes its cell and the next one counts as covered; trailing blanks are cut, `|` ends a row),
+/// then one line per run of equally styled cells whose style is not the default. A run is
+/// `row col..col fg bg mods |text|`, so a snapshot sees colors and attributes as well as glyphs.
+pub(crate) fn buffer_dump(buf: &ratatui::buffer::Buffer) -> String {
+    use ratatui::style::{Color, Modifier};
+    use unicode_width::UnicodeWidthStr;
+    let area = buf.area;
+    let mut rows = String::new();
+    let mut runs = String::new();
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        // (start col, style key, text) of the run being built.
+        let mut run: Option<(u16, (Color, Color, Modifier), String)> = None;
+        let mut flush = |run: &mut Option<(u16, (Color, Color, Modifier), String)>, end: u16| {
+            if let Some((start, (fg, bg, m), text)) = run.take() {
+                if (fg, bg, m) != (Color::Reset, Color::Reset, Modifier::empty()) {
+                    runs.push_str(&format!(
+                        "r{y} c{start}..{} fg={fg:?} bg={bg:?} mod={m:?} |{}|\n",
+                        end - 1,
+                        text.trim_end()
+                    ));
+                }
+            }
+        };
+        let mut x = area.left();
+        while x < area.right() {
+            let cell = &buf[(x, y)];
+            let sym = cell.symbol();
+            let w = sym.width().max(1) as u16;
+            line.push_str(sym);
+            let key = (cell.fg, cell.bg, cell.modifier);
+            match &mut run {
+                Some((_, k, text)) if *k == key => text.push_str(sym),
+                _ => {
+                    flush(&mut run, x);
+                    run = Some((x, key, sym.to_string()));
+                }
+            }
+            x += w;
+        }
+        flush(&mut run, x);
+        rows.push_str(&format!("{y:>2}|{}|\n", line.trim_end()));
+    }
+    format!("{rows}--- styles ---\n{runs}")
+}
+
 // ---------------------------------------------------------------------------------------------
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the

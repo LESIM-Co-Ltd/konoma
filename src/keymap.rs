@@ -30,6 +30,8 @@ mod context_tests;
 mod defaults_snapshot;
 #[cfg(test)]
 mod defaults_tests;
+#[cfg(test)]
+mod override_resolution;
 
 // =============================================================================
 // Motion (shared movement/scroll amount). Per-Surface interpretation lives on the dispatch_action side (Stage 3).

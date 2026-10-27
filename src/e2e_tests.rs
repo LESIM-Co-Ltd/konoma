@@ -20856,3 +20856,9 @@ fn e2e_markdown_inline_svg_refused_shows_the_reason_under_its_fallback() {
 mod survivors_f7;
 
 mod survivors_f8b;
+
+#[cfg(test)]
+mod help_footer_snapshot;
+
+#[cfg(test)]
+mod render_snapshot;
