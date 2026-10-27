@@ -139,3 +139,37 @@ impl Session for ChildSession {
         }
     }
 }
+
+/// The second plugin of a program that carries two (`KP_PROC_CHILD=multi`): files `*.s`; a file
+/// named `fail.s` makes the open fail with a message that names this plugin.
+pub struct SecondPlugin;
+
+impl Plugin for SecondPlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("proc-second", "4.5.6")
+            .shows(ViewKind::Text)
+            .bind(Bind::files(["*.s"]))
+    }
+
+    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if let Input::File { path, .. } = &input {
+            if path.file_name().and_then(|n| n.to_str()) == Some("fail.s") {
+                return Err(Failure::corrupt(Tr::new("second plugin refuses fail.s")));
+            }
+        }
+        Ok(Box::new(SecondSession))
+    }
+}
+
+struct SecondSession;
+
+impl Session for SecondSession {
+    fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Text(TextView {
+            source: TextSource::Owned("from the second plugin".to_string()),
+            styler: None,
+            file_lines: false,
+            syntax_name: None,
+        }))
+    }
+}

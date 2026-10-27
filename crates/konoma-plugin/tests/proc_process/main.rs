@@ -13,7 +13,14 @@ mod tests;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    if std::env::var_os(child::CHILD_ENV).is_some() {
+    if let Some(mode) = std::env::var_os(child::CHILD_ENV) {
+        // "multi": a program that carries two plugins (`export!(A, B)`).
+        if mode == "multi" {
+            return konoma_plugin::proc::cli_main_many(vec![
+                Box::new(child::ChildPlugin),
+                Box::new(child::SecondPlugin),
+            ]);
+        }
         return konoma_plugin::proc::cli_main(child::ChildPlugin);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();

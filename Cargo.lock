@@ -1946,9 +1946,11 @@ dependencies = [
 name = "konoma-plugin"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "globset",
  "konoma-test-support",
  "libc",
+ "ratatui",
  "rmp-serde",
  "serde",
  "serde_json",

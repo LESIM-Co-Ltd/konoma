@@ -561,6 +561,11 @@ USAGE:
     <program> --manifest    print what the plugin declares (JSON)
     <program> --version     print the plugin id and version
     <program> --help        print this text
+    <program> <file>        show the file in a terminal of its own (a program built with the
+                            `app` feature of konoma-plugin)
+
+A program that carries several plugins (`export!(A, B)`) serves, prints the manifest of and
+names one at a time: add `--plugin <id>` (`<program> --plugin <id> --serve`).
 ";
 
 /// Write `text` to standard output. A reader that left early (`| head`) is not an error worth a
@@ -578,11 +583,54 @@ fn print_out(text: &str) -> ExitCode {
     }
 }
 
-/// The `main` of a plugin program (what [`export!`](crate::export) emits).
+/// The `main` of a plugin program (what [`export!`](crate::export) emits for one plugin).
 pub fn cli_main<P: Plugin>(plugin: P) -> ExitCode {
+    cli_main_many(vec![Box::new(plugin)])
+}
+
+/// Take `--plugin <id>` out of the arguments. `Err` is the text of the refusal.
+fn take_plugin_option(args: &mut Vec<std::ffi::OsString>) -> Result<Option<String>, String> {
+    let mut found: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--plugin" {
+            let Some(v) = args.get(i + 1) else {
+                return Err("--plugin needs a plugin id".to_string());
+            };
+            let id = v
+                .to_str()
+                .ok_or_else(|| "the plugin id is not valid UTF-8".to_string())?
+                .to_string();
+            if found.is_some() {
+                return Err("--plugin is given twice".to_string());
+            }
+            found = Some(id);
+            args.drain(i..i + 2);
+        } else {
+            i += 1;
+        }
+    }
+    Ok(found)
+}
+
+/// The `main` of a program that carries one or more plugins (what [`export!`](crate::export)
+/// emits for `export!(A, B)`).
+///
+/// The protocol of [`serve`] is one plugin per process (the first reply carries one manifest), so
+/// with several plugins `--serve`, `--manifest` and `--version` need `--plugin <id>` to say which
+/// (`--version` alone lists them all). A file is not tied to one: it goes to the plugin the
+/// registry's rules pick, whichever it is.
+pub fn cli_main_many(mut plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
     use std::os::unix::ffi::OsStrExt;
     // The arguments of a program are bytes, not text: `args()` would panic on one that is not UTF-8.
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let chosen = match take_plugin_option(&mut args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("konoma plugin: {e}");
+            return ExitCode::from(2);
+        }
+    };
     // The host starts a program as `<command> <the user's args> --serve`, so `--serve` is the LAST
     // argument (a program run through an interpreter, `python3 plugin.py --serve`, has its own
     // arguments before it). Anything else is read from the first argument, as a person types it.
@@ -591,33 +639,78 @@ pub fn cli_main<P: Plugin>(plugin: P) -> ExitCode {
     } else {
         args.first().map(|a| a.as_bytes())
     };
+    // The one plugin a mode that speaks for a single plugin works on.
+    let pick = |plugins: &mut Vec<Box<dyn Plugin>>| -> Result<Box<dyn Plugin>, ExitCode> {
+        let ids: Vec<String> = plugins.iter().map(|p| p.manifest().id).collect();
+        let at = match &chosen {
+            Some(id) => ids.iter().position(|i| i == id).ok_or_else(|| {
+                eprintln!(
+                    "konoma plugin: this program has no plugin `{}` (it has: {})",
+                    id.chars()
+                        .filter(|c| !c.is_control())
+                        .take(64)
+                        .collect::<String>(),
+                    ids.join(", ")
+                );
+                ExitCode::from(2)
+            })?,
+            None if plugins.len() == 1 => 0,
+            None => {
+                eprintln!(
+                    "konoma plugin: this program has several plugins ({}); name one with --plugin <id>",
+                    ids.join(", ")
+                );
+                return Err(ExitCode::from(2));
+            }
+        };
+        Ok(plugins.swap_remove(at))
+    };
     match first {
-        Some(b"--serve") => match serve(plugin) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("konoma plugin: {e}");
-                ExitCode::FAILURE
+        Some(b"--serve") => {
+            let plugin = match pick(&mut plugins) {
+                Ok(p) => p,
+                Err(code) => return code,
+            };
+            match serve(plugin) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("konoma plugin: {e}");
+                    ExitCode::FAILURE
+                }
             }
-        },
-        Some(b"--manifest") => match super::manifest_to_json(&plugin.manifest()) {
-            Ok(json) => print_out(&format!("{json}\n")),
-            Err(e) => {
-                eprintln!("konoma plugin: {e}");
-                ExitCode::FAILURE
+        }
+        Some(b"--manifest") => {
+            let plugin = match pick(&mut plugins) {
+                Ok(p) => p,
+                Err(code) => return code,
+            };
+            match super::manifest_to_json(&plugin.manifest()) {
+                Ok(json) => print_out(&format!("{json}\n")),
+                Err(e) => {
+                    eprintln!("konoma plugin: {e}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Some(b"--version") => {
-            let m = plugin.manifest();
-            print_out(&format!("{} {}\n", m.id, m.version))
+            let all: Vec<_> = plugins.iter().map(|p| p.manifest()).collect();
+            let shown: Vec<_> = match &chosen {
+                Some(id) => all.iter().filter(|m| &m.id == id).collect(),
+                None => all.iter().collect(),
+            };
+            if shown.is_empty() {
+                eprintln!("konoma plugin: this program has no plugin of that id");
+                return ExitCode::from(2);
+            }
+            print_out(
+                &shown
+                    .iter()
+                    .map(|m| format!("{} {}\n", m.id, m.version))
+                    .collect::<String>(),
+            )
         }
         Some(b"--help" | b"-h") => print_out(HELP),
-        Some(other) if !other.starts_with(b"-") => {
-            eprintln!(
-                "konoma plugin: opening {:?} as a standalone app is not available in this version",
-                args[0]
-            );
-            ExitCode::from(2)
-        }
+        Some(other) if !other.starts_with(b"-") => open_as_app(plugins, &args),
         Some(_) => {
             eprintln!("konoma plugin: unknown option {:?}\n\n{HELP}", args[0]);
             ExitCode::from(2)
@@ -627,4 +720,32 @@ pub fn cli_main<P: Plugin>(plugin: P) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// `<program> <file>`: the standalone app (the `app` feature), or a refusal that says it is not
+/// built in.
+#[cfg(feature = "app")]
+fn open_as_app(plugins: Vec<Box<dyn Plugin>>, args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() > 1 {
+        eprintln!("konoma plugin: give one file to open, not {}", args.len());
+        return ExitCode::from(2);
+    }
+    let plugins: Vec<std::sync::Arc<dyn Plugin>> =
+        plugins.into_iter().map(std::sync::Arc::from).collect();
+    match crate::app::run(plugins, std::path::Path::new(&args[0])) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("konoma plugin: {e}");
+            ExitCode::from(e.exit_code())
+        }
+    }
+}
+
+#[cfg(not(feature = "app"))]
+fn open_as_app(_plugins: Vec<Box<dyn Plugin>>, args: &[std::ffi::OsString]) -> ExitCode {
+    eprintln!(
+        "konoma plugin: opening {:?} as a standalone app is not available in this version",
+        args[0]
+    );
+    ExitCode::from(2)
 }
