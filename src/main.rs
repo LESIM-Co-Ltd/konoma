@@ -349,7 +349,7 @@ fn main() -> Result<()> {
         Startup::Plugins => {
             // Reading the config is all it needs; the terminal is never touched.
             let (mut cfg, _) = config::Config::load_reporting();
-            let lang = i18n::Lang::resolve(&cfg.ui.lang);
+            let lang = i18n::resolve_lang(&cfg.ui.lang);
             cfg.external_plugins = plugins::external::install(
                 &plugins::external::Env::production(lang),
                 &cfg.plugins,
@@ -369,7 +369,7 @@ fn main() -> Result<()> {
     // that is not cached is asked for its manifest once (bounded, in parallel). What failed is
     // said in the start-up message (`Config::plugin_report`).
     cfg.external_plugins = plugins::external::install(
-        &plugins::external::Env::production(i18n::Lang::resolve(&cfg.ui.lang)),
+        &plugins::external::Env::production(i18n::resolve_lang(&cfg.ui.lang)),
         &cfg.plugins,
         &dev_plugins,
     );

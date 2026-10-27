@@ -123,53 +123,7 @@ impl Bookmarks {
     }
 }
 
-/// Shared XDG base-dir resolution rule, used by all three of konoma's on-disk config/cache
-/// locations: bookmarks/session storage here (`default_base`), the config file path
-/// (`config::dirs_config_path`), and the image-cache root (`app::cache_root`). The rule: the XDG
-/// variable (`XDG_CONFIG_HOME` / `XDG_CACHE_HOME`) wins when it is set and non-empty; otherwise
-/// `$HOME/<home_suffix>`; otherwise `None`.
-///
-/// Before this helper existed the three call sites disagreed: `app::cache_root` already honored its
-/// XDG variable, but this module's `default_base` and `config::dirs_config_path` silently ignored
-/// `XDG_CONFIG_HOME` entirely — and, the more serious bug, `default_base` fell back to
-/// `PathBuf::default()` (`.unwrap_or_default()`) when `HOME` was unset, which is an *empty* path:
-/// `PathBuf::new().join(".config/konoma")` yields the **relative** path `.config/konoma`, so a
-/// `HOME`-less launch (a systemd unit, `su` without `-`, a minimal container) silently wrote
-/// `bookmarks.toml`/session files into whatever directory konoma happened to be started from
-/// (`config::dirs_config_path` degraded more safely to `None`, since it is read-only and never
-/// writes anywhere when that happens).
-///
-/// Takes the two env-var values as parameters instead of reading them itself, purely so it is
-/// testable without mutating process-wide environment variables: `std::env::var_os` reads process
-/// state shared by every test thread, so a test that called `std::env::set_var("HOME", ..)` would
-/// affect every other test running concurrently — including the ~340 `App::new` call sites, each of
-/// which resolves a `Bookmarks` base through this same rule on construction.
-pub(crate) fn xdg_base_dir(
-    xdg_value: Option<&std::ffi::OsStr>,
-    home_value: Option<&std::ffi::OsStr>,
-    home_suffix: &str,
-) -> Option<PathBuf> {
-    if let Some(x) = xdg_value {
-        if !x.is_empty() {
-            return Some(PathBuf::from(x));
-        }
-    }
-    let home = home_value?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(home).join(home_suffix))
-}
-
-/// Config-scope base directory (`$XDG_CONFIG_HOME`, or `$HOME/.config`, or `None`). The impure,
-/// real-env-reading wrapper around `xdg_base_dir`; shared with `config::dirs_config_path`.
-pub(crate) fn xdg_config_home() -> Option<PathBuf> {
-    xdg_base_dir(
-        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        ".config",
-    )
-}
+pub(crate) use konoma_base::xdg::{xdg_base_dir, xdg_config_home};
 
 /// Pure core of `default_base`: given the already-resolved config-scope base (or `None` when neither
 /// `XDG_CONFIG_HOME` nor `HOME` is available), appends `konoma`. Falls back to the system temp

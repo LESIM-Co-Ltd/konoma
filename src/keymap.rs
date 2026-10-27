@@ -797,14 +797,7 @@ pub fn scheme_from_str(s: &str) -> KeyScheme {
     }
 }
 
-/// Raw representation of the config file's `[keys.<context>]` (context name → (chord string → action string)).
-/// In Stage 2, config/mod.rs uses serde to populate this type and passes it to App. The keymap layer does not depend on serde.
-#[derive(Debug, Clone, Default)]
-pub struct KeysFileConfig {
-    /// Context name (`global`, `tree`, `text`, `git.changes`, ...; the old surface names such as
-    /// `preview_text` are read too) → (chord string → action string).
-    pub surfaces: HashMap<String, HashMap<String, String>>,
-}
+pub use konoma_host_core::keys::KeysFileConfig;
 
 /// One key conflict detected at startup (#17 / FR-8).
 /// The startup flash (`App::keymap_report`) shows the count and the first conflict's key, `kept`

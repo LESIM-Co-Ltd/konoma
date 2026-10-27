@@ -2260,8 +2260,19 @@ fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Ta
 #[test]
 fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
     let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/mod.rs");
-    let source = std::fs::read_to_string(&src_path)
+    let mut source = std::fs::read_to_string(&src_path)
         .unwrap_or_else(|e| panic!("cannot read src/config/mod.rs: {e}"));
+    // `EditorConfig` and `KeysConfig` live in the shared `konoma-host-core` crate now; scan its
+    // sources too so their field lists are still read live.
+    for shared in ["editor.rs", "keys.rs"] {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/konoma-host-core/src")
+            .join(shared);
+        source.push('\n');
+        source.push_str(
+            &std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {p:?}: {e}")),
+        );
+    }
 
     // (TOML path, owning struct). The field *list* for each is read live from `source` above, but
     // which struct a nested path belongs to (`ui.sort` -> `SortConfig`) is structural knowledge a
