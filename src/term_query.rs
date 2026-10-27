@@ -209,16 +209,18 @@ fn poll_millis(remaining: Duration) -> i32 {
 /// interrupts the wait, the time left is recomputed from the absolute deadline, so a stream of
 /// signals cannot stretch the wait.
 fn wait_readable(fd: RawFd, remaining: Duration) -> io::Result<bool> {
-    wait_readable_with(fd, remaining, |p, ms| {
+    wait_readable_with(fd, remaining, Instant::now, |p, ms| {
         // SAFETY: one valid pollfd.
         unsafe { libc::poll(p, 1, ms) }
     })
 }
 
-/// `wait_readable` with the `poll(2)` call injected (a test makes it fail with EINTR).
+/// `wait_readable` with the clock and the `poll(2)` call injected (a test makes poll fail with
+/// EINTR and advances a fake clock, so it never depends on real elapsed time).
 fn wait_readable_with(
     fd: RawFd,
     remaining: Duration,
+    mut now: impl FnMut() -> Instant,
     mut poll: impl FnMut(&mut libc::pollfd, i32) -> i32,
 ) -> io::Result<bool> {
     let mut p = libc::pollfd {
@@ -226,14 +228,14 @@ fn wait_readable_with(
         events: libc::POLLIN,
         revents: 0,
     };
-    let deadline = Instant::now() + remaining;
+    let deadline = now() + remaining;
     let mut ms = poll_millis(remaining);
     loop {
         let n = poll(&mut p, ms);
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {
-                let left = deadline.saturating_duration_since(Instant::now());
+                let left = deadline.saturating_duration_since(now());
                 if left.is_zero() {
                     return Ok(false);
                 }
@@ -1100,25 +1102,26 @@ mod tests {
 
     #[test]
     fn eintr_does_not_stretch_the_deadline() {
-        // Every poll is "interrupted" and takes 40 ms; with a 150 ms budget the wait must give up
-        // after about four calls, not retry the full budget each time.
-        let mut calls = 0;
+        // Every poll is "interrupted" and takes 40 ms on a fake clock (no real sleeping, so a
+        // loaded CI machine cannot change the count). With a 150 ms budget the wait must ask for
+        // what is left each time and give up after exactly four calls.
+        let clock = std::cell::Cell::new(Instant::now());
         let mut asked = Vec::new();
-        let started = Instant::now();
-        let r = wait_readable_with(0, Duration::from_millis(150), |_, ms| {
-            calls += 1;
-            asked.push(ms);
-            std::thread::sleep(Duration::from_millis(40));
-            // SAFETY: sets errno for the caller's last_os_error().
-            unsafe { *errno_ptr() = libc::EINTR };
-            -1
-        })
+        let r = wait_readable_with(
+            0,
+            Duration::from_millis(150),
+            || clock.get(),
+            |_, ms| {
+                asked.push(ms);
+                clock.set(clock.get() + Duration::from_millis(40));
+                // SAFETY: sets errno for the caller's last_os_error().
+                unsafe { *errno_ptr() = libc::EINTR };
+                -1
+            },
+        )
         .unwrap();
         assert!(!r);
-        assert!(started.elapsed() < Duration::from_millis(1000));
-        assert!((3..=5).contains(&calls), "{calls} calls");
-        // Each retry asks for what is left, not the original budget again.
-        assert!(asked.windows(2).all(|w| w[1] + 30 <= w[0]), "{asked:?}");
+        assert_eq!(asked, [150, 110, 70, 30]);
     }
 
     #[cfg(target_os = "macos")]
