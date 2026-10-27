@@ -10,7 +10,7 @@
 - [ ] `cargo fmt --all` is clean
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` (git feature) passes
 - [ ] `cargo clippy --workspace --all-targets --no-default-features -- -D warnings` passes
-- [ ] `cargo nextest run --workspace` and `cargo nextest run --workspace --no-default-features` are green, and so are the doctests (`cargo test --workspace --doc`, with and without `--no-default-features`)
+- [ ] `cargo nextest run --workspace` and the doctests (`cargo test --workspace --doc`) are green, and so is `cargo nextest run --no-default-features -p konoma -p konoma-vcs-core -p konoma-widgets`
 - [ ] Behavior change is covered by a test (or the reason it can't be is noted)
 - [ ] `CHANGELOG.md` updated under `[Unreleased]` for user-facing changes
 - [ ] Docs updated if a key, config option, or preview kind changed

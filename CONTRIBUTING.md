@@ -30,10 +30,13 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo nextest run --workspace               # install once: cargo install cargo-nextest --locked
-cargo nextest run --workspace --no-default-features
 cargo test --workspace --doc                # nextest does not run doctests
-cargo test --workspace --doc --no-default-features
+cargo nextest run --no-default-features -p konoma -p konoma-vcs-core -p konoma-widgets
 ```
+
+`--no-default-features` changes only `konoma`, `konoma-vcs-core` and `konoma-widgets` (the crates
+that see the `git` feature); every other crate builds the same test binary either way, so the
+no-git tests are run for those three. CI runs the whole suite for both feature sets.
 
 The repository is a Cargo workspace: the `konoma` binary at the root (`src/`) plus the
 host-independent engines under `crates/` — `konoma-base` (small shared utilities),
