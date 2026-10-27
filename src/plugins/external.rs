@@ -434,11 +434,19 @@ impl Env {
         BoxedLaunch(match &self.launcher {
             Some(make) => make(spec, exe),
             None => Box::new(
-                CommandLaunch::new(exe, spec.args.iter().map(OsString::from))
-                    .with_work_dir(&self.work_dir),
+                CommandLaunch::new(exe, serve_args(&spec.args)).with_work_dir(&self.work_dir),
             ),
         })
     }
+}
+
+/// The arguments of a child: the user's `args`, then `--serve` (always, once, last), so that
+/// `command = "python3", args = ["plugin.py"]` runs `python3 plugin.py --serve`.
+fn serve_args(user: &[String]) -> Vec<OsString> {
+    user.iter()
+        .map(OsString::from)
+        .chain(std::iter::once(OsString::from("--serve")))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------

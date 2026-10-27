@@ -13,7 +13,8 @@ All notable changes to konoma are documented in this file. The format is based o
   program's real path, size, mtime and inode), so starting konoma does not run it; the program is started when a file it
   takes is opened, stopped when idle, started again after it is rebuilt (`r`), and stopped when konoma exits. A program that
   is missing, does not start, does not answer in 5 seconds or whose id is taken is left out, and the start-up message says
-  why. It is a user's plugin: it reads only the tab's folder, the shown file's folder and `read_dirs`. `konoma --plugins`
+  why. konoma starts the program as `<command> <args> --serve` (it adds `--serve` itself, last, so a program run through an
+  interpreter works too). It is a user's plugin: it reads only the tab's folder, the shown file's folder and `read_dirs`. `konoma --plugins`
   lists these programs and their commands.
 - **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
   `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.

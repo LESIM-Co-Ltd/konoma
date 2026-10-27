@@ -583,7 +583,14 @@ pub fn cli_main<P: Plugin>(plugin: P) -> ExitCode {
     use std::os::unix::ffi::OsStrExt;
     // The arguments of a program are bytes, not text: `args()` would panic on one that is not UTF-8.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let first = args.first().map(|a| a.as_bytes());
+    // The host starts a program as `<command> <the user's args> --serve`, so `--serve` is the LAST
+    // argument (a program run through an interpreter, `python3 plugin.py --serve`, has its own
+    // arguments before it). Anything else is read from the first argument, as a person types it.
+    let first = if args.last().map(|a| a.as_bytes()) == Some(b"--serve") {
+        Some(&b"--serve"[..])
+    } else {
+        args.first().map(|a| a.as_bytes())
+    };
     match first {
         Some(b"--serve") => match serve(plugin) {
             Ok(()) => ExitCode::SUCCESS,

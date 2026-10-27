@@ -32,6 +32,10 @@ pub fn all() -> Vec<(&'static str, fn())> {
             launch_group_rlimit,
         ),
         (
+            "serve_is_found_after_the_arguments_a_user_gave_the_program",
+            serve_after_the_users_arguments,
+        ),
+        (
             "stop_kills_the_group_and_waits_for_the_child",
             stop_kills_and_waits,
         ),
@@ -144,8 +148,9 @@ impl Launch for Recording {
 fn plugin(limits: Limits, scratch: &Path, extra: &[&str]) -> (ProcPlugin, Arc<Mutex<Vec<u32>>>) {
     std::env::set_var(CHILD_ENV, "1");
     let pids = Arc::new(Mutex::new(Vec::new()));
-    let mut args = vec!["--serve"];
-    args.extend_from_slice(extra);
+    // The order the host uses: the user's arguments, then `--serve` last.
+    let mut args: Vec<&str> = extra.to_vec();
+    args.push("--serve");
     let launch = Recording {
         inner: CommandLaunch::new(exe(), args),
         pids: Arc::clone(&pids),
@@ -256,6 +261,21 @@ fn launch_group_rlimit() {
         "and it is not the host's group"
     );
     assert_eq!(field(&info, "core"), 0, "no core dump: {info}");
+    drop(s);
+    p.stop();
+    gone(pid);
+}
+
+/// The host starts `<command> <user args> --serve`: a program given arguments of its own before
+/// `--serve` (an interpreter and its script) must still serve.
+fn serve_after_the_users_arguments() {
+    let dir = unique_tmp("kpp_serve_last");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let (p, pids) = plugin(limits(), dir.as_path(), &["plugin.py", "-x"]);
+    let mut s = open(&p, dir.as_path(), "a.t");
+    let info = flash(&mut s, "info");
+    let pid = the_pid(&pids);
+    assert_eq!(field(&info, "pid"), pid as i32, "{info}");
     drop(s);
     p.stop();
     gone(pid);

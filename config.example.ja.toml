@@ -501,7 +501,9 @@ code_theme = "TwoDark"
 # それ自身がプログラムであるプラグイン(言語は問わない。stdin/stdout で konoma のプラグインプロトコルを話す):
 #   command = "my-viewer"   プログラム。`/` の無い名前は PATH から探し、パスはそのまま使う。シェルは通さない。
 #                           id は表の名前で、プログラムが宣言する id と同じでなければならない。
-#   args = ["--fast"]       引数(省略可)。
+#   args = ["--fast"]       引数(省略可)。konoma は `<command> <args> --serve` の形で起動する。`--serve` は
+#                           konoma が最後に自分で付ける(書かない)。`command = "python3"`、
+#                           `args = ["plugin.py"]` なら `python3 plugin.py --serve` で動く。
 # この種の表のほかのキー(enabled・read_only・read_dirs 以外)は、プログラムの設定としてそのまま渡される。
 # konoma はプログラムの manifest を 1 回だけ尋ねて保存する(プログラムの実体のパス・サイズ・更新時刻・inode が鍵)ので、
 # 起動時にはプログラムを動かさない。起動するのは、それが受け持つファイルを開いた時で、使われなければ止まり、

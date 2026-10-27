@@ -541,7 +541,9 @@ code_theme = "TwoDark"
 # A plugin that is a program of its own (any language; it speaks konoma's plugin protocol on stdin/stdout):
 #   command = "my-viewer"   the program. A name without `/` is searched on PATH, a path is taken as it is. It is not run
 #                           through a shell. The id is the table's name and must be the id the program declares.
-#   args = ["--fast"]       its arguments (optional).
+#   args = ["--fast"]       its arguments (optional). konoma starts the program as `<command> <args> --serve`: it
+#                           adds `--serve` itself, last (do not write it), so `command = "python3"`,
+#                           `args = ["plugin.py"]` runs `python3 plugin.py --serve`.
 # The other keys of such a table (besides enabled, read_only, read_dirs) are sent to the program as its settings.
 # konoma asks the program for its manifest once and keeps the answer (keyed by the program's real path, size, mtime
 # and inode), so a start-up does not run it; it is started when a file it takes is opened, stopped when idle, and
