@@ -88,6 +88,7 @@ pub mod keys;
 pub mod manifest;
 pub mod prelude;
 pub mod registry;
+pub mod scope;
 pub mod session;
 pub mod settings;
 pub mod style;
@@ -101,6 +102,7 @@ pub use manifest::{
     Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
     Unavailable, Verb, VerbDecl, ViewKind,
 };
+pub use scope::{ReadScope, ScopeError};
 pub use session::{
     ActCx, Cancel, ColorDepth, Failure, FailureKind, OpenCx, Outcome, Plugin, Session, TermCaps,
     ViewCx,

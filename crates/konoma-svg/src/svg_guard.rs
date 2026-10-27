@@ -485,6 +485,17 @@ fn looks_raster(data: &[u8]) -> bool {
 /// checks protect is that process from dying on the common hostile shapes, with a reason, instead
 /// of by its stack overflowing.
 pub fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
+    options_within(resources_dir, None)
+}
+
+/// [`options`], with the files a drawing may read limited to `roots` (real, symbolic-link-free
+/// directories): every `<image href>` -- relative or absolute, in this document or in an SVG it
+/// references -- is resolved to its real path and read only when that path is inside one of
+/// them, compared component by component. `None` is no limit (konoma's own previews).
+pub fn options_within(
+    resources_dir: Option<PathBuf>,
+    roots: Option<std::sync::Arc<[PathBuf]>>,
+) -> usvg::Options<'static> {
     let default_data = usvg::ImageHrefResolver::default_data_resolver();
     let default_string = usvg::ImageHrefResolver::default_string_resolver();
     // The file resolver hands an SVG file to the data resolver (`image/svg+xml`), so the second
@@ -513,7 +524,22 @@ pub fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
                 {
                     return None;
                 }
-                let path = opts.get_abs_path(std::path::Path::new(href));
+                let mut path = opts.get_abs_path(std::path::Path::new(href));
+                let mut href = href;
+                let real_href;
+                if let Some(roots) = &roots {
+                    // Judge the real path and read that same path (not the one asked about), so a
+                    // link swapped after the check cannot lead out of the scope.
+                    let Ok(real) = std::fs::canonicalize(&path) else {
+                        return None;
+                    };
+                    if !roots.iter().any(|r| real.starts_with(r)) {
+                        return None;
+                    }
+                    real_href = real.to_string_lossy().into_owned();
+                    href = &real_href;
+                    path = real;
+                }
                 match std::fs::metadata(&path) {
                     Ok(m) if m.is_file() && m.len() <= MAX_EXTERNAL_IMAGE_BYTES => {}
                     _ => return None,
@@ -557,6 +583,16 @@ pub fn load_tree<T: Send>(
     resources_dir: Option<PathBuf>,
     then: impl FnOnce(usvg::Tree) -> Result<T, SvgFail> + Send,
 ) -> Result<T, SvgFail> {
+    load_tree_within(data, resources_dir, None, then)
+}
+
+/// [`load_tree`] with the readable files limited to `roots` (see [`options_within`]).
+pub fn load_tree_within<T: Send>(
+    data: &[u8],
+    resources_dir: Option<PathBuf>,
+    roots: Option<std::sync::Arc<[PathBuf]>>,
+    then: impl FnOnce(usvg::Tree) -> Result<T, SvgFail> + Send,
+) -> Result<T, SvgFail> {
     // roxmltree recurses on nesting, so depth is bounded by a flat scan *before* parsing, and
     // the stack decision comes from it (on the unzipped text for an svgz).
     let deep = scan_depth(&plain_bytes(data)?)? > INLINE_DEPTH;
@@ -565,7 +601,7 @@ pub fn load_tree<T: Send>(
         let text = std::str::from_utf8(&bytes).map_err(|_| SvgFail::Invalid)?;
         let doc = parse_xml(text)?;
         check_xml(&doc)?;
-        let opt = options(resources_dir);
+        let opt = options_within(resources_dir, roots);
         let tree = usvg::Tree::from_xmltree(&doc, &opt).map_err(|_| SvgFail::Invalid)?;
         then(tree)
     })

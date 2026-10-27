@@ -14,6 +14,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use crate::keys::{sanitize, KeyIssue};
 use crate::manifest::{ApiVersion, Manifest, Priority, Target};
 use crate::session::Plugin;
+use crate::settings::Value;
 
 /// Who registered a plugin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,18 @@ pub const MAX_SETTINGS: usize = 256;
 pub const MAX_BINDS: usize = 1024;
 /// The most screens a manifest may declare.
 pub const MAX_SCREENS: usize = 64;
+/// The most targets one bind may list.
+pub const MAX_TARGETS_PER_BIND: usize = 512;
+/// The longest target (a glob, a file name, a MIME type, a content or embed name), in **bytes**.
+/// Generous: a brace glob of dozens of extensions fits.
+pub const MAX_TARGET_BYTES: usize = 1024;
+/// The most values a setting's default may hold in all (a list or a table counts every entry,
+/// nested ones included).
+pub const MAX_DEFAULT_NODES: usize = 1024;
+/// The longest key of a table inside a setting's default, in bytes.
+pub const MAX_DEFAULT_KEY_BYTES: usize = 256;
+/// The deepest a setting's default may nest (lists and tables inside lists and tables).
+pub const MAX_DEFAULT_DEPTH: usize = 8;
 /// The longest version string kept (longer is cut).
 pub const MAX_VERSION_CHARS: usize = 64;
 
@@ -62,6 +75,75 @@ fn display_name(s: &str) -> String {
         .collect()
 }
 
+/// Whether `c` may not appear in a pattern or an identifier: any control character, or the kitty
+/// placeholder U+10EEEE.
+fn is_unclean(c: char) -> bool {
+    c.is_control() || c == '\u{10EEEE}'
+}
+
+/// What is wrong with a target of bind number `bind`: too long, or with a control character (a
+/// pattern cannot be cut or cleaned without changing what it matches, so the plugin is refused).
+/// The message names the bind and the reason and **never carries the target's text** (it can hold
+/// anything a terminal would act on, bidi controls included).
+fn target_problem(bind: usize, t: &Target) -> Option<String> {
+    let (Target::Glob(s)
+    | Target::FileName(s)
+    | Target::Mime(s)
+    | Target::Content(s)
+    | Target::Embed(s)) = t;
+    if s.len() > MAX_TARGET_BYTES {
+        return Some(format!(
+            "bind {bind} has a target that is too long ({} bytes, at most {MAX_TARGET_BYTES})",
+            s.len()
+        ));
+    }
+    if s.chars().any(is_unclean) {
+        return Some(format!(
+            "bind {bind} has a target that contains a control character"
+        ));
+    }
+    None
+}
+
+/// What is wrong with the shape of a setting's default: nested too deep or holding too many
+/// values. (Its strings are cleaned and cut at registration, not refused.)
+fn default_problem(v: &Value) -> Option<String> {
+    fn walk(v: &Value, depth: usize, nodes: &mut usize) -> Option<String> {
+        *nodes += 1;
+        if *nodes > MAX_DEFAULT_NODES {
+            return Some(format!(
+                "a setting default of more than {MAX_DEFAULT_NODES} values"
+            ));
+        }
+        let children: Box<dyn Iterator<Item = &Value>> = match v {
+            Value::List(l) => Box::new(l.iter()),
+            Value::Table(t) => {
+                // A key is an identifier: it is never cleaned or cut (two keys could become one).
+                if let Some(k) = t
+                    .keys()
+                    .find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean))
+                {
+                    return Some(format!(
+                        "a setting default has a key that is {} (at most {} bytes, no control character)",
+                        if k.len() > MAX_DEFAULT_KEY_BYTES { "too long" } else { "unclean" },
+                        MAX_DEFAULT_KEY_BYTES
+                    ));
+                }
+                Box::new(t.values())
+            }
+            _ => return None,
+        };
+        // The outermost list or table is level 1.
+        if depth > MAX_DEFAULT_DEPTH {
+            return Some(format!(
+                "a setting default nested deeper than {MAX_DEFAULT_DEPTH}"
+            ));
+        }
+        children.into_iter().find_map(|c| walk(c, depth + 1, nodes))
+    }
+    walk(v, 1, &mut 0)
+}
+
 /// What is wrong with the declarations of `m` that make the host refuse the plugin: a name that is
 /// not [`is_valid_name`], or more declarations than the host takes.
 fn manifest_problem(m: &Manifest) -> Option<String> {
@@ -81,6 +163,13 @@ fn manifest_problem(m: &Manifest) -> Option<String> {
         .or_else(|| count("settings", m.settings.len(), MAX_SETTINGS))
         .or_else(|| count("binds", m.binds.len(), MAX_BINDS))
         .or_else(|| count("screens", m.screens.len(), MAX_SCREENS))
+        .or_else(|| {
+            m.binds.iter().enumerate().find_map(|(i, b)| {
+                count("targets in a bind", b.targets.len(), MAX_TARGETS_PER_BIND)
+                    .or_else(|| b.targets.iter().find_map(|t| target_problem(i, t)))
+            })
+        })
+        .or_else(|| m.settings.iter().find_map(|s| default_problem(&s.default)))
         .or_else(|| {
             m.actions.iter().find_map(|a| {
                 name("an action id", &a.id).or_else(|| {
@@ -316,6 +405,10 @@ impl Registry {
             .filter(|c| !c.is_control())
             .take(MAX_VERSION_CHARS)
             .collect();
+        // The strings of a setting's default (and the keys of a table in it) are texts too.
+        for st in &mut manifest.settings {
+            st.default = st.default.cleaned();
+        }
         let mut notes: Vec<NoteKind> = key_issues.into_iter().map(NoteKind::Key).collect();
         let blocked = !manifest.api.works_with(ApiVersion::CURRENT);
         if blocked {

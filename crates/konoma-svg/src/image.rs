@@ -66,6 +66,10 @@ pub enum ImageFailure {
     /// An SVG file that was refused or stopped by the guard or by the supervisor of its drawing
     /// process (nested too deeply, took too long, ...): one reason type for every picture.
     Svg(super::svg_guard::SvgFail),
+    /// A plugin that is not a standard one named a file outside the folders the host may read for
+    /// it (its read scope: the tree root, the previewed file's folder, and the user's
+    /// `[plugins.<id>] read_dirs`). The file was not opened.
+    OutsideReadDirs,
 }
 
 impl ImageFailure {
@@ -76,6 +80,7 @@ impl ImageFailure {
             Self::Corrupt => "corrupt",
             Self::UnsupportedFormat => "unsupported-format",
             Self::Cancelled => "cancelled",
+            Self::OutsideReadDirs => "outside-read-dirs",
             Self::Svg(f) => f.code_text(),
         }
     }
@@ -87,6 +92,7 @@ impl ImageFailure {
             Self::Corrupt,
             Self::UnsupportedFormat,
             Self::Cancelled,
+            Self::OutsideReadDirs,
         ]
         .into_iter()
         .chain(super::svg_guard::SvgFail::ALL.into_iter().map(Self::Svg))

@@ -513,6 +513,12 @@ code_theme = "TwoDark"
 #                      text, otherwise [can not preview]). Unknown ids are reported at startup.
 #   read_only = true   stop the writing actions of that plugin (the actions it declares as writing; such a key says why
 #                      and does nothing). The standard plugins declare no actions yet, so it has no effect on them today.
+#   read_dirs = ["~/Pictures"]
+#                      folders konoma may read files from on behalf of a plugin YOU added (a picture or text
+#                      file the plugin names). Default: the tab's root folder and the folder of the file being
+#                      previewed. Absolute paths or `~` only (a relative path is rejected and named at startup).
+#                      Symbolic links are judged by their real path. A refusal shows on the footer and names
+#                      this key. Standard plugins are not limited.
 # The other keys of the table are the plugin's own settings. They REPLACE the matching [ui] keys: the old
 # [ui] name is still read (used when the plugin table does not set the value); if both are set, the plugin
 # table wins. A key a plugin does not have is reported at startup and ignored; a value of another type than the plugin

@@ -2,6 +2,7 @@
 
 pub use crate::key::{Key, KeyCode, KeyMods};
 pub use crate::manifest::ViewKind;
+pub use crate::scope::ReadScope;
 pub use crate::session::ColorDepth;
 pub use crate::session::{ActCx, Failure, OpenCx, Outcome, Plugin, Session, ViewCx};
 pub use crate::settings::{Settings, Value};

@@ -594,6 +594,135 @@ fn e2e_the_page_list_of_a_huge_document_is_built_once_when_it_opens_not_per_fram
     assert!(PAGE_LIST_BUILDS.with(std::cell::Cell::get) > opened);
 }
 
+#[test]
+fn e2e_the_page_list_of_a_hundred_thousand_pages_draws_the_end_and_enter_goes_there() {
+    use konoma_plugin::view::PageLayout;
+    struct Paged;
+    impl Plugin for Paged {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("x-paged3", "0.1.0")
+                .bind(Bind::files(["*.pgd"]))
+                .shows(ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(PagedSession))
+        }
+    }
+    struct PagedSession;
+    impl Session for PagedSession {
+        fn layout(&self) -> Layout {
+            Layout {
+                pages: Some(PageLayout::Separate {
+                    count: Some(100_000),
+                    titles: (0..100_000).map(|i| format!("title {i}")).collect(),
+                }),
+                ..Layout::default()
+            }
+        }
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Ok(View::text(["page"]))
+        }
+    }
+    let dir = sandbox("p2_paged_100k");
+    std::fs::write(dir.join("a.pgd"), "x").unwrap();
+    let marker = test_plugins::register("p2_paged_100k", Arc::new(Paged));
+    let mut s = Sim::with_config_sized(&canon(&dir), test_plugins::marker_config(&marker), 90, 26);
+    s.select("a.pgd");
+    s.enter();
+    s.key('O');
+    assert!(s.app.is_outline());
+    s.see("title 0");
+    s.dont_see("title 99999");
+    s.key('G');
+    assert_eq!(s.app.outline_sel(), 99_999);
+    s.draw();
+    s.see("title 99999");
+    // One up and back: the window follows the cursor across the u16 boundary.
+    for _ in 0..40_000 {
+        s.app.outline_move(-1);
+    }
+    s.draw();
+    assert_eq!(s.app.outline_sel(), 59_999);
+    s.see("title 59999");
+    s.key('G');
+    s.enter();
+    assert!(!s.app.is_outline());
+    assert_eq!(s.app.page_indicator().map(|p| p.0), Some(100_000));
+}
+
+#[test]
+fn e2e_the_page_list_popup_of_a_long_list_keeps_its_width_while_scrolling_and_resets_on_reopen() {
+    use konoma_plugin::view::PageLayout;
+    struct Paged;
+    impl Plugin for Paged {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("x-paged4", "0.1.0")
+                .bind(Bind::files(["*.pgd"]))
+                .shows(ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(PagedSession))
+        }
+    }
+    struct PagedSession;
+    impl Session for PagedSession {
+        fn layout(&self) -> Layout {
+            Layout {
+                pages: Some(PageLayout::Separate {
+                    count: Some(5_000),
+                    titles: (0..5_000)
+                        .map(|i| {
+                            if i == 60 {
+                                "a really rather long title of page sixty".to_string()
+                            } else {
+                                format!("t{i}")
+                            }
+                        })
+                        .collect(),
+                }),
+                ..Layout::default()
+            }
+        }
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Ok(View::text(["page"]))
+        }
+    }
+    let dir = sandbox("p2_paged_width");
+    std::fs::write(dir.join("a.pgd"), "x").unwrap();
+    let marker = test_plugins::register("p2_paged_width", Arc::new(Paged));
+    let mut s = Sim::with_config_sized(&canon(&dir), test_plugins::marker_config(&marker), 90, 26);
+    s.select("a.pgd");
+    s.enter();
+    s.key('O');
+    s.draw();
+    let narrow = s.app.outline_width_floor("");
+    for _ in 0..60 {
+        s.app.outline_move(1);
+    }
+    s.draw();
+    s.see("long title of page sixty");
+    let wide = s.app.outline_width_floor("");
+    assert!(wide > narrow, "the window with the long title widened it");
+    for _ in 0..3000 {
+        s.app.outline_move(1);
+    }
+    s.draw();
+    assert_eq!(
+        s.app.outline_width_floor(""),
+        wide,
+        "scrolling away keeps it"
+    );
+    // A filter query is a different list: it sizes itself afresh.
+    assert_eq!(s.app.outline_width_floor("zz"), 0);
+    // Closing and opening again starts over.
+    s.key('O');
+    s.key('O');
+    assert!(
+        s.app.outline_width_floor("") < wide,
+        "the reopened list forgot the old width"
+    );
+}
+
 #[cfg(feature = "demo-canvas")]
 #[test]
 fn the_canvas_trace_line_tells_the_job_road_apart() {

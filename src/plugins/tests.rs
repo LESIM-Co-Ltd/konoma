@@ -1234,3 +1234,70 @@ fn a_plugin_registered_the_ordinary_way_has_its_profile_under_its_own_id() {
     assert!(register(&mut r, std::sync::Arc::new(Dup), PluginOrigin::User).is_err());
     assert!(profile_of("profile-own").table && !profile_of("profile-own").text);
 }
+
+#[test]
+fn every_standard_manifest_registers_with_its_binds_defaults_and_notice_unchanged() {
+    use konoma_plugin::registry::{
+        MAX_DEFAULT_DEPTH, MAX_DEFAULT_NODES, MAX_TARGETS_PER_BIND, MAX_TARGET_BYTES,
+    };
+    use konoma_plugin::{Target, Unavailable, Value};
+    fn nodes_depth(v: &Value, depth: usize) -> (usize, usize) {
+        let kids: Vec<&Value> = match v {
+            Value::List(l) => l.iter().collect(),
+            Value::Table(t) => t.values().collect(),
+            _ => return (1, depth),
+        };
+        kids.into_iter().fold((1, depth), |(n, d), k| {
+            let (kn, kd) = nodes_depth(k, depth + 1);
+            (n + kn, d.max(kd))
+        })
+    }
+    let (mut max_targets, mut max_len, mut max_nodes, mut max_depth) = (0, 0, 0, 0);
+    let mut seen = 0;
+    for m in standard_manifests().into_iter().chain(internal_manifests()) {
+        let plugin = plugin_of(m);
+        let own = plugin.manifest();
+        let mut r = Registry::new();
+        register(&mut r, plugin, PluginOrigin::Standard)
+            .unwrap_or_else(|e| panic!("`{}` is refused: {e}", own.id));
+        let kept = r.manifest(&own.id).unwrap();
+        assert_eq!(
+            format!("{:?}", kept.binds),
+            format!("{:?}", own.binds),
+            "{} binds",
+            own.id
+        );
+        assert_eq!(
+            format!("{:?}", kept.settings),
+            format!("{:?}", own.settings),
+            "{} settings",
+            own.id
+        );
+        assert_eq!(kept.unavailable, own.unavailable, "{} unavailable", own.id);
+        assert!(!matches!(kept.unavailable, Unavailable::Notice(ref t) if t.en().is_empty()));
+        for b in &own.binds {
+            max_targets = max_targets.max(b.targets.len());
+            for t in &b.targets {
+                let (Target::Glob(s)
+                | Target::FileName(s)
+                | Target::Mime(s)
+                | Target::Content(s)
+                | Target::Embed(s)) = t;
+                max_len = max_len.max(s.len());
+            }
+        }
+        for s in &own.settings {
+            let (n, d) = nodes_depth(&s.default, 1);
+            max_nodes = max_nodes.max(n);
+            max_depth = max_depth.max(d);
+        }
+        seen += 1;
+    }
+    // Not vacuous: the whole standard set was looked at (a floor, not the exact count).
+    assert!(seen >= 14, "only {seen} standard manifests");
+    // Generous: the standard plugins use a small part of every limit (twice as much would still fit).
+    assert!(max_targets * 2 <= MAX_TARGETS_PER_BIND, "{max_targets}");
+    assert!(max_len * 2 <= MAX_TARGET_BYTES, "{max_len}");
+    assert!(max_nodes * 2 <= MAX_DEFAULT_NODES, "{max_nodes}");
+    assert!(max_depth * 2 <= MAX_DEFAULT_DEPTH, "{max_depth}");
+}

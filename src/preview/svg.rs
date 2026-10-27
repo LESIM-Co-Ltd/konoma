@@ -25,16 +25,27 @@ fn run_in_child(
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RasterError> {
+    run_in_child_within(data, base, None, max_px, cancelled)
+}
+
+/// [`run_in_child`] with the files the drawing may read limited to `roots` (`None`: no limit).
+fn run_in_child_within(
+    data: &[u8],
+    base: Option<&Path>,
+    roots: Option<&[std::path::PathBuf]>,
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, RasterError> {
     #[cfg(test)]
     seen_for_tests::note(data);
     #[cfg(test)]
     if svg_proc::child_exe().is_none() {
         // Unit tests of the callers run the same guarded drawing in this process; the tests of
         // the child itself start the real binary through `svg_proc::run_with`.
-        return Ok(rasterize_guarded(data, base, max_px)?);
+        return Ok(rasterize_guarded_within(data, base, roots, max_px)?);
     }
     let req = svg_proc::Request { data, base, max_px };
-    match svg_proc::run(&req, cancelled) {
+    match svg_proc::run_scoped(&req, roots, cancelled) {
         Ok(img) => Ok(img),
         Err(svg_proc::RunError::Failed(f)) => Err(RasterError::Failed(f)),
         Err(svg_proc::RunError::Cancelled) => Err(RasterError::Cancelled),
@@ -44,18 +55,25 @@ fn run_in_child(
 /// Rasterize the SVG file at `path` with a max side of `max_px` in a supervised child process.
 /// Blocks: call from a worker thread. `cancelled` is polled while waiting; when it turns true the
 /// child is stopped and the result is `Err(RasterError::Cancelled)`.
+#[cfg(test)]
 pub fn rasterize(
     path: &Path,
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RasterError> {
-    rasterize_via(
-        path,
-        max_px,
-        cancelled,
-        remote_cache_dir().as_deref(),
-        &run_in_child,
-    )
+    rasterize_within(path, None, max_px, cancelled)
+}
+
+/// [`rasterize`] for a file of a plugin the user added: the drawing reads only files inside
+/// `roots` (`None` is no limit, the same as [`rasterize`]).
+pub fn rasterize_within(
+    path: &Path,
+    roots: Option<&[std::path::PathBuf]>,
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, RasterError> {
+    let data = read_limited(path)?;
+    rasterize_untrusted_within(&data, path, roots, max_px, cancelled)
 }
 
 /// Rasterize SVG bytes that konoma did not write (a file, a git blob, a cached download), in a
@@ -76,6 +94,27 @@ pub fn rasterize_untrusted(
         cancelled,
         remote_cache_dir().as_deref(),
         &run_in_child,
+    )
+}
+
+/// [`rasterize_untrusted`] for a plugin the user added: the drawing reads only files inside
+/// `roots` (real directories), whatever the SVG references, and the child process judges each
+/// reference. `None` is no limit (the same as [`rasterize_untrusted`]).
+pub fn rasterize_untrusted_within(
+    data: &[u8],
+    path: &Path,
+    roots: Option<&[std::path::PathBuf]>,
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, RasterError> {
+    rasterize_untrusted_within_via(
+        data,
+        path,
+        roots,
+        max_px,
+        cancelled,
+        remote_cache_dir().as_deref(),
+        &run_in_child_within,
     )
 }
 

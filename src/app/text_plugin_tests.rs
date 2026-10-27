@@ -698,7 +698,9 @@ fn a_text_plugin_naming_a_file_of_its_own_is_read_in_place() {
     let mut app = App::new(dir.to_path_buf(), marker_config(&marker)).unwrap();
     app.enter_preview(&opened);
     assert!(app.shows_text_plugin());
-    assert_eq!(app.text_plugin_own_file(), Some(other.as_path()));
+    // The file is read through the real path that was checked against the plugin's read scope.
+    let real_other = std::fs::canonicalize(&other).unwrap();
+    assert_eq!(app.text_plugin_own_file(), Some(real_other.as_path()));
     assert!(app.tab.command_out.is_none(), "nothing is written for it");
     let shown: String = app
         .windowed_lines(10, 80)

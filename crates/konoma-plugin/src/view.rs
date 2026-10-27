@@ -924,7 +924,11 @@ impl std::error::Error for CanvasIssue {}
 /// area asked for (in either dimension, up to the limits above) is not refused: it is drawn
 /// clipped at the right and bottom edges (a wide character cut by the edge is blanked). The host
 /// asks again when the *area* changes (a resize), not because a canvas is bigger than it was asked
-/// for, so a plugin that always returns a larger canvas is simply clipped. A smaller one leaves the rest of the area blank. The
+/// for, so a plugin that always returns a larger canvas is simply clipped. **The host keeps only the
+/// top-left part**: cells beyond the size asked for (give or take a margin the host chooses) are
+/// dropped when the answer lands ([`CanvasView::clipped`]), and a placement that starts beyond what
+/// is kept is dropped with them; what the user can see is asked for again when the area
+/// changes, so draw for `req`, never for a bigger world. A smaller canvas leaves the rest of the area blank. The
 /// canvas is drawn at the top-left of the preview's content area. `cols` and `rows` can be 0.
 ///
 /// **`Session::view` is called at times the plugin does not choose**: on the first measure of the
@@ -1175,6 +1179,13 @@ impl CanvasView {
     ///
     /// The delays of an animation are not checked: the host raises a short delay.
     pub fn check(&self) -> Result<(), CanvasIssue> {
+        self.check_size()?;
+        self.check_cells()?;
+        self.check_placements()
+    }
+
+    /// The size-only rules: the area and the cell count.
+    fn check_size(&self) -> Result<(), CanvasIssue> {
         if self.cols > CANVAS_MAX_SIDE
             || self.rows > CANVAS_MAX_SIDE
             || self.cols as usize * self.rows as usize > CANVAS_MAX_CELLS
@@ -1191,11 +1202,22 @@ impl CanvasView {
                 actual: self.cells.len(),
             });
         }
+        Ok(())
+    }
+
+    /// The per-cell rules (needs `check_size` to have passed).
+    fn check_cells(&self) -> Result<(), CanvasIssue> {
         if self.cols > 0 {
             for (y, row) in self.cells.chunks(self.cols as usize).enumerate() {
                 self.check_row(y as u16, row)?;
             }
         }
+        Ok(())
+    }
+
+    /// The placement rules, judged against the canvas size this value holds. Bounded by
+    /// [`CANVAS_MAX_PLACEMENTS`], not by the area.
+    fn check_placements(&self) -> Result<(), CanvasIssue> {
         if self.images.len() > CANVAS_MAX_PLACEMENTS {
             return Err(CanvasIssue::TooManyPlacements {
                 count: self.images.len(),
@@ -1227,6 +1249,51 @@ impl CanvasView {
             }
         }
         Ok(())
+    }
+
+    /// The canvas cut to at most `max_cols` x `max_rows` cells (the top-left part), checked: the
+    /// only way for the host to take a canvas whose size it does not control, so what it keeps and
+    /// checks is bounded by the size it asked for, not by what the plugin sent. This validates by
+    /// itself (there is no separate check to forget), so the result satisfies the contract of
+    /// [`CanvasView::check`] except that a kept placement may cross the cut edge.
+    ///
+    /// - The size rules and **every placement** (count, distinct ids, zero size, one size per id,
+    ///   bounds, picture data) are judged on the canvas as sent, before anything is dropped: a
+    ///   violation in a placement that is cut away is still refused.
+    /// - The per-cell rules are judged on the cells that are kept.
+    /// - A wide character cut in half by the right edge becomes a blank cell (the host draws it
+    ///   blank too, never half a character).
+    /// - A placement that starts inside the cut canvas is kept whole (also when it runs past the
+    ///   cut edge: the host crops it to the area when drawing); one that starts outside is dropped.
+    /// - A canvas that already fits is returned as it is.
+    pub fn clipped(mut self, max_cols: u16, max_rows: u16) -> Result<CanvasView, CanvasIssue> {
+        self.check_size()?;
+        self.check_placements()?;
+        let (cols, rows) = (self.cols.min(max_cols), self.rows.min(max_rows));
+        if (cols, rows) == (self.cols, self.rows) {
+            self.check_cells()?;
+            return Ok(self);
+        }
+        let mut cells = Vec::with_capacity(cols as usize * rows as usize);
+        if cols > 0 {
+            for row in self.cells.chunks(self.cols as usize).take(rows as usize) {
+                cells.extend_from_slice(&row[..cols as usize]);
+                // The character at the last kept column is wide when the cell after it (cut off)
+                // is its continuation.
+                if cols < self.cols && row[cols as usize].symbol.is_empty() {
+                    let last = cells.len() - 1;
+                    if !cells[last].symbol.is_empty() {
+                        cells[last] = CanvasCell::default();
+                    }
+                }
+            }
+        }
+        self.cells = cells;
+        self.images.retain(|im| im.x < cols && im.y < rows);
+        self.cols = cols;
+        self.rows = rows;
+        self.check_cells()?;
+        Ok(self)
     }
 
     fn check_row(&self, y: u16, row: &[CanvasCell]) -> Result<(), CanvasIssue> {

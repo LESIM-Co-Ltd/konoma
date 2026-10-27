@@ -32,7 +32,16 @@ fn nothing_held() -> CanvasHeld {
 }
 
 fn decode(plugin: &str, c: &CanvasView, held: &CanvasHeld) -> CanvasPictures {
-    decode_canvas(plugin, c, held, Path::new("/x/a.spr"), 800, None, false)
+    decode_canvas(
+        plugin,
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    )
 }
 
 fn small(limits: impl FnOnce(&mut CanvasLimits)) -> CanvasLimits {
@@ -42,7 +51,17 @@ fn small(limits: impl FnOnce(&mut CanvasLimits)) -> CanvasLimits {
 }
 
 fn decode_within(c: &CanvasView, held: &CanvasHeld, l: CanvasLimits) -> CanvasPictures {
-    decode_canvas_within("pw", c, held, Path::new("/x/a.spr"), 800, None, false, l)
+    decode_canvas_within(
+        "pw",
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+        l,
+    )
 }
 
 /// What a cache would hold after `got` landed: its fresh keys with their decoded bytes.
@@ -428,14 +447,27 @@ fn the_limits_are_pinned() {
         MAX_CANVAS_IMAGES,
         "the API's distinct-id limit is the host's"
     );
+    assert_eq!(MAX_HEADER_PIXELS_PER_ANSWER, 400_000_000);
+    assert_eq!(
+        MAX_HEADER_PIXELS_PER_ANSWER,
+        crate::preview::image::MAX_GIF_WORK_PIXELS,
+        "the number the GIF decoder is calibrated with"
+    );
     let p = CanvasLimits::PRODUCTION;
     assert_eq!(
-        (p.held_bytes, p.answer_bytes, p.decodes, p.input_bytes),
+        (
+            p.held_bytes,
+            p.answer_bytes,
+            p.decodes,
+            p.input_bytes,
+            p.header_pixels
+        ),
         (
             MAX_CANVAS_HELD_BYTES,
             MAX_CANVAS_BYTES,
             MAX_DECODES_PER_ANSWER,
-            MAX_INPUT_BYTES_PER_ANSWER
+            MAX_INPUT_BYTES_PER_ANSWER,
+            MAX_HEADER_PIXELS_PER_ANSWER
         )
     );
 }
@@ -789,6 +821,7 @@ fn a_cancelled_job_decodes_nothing() {
         800,
         Some(&cancel),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     // Cancelled while the content was hashed: nothing is decoded, nothing is named.
     assert!(got.fresh.is_empty());
@@ -818,6 +851,7 @@ fn a_cancel_between_frames_stops_an_animation() {
         800,
         Some(&cancel),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(matches!(
         got.fresh[0].1,
@@ -884,6 +918,7 @@ fn a_cancelled_picture_leaves_no_entry_behind() {
     let (mut app, _dir) = new_app("cvi_cancelled");
     let key = PathBuf::from("canvas://p/1/00000000000000aa");
     app.canvas_pictures_landed(CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 1, 1),
@@ -912,6 +947,7 @@ fn a_cancelled_picture_is_neither_progress_nor_a_failure_on_landing() {
     let (mut app, _dir) = new_app("cvi_cancelled_progress");
     let key = PathBuf::from("canvas://p/1/00000000000000ab");
     let more = app.canvas_pictures_landed(CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 1, 1),
@@ -1497,6 +1533,7 @@ fn hashing_looks_at_the_cancellation_while_a_large_buffer_is_read() {
         800,
         Some(&crate::preview::office::Cancel::new(|| true)),
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(got.fresh.is_empty() && got.sources.is_empty());
     assert!(got.places[0].key.is_none());
@@ -1743,6 +1780,7 @@ fn landing_asks_again_when_room_grew_for_a_refused_picture() {
     let (mut app, _dir) = new_app("cvi_ask_room");
     let key: Arc<str> = Arc::from("canvas://pa/0/00000000000000c1");
     let pics = |needs: u64| CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 0,
             rect: CellRect::new(0, 0, 1, 1),
@@ -1889,6 +1927,7 @@ fn the_oldest_kept_source_goes_first_whatever_the_order_the_worker_listed_them_i
         })
         .collect();
     let pics = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: Vec::new(),
         waiting: 3,
@@ -2149,6 +2188,7 @@ fn a_decoded_picture_for_a_key_already_held_leaves_the_entry_as_it_is() {
     // A job that was out before that landing answers with the same key (decoded bigger here, to
     // see whether it replaces the entry).
     let second = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: vec![(
             key.clone(),
@@ -2246,6 +2286,7 @@ fn landing_asks_again_when_the_room_is_exactly_what_a_refused_picture_needs() {
         )
     };
     let pics = |needs: u64| CanvasPictures {
+        scope_fp: 0,
         places: vec![CanvasPlace {
             id: 1,
             rect: CellRect::new(0, 0, 2, 2),
@@ -2289,6 +2330,7 @@ fn kept_sources_exactly_at_their_bound_are_all_kept() {
         })
         .collect();
     let pics = CanvasPictures {
+        scope_fp: 0,
         places,
         fresh: Vec::new(),
         waiting: 2,
@@ -2666,7 +2708,16 @@ fn a_relative_picture_path_is_relative_to_the_previewed_files_directory() {
     let shown = dir.join("a.spr");
     // The process's own directory is somewhere else: the path must not be looked for there.
     let c = canvas_of(vec![im(1, ImageData::File("sub/pic.png".into()))]);
-    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(
         matches!(got.fresh[0].1, CanvasDecoded::Still(_)),
         "found next to the shown file"
@@ -2684,11 +2735,21 @@ fn a_relative_picture_path_is_relative_to_the_previewed_files_directory() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     assert!(matches!(got.fresh[0].1, CanvasDecoded::Still(_)));
     // A relative path that is not there fails (it is not looked for in the working directory).
     let missing = canvas_of(vec![im(1, ImageData::File("nothing.png".into()))]);
-    let got = decode_canvas("pr", &missing, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &missing,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
 }
 
@@ -2707,6 +2768,7 @@ fn the_hash_of_a_relative_file_follows_the_file_next_to_the_shown_one() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     ));
     // The file changed under the same name: another picture (its size/mtime are of that file, not
     // of whatever the working directory holds under that name).
@@ -2725,6 +2787,7 @@ fn the_hash_of_a_relative_file_follows_the_file_next_to_the_shown_one() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     ));
     assert_ne!(first, second);
 }
@@ -2742,7 +2805,16 @@ fn a_device_a_directory_and_an_oversized_file_are_refused_on_the_opened_handle()
         dir.to_path_buf(),
     ] {
         let c = canvas_of(vec![im(1, ImageData::File(special.clone()))]);
-        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        let got = decode_canvas(
+            "pr",
+            &c,
+            &nothing_held(),
+            &shown,
+            800,
+            None,
+            false,
+            &konoma_plugin::ReadScope::unrestricted(),
+        );
         assert!(
             matches!(
                 got.fresh[0].1,
@@ -2756,7 +2828,16 @@ fn a_device_a_directory_and_an_oversized_file_are_refused_on_the_opened_handle()
     let f = std::fs::File::create(&big).unwrap();
     f.set_len(MAX_PICTURE_FILE_BYTES + 1).unwrap();
     let c = canvas_of(vec![im(1, ImageData::File(big))]);
-    let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
     assert!(matches!(
         got.fresh[0].1,
         CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
@@ -2780,7 +2861,16 @@ fn a_fifo_that_nobody_writes_to_is_refused_without_blocking_inside_frames_too() 
     let shown = dir.join("a.spr");
     std::thread::spawn(move || {
         let c = canvas_of(vec![im(1, ImageData::File(fifo))]);
-        let got = decode_canvas("pr", &c, &nothing_held(), &shown, 800, None, false);
+        let got = decode_canvas(
+            "pr",
+            &c,
+            &nothing_held(),
+            &shown,
+            800,
+            None,
+            false,
+            &konoma_plugin::ReadScope::unrestricted(),
+        );
         let _ = tx.send(matches!(got.fresh[0].1, CanvasDecoded::Failed(_)));
     });
     assert!(
@@ -2816,6 +2906,7 @@ fn a_gif_file_is_an_animation_read_from_the_opened_handle() {
         800,
         None,
         false,
+        &konoma_plugin::ReadScope::unrestricted(),
     );
     let CanvasDecoded::Frames(f) = &got.fresh[0].1 else {
         panic!("a GIF file with two frames is an animation");
@@ -2882,4 +2973,930 @@ fn an_encoded_frame_costs_a_decode_like_a_file_and_only_a_ready_rgba_frame_costs
 
 fn enc_png() -> ImageData {
     png_of(image::DynamicImage::new_rgba8(2, 2))
+}
+
+// ---- the read scope of a plugin the user added (canvas pictures) ------------------------------------
+
+fn scoped(dirs: &[&Path]) -> konoma_plugin::ReadScope {
+    konoma_plugin::ReadScope::within(dirs.iter().copied())
+}
+
+fn canvas_file(p: &Path, shown: &Path, scope: &konoma_plugin::ReadScope) -> CanvasDecoded {
+    let c = canvas_of(vec![im(1, ImageData::File(p.to_path_buf()))]);
+    let mut got = decode_canvas("pr", &c, &nothing_held(), shown, 800, None, false, scope);
+    assert_eq!(got.fresh.len(), 1);
+    got.fresh.remove(0).1
+}
+
+#[test]
+fn a_canvas_picture_outside_the_scope_is_refused_with_its_own_reason() {
+    let dir = crate::test_support::unique_tmp("cvi_scope");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&root.join("in.png"), 1);
+    write_png(&out.join("out.png"), 2);
+    let scope = scoped(&[&root]);
+    let shown = root.join("a.spr");
+    assert!(matches!(
+        canvas_file(&root.join("in.png"), &shown, &scope),
+        CanvasDecoded::Still(_)
+    ));
+    assert!(matches!(
+        canvas_file(&out.join("out.png"), &shown, &scope),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+    // The same file under a widened scope.
+    let wide = scoped(&[&root, &out]);
+    assert!(matches!(
+        canvas_file(&out.join("out.png"), &shown, &wide),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_that_is_the_previewed_file_is_read_whatever_the_scope() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_self");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&out.join("shown.png"), 3);
+    let shown = out.join("shown.png");
+    let scope = scoped(&[&root]);
+    assert!(matches!(
+        canvas_file(&shown, &shown, &scope),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_link_out_is_refused_and_the_scope_does_not_touch_a_standard_plugin() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_link");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&out.join("out.png"), 4);
+    let link = root.join("l.png");
+    std::os::unix::fs::symlink(out.join("out.png"), &link).unwrap();
+    let shown = root.join("a.spr");
+    assert!(matches!(
+        canvas_file(&link, &shown, &scoped(&[&root])),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+    // Unrestricted (a standard plugin): the same link is followed, as ever.
+    assert!(matches!(
+        canvas_file(&link, &shown, &konoma_plugin::ReadScope::unrestricted()),
+        CanvasDecoded::Still(_)
+    ));
+}
+
+#[test]
+fn a_canvas_picture_naming_a_sibling_with_the_same_start_is_outside() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_prefix");
+    let (b, bc) = (dir.join("b"), dir.join("bc"));
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::create_dir_all(&bc).unwrap();
+    write_png(&bc.join("p.png"), 5);
+    assert!(matches!(
+        canvas_file(&bc.join("p.png"), &b.join("a.spr"), &scoped(&[&b])),
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+}
+
+#[test]
+fn a_canvas_frame_list_is_judged_frame_by_frame() {
+    let dir = crate::test_support::unique_tmp("cvi_scope_frames");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    write_png(&root.join("a.png"), 6);
+    write_png(&out.join("b.png"), 7);
+    let frames = ImageData::Frames(vec![
+        (
+            ImageData::File(root.join("a.png")),
+            Duration::from_millis(100),
+        ),
+        (
+            ImageData::File(out.join("b.png")),
+            Duration::from_millis(100),
+        ),
+    ]);
+    let c = canvas_of(vec![im(1, frames)]);
+    let got = decode_canvas(
+        "pr",
+        &c,
+        &nothing_held(),
+        &root.join("a.spr"),
+        800,
+        None,
+        false,
+        &scoped(&[&root]),
+    );
+    assert!(matches!(
+        got.fresh[0].1,
+        CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+    ));
+}
+
+// ---- read scope ------------------------------------------------------------------------------------
+
+fn scope_files(name: &str) -> (crate::test_support::TmpDir, PathBuf, PathBuf) {
+    let dir = crate::test_support::unique_tmp(name);
+    let (inside, outside) = (dir.join("in"), dir.join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (a, b) = (inside.join("a.png"), outside.join("b.png"));
+    for p in [&a, &b] {
+        image::RgbaImage::from_pixel(3, 3, image::Rgba([1, 2, 3, 255]))
+            .save(p)
+            .unwrap();
+    }
+    (dir, a, b)
+}
+
+fn decode_scoped(
+    c: &CanvasView,
+    held: &CanvasHeld,
+    scope: &konoma_plugin::ReadScope,
+) -> CanvasPictures {
+    decode_canvas(
+        "demo",
+        c,
+        held,
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        false,
+        scope,
+    )
+}
+
+fn is_outside(p: &CanvasPictures) -> bool {
+    p.fresh.iter().any(|(_, d)| {
+        matches!(
+            d,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+        )
+    })
+}
+
+#[test]
+fn a_picture_judged_under_one_scope_is_not_served_to_another() {
+    let (_dir, a, _b) = scope_files("cvi_scope_switch");
+    let c = canvas_of(vec![im(1, ImageData::File(a.clone()))]);
+    let wide = konoma_plugin::ReadScope::within([a.parent().unwrap()]);
+    let narrow =
+        konoma_plugin::ReadScope::within([a.parent().unwrap().parent().unwrap().join("out")]);
+    let (mut app, _d) = new_app("cvi_scope_switch_app");
+    let first = decode_scoped(&c, &nothing_held(), &wide);
+    assert!(matches!(first.fresh[0].1, CanvasDecoded::Still(_)));
+    app.canvas_pictures_landed(first);
+    // The same file, the same content, but the scope no longer holds it: the held key of the
+    // first answer must not be reused.
+    let held = app.canvas_known_keys_for_test();
+    let second = decode_scoped(&c, &held, &narrow);
+    assert!(is_outside(&second), "refused, not served from the cache");
+    assert_ne!(keys(&second)[0], None);
+}
+
+#[test]
+fn a_refused_picture_flashes_the_reason_once_per_plugin() {
+    let (_dir, a, _b) = scope_files("cvi_flash");
+    let c = canvas_of(vec![im(1, ImageData::File(a.clone()))]);
+    let none_ok = konoma_plugin::ReadScope::within(Vec::<PathBuf>::new());
+    let pics = decode_scoped(&c, &nothing_held(), &none_ok);
+    assert!(is_outside(&pics));
+    let (mut app, _d) = new_app("cvi_flash_app");
+    app.canvas_flash_refusals("demo", &pics);
+    let msg = app.flash.clone().expect("flashed");
+    assert!(msg.contains("read_dirs") && msg.contains("demo"), "{msg}");
+    assert!(!msg.contains("<id>"), "{msg}");
+    // Not again for the same plugin.
+    app.flash = None;
+    app.canvas_flash_refusals("demo", &pics);
+    assert!(app.flash.is_none(), "no re-flash");
+    // Another plugin is told.
+    app.canvas_flash_refusals("other", &pics);
+    assert!(app.flash.as_deref().is_some_and(|m| m.contains("other")));
+    // An answer without a refusal flashes nothing.
+    let (mut app2, _d2) = new_app("cvi_flash_ok");
+    let ok = decode_scoped(
+        &c,
+        &nothing_held(),
+        &konoma_plugin::ReadScope::unrestricted(),
+    );
+    app2.canvas_flash_refusals("demo", &ok);
+    assert!(app2.flash.is_none());
+}
+
+#[test]
+fn the_refusal_text_names_the_plugin_in_both_languages() {
+    use crate::i18n::Lang;
+    use crate::preview::image::{ImageFailure, ImageFailureMessage};
+    for lang in [Lang::En, Lang::Jp] {
+        let t = ImageFailure::OutsideReadDirs.message(lang, "demo").unwrap();
+        assert!(
+            t.contains("[plugins.demo]") && t.contains("read_dirs"),
+            "{t}"
+        );
+        assert!(!t.contains("<id>"), "{t}");
+        // Other reasons are untouched.
+        let o = ImageFailure::Corrupt.message(lang, "demo").unwrap();
+        assert!(!o.contains("demo"));
+    }
+}
+
+#[test]
+fn an_svg_file_in_scope_cannot_read_a_file_outside_through_its_href() {
+    // A canvas picture `ImageData::File(in-scope evil.svg)` whose SVG names an absolute file
+    // outside the scope: the host reads the SVG (allowed) but not what it points at.
+    let dir = crate::test_support::unique_tmp("konoma_canvas_svg_href");
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let secret = elsewhere.join("secret.png");
+    image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+        .save(&secret)
+        .unwrap();
+    let evil = root.join("evil.svg");
+    std::fs::write(
+        &evil,
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{}" width="20" height="20"/></svg>"#,
+            secret.display()
+        ),
+    )
+    .unwrap();
+    let shown = root.join("a.spr");
+    let alpha = |scope: &konoma_plugin::ReadScope| match super::decode_one(
+        &ImageData::File(evil.clone()),
+        &shown,
+        64,
+        None,
+        false,
+        scope,
+    ) {
+        super::CanvasDecoded::Still(img) => {
+            let px = img.to_rgba8();
+            px.get_pixel(px.width() / 2, px.height() / 2)[3]
+        }
+        _ => panic!("the SVG is drawn"),
+    };
+    let scope = konoma_plugin::ReadScope::within([root.as_path()]);
+    assert_eq!(alpha(&scope), 0, "the file outside is not read");
+    // The same file as a frame of an animation goes through the same judgement.
+    let framed = super::decode_one(
+        &ImageData::Frames(vec![(
+            ImageData::File(evil.clone()),
+            std::time::Duration::from_millis(50),
+        )]),
+        &shown,
+        64,
+        None,
+        false,
+        &scope,
+    );
+    match framed {
+        super::CanvasDecoded::Frames(f) => {
+            let px = f[0].0.to_rgba8();
+            assert_eq!(
+                px.get_pixel(px.width() / 2, px.height() / 2)[3],
+                0,
+                "a frame"
+            );
+        }
+        _ => panic!("the frames are drawn"),
+    }
+    assert_eq!(
+        alpha(&konoma_plugin::ReadScope::unrestricted()),
+        255,
+        "unrestricted reads it"
+    );
+}
+
+// ---- the per-answer budget counts the header pixels before anything is decoded ----
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+/// A file of a few dozen bytes whose header announces `w` x `h` pixels (a real 1-pixel picture
+/// with the size fields patched; the pixel data is not there to decode). `salt` makes the content
+/// (and so the hash) differ between two files of the same size.
+fn huge_header(kind: Kind, w: u32, h: u32, salt: u8) -> Vec<u8> {
+    use image::ImageEncoder;
+    match kind {
+        Kind::Png => {
+            let mut out = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut out)
+                .write_image(&[salt, 0, 0], 1, 1, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            out[16..20].copy_from_slice(&w.to_be_bytes());
+            out[20..24].copy_from_slice(&h.to_be_bytes());
+            let crc = crc32(&out[12..29]);
+            out[29..33].copy_from_slice(&crc.to_be_bytes());
+            out
+        }
+        Kind::Jpeg => {
+            let mut out = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut out)
+                .write_image(&[salt; 8 * 8 * 3], 8, 8, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            let sof = out
+                .windows(2)
+                .position(|p| p == [0xFF, 0xC0])
+                .expect("a baseline frame header");
+            // marker(2) length(2) precision(1) height(2) width(2)
+            out[sof + 5..sof + 7].copy_from_slice(&(h as u16).to_be_bytes());
+            out[sof + 7..sof + 9].copy_from_slice(&(w as u16).to_be_bytes());
+            out
+        }
+        Kind::Gif => {
+            let mut out = b"GIF89a".to_vec();
+            out.extend_from_slice(&(w as u16).to_le_bytes());
+            out.extend_from_slice(&(h as u16).to_le_bytes());
+            out.extend_from_slice(&[0, salt, 0]);
+            // One 1 x 1 frame (descriptor, LZW minimum size 2, one data block), then the trailer.
+            out.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x4C, 0x01, 0, 0x3B]);
+            out
+        }
+        Kind::Webp => {
+            // A real 1 x 1 lossless picture with the 14-bit size fields of its VP8L header
+            // patched (its one-symbol codes hold for any size, so the decoder starts).
+            let mut out = Vec::new();
+            image::codecs::webp::WebPEncoder::new_lossless(&mut out)
+                .write_image(&[salt, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+                .unwrap();
+            let at = out.windows(4).position(|p| p == b"VP8L").unwrap() + 8;
+            assert_eq!(out[at], 0x2F);
+            let old = u32::from_le_bytes([out[at + 1], out[at + 2], out[at + 3], out[at + 4]]);
+            let packed = ((w - 1) | ((h - 1) << 14)) | (old & 0xF000_0000);
+            out[at + 1..at + 5].copy_from_slice(&packed.to_le_bytes());
+            out
+        }
+    }
+}
+
+const KINDS: [Kind; 4] = [Kind::Png, Kind::Jpeg, Kind::Gif, Kind::Webp];
+
+fn encoded(bytes: Vec<u8>) -> ImageData {
+    ImageData::Encoded(Arc::from(bytes))
+}
+
+#[test]
+fn the_header_pixels_of_every_still_kind_come_from_the_header_alone() {
+    for kind in KINDS {
+        // 140,000,000 pixels in a file of a few dozen bytes. (WebP lossless sides stop at 16384.)
+        let (w, h) = match kind {
+            Kind::Webp => (16_000, 9_000),
+            _ => (14_000, 10_000),
+        };
+        let bytes = huge_header(kind, w, h, 1);
+        assert!(
+            bytes.len() < 1000,
+            "{kind:?}: a tiny file ({} bytes)",
+            bytes.len()
+        );
+        assert_eq!(
+            header_pixels(
+                &encoded(bytes),
+                Path::new("/x/a.spr"),
+                &konoma_plugin::ReadScope::unrestricted()
+            ),
+            (u64::from(w) * u64::from(h), false),
+            "{kind:?}"
+        );
+    }
+    // Something that is not a picture costs nothing (the decoder refuses it cheaply); a ready
+    // `Rgba` costs nothing (a copy).
+    assert_eq!(
+        header_pixels(
+            &encoded(vec![7; 100]),
+            Path::new("/x"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (0, false)
+    );
+    assert_eq!(
+        header_pixels(
+            &rgba(50, 50, 1),
+            Path::new("/x"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (0, false)
+    );
+}
+
+#[test]
+fn the_header_pixels_of_a_file_are_read_through_the_regular_file_door() {
+    let dir = crate::test_support::unique_tmp("cvi_header_px_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    for kind in KINDS {
+        let (w, h) = (3000, 2000);
+        let path = dir.join(format!("p_{kind:?}.bin"));
+        std::fs::write(&path, huge_header(kind, w, h, 2)).unwrap();
+        assert_eq!(
+            header_pixels(
+                &ImageData::File(path.clone()),
+                &dir.join("a.spr"),
+                &konoma_plugin::ReadScope::unrestricted()
+            ),
+            (6_000_000, false),
+            "{kind:?}"
+        );
+    }
+    // An SVG file is not counted by a header: its cost is known once it is drawn.
+    let svg = dir.join("s.svg");
+    std::fs::write(
+        &svg,
+        b"<svg xmlns='http://www.w3.org/2000/svg' width='9' height='9'/>",
+    )
+    .unwrap();
+    assert_eq!(
+        header_pixels(
+            &ImageData::File(svg),
+            &dir.join("a.spr"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (0, true)
+    );
+    // A missing file costs nothing here (the decode says why it cannot be shown).
+    assert_eq!(
+        header_pixels(
+            &ImageData::File(dir.join("none.png")),
+            &dir.join("a.spr"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (0, false)
+    );
+    // An animation costs the sum of its frames.
+    let frames = ImageData::Frames(vec![
+        (
+            encoded(huge_header(Kind::Png, 100, 100, 1)),
+            Duration::from_millis(50),
+        ),
+        (
+            encoded(huge_header(Kind::Png, 200, 100, 2)),
+            Duration::from_millis(50),
+        ),
+    ]);
+    assert_eq!(
+        header_pixels(
+            &frames,
+            &dir.join("a.spr"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (30_000, false)
+    );
+}
+
+#[test]
+fn a_gif_costs_its_screen_times_its_frames() {
+    // Two image blocks on a 100 x 50 screen: a minimal animation, counted from the block structure.
+    let mut g = b"GIF89a".to_vec();
+    g.extend_from_slice(&[100, 0, 50, 0, 0, 0, 0]);
+    for _ in 0..2 {
+        // image descriptor (0,0,1,1), no local table, LZW min size 2, one data block, terminator
+        g.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x4C, 0x01, 0]);
+    }
+    g.push(0x3B);
+    assert_eq!(
+        header_pixels(
+            &encoded(g),
+            Path::new("/x"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (100 * 50 * 2, false)
+    );
+}
+
+/// The hash the worker names a picture by: whether the picture was decoded is read from it.
+fn decoded_times(data: &ImageData) -> usize {
+    decoded_count(content_hash(data))
+}
+
+#[test]
+fn a_tiny_file_with_a_huge_header_waits_before_it_is_decoded() {
+    for kind in KINDS {
+        let (w, h) = match kind {
+            Kind::Webp => (16_000, 9_000),
+            _ => (14_000, 10_000),
+        };
+        let huge = encoded(huge_header(kind, w, h, 3));
+        // A first picture that is cheap runs; the huge one does not fit next to it: it waits, and
+        // nothing was decoded for it (the decode of the huge header is what the budget protects).
+        let c = canvas_of(vec![im(1, rgba(4, 4, 9)), im(2, huge.clone())]);
+        let got = decode_within(&c, &nothing_held(), small(|l| l.header_pixels = 1_000_000));
+        assert_eq!(got.fresh.len(), 1, "{kind:?}: only the cheap one ran");
+        assert_eq!(got.waiting, 1, "{kind:?}");
+        assert!(got.more, "{kind:?}: asked again");
+        assert_eq!(
+            decoded_times(&huge),
+            0,
+            "{kind:?}: the huge header was not decoded"
+        );
+        // Not failed and not refused for good: the host kept its source for the next answer.
+        assert!(got.sources.iter().any(|(id, _)| *id == 2), "{kind:?}");
+        // Alone in an answer it is the first picture and runs (an answer makes progress).
+        let alone = decode_within(
+            &canvas_of(vec![im(2, huge.clone())]),
+            &nothing_held(),
+            small(|l| l.header_pixels = 1_000_000),
+        );
+        assert_eq!(alone.waiting, 0, "{kind:?}");
+        assert_eq!(alone.fresh.len(), 1, "{kind:?}");
+        assert_eq!(
+            decoded_times(&huge),
+            1,
+            "{kind:?}: the first picture is decoded"
+        );
+    }
+}
+
+#[test]
+fn the_header_budget_is_the_sum_of_the_pictures_one_answer_started() {
+    // Three pictures of 140,000,000 header pixels against the production 400,000,000: the first two
+    // start (280,000,000), the third would make 420,000,000 and waits. Nothing here is a valid picture,
+    // the decoder fails them cheaply; what is asserted is how many were started.
+    let pics: Vec<ImageData> = (111..=113u8)
+        .map(|n| encoded(huge_header(Kind::Png, 14_000, 10_000, n)))
+        .collect();
+    let c = canvas_of(
+        pics.iter()
+            .enumerate()
+            .map(|(i, d)| im(i as u64 + 1, d.clone()))
+            .collect(),
+    );
+    let got = decode("pw", &c, &nothing_held());
+    assert_eq!(got.fresh.len(), 2);
+    assert_eq!(got.waiting, 1);
+    assert!(got.more);
+    assert_eq!(decoded_times(&pics[0]), 1);
+    assert_eq!(decoded_times(&pics[1]), 1);
+    assert_eq!(decoded_times(&pics[2]), 0, "the third waits");
+    // What waited is first in line next answer and runs.
+    let mut held = held_after(&nothing_held(), &got);
+    for (id, k) in &got.sources {
+        held.kept.insert(*id, k.clone());
+    }
+    let next = decode("pw", &c, &held);
+    assert_eq!(decoded_times(&pics[2]), 1);
+    assert_eq!(next.waiting, 0);
+}
+
+#[test]
+fn the_header_budget_does_not_touch_an_ordinary_answer() {
+    // 32 pictures of 64 x 64 (the most one answer decodes): every one runs, none waits. The
+    // pinned numbers: 32 x 4,096 header pixels is far under 400,000,000.
+    let pics: Vec<CanvasImage> = (0..32u8)
+        .map(|n| im(u64::from(n) + 1, rgba(64, 64, n)))
+        .collect();
+    let got = decode("pw", &canvas_of(pics), &nothing_held());
+    assert_eq!(got.fresh.len(), 32);
+    assert_eq!(got.waiting, 0);
+    // And the same answer with real encoded pictures.
+    let encoded_pics: Vec<CanvasImage> = (0..32u8)
+        .map(|n| {
+            let mut out = Vec::new();
+            image::ImageEncoder::write_image(
+                image::codecs::png::PngEncoder::new(&mut out),
+                &vec![n; 64 * 64 * 3],
+                64,
+                64,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+            im(u64::from(n) + 100, encoded(out))
+        })
+        .collect();
+    let got = decode("pw", &canvas_of(encoded_pics), &nothing_held());
+    assert_eq!(got.fresh.len(), 32);
+    assert_eq!(got.waiting, 0);
+}
+
+#[test]
+fn an_animation_that_alone_costs_more_than_the_header_budget_is_refused_for_good() {
+    let frames = ImageData::Frames(
+        (1..=3u8)
+            .map(|n| {
+                (
+                    encoded(huge_header(Kind::Png, 1000, 1000, n)),
+                    Duration::from_millis(50),
+                )
+            })
+            .collect(),
+    );
+    let got = decode_within(
+        &canvas_of(vec![im(1, frames.clone())]),
+        &nothing_held(),
+        small(|l| l.header_pixels = 2_000_000),
+    );
+    assert_eq!(got.waiting, 0, "never decodable: not waiting");
+    assert_eq!(got.fresh.len(), 1);
+    assert!(
+        matches!(
+            got.fresh[0].1,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::TooLarge)
+        ),
+        "failed for good, as an animation over the other budgets is"
+    );
+    assert_eq!(decoded_times(&frames), 0);
+}
+
+#[test]
+fn an_svg_is_counted_by_the_pixels_it_is_drawn_to() {
+    // No header to read: the drawing is the work. The first SVG is drawn (a first picture always
+    // runs) and its pixels count; the second does not fit next to it and waits.
+    let svg = |n: u32| ImageData::Svg {
+        data: Arc::from(
+            format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='{}'/>",
+                40 + n
+            )
+            .into_bytes(),
+        ),
+        base_dir: None,
+        trusted: true,
+    };
+    let c = canvas_of(vec![im(1, svg(1)), im(2, svg(2)), im(3, svg(3))]);
+    let got = decode_canvas_within(
+        "pw",
+        &c,
+        &nothing_held(),
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        true,
+        &konoma_plugin::ReadScope::unrestricted(),
+        small(|l| l.header_pixels = 100),
+    );
+    assert_eq!(got.fresh.len(), 1, "the first drew and used the budget");
+    assert_eq!(got.waiting, 2);
+    assert!(got.more);
+    // With room for all of them, all are drawn.
+    let all = decode_canvas_within(
+        "pw",
+        &c,
+        &nothing_held(),
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        true,
+        &konoma_plugin::ReadScope::unrestricted(),
+        CanvasLimits::PRODUCTION,
+    );
+    assert_eq!(all.fresh.len(), 3);
+}
+
+#[test]
+fn an_svg_frame_inside_an_animation_is_counted_by_the_pixels_it_is_drawn_to() {
+    let svg = |n: u32| ImageData::Svg {
+        data: Arc::from(
+            format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='{}'/>",
+                40 + n
+            )
+            .into_bytes(),
+        ),
+        base_dir: None,
+        trusted: true,
+    };
+    let anim = |n: u32| ImageData::Frames(vec![(svg(n), Duration::from_millis(50))]);
+    // The header of an animation with an SVG frame is unknown before drawing, like a bare SVG.
+    assert_eq!(
+        header_pixels(
+            &anim(1),
+            Path::new("/x/a.spr"),
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (0, true)
+    );
+    // The first animation draws and its pixels count; the second does not fit next to it.
+    let c = canvas_of(vec![im(1, anim(1)), im(2, anim(2))]);
+    let got = decode_canvas_within(
+        "pw",
+        &c,
+        &nothing_held(),
+        Path::new("/x/a.spr"),
+        800,
+        None,
+        true,
+        &konoma_plugin::ReadScope::unrestricted(),
+        small(|l| l.header_pixels = 100),
+    );
+    assert_eq!(got.fresh.len(), 1, "the first drew and used the budget");
+    assert_eq!(got.waiting, 1);
+    assert!(got.more);
+}
+
+#[test]
+fn a_tiny_file_over_the_per_image_pixel_cap_is_refused_from_its_header_when_it_is_first() {
+    // The first picture of an answer always runs, so what keeps a thin file with a huge header
+    // from being decoded is the per-image cap (`decode_reader`: `within_decode_limits`, read from
+    // the header before the decoder allocates anything). The proof that nothing was decoded: the
+    // file holds no pixel data, so a decode that began would fail as `Corrupt`; the refusal is
+    // `TooLarge`.
+    let dir = crate::test_support::unique_tmp("cvi_header_cap");
+    std::fs::create_dir_all(&dir).unwrap();
+    let over = [
+        (Kind::Png, 20_000, 20_000),
+        (Kind::Jpeg, 30_000, 30_000),
+        (Kind::Webp, 16_384, 16_384),
+        (Kind::Gif, 30_000, 30_000),
+    ];
+    for (n, (kind, w, h)) in over.into_iter().enumerate() {
+        assert!(u64::from(w) * u64::from(h) > crate::preview::image::MAX_IMAGE_PIXELS);
+        let bytes = huge_header(kind, w, h, 40 + n as u8);
+        let path = dir.join(format!("thin_{kind:?}.bin"));
+        std::fs::write(&path, &bytes).unwrap();
+        for data in [encoded(bytes.clone()), ImageData::File(path.clone())] {
+            let got = decode_within(
+                &canvas_of(vec![im(1, data)]),
+                &nothing_held(),
+                CanvasLimits::PRODUCTION,
+            );
+            assert_eq!(got.fresh.len(), 1, "{kind:?}: the first picture ran");
+            use crate::preview::image::ImageFailure as F;
+            let why = match &got.fresh[0].1 {
+                CanvasDecoded::Failed(f) => Some(*f),
+                _ => None,
+            };
+            // The WebP decoder of the image crate refuses a header it cannot start from as damaged
+            // before it reports a size; either way it stops before any pixel is produced.
+            let ok = why == Some(F::TooLarge) || (kind == Kind::Webp && why == Some(F::Corrupt));
+            assert!(ok, "{kind:?}: refused from the header, got {why:?}");
+        }
+    }
+    // The line is the existing pixel cap: a 100-megapixel camera image is under it.
+    assert!(crate::preview::image::dimensions_within_limits((
+        11_600, 8_700
+    )));
+}
+
+#[test]
+fn a_picture_outside_the_read_scope_costs_no_header_pixels_and_is_never_opened() {
+    // A user plugin names a file outside its scope whose header announces 6,000,000 pixels. konoma
+    // must not open it even to price it: it costs (0, false), so it does not eat the per-answer
+    // header budget that the in-scope pictures after it need.
+    let dir = crate::test_support::unique_tmp("cvi_header_scope");
+    let (root, out) = (dir.join("root"), dir.join("out"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let huge = out.join("huge.png");
+    std::fs::write(&huge, huge_header(Kind::Png, 3000, 2000, 1)).unwrap();
+    write_png(&root.join("a.png"), 11);
+    write_png(&root.join("b.png"), 12);
+    let shown = root.join("a.spr");
+    let scope = scoped(&[&root]);
+    // Priced directly: refused without a read, while the same file under an open scope is read.
+    assert_eq!(
+        header_pixels(&ImageData::File(huge.clone()), &shown, &scope),
+        (0, false)
+    );
+    assert_eq!(
+        header_pixels(
+            &ImageData::File(huge.clone()),
+            &shown,
+            &konoma_plugin::ReadScope::unrestricted()
+        ),
+        (6_000_000, false)
+    );
+    // Through an answer: 9 + 9 header pixels fit the limit of 20 only if the huge one cost 0.
+    let c = canvas_of(vec![
+        im(1, ImageData::File(huge)),
+        im(2, ImageData::File(root.join("a.png"))),
+        im(3, ImageData::File(root.join("b.png"))),
+    ]);
+    let got = decode_canvas_within(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &scope,
+        small(|l| l.header_pixels = 20),
+    );
+    assert_eq!(got.waiting, 0, "the out-of-scope header cost nothing");
+    assert_eq!(got.fresh.len(), 3);
+    assert!(
+        matches!(
+            got.fresh[0].1,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+        ),
+        "the out-of-scope picture is refused for its own reason"
+    );
+    assert!(matches!(got.fresh[1].1, CanvasDecoded::Still(_)));
+    assert!(matches!(got.fresh[2].1, CanvasDecoded::Still(_)));
+}
+
+#[test]
+fn a_picture_outside_the_read_scope_consumes_no_budget_of_the_answer() {
+    // A huge file outside the scope (sparse: larger than the input budget below, no disk used)
+    // and an animation with such a file among its frames come first; in-scope pictures follow.
+    // The refused ones are never opened, so they must not use the decode limit (2) or the input
+    // budget (64 KiB), and the in-scope pictures after them all decode in this very answer.
+    // The folders and the files are named in CJK (a path is bytes, not ASCII).
+    let dir = crate::test_support::unique_tmp("cvi_scope_budget");
+    let (root, out) = (dir.join("作業"), dir.join("外部"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let huge = out.join("巨大.png");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(10 * 1024 * 1024)
+        .unwrap();
+    write_png(&root.join("一.png"), 21);
+    write_png(&root.join("二.png"), 22);
+    let shown = root.join("a.spr");
+    let scope = scoped(&[&root]);
+    let anim = ImageData::Frames(vec![
+        (
+            ImageData::File(root.join("一.png")),
+            Duration::from_millis(50),
+        ),
+        (ImageData::File(huge.clone()), Duration::from_millis(50)),
+    ]);
+    let c = canvas_of(vec![
+        im(1, ImageData::File(huge)),
+        im(2, anim),
+        im(3, ImageData::File(root.join("一.png"))),
+        im(4, ImageData::File(root.join("二.png"))),
+    ]);
+    let got = decode_canvas_within(
+        "pr",
+        &c,
+        &nothing_held(),
+        &shown,
+        800,
+        None,
+        false,
+        &scope,
+        small(|l| {
+            l.decodes = 2;
+            l.input_bytes = 64 * 1024;
+        }),
+    );
+    let outside = |d: &CanvasDecoded| {
+        matches!(
+            d,
+            CanvasDecoded::Failed(crate::preview::image::ImageFailure::OutsideReadDirs)
+        )
+    };
+    assert_eq!(got.waiting, 0, "nothing waits behind a refused picture");
+    assert!(!got.more, "no further answer is needed");
+    assert_eq!(got.fresh.len(), 4);
+    assert!(outside(&got.fresh[0].1), "the huge file is refused");
+    assert!(outside(&got.fresh[1].1), "so is the animation holding it");
+    assert!(matches!(got.fresh[2].1, CanvasDecoded::Still(_)));
+    assert!(matches!(got.fresh[3].1, CanvasDecoded::Still(_)));
+}
+
+#[test]
+fn a_stale_answer_stops_counting_the_frames_of_a_gif() {
+    let mut g = b"GIF89a".to_vec();
+    g.extend_from_slice(&[100, 0, 50, 0, 0, 0, 0]);
+    // A comment extension of 70,000 one-byte sub-blocks: the counter looks at `stale` only every
+    // 65,536 sub-blocks, so a superseded answer is noticed inside it.
+    g.extend_from_slice(&[0x21, 0xFE]);
+    for _ in 0..70_000 {
+        g.extend_from_slice(&[1, b'x']);
+    }
+    g.push(0);
+    for _ in 0..3 {
+        g.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x4C, 0x01, 0]);
+    }
+    g.push(0x3B);
+    let (data, shown) = (encoded(g), Path::new("/x"));
+    let scope = konoma_plugin::ReadScope::unrestricted();
+    assert_eq!(
+        header_pixels_within(&data, shown, &scope, &|| false),
+        (100 * 50 * 3, false)
+    );
+    // Superseded: the count is abandoned (one frame's worth), not finished.
+    assert_eq!(
+        header_pixels_within(&data, shown, &scope, &|| true),
+        (100 * 50, false)
+    );
 }

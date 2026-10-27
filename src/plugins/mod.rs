@@ -12,6 +12,7 @@ mod acts;
 mod command;
 mod listing;
 mod profile;
+pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]
 mod survivor_tests;
@@ -526,8 +527,9 @@ pub(crate) fn value_type_mismatch(
 }
 
 /// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
-/// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`). Both are booleans.
-pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only"];
+/// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`), both booleans, and
+/// `read_dirs` (a list of folders, see [`read_scope`]).
+pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only", "read_dirs"];
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.
@@ -578,7 +580,10 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
                 }
             }
         }
-        for key in HOST_PLUGIN_KEYS {
+        if let Some(v) = table.get("read_dirs") {
+            out.extend(read_dirs_messages(id, v, lang));
+        }
+        for key in HOST_PLUGIN_KEYS.iter().filter(|k| **k != "read_dirs") {
             match table.get(*key) {
                 None | Some(toml::Value::Boolean(_)) => {}
                 Some(_) => out.push(match lang {
@@ -595,6 +600,41 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
         }
     }
     out
+}
+
+/// The startup messages for one plugin's `read_dirs`.
+fn read_dirs_messages(id: &str, value: &toml::Value, lang: crate::i18n::Lang) -> Vec<String> {
+    use crate::i18n::Lang;
+    use read_scope::ReadDirsProblem as P;
+    let home = read_scope::home_dir();
+    read_scope::parse_read_dirs(value, home.as_deref())
+        .problems
+        .into_iter()
+        .map(|p| match (p, lang) {
+            (P::NotAList, Lang::Jp) => format!("[plugins.{id}] の read_dirs はフォルダの一覧"),
+            (P::NotAList, Lang::En) => {
+                format!("[plugins.{id}] read_dirs must be a list of folders")
+            }
+            (P::NotAString, Lang::Jp) => {
+                format!("[plugins.{id}] の read_dirs に文字列でない要素(無視)")
+            }
+            (P::NotAString, Lang::En) => {
+                format!("[plugins.{id}] read_dirs has an entry that is not a string (ignored)")
+            }
+            (P::Relative(e), Lang::Jp) => {
+                format!("[plugins.{id}] の read_dirs `{e}` は絶対パスか ~ で始める(無視)")
+            }
+            (P::Relative(e), Lang::En) => {
+                format!("[plugins.{id}] read_dirs `{e}` must be absolute or start with ~ (ignored)")
+            }
+            (P::Missing(e), Lang::Jp) => {
+                format!("[plugins.{id}] の read_dirs `{e}` が見つかりません(無視)")
+            }
+            (P::Missing(e), Lang::En) => {
+                format!("[plugins.{id}] read_dirs `{e}` does not exist (ignored)")
+            }
+        })
+        .collect()
 }
 
 /// Test probe: does the registry's matching take `rule` for `path` when the content reads as

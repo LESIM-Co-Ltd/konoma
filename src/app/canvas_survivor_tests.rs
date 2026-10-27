@@ -703,12 +703,11 @@ fn an_action_that_counted_keys_which_are_gone_still_goes() {
     assert_eq!(*h.seen.order.lock().unwrap(), ["act:one"]);
 }
 
-/// The first answer of a new session must not resolve `unchanged` to the pictures of the session
-/// before it (the file was read again with the old view kept).
-#[test]
-fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() {
+/// An app with a canvas picture (id 3) held as a landed answer leaves it: placed, drawn from, and
+/// kept as a source.
+fn seeded_canvas_app(name: &str) -> H {
     use super::canvas_images::{CanvasPlace, KeptPicture};
-    let mut h = H::open("cs_known", None, false);
+    let mut h = H::open(name, None, false);
     h.app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     let (tx, _rx) = channel();
     h.app.attach_md_encoder(tx);
@@ -732,6 +731,14 @@ fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() 
             needs: None,
         },
     );
+    h
+}
+
+/// The first answer of a new session must not resolve `unchanged` to the pictures of the session
+/// before it (the file was read again with the old view kept).
+#[test]
+fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() {
+    let mut h = seeded_canvas_app("cs_known");
     let (id, path) = (h.show().id.clone(), h.show().path.clone());
     let req = h.app.plugin_view_req();
     let plugin: Arc<dyn konoma_plugin::Plugin> = Arc::new(Mini {
@@ -759,7 +766,9 @@ fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() 
         known.front.contains_key(&3),
         "the entry on screen stays (no blink)"
     );
-    // Any later job of the session is told, as before.
+    // Any later job of the session is told, as before (the pictures were made under the scope
+    // this job runs under).
+    h.app.canvas_scope_fp = open.read_scope.fingerprint();
     let session = h.show_mut().session.take().expect("the session is at hand");
     let view = h
         .app
@@ -767,6 +776,38 @@ fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() 
     let known = view.canvas_known.expect("pictures can be shown");
     assert!(known.by_id.contains_key(&3));
     assert!(known.kept.contains_key(&3));
+}
+
+/// A job under another read scope than the pictures were made under is not told their ids or
+/// sources: the keys were judged by the old scope, and `unchanged` would otherwise bring back a
+/// file the new scope does not allow.
+#[test]
+fn a_job_under_another_read_scope_is_not_told_the_held_ids_or_kept_sources() {
+    let mut h = seeded_canvas_app("cs_known_scope");
+    let (id, path) = (h.show().id.clone(), h.show().path.clone());
+    let req = h.app.plugin_view_req();
+    let seen = h.seen.clone();
+    let job = || plugin_host::PluginJob::View {
+        session: Box::new(MiniSession {
+            seen: seen.clone(),
+            table: false,
+        }),
+    };
+    // Made under the scope this job runs under: told.
+    let probe = h
+        .app
+        .plugin_work(id.clone(), path.clone(), job(), req.clone());
+    h.app.canvas_scope_fp = probe.read_scope.fingerprint();
+    let same = h
+        .app
+        .plugin_work(id.clone(), path.clone(), job(), req.clone());
+    assert!(same.canvas_known.unwrap().by_id.contains_key(&3));
+    // Made under another one (the tab root moved): not told.
+    h.app.canvas_scope_fp ^= 0x5eed;
+    let other = h.app.plugin_work(id, path, job(), req);
+    let known = other.canvas_known.unwrap();
+    assert!(known.by_id.is_empty());
+    assert!(known.kept.is_empty());
 }
 
 /// A plugin that declares a table and a canvas is neither before its first view, and it is a table

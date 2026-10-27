@@ -64,6 +64,7 @@ pub(super) fn decode_image_view(
     default_raster_px: u32,
     cancel: Option<&crate::preview::office::Cancel>,
     trust_own_svg: bool,
+    scope: &konoma_plugin::ReadScope,
 ) -> Option<MediaPayload> {
     use crate::preview::image::ImageFailure;
     let cancelled = || cancel.is_some_and(|c| c.is_cancelled());
@@ -75,15 +76,33 @@ pub(super) fn decode_image_view(
         // opened without blocking; a relative path is relative to the previewed file's folder),
         // and decoded from that handle -- nothing opens the path a second time. (No 64 MiB read
         // cap here: a large still is bounded by the decoders' own limits, as it always was.)
-        ImageData::File(p) => Some(match super::canvas_images::open_picture_file(path, &p) {
-            Ok((file, named)) => decode_picture_handle(file, &named),
-            Err(why) => MediaPayload::ImageFailed(why),
-        }),
+        ImageData::File(p) => Some(
+            match super::canvas_images::open_picture_file(path, &p, scope) {
+                Ok((file, named)) => decode_picture_handle(file, &named),
+                Err(why) => MediaPayload::ImageFailed(why),
+            },
+        ),
         ImageData::Svg {
             data,
             base_dir,
             trusted,
         } => {
+            // The SVG's relative references are read from the directory the plugin names, so that
+            // directory is a path the plugin gave: outside the read scope the SVG is refused with
+            // the scope's reason (not silently drawn without its pictures). One that cannot be
+            // resolved holds nothing to read, so the SVG names no directory. Every file the
+            // drawing reads is judged again against the scope (`roots`), whatever the SVG says.
+            let base_dir = match base_dir {
+                Some(d) if scope.is_restricted() => match scope.resolve(&d) {
+                    Ok(real) => Some(real),
+                    Err(konoma_plugin::ScopeError::Outside) => {
+                        return Some(MediaPayload::ImageFailed(ImageFailure::OutsideReadDirs));
+                    }
+                    Err(_) => None,
+                },
+                other => other,
+            };
+            let roots = scope.dirs();
             // Relative references inside the SVG resolve from the directory the plugin names.
             let base = match (&base_dir, path.file_name()) {
                 (Some(dir), Some(name)) => dir.join(name),
@@ -96,8 +115,16 @@ pub(super) fn decode_image_view(
                 )
             } else if base_dir.is_some() {
                 // A file the user opened: drawn by a supervised child process.
-                match crate::preview::svg::rasterize_untrusted(&data, &base, max_px, &cancelled) {
-                    Ok(img) => (img, SvgTrust::File(base)),
+                match crate::preview::svg::rasterize_untrusted_within(
+                    &data, &base, roots, max_px, &cancelled,
+                ) {
+                    Ok(img) => (
+                        img,
+                        match roots {
+                            Some(r) => SvgTrust::FileWithin(base, r.into()),
+                            None => SvgTrust::File(base),
+                        },
+                    ),
                     Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
                 }
             } else {
@@ -300,7 +327,14 @@ pub(crate) fn svg_view_payload(
         sharp_zoom: true,
         raster_max_px: None,
     };
-    decode_image_view(view, shown, 100, None, trust_own)
+    decode_image_view(
+        view,
+        shown,
+        100,
+        None,
+        trust_own,
+        &konoma_plugin::ReadScope::unrestricted(),
+    )
 }
 
 #[cfg(test)]

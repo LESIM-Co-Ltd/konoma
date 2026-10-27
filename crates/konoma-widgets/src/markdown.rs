@@ -337,7 +337,7 @@ pub enum ImageSlot {
     Unavailable,
     /// The image exists but cannot be shown, and the reason is known (too large, damaged,
     /// unsupported format — already translated): a one-line placeholder that says so.
-    Failed(&'static str),
+    Failed(String),
 }
 
 /// Where a block-level element sits inside the width it is drawn into — the one rule

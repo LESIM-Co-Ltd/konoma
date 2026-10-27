@@ -196,6 +196,67 @@ impl App {
     pub(crate) fn close_outline(&mut self) {
         self.outline_open = false;
         *self.outline_pages.borrow_mut() = None;
+        self.reset_outline_width();
+    }
+
+    /// Forgets the widest window seen and the list it was for (closed: nothing to size).
+    fn reset_outline_width(&self) {
+        *self.outline_width.borrow_mut() = (String::new(), 0, 0);
+    }
+
+    /// A new opening sizes the popup afresh, for the list as it is now.
+    pub(super) fn reset_outline_width_for_open(&self) {
+        *self.outline_width.borrow_mut() = (String::new(), 0, self.outline_list_sig());
+    }
+
+    /// What the page list is made of, as a number (the kind, the count, every title); 0 when the
+    /// overlay is not a plugin's page list. Equal signatures mean the same rows.
+    fn outline_list_sig(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(PageListShape::Pages { is_sheet }) = self.page_list_shape() else {
+            return 0;
+        };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        is_sheet.hash(&mut h);
+        self.tab.page_count.hash(&mut h);
+        if let Some(Some(konoma_plugin::view::PageLayout::Separate { titles, .. })) =
+            self.plugin.as_ref().map(|p| &p.layout.pages)
+        {
+            titles.hash(&mut h);
+        }
+        h.finish() | 1
+    }
+
+    /// The session reported its layout again while the overlay is open: the width floor stays
+    /// unless the list it measured is no longer the list.
+    pub(crate) fn outline_layout_adopted(&self) {
+        if !self.outline_open {
+            return;
+        }
+        let sig = self.outline_list_sig();
+        if self.outline_width.borrow().2 != sig {
+            *self.outline_width.borrow_mut() = (String::new(), 0, sig);
+        }
+    }
+
+    /// The width a long list's popup must not shrink below, for the filter query `q` (0 when the
+    /// query changed: a different list sizes itself afresh).
+    pub(crate) fn outline_width_floor(&self, q: &str) -> usize {
+        let w = self.outline_width.borrow();
+        if w.0 == q {
+            w.1
+        } else {
+            0
+        }
+    }
+
+    /// Records the content width the popup was just sized by, for `outline_width_floor`.
+    pub(crate) fn outline_width_seen(&self, q: &str, content_w: usize) {
+        let mut w = self.outline_width.borrow_mut();
+        if w.0 != q {
+            *w = (q.to_string(), 0, w.2);
+        }
+        w.1 = w.1.max(content_w);
     }
 
     /// Forgets the page list built for the overlay (the layout it was built from changed).
@@ -267,6 +328,7 @@ impl App {
         self.list_filter_reset(super::list_filter::ListId::Outline);
         self.forget_outline_pages();
         self.outline_open = true;
+        self.reset_outline_width_for_open();
     }
 
     /// Enter in the page list: go to the selected page.
@@ -317,6 +379,7 @@ impl App {
             .unwrap_or(0);
         self.list_filter_reset(super::list_filter::ListId::Outline);
         self.outline_open = true;
+        self.reset_outline_width_for_open();
     }
 
     pub fn outline_sel(&self) -> usize {
