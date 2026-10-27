@@ -10,14 +10,16 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::frame::{self, FrameError, MAX_FRAME};
 use super::proto::{
     Answer, FromChild, Hello, HelloReply, Reply, ToChild, WState, PROTOCOL_VERSION,
 };
 use super::wire::{
-    self, cx_from_wire, failure_to_wire, input_from_wire, key_from_wire, layout_to_wire,
-    manifest_to_wire, outcome_to_wire, req_from_wire, view_to_wire, CxData, Dec, Enc, Side,
+    self, cx_from_wire, failure_to_wire, input_from_wire, input_side_names, key_from_wire,
+    layout_to_wire, manifest_to_wire, outcome_to_wire, req_from_wire, view_to_wire, CxData, Dec,
+    Enc, Side, WView, SIDE_TOTAL_MAX_FROM_CHILD,
 };
 use crate::session::{ActCx, Cancel, OpenCx, ViewCx};
 use crate::{t, Failure, Plugin, Session};
@@ -30,6 +32,10 @@ pub struct ServeOptions {
     pub max_sessions: usize,
     /// The size over which a byte string goes through a side file; `None` is the protocol's.
     pub side_threshold: Option<usize>,
+    /// When the host's end of the pipe closes (the host died, or left without `Shutdown`), every
+    /// running call is asked to stop and, after this long, the **process exits**. `None` leaves
+    /// the process alone (a test serves from a thread). [`serve`] sets `HOST_GONE_GRACE`.
+    pub exit_after_host_gone: Option<Duration>,
 }
 
 impl Default for ServeOptions {
@@ -37,9 +43,14 @@ impl Default for ServeOptions {
         ServeOptions {
             max_sessions: 1024,
             side_threshold: None,
+            exit_after_host_gone: None,
         }
     }
 }
+
+/// How long a child that has lost its host gets to finish what it is doing (its calls are asked to
+/// stop at once) before the process exits. 2 s, the same as the host's grace for a cancel.
+pub const HOST_GONE_GRACE: Duration = Duration::from_secs(2);
 
 enum Job {
     Call {
@@ -59,29 +70,53 @@ enum Job {
 /// Stdin is duplicated the same way and fd 0 pointed at `/dev/null`, so the plugin cannot read the
 /// protocol either.
 pub fn serve<P: Plugin>(plugin: P) -> std::io::Result<()> {
+    let (input, output) = take_protocol_fds()?;
+    serve_io(
+        plugin,
+        input,
+        output,
+        &ServeOptions {
+            exit_after_host_gone: Some(HOST_GONE_GRACE),
+            ..ServeOptions::default()
+        },
+    )
+}
+
+/// Duplicate fds 0 and 1 for the protocol (close-on-exec, so a program the plugin starts does not
+/// inherit them: a grandchild that held the pipe would keep the host from ever seeing the end of
+/// it), then point fd 1 at stderr and fd 0 at `/dev/null`.
+fn take_protocol_fds() -> std::io::Result<(std::fs::File, std::fs::File)> {
     use std::fs::File;
     use std::os::fd::FromRawFd;
-    // SAFETY: plain fd duplication on this process's own descriptors; each new fd is wrapped in
-    // exactly one `File` that owns it.
-    let (input, output) = unsafe {
-        let out_fd = libc::dup(1);
-        let in_fd = libc::dup(0);
-        if out_fd < 0 || in_fd < 0 {
+    // `F_DUPFD_CLOEXEC` from 3 up, so the copy cannot land on 0, 1 or 2.
+    let dup_cloexec = |fd: libc::c_int| -> std::io::Result<File> {
+        // SAFETY: plain fd duplication on this process's own descriptor; the new fd is wrapped in
+        // exactly one `File` that owns it (so it is closed on every early return).
+        let new = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if new < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: `new` is a fresh descriptor nothing else owns.
+        Ok(unsafe { File::from_raw_fd(new) })
+    };
+    // Each copy is owned by a `File` from the moment it exists, so a failure of the second or of
+    // the redirection below closes the first instead of leaking it.
+    let output = dup_cloexec(1)?;
+    let input = dup_cloexec(0)?;
+    // SAFETY: plain syscalls on this process's own descriptors.
+    unsafe {
         if libc::dup2(2, 1) < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
         if null >= 0 {
             libc::dup2(null, 0);
             if null > 2 {
                 libc::close(null);
             }
         }
-        (File::from_raw_fd(in_fd), File::from_raw_fd(out_fd))
-    };
-    serve_io(plugin, input, output, &ServeOptions::default())
+    }
+    Ok((input, output))
 }
 
 /// Serve over any pair of streams (a test serves over pipes from a thread). Returns when the host
@@ -137,6 +172,7 @@ where
     let flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>> = Arc::default();
     let (tx, rx) = mpsc::channel::<Job>();
     let reader_flags = Arc::clone(&flags);
+    let exit_after = opts.exit_after_host_gone;
     let reader = std::thread::Builder::new()
         .name("konoma-plugin-reader".into())
         .stack_size(8 << 20)
@@ -150,6 +186,12 @@ where
                     }
                     continue;
                 }
+                Ok(Some(ToChild::Shutdown)) => {
+                    // Stop what runs and what waits: the calls ahead of the `Shutdown` in the
+                    // queue answer "cancelled" when they are taken, and the process can leave.
+                    raise_all(&reader_flags);
+                    Job::Notice(ToChild::Shutdown)
+                }
                 Ok(Some(msg)) => match call_rid(&msg) {
                     Some(rid) => {
                         let flag = Arc::new(AtomicBool::new(false));
@@ -160,7 +202,22 @@ where
                 },
             };
             let end = matches!(job, Job::End(_));
-            if tx.send(job).is_err() || end {
+            if end {
+                // The host is gone: nobody is waiting for any running call.
+                raise_all(&reader_flags);
+            }
+            let queued = tx.send(job).is_ok();
+            if end {
+                if let Some(grace) = exit_after {
+                    // The worker may be inside a plugin call that never looks at its flag. The
+                    // process is the plugin's to give up, not the OS's to find: leave after the
+                    // grace even if the worker has not (a clean exit gets there first).
+                    std::thread::sleep(grace);
+                    std::process::exit(1);
+                }
+                return;
+            }
+            if !queued {
                 return;
             }
         })?;
@@ -171,6 +228,7 @@ where
         sessions: HashMap::new(),
         side,
         max_sessions: opts.max_sessions,
+        written: Vec::new(),
     };
     let mut result = Ok(());
     for job in rx {
@@ -182,7 +240,9 @@ where
             }
             Job::Notice(ToChild::Shutdown) => break,
             Job::Notice(ToChild::Close { sid }) => {
-                worker.sessions.remove(&sid);
+                if let Some(session) = worker.sessions.remove(&sid) {
+                    quiet_drop(session);
+                }
             }
             Job::Notice(_) => {}
             Job::Call { msg, flag } => {
@@ -197,7 +257,9 @@ where
                     }
                 });
                 if body.is_err() {
-                    // The answer itself is over the frame limit: say so instead of dying.
+                    // The answer itself is over the frame limit: say so instead of dying. The
+                    // side files it wrote go with it.
+                    worker.discard_written();
                     let f = Failure::too_large(t!(
                         en: "the plugin's answer is too large",
                         ja: "プラグインの応答が大きすぎます"
@@ -209,16 +271,41 @@ where
                 }
                 let wrote = body.and_then(|b| frame::write_frame(&mut output, &b));
                 if let Err(e) = wrote {
+                    worker.discard_written();
                     result = Err(io_err(e));
                     break;
                 }
             }
         }
     }
+    // Leaving: the sessions are dropped one by one in the order they were opened (a plugin may
+    // keep something in a session that it flushes on drop), each shielded from the others'
+    // panics, and then the plugin itself.
+    worker.finish();
     // The reader may be blocked in `read`; it ends when the host closes the pipe. Do not wait for
     // it: a host that left the pipe open and went away is the OS's to clean up.
     drop(reader);
     result
+}
+
+/// Ask every running or queued call to stop.
+fn raise_all(flags: &Mutex<HashMap<u64, Arc<AtomicBool>>>) {
+    for f in lock(flags).values() {
+        f.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Drop a value whose `Drop` is the plugin's code. A panic in it is the plugin's alone: it is
+/// caught and reported on stderr, and the process (and every other session) goes on.
+fn quiet_drop<T>(v: T) {
+    if let Err(p) = catch_unwind(AssertUnwindSafe(|| drop(v))) {
+        let text = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(no message)".to_string());
+        eprintln!("konoma plugin: a panic while dropping: {text}");
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -241,6 +328,8 @@ struct Worker {
     sessions: HashMap<u64, Box<dyn Session>>,
     side: Side,
     max_sessions: usize,
+    /// The side files the latest answer wrote (deleted if the answer is not sent).
+    written: Vec<String>,
 }
 
 fn panic_failure(what: &str, payload: Box<dyn std::any::Any + Send>) -> Failure {
@@ -283,10 +372,57 @@ impl Worker {
     }
 
     fn call(&mut self, msg: ToChild, flag: &Arc<AtomicBool>) -> Answer {
-        match self.call_inner(msg, flag) {
+        self.written.clear();
+        // The names of the side files the call brings, so the ones it does not get to read are
+        // deleted when it fails.
+        let brought = match &msg {
+            ToChild::Open { input, .. } => input_side_names(input),
+            _ => Vec::new(),
+        };
+        let result = if flag.load(Ordering::SeqCst) {
+            // Asked to stop while it waited behind other calls: the child works through its
+            // calls in order, so it is only now that this one is taken, and it does not run.
+            Err(Failure::cancelled(t!(
+                en: "the call was cancelled before it started",
+                ja: "開始前に中断されました"
+            )))
+        } else {
+            self.call_inner(msg, flag)
+        };
+        match result {
             Ok(r) => Answer::Ok(r),
-            Err(f) => Answer::Err(failure_to_wire(&f)),
+            Err(f) => {
+                for n in &brought {
+                    self.side.discard(n);
+                }
+                self.discard_written();
+                Answer::Err(failure_to_wire(&f))
+            }
         }
+    }
+
+    /// Delete the side files the latest answer wrote.
+    fn discard_written(&mut self) {
+        for n in self.written.drain(..) {
+            self.side.discard(&n);
+        }
+    }
+
+    /// Drop every session in the order they were opened, then the plugin.
+    fn finish(self) {
+        let Worker {
+            plugin,
+            mut sessions,
+            ..
+        } = self;
+        let mut sids: Vec<u64> = sessions.keys().copied().collect();
+        sids.sort_unstable();
+        for sid in sids {
+            if let Some(session) = sessions.remove(&sid) {
+                quiet_drop(session);
+            }
+        }
+        quiet_drop(plugin);
     }
 
     fn call_inner(&mut self, msg: ToChild, flag: &Arc<AtomicBool>) -> Result<Reply, Failure> {
@@ -309,8 +445,16 @@ impl Worker {
                 let plugin = Arc::clone(&self.plugin);
                 let session = catch_unwind(AssertUnwindSafe(|| plugin.open(input, &ocx)))
                     .map_err(|p| panic_failure("open", p))??;
-                let state = self.state(&*session)?;
-                self.sessions.insert(sid, session);
+                let state = match self.state(&*session) {
+                    Ok(s) => s,
+                    Err(f) => {
+                        quiet_drop(session);
+                        return Err(f);
+                    }
+                };
+                if let Some(old) = self.sessions.insert(sid, session) {
+                    quiet_drop(old);
+                }
                 Ok(Reply::Opened { state })
             }
             ToChild::View { sid, req, cx, .. } => {
@@ -327,11 +471,27 @@ impl Worker {
                     .ok_or_else(|| unknown_session(sid))?;
                 let mut view = catch_unwind(AssertUnwindSafe(|| session.view(&req, &vcx)))
                     .map_err(|p| panic_failure("view", p))??;
-                let wv = catch_unwind(AssertUnwindSafe(|| {
-                    view_to_wire(&mut view, &mut Enc::new(&self.side))
-                }))
-                .map_err(|p| panic_failure("styler", p))?
-                .map_err(Failure::from)?;
+                let mut enc = Enc::with_total_max(&self.side, SIDE_TOTAL_MAX_FROM_CHILD);
+                let converted =
+                    catch_unwind(AssertUnwindSafe(|| view_to_wire(&mut view, &mut enc)));
+                quiet_drop(view);
+                let wv = match converted {
+                    Ok(Ok(wv)) => wv,
+                    Ok(Err(e)) => {
+                        enc.discard();
+                        return Err(Failure::from(e));
+                    }
+                    Err(p) => {
+                        enc.discard();
+                        return Err(panic_failure("styler", p));
+                    }
+                };
+                if let WView::Text(t) = &wv {
+                    if let Some(note) = &t.note {
+                        eprintln!("konoma plugin: {note}");
+                    }
+                }
+                self.written = enc.into_written();
                 let session = self
                     .sessions
                     .get(&sid)
@@ -403,44 +563,56 @@ USAGE:
     <program> --help        print this text
 ";
 
+/// Write `text` to standard output. A reader that left early (`| head`) is not an error worth a
+/// panic: the output is simply not wanted any more.
+fn print_out(text: &str) -> ExitCode {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("konoma plugin: cannot write the output: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The `main` of a plugin program (what [`export!`](crate::export) emits).
 pub fn cli_main<P: Plugin>(plugin: P) -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("--serve") => match serve(plugin) {
+    use std::os::unix::ffi::OsStrExt;
+    // The arguments of a program are bytes, not text: `args()` would panic on one that is not UTF-8.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let first = args.first().map(|a| a.as_bytes());
+    match first {
+        Some(b"--serve") => match serve(plugin) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("konoma plugin: {e}");
                 ExitCode::FAILURE
             }
         },
-        Some("--manifest") => match super::manifest_to_json(&plugin.manifest()) {
-            Ok(json) => {
-                println!("{json}");
-                ExitCode::SUCCESS
-            }
+        Some(b"--manifest") => match super::manifest_to_json(&plugin.manifest()) {
+            Ok(json) => print_out(&format!("{json}\n")),
             Err(e) => {
                 eprintln!("konoma plugin: {e}");
                 ExitCode::FAILURE
             }
         },
-        Some("--version") => {
+        Some(b"--version") => {
             let m = plugin.manifest();
-            println!("{} {}", m.id, m.version);
-            ExitCode::SUCCESS
+            print_out(&format!("{} {}\n", m.id, m.version))
         }
-        Some("--help" | "-h") => {
-            print!("{HELP}");
-            ExitCode::SUCCESS
-        }
-        Some(other) if !other.starts_with('-') => {
+        Some(b"--help" | b"-h") => print_out(HELP),
+        Some(other) if !other.starts_with(b"-") => {
             eprintln!(
-                "konoma plugin: opening {other:?} as a standalone app is not available in this version"
+                "konoma plugin: opening {:?} as a standalone app is not available in this version",
+                args[0]
             );
             ExitCode::from(2)
         }
-        Some(other) => {
-            eprintln!("konoma plugin: unknown option {other:?}\n\n{HELP}");
+        Some(_) => {
+            eprintln!("konoma plugin: unknown option {:?}\n\n{HELP}", args[0]);
             ExitCode::from(2)
         }
         None => {

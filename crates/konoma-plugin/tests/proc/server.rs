@@ -217,6 +217,7 @@ fn the_session_cap_answers_too_heavy_and_a_close_frees_a_place() {
     let mut h = Host::start(ServeOptions {
         max_sessions: 2,
         side_threshold: None,
+        exit_after_host_gone: None,
     });
     assert!(matches!(
         h.hello(vec![1], dir.as_path()),
@@ -240,6 +241,7 @@ fn the_same_session_id_can_be_opened_again_at_the_cap() {
     let mut h = Host::start(ServeOptions {
         max_sessions: 1,
         side_threshold: None,
+        exit_after_host_gone: None,
     });
     assert!(matches!(
         h.hello(vec![1], dir.as_path()),

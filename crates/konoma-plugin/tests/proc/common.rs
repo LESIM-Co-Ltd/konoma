@@ -63,6 +63,8 @@ pub struct Ctl {
     pub release: Latch,
     pub opened: AtomicUsize,
     pub closed: AtomicUsize,
+    /// Calls of `act` that started running.
+    pub acts: AtomicUsize,
     pub last_input: Mutex<Option<String>>,
     /// The stderr stream of the current child.
     pub stderr: Mutex<Option<UnixStream>>,
@@ -261,6 +263,7 @@ impl Session for TestSession {
     }
 
     fn act(&mut self, action: &str, _cx: &ActCx) -> Result<Outcome, Failure> {
+        self.ctl.acts.fetch_add(1, Ordering::SeqCst);
         match action {
             "flash" => Ok(Outcome::Flash(Tr::new("flashed").ja("フラッシュ"))),
             "toggle" => {
@@ -302,6 +305,8 @@ pub struct Rig {
     pub ctl: Arc<Ctl>,
     pub launches: Arc<AtomicUsize>,
     pub kills: Arc<AtomicUsize>,
+    /// Children that left on their own (served to the end) before anything cut their streams.
+    pub exits: Arc<AtomicUsize>,
     /// The id the next child declares (to test a mismatch).
     pub id: Arc<Mutex<String>>,
     pub side_threshold: Option<usize>,
@@ -315,6 +320,7 @@ impl Rig {
             ctl: Arc::new(Ctl::default()),
             launches: Arc::default(),
             kills: Arc::default(),
+            exits: Arc::default(),
             id: Arc::new(Mutex::new("test".into())),
             side_threshold: None,
             pid: None,
@@ -340,17 +346,23 @@ impl Rig {
             host_err.try_clone()?,
         ];
         let killed = Arc::new(AtomicBool::new(false));
+        let all = Arc::new(all);
+        let cut_all = {
+            let all = Arc::clone(&all);
+            move || {
+                for s in all.iter() {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        };
         let kill_all = {
-            let all = Arc::new(all);
             let kills = Arc::clone(&self.kills);
             let killed = Arc::clone(&killed);
             move || {
                 if !killed.swap(true, Ordering::SeqCst) {
                     kills.fetch_add(1, Ordering::SeqCst);
                 }
-                for s in all.iter() {
-                    let _ = s.shutdown(std::net::Shutdown::Both);
-                }
+                cut_all();
             }
         };
         let kill_all = Arc::new(kill_all);
@@ -365,7 +377,20 @@ impl Rig {
             side_threshold: self.side_threshold,
             ..ServeOptions::default()
         };
-        let end = Arc::clone(&kill_all);
+        let exits = Arc::clone(&self.exits);
+        let killed_flag = Arc::clone(&killed);
+        let leave = {
+            let all = Arc::clone(&all);
+            move || {
+                // The program has exited: its ends of the pipes close (the host reads end of file).
+                if !killed_flag.load(Ordering::SeqCst) {
+                    exits.fetch_add(1, Ordering::SeqCst);
+                }
+                for s in all.iter() {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        };
         std::thread::Builder::new()
             .name("test-child".into())
             .spawn(move || {
@@ -374,9 +399,8 @@ impl Rig {
                     id,
                 };
                 let _ = serve_io(plugin, child_r, child_w, &opts);
-                // The program has exited: its ends of the pipes close.
                 let _ = child_err.shutdown(std::net::Shutdown::Both);
-                let _ = end;
+                leave();
             })?;
         let k = Arc::clone(&kill_all);
         Ok(Spawned {
@@ -430,6 +454,8 @@ pub fn short_limits() -> Limits {
         stderr_tail: 4096,
         rss_limit: u64::MAX,
         rss_interval: Duration::from_millis(20),
+        shutdown_grace: Duration::from_millis(500),
+        start_retry_after: Duration::ZERO,
     }
 }
 

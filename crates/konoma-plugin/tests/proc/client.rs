@@ -501,11 +501,13 @@ fn a_view_past_its_deadline_kills_the_child_fails_the_others_and_the_next_open_r
     assert_eq!(rig.kills.load(Ordering::SeqCst), 1);
     assert!(!p.is_running());
 
-    // The other session fails with the connection's reason, without waiting.
-    let started = Instant::now();
+    // The other session fails with the connection's reason of record (the very same failure, not a
+    // new one of its own), and no second child is ended.
     let g = view(&mut b, "plain").unwrap_err();
     assert_eq!(g.kind, FailureKind::Timeout);
-    assert!(started.elapsed() < Duration::from_millis(200));
+    assert_eq!(g.message, f.message);
+    assert_eq!(g.detail, f.detail);
+    assert_eq!(rig.kills.load(Ordering::SeqCst), 1);
     assert!(act(&mut b, "flash").is_err());
     assert!(b.key(&Key::new(KeyCode::Enter), &ActCx::bare()).is_err());
 
@@ -551,7 +553,9 @@ fn the_deadline_of_open_and_view_is_not_the_one_of_act_and_key() {
     limits.act_key = Duration::from_millis(150);
     let p = rig.plugin(limits, &scratch);
     let mut s = open(&p).unwrap();
-    // A view may take longer than act_key (here: held until released after 400 ms of waiting).
+    // A view may take longer than act_key. The sleep is a span of time that must be longer than
+    // act_key (a sleep is never shorter than asked), not a way to order two events: the view's
+    // own deadline is `PATIENCE`.
     let ctl = Arc::clone(&rig.ctl);
     let releaser = std::thread::spawn(move || {
         ctl.started.wait();
@@ -1266,12 +1270,10 @@ fn a_bad_side_file_in_an_answer_ends_only_that_call() {
     );
     let mut s = open(&p).unwrap();
     let f = s.view(&ViewReq::new(1, 1), &ViewCx::bare()).err().unwrap();
+    assert_eq!(f.kind, FailureKind::Corrupt, "{f:?}");
     assert!(
-        matches!(
-            f.kind,
-            FailureKind::Corrupt | FailureKind::External | FailureKind::Io
-        ),
-        "{f:?}"
+        f.detail.as_deref().unwrap_or("").contains("c-404"),
+        "the detail names the missing side file: {f:?}"
     );
     assert_eq!(kills.load(Ordering::SeqCst), 0);
     assert!(p.is_running());
@@ -1307,6 +1309,7 @@ fn a_hostile_view_that_decodes_but_breaks_the_rules_fails_the_call_not_the_host(
             WView::Canvas(WCanvas {
                 cols: 3,
                 rows: 2,
+                styles: WBin::Inline(vec![]),
                 runs: vec![],
                 images: vec![],
                 redraw_after_ms: None,
@@ -1403,4 +1406,349 @@ fn an_open_can_be_cancelled_before_it_is_even_sent_to_a_slow_reader() {
     latch.set();
 }
 
+// ---------------------------------------------------------------------------------------------
+// The clock runs while the child works on a call, not while the call waits its turn
+// ---------------------------------------------------------------------------------------------
+
+/// Hold the head call of the child for `hold` (its own deadline is patient), meanwhile a call of
+/// another session waits its turn. `b` runs after the hold and decides what the waiting call does.
+fn behind_a_slow_view<R: Send + 'static>(
+    rig: &Rig,
+    p: &Arc<ProcPlugin>,
+    hold: Duration,
+    b: impl FnOnce(Box<dyn Session>) -> R + Send + 'static,
+) -> (R, Box<dyn Session>) {
+    let mut a = open(p).unwrap();
+    let b_session = open(p).unwrap();
+    let ha = std::thread::spawn(move || {
+        let r = view(&mut a, "hang");
+        (a, r)
+    });
+    rig.ctl.started.wait();
+    let hb = std::thread::spawn(move || b(b_session));
+    // The waiting call is sent and is waiting. This sleep is a span of time to live through (the
+    // deadline of the waiting call is shorter than it), not an ordering.
+    std::thread::sleep(hold);
+    rig.ctl.release.set();
+    let (a, ra) = ha.join().unwrap();
+    assert!(
+        ra.is_ok(),
+        "the slow call is within its own deadline: {ra:?}"
+    );
+    (hb.join().unwrap(), a)
+}
+
+fn queue_limits() -> Limits {
+    let mut l = patient_limits();
+    l.act_key = Duration::from_millis(300);
+    l.cancel_grace = Duration::from_millis(300);
+    l
+}
+
+#[test]
+fn a_call_that_waits_behind_a_slow_one_is_not_late_for_the_wait() {
+    let scratch = unique_tmp("kp_queue_deadline");
+    let rig = Rig::new();
+    let p = Arc::new(rig.plugin(queue_limits(), &scratch));
+    let (r, _a) = behind_a_slow_view(&rig, &p, Duration::from_millis(800), |mut b| {
+        act(&mut b, "flash").map(|_| b)
+    });
+    assert!(
+        r.is_ok(),
+        "waited longer than its deadline, still answered: {:?}",
+        r.err()
+    );
+    assert_eq!(
+        rig.kills.load(Ordering::SeqCst),
+        0,
+        "the child is not killed for the wait"
+    );
+    assert!(p.is_running());
+}
+
+#[test]
+fn a_call_cancelled_while_it_waits_is_answered_cancelled_without_running_and_without_a_kill() {
+    let scratch = unique_tmp("kp_queue_cancel");
+    let rig = Rig::new();
+    let p = Arc::new(rig.plugin(queue_limits(), &scratch));
+    let (flag, cancel) = cancel_flag();
+    flag.store(true, Ordering::SeqCst);
+    let (r, mut a) = behind_a_slow_view(&rig, &p, Duration::from_millis(800), move |mut b| {
+        b.act("flash", &ActCx::bare().with_cancel(cancel))
+    });
+    let f = r.unwrap_err();
+    assert_eq!(f.kind, FailureKind::Cancelled);
+    assert_eq!(
+        rig.ctl.acts.load(Ordering::SeqCst),
+        0,
+        "the child did not run a call that was cancelled before it got to it"
+    );
+    assert_eq!(
+        rig.kills.load(Ordering::SeqCst),
+        0,
+        "the grace after a cancel does not run while the call waits its turn"
+    );
+    assert!(view(&mut a, "plain").is_ok());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stopping on purpose
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn stop_idle_stop_and_drop_ask_the_child_to_leave_before_they_kill() {
+    for how in ["stop", "reap_idle", "drop"] {
+        let scratch = unique_tmp("kp_graceful");
+        let rig = Rig::new();
+        let mut limits = patient_limits();
+        limits.shutdown_grace = PATIENCE;
+        let p = rig.plugin(limits, &scratch);
+        let sessions = if how == "reap_idle" {
+            vec![]
+        } else {
+            vec![open(&p).unwrap(), open(&p).unwrap()]
+        };
+        if how == "reap_idle" {
+            drop(open(&p).unwrap());
+        }
+        match how {
+            "stop" => p.stop(),
+            "reap_idle" => assert!(p.reap_idle_at(Instant::now() + Duration::from_secs(301))),
+            _ => drop(p),
+        }
+        // The call has returned: the child had left by itself (it served to its end) before the
+        // streams were cut, and had dropped its sessions on the way.
+        assert_eq!(
+            rig.exits.load(Ordering::SeqCst),
+            1,
+            "{how}: the child left on its own"
+        );
+        assert_eq!(
+            rig.ctl.closed.load(Ordering::SeqCst),
+            rig.ctl.opened.load(Ordering::SeqCst),
+            "{how}: every session was dropped in the child"
+        );
+        drop(sessions);
+    }
+}
+
+#[test]
+fn a_child_that_does_not_leave_on_shutdown_is_killed_after_the_grace() {
+    let scratch = unique_tmp("kp_graceless");
+    let rig = Rig::new();
+    let mut limits = patient_limits();
+    limits.shutdown_grace = Duration::from_millis(200);
+    let p = Arc::new(rig.plugin(limits, &scratch));
+    let mut a = open(&p).unwrap();
+    let ha = std::thread::spawn(move || {
+        let r = view(&mut a, "ignore-cancel");
+        (a, r)
+    });
+    rig.ctl.started.wait();
+    p.stop();
+    assert_eq!(rig.kills.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        rig.exits.load(Ordering::SeqCst),
+        0,
+        "it was cut, it did not leave"
+    );
+    let (_a, r) = ha.join().unwrap();
+    assert!(r.is_err());
+    rig.ctl.release.set();
+}
+
+#[test]
+fn a_start_in_progress_does_not_block_is_running_stop_or_reap_idle() {
+    let scratch = unique_tmp("kp_start_nolock");
+    let rig = Rig::new();
+    let entered = Latch::new();
+    let gate = Latch::new();
+    let inner = rig.launch();
+    let (e2, g2) = (entered.clone(), gate.clone());
+    let p = Arc::new(ProcPlugin::from_manifest(
+        test_manifest("test"),
+        move || {
+            e2.set();
+            g2.wait();
+            inner()
+        },
+        config(patient_limits(), &scratch),
+    ));
+    let p2 = Arc::clone(&p);
+    let opener = std::thread::spawn(move || open(&p2).err());
+    entered.wait();
+    // The launcher is blocked inside the start. Each of these returns (a test that deadlocks here
+    // is stopped by the harness timeout).
+    assert!(!p.is_running());
+    assert!(!p.reap_idle_at(Instant::now() + Duration::from_secs(10_000)));
+    p.stop();
+    gate.set();
+    let f = opener
+        .join()
+        .unwrap()
+        .expect("a start that was stopped meanwhile does not open");
+    assert_eq!(f.kind, FailureKind::External);
+    assert!(!p.is_running());
+    assert_eq!(
+        rig.exits.load(Ordering::SeqCst),
+        1,
+        "the child that came up late was shut down"
+    );
+    // And the plugin works afterwards.
+    let mut s = open(&p).unwrap();
+    assert!(view(&mut s, "plain").is_ok());
+}
+
+#[test]
+fn a_failed_start_is_remembered_for_a_while_without_forking_again() {
+    let scratch = unique_tmp("kp_start_memory");
+    let launches = Arc::new(AtomicUsize::new(0));
+    let l2 = Arc::clone(&launches);
+    let mut limits = patient_limits();
+    limits.start_retry_after = Duration::from_secs(3600);
+    let p = ProcPlugin::from_manifest(
+        test_manifest("test"),
+        move || -> std::io::Result<Spawned> {
+            l2.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("no such program"))
+        },
+        config(limits, &scratch),
+    );
+    let first = open(&p).err().unwrap();
+    for _ in 0..5 {
+        let again = open(&p).err().unwrap();
+        assert_eq!(again.kind, first.kind);
+        assert_eq!(again.detail, first.detail, "the same reason");
+    }
+    assert_eq!(
+        launches.load(Ordering::SeqCst),
+        1,
+        "the program was started once, not six times"
+    );
+    assert!(first
+        .detail
+        .as_deref()
+        .unwrap_or("")
+        .contains("no such program"));
+    // An explicit stop forgets it.
+    p.stop();
+    let _ = open(&p);
+    assert_eq!(launches.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_failed_start_may_be_retried_at_once_when_the_memory_is_off() {
+    let scratch = unique_tmp("kp_start_nomemory");
+    let launches = Arc::new(AtomicUsize::new(0));
+    let l2 = Arc::clone(&launches);
+    let mut limits = patient_limits();
+    limits.start_retry_after = Duration::ZERO;
+    let p = ProcPlugin::from_manifest(
+        test_manifest("test"),
+        move || -> std::io::Result<Spawned> {
+            l2.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("no such program"))
+        },
+        config(limits, &scratch),
+    );
+    for _ in 0..3 {
+        assert!(open(&p).is_err());
+    }
+    assert_eq!(launches.load(Ordering::SeqCst), 3);
+}
+
+// ---------------------------------------------------------------------------------------------
+// What a failure shows of the child's stderr
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_detail_keeps_the_reason_and_the_stderr_without_control_characters() {
+    let scratch = unique_tmp("kp_detail");
+    let rig = Rig::new();
+    let p = rig.plugin(short_limits(), &scratch);
+    let mut s = open(&p).unwrap();
+    rig.ctl
+        .write_stderr(b"\x1b]0;evil title\x07\x1b[31mRED-TEXT\x1b[0m\x00 tab\there\r\nSECOND\n");
+    let f = act(&mut s, "noisy-hang").unwrap_err();
+    assert_eq!(f.kind, FailureKind::Timeout);
+    let d = f.detail.expect("a detail");
+    assert!(d.contains("no answer within"), "the reason stays: {d:?}");
+    assert!(
+        d.contains("RED-TEXT") && d.contains("MARKER-BEFORE-HANG"),
+        "{d:?}"
+    );
+    assert!(d.contains("\there"), "a tab stays: {d:?}");
+    assert!(
+        !d.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+        "no control character (an escape sequence would reach the host's terminal): {d:?}"
+    );
+    assert!(d.chars().count() <= 512, "{} chars", d.chars().count());
+    rig.ctl.release.set();
+}
+
+#[test]
+fn a_long_stderr_keeps_its_end_and_the_reason_within_the_text_limit() {
+    let scratch = unique_tmp("kp_detail_long");
+    let rig = Rig::new();
+    let p = rig.plugin(patient_limits(), &scratch);
+    let mut s = open(&p).unwrap();
+    let f = view(&mut s, "die").unwrap_err();
+    let d = f.detail.expect("a detail");
+    assert!(d.chars().count() <= 512, "{} chars", d.chars().count());
+    assert!(
+        d.ends_with("LAST-WORDS"),
+        "{:?}",
+        &d[d.len().saturating_sub(30)..]
+    );
+    assert!(
+        d.contains("closed its output") || d.contains("exited"),
+        "the reason: {d:?}"
+    );
+}
+
 fn _unused(_: Config) {}
+
+// ---------------------------------------------------------------------------------------------
+// The sweep of directories a dead host left
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_sweep_removes_only_the_directories_of_hosts_that_are_gone() {
+    use konoma_plugin::proc::client::sweep_stale_side_dirs;
+    let root = unique_tmp("kp_sweep");
+    std::fs::create_dir_all(root.as_path()).unwrap();
+    // A pid that existed and was reaped.
+    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let dead = done.id();
+    done.wait().unwrap();
+    let make = |name: &str| {
+        let d = root.as_path().join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("h-1"), b"x").unwrap();
+        d
+    };
+    let stale = make(&format!("konoma-plugin-{dead}-1-100"));
+    let ours = make(&format!("konoma-plugin-{}-2-100", std::process::id()));
+    // Another process that is alive: init (pid 1) exists and is not ours.
+    let other_live = make("konoma-plugin-1-3-100");
+    let odd_name = make("konoma-plugin-notapid-4-100");
+    let unrelated = make("somebody-elses");
+    // A link with a stale name must not be followed: its target stays, and the link is left alone.
+    let target = make("link-target");
+    let link = root.as_path().join(format!("konoma-plugin-{dead}-5-100"));
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    // A plain file with a stale name is not a directory.
+    let file = root.as_path().join(format!("konoma-plugin-{dead}-6-100"));
+    std::fs::write(&file, b"x").unwrap();
+
+    let n = sweep_stale_side_dirs(root.as_path());
+    assert_eq!(n, 1, "only the directory of the dead host");
+    assert!(!stale.exists(), "removed");
+    for kept in [&ours, &other_live, &odd_name, &unrelated, &target] {
+        assert!(kept.join("h-1").exists(), "{kept:?} must stay");
+    }
+    assert!(link.symlink_metadata().is_ok(), "the link itself is left");
+    assert!(file.exists());
+    // A root that does not exist is not an error.
+    assert_eq!(sweep_stale_side_dirs(&root.as_path().join("nope")), 0);
+}

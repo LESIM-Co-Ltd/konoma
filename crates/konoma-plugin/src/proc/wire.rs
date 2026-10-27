@@ -19,7 +19,7 @@
 //! - A nested animation (`Frames` inside `Frames`) is refused.
 //! - A table's per-cell `detail`, and a text view's styler (its lines are styled in the child).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -55,8 +55,16 @@ pub const SIDE_THRESHOLD: usize = 1 << 20;
 /// The largest side file either end writes or accepts. (A frame is 64 MiB; a picture of 8192 x 8192
 /// pixels is 256 MiB.)
 pub const SIDE_FILE_MAX: usize = 256 << 20;
-/// The most side-file bytes one message may carry.
+/// The most side-file bytes one message from the host to the child may carry.
 pub const SIDE_TOTAL_MAX: usize = 512 << 20;
+/// The most side-file bytes one message from a child to the host may carry, and the most the host
+/// takes. 256 MiB, the same as the canvas pictures the host keeps (`MAX_CANVAS_HELD_BYTES` and
+/// `MAX_CANVAS_KEPT_BYTES`): the host holds a whole answer in memory at once, so it accepts no more
+/// than it would keep.
+pub const SIDE_TOTAL_MAX_FROM_CHILD: usize = 256 << 20;
+/// The largest encoded size of a styled text (its lines with their styles) a child sends. Past
+/// it the text is sent plain, so the answer stays well inside a frame.
+pub const STYLED_MAX_ENCODED: usize = 40 << 20;
 /// The cells (all columns of all rows) of a table a child sends. The same number as the Office
 /// reader's per-sheet cell budget, so a sheet the reader keeps whole also crosses whole.
 pub const TABLE_MAX_CELLS: usize = 4_000_000;
@@ -238,20 +246,39 @@ impl Side {
             .create_new(true)
             .mode(0o600)
             .open(&path)?;
-        f.write_all(bytes)?;
+        if let Err(e) = f.write_all(bytes) {
+            drop(f);
+            let _ = std::fs::remove_file(&path);
+            return Err(e.into());
+        }
         Ok(WBin::File {
             name,
             len: bytes.len() as u64,
         })
     }
 
-    fn take(&self, name: &str, len: u64) -> Result<Vec<u8>, WireError> {
-        let plain = !name.is_empty()
+    /// Whether `name` is one plain file name (what a side file is called), so joining it to the
+    /// directory cannot leave the directory.
+    fn plain(name: &str) -> bool {
+        !name.is_empty()
             && name.len() <= 64
             && name != "."
             && name != ".."
-            && !name.bytes().any(|b| b == b'/' || b == 0);
-        if !plain {
+            && !name.bytes().any(|b| b == b'/' || b == 0)
+    }
+
+    /// Delete a side file the receiver has not read (the message it came with failed). A name that
+    /// is not a plain one is ignored: it names nothing in the directory.
+    pub fn discard(&self, name: &str) {
+        if Side::plain(name) {
+            let _ = std::fs::remove_file(self.dir.join(name));
+        }
+    }
+
+    /// Open a side file for reading, checked: a plain name, no link followed, a regular file of
+    /// exactly the announced length. Returns the file and its path.
+    fn open_checked(&self, name: &str, len: u64) -> Result<(std::fs::File, PathBuf), WireError> {
+        if !Side::plain(name) {
             return Err(WireError::bad(format!(
                 "side file name {name:?} is not a plain name"
             )));
@@ -279,14 +306,37 @@ impl Side {
                 meta.len()
             )));
         }
-        let mut out = Vec::new();
-        file.take(len).read_to_end(&mut out)?;
+        Ok((file, path))
+    }
+
+    /// Read a side file into a buffer made at its size (the length was checked against the file
+    /// itself, so the allocation is for bytes that exist), then delete it.
+    fn take(&self, name: &str, len: u64) -> Result<Vec<u8>, WireError> {
+        let (file, path) = self.open_checked(name, len)?;
+        let mut out = Vec::with_capacity(len as usize);
+        let read = file.take(len).read_to_end(&mut out);
         // Deleted once read, whether or not the rest of the message is good.
         let _ = std::fs::remove_file(&path);
+        read?;
         if out.len() as u64 != len {
             return Err(WireError::bad(format!("side file {name:?} was cut short")));
         }
         Ok(out)
+    }
+
+    /// [`Side::take`] into an `Arc<[u8]>` directly (a `Vec` converted to an `Arc` is copied).
+    fn take_arc(&self, name: &str, len: u64) -> Result<Arc<[u8]>, WireError> {
+        let (file, path) = self.open_checked(name, len)?;
+        // SAFETY: zeroed bytes are a valid `u8`, so the slice is initialised.
+        let mut arc: Arc<[u8]> =
+            unsafe { Arc::<[u8]>::new_zeroed_slice(len as usize).assume_init() };
+        let read = match Arc::get_mut(&mut arc) {
+            Some(buf) => file.take(len).read_exact(buf),
+            None => Err(std::io::Error::other("a new Arc is shared")),
+        };
+        let _ = std::fs::remove_file(&path);
+        read.map_err(|e| WireError::bad(format!("side file {name:?} was cut short: {e}")))?;
+        Ok(arc)
     }
 }
 
@@ -294,11 +344,25 @@ impl Side {
 pub struct Enc<'a> {
     side: &'a Side,
     sent: usize,
+    total_max: usize,
+    written: Vec<String>,
 }
 
 impl<'a> Enc<'a> {
+    /// A message to the child (up to [`SIDE_TOTAL_MAX`] bytes of side files).
     pub fn new(side: &'a Side) -> Enc<'a> {
-        Enc { side, sent: 0 }
+        Enc::with_total_max(side, SIDE_TOTAL_MAX)
+    }
+
+    /// A message with another side-file total (a child uses [`SIDE_TOTAL_MAX_FROM_CHILD`], what
+    /// the host accepts).
+    pub fn with_total_max(side: &'a Side, total_max: usize) -> Enc<'a> {
+        Enc {
+            side,
+            sent: 0,
+            total_max,
+            written: Vec::new(),
+        }
     }
 
     fn bin(&mut self, bytes: &[u8]) -> Result<WBin, WireError> {
@@ -306,10 +370,26 @@ impl<'a> Enc<'a> {
             return Ok(WBin::Inline(bytes.to_vec()));
         }
         self.sent = self.sent.saturating_add(bytes.len());
-        if self.sent > SIDE_TOTAL_MAX {
+        if self.sent > self.total_max {
             return Err(WireError::too_large("one message carries too many bytes"));
         }
-        self.side.put(bytes)
+        let bin = self.side.put(bytes)?;
+        if let WBin::File { name, .. } = &bin {
+            self.written.push(name.clone());
+        }
+        Ok(bin)
+    }
+
+    /// The side files this message wrote (the caller deletes them if it does not send it).
+    pub fn into_written(self) -> Vec<String> {
+        self.written
+    }
+
+    /// Delete every side file this message wrote (it will not be sent).
+    pub fn discard(&mut self) {
+        for name in self.written.drain(..) {
+            self.side.discard(&name);
+        }
     }
 }
 
@@ -317,30 +397,60 @@ impl<'a> Enc<'a> {
 pub struct Dec<'a> {
     side: &'a Side,
     taken: usize,
+    total_max: usize,
 }
 
 impl<'a> Dec<'a> {
+    /// A message from the host (up to [`SIDE_TOTAL_MAX`] bytes of side files).
     pub fn new(side: &'a Side) -> Dec<'a> {
-        Dec { side, taken: 0 }
+        Dec::with_total_max(side, SIDE_TOTAL_MAX)
+    }
+
+    /// A message with another side-file total (the host uses [`SIDE_TOTAL_MAX_FROM_CHILD`]).
+    pub fn with_total_max(side: &'a Side, total_max: usize) -> Dec<'a> {
+        Dec {
+            side,
+            taken: 0,
+            total_max,
+        }
+    }
+
+    fn count(&mut self, len: u64) -> Result<(), WireError> {
+        self.taken = self
+            .taken
+            .saturating_add(len.min(usize::MAX as u64) as usize);
+        if self.taken > self.total_max {
+            return Err(WireError::too_large("one message carries too many bytes"));
+        }
+        Ok(())
     }
 
     fn bin(&mut self, b: WBin) -> Result<Vec<u8>, WireError> {
         match b {
             WBin::Inline(v) => Ok(v),
             WBin::File { name, len } => {
-                self.taken = self
-                    .taken
-                    .saturating_add(len.min(usize::MAX as u64) as usize);
-                if self.taken > SIDE_TOTAL_MAX {
-                    return Err(WireError::too_large("one message carries too many bytes"));
-                }
+                self.count(len)?;
                 self.side.take(&name, len)
             }
         }
     }
 
     fn arc(&mut self, b: WBin) -> Result<Arc<[u8]>, WireError> {
-        Ok(Arc::from(self.bin(b)?))
+        match b {
+            WBin::Inline(v) => Ok(Arc::from(v)),
+            WBin::File { name, len } => {
+                self.count(len)?;
+                self.side.take_arc(&name, len)
+            }
+        }
+    }
+
+    /// Delete the side files of a message that could not be converted (the ones already read are
+    /// gone; the rest would stay until the connection ends).
+    pub fn discard(&self, names: &[String]) {
+        for n in names {
+            self.side.discard(n);
+        }
     }
 }
 
@@ -369,6 +479,27 @@ pub fn abs_path_from_wire(p: WPath, what: &str) -> Result<PathBuf, WireError> {
         )));
     }
     Ok(path)
+}
+
+/// A path the host's own input carries to the child: made absolute against the host's working
+/// directory, because the child's working directory is `/`.
+fn path_made_absolute(p: &Path, what: &str) -> Result<WPath, WireError> {
+    std::path::absolute(p)
+        .map(|abs| path_to_wire(&abs))
+        .map_err(|e| WireError::bad(format!("{what} {}: {e}", p.display())))
+}
+
+/// A path a child's view carries to the host: it must already be absolute. A relative path would
+/// mean the child's working directory (`/`), which is not where the plugin author thinks it is,
+/// so it is refused instead of silently pointing somewhere else.
+fn path_required_absolute(p: &Path, what: &str) -> Result<WPath, WireError> {
+    if !p.is_absolute() {
+        return Err(WireError::bad(format!(
+            "{what} {} is not an absolute path",
+            p.display()
+        )));
+    }
+    Ok(path_to_wire(p))
 }
 
 fn index_from_wire(n: u64, what: &str) -> Result<usize, WireError> {
@@ -403,7 +534,7 @@ pub fn tr_from_wire(t: WTr) -> Tr {
     out.clipped()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WColor {
     Reset,
     Black,
@@ -474,7 +605,7 @@ fn color_from_wire(c: WColor) -> Color {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WStyle {
     pub fg: Option<WColor>,
     pub bg: Option<WColor>,
@@ -691,13 +822,20 @@ pub enum WOrigin {
     Converted { from: WPath },
 }
 
-fn origin_to_wire(o: &Origin) -> WOrigin {
-    match o {
-        Origin::File(p) => WOrigin::File(path_to_wire(p)),
-        Origin::Converted { from } => WOrigin::Converted {
-            from: path_to_wire(from),
-        },
-    }
+/// `from_host`: the origin is the host's own input (made absolute); otherwise it is a child's
+/// view (must be absolute).
+fn origin_to_wire(o: &Origin, from_host: bool) -> Result<WOrigin, WireError> {
+    let conv = |p: &Path| {
+        if from_host {
+            path_made_absolute(p, "origin")
+        } else {
+            path_required_absolute(p, "origin")
+        }
+    };
+    Ok(match o {
+        Origin::File(p) => WOrigin::File(conv(p)?),
+        Origin::Converted { from } => WOrigin::Converted { from: conv(from)? },
+    })
 }
 
 fn origin_from_wire(o: WOrigin) -> Result<Origin, WireError> {
@@ -754,14 +892,10 @@ pub enum WInput {
 /// child's working directory is `/`.
 pub fn input_to_wire(i: &Input, enc: &mut Enc<'_>) -> Result<WInput, WireError> {
     Ok(match i {
-        Input::File { path, hint } => {
-            let abs = std::path::absolute(path)
-                .map_err(|e| WireError::bad(format!("path {}: {e}", path.display())))?;
-            WInput::File {
-                path: path_to_wire(&abs),
-                hint: hint.clone(),
-            }
-        }
+        Input::File { path, hint } => WInput::File {
+            path: path_made_absolute(path, "path")?,
+            hint: hint.clone(),
+        },
         Input::Content {
             content_type,
             text,
@@ -771,7 +905,7 @@ pub fn input_to_wire(i: &Input, enc: &mut Enc<'_>) -> Result<WInput, WireError> 
             content_type: content_type.clone(),
             text: text.clone(),
             resources: resources_to_wire(resources, enc)?,
-            origin: origin_to_wire(origin),
+            origin: origin_to_wire(origin, true)?,
         },
         Input::Embed {
             kind,
@@ -1108,11 +1242,7 @@ pub enum WImage {
 
 fn leaf_to_wire(d: &ImageData, enc: &mut Enc<'_>) -> Result<WLeaf, WireError> {
     Ok(match d {
-        ImageData::File(p) => {
-            WLeaf::File(path_to_wire(&std::path::absolute(p).map_err(|e| {
-                WireError::bad(format!("image path {}: {e}", p.display()))
-            })?))
-        }
+        ImageData::File(p) => WLeaf::File(path_required_absolute(p, "image path")?),
         ImageData::Encoded(b) => WLeaf::Encoded(enc.bin(b)?),
         ImageData::Svg {
             data,
@@ -1120,7 +1250,10 @@ fn leaf_to_wire(d: &ImageData, enc: &mut Enc<'_>) -> Result<WLeaf, WireError> {
             trusted,
         } => WLeaf::Svg {
             data: enc.bin(data)?,
-            base_dir: base_dir.as_deref().map(path_to_wire),
+            base_dir: base_dir
+                .as_deref()
+                .map(|p| path_required_absolute(p, "svg base directory"))
+                .transpose()?,
             trusted: *trusted,
         },
         ImageData::Rgba {
@@ -1165,13 +1298,16 @@ fn leaf_from_wire(l: WLeaf, dec: &mut Dec<'_>) -> Result<ImageData, WireError> {
         WLeaf::Svg {
             data,
             base_dir,
-            trusted,
+            trusted: _,
         } => ImageData::Svg {
             data: dec.arc(data)?,
             base_dir: base_dir
                 .map(|p| abs_path_from_wire(p, "svg base directory"))
                 .transpose()?,
-            trusted,
+            // What the child claims is a ceiling, not a grant: whether an SVG is trusted is the
+            // host's decision from where it came from, and a program the host starts as a child
+            // is not a standard plugin. So a picture from a child is never trusted.
+            trusted: false,
         },
         WLeaf::Rgba {
             width,
@@ -1229,6 +1365,10 @@ pub struct WText {
     pub source: WTextSource,
     pub file_lines: bool,
     pub syntax_name: Option<String>,
+    /// Why the text was sent plain although the plugin styled it (too long to style, or the styled
+    /// form would not fit in a frame). The host does not show it; it is for the log of the child.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1317,14 +1457,20 @@ pub struct WCanvasImage {
     pub image: Option<WImage>,
 }
 
-/// A canvas as rows of style runs. A run is a style and the symbols of its cells written one after
-/// the other; the empty cell after a wide character is written as U+0000 (a control character,
-/// which a cell symbol may not hold, so it is never a real symbol).
+/// A canvas as rows of style runs. A run is the number of a style and the symbols of its cells
+/// written one after the other; the empty cell after a wide character is written as U+0000 (a
+/// control character, which a cell symbol may not hold, so it is never a real symbol).
+///
+/// The styles are a table of this answer (`styles`, [`STYLE_RECORD`] bytes each, see
+/// [`pack_styles`]) that the runs refer to by number, so a style is written once however many runs
+/// use it. The table is a byte string, so a canvas whose every cell has a style of its own (up to
+/// four million) is a table of tens of megabytes that goes through a side file, not the frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WCanvas {
     pub cols: u16,
     pub rows: u16,
-    pub runs: Vec<Vec<(WStyle, String)>>,
+    pub styles: WBin,
+    pub runs: Vec<Vec<(u32, String)>>,
     pub images: Vec<WCanvasImage>,
     /// Milliseconds, rounded up; `None` is "no timed redraw".
     pub redraw_after_ms: Option<u32>,
@@ -1430,34 +1576,92 @@ fn styled_lines(styler: &mut dyn LineStyler, text: &str) -> Vec<Line> {
     styler.style_block(0, text)
 }
 
+/// An upper bound of the encoded size of styled lines: every span is its text, the map keys of a
+/// style, two colours and the framing. Cheap to compute, so the exact size is only measured for
+/// the rare text that comes near the limit.
+fn styled_size_bound(lines: &[WLine]) -> usize {
+    lines
+        .iter()
+        .map(|l| 80 + l.spans.iter().map(|(t, _)| t.len() + 80).sum::<usize>())
+        .sum()
+}
+
+/// Styled lines as a source, or `Err(reason)` when their encoded form is over
+/// [`STYLED_MAX_ENCODED`] (the caller then sends the text plain).
+fn styled_source(lines: Vec<Line>) -> Result<WTextSource, String> {
+    let wl = lines_to_wire(&lines);
+    if styled_size_bound(&wl) > STYLED_MAX_ENCODED {
+        let exact = rmp_serde::to_vec_named(&wl)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
+        if exact > STYLED_MAX_ENCODED {
+            return Err(format!(
+                "the styled text is {exact} bytes encoded, over the limit of {STYLED_MAX_ENCODED}"
+            ));
+        }
+    }
+    Ok(WTextSource::Lines(wl))
+}
+
 fn text_to_wire(t: &mut TextView) -> Result<WText, WireError> {
     let styler_ready = t.styler.as_ref().is_some_and(|s| s.ready());
+    let mut note: Option<String> = None;
     let source = match (&t.source, styler_ready) {
-        (TextSource::Lines(lines), _) => WTextSource::Lines(lines_to_wire(lines)),
+        (TextSource::Lines(lines), _) => match styled_source(lines.clone()) {
+            Ok(src) => src,
+            Err(why) => {
+                // The same fallback as for text this side styles: the words, without the colours.
+                note = Some(format!("{why}; sent plain"));
+                WTextSource::Owned(lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n"))
+            }
+        },
         (TextSource::Owned(s), false) => WTextSource::Owned(s.clone()),
         (TextSource::Owned(s), true) => {
-            let styler = t
-                .styler
-                .as_mut()
-                .ok_or_else(|| WireError::bad("no styler"))?;
-            WTextSource::Lines(lines_to_wire(&styled_lines(&mut **styler, s)))
+            if s.len() as u64 > STYLE_MAX_BYTES {
+                note = Some(format!(
+                    "the text is {} bytes, over the {STYLE_MAX_BYTES} that are styled; sent plain",
+                    s.len()
+                ));
+                WTextSource::Owned(s.clone())
+            } else {
+                let styler = t
+                    .styler
+                    .as_mut()
+                    .ok_or_else(|| WireError::bad("no styler"))?;
+                match styled_source(styled_lines(&mut **styler, s)) {
+                    Ok(src) => src,
+                    Err(why) => {
+                        note = Some(format!("{why}; sent plain"));
+                        WTextSource::Owned(s.clone())
+                    }
+                }
+            }
         }
-        (TextSource::File(p), false) => WTextSource::File(path_to_wire(&std::path::absolute(p)?)),
+        (TextSource::File(p), false) => WTextSource::File(path_required_absolute(p, "text file")?),
         (TextSource::File(p), true) => {
-            let abs = std::path::absolute(p)?;
-            let small = std::fs::metadata(&abs).is_ok_and(|m| m.len() <= STYLE_MAX_BYTES);
+            let wp = path_required_absolute(p, "text file")?;
+            let small = std::fs::metadata(p).is_ok_and(|m| m.len() <= STYLE_MAX_BYTES);
             let text = if small {
-                std::fs::read(&abs)
+                std::fs::read(p)
                     .ok()
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
             } else {
+                note = Some(format!(
+                    "the file is over the {STYLE_MAX_BYTES} bytes that are styled; sent as the file"
+                ));
                 None
             };
             match (text, t.styler.as_mut()) {
                 (Some(text), Some(styler)) => {
-                    WTextSource::Lines(lines_to_wire(&styled_lines(&mut **styler, &text)))
+                    match styled_source(styled_lines(&mut **styler, &text)) {
+                        Ok(src) => src,
+                        Err(why) => {
+                            note = Some(format!("{why}; sent as the file"));
+                            WTextSource::File(wp)
+                        }
+                    }
                 }
-                _ => WTextSource::File(path_to_wire(&abs)),
+                _ => WTextSource::File(wp),
             }
         }
     };
@@ -1465,6 +1669,7 @@ fn text_to_wire(t: &mut TextView) -> Result<WText, WireError> {
         source,
         file_lines: t.file_lines,
         syntax_name: t.syntax_name.clone(),
+        note,
     })
 }
 
@@ -1540,16 +1745,114 @@ fn table_from_wire(t: WTable) -> Result<TableView, WireError> {
     })
 }
 
+/// The bytes of one packed style: foreground (4), background (4), added modifiers (2, little
+/// endian), removed modifiers (2).
+pub const STYLE_RECORD: usize = 12;
+
+const NAMED_COLORS: [WColor; 17] = [
+    WColor::Reset,
+    WColor::Black,
+    WColor::Red,
+    WColor::Green,
+    WColor::Yellow,
+    WColor::Blue,
+    WColor::Magenta,
+    WColor::Cyan,
+    WColor::Gray,
+    WColor::DarkGray,
+    WColor::LightRed,
+    WColor::LightGreen,
+    WColor::LightYellow,
+    WColor::LightBlue,
+    WColor::LightMagenta,
+    WColor::LightCyan,
+    WColor::White,
+];
+const TAG_INDEXED: u8 = 18;
+const TAG_RGB: u8 = 19;
+
+fn pack_color(c: Option<WColor>, out: &mut Vec<u8>) {
+    // Tag 0 is "no colour"; 1..=17 the named colours; then indexed and RGB with their bytes.
+    let rec = match c {
+        None => [0, 0, 0, 0],
+        Some(WColor::Indexed(i)) => [TAG_INDEXED, i, 0, 0],
+        Some(WColor::Rgb(r, g, b)) => [TAG_RGB, r, g, b],
+        Some(named) => {
+            let tag = NAMED_COLORS
+                .iter()
+                .position(|n| *n == named)
+                .map_or(0, |i| i as u8 + 1);
+            [tag, 0, 0, 0]
+        }
+    };
+    out.extend_from_slice(&rec);
+}
+
+fn unpack_color(rec: &[u8]) -> Result<Option<WColor>, WireError> {
+    Ok(match rec[0] {
+        0 => None,
+        t @ 1..=17 => Some(NAMED_COLORS[t as usize - 1]),
+        TAG_INDEXED => Some(WColor::Indexed(rec[1])),
+        TAG_RGB => Some(WColor::Rgb(rec[1], rec[2], rec[3])),
+        t => return Err(WireError::bad(format!("canvas style with colour tag {t}"))),
+    })
+}
+
+/// The style table as bytes.
+pub fn pack_styles(styles: &[WStyle]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(styles.len() * STYLE_RECORD);
+    for s in styles {
+        pack_color(s.fg, &mut out);
+        pack_color(s.bg, &mut out);
+        out.extend_from_slice(&s.add.to_le_bytes());
+        out.extend_from_slice(&s.sub.to_le_bytes());
+    }
+    out
+}
+
+/// The style table from its bytes; at most `max` styles (a canvas cannot use more styles than it
+/// has cells).
+fn unpack_styles(bytes: &[u8], max: usize) -> Result<Vec<Style>, WireError> {
+    if !bytes.len().is_multiple_of(STYLE_RECORD) {
+        return Err(WireError::bad(format!(
+            "canvas style table of {} bytes is not whole records",
+            bytes.len()
+        )));
+    }
+    if bytes.len() / STYLE_RECORD > max {
+        return Err(WireError::bad("canvas has more styles than cells"));
+    }
+    bytes
+        .as_chunks::<STYLE_RECORD>()
+        .0
+        .iter()
+        .map(|r| {
+            Ok(style_from_wire(WStyle {
+                fg: unpack_color(&r[0..4])?,
+                bg: unpack_color(&r[4..8])?,
+                add: u16::from_le_bytes([r[8], r[9]]),
+                sub: u16::from_le_bytes([r[10], r[11]]),
+            }))
+        })
+        .collect()
+}
+
 fn canvas_to_wire(c: &CanvasView, enc: &mut Enc<'_>) -> Result<WCanvas, WireError> {
     c.check()
         .map_err(|e| WireError::bad(format!("canvas: {e}")))?;
     let cols = c.cols as usize;
-    let mut runs: Vec<Vec<(WStyle, String)>> = Vec::with_capacity(c.rows as usize);
+    let mut table: Vec<WStyle> = Vec::new();
+    let mut numbers: HashMap<WStyle, u32> = HashMap::new();
+    let mut runs: Vec<Vec<(u32, String)>> = Vec::with_capacity(c.rows as usize);
     for y in 0..c.rows as usize {
-        let mut row: Vec<(WStyle, String)> = Vec::new();
+        let mut row: Vec<(u32, String)> = Vec::new();
         let mut last: Option<&str> = None;
         for cell in &c.cells[y * cols..(y + 1) * cols] {
-            let st = style_to_wire(&cell.style);
+            let ws = style_to_wire(&cell.style);
+            let st = *numbers.entry(ws).or_insert_with(|| {
+                table.push(ws);
+                (table.len() - 1) as u32
+            });
             let sym: &str = if cell.symbol.is_empty() {
                 CONTINUATION
             } else {
@@ -1573,6 +1876,7 @@ fn canvas_to_wire(c: &CanvasView, enc: &mut Enc<'_>) -> Result<WCanvas, WireErro
         }
         runs.push(row);
     }
+    let styles = enc.bin(&pack_styles(&table))?;
     let images = c
         .images
         .iter()
@@ -1594,6 +1898,7 @@ fn canvas_to_wire(c: &CanvasView, enc: &mut Enc<'_>) -> Result<WCanvas, WireErro
     Ok(WCanvas {
         cols: c.cols,
         rows: c.rows,
+        styles,
         runs,
         images,
         redraw_after_ms: c
@@ -1623,11 +1928,17 @@ fn canvas_from_wire(c: WCanvas, dec: &mut Dec<'_>) -> Result<CanvasView, WireErr
         )));
     }
     let cols = c.cols as usize;
+    let styles = unpack_styles(
+        &dec.bin(c.styles)?,
+        (c.cols as usize * c.rows as usize).max(1),
+    )?;
     let mut cells: Vec<CanvasCell> = Vec::new();
     for (y, row) in c.runs.into_iter().enumerate() {
         let before = cells.len();
         for (st, text) in row {
-            let style = style_from_wire(st);
+            let style = *styles.get(st as usize).ok_or_else(|| {
+                WireError::bad(format!("canvas run names style {st}, not in the table"))
+            })?;
             for g in text.graphemes(true) {
                 if cells.len() - before >= cols {
                     return Err(WireError::bad(format!("canvas row {y} has too many cells")));
@@ -1675,7 +1986,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
         View::Text(t) => WView::Text(text_to_wire(t)?),
         View::Document(d) => WView::Document(WDocument {
             markdown: d.markdown.clone(),
-            origin: origin_to_wire(&d.origin),
+            origin: origin_to_wire(&d.origin, false)?,
             resources: resources_to_wire(&d.resources, enc)?,
             options: doc_options_to_wire(&d.options),
             title: d.title.clone(),
@@ -1690,13 +2001,19 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
         View::List(l) => WView::List(
             l.rows
                 .iter()
-                .map(|r| WListRow {
-                    cells: lines_to_wire(&r.cells),
-                    kind: r.kind.clone(),
-                    target: r.target.as_deref().map(path_to_wire),
-                    checked: r.checked,
+                .map(|r| {
+                    Ok(WListRow {
+                        cells: lines_to_wire(&r.cells),
+                        kind: r.kind.clone(),
+                        target: r
+                            .target
+                            .as_deref()
+                            .map(|p| path_required_absolute(p, "list target"))
+                            .transpose()?,
+                        checked: r.checked,
+                    })
                 })
-                .collect(),
+                .collect::<Result<_, WireError>>()?,
         ),
         View::Diff(d) => WView::Diff(
             d.hunks
@@ -1723,11 +2040,73 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
             content_type: r.content_type.clone(),
             text: r.text.clone(),
             resources: resources_to_wire(&r.resources, enc)?,
-            origin: origin_to_wire(&r.origin),
+            origin: origin_to_wire(&r.origin, false)?,
             truncated: r.truncated,
         }),
         View::Message(m) => WView::Message(lines_to_wire(&m.lines)),
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The side files a message names
+// ---------------------------------------------------------------------------------------------
+
+fn bin_name(b: &WBin, out: &mut Vec<String>) {
+    if let WBin::File { name, .. } = b {
+        out.push(name.clone());
+    }
+}
+
+fn resource_names(r: &[(String, WBin)], out: &mut Vec<String>) {
+    for (_, b) in r {
+        bin_name(b, out);
+    }
+}
+
+fn leaf_names(l: &WLeaf, out: &mut Vec<String>) {
+    match l {
+        WLeaf::File(_) => {}
+        WLeaf::Encoded(b) => bin_name(b, out),
+        WLeaf::Svg { data, .. } => bin_name(data, out),
+        WLeaf::Rgba { pixels, .. } => bin_name(pixels, out),
+    }
+}
+
+fn image_names(i: &WImage, out: &mut Vec<String>) {
+    match i {
+        WImage::One(l) => leaf_names(l, out),
+        WImage::Frames(fs) => fs.iter().for_each(|(l, _)| leaf_names(l, out)),
+    }
+}
+
+/// The names of the side files a received view announces. The receiver deletes the ones it did not
+/// get to read when the conversion of the message fails.
+pub fn view_side_names(v: &WView) -> Vec<String> {
+    let mut out = Vec::new();
+    match v {
+        WView::Document(d) => resource_names(&d.resources, &mut out),
+        WView::Reopen(r) => resource_names(&r.resources, &mut out),
+        WView::Image(i) => image_names(&i.data, &mut out),
+        WView::Canvas(c) => {
+            bin_name(&c.styles, &mut out);
+            for im in &c.images {
+                if let Some(i) = &im.image {
+                    image_names(i, &mut out);
+                }
+            }
+        }
+        WView::Text(_) | WView::Table(_) | WView::List(_) | WView::Diff(_) | WView::Message(_) => {}
+    }
+    out
+}
+
+/// The names of the side files a received input announces (see [`view_side_names`]).
+pub fn input_side_names(i: &WInput) -> Vec<String> {
+    let mut out = Vec::new();
+    if let WInput::Content { resources, .. } = i {
+        resource_names(resources, &mut out);
+    }
+    out
 }
 
 /// Convert a received view. The sender is untrusted: see the module docs.
@@ -1763,7 +2142,10 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                 out.push(ListRow {
                     cells: lines_from_wire(r.cells),
                     kind: r.kind,
-                    target: r.target.map(path_from_wire).transpose()?,
+                    target: r
+                        .target
+                        .map(|p| abs_path_from_wire(p, "list target"))
+                        .transpose()?,
                     checked: r.checked,
                 });
             }

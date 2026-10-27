@@ -31,3 +31,12 @@ serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+
+# Real-process tests: this binary is also the plugin program (it serves when an environment variable
+# says so). `harness = false` because the body must run as the child too; it speaks the part of
+# libtest's command line that nextest uses (`--list`, `--exact`).
+[[test]]
+name = "proc_process"
+path = "tests/proc_process/main.rs"
+harness = false
+required-features = ["proc"]

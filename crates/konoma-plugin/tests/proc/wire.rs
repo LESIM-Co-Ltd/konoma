@@ -168,33 +168,95 @@ fn text_styler_that_is_not_ready_is_not_run() {
 }
 
 #[test]
-fn text_file_with_a_relative_path_is_sent_absolute_and_a_relative_wire_path_is_refused() {
-    let v = View::Text(TextView {
+fn a_child_view_with_a_relative_path_is_refused_when_sent_and_when_received() {
+    let dir = unique_tmp("kp_rel");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    // Sending: the child's working directory means nothing to the host.
+    let mut v = View::Text(TextView {
         source: TextSource::File(PathBuf::from("rel/x.txt")),
         styler: None,
         file_lines: false,
         syntax_name: None,
     });
-    let back = rt_ok(v);
-    let View::Text(t) = &back else { panic!() };
-    let TextSource::File(p) = &t.source else {
-        panic!()
-    };
-    assert!(p.is_absolute());
-    assert!(p.ends_with("rel/x.txt"));
+    let e = view_to_wire(&mut v, &mut Enc::new(&side)).unwrap_err();
+    assert!(
+        matches!(&e, WireError::Bad(m) if m.contains("absolute")),
+        "{e:?}"
+    );
+    let mut abs = View::Text(TextView {
+        source: TextSource::File(PathBuf::from("/rel/x.txt")),
+        styler: None,
+        file_lines: false,
+        syntax_name: None,
+    });
+    assert!(view_to_wire(&mut abs, &mut Enc::new(&side)).is_ok());
 
+    // Receiving: the same rule, for a sender that did not go through ours.
     let w = WView::Text(WText {
         source: WTextSource::File(path_to_wire(Path::new("rel/x.txt"))),
         file_lines: false,
         syntax_name: None,
+        note: None,
     });
-    let dir = unique_tmp("kp_rel");
-    std::fs::create_dir_all(dir.as_path()).unwrap();
-    let side = side_in(dir.as_path());
     assert!(matches!(
         view_from_wire(w, &mut Dec::new(&side)),
         Err(WireError::Bad(_))
     ));
+}
+
+#[test]
+fn every_other_path_a_child_sends_must_be_absolute_too() {
+    let dir = unique_tmp("kp_rel2");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let rel = || PathBuf::from("rel/x.png");
+    let bad: Vec<(&str, View)> = vec![
+        (
+            "image file",
+            View::Image(ImageView::new(ImageData::File(rel()))),
+        ),
+        (
+            "svg base dir",
+            View::Image(ImageView::new(ImageData::Svg {
+                data: Arc::from(b"<svg/>".to_vec()),
+                base_dir: Some(PathBuf::from("rel")),
+                trusted: false,
+            })),
+        ),
+        (
+            "frame file",
+            View::Image(ImageView::new(ImageData::Frames(vec![(
+                ImageData::File(rel()),
+                Duration::from_millis(10),
+            )]))),
+        ),
+    ];
+    for (name, mut v) in bad {
+        let r = view_to_wire(&mut v, &mut Enc::new(&side));
+        assert!(matches!(r, Err(WireError::Bad(_))), "{name}: {r:?}");
+    }
+    // A list row's target, and the origin of a document.
+    let mut list = View::List(ListView {
+        rows: vec![ListRow {
+            cells: vec![],
+            kind: String::new(),
+            target: Some(PathBuf::from("rel/t")),
+            checked: None,
+        }],
+    });
+    let r = view_to_wire(&mut list, &mut Enc::new(&side));
+    assert!(matches!(r, Err(WireError::Bad(_))), "list target: {r:?}");
+    let mut d = doc(Resources::default());
+    let View::Document(dv) = &mut d else { panic!() };
+    dv.origin = Origin::Converted {
+        from: PathBuf::from("rel/b.docx"),
+    };
+    let r = view_to_wire(&mut d, &mut Enc::new(&side));
+    assert!(
+        matches!(r, Err(WireError::Bad(_))),
+        "document origin: {r:?}"
+    );
 }
 
 fn doc(resources: Resources) -> View {
@@ -457,8 +519,64 @@ fn every_image_variant_round_trips() {
         let View::Image(i) = &back else { panic!() };
         assert!(i.sharp_zoom);
         assert_eq!(i.raster_max_px, Some(2048));
-        assert_eq!(format!("{:?}", i.data), format!("{img:?}"));
+        // A picture from a child is never trusted, whatever it claimed (see the next test).
+        let expected = match img {
+            ImageData::Svg { data, base_dir, .. } => ImageData::Svg {
+                data,
+                base_dir,
+                trusted: false,
+            },
+            other => other,
+        };
+        assert_eq!(format!("{:?}", i.data), format!("{expected:?}"));
     }
+}
+
+#[test]
+fn an_svg_that_claims_to_be_trusted_arrives_untrusted() {
+    let img = ImageData::Svg {
+        data: Arc::from(b"<svg/>".to_vec()),
+        base_dir: None,
+        trusted: true,
+    };
+    let back = rt_ok(View::Image(ImageView::new(img)));
+    let View::Image(i) = &back else { panic!() };
+    assert!(
+        matches!(&i.data, ImageData::Svg { trusted: false, .. }),
+        "{:?}",
+        i.data
+    );
+
+    // Also when the wire itself says trusted (a hostile child does not go through our sender).
+    let dir = unique_tmp("kp_svgtrust");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let mut v = View::Image(ImageView::new(ImageData::Svg {
+        data: Arc::from(b"<svg/>".to_vec()),
+        base_dir: None,
+        trusted: false,
+    }));
+    let w = view_to_wire(&mut v, &mut Enc::new(&side)).unwrap();
+    let mut text = format!("{w:?}");
+    assert!(text.contains("trusted: false"), "{text}");
+    text.clear();
+    let WView::Image(wi) = w else { panic!() };
+    let WImage::One(WLeaf::Svg { data, base_dir, .. }) = wi.data else {
+        panic!()
+    };
+    let hostile = WView::Image(WImageView {
+        data: WImage::One(WLeaf::Svg {
+            data,
+            base_dir,
+            trusted: true,
+        }),
+        sharp_zoom: false,
+        raster_max_px: None,
+    });
+    let View::Image(i) = view_from_wire(hostile, &mut Dec::new(&side)).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(&i.data, ImageData::Svg { trusted: false, .. }));
 }
 
 #[test]
@@ -762,9 +880,26 @@ fn try_canvas(c: WCanvas) -> Result<View, WireError> {
 }
 
 fn canvas_of(cols: u16, rows: u16, runs: Vec<Vec<(WStyle, String)>>) -> WCanvas {
+    // The styles go into a table, the runs refer to them by number, as `canvas_to_wire` does.
+    let mut table: Vec<WStyle> = Vec::new();
+    let runs = runs
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|(st, text)| {
+                    let i = table.iter().position(|t| *t == st).unwrap_or_else(|| {
+                        table.push(st);
+                        table.len() - 1
+                    });
+                    (i as u32, text)
+                })
+                .collect()
+        })
+        .collect();
     WCanvas {
         cols,
         rows,
+        styles: WBin::Inline(pack_styles(&table)),
         runs,
         images: vec![],
         redraw_after_ms: None,
@@ -1574,4 +1709,290 @@ fn full_manifest() -> Manifest {
         .action(Act::new("a2").key("ctrl-y").writes().destructive())
         .setting(SettingDecl::new("size", Value::Int(3), Tr::new("The size")))
         .screen("main")
+}
+
+// ---------------------------------------------------------------------------------------------
+// The frame budget: styles once per answer, coloured text that is too much goes out plain
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_largest_canvas_with_a_distinct_style_in_every_cell_fits_in_a_frame() {
+    let dir = unique_tmp("kp_maxcanvas");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let side_len = 2048u16;
+    let mut c = CanvasView::new(side_len, side_len);
+    for (i, cell) in c.cells.iter_mut().enumerate() {
+        let i = i as u32;
+        cell.symbol = "a".into();
+        cell.style = Style::new().fg(Color::Rgb((i >> 16) as u8, (i >> 8) as u8, i as u8));
+    }
+    c.check().expect("the largest canvas is a valid one");
+    let mut enc = Enc::new(&side);
+    let w = view_to_wire(&mut View::Canvas(c), &mut enc).expect("it converts");
+    let bytes = frame::encode(&w).expect("the frame is within the limit");
+    assert!(
+        bytes.len() < frame::MAX_FRAME,
+        "{} bytes of {}",
+        bytes.len(),
+        frame::MAX_FRAME
+    );
+    let WView::Canvas(wc) = &w else { panic!() };
+    assert!(
+        matches!(wc.styles, WBin::File { .. }),
+        "the style table is large and goes through a side file"
+    );
+    // And it arrives whole.
+    let w2: WView = frame::decode(&bytes).unwrap();
+    let View::Canvas(back) = view_from_wire(w2, &mut Dec::new(&side)).expect("it converts back")
+    else {
+        panic!()
+    };
+    assert_eq!(back.cells.len(), side_len as usize * side_len as usize);
+    for i in [0usize, 1, 255, 256, 65_535, 65_536, 4_194_303] {
+        assert_eq!(
+            back.cells[i].style,
+            Style::new().fg(Color::Rgb((i >> 16) as u8, (i >> 8) as u8, i as u8)),
+            "cell {i}"
+        );
+    }
+}
+
+#[test]
+fn a_style_table_that_is_not_whole_records_or_a_run_past_it_is_refused() {
+    let p = plain_style();
+    let mut c = canvas_of(3, 1, vec![vec![run(&p, "abc")]]);
+    assert!(try_canvas(c.clone()).is_ok());
+    // A run that names a style the table does not have.
+    c.runs = vec![vec![(7, "abc".to_string())]];
+    assert!(matches!(try_canvas(c.clone()), Err(WireError::Bad(_))));
+    // A table cut in the middle of a record.
+    let mut c = canvas_of(3, 1, vec![vec![run(&p, "abc")]]);
+    c.styles = WBin::Inline(vec![0; STYLE_RECORD + 5]);
+    assert!(matches!(try_canvas(c), Err(WireError::Bad(_))));
+    // A colour tag that does not exist.
+    let mut c = canvas_of(3, 1, vec![vec![run(&p, "abc")]]);
+    c.styles = WBin::Inline(vec![250; STYLE_RECORD]);
+    assert!(matches!(try_canvas(c), Err(WireError::Bad(_))));
+}
+
+fn coloured_text(chars: usize) -> TextView {
+    struct PerChar;
+    impl LineStyler for PerChar {
+        fn style_block(&mut self, _: usize, text: &str) -> Vec<Line> {
+            text.lines()
+                .map(|l| {
+                    Line::from(
+                        l.chars()
+                            .enumerate()
+                            .map(|(i, ch)| {
+                                Span::styled(
+                                    ch.to_string(),
+                                    Style::new().fg(Color::Rgb(i as u8, (i >> 8) as u8, 7)),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect()
+        }
+    }
+    TextView {
+        source: TextSource::Owned("x".repeat(chars)),
+        styler: Some(Box::new(PerChar)),
+        file_lines: false,
+        syntax_name: None,
+    }
+}
+
+#[test]
+fn coloured_text_that_would_not_fit_goes_out_plain_with_the_reason() {
+    let dir = unique_tmp("kp_styledfallback");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    // One span per character: far more than STYLED_MAX_ENCODED once the style is spelled out.
+    let mut v = View::Text(coloured_text(1_500_000));
+    let w = view_to_wire(&mut v, &mut Enc::new(&side)).expect("it does not fail");
+    let WView::Text(t) = &w else { panic!() };
+    assert!(
+        matches!(&t.source, WTextSource::Owned(s) if s.len() == 1_500_000),
+        "sent as the plain text"
+    );
+    let note = t.note.as_deref().expect("the reason is recorded");
+    assert!(note.contains("sent plain"), "{note}");
+    assert!(frame::encode(&w).unwrap().len() < frame::MAX_FRAME);
+
+    // A modest amount of colour is sent as it is, with no note.
+    let mut v = View::Text(coloured_text(2_000));
+    let w = view_to_wire(&mut v, &mut Enc::new(&side)).unwrap();
+    let WView::Text(t) = &w else { panic!() };
+    assert!(matches!(&t.source, WTextSource::Lines(_)));
+    assert!(t.note.is_none());
+}
+
+#[test]
+fn lines_a_plugin_styled_itself_are_held_to_the_same_limit() {
+    let dir = unique_tmp("kp_styledlines");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let n = 1_500_000usize;
+    let line = Line::from(
+        (0..n)
+            .map(|i| Span::styled("y", Style::new().fg(Color::Rgb(i as u8, (i >> 8) as u8, 1))))
+            .collect::<Vec<_>>(),
+    );
+    let mut v = View::Text(TextView {
+        source: TextSource::Lines(vec![line]),
+        styler: None,
+        file_lines: false,
+        syntax_name: None,
+    });
+    let w = view_to_wire(&mut v, &mut Enc::new(&side)).expect("not a failure");
+    let WView::Text(t) = &w else { panic!() };
+    assert!(
+        matches!(&t.source, WTextSource::Owned(s) if s.len() == n),
+        "the words are kept"
+    );
+    assert!(t.note.is_some());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Side files: totals, and the ones nobody will read
+// ---------------------------------------------------------------------------------------------
+
+fn put_file(dir: &Path, name: &str, len: u64) {
+    let f = std::fs::File::create(dir.join(name)).unwrap();
+    f.set_len(len).unwrap();
+}
+
+#[test]
+fn the_total_of_side_files_in_one_message_is_bounded_and_the_error_says_too_large() {
+    let dir = unique_tmp("kp_sidetotal2");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let len = 600 << 10;
+    for n in ["c-1", "c-2"] {
+        put_file(dir.as_path(), n, len);
+    }
+    let leaf = |n: &str| {
+        (
+            WLeaf::Encoded(WBin::File {
+                name: n.into(),
+                len,
+            }),
+            1u64,
+        )
+    };
+    let v = WView::Image(WImageView {
+        data: WImage::Frames(vec![leaf("c-1"), leaf("c-2")]),
+        sharp_zoom: false,
+        raster_max_px: None,
+    });
+    // 1 MiB in all: the first file fits, the second takes it over.
+    let r = view_from_wire(v, &mut Dec::with_total_max(&side, 1 << 20));
+    assert!(matches!(r, Err(WireError::TooLarge(_))), "{r:?}");
+    const _: () = assert!(SIDE_TOTAL_MAX_FROM_CHILD < SIDE_TOTAL_MAX);
+    assert_eq!(
+        SIDE_TOTAL_MAX_FROM_CHILD,
+        256 << 20,
+        "the canvas hold limit of the host"
+    );
+}
+
+#[test]
+fn side_files_of_a_view_that_fails_to_convert_can_be_deleted_by_name() {
+    let dir = unique_tmp("kp_sidediscard");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    put_file(dir.as_path(), "c-1", 10);
+    put_file(dir.as_path(), "c-2", 10);
+    put_file(dir.as_path(), "keep", 10);
+    let rel = WLeaf::File(path_to_wire(Path::new("rel/x.png")));
+    let file = |n: &str| {
+        WLeaf::Encoded(WBin::File {
+            name: n.into(),
+            len: 10,
+        })
+    };
+    let v = WView::Image(WImageView {
+        // The first frame breaks the rules; the two after it are never read.
+        data: WImage::Frames(vec![(rel, 1), (file("c-1"), 1), (file("c-2"), 1)]),
+        sharp_zoom: false,
+        raster_max_px: None,
+    });
+    let names = view_side_names(&v);
+    assert_eq!(names, vec!["c-1".to_string(), "c-2".to_string()]);
+    let mut dec = Dec::new(&side);
+    assert!(view_from_wire(v, &mut dec).is_err());
+    assert!(
+        dir.as_path().join("c-1").exists(),
+        "unread, as it stopped at the first"
+    );
+    dec.discard(&names);
+    assert!(!dir.as_path().join("c-1").exists());
+    assert!(!dir.as_path().join("c-2").exists());
+    assert!(dir.as_path().join("keep").exists(), "only the named ones");
+
+    // A name that is not a plain file name is not followed out of the directory.
+    let outside = unique_tmp("kp_sidediscard_out");
+    std::fs::create_dir_all(outside.as_path()).unwrap();
+    put_file(outside.as_path(), "victim", 1);
+    let evil = format!(
+        "../{}/victim",
+        outside.as_path().file_name().unwrap().to_str().unwrap()
+    );
+    dec.discard(&[evil]);
+    assert!(outside.as_path().join("victim").exists());
+}
+
+#[test]
+fn the_side_files_a_sender_wrote_are_listed_and_a_failed_conversion_deletes_them() {
+    let dir = unique_tmp("kp_senddiscard");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let side = side_in(dir.as_path());
+    let mut enc = Enc::new(&side);
+    let mut v = View::Image(ImageView::new(ImageData::Frames(vec![
+        (
+            ImageData::Encoded(Arc::from(vec![1u8; (1 << 20) + 1])),
+            Duration::from_millis(10),
+        ),
+        (
+            ImageData::Encoded(Arc::from(vec![2u8; (1 << 20) + 1])),
+            Duration::from_millis(10),
+        ),
+        // The last frame breaks the rules: the two files written before it are not wanted.
+        (
+            ImageData::File(PathBuf::from("rel.png")),
+            Duration::from_millis(10),
+        ),
+    ])));
+    assert!(view_to_wire(&mut v, &mut enc).is_err());
+    let left = |d: &Path| std::fs::read_dir(d).unwrap().count();
+    assert_eq!(left(dir.as_path()), 2);
+    enc.discard();
+    assert_eq!(left(dir.as_path()), 0);
+
+    // On success the names `view_side_names` finds are exactly the ones written.
+    let mut enc = Enc::new(&side);
+    let mut v = View::Image(ImageView::new(ImageData::Frames(vec![
+        (
+            ImageData::Encoded(Arc::from(vec![1u8; (1 << 20) + 1])),
+            Duration::from_millis(10),
+        ),
+        (
+            ImageData::Rgba {
+                width: 1024,
+                height: 513,
+                pixels: Arc::new(vec![0; 1024 * 513 * 4]),
+            },
+            Duration::from_millis(10),
+        ),
+    ])));
+    let w = view_to_wire(&mut v, &mut enc).unwrap();
+    let mut named = view_side_names(&w);
+    let mut written = enc.into_written();
+    named.sort();
+    written.sort();
+    assert_eq!(named, written);
+    assert_eq!(named.len(), 2);
 }

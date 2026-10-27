@@ -19,8 +19,21 @@
 //! - A table's per-cell `detail` and a text view's `styler` do not cross. The child sends the
 //!   table's cells (at most [`wire::TABLE_MAX_CELLS`]) and the text already styled (a file over
 //!   [`wire::STYLE_MAX_BYTES`] is sent as the file, unstyled).
-//! - A child's [`ImageData::File`](crate::view::ImageData) and text file must be absolute paths.
-//! - A canvas travels per row as style runs; the sender's `CanvasView::check` must pass.
+//! - Every path a child sends (a text file, a picture file, an SVG's base directory, the origin of
+//!   a document, a list row's target) must be absolute: the side that puts the view on the wire
+//!   refuses a relative one with a failure, because the child's working directory means nothing to
+//!   the host. (The host's own input is made absolute before it is sent.)
+//! - An SVG from a child is never trusted (`trusted` is false on arrival, whatever the child said):
+//!   its external references are not read.
+//! - A canvas travels per row as style runs that refer to a table of styles by number (one table
+//!   per answer, so a style is written once, not per run); the sender's `CanvasView::check` must
+//!   pass. Coloured text whose encoding would pass [`wire::STYLED_MAX_ENCODED`] is sent plain
+//!   (with the reason on the child's stderr).
+//! - Side files: the total a child hands over in one answer is at most
+//!   [`wire::SIDE_TOTAL_MAX_FROM_CHILD`] (256 MiB, the amount the host holds of canvases), the
+//!   total the host hands over in one message [`wire::SIDE_TOTAL_MAX`]. The ones of an answer that
+//!   fails to convert are deleted unread; [`client::sweep_stale_side_dirs`] removes the directories
+//!   a host that died left behind.
 //!
 //! # Deadlines and failure
 //!
@@ -29,6 +42,17 @@
 //! fail with a [`Failure`](crate::Failure) whose detail is the tail of the child's stderr, every
 //! other session of that child fails afterwards, and the next `open` starts a new child.
 //! [`client::Limits`] names the deadlines and says why each has its value.
+//!
+//! The child works through the calls of all its sessions in order, so a call's deadline (and the
+//! grace after a cancel) counts only from when the child starts on it, not from when the call was
+//! sent. A call cancelled while it waits its turn is answered "cancelled" without running.
+//!
+//! A host that stops a child on purpose (`stop`, the idle stop, a drop) sends `Shutdown` first: the
+//! child drops its sessions in order and exits; only a child that has not left within
+//! `Limits::shutdown_grace` is killed. A child whose host has gone (its input ends) raises every
+//! cancel flag and exits after [`ServeOptions::exit_after_host_gone`].
+//! A start that fails is remembered for `Limits::start_retry_after`: the opens in that window fail
+//! with the same reason without starting the program again.
 
 #![allow(clippy::module_name_repetitions)]
 
