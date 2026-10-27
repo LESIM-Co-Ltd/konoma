@@ -24,8 +24,10 @@ configurations:
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-cargo test --workspace
-cargo test --workspace --no-default-features
+cargo nextest run --workspace               # install once: cargo install cargo-nextest --locked
+cargo nextest run --workspace --no-default-features
+cargo test --workspace --doc                # nextest does not run doctests
+cargo test --workspace --doc --no-default-features
 ```
 
 The repository is a Cargo workspace: the `konoma` binary at the root (`src/`) plus the

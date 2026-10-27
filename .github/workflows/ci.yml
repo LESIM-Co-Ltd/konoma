@@ -43,6 +43,12 @@ jobs:
         with:
           key: macos-${{ matrix.flags }}
 
+      # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
+      # it does not run doctests, so those are a separate step.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       # jj (Jujutsu) for the jj backend's tests. Installed here as well as on Linux because macOS is
       # the platform konoma is developed on: without it the jj tests skip silently, and the suite
       # looks green on the machine that matters most while checking nothing. Pinned for the same
@@ -66,7 +72,10 @@ jobs:
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
       - name: Test (${{ matrix.features }})
-        run: cargo test --workspace ${{ matrix.flags }}
+        run: cargo nextest run --workspace ${{ matrix.flags }}
+
+      - name: Doctests (${{ matrix.features }})
+        run: cargo test --workspace --doc ${{ matrix.flags }}
 
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
@@ -145,6 +154,12 @@ jobs:
           echo "apt failed three times" >&2
           exit 1
 
+      # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
+      # it does not run doctests, so those are a separate step.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       # jj (Jujutsu) for the jj backend's tests. Pinned rather than tracking latest: jj is pre-1.0
       # and ships breaking changes monthly, and a CI run should fail because konoma changed, not
       # because jj released that morning. The suite is written to stay green without jj — konoma
@@ -184,7 +199,10 @@ jobs:
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
       - name: Test (${{ matrix.features }})
-        run: cargo test --workspace ${{ matrix.flags }}
+        run: cargo nextest run --workspace ${{ matrix.flags }}
+
+      - name: Doctests (${{ matrix.features }})
+        run: cargo test --workspace --doc ${{ matrix.flags }}
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list
@@ -195,7 +213,7 @@ jobs:
       # above built, so it costs seconds.
       - name: Check the runner really has a usable sans-serif
         if: matrix.flags == ''
-        run: cargo test -p konoma-svg -- --ignored --exact svg::tests::the_system_resolves_sans_serif_without_the_fallback
+        run: cargo nextest run -p konoma-svg --run-ignored only -E 'test(=svg::tests::the_system_resolves_sans_serif_without_the_fallback)'
 
       # The temporary `demo-canvas` feature (removed in stage 3) is not in any default build; keep
       # its host side from rotting.
@@ -205,7 +223,7 @@ jobs:
 
       - name: Test (demo-canvas)
         if: matrix.flags == ''
-        run: cargo test -p konoma --features demo-canvas demo_canvas
+        run: cargo nextest run -p konoma --features demo-canvas -E 'test(demo_canvas)'
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
   # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma
