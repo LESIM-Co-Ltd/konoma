@@ -6,6 +6,9 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- The first keys typed after starting konoma were lost when the terminal did not answer the startup graphics query (a detached tmux, or a tmux pane without `allow-passthrough`, even inside Ghostty). The query ran on a helper thread inside `ratatui-image` that, after the 2 second timeout, stayed blocked reading stdin: it swallowed the next key, it could leave the main loop's own read waiting until the key after that (so a plugin redraw also stalled), and it later called `disable_raw_mode()` on its own. konoma now asks the terminal itself, on the main thread, with `poll(2)` and a hard deadline, using `ratatui-image`'s own query and reply parser, and reads exactly up to the final status report, so nothing is left reading stdin and keys typed after the reply (or typed while it was in flight) are kept.
+
 ## [0.31.2] - 2026-10-21
 
 ### Security
