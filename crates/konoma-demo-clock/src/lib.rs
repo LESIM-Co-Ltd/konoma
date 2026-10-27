@@ -1,10 +1,7 @@
 //! A complete konoma plugin that draws with ratatui widgets (the "clock" demo).
 //!
-//! **Temporary and unstable, behind the `demo` feature (hidden from the docs, not part of the
-//! crate's API, no semver promise).** It exists so that a canvas plugin can be seen in a real
-//! terminal (`konoma --features demo-canvas`, open `samples/demo.konoma-demo`) before stage 3 can
-//! load plugins from outside. It is removed, with the `demo-canvas` feature of the konoma crate,
-//! when stage 3 can load external plugins (this file then stays only as the `clock` example).
+//! It runs as a program of its own (`src/main.rs`: `konoma_plugin::export!`), which konoma loads
+//! with `konoma --plugin <path>`; `samples/demo.konoma-demo` is a file to open with it.
 //!
 //! The plugin shows files named `*.konoma-demo` as a canvas: a titled `Block`, a `Gauge` that
 //! follows the seconds since the file was opened (`redraw_after` = one second), a small picture
@@ -28,14 +25,16 @@ use std::time::{Duration, Instant};
 use konoma_plugin::prelude::*;
 use konoma_plugin::view::ImageData;
 
-use crate::draw_canvas;
-use crate::ratatui::layout::{Constraint, Layout as RLayout};
-use crate::ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
-use crate::ratatui::text::{Line as RLine, Span as RSpan};
-use crate::ratatui::widgets::{Block, Gauge, Paragraph, Widget};
+use konoma_plugin_ratatui::draw_canvas;
+use konoma_plugin_ratatui::ratatui::layout::{Constraint, Layout as RLayout};
+use konoma_plugin_ratatui::ratatui::style::{
+    Color as RColor, Modifier as RModifier, Style as RStyle,
+};
+use konoma_plugin_ratatui::ratatui::text::{Line as RLine, Span as RSpan};
+use konoma_plugin_ratatui::ratatui::widgets::{Block, Gauge, Paragraph, Widget};
 
 /// The id the plugin registers under.
-pub const ID: &str = "demo-canvas";
+pub const ID: &str = "demo-clock";
 
 /// The id of the picture: one stable name, whatever the pixels or the place.
 const BADGE: u64 = 1;
@@ -131,8 +130,8 @@ impl ClockSession {
     /// or - while typing - a banner and a highlighted prompt with a block cursor.
     fn draw_text(
         &self,
-        body: crate::ratatui::layout::Rect,
-        buf: &mut crate::ratatui::buffer::Buffer,
+        body: konoma_plugin_ratatui::ratatui::layout::Rect,
+        buf: &mut konoma_plugin_ratatui::ratatui::buffer::Buffer,
         lang: &str,
         accent: RColor,
     ) {
@@ -158,8 +157,14 @@ impl ClockSession {
             return;
         }
         if self.typing {
-            let rect =
-                |y| crate::ratatui::layout::Rect::new(bottom_area.x, y, bottom_area.width, 1);
+            let rect = |y| {
+                konoma_plugin_ratatui::ratatui::layout::Rect::new(
+                    bottom_area.x,
+                    y,
+                    bottom_area.width,
+                    1,
+                )
+            };
             let prompt_y = bottom_area.y + bottom_area.height - 1;
             if bottom_area.height >= 2 {
                 let banner = t!(

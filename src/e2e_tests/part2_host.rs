@@ -722,39 +722,3 @@ fn e2e_the_page_list_popup_of_a_long_list_keeps_its_width_while_scrolling_and_re
         "the reopened list forgot the old width"
     );
 }
-
-#[cfg(feature = "demo-canvas")]
-#[test]
-fn the_canvas_trace_line_tells_the_job_road_apart() {
-    // The demo-only trace: enough to tell "a job is out" from "the session was lost" from "the
-    // file is read again and again".
-    let (mut s, _asked, _dir) = open_rules("p2_trace", true);
-    let line = s.app.canvas_trace_line(std::time::Instant::now());
-    for field in [
-        "phase=ready",
-        "media_gen=",
-        "open_gen=Some(",
-        "show_req=Some((",
-        "workers=",
-        "reopens=",
-        "last_discard=",
-        "session_out=false",
-    ] {
-        assert!(line.contains(field), "{field} missing: {line}");
-    }
-    let reopens = |l: &str| -> u64 {
-        l.split("reopens=")
-            .nth(1)
-            .unwrap()
-            .split(' ')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap()
-    };
-    let before = reopens(&line);
-    std::fs::write(_dir.join("a.rul"), "changed and longer").unwrap();
-    s.app.reload_preview();
-    let after = s.app.canvas_trace_line(std::time::Instant::now());
-    assert!(reopens(&after) > before, "{line} -> {after}");
-}

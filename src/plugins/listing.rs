@@ -35,7 +35,20 @@ fn yes(b: bool) -> &'static str {
 /// The table `konoma --plugins` prints, in the order a file is decided: the user's
 /// `[[preview.rules]]` first, then the standard plugins in registration order.
 pub(crate) fn plugins_table(cfg: &Config) -> String {
-    let disabled = disabled_ids(&cfg.plugins);
+    let mut disabled = disabled_ids(&cfg.plugins);
+    // The programs of their own that were loaded (`command`, `--plugin`) are part of the registry.
+    let external = cfg.external_plugins.as_deref();
+    if let Some(token) = external {
+        disabled.push(super::external::marker(token));
+    }
+    let external_ids: Vec<String> = external
+        .map(|t| {
+            super::external::plugins_of(t)
+                .iter()
+                .map(|p| konoma_plugin::Plugin::manifest(p.as_ref()).id)
+                .collect()
+        })
+        .unwrap_or_default();
     let registry = build_registry(&disabled);
     let mut rows: Vec<[String; 5]> = Vec::new();
     // The path only matters for `builtin = "document"`, which covers Word and presentations.
@@ -71,7 +84,11 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
             r.plugin.clone(),
             yes(r.origin == PluginOrigin::Standard).into(),
             yes(r.enabled).into(),
-            "built-in".into(),
+            if external_ids.contains(&r.plugin) {
+                "external".into()
+            } else {
+                "built-in".into()
+            },
         ]);
     }
     for row in &mut rows {
@@ -110,6 +127,18 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
     out.push_str(&line(head));
     for row in &rows {
         out.push_str(&line([&row[0], &row[1], &row[2], &row[3], &row[4]]));
+    }
+    if let Some(token) = external {
+        let lines = super::external::describe(token);
+        if !lines.is_empty() {
+            out.push_str("\nExternal plugins (ID  VERSION  COMMAND  SOURCE):\n");
+            for l in lines {
+                out.push_str(&format!("  {}\n", clean(&l)));
+            }
+        }
+        for problem in super::external::problems(token, crate::i18n::Lang::En) {
+            out.push_str(&format!("warning: {}\n", clean(&problem)));
+        }
     }
     out.push_str(
         "\nTurn a standard plugin off with `[plugins.<id>] enabled = false` in the config.\n",

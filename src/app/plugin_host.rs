@@ -1604,8 +1604,6 @@ impl App {
                 super::table_actions::discard_in_background(old);
             }
             show.flow.reopening = true;
-            #[cfg(feature = "demo-canvas")]
-            super::canvas_trace::note_reopen();
         }
         self.plugin_stamp = file_stamp(&path);
         self.plugin_stamp_taken = Some(std::time::SystemTime::now());
@@ -1786,8 +1784,6 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("konoma-plugin".into())
             .spawn(move || {
-                #[cfg(feature = "demo-canvas")]
-                let _alive = super::canvas_trace::WorkerGuard::new();
                 let (work, handoff, gate, tx, cancel, group) = worker;
                 let taken = work.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(work) = taken {
@@ -2264,15 +2260,6 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.id == res.id && self.shows_plugin_file(p));
         if !current || !belongs {
-            #[cfg(feature = "demo-canvas")]
-            super::canvas_trace::note_discard(
-                res.gen,
-                if current {
-                    "not the show on screen"
-                } else {
-                    "not the newest generation"
-                },
-            );
             self.discard_stale_answer(res.gen);
             super::table_actions::discard_in_background(res);
             return false;

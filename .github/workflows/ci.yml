@@ -71,6 +71,11 @@ jobs:
       - name: Clippy (${{ matrix.features }})
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
+      # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
+      # does not build another package's binary, and a missing one fails the tests on purpose.
+      - name: Build the demo plugin program
+        run: cargo build -p konoma-demo-clock
+
       - name: Test (${{ matrix.features }})
         run: cargo nextest run --workspace ${{ matrix.flags }}
 
@@ -178,8 +183,7 @@ jobs:
 
       # The extras below are spread over the two legs so that each runs exactly once overall.
       # The per-crate builds do not depend on the host's default features, so they go in the
-      # `--no-default-features` leg; `demo-canvas` is the default features plus one, so its checks
-      # share the default leg's build.
+      # `--no-default-features` leg.
       #
       # Each crate under `crates/` must build on its own (not only as part of the whole workspace,
       # where another member's features can switch on what this one forgot to declare).
@@ -191,12 +195,16 @@ jobs:
           done
           cargo check -p konoma-vcs-core --features git
           # Alone, so that the host's ratatui features do not hide what the crate itself needs
-          # (it is the one crate plugin authors depend on), with and without its temporary demo.
+          # (it is the one crate plugin authors depend on).
           cargo check -p konoma-plugin-ratatui
-          cargo check -p konoma-plugin-ratatui --features demo
 
       - name: Clippy (${{ matrix.features }})
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
+
+      # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
+      # does not build another package's binary, and a missing one fails the tests on purpose.
+      - name: Build the demo plugin program
+        run: cargo build -p konoma-demo-clock
 
       - name: Test (${{ matrix.features }})
         run: cargo nextest run --workspace ${{ matrix.flags }}
@@ -214,16 +222,6 @@ jobs:
       - name: Check the runner really has a usable sans-serif
         if: matrix.flags == ''
         run: cargo nextest run -p konoma-svg --run-ignored only -E 'test(=svg::tests::the_system_resolves_sans_serif_without_the_fallback)'
-
-      # The temporary `demo-canvas` feature (removed in stage 3) is not in any default build; keep
-      # its host side from rotting.
-      - name: Clippy (demo-canvas)
-        if: matrix.flags == ''
-        run: cargo clippy -p konoma --all-targets --features demo-canvas -- -D warnings
-
-      - name: Test (demo-canvas)
-        if: matrix.flags == ''
-        run: cargo nextest run -p konoma --features demo-canvas -E 'test(demo_canvas)'
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
   # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma

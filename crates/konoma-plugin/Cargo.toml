@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Plugin API of konoma: the entry traits, display types, declarations, and the rules that settle which plugin shows a file"
 
+[features]
+# The child-process transport: wire types, framing, the SDK `serve` side and the host `ProcPlugin`
+# client. Off by default so a plugin linked in-process pays for none of it.
+proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
+
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
 globset.workspace = true
@@ -15,5 +20,23 @@ unicode-width.workspace = true
 # One grapheme per canvas cell.
 unicode-segmentation.workspace = true
 
+# Wire types (derive) of the child-process transport.
+serde = { workspace = true, optional = true }
+# MessagePack body of every frame.
+rmp-serde = { workspace = true, optional = true }
+# Process groups, signals, rlimits and fd duplication of the child supervision.
+libc = { workspace = true, optional = true }
+# The human-readable `--manifest` output and the host's manifest cache.
+serde_json = { workspace = true, optional = true }
+
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+
+# Real-process tests: this binary is also the plugin program (it serves when an environment variable
+# says so). `harness = false` because the body must run as the child too; it speaks the part of
+# libtest's command line that nextest uses (`--list`, `--exact`).
+[[test]]
+name = "proc_process"
+path = "tests/proc_process/main.rs"
+harness = false
+required-features = ["proc"]

@@ -1,14 +1,14 @@
 //! A complete konoma plugin that draws with ratatui widgets, run without konoma or a terminal.
 //!
-//! `cargo run -p konoma-plugin-ratatui --example clock`
+//! `cargo run -p konoma-demo-clock --example clock`
 //!
-//! The plugin itself is `konoma_plugin_ratatui::demo::Clock` (see there for what it does and the
+//! The plugin itself is `konoma_demo_clock::Clock` (see there for what it does and the
 //! practices it shows). `main` drives it with the helpers of `konoma_plugin::testing` and prints
 //! what the canvas looks like.
 
+use konoma_demo_clock::Clock;
 use konoma_plugin::prelude::*;
 use konoma_plugin::testing::{open_bytes, send_keys, view_canvas, CanvasText};
-use konoma_plugin_ratatui::demo::Clock;
 
 fn main() -> Result<(), Failure> {
     let (mut session, _file) = open_bytes(&Clock::default(), "a.konoma-demo", b"Hello, konoma\n")?;

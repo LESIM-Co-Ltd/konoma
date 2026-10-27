@@ -108,6 +108,49 @@ fn every_toml_type_round_trips_into_a_settings_value() {
     assert_eq!(s.get("x"), Some(&Value::Int(1)));
 }
 
+/// `command` and `args` are the host's keys only in the table of a program of its own (one with a
+/// `command`); in the table of a plugin that runs in this process they are the plugin's settings.
+#[test]
+fn command_and_args_are_the_hosts_only_in_the_table_of_a_program_of_its_own() {
+    // A program of its own: both are the host's, whatever else is in the table.
+    let external: toml::Table =
+        toml::from_str("command = \"prog\"\nargs = [\"/x/a.py\"]\nx = 1\n").unwrap();
+    let s = settings_of(&external);
+    assert!(s.get("command").is_none() && s.get("args").is_none());
+    assert_eq!(s.get("x"), Some(&Value::Int(1)));
+    assert!(is_host_key(&external, "command") && is_host_key(&external, "args"));
+    // A plugin of this process (no `command`) that declares `args` is handed it.
+    let own: toml::Table = toml::from_str("args = [\"-v\", \"--fast\"]\nx = 1\n").unwrap();
+    let s = settings_of(&own);
+    assert_eq!(
+        s.get("args"),
+        Some(&Value::List(vec![
+            Value::Str("-v".into()),
+            Value::Str("--fast".into())
+        ]))
+    );
+    assert!(!is_host_key(&own, "args"));
+    // In a table without a `command`, `args` is checked like any setting: a plugin that did not
+    // declare it gets the warning for an unknown setting (it used to be skipped as a host key).
+    let mut tables = PluginTables::new();
+    tables.insert(konoma_markdown::MARKDOWN_ID.to_string(), own.clone());
+    let msgs = table_problems(&tables, crate::i18n::Lang::En).join("\n");
+    assert!(msgs.contains("unknown setting `args`"), "{msgs}");
+    // In a table with a `command` it is the program's arguments, not an unknown setting.
+    let mut with_command = own.clone();
+    with_command.insert("command".into(), toml::Value::String("prog".into()));
+    tables.insert(konoma_markdown::MARKDOWN_ID.to_string(), with_command);
+    let msgs = table_problems(&tables, crate::i18n::Lang::En).join("\n");
+    assert!(!msgs.contains("unknown setting"), "{msgs}");
+    // The keys that are always the host's stay so.
+    for key in ["enabled", "read_only", "read_dirs"] {
+        assert!(
+            is_host_key(&own, key) && is_host_key(&external, key),
+            "{key}"
+        );
+    }
+}
+
 /// The syntect theme of the Markdown code blocks (`[ui.theme] code_theme`) is what the `code`
 /// plugin is handed, unless its own table names one; a theme other than the default reaches it.
 #[test]

@@ -21,8 +21,7 @@ fn view(req: &ViewReq) -> View {
   canvas itself (`CanvasImage`).
 - See [`konoma-plugin`](https://crates.io/crates/konoma-plugin) for the plugin API.
 
-The `demo` feature (a clock plugin used by konoma's `demo-canvas` feature) is **temporary and
-unstable**: it is hidden from the docs, has no semver promise and is removed when konoma can load
-plugins from outside.
+A complete plugin built on it is `konoma-demo-clock` (in the konoma repository, not published): a
+program of its own that konoma loads with `--plugin`.
 
 MIT licensed.

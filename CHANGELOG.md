@@ -7,6 +7,16 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
+  that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
+  developing a plugin). konoma asks the program for its manifest once and keeps it in its cache directory (keyed by the
+  program's real path and its `args`; a change of the program's size, mtime or inode makes it stale, and a script edited under
+  an unchanged interpreter is corrected when the program next starts), so starting konoma does not run it; the program is started when a file it
+  takes is opened, stopped when idle, started again after it is rebuilt (`r`), and stopped when konoma exits. A program that
+  is missing, does not start, does not answer in 5 seconds or whose id is taken is left out, and the start-up message says
+  why. konoma starts the program as `<command> <args> --serve` (it adds `--serve` itself, last, so a program run through an
+  interpreter works too; `args` are passed as written, and the program runs in a folder of its own, so name files by absolute path). It is a user's plugin: it reads only the tab's folder, the shown file's folder and `read_dirs`. `konoma --plugins`
+  lists these programs and their commands.
 - **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
   `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
   What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
@@ -124,7 +134,7 @@ All notable changes to konoma are documented in this file. The format is based o
     signal, a panic) deletes the canvas pictures from a kitty terminal, without landing inside a frame being written.
   - *API.* `testing::send_keys` returns a `KeyRun` and goes on after a failed key; `Key`, `CanvasCell`, `Outcome`, `ImageData`
     and `Style` are `#[non_exhaustive]`, so a plugin matches them with a `_` arm.
-- **Temporary `demo-canvas` build feature.** `cargo run --features demo-canvas -- samples/demo.konoma-demo` shows a canvas plugin (a ratatui clock with a gauge, a picture and a line editor) in a real terminal; `KONOMA_CANVAS_TRACE=<file>` logs what the canvas does. It is not in any default build, is not a supported option, and is removed when plugins can be loaded from outside (stage 3).
+- **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
 
 ### Changed
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its

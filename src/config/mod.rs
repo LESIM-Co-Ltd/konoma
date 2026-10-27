@@ -31,6 +31,11 @@ pub struct Config {
     /// the file: filled in by `Config::load_reporting`, named once in the startup message).
     #[serde(skip)]
     pub renamed_settings: Vec<(String, String)>,
+    /// The external plugins (programs of their own) this run loaded, as the token
+    /// `plugins::external::install` returned. Not part of the file. It is part of the registry's key
+    /// (`plugin_disabled`), so a configuration with other external plugins never shares a registry.
+    #[serde(skip)]
+    pub external_plugins: Option<String>,
 }
 
 /// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
@@ -936,8 +941,15 @@ impl Config {
     }
 
     /// The ids of the plugins `[plugins.<id>] enabled = false` switches off.
+    ///
+    /// This list is also the key the registry is shared under: when external plugins were loaded
+    /// it ends with their marker, so the registry holds them too (`plugins::build_registry`).
     pub fn plugin_disabled(&self) -> Vec<String> {
-        crate::plugins::disabled_ids(&self.plugins)
+        let mut ids = crate::plugins::disabled_ids(&self.plugins);
+        if let Some(token) = &self.external_plugins {
+            ids.push(crate::plugins::external::marker(token));
+        }
+        ids
     }
 
     /// The plugin's own settings from `[plugins.<id>]` (everything but `enabled`).
@@ -952,7 +964,10 @@ impl Config {
 
     /// A one-line startup message about `[plugins.*]` mistakes (an unknown id, ...), if any.
     pub fn plugin_report(&self, lang: crate::i18n::Lang) -> Option<String> {
-        let problems = crate::plugins::table_problems(&self.plugins, lang);
+        let mut problems = crate::plugins::table_problems(&self.plugins, lang);
+        if let Some(token) = &self.external_plugins {
+            problems.extend(crate::plugins::external::problems(token, lang));
+        }
         if problems.is_empty() {
             None
         } else {

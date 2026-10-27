@@ -110,6 +110,11 @@ impl Tr {
     }
 
     /// The English text.
+    /// The `(language, text)` pairs besides English, in declaration order.
+    pub fn translations(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.others.iter().map(|(l, t)| (&**l, &**t))
+    }
+
     pub fn en(&self) -> &str {
         &self.en
     }
