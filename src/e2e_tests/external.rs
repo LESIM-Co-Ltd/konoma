@@ -980,10 +980,11 @@ fn args_of(items: &[&Path]) -> (&'static str, toml::Value) {
 use std::path::Path;
 
 #[test]
-fn e2e_ext_editing_the_script_of_an_interpreter_plugin_is_a_rebuild() {
+fn e2e_ext_editing_a_file_named_in_args_does_not_rebuild_a_running_child() {
     let lab = Lab::new("script_edit");
     let rig = Rig::new("ext-script");
     lab.program("python-like", "interpreter");
+    // The arguments are opaque: this may be a script or a state file the child writes itself.
     let script = lab.progs.join("plugin.py");
     std::fs::write(&script, "print(1)").unwrap();
     write_xd(&lab, "a.xd", "plain");
@@ -995,29 +996,62 @@ fn e2e_ext_editing_the_script_of_an_interpreter_plugin_is_a_rebuild() {
     let mut s = session(&lab, token, t.clone());
     open_file(&mut s, "a.xd");
     s.see("child says hello");
-    s.key('r');
+    for n in 0..3 {
+        std::fs::write(&script, format!("print('written {n} by the child')")).unwrap();
+        s.key('r');
+        s.see("child says hello");
+    }
     assert_eq!(
         (rig.launches(), rig.kills()),
         (1, 0),
-        "same build: same child"
+        "same child: only the program is a build"
     );
-
-    // Only the script changes; the interpreter is untouched.
-    std::fs::write(&script, "print('a longer script')").unwrap();
-    s.key('r');
-    s.see("child says hello");
-    assert_eq!(rig.launches(), 2, "started again from the edited script");
-    assert_eq!(rig.kills(), 1, "the old child was stopped");
-
-    // The cache follows the script: a restart with it unchanged is a hit.
+    // And a restart is a cache hit whatever happened to the file.
     let rig2 = Rig::new("ext-script");
     let _ = external::install(&lab.env(&rig2), &t, &[]);
     assert_eq!(rig2.launches(), 0);
-    // And a restart after one more edit is a miss.
-    std::fs::write(&script, "print('and longer still, again')").unwrap();
-    let rig3 = Rig::new("ext-script");
-    let _ = external::install(&lab.env(&rig3), &t, &[]);
-    assert_eq!(rig3.launches(), 1);
+}
+
+#[test]
+fn e2e_ext_a_stale_cache_after_a_script_edit_is_corrected_by_the_next_child() {
+    let lab = Lab::new("script_stale");
+    let rig = Rig::new("ext-stale");
+    lab.program("python-like", "interpreter");
+    let script = lab.progs.join("plugin.py");
+    std::fs::write(&script, "print(1)").unwrap();
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[(
+        "ext-stale",
+        table("python-like", &[args_of(&[script.as_path()])]),
+    )]);
+    let _ = external::install(&lab.env(&rig), &t, &[]).unwrap();
+    assert_eq!(lab.cache_files().len(), 1);
+
+    // The script is edited and now declares another manifest. Its stamp is not looked at, so the
+    // cache still says 1.2.3 and is a hit.
+    std::fs::write(&script, "print('a longer script')").unwrap();
+    let rig2 = Rig::new("ext-stale");
+    *rig2.version.lock().unwrap() = "9.9.9".into();
+    let token2 = external::install(&lab.env(&rig2), &t, &[]);
+    assert_eq!(rig2.launches(), 0, "a hit");
+    let mut s = session(&lab, token2, t.clone());
+    assert_eq!(
+        registry_of(&s).manifest("ext-stale").unwrap().version,
+        "1.2.3"
+    );
+    // The first child that starts declares the new manifest, and the cache is corrected.
+    open_file(&mut s, "a.xd");
+    s.see("child says hello");
+    assert_eq!(rig2.launches(), 1);
+    let rig3 = Rig::new("ext-stale");
+    let token3 = external::install(&lab.env(&rig3), &t, &[]);
+    assert_eq!(rig3.launches(), 0, "a hit");
+    let s3 = session(&lab, token3, t.clone());
+    assert_eq!(
+        registry_of(&s3).manifest("ext-stale").unwrap().version,
+        "9.9.9",
+        "the cache holds what the child declared"
+    );
 }
 
 #[test]
@@ -1061,54 +1095,46 @@ fn e2e_ext_two_plugins_of_one_interpreter_keep_their_own_cache_entries() {
 }
 
 #[test]
-fn e2e_ext_a_relative_path_in_args_is_refused_with_the_reason() {
-    let lab = Lab::new("rel_args");
-    let rig = Rig::new("ext-rel");
+fn e2e_ext_arguments_with_a_slash_reach_the_child_as_they_are() {
+    let lab = Lab::new("slash_args");
+    let rig = Rig::new("ext-slash");
     lab.program("python-like", "interpreter");
-    for (n, arg) in ["./gone.py", "../up.py", "sub/plugin.py"]
-        .iter()
-        .enumerate()
-    {
-        let t = tables(&[(
-            "ext-rel",
-            table(
-                "python-like",
-                &[(
-                    "args",
-                    toml::Value::Array(vec![toml::Value::String((*arg).into())]),
-                )],
-            ),
-        )]);
-        let token = external::install(&lab.env(&rig), &t, &[]).unwrap();
-        assert!(external::plugins_of(&token).is_empty(), "{arg}");
-        let en = external::problems(&token, crate::i18n::Lang::En);
-        assert_eq!(en.len(), 1, "{arg}: {en:?}");
-        assert!(
-            en[0].contains("relative path") && en[0].contains(arg),
-            "{en:?}"
-        );
-        let ja = external::problems(&token, crate::i18n::Lang::Jp);
-        assert!(ja[0].contains("相対パス"), "{ja:?}");
-        assert_eq!(rig.launches(), 0, "{n}: nothing was started");
-    }
-    // Flags and plain words are not paths, even when a file of that name is in konoma's cwd (the
-    // lab's cwd is the programs folder): the same config loads the same wherever konoma starts.
-    std::fs::write(lab.progs.join("fast"), "x").unwrap();
+    let items = [
+        "http://localhost:8080",
+        "text/plain",
+        "owner/repo",
+        "--config=./x",
+        "-u",
+    ];
     let t = tables(&[(
-        "ext-rel",
+        "ext-slash",
         table(
             "python-like",
             &[(
                 "args",
-                toml::Value::Array(vec![
-                    toml::Value::String("-u".into()),
-                    toml::Value::String("fast".into()),
-                ]),
+                toml::Value::Array(
+                    items
+                        .iter()
+                        .map(|a| toml::Value::String((*a).into()))
+                        .collect(),
+                ),
             )],
         ),
     )]);
-    let token = external::install(&lab.env(&rig), &t, &[]).unwrap();
-    assert_eq!(external::plugins_of(&token).len(), 1);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+    let mut env = lab.env(&rig);
+    let (inner, seen2) = (rig.factory(), std::sync::Arc::clone(&seen));
+    env.launcher = Some(std::sync::Arc::new(move |spec, exe| {
+        seen2.lock().unwrap().push(spec.args.clone());
+        inner(spec, exe)
+    }));
+    let token = external::install(&env, &t, &[]).unwrap();
+    assert_eq!(external::plugins_of(&token).len(), 1, "loaded");
+    assert!(external::problems(&token, crate::i18n::Lang::En).is_empty());
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty(), "the program was started to be asked");
+    let want: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+    assert!(seen.iter().all(|a| *a == want), "{seen:?}");
 }
 
 /// The rig's program is rebuilt and its child now declares version `9.9.9`.

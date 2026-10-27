@@ -225,47 +225,19 @@ pub(crate) fn stamp_of(path: &Path) -> io::Result<Stamp> {
     })
 }
 
-/// What identifies one build of a plugin: the program, and every file its arguments name. For
-/// `command = "python3", args = ["/x/plugin.py"]` the program is the interpreter and the plugin is
-/// the script, so editing the script is a new build.
+/// What identifies one build of a plugin: the stamp of its program. The arguments are opaque (the
+/// host passes them on as they are), so what they name is not looked at; a stale cache entry is
+/// corrected by the manifest the next child declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Build {
     exe: Stamp,
-    /// The argument and the stamp of the file it names, for each argument that is the absolute
-    /// path of a regular file. Other arguments (flags, words, relative names) are not files the
-    /// host can look at: a relative path is relative to the child's working directory, not to
-    /// anything the user can see (see [`relative_file_args`]).
-    files: Vec<(String, Stamp)>,
 }
 
-/// The [`Build`] of the program `exe` run with `args`.
-pub(crate) fn build_of(exe: &Path, args: &[String]) -> io::Result<Build> {
-    let mut files = Vec::new();
-    for arg in args {
-        let path = Path::new(arg);
-        if path.is_absolute() && std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
-            // A file that vanishes between the two calls is the same as one that is not there.
-            if let Ok(stamp) = stamp_of(path) {
-                files.push((arg.clone(), stamp));
-            }
-        }
-    }
+/// The [`Build`] of the program `exe`.
+pub(crate) fn build_of(exe: &Path) -> io::Result<Build> {
     Ok(Build {
         exe: stamp_of(exe)?,
-        files,
     })
-}
-
-/// The arguments that are relative paths: not absolute and containing a `/` (`./x`, `../x`,
-/// `sub/x`). A child runs in a private working directory of its own, so these would not find what
-/// the user means; they are refused when the plugin is loaded, with a message that asks for an
-/// absolute path. Flags (a leading `-`) and words without a `/` pass: whether such a word names
-/// a file depends on where konoma was started, and the same config must load the same way anywhere.
-pub(crate) fn relative_file_args(args: &[String]) -> Vec<String> {
-    args.iter()
-        .filter(|a| !Path::new(a.as_str()).is_absolute() && !a.starts_with('-') && a.contains('/'))
-        .cloned()
-        .collect()
 }
 
 /// Find the program: a name without `/` is searched in `path_var`, anything else is taken relative
@@ -579,7 +551,7 @@ impl ExternalPlugin {
     /// The connection to use for an `open`: the existing one, or a new one when the program (or
     /// a file named in its arguments) was rebuilt since. The second part is the build it belongs to.
     fn current_proc(&self) -> (Arc<ProcPlugin>, Build) {
-        let now = build_of(&self.exe, &self.spec.args).ok();
+        let now = build_of(&self.exe).ok();
         let (proc, build, old) = {
             let mut cur = lock(&self.current);
             let mut old = None;
@@ -787,21 +759,7 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
             format!("{why}(読み込みません)"),
         )
     })?;
-    let relative = relative_file_args(&spec.args);
-    if !relative.is_empty() {
-        let list = relative.join("`, `");
-        return Err(fail(
-            format!(
-                "`{}`: the argument `{list}` is a relative path, but the program runs in a folder of its own; write the absolute path (not loaded)",
-                spec.command
-            ),
-            format!(
-                "`{}`: 引数 `{list}` は相対パスですが、プログラムは専用のフォルダで動きます。絶対パスで書いてください(読み込みません)",
-                spec.command
-            ),
-        ));
-    }
-    let build = build_of(&exe, &spec.args).map_err(|e| {
+    let build = build_of(&exe).map_err(|e| {
         fail(
             format!("`{}`: {e} (not loaded)", spec.command),
             format!("`{}`: {e}(読み込みません)", spec.command),
@@ -1321,18 +1279,15 @@ mod tests {
     fn the_cache_round_trips_and_a_changed_stamp_is_a_miss() {
         let lab = Lab::new("cache_unit");
         let exe = exe_in(&lab, "prog", 0o755);
-        let script = lab.root().join("script.py");
-        std::fs::write(&script, "print(1)").unwrap();
-        let args = vec![script.to_string_lossy().into_owned()];
-        let build = build_of(&exe, &args).unwrap();
-        assert_eq!(build.files.len(), 1, "the script is part of the build");
+        let args = vec!["/x/script.py".to_string()];
+        let build = build_of(&exe).unwrap();
         assert!(cache_load(&lab.cache, &exe, &args, &build).is_none());
         cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
         assert_eq!(
             cache_load(&lab.cache, &exe, &args, &build).unwrap().id,
             "cache-unit"
         );
-        // Each part of the stamp of the program and of the script, on its own, is a miss.
+        // Each part of the stamp of the program, on its own, is a miss.
         let parts = |s: Stamp| {
             [
                 Stamp {
@@ -1355,21 +1310,8 @@ mod tests {
         };
         let mut variants = Vec::new();
         for v in parts(build.exe) {
-            variants.push(Build {
-                exe: v,
-                ..build.clone()
-            });
+            variants.push(Build { exe: v });
         }
-        for v in parts(build.files[0].1) {
-            variants.push(Build {
-                files: vec![(build.files[0].0.clone(), v)],
-                ..build.clone()
-            });
-        }
-        variants.push(Build {
-            files: Vec::new(),
-            ..build.clone()
-        });
         for (i, v) in variants.iter().enumerate() {
             cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
             assert!(cache_load(&lab.cache, &exe, &args, v).is_none(), "part {i}");
@@ -1377,7 +1319,7 @@ mod tests {
         // A program elsewhere has its own entry.
         let other = exe_in(&lab, "other", 0o755);
         cache_store(&lab.cache, &exe, &args, &build, &sample_manifest());
-        let other_build = build_of(&other, &[]).unwrap();
+        let other_build = build_of(&other).unwrap();
         assert!(cache_load(&lab.cache, &other, &[], &other_build).is_none());
     }
 
@@ -1395,10 +1337,7 @@ mod tests {
             cache_file(&lab.cache, &exe, &args_a),
             cache_file(&lab.cache, &exe, &args_b)
         );
-        let (build_a, build_b) = (
-            build_of(&exe, &args_a).unwrap(),
-            build_of(&exe, &args_b).unwrap(),
-        );
+        let (build_a, build_b) = (build_of(&exe).unwrap(), build_of(&exe).unwrap());
         cache_store(
             &lab.cache,
             &exe,
@@ -1431,55 +1370,10 @@ mod tests {
     }
 
     #[test]
-    fn only_absolute_paths_of_regular_files_are_part_of_a_build() {
-        let lab = Lab::new("build_files");
-        let exe = exe_in(&lab, "interp", 0o755);
-        let script = lab.root().join("s.py");
-        std::fs::write(&script, "x").unwrap();
-        let args = vec![
-            "-u".to_string(),
-            "word".to_string(),
-            "s.py".to_string(),
-            lab.root().to_string_lossy().into_owned(),
-            lab.root().join("missing.py").to_string_lossy().into_owned(),
-            script.to_string_lossy().into_owned(),
-        ];
-        let build = build_of(&exe, &args).unwrap();
-        assert_eq!(
-            build.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
-            vec![script.to_str().unwrap()]
-        );
-    }
-
-    #[test]
-    fn an_argument_with_a_slash_that_is_not_absolute_is_a_relative_path_and_a_word_is_not() {
-        let args: Vec<String> = [
-            "-u",
-            "--serve",
-            "-x/y",
-            "word",
-            "dir",
-            "here.py",
-            "/abs/x.py",
-            "~/x.py",
-            "./gone.py",
-            "../up.py",
-            "sub/x.py",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            relative_file_args(&args),
-            vec!["~/x.py", "./gone.py", "../up.py", "sub/x.py"]
-        );
-    }
-
-    #[test]
     fn a_cache_file_bigger_than_the_cap_or_of_another_format_is_not_used_and_goes() {
         let lab = Lab::new("cache_caps");
         let exe = exe_in(&lab, "prog", 0o755);
-        let build = build_of(&exe, &[]).unwrap();
+        let build = build_of(&exe).unwrap();
         cache_store(&lab.cache, &exe, &[], &build, &sample_manifest());
         let file = cache_file(&lab.cache, &exe, &[]);
         let good = std::fs::read_to_string(&file).unwrap();
@@ -1510,7 +1404,7 @@ mod tests {
         let lab = Lab::new("cache_mode");
         let exe = exe_in(&lab, "prog", 0o755);
         let dir = lab.cache.join("fresh");
-        let build = build_of(&exe, &[]).unwrap();
+        let build = build_of(&exe).unwrap();
         cache_store(&dir, &exe, &[], &build, &sample_manifest());
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
