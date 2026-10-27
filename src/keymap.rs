@@ -2185,16 +2185,7 @@ impl KeyMap {
     }
 }
 
-/// Which layer of the keymap a key comes from, for the `?` help's sections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyLayer {
-    /// Layer 0: every context inherits it (tabs, help, quit).
-    Global,
-    /// Layer 1: movement every context with a cursor shares.
-    Basic,
-    /// The context's own table and the table of its view type.
-    View,
-}
+pub use konoma_host_core::help::KeyLayer;
 
 impl KeyMap {
     /// Where `kp` is defined for `ctx` (`None` = not bound there). The same lookup order as
@@ -2215,28 +2206,7 @@ impl KeyMap {
     }
 }
 
-/// The order keys are listed in: plain characters (by code point, so `j` before `k`, `J` before
-/// `j`), then Ctrl-chords, then named keys.
-fn display_order(k: KeyPress) -> (u8, u32) {
-    match (k.ctrl, k.code) {
-        (false, KeyCode::Char(c)) => (0, c as u32),
-        (true, KeyCode::Char(c)) => (1, c as u32),
-        (_, other) => (
-            2,
-            match other {
-                KeyCode::Enter => 0,
-                KeyCode::Tab => 1,
-                KeyCode::BackTab => 2,
-                KeyCode::Esc => 3,
-                KeyCode::PageDown => 4,
-                KeyCode::PageUp => 5,
-                KeyCode::Home => 6,
-                KeyCode::End => 7,
-                _ => 99,
-            },
-        ),
-    }
-}
+use konoma_host_core::help::display_order;
 
 fn binding_to_resolution(b: &Binding) -> Resolution {
     match b {

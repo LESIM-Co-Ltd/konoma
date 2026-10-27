@@ -69,12 +69,12 @@ fn line(l: &Line) -> RLine<'static> {
 }
 
 /// The footer: the keys first (a narrow terminal cuts the end), where the text is, the title.
-pub fn footer(title: &str, frame: &Frame, scroll: usize) -> String {
+pub fn footer(hints: &[String], title: &str, frame: &Frame, scroll: usize) -> String {
     let pos = match frame {
         Frame::Lines(l) if !l.is_empty() => format!("  line {}", scroll + 1),
         _ => String::new(),
     };
-    format!(" q quit  j/k scroll{pos}  {title}")
+    format!(" {}{pos}  {title}", hints.join("  "))
 }
 
 pub fn draw(f: &mut ratatui::Frame, frame: &Frame, footer: &str) {

@@ -85,7 +85,7 @@ fn first_body(term: &Terminal<TestBackend>) -> String {
 #[test]
 fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     let (_d, p) = file("app_text", "a.t", &lines20());
-    let (term, _) = run_events(TestPlugin::all(), &p, (40, 6), vec![]);
+    let (term, _) = run_events(TestPlugin::all(), &p, (60, 6), vec![]);
     let r = rows(&term);
     assert_eq!(r.len(), 6);
     for (i, row) in r.iter().enumerate().take(5) {
@@ -93,8 +93,8 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     }
     assert!(r[5].contains("line 1"), "{r:?}");
     assert!(r[5].ends_with("title"), "{r:?}");
-    assert!(r[5].contains("q quit"), "{r:?}");
-    assert!(!r[4].contains("q quit"));
+    assert!(r[5].contains("q:quit"), "{r:?}");
+    assert!(!r[4].contains("q:quit"));
     // The footer row is reversed.
     let buf = term.backend().buffer();
     assert!(buf[(0, 5)]
@@ -237,7 +237,7 @@ fn a_canvas_is_sized_to_the_screen_and_drawn_cell_for_cell() {
     assert_eq!(r[1], "xxxxxxxxxx");
     assert_eq!(r[2], "xxxxxxxxxx");
     assert!(
-        r[3].contains("q quit"),
+        r[3].contains("q:quit"),
         "the footer owns the last row: {r:?}"
     );
     let buf = term.backend().buffer();
@@ -255,14 +255,14 @@ fn a_canvas_bigger_than_the_screen_is_clipped_without_a_panic() {
     let r = rows(&term);
     assert_eq!(r[0], "Axxxxxxx");
     assert_eq!(r[1], "xxxxxxxx");
-    assert!(r[2].contains("q quit"));
+    assert!(r[2].contains("q:quit"));
 }
 
 #[test]
 fn a_one_row_screen_has_only_the_footer() {
     let (_d, p) = file("app_one", "a.c", "");
     let (term, _) = run_events(TestPlugin::all(), &p, (10, 1), vec![]);
-    assert!(rows(&term)[0].contains("q quit"));
+    assert!(rows(&term)[0].contains("q:quit"));
     // And a zero-height screen does not panic.
     let (_term, _) = run_events(TestPlugin::all(), &p, (10, 0), vec![]);
 }

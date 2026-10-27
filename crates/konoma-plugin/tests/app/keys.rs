@@ -185,15 +185,7 @@ fn commands_the_app_cannot_do_yet_are_ignored() {
     let k = AppKeys::defaults();
     let (first, left) = run(
         &k,
-        vec![
-            key('e'),
-            key('o'),
-            key('+'),
-            key('J'),
-            key('y'),
-            key('t'),
-            key('?'),
-        ],
+        vec![key('e'), key('o'), key('+'), key('J'), key('y'), key('t')],
     );
     assert_eq!(first, "line 00");
     assert_eq!(left, 0, "none of them ended the loop");

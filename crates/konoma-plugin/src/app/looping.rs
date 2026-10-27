@@ -2,10 +2,15 @@
 
 use std::time::Duration;
 
+use konoma_host_core::help::{
+    core_sections, ctrl_c_token, render_foot, CoreFoot, CoreLookup, CoreSection, HelpFacts, HelpOp,
+};
+use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
     scheme_from_str, CoreAction, CoreContext, CoreKeys, CoreResolution, KeyPress, Motion,
 };
 use konoma_host_core::keys::KeysConfig;
+use konoma_host_core::lang::Lang;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
@@ -36,6 +41,7 @@ pub struct AppCx {
 #[derive(Clone, Debug)]
 pub struct AppKeys {
     keys: CoreKeys,
+    lang: Lang,
 }
 
 impl AppKeys {
@@ -43,7 +49,114 @@ impl AppKeys {
     pub fn new(keys: &KeysConfig, ui_keys: &str) -> AppKeys {
         AppKeys {
             keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
+            lang: Lang::En,
         }
+    }
+
+    /// The same keys with the help and the footer in `lang`.
+    pub fn with_lang(mut self, lang: Lang) -> AppKeys {
+        self.lang = lang;
+        self
+    }
+
+    /// The language of the help and the footer.
+    pub fn lang(&self) -> Lang {
+        self.lang
+    }
+
+    /// What the help and the footer say about the keys of a text: every operation of the shared
+    /// layers the app does not act on is off (its row and token are left out), and the two
+    /// leaving keys are named as the app leaves (it has no tree to go back to).
+    pub fn facts(&self) -> HelpFacts {
+        let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::Navigate(m)) => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
+                true
+            }
+            HelpOp::Cancel => true,
+            _ => false,
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Text) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        off.push(HelpOp::Menu(konoma_host_core::keymap::CoreMenu::Options));
+        HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        }
+    }
+
+    /// The footer's key hints: what leaves (`q` or else `Q` or else `Ctrl-C`, whichever really
+    /// quits), what scrolls, what opens the help.
+    pub fn footer_tokens(&self) -> Vec<String> {
+        let facts = self.facts();
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Text, &facts, &look, self.lang);
+        let leave = tok(CoreFoot::Back)
+            .or_else(|| tok(CoreFoot::Quit))
+            .unwrap_or_else(|| ctrl_c_token(self.lang));
+        let mut out = vec![leave.text];
+        out.extend(tok(CoreFoot::Scroll).map(|t| t.text));
+        out.extend(tok(CoreFoot::Help).map(|t| t.text));
+        out
+    }
+
+    /// The sections of the `?` help.
+    pub fn help_sections(&self) -> Vec<CoreSection> {
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        core_sections(CoreContext::Text, &self.facts(), &look, self.lang)
+    }
+
+    /// The `?` help as lines: a heading and the aligned rows of each section.
+    fn help_lines(&self) -> Vec<Line> {
+        let secs = self.help_sections();
+        let w = secs
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut out = Vec::new();
+        for (i, s) in secs.iter().enumerate() {
+            if i > 0 {
+                out.push(Line::raw(""));
+            }
+            out.push(Line::raw(s.title.clone()));
+            for (k, d) in &s.rows {
+                out.push(Line::raw(format!("  {k:<w$}  {d}")));
+            }
+        }
+        out
+    }
+
+    /// The title of the `?` help, shown in the footer while it is open.
+    fn help_title(&self) -> String {
+        CoreMsg::HelpTitle.tr(self.lang).to_string()
     }
 
     /// The built-in keys (no overrides, vim paging).
@@ -63,6 +176,9 @@ impl AppKeys {
                 KeyCode::Up => return Some(Act::Move(Motion::Up)),
                 KeyCode::Home => return Some(Act::Move(Motion::Top)),
                 KeyCode::End => return Some(Act::Move(Motion::Bottom)),
+                // `Esc` is fixed (not in the keymap) and the help says `q / Esc` leaves, so it
+                // does: it closes the help, and out of the help it ends the app.
+                KeyCode::Esc => return Some(Act::Quit),
                 _ => {}
             }
         }
@@ -70,6 +186,7 @@ impl AppKeys {
         match self.keys.resolve(CoreContext::Text, kp) {
             CoreResolution::Action(CoreAction::Quit | CoreAction::PreviewBack) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
             _ => None,
         }
     }
@@ -80,6 +197,7 @@ impl AppKeys {
 enum Act {
     Quit,
     Move(Motion),
+    Help,
 }
 
 /// The key as the shared tables name it. Alt and the keys that are not part of the shared
@@ -162,6 +280,8 @@ struct State {
     page: usize,
     /// The last number of lines a text had (the bound of `End`).
     total: usize,
+    /// The `?` help while it is open: the first line shown.
+    help: Option<usize>,
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
@@ -190,8 +310,18 @@ pub fn run_with<B: Backend, E: EventSource>(
                 ))],
             }),
         };
-        let (frame, redraw_after) = frame_of(view, &mut st, usize::from(body_rows));
-        let footer = draw::footer(&cx.title, &frame, st.scroll);
+        let (mut frame, redraw_after) = frame_of(view, &mut st, usize::from(body_rows));
+        let footer = match st.help {
+            Some(top) => {
+                let lines = keys.help_lines();
+                let rows = usize::from(body_rows);
+                let top = top.min(lines.len().saturating_sub(rows));
+                st.help = Some(top);
+                frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
+                format!(" {}", keys.help_title().trim())
+            }
+            None => draw::footer(&keys.footer_tokens(), &cx.title, &frame, st.scroll),
+        };
         terminal
             .draw(|f| draw::draw(f, &frame, &footer))
             .map_err(|e| terr(&e))?;
@@ -200,13 +330,34 @@ pub fn run_with<B: Backend, E: EventSource>(
         match events.next(wait) {
             Next::End => return Ok(()),
             Next::Timeout | Next::Event(AppEvent::Resize) => {}
-            Next::Event(AppEvent::Key(key)) => match keys.act(&key) {
-                Some(Act::Quit) => return Ok(()),
-                Some(Act::Move(m)) => scroll_by(m, &mut st),
-                None => {}
+            Next::Event(AppEvent::Key(key)) => match (keys.act(&key), st.help) {
+                // Ctrl-C leaves even from the help; the other leaving keys close it.
+                (Some(Act::Quit), Some(_)) if !is_ctrl_c(&key) => st.help = None,
+                (Some(Act::Quit), _) => return Ok(()),
+                (Some(Act::Help), Some(_)) => st.help = None,
+                (Some(Act::Help), None) => st.help = Some(0),
+                (Some(Act::Move(m)), Some(top)) => {
+                    st.help = Some(match m {
+                        Motion::Down => top.saturating_add(1),
+                        Motion::Up => top.saturating_sub(1),
+                        Motion::Top => 0,
+                        Motion::Bottom => usize::MAX / 2,
+                        Motion::PageDown => top.saturating_add(st.page),
+                        Motion::PageUp => top.saturating_sub(st.page),
+                        Motion::HalfDown => top.saturating_add((st.page / 2).max(1)),
+                        Motion::HalfUp => top.saturating_sub((st.page / 2).max(1)),
+                        _ => top,
+                    })
+                }
+                (Some(Act::Move(m)), None) => scroll_by(m, &mut st),
+                (None, _) => {}
             },
         }
     }
+}
+
+fn is_ctrl_c(key: &Key) -> bool {
+    key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c'))
 }
 
 fn scroll_by(m: Motion, st: &mut State) {
