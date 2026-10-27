@@ -1549,67 +1549,16 @@ fn run_external(
     args: &[String],
     cwd: &std::path::Path,
 ) -> Result<std::io::Result<std::process::ExitStatus>> {
-    use crossterm::event::{DisableMouseCapture, PopKeyboardEnhancementFlags};
-    use crossterm::execute;
-    use crossterm::terminal::{
-        disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
-        EnterAlternateScreen,
-    };
-
-    // --- Suspend the TUI ---
-    // **Don't leave** the alternate screen (only disable raw mode). vim etc. enter the alternate
-    // screen themselves (smcup), but since the terminal is already alt, no screen switch occurs,
-    // preventing the plain terminal screen from flashing briefly at launch
-    // (a common Ratatui-forum idiom). Since vim always returns to the primary screen with rmcup on
-    // exit, re-enter via EnterAlternateScreen on the restore side.
-    disable_raw_mode()?;
-
-    // --- Run the external command synchronously (inherit stdio and block) ---
-    // SIGINT (Ctrl-C) goes to the child, not to us, while it runs (see `ignore_signal`).
-    let status = {
-        let _child = preview::command::ForegroundChildGuard::new();
-        std::process::Command::new(prog)
-            .args(args)
-            .current_dir(cwd)
-            .status()
-    };
-
-    // --- Restore the TUI ---
-    // Redraw immediately right after returning to the alternate screen, and further make the
-    // "switch + redraw" appear atomically via synchronized output (DEC 2026).
-    // This eliminates the plain-terminal/blank-screen flash between the external tool exiting and
-    // konoma restoring (supported terminals only.
-    // On unsupported terminals, ?2026 is ignored and only the immediate redraw takes effect =
-    // harmless). Treat clear/draw as best-effort since they're cosmetic,
-    // and always send EndSynchronizedUpdate even on error (so the terminal doesn't get stuck
-    // waiting for the sync to end).
-    enable_raw_mode()?;
-    let _ = execute!(std::io::stdout(), BeginSynchronizedUpdate);
-    execute!(std::io::stdout(), EnterAlternateScreen)?;
-    {
+    // The suspend / run / restore sequence is the shared `hand_off` (raw mode, synchronized
+    // update, alternate screen, input modes; see its documentation). Only the frame is ours.
+    let status = konoma_host_core::term::hand_off(prog, args, cwd, &mut || {
         // A frame (a kitty transmit is a run of chunks) is written under the right to write to
         // the terminal, like the run loop's: an exit signal must not land inside it.
         let _writing = preview::command::terminal_write();
         let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
-        let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
-    }
-    let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
-
-    // Legacy-izing the input mode + draining leftover bytes can happen after the screen is
-    // restored (invisible).
-    // Pop the kitty keyboard protocol and disable mouse reporting (left by the external tool).
-    // konoma itself uses bracketed paste (to receive D&D), so **re-enable it** after cleaning up.
-    let _ = execute!(
-        std::io::stdout(),
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        crossterm::event::EnableBracketedPaste,
-    );
-    // Drain and discard leftover input (terminal-query responses, extra keys) for a short time to
-    // recover the decoder's sync.
-    while event::poll(Duration::from_millis(10)).unwrap_or(false) {
-        let _ = event::read();
-    }
+        terminal.draw(|frame| ui::render(frame, app))?; // draw immediately right after restoring (don't delay it until the next loop)
+        Ok(())
+    })?;
     Ok(status)
 }
 

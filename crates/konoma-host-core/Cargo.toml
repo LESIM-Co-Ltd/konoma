@@ -13,6 +13,10 @@ serde.workspace = true
 toml.workspace = true
 # The OS default language (no external process).
 sys-locale.workspace = true
+# The terminal handed to a child and taken back (raw mode, alternate screen, input modes).
+crossterm.workspace = true
+# The thread that ends the program on SIGTERM / SIGHUP / SIGINT.
+signal-hook.workspace = true
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
