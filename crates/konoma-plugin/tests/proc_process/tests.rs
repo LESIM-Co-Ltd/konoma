@@ -24,6 +24,10 @@ use crate::child::CHILD_ENV;
 pub fn all() -> Vec<(&'static str, fn())> {
     vec![
         (
+            "command_launch_runs_the_child_in_the_given_working_directory_and_in_root_by_default",
+            launch_work_dir,
+        ),
+        (
             "command_launch_gives_the_child_its_own_group_and_no_core_dump",
             launch_group_rlimit,
         ),
@@ -204,6 +208,34 @@ fn the_pid(pids: &Arc<Mutex<Vec<u32>>>) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // CommandLaunch, kill and wait
 // ---------------------------------------------------------------------------------------------
+
+/// What `pwd` says in a child started by `launch`.
+fn cwd_of(launch: &CommandLaunch) -> PathBuf {
+    let mut spawned = launch.launch().expect("sh starts");
+    let mut out = String::new();
+    spawned
+        .reader
+        .read_to_string(&mut out)
+        .expect("the child's output");
+    (spawned.kill)();
+    std::fs::canonicalize(out.trim()).expect("a directory")
+}
+
+fn launch_work_dir() {
+    let dir = unique_tmp("kpp_cwd");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let args = ["-c", "pwd -P"];
+    assert_eq!(
+        cwd_of(&CommandLaunch::new("/bin/sh", args)),
+        PathBuf::from("/"),
+        "the default"
+    );
+    assert_eq!(
+        cwd_of(&CommandLaunch::new("/bin/sh", args).with_work_dir(dir.as_path())),
+        std::fs::canonicalize(dir.as_path()).unwrap(),
+        "the given directory"
+    );
+}
 
 fn launch_group_rlimit() {
     let dir = unique_tmp("kpp_group");

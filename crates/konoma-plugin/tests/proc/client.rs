@@ -1752,3 +1752,154 @@ fn the_sweep_removes_only_the_directories_of_hosts_that_are_gone() {
     // A root that does not exist is not an error.
     assert_eq!(sweep_stale_side_dirs(&root.as_path().join("nope")), 0);
 }
+
+// ---------------------------------------------------------------------------------------------
+// One set of limits, however the plugin was made
+// ---------------------------------------------------------------------------------------------
+
+/// A plugin whose first child answers the handshake and whose later children never do; the second
+/// result is the failure of the `open` that restarts it.
+fn restart_failure(first_handshake: Duration, start_timeout: Duration) -> Failure {
+    let scratch = unique_tmp("kp_start_within");
+    let latch = Latch::new();
+    let l2 = latch.clone();
+    let mut limits = patient_limits();
+    limits.start_timeout = start_timeout;
+    let launches = Arc::new(AtomicUsize::new(0));
+    let kills = Arc::new(AtomicUsize::new(0));
+    let l = scripted(
+        Arc::new(move |r, w, n| {
+            read_hello(r);
+            if n == 0 {
+                ack(w);
+                while let Ok(Some(_)) = frame::recv::<_, ToChild>(r) {}
+            } else {
+                l2.wait_for(PATIENCE);
+            }
+        }),
+        Arc::clone(&launches),
+        Arc::clone(&kills),
+    );
+    let p = ProcPlugin::start_within(l, config(limits, &scratch), first_handshake)
+        .expect("the first child answers");
+    p.stop();
+    let f = open(&p).err().expect("the second child never answers");
+    latch.set();
+    assert_eq!(launches.load(Ordering::SeqCst), 2);
+    f
+}
+
+#[test]
+fn a_restart_after_start_within_is_bound_by_the_start_timeout_not_the_first_handshake_bound() {
+    let f = restart_failure(Duration::from_millis(150), Duration::from_millis(700));
+    assert_eq!(f.kind, FailureKind::Timeout);
+    let d = f.detail.unwrap_or_default();
+    assert!(
+        d.contains("700ms"),
+        "the restart's bound is start_timeout: {d:?}"
+    );
+}
+
+#[test]
+fn start_within_bounds_only_the_first_handshake() {
+    let scratch = unique_tmp("kp_start_within_first");
+    let latch = Latch::new();
+    let l2 = latch.clone();
+    let mut limits = patient_limits();
+    limits.start_timeout = Duration::from_secs(60);
+    let l = scripted(
+        Arc::new(move |r, _w, _| {
+            read_hello(r);
+            l2.wait_for(PATIENCE);
+        }),
+        Arc::default(),
+        Arc::default(),
+    );
+    let f = ProcPlugin::start_within(l, config(limits, &scratch), Duration::from_millis(200))
+        .err()
+        .expect("a child that never answers fails the start");
+    latch.set();
+    assert_eq!(f.kind, FailureKind::Timeout);
+    let d = f.detail.unwrap_or_default();
+    assert!(d.contains("200ms"), "{d:?}");
+}
+
+#[test]
+fn start_is_start_within_with_the_start_timeout() {
+    let scratch = unique_tmp("kp_start_same");
+    let latch = Latch::new();
+    let l2 = latch.clone();
+    let mut limits = patient_limits();
+    limits.start_timeout = Duration::from_millis(250);
+    let l = scripted(
+        Arc::new(move |r, _w, _| {
+            read_hello(r);
+            l2.wait_for(PATIENCE);
+        }),
+        Arc::default(),
+        Arc::default(),
+    );
+    let f = ProcPlugin::start(l, config(limits, &scratch))
+        .err()
+        .expect("fails");
+    latch.set();
+    assert!(f.detail.unwrap_or_default().contains("250ms"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sweep of the private directories of hosts that are gone
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_root_sweep_removes_only_private_directories_of_the_kind_whose_host_is_gone() {
+    use konoma_plugin::proc::client::sweep_stale_private_roots;
+    let temp = unique_tmp("kp_sweep_roots");
+    std::fs::create_dir_all(temp.as_path()).unwrap();
+    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let dead = done.id();
+    done.wait().unwrap();
+    let make = |name: &str| {
+        let d = temp.as_path().join(name);
+        std::fs::create_dir_all(d.join("inner")).unwrap();
+        std::fs::write(d.join("inner").join("h-1"), b"x").unwrap();
+        d
+    };
+    let stale = make(&format!("konoma-plugin-{dead}"));
+    let stale_fallback = make(&format!("konoma-plugin-{dead}-0123456789abcdef"));
+    let stale_other_kind = make(&format!("konoma-plugin-work-{dead}"));
+    let ours = make(&format!("konoma-plugin-{}", std::process::id()));
+    let live_other = make("konoma-plugin-1");
+    let side_dir_shape = make(&format!("konoma-plugin-{dead}-1-100"));
+    let bad_random = make(&format!("konoma-plugin-{dead}-xyz"));
+    let other_kind = make(&format!("konoma-cmd-{dead}"));
+    let target = make("link-target");
+    let link = temp.as_path().join("konoma-plugin-999999998");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let n = sweep_stale_private_roots(temp.as_path(), "plugin");
+    assert_eq!(n, 2, "the plain and the fallback name of the dead host");
+    assert!(!stale.exists());
+    assert!(!stale_fallback.exists());
+    for kept in [
+        &stale_other_kind,
+        &ours,
+        &live_other,
+        &side_dir_shape,
+        &bad_random,
+        &other_kind,
+        &target,
+    ] {
+        assert!(
+            kept.join("inner").join("h-1").exists(),
+            "{kept:?} must stay"
+        );
+    }
+    assert!(link.symlink_metadata().is_ok());
+    // The work-directory kind is swept by asking for it.
+    assert_eq!(sweep_stale_private_roots(temp.as_path(), "plugin-work"), 1);
+    assert!(!stale_other_kind.exists());
+    assert_eq!(
+        sweep_stale_private_roots(&temp.as_path().join("nope"), "plugin"),
+        0
+    );
+}

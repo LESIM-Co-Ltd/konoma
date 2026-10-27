@@ -443,8 +443,55 @@ fn e2e_ext_a_program_that_never_answers_the_handshake_is_given_up_on_within_the_
         en[0].contains("not loaded") || en[0].contains("did not start"),
         "{en:?}"
     );
+    // The bound that applied is the first-handshake one, not the (longer) start timeout.
+    assert!(en[0].contains("300ms"), "{en:?}");
     assert!(rig.kills() >= 1, "the silent child was killed");
     assert!(lab.cache_files().is_empty());
+}
+
+/// The reason an `open` of the first plugin of `token` fails with, when its child never answers.
+fn silent_restart_detail(lab: &Lab, token: &str) -> String {
+    let plugin = external::plugins_of(token).remove(0);
+    plugin.stop();
+    let f = plugin
+        .open(
+            konoma_plugin::Input::File {
+                path: lab.root().join("a.xd"),
+                hint: None,
+            },
+            &konoma_plugin::OpenCx::bare(),
+        )
+        .err()
+        .expect("a silent child fails the open");
+    assert_eq!(f.kind, konoma_plugin::FailureKind::Timeout);
+    f.detail.unwrap_or_default()
+}
+
+#[test]
+fn e2e_ext_the_same_limits_apply_whether_the_plugin_was_started_or_built_from_the_cache() {
+    let lab = Lab::new("limits_same");
+    let rig = Rig::new("ext-limits");
+    lab.program("limits-prog", "v1");
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[("ext-limits", table("limits-prog", &[]))]);
+    let mut env = lab.env(&rig);
+    // The bound of the very first handshake is short; the one of every other start is not.
+    env.handshake_limit = Duration::from_millis(200);
+    env.limits.start_timeout = Duration::from_millis(700);
+    // Nothing cached: the program is started to learn its manifest.
+    let started = external::install(&env, &t, &[]).unwrap();
+    assert_eq!(lab.cache_files().len(), 1);
+    *rig.mode.lock().unwrap() = Mode::Silent;
+    let d = silent_restart_detail(&lab, &started);
+    assert!(d.contains("700ms"), "a restart after a start: {d:?}");
+    // Cached: nothing is started at install, the first open starts it.
+    let cached = external::install(&env, &t, &[]).unwrap();
+    assert_eq!(rig.launches(), 2, "the second install started nothing");
+    let d = silent_restart_detail(&lab, &cached);
+    assert!(
+        d.contains("700ms"),
+        "the first start of a cached plugin: {d:?}"
+    );
 }
 
 #[test]
@@ -639,10 +686,68 @@ fn e2e_ext_a_child_that_takes_too_long_shows_cannot_preview_with_a_reason() {
     let token = external::install(&env, &t, &[]);
     let mut s = session(&lab, token, t);
     open_file(&mut s, "hang.xd");
-    // The reason is on the screen (the host's unavailable view: reason, then the file).
+    // The reason is on the screen (the host's unavailable view: reason, then the file). It is the
+    // same view a standard plugin that fails gets (`ui::preview`'s plugin-failure arm: the
+    // failure's message, then the path), not the `[can not preview: <ext>]` marker.
     s.see("the plugin did not answer in time");
+    s.see("hang.xd");
+    assert!(!s.screen().contains("can not preview"), "{}", s.screen());
     rig.ctl.release.set();
     assert!(rig.kills() >= 1, "the stuck child was killed");
+}
+
+// ---- start-up sweep -----------------------------------------------------------------------------------------------
+
+/// A pid that existed and was reaped.
+fn dead_pid() -> u32 {
+    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let pid = done.id();
+    done.wait().unwrap();
+    pid
+}
+
+fn plant(dir: &std::path::Path, name: &str) -> PathBuf {
+    let d = dir.join(name);
+    std::fs::create_dir_all(d.join("inner")).unwrap();
+    std::fs::write(d.join("inner").join("h-1"), b"x").unwrap();
+    d
+}
+
+#[test]
+fn e2e_ext_install_sweeps_what_a_dead_host_left_off_the_calling_thread() {
+    let lab = Lab::new("sweep");
+    let rig = Rig::new("ext-sweep");
+    lab.program("sweep-prog", "v1");
+    let dead = dead_pid();
+    // In the handoff root: a handoff directory of a dead host.
+    let side_stale = plant(&lab.scratch, &format!("konoma-plugin-{dead}-1-100"));
+    let side_live = plant(&lab.scratch, "konoma-plugin-1-2-100");
+    // Beside it: the private directories of a dead host (and of this process, and of a live one).
+    let root_stale = plant(lab.dir.as_path(), &format!("konoma-plugin-{dead}"));
+    let work_stale = plant(lab.dir.as_path(), &format!("konoma-plugin-work-{dead}"));
+    let root_ours = plant(
+        lab.dir.as_path(),
+        &format!("konoma-plugin-{}", std::process::id()),
+    );
+    let root_live = plant(lab.dir.as_path(), "konoma-plugin-1");
+    let t = tables(&[("ext-sweep", table("sweep-prog", &[]))]);
+    let token = external::install(&lab.env(&rig), &t, &[]).unwrap();
+    external::wait_sweep(&token);
+    for gone in [&side_stale, &root_stale, &work_stale] {
+        assert!(!gone.exists(), "{gone:?} should have been swept");
+    }
+    for kept in [&side_live, &root_ours, &root_live] {
+        assert!(kept.join("inner").join("h-1").exists(), "{kept:?} stays");
+    }
+}
+
+#[test]
+fn e2e_ext_the_sweep_runs_on_a_thread_of_its_own() {
+    let lab = Lab::new("sweep_thread");
+    let handle = external::sweep_in_background(&lab.scratch, &lab.work).expect("a thread");
+    assert_ne!(handle.thread().id(), std::thread::current().id());
+    assert_eq!(handle.thread().name(), Some("plugin-sweep"));
+    handle.join().unwrap();
 }
 
 // ---- idle children and leaving -----------------------------------------------------------------------------------
@@ -702,6 +807,39 @@ fn e2e_ext_a_child_with_a_file_open_is_not_reaped() {
         "a live session keeps it"
     );
     assert_eq!(rig.kills(), 0);
+}
+
+#[test]
+fn e2e_ext_the_run_loop_entry_reaches_the_children_that_are_idle() {
+    // The run loop calls `reap_if_due`; this is the whole way from it to the stopped child.
+    let lab = Lab::new("reap_entry");
+    let rig = Rig::new("ext-reapentry");
+    lab.program("reapentry-prog", "v1");
+    write_xd(&lab, "a.xd", "plain");
+    let t = tables(&[("ext-reapentry", table("reapentry-prog", &[]))]);
+    let mut env = lab.env(&rig);
+    // Idle at once, so the real clock the entry reads is past it.
+    env.limits.idle_after = Duration::ZERO;
+    let token = external::install(&env, &t, &[]).unwrap();
+    let mut s = session(&lab, Some(token.clone()), t);
+    open_file(&mut s, "a.xd");
+    s.see("child says hello");
+    // With the file open the child has a session: not idle, whatever the time.
+    let busy = external::reap_if_due(Instant::now()).expect("the first look is not throttled");
+    busy.join().unwrap();
+    assert_eq!(rig.kills(), 0, "a live session keeps the child");
+    s.esc();
+    let plugin = external::plugins_of(&token).remove(0);
+    assert!(plugin.is_running());
+    // Within the interval of the look above the entry does nothing; after it, it stops the child.
+    assert!(external::reap_if_due(Instant::now()).is_none());
+    let later = Instant::now() + external::REAP_INTERVAL + Duration::from_secs(1);
+    external::reap_if_due(later)
+        .expect("a look is due")
+        .join()
+        .unwrap();
+    assert_eq!(rig.kills(), 1, "the idle child was stopped by the entry");
+    assert!(!plugin.is_running());
 }
 
 #[test]

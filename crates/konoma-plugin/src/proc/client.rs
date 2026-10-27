@@ -168,10 +168,13 @@ where
     }
 }
 
-/// Start a program: its own process group, no core dump, working directory `/`.
+/// Start a program: its own process group, no core dump, and a working directory (`/` unless
+/// [`CommandLaunch::with_work_dir`] says otherwise).
 pub struct CommandLaunch {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// The child's working directory.
+    pub work_dir: PathBuf,
 }
 
 impl CommandLaunch {
@@ -182,7 +185,15 @@ impl CommandLaunch {
         CommandLaunch {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            work_dir: PathBuf::from("/"),
         }
+    }
+
+    /// Run the child in `dir` instead of `/` (a host gives it a private directory, so a plugin that
+    /// writes to its working directory writes where only the user can read).
+    pub fn with_work_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.work_dir = dir.into();
+        self
     }
 }
 
@@ -190,7 +201,7 @@ impl Launch for CommandLaunch {
     fn launch(&self) -> std::io::Result<Spawned> {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
-            .current_dir("/")
+            .current_dir(&self.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -795,6 +806,57 @@ pub fn sweep_stale_side_dirs(root: &Path) -> usize {
     removed
 }
 
+/// Remove the per-process private directories `konoma-<kind>-<pid>` (the host's `private_dir(kind)`,
+/// the parent of the handoff directories) under `temp` that a host which exited abnormally left
+/// behind. [`sweep_stale_side_dirs`] only looks inside one such directory, and a host only sees its
+/// own, so what a crashed host left is found here. The same safety as there: a real directory owned
+/// by this user, named exactly like that (the pid, optionally followed by the 16 hex digits of the
+/// fallback name), whose process no longer exists and is not this one. Returns how many were removed.
+pub fn sweep_stale_private_roots(temp: &Path, kind: &str) -> usize {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(temp) else {
+        return 0;
+    };
+    let prefix = format!("konoma-{kind}-");
+    // SAFETY: plain syscall without arguments.
+    let euid = unsafe { libc::geteuid() };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let mut parts = rest.split('-');
+        let (Some(pid), random, None) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if random.is_some_and(|r| r.len() != 16 || !r.bytes().all(|b| b.is_ascii_hexdigit())) {
+            continue;
+        }
+        let Ok(pid) = pid.parse::<i32>() else {
+            continue;
+        };
+        if pid <= 0 || pid as u32 == std::process::id() {
+            continue;
+        }
+        let path = e.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() || meta.uid() != euid {
+            continue;
+        }
+        // SAFETY: signal 0 only asks whether the process exists.
+        let gone = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone && std::fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn make_side_dir(root: &Path) -> std::io::Result<PathBuf> {
@@ -1071,7 +1133,21 @@ impl ProcPlugin {
     /// Start the program now and use the manifest it declares. The child stays up for the first
     /// `open`.
     pub fn start(launch: impl Launch + 'static, cfg: Config) -> Result<ProcPlugin, Failure> {
-        let (shared, manifest) = connect(&launch, &cfg, None)?;
+        let first = cfg.limits.start_timeout;
+        ProcPlugin::start_within(launch, cfg, first)
+    }
+
+    /// [`ProcPlugin::start`] with a different bound for this first handshake only. The plugin keeps
+    /// `cfg` as given, so a later restart is bound by `Limits::start_timeout` like one of a plugin
+    /// built by [`ProcPlugin::from_manifest`].
+    pub fn start_within(
+        launch: impl Launch + 'static,
+        cfg: Config,
+        first_handshake: Duration,
+    ) -> Result<ProcPlugin, Failure> {
+        let mut first_cfg = cfg.clone();
+        first_cfg.limits.start_timeout = first_handshake;
+        let (shared, manifest) = connect(&launch, &first_cfg, None)?;
         *lock(&shared.last_used) = Instant::now();
         Ok(ProcPlugin {
             expect_id: Some(manifest.id.clone()),

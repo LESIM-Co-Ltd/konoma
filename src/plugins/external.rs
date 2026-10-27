@@ -40,14 +40,15 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use konoma_plugin::proc::client::{Config as ProcConfig, Launch, Limits, ProcPlugin, Spawned};
+use konoma_plugin::proc::client::{
+    sweep_stale_private_roots, sweep_stale_side_dirs, CommandLaunch, Config as ProcConfig, Launch,
+    Limits, ProcPlugin, Spawned,
+};
 use konoma_plugin::{Failure, Input, Manifest, OpenCx, Plugin, Session};
 use serde::{Deserialize, Serialize};
 
@@ -357,68 +358,6 @@ pub(crate) fn cache_store(dir: &Path, exe: &Path, stamp: &Stamp, manifest: &Mani
 // Starting a program
 // ---------------------------------------------------------------------------------------------
 
-/// Starts the program in its own process group, with no core dump, in the host's private work
-/// directory (so a plugin that writes to its working directory writes where only the user can
-/// read, and where the exit cleanup removes it).
-struct ProgramLaunch {
-    program: PathBuf,
-    args: Vec<OsString>,
-    work_dir: PathBuf,
-}
-
-impl Launch for ProgramLaunch {
-    fn launch(&self) -> io::Result<Spawned> {
-        let mut cmd = Command::new(&self.program);
-        cmd.args(&self.args)
-            .current_dir(&self.work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
-        // SAFETY: only async-signal-safe calls (`setrlimit`) between fork and exec.
-        unsafe {
-            cmd.pre_exec(|| {
-                let none = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                libc::setrlimit(libc::RLIMIT_CORE, &none);
-                Ok(())
-            });
-        }
-        let mut child = cmd.spawn()?;
-        let pid = child.id();
-        let (stdin, stdout, stderr) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take());
-        let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
-            kill_group(&Mutex::new(Some(child)), pid);
-            return Err(io::Error::other("the child's pipes are missing"));
-        };
-        let child = Mutex::new(Some(child));
-        Ok(Spawned {
-            reader: Box::new(stdout),
-            writer: Box::new(stdin),
-            stderr: Some(Box::new(stderr)),
-            kill: Box::new(move || kill_group(&child, pid)),
-            pid: Some(pid),
-        })
-    }
-}
-
-/// Kill the child's process group and reap the child (the pid is only used while the child is
-/// unreaped, so it cannot name another process).
-fn kill_group(child: &Mutex<Option<Child>>, pid: u32) {
-    let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(mut c) = guard.take() {
-        // SAFETY: plain syscall on the group of a child this process started and has not reaped.
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
-        let _ = c.kill();
-        let _ = c.wait();
-    }
-}
-
 /// A launcher the tests put in place of a real program.
 pub(crate) type LauncherFactory = Arc<dyn Fn(&Spec, &Path) -> Box<dyn Launch> + Send + Sync>;
 
@@ -478,13 +417,13 @@ impl Env {
         }
     }
 
-    fn proc_config(&self, handshake: bool) -> ProcConfig {
-        let mut limits = self.limits.clone();
-        if handshake {
-            limits.start_timeout = self.handshake_limit;
-        }
+    /// The configuration of every connection, however the plugin was made: `limits` as they are,
+    /// including `start_timeout` (what a restart and a cached plugin's first start are given).
+    /// Only the very first handshake of a program the cache knows nothing about is shorter
+    /// ([`Env::handshake_limit`], passed to `ProcPlugin::start_within`).
+    fn proc_config(&self) -> ProcConfig {
         ProcConfig {
-            limits,
+            limits: self.limits.clone(),
             scratch_root: self.scratch_root.clone(),
             host_version: self.host_version.clone(),
             lang: self.lang_code().to_string(),
@@ -494,11 +433,10 @@ impl Env {
     fn launch_of(&self, spec: &Spec, exe: &Path) -> BoxedLaunch {
         BoxedLaunch(match &self.launcher {
             Some(make) => make(spec, exe),
-            None => Box::new(ProgramLaunch {
-                program: exe.to_path_buf(),
-                args: spec.args.iter().map(OsString::from).collect(),
-                work_dir: self.work_dir.clone(),
-            }),
+            None => Box::new(
+                CommandLaunch::new(exe, spec.args.iter().map(OsString::from))
+                    .with_work_dir(&self.work_dir),
+            ),
         })
     }
 }
@@ -576,7 +514,7 @@ impl ExternalPlugin {
                 cur.proc = Arc::new(ProcPlugin::from_manifest(
                     self.manifest.clone(),
                     self.env.launch_of(&self.spec, &self.exe),
-                    self.env.proc_config(false),
+                    self.env.proc_config(),
                 ));
                 cur.stamp = now;
                 cur.cache_stale = true;
@@ -636,6 +574,33 @@ impl Problem {
 struct Installed {
     plugins: Vec<Arc<ExternalPlugin>>,
     problems: Vec<Problem>,
+    /// The start-up sweep of what a host that died left (see [`sweep_in_background`]); only a test
+    /// waits for it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    sweep: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// Remove, off the calling thread, what hosts that died left under the handoff root: their
+/// handoff directories inside it, and their whole private directories next to it (a host only
+/// ever sees its own, so a crashed host's are found by the name `konoma-<kind>-<pid>` in the
+/// directory that holds this process's).
+pub(crate) fn sweep_in_background(
+    scratch_root: &Path,
+    work_dir: &Path,
+) -> Option<std::thread::JoinHandle<()>> {
+    let roots = (scratch_root.to_path_buf(), work_dir.to_path_buf());
+    std::thread::Builder::new()
+        .name("plugin-sweep".into())
+        .spawn(move || {
+            sweep_stale_side_dirs(&roots.0);
+            // The private directories are siblings of the ones this process uses.
+            for (own, kind) in [(&roots.0, "plugin"), (&roots.1, "plugin-work")] {
+                if let Some(parent) = own.parent() {
+                    sweep_stale_private_roots(parent, kind);
+                }
+            }
+        })
+        .ok()
 }
 
 fn installed() -> &'static Mutex<BTreeMap<String, Arc<Installed>>> {
@@ -716,25 +681,26 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
     let launch = env.launch_of(spec, &exe);
     let (proc, manifest, cache_stale) = match cache_load(&env.cache_dir, &exe, &stamp) {
         Some(manifest) => (
-            ProcPlugin::from_manifest(manifest.clone(), launch, env.proc_config(false)),
+            ProcPlugin::from_manifest(manifest.clone(), launch, env.proc_config()),
             manifest,
             false,
         ),
         None => {
-            let proc = ProcPlugin::start(launch, env.proc_config(true)).map_err(|f| {
-                fail(
-                    format!(
-                        "`{}` did not start: {} (not loaded)",
-                        spec.command,
-                        failure_text(&f, Lang::En)
-                    ),
-                    format!(
-                        "`{}` が起動しません: {}(読み込みません)",
-                        spec.command,
-                        failure_text(&f, Lang::Jp)
-                    ),
-                )
-            })?;
+            let proc = ProcPlugin::start_within(launch, env.proc_config(), env.handshake_limit)
+                .map_err(|f| {
+                    fail(
+                        format!(
+                            "`{}` did not start: {} (not loaded)",
+                            spec.command,
+                            failure_text(&f, Lang::En)
+                        ),
+                        format!(
+                            "`{}` が起動しません: {}(読み込みません)",
+                            spec.command,
+                            failure_text(&f, Lang::Jp)
+                        ),
+                    )
+                })?;
             let manifest = proc.manifest();
             cache_store(&env.cache_dir, &exe, &stamp, &manifest);
             (proc, manifest, false)
@@ -785,6 +751,7 @@ pub(crate) fn install(env: &Env, tables: &PluginTables, dev: &[PathBuf]) -> Opti
         command: p.to_string_lossy().into_owned(),
         args: Vec::new(),
     }));
+    let sweep = sweep_in_background(&env.scratch_root, &env.work_dir);
     if specs.is_empty() {
         return None;
     }
@@ -844,8 +811,24 @@ pub(crate) fn install(env: &Env, tables: &PluginTables, dev: &[PathBuf]) -> Opti
     }
     static SEQ: AtomicU64 = AtomicU64::new(1);
     let token = format!("e{}", SEQ.fetch_add(1, Ordering::Relaxed));
-    lock(installed()).insert(token.clone(), Arc::new(Installed { plugins, problems }));
+    lock(installed()).insert(
+        token.clone(),
+        Arc::new(Installed {
+            plugins,
+            problems,
+            sweep: Mutex::new(sweep),
+        }),
+    );
     Some(token)
+}
+
+/// Wait for the start-up sweep of the set `token` (only a test needs to know it is done).
+#[cfg(test)]
+pub(crate) fn wait_sweep(token: &str) {
+    let handle = installed_set(token).and_then(|i| lock(&i.sweep).take());
+    if let Some(h) = handle {
+        let _ = h.join();
+    }
 }
 
 /// What `konoma --plugins` says about the loaded set: one line per program.
@@ -920,10 +903,11 @@ pub(crate) fn reap_set_at(token: &str, now: Instant) -> usize {
 /// Called by the run loop on every pass; does something only once per [`REAP_INTERVAL`], and then
 /// on a thread of its own (looking at a child can wait for a start that is in progress, which the
 /// loop must not).
-pub(crate) fn reap_if_due(now: Instant) {
+/// The thread started, if any (the run loop lets go of it; a test joins it).
+pub(crate) fn reap_if_due(now: Instant) -> Option<std::thread::JoinHandle<()>> {
     reap_if_due_with(now, || {
         reap_all_at(Instant::now());
-    });
+    })
 }
 
 /// Test entry of the throttle.
@@ -932,25 +916,29 @@ pub(crate) fn reap_if_due_with_for_test(
     now: Instant,
     work: impl FnOnce() + Send + 'static,
 ) -> bool {
-    reap_if_due_with(now, work)
+    reap_if_due_with(now, work).is_some()
 }
 
-/// The throttle of [`reap_if_due`], with the work given: whether `work` was started.
-fn reap_if_due_with(now: Instant, work: impl FnOnce() + Send + 'static) -> bool {
+/// The throttle of [`reap_if_due`], with the work given: the thread `work` runs on, if it was
+/// started.
+fn reap_if_due_with(
+    now: Instant,
+    work: impl FnOnce() + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     static BUSY: AtomicBool = AtomicBool::new(false);
     if lock(installed()).is_empty() {
-        return false;
+        return None;
     }
     {
         let mut last = lock(&LAST);
         if last.is_some_and(|t| now.saturating_duration_since(t) < REAP_INTERVAL) {
-            return false;
+            return None;
         }
         *last = Some(now);
     }
     if BUSY.swap(true, Ordering::SeqCst) {
-        return false;
+        return None;
     }
     let spawned = std::thread::Builder::new()
         .name("plugin-reap".into())
@@ -958,11 +946,13 @@ fn reap_if_due_with(now: Instant, work: impl FnOnce() + Send + 'static) -> bool 
             work();
             BUSY.store(false, Ordering::SeqCst);
         });
-    if spawned.is_err() {
-        BUSY.store(false, Ordering::SeqCst);
-        return false;
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(_) => {
+            BUSY.store(false, Ordering::SeqCst);
+            None
+        }
     }
-    true
 }
 
 #[cfg(test)]
@@ -973,6 +963,33 @@ mod tests {
 
     fn tbl(src: &str) -> toml::Table {
         src.parse().unwrap()
+    }
+
+    #[test]
+    fn the_real_launcher_runs_the_program_in_the_private_work_directory_in_its_own_group() {
+        use std::io::Read;
+        let lab = Lab::new("real_launch");
+        // The program says where it is and which group it leads, then leaves.
+        let exe = lab.program("where-prog", "#!/bin/sh\npwd -P\nps -o pgid= -p $$\n");
+        let mut env = Env::production(Lang::En);
+        env.work_dir = lab.work.clone();
+        let spec = Spec {
+            source: Source::Dev,
+            command: exe.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        };
+        let mut spawned = env.launch_of(&spec, &exe).launch().expect("starts");
+        let mut out = String::new();
+        spawned.reader.read_to_string(&mut out).unwrap();
+        let pid = spawned.pid.expect("a pid");
+        (spawned.kill)();
+        let mut lines = out.lines();
+        assert_eq!(
+            std::fs::canonicalize(lines.next().unwrap()).unwrap(),
+            lab.work
+        );
+        let pgid: u32 = lines.next().unwrap().trim().parse().unwrap();
+        assert_eq!(pgid, pid, "the program leads its own group");
     }
 
     #[test]
