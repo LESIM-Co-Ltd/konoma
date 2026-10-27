@@ -2,6 +2,10 @@
 
 use std::time::Duration;
 
+use konoma_host_core::keymap::{
+    scheme_from_str, CoreAction, CoreContext, CoreKeys, CoreResolution, KeyPress, Motion,
+};
+use konoma_host_core::keys::KeysConfig;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
@@ -20,6 +24,91 @@ pub struct AppCx {
     pub term: TermCaps,
     /// Shown in the footer.
     pub title: String,
+}
+
+/// The keys of the app: layers 0 to 3 of the key design, shared with the host
+/// (`konoma_host_core::keymap`), with the user's `[keys]` overrides applied.
+///
+/// The app shows one text at a time, so it answers only what a text needs: moving and paging
+/// (`j` `k` `g` `G`, `Ctrl-f` `Ctrl-b` `Ctrl-d` `Ctrl-u` or `f` `b` `d` `u` by `ui.keys`,
+/// `PageUp` `PageDown`) and leaving (`q`, `Q`). The arrows, `Home` and `End` are fixed keys.
+/// Every other command of the shared tables is ignored here until the app can do it.
+#[derive(Clone, Debug)]
+pub struct AppKeys {
+    keys: CoreKeys,
+}
+
+impl AppKeys {
+    /// The keys for the `[keys]` table `keys` and the `ui.keys` paging style (`"vim"` | `"less"`).
+    pub fn new(keys: &KeysConfig, ui_keys: &str) -> AppKeys {
+        AppKeys {
+            keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
+        }
+    }
+
+    /// The built-in keys (no overrides, vim paging).
+    pub fn defaults() -> AppKeys {
+        AppKeys::new(&KeysConfig::default(), "vim")
+    }
+
+    /// What the app does for `key` (`None` = nothing).
+    fn act(&self, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        // The fixed keys: not in the keymap, so not rebindable.
+        if key.mods.is_empty() {
+            match key.code {
+                KeyCode::Down => return Some(Act::Move(Motion::Down)),
+                KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Home => return Some(Act::Move(Motion::Top)),
+                KeyCode::End => return Some(Act::Move(Motion::Bottom)),
+                _ => {}
+            }
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(CoreContext::Text, kp) {
+            CoreResolution::Action(CoreAction::Quit | CoreAction::PreviewBack) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
+            _ => None,
+        }
+    }
+}
+
+/// What a key does in the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Act {
+    Quit,
+    Move(Motion),
+}
+
+/// The key as the shared tables name it. Alt and the keys that are not part of the shared
+/// tables (function keys, a paste) have none; Shift is already in the character.
+fn key_press(key: &Key) -> Option<KeyPress> {
+    use konoma_host_core::keymap::KeyPress as P;
+    if key.mods.contains(KeyMods::ALT) {
+        return None;
+    }
+    let ctrl = key.mods.contains(KeyMods::CTRL);
+    let code = match &key.code {
+        KeyCode::Char(c) => crossterm::event::KeyCode::Char(*c),
+        KeyCode::Enter => crossterm::event::KeyCode::Enter,
+        KeyCode::Backspace => crossterm::event::KeyCode::Backspace,
+        KeyCode::Delete => crossterm::event::KeyCode::Delete,
+        KeyCode::Tab => crossterm::event::KeyCode::Tab,
+        KeyCode::BackTab => crossterm::event::KeyCode::BackTab,
+        KeyCode::Left => crossterm::event::KeyCode::Left,
+        KeyCode::Right => crossterm::event::KeyCode::Right,
+        KeyCode::Up => crossterm::event::KeyCode::Up,
+        KeyCode::Down => crossterm::event::KeyCode::Down,
+        KeyCode::Home => crossterm::event::KeyCode::Home,
+        KeyCode::End => crossterm::event::KeyCode::End,
+        KeyCode::PageUp => crossterm::event::KeyCode::PageUp,
+        KeyCode::PageDown => crossterm::event::KeyCode::PageDown,
+        KeyCode::Esc => crossterm::event::KeyCode::Esc,
+        _ => return None,
+    };
+    Some(P { code, ctrl })
 }
 
 /// An event the loop reacts to.
@@ -75,12 +164,14 @@ struct State {
     total: usize,
 }
 
-/// Run the app on `terminal` until `q` (or `Ctrl-C`, or the end of `events`).
+/// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
+/// `events`). `keys` says what each key does.
 pub fn run_with<B: Backend, E: EventSource>(
     terminal: &mut Terminal<B>,
     session: &mut dyn Session,
     events: &mut E,
     cx: &AppCx,
+    keys: &AppKeys,
 ) -> Result<(), AppError> {
     let mut st = State::default();
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
@@ -109,37 +200,29 @@ pub fn run_with<B: Backend, E: EventSource>(
         match events.next(wait) {
             Next::End => return Ok(()),
             Next::Timeout | Next::Event(AppEvent::Resize) => {}
-            Next::Event(AppEvent::Key(key)) => {
-                if is_quit(&key) {
-                    return Ok(());
-                }
-                scroll_by_key(&key, &mut st);
-            }
+            Next::Event(AppEvent::Key(key)) => match keys.act(&key) {
+                Some(Act::Quit) => return Ok(()),
+                Some(Act::Move(m)) => scroll_by(m, &mut st),
+                None => {}
+            },
         }
     }
 }
 
-fn is_quit(key: &Key) -> bool {
-    match (&key.code, key.mods) {
-        (KeyCode::Char('q'), m) => m.is_empty(),
-        (KeyCode::Char('c'), m) => m == KeyMods::CTRL,
-        _ => false,
-    }
-}
-
-fn scroll_by_key(key: &Key, st: &mut State) {
-    if !key.mods.is_empty() {
-        return;
-    }
+fn scroll_by(m: Motion, st: &mut State) {
     let page = st.page;
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => st.scroll = st.scroll.saturating_add(1),
-        KeyCode::Char('k') | KeyCode::Up => st.scroll = st.scroll.saturating_sub(1),
-        KeyCode::PageDown | KeyCode::Char(' ') => st.scroll = st.scroll.saturating_add(page),
-        KeyCode::PageUp => st.scroll = st.scroll.saturating_sub(page),
-        KeyCode::Home | KeyCode::Char('g') => st.scroll = 0,
-        KeyCode::End | KeyCode::Char('G') => st.scroll = st.total,
-        _ => {}
+    let half = (page / 2).max(1);
+    match m {
+        Motion::Down => st.scroll = st.scroll.saturating_add(1),
+        Motion::Up => st.scroll = st.scroll.saturating_sub(1),
+        Motion::PageDown => st.scroll = st.scroll.saturating_add(page),
+        Motion::PageUp => st.scroll = st.scroll.saturating_sub(page),
+        Motion::HalfDown => st.scroll = st.scroll.saturating_add(half),
+        Motion::HalfUp => st.scroll = st.scroll.saturating_sub(half),
+        Motion::Top => st.scroll = 0,
+        Motion::Bottom => st.scroll = st.total,
+        // The app does not scroll sideways yet.
+        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd => {}
     }
 }
 

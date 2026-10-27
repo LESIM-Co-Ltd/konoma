@@ -3,6 +3,7 @@
 //! read the same way. No renderer (ratatui), no plugin API, no dependency on the host. [`term`] holds the terminal hand-off and its process-wide lock.
 
 pub mod editor;
+pub mod keymap;
 pub mod keys;
 pub mod lang;
 pub mod shared;

@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 
 #[cfg(feature = "git")]
 use crate::app::GitCopyKind;
@@ -32,26 +32,93 @@ mod defaults_snapshot;
 mod defaults_tests;
 #[cfg(test)]
 mod override_resolution;
+#[cfg(test)]
+mod shared_agreement;
 
-// =============================================================================
-// Motion (shared movement/scroll amount). Per-Surface interpretation lives on the dispatch_action side (Stage 3).
-// =============================================================================
+// The key types of layers 0-3 live in `konoma_host_core::keymap`, shared with the standalone
+// plugin app: the host builds those layers of its tables from the shared ones.
+use konoma_host_core::keymap::{
+    basic_table, global_table, is_fixed_key, own_table, type_table, verbs_table, CoreAction,
+    CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType,
+};
+pub use konoma_host_core::keymap::{scheme_from_str, KeyPress, KeyScheme, Motion};
 
-/// Abstract amount of cursor movement / scrolling, mapped to concrete behavior per surface (§1.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Motion {
-    Up,
-    Down,
-    Top,
-    Bottom,
-    PageUp,
-    PageDown,
-    HalfUp,
-    HalfDown,
-    Left,
-    Right,
-    LineHome,
-    LineEnd,
+impl From<CoreAction> for Action {
+    fn from(a: CoreAction) -> Action {
+        match a {
+            CoreAction::Navigate(m) => Action::Navigate(m),
+            CoreAction::Quit => Action::Quit,
+            CoreAction::ToggleFollow => Action::ToggleFollow,
+            CoreAction::TabNewAfter => Action::TabNewAfter,
+            CoreAction::ToggleTabList => Action::ToggleTabList,
+            CoreAction::PasteJump => Action::PasteJump,
+            CoreAction::TabPrev => Action::TabPrev,
+            CoreAction::TabNext => Action::TabNext,
+            CoreAction::TabGoto(i) => Action::TabGoto(i),
+            CoreAction::ToggleHelp => Action::ToggleHelp,
+            CoreAction::PreviewBack => Action::PreviewBack,
+            CoreAction::ImageZoomIn => Action::ImageZoomIn,
+            CoreAction::ImageZoomOut => Action::ImageZoomOut,
+            CoreAction::ImageZoomReset => Action::ImageZoomReset,
+            CoreAction::PageNext => Action::PageNext,
+            CoreAction::PagePrev => Action::PagePrev,
+            CoreAction::ToggleOutline => Action::ToggleOutline,
+            CoreAction::RequestEdit => Action::RequestEdit,
+            CoreAction::OpenExternal => Action::OpenExternal,
+            CoreAction::CopyPath(k) => Action::CopyPath(k),
+            CoreAction::TableCopy(k) => Action::TableCopy(k),
+            CoreAction::SortSet(k) => Action::SortSet(k),
+        }
+    }
+}
+
+impl Action {
+    /// The shared (layer 0-3) command this action is, if it is one.
+    pub fn core(self) -> Option<CoreAction> {
+        Some(match self {
+            Action::Navigate(m) => CoreAction::Navigate(m),
+            Action::Quit => CoreAction::Quit,
+            Action::ToggleFollow => CoreAction::ToggleFollow,
+            Action::TabNewAfter => CoreAction::TabNewAfter,
+            Action::ToggleTabList => CoreAction::ToggleTabList,
+            Action::PasteJump => CoreAction::PasteJump,
+            Action::TabPrev => CoreAction::TabPrev,
+            Action::TabNext => CoreAction::TabNext,
+            Action::TabGoto(i) => CoreAction::TabGoto(i),
+            Action::ToggleHelp => CoreAction::ToggleHelp,
+            Action::PreviewBack => CoreAction::PreviewBack,
+            Action::ImageZoomIn => CoreAction::ImageZoomIn,
+            Action::ImageZoomOut => CoreAction::ImageZoomOut,
+            Action::ImageZoomReset => CoreAction::ImageZoomReset,
+            Action::PageNext => CoreAction::PageNext,
+            Action::PagePrev => CoreAction::PagePrev,
+            Action::ToggleOutline => CoreAction::ToggleOutline,
+            Action::RequestEdit => CoreAction::RequestEdit,
+            Action::OpenExternal => CoreAction::OpenExternal,
+            Action::CopyPath(k) => CoreAction::CopyPath(k),
+            Action::TableCopy(k) => CoreAction::TableCopy(k),
+            Action::SortSet(k) => CoreAction::SortSet(k),
+            _ => return None,
+        })
+    }
+}
+
+impl From<CoreBinding> for Binding {
+    fn from(b: CoreBinding) -> Binding {
+        match b {
+            CoreBinding::Run(a) => Binding::Run(a.into()),
+            CoreBinding::Menu(CoreMenu::Actions) => Binding::Leader(LeaderId::Actions),
+            CoreBinding::Menu(CoreMenu::Copy) => Binding::Leader(LeaderId::Copy),
+            CoreBinding::Menu(CoreMenu::TableCopy) => Binding::Leader(LeaderId::TableCopy),
+            CoreBinding::Menu(CoreMenu::Options) => Binding::Leader(LeaderId::Options),
+            CoreBinding::Unbound => Binding::Unbound,
+        }
+    }
+}
+
+/// A shared table as the host's table type.
+fn host_table(t: CoreTable) -> ContextMap {
+    t.into_iter().map(|(k, b)| (k, b.into())).collect()
 }
 
 // =============================================================================
@@ -566,112 +633,6 @@ impl Surface {
 // KeyPress / KeyChord / Binding
 // =============================================================================
 
-/// Normalized representation of a single keystroke. SHIFT is folded into the uppercase char and ALT is unused, so it holds only CONTROL (§1.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyPress {
-    pub code: KeyCode,
-    pub ctrl: bool,
-}
-
-impl KeyPress {
-    /// A character key (no modifiers).
-    pub fn ch(c: char) -> KeyPress {
-        KeyPress {
-            code: KeyCode::Char(c),
-            ctrl: false,
-        }
-    }
-    /// Ctrl + a character key.
-    pub fn ctrl_ch(c: char) -> KeyPress {
-        KeyPress {
-            code: KeyCode::Char(c),
-            ctrl: true,
-        }
-    }
-    /// A special key (no modifiers).
-    pub fn key(code: KeyCode) -> KeyPress {
-        KeyPress { code, ctrl: false }
-    }
-
-    /// Normalize a crossterm key event (extracting only CONTROL).
-    pub fn norm(ev: &KeyEvent) -> KeyPress {
-        KeyPress {
-            code: ev.code,
-            ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
-        }
-    }
-
-    /// How the key is written for a person: `Space`, `Enter`, `Tab`, `Ctrl-t`, `q`.
-    pub fn label(self) -> String {
-        let base = match self.code {
-            KeyCode::Char(' ') => "Space".to_string(),
-            KeyCode::Char(c) => c.to_string(),
-            KeyCode::Enter => "Enter".to_string(),
-            KeyCode::Tab => "Tab".to_string(),
-            other => format!("{other:?}"),
-        };
-        if self.ctrl {
-            format!("Ctrl-{base}")
-        } else {
-            base
-        }
-    }
-
-    /// Parse one config-string token. Handles the `ctrl-x`/`c-x` modifier, `space`, literals `0 $ ! …`,
-    /// named keys (`tab enter up …`), and single characters (uppercase = SHIFT included).
-    pub fn parse(s: &str) -> Result<KeyPress> {
-        let s = s.trim();
-        if s.is_empty() {
-            bail!("empty key token");
-        }
-        let (ctrl, rest) = if let Some(r) = s.strip_prefix("ctrl-") {
-            (true, r)
-        } else if let Some(r) = s.strip_prefix("c-") {
-            (true, r)
-        } else {
-            (false, s)
-        };
-        if rest.is_empty() {
-            bail!("missing key after modifier: {s}");
-        }
-        let code = Self::parse_code(rest)?;
-        Ok(KeyPress { code, ctrl })
-    }
-
-    fn parse_code(s: &str) -> Result<KeyCode> {
-        let lower = s.to_ascii_lowercase();
-        let code = match lower.as_str() {
-            "space" => KeyCode::Char(' '),
-            "tab" => KeyCode::Tab,
-            "backtab" => KeyCode::BackTab,
-            "enter" | "return" => KeyCode::Enter,
-            "esc" | "escape" => KeyCode::Esc,
-            "backspace" => KeyCode::Backspace,
-            "delete" | "del" => KeyCode::Delete,
-            "up" => KeyCode::Up,
-            "down" => KeyCode::Down,
-            "left" => KeyCode::Left,
-            "right" => KeyCode::Right,
-            "home" => KeyCode::Home,
-            "end" => KeyCode::End,
-            "pageup" | "pgup" => KeyCode::PageUp,
-            "pagedown" | "pgdn" | "pagedn" => KeyCode::PageDown,
-            _ => {
-                // A single character (keeps its original case). Multiple characters is an invalid token.
-                let mut chars = s.chars();
-                let c = chars
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("empty key token"))?;
-                if chars.next().is_some() {
-                    bail!("unknown key token: {s}");
-                }
-                KeyCode::Char(c)
-            }
-        };
-        Ok(code)
-    }
-}
-
 /// A single keystroke or a two-keystroke chord (leader). In config it is 1-2 whitespace-separated tokens (§1.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyChord {
@@ -779,23 +740,6 @@ impl LeaderMenu {
 
 /// Per-surface "key → value" table.
 pub type ContextMap = HashMap<KeyPress, Binding>;
-
-/// Paging profile. Corresponds to "vim"/"less" of `ui.keys` (§2 scheme).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KeyScheme {
-    #[default]
-    Vim,
-    Less,
-}
-
-/// Choose the profile from the `ui.keys` string (anything but "less" is vim).
-pub fn scheme_from_str(s: &str) -> KeyScheme {
-    if s.eq_ignore_ascii_case("less") {
-        KeyScheme::Less
-    } else {
-        KeyScheme::Vim
-    }
-}
 
 pub use konoma_host_core::keys::KeysFileConfig;
 
@@ -1262,29 +1206,14 @@ impl KeyMap {
         let run = |a: Action| Binding::Run(a);
 
         // The movement every scrolling view shares (text, table, diff). Paging follows `ui.keys`.
-        let scroll = || -> ContextMap {
-            let mut m: ContextMap = HashMap::new();
-            m.insert(KeyPress::ch('g'), nav(Motion::Top));
-            m.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            m.insert(KeyPress::ch('h'), nav(Motion::Left));
-            m.insert(KeyPress::ch('l'), nav(Motion::Right));
-            m.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-            m.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-            m.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-            m.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-            apply_scheme_paging(&mut m, scheme);
-            m
-        };
+        #[cfg(feature = "git")]
+        let scroll =
+            || -> ContextMap { host_table(konoma_host_core::keymap::scroll_table(scheme)) };
 
         // =====================================================================
         // Layer 1: the same in every context that has a cursor (`inherits_basic`).
         // =====================================================================
-        let mut basic: ContextMap = HashMap::new();
-        basic.insert(KeyPress::ch('j'), nav(Motion::Down));
-        basic.insert(KeyPress::ch('k'), nav(Motion::Up));
-        // `Space` = the menu of this context's operations (the tree and its range selection own
-        // the file menu instead). It opens only when the context has an operation that acts.
-        basic.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::Actions));
+        let basic: ContextMap = host_table(basic_table());
 
         // =====================================================================
         // Layer 2: per view type.
@@ -1292,29 +1221,27 @@ impl KeyMap {
         let mut types: HashMap<ViewType, ContextMap> = HashMap::new();
 
         // Text (text, document, text_visual, the commit detail): the scrolling keys.
-        types.insert(ViewType::Text, scroll());
+        types.insert(
+            ViewType::Text,
+            host_table(type_table(CoreViewType::Text, scheme)),
+        );
         // Document: nothing of its own yet (a document is also text, so lookup continues into
         // Text). B3 puts the document keys (outline, focus, representation cycle) here.
-        types.insert(ViewType::Document, HashMap::new());
+        types.insert(
+            ViewType::Document,
+            host_table(type_table(CoreViewType::Document, scheme)),
+        );
         // Table: the cell cursor moves with the scrolling keys.
-        types.insert(ViewType::Table, scroll());
+        types.insert(
+            ViewType::Table,
+            host_table(type_table(CoreViewType::Table, scheme)),
+        );
 
         // Image: pan with h/l (j/k from layer 1), zoom, and the page of a multi-page file.
-        let mut image: ContextMap = HashMap::new();
-        image.insert(KeyPress::ch('h'), nav(Motion::Left));
-        image.insert(KeyPress::ch('l'), nav(Motion::Right));
-        image.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
-        image.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
-        image.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
-        // PDF page paging (the handler no-ops for non-PDF). lowercase jk = pan within the page /
-        // uppercase JK = move to the next/previous page.
-        image.insert(KeyPress::ch('J'), run(Action::PageNext));
-        image.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        image.insert(KeyPress::key(KeyCode::PageDown), run(Action::PageNext));
-        image.insert(KeyPress::key(KeyCode::PageUp), run(Action::PagePrev));
-        // `O` = the list of the pages (a PDF with 2+ pages; the gate refuses elsewhere).
-        image.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
-        types.insert(ViewType::Image, image);
+        types.insert(
+            ViewType::Image,
+            host_table(type_table(CoreViewType::Image, scheme)),
+        );
 
         #[cfg(feature = "git")]
         {
@@ -1327,8 +1254,7 @@ impl KeyMap {
             // *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them to the
             // same handler only while the media diff is active, and keeps their ordinary scroll
             // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
-            diff.insert(KeyPress::ch('J'), run(Action::PageNext));
-            diff.insert(KeyPress::ch('K'), run(Action::PagePrev));
+            diff.extend(host_table(konoma_host_core::keymap::page_turn_table()));
             types.insert(ViewType::Diff, diff);
 
             // List screens: jump to the first / last row.
@@ -1345,6 +1271,7 @@ impl KeyMap {
 
         // --- Tree (normal) ---
         let mut tree: ContextMap = HashMap::new();
+        tree.extend(host_table(verbs_table()));
         tree.insert(KeyPress::ch('g'), nav(Motion::Top));
         tree.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         tree.insert(KeyPress::ctrl_ch('d'), nav(Motion::HalfDown));
@@ -1364,10 +1291,8 @@ impl KeyMap {
         // runs the path style.
         tree.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
-        tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // `o` = open in another app (layer 3): the Office apps for an Office file, else the OS
         // default. `e` edits, `o` opens.
-        tree.insert(KeyPress::ch('o'), run(Action::OpenExternal));
         tree.insert(KeyPress::ch('m'), run(Action::MarkSet));
         tree.insert(KeyPress::ch('\''), run(Action::MarkJump));
         tree.insert(KeyPress::ch('d'), run(Action::OpenGitDiffCursor));
@@ -1411,15 +1336,11 @@ impl KeyMap {
 
         // --- Preview: text / markdown. `text` and `document` carry the same keys for now (they
         // were one table); B3 tells them apart. ---
-        let mut ptext: ContextMap = HashMap::new();
-        ptext.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        let mut ptext: ContextMap = host_table(own_table(CoreContext::Text));
         ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
         ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
         ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
         // `p` is the project's screen on every context (below); the path style is in the `,` menu.
-        ptext.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
-        ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        ptext.insert(KeyPress::ch('o'), run(Action::OpenExternal));
         ptext.insert(KeyPress::ch('p'), run(Action::OpenGitView));
         #[cfg(feature = "git")]
         ptext.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
@@ -1443,19 +1364,12 @@ impl KeyMap {
         // +/-/= : zoom/reset the focused inline mermaid diagram in place (the display area stays
         // fixed). No-op when no diagram is focused (guarded on the image_zoom_by side). `0` is kept
         // as-is for LineHome (go to line start).
-        ptext.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
-        ptext.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
-        ptext.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
-        ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
         ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
         // Heading outline (Markdown preview). `O` toggles it open/closed (`o` is the verb "open").
-        ptext.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
         // `App::page_turn` does nothing for any other text preview).
-        ptext.insert(KeyPress::ch('J'), run(Action::PageNext));
-        ptext.insert(KeyPress::ch('K'), run(Action::PagePrev));
         contexts.insert(Context::Document, ptext.clone());
         contexts.insert(Context::Text, ptext);
 
@@ -1470,17 +1384,13 @@ impl KeyMap {
         contexts.insert(Context::TextVisual, pvis);
 
         // --- Preview: image ---
-        let mut pimg: ContextMap = HashMap::new();
-        pimg.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        let mut pimg: ContextMap = host_table(own_table(CoreContext::Image));
         // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
         // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
         // (`App::image_return_to_diff`'s own doc comment — **not** `Action::CycleRepresentation`,
         // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
         // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
         pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
-        pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        pimg.insert(KeyPress::ch('o'), run(Action::OpenExternal));
         pimg.insert(KeyPress::ch('p'), run(Action::OpenGitView));
         #[cfg(feature = "git")]
         pimg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
@@ -1488,7 +1398,6 @@ impl KeyMap {
         // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
         pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
         pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
         contexts.insert(Context::Image, pimg);
@@ -1496,20 +1405,13 @@ impl KeyMap {
         // --- Preview: table (csv/tsv) ---
         // hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last column / y→ = copy
         // the cell/row/column.
-        let mut ptbl: ContextMap = HashMap::new();
-        ptbl.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        let mut ptbl: ContextMap = host_table(own_table(CoreContext::Table));
         // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
         // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
-        ptbl.insert(KeyPress::ch('J'), run(Action::PageNext));
-        ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
         // `O` = the list of the sheets of a workbook (2+ visible sheets; the gate refuses elsewhere).
-        ptbl.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         // R = the next representation of a table plugin that declares several (the host walks
         // them; nothing happens, and no hint shows, for a table with one).
         ptbl.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        ptbl.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
-        ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        ptbl.insert(KeyPress::ch('o'), run(Action::OpenExternal));
         ptbl.insert(KeyPress::ch('p'), run(Action::OpenGitView));
         #[cfg(feature = "git")]
         ptbl.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
@@ -1521,7 +1423,6 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
         ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
         ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
         ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
         contexts.insert(Context::Table, ptbl);
@@ -1536,23 +1437,14 @@ impl KeyMap {
         // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
         // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
         // the plugin's).
-        let mut pcvs: ContextMap = HashMap::new();
-        pcvs.insert(KeyPress::ch('q'), run(Action::PreviewBack));
-        pcvs.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::Actions));
-        pcvs.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
-        pcvs.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        pcvs.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+        let mut pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
         pcvs.insert(KeyPress::ch('p'), run(Action::OpenGitView));
         #[cfg(feature = "git")]
         pcvs.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
         pcvs.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        pcvs.insert(KeyPress::ch('J'), run(Action::PageNext));
-        pcvs.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        pcvs.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         pcvs.insert(KeyPress::ch('r'), run(Action::Refresh));
         pcvs.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         pcvs.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pcvs.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         pcvs.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         pcvs.insert(KeyPress::ch('m'), run(Action::MarkSet));
         pcvs.insert(KeyPress::ch('\''), run(Action::MarkJump));
@@ -1562,13 +1454,11 @@ impl KeyMap {
         #[cfg(feature = "git")]
         {
             // Preview: gitdiff
-            let mut pgit: ContextMap = HashMap::new();
+            let mut pgit: ContextMap = host_table(verbs_table());
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
             // `e` opens the editor at the change block on screen; `o` opens the file in another
             // app; `p` / `!` reach the project's screen and tool; `r` reads the diff again.
-            pgit.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-            pgit.insert(KeyPress::ch('o'), run(Action::OpenExternal));
             pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
             pgit.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
             pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
@@ -1589,7 +1479,7 @@ impl KeyMap {
             // The version-control screens: git and jj start with the same tables.
             for backend in Backend::ALL {
                 // Changes hub. Enter→GitOpenSelectedDiff fires as a fixed key.
-                let mut gchg: ContextMap = HashMap::new();
+                let mut gchg: ContextMap = host_table(verbs_table());
                 gchg.insert(KeyPress::ch('s'), run(Action::GitStage));
                 gchg.insert(KeyPress::ch('u'), run(Action::GitUnstage));
                 gchg.insert(KeyPress::ch('S'), run(Action::GitStageAll));
@@ -1607,8 +1497,6 @@ impl KeyMap {
                 gchg.insert(KeyPress::ch('h'), run(Action::GitClose));
                 gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
                 // The row is a file: edit it, open it in another app, in a new tab; filter rows.
-                gchg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-                gchg.insert(KeyPress::ch('o'), run(Action::OpenExternal));
                 gchg.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
                 gchg.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
                 gchg.insert(KeyPress::ch('r'), run(Action::Refresh));
@@ -1768,31 +1656,7 @@ impl KeyMap {
         // =====================================================================
         // Layer 0: global (inherited by every context).
         // =====================================================================
-        let mut global: ContextMap = HashMap::new();
-        // Q = quit the whole app. Every context inherits global, so Q exits from any of them.
-        // Changeable via `[keys.global]`; conflicts are detected by validate() at startup.
-        global.insert(KeyPress::ch('Q'), run(Action::Quit));
-        // F = follow mode (auto-jump to externally changed files). Global so it can be toggled from
-        // either Tree or Preview.
-        global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
-        // t = a new tab right of the active one (`tab_new_after`). Appending at the end
-        // (`tab_new`) and the old `I` have no default key now; both actions stay for `[keys]`.
-        global.insert(KeyPress::ch('t'), run(Action::TabNewAfter));
-        global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
-        // P = read a path/GitHub link from the clipboard and jump there (reveal + preview). Global
-        // so it works from either Tree or Preview. Changeable via `[keys.global]`.
-        global.insert(KeyPress::ch('P'), run(Action::PasteJump));
-        // No default binding is placed on `w`: vim's word-motion habit makes it easy to trigger by
-        // accident, so closing a tab is consolidated onto the tree's `q` (CloseTabOrQuit) (user
-        // decision, 2026-07-07). The `tab_close` action itself still exists, so it can be revived
-        // via `[keys.global] w = "tab_close"`.
-        global.insert(KeyPress::ch('['), run(Action::TabPrev));
-        global.insert(KeyPress::ch(']'), run(Action::TabNext));
-        for i in 1..=9u8 {
-            let c = char::from(b'0' + i);
-            global.insert(KeyPress::ch(c), run(Action::TabGoto(i - 1)));
-        }
-        global.insert(KeyPress::ch('?'), run(Action::ToggleHelp));
+        let global: ContextMap = host_table(global_table());
 
         // --- Leaders ---
         let mut leaders: HashMap<LeaderId, LeaderMenu> = HashMap::new();
@@ -2421,68 +2285,6 @@ fn leader_name(id: LeaderId) -> &'static str {
     }
 }
 
-/// Fixed keys that cannot be rebound (§3). A config rebind of these is warned and ignored.
-/// Character keys are not treated as fixed (the fixedness of text-input surfaces is handled separately per Surface).
-fn is_fixed_key(kp: KeyPress) -> bool {
-    matches!(
-        kp.code,
-        KeyCode::Esc
-            | KeyCode::Enter
-            | KeyCode::Backspace
-            | KeyCode::Delete
-            | KeyCode::Tab
-            | KeyCode::BackTab
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Left
-            | KeyCode::Right
-    )
-}
-
-/// Swap the page/half rows of the Preview surfaces according to scheme (§2 scheme). Not called for Tree (always vim).
-fn apply_scheme_paging(m: &mut ContextMap, scheme: KeyScheme) {
-    match scheme {
-        KeyScheme::Vim => {
-            m.insert(
-                KeyPress::ctrl_ch('f'),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('b'),
-                Binding::Run(Action::Navigate(Motion::PageUp)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('d'),
-                Binding::Run(Action::Navigate(Motion::HalfDown)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('u'),
-                Binding::Run(Action::Navigate(Motion::HalfUp)),
-            );
-        }
-        KeyScheme::Less => {
-            m.insert(
-                KeyPress::ch('f'),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ch('b'),
-                Binding::Run(Action::Navigate(Motion::PageUp)),
-            );
-            m.insert(
-                KeyPress::ch('d'),
-                Binding::Run(Action::Navigate(Motion::HalfDown)),
-            );
-            m.insert(
-                KeyPress::ch('u'),
-                Binding::Run(Action::Navigate(Motion::HalfUp)),
-            );
-        }
-    }
-}
-
 fn copy_leader_default() -> LeaderMenu {
     LeaderMenu {
         id: LeaderId::Copy,
@@ -2754,64 +2556,19 @@ fn leader_label(a: Action) -> Msg {
 // Action ↔ config-string two-way mapping.
 // =============================================================================
 
-fn motion_name(m: Motion) -> &'static str {
-    match m {
-        Motion::Up => "up",
-        Motion::Down => "down",
-        Motion::Top => "top",
-        Motion::Bottom => "bottom",
-        Motion::PageUp => "page_up",
-        Motion::PageDown => "page_down",
-        Motion::HalfUp => "half_up",
-        Motion::HalfDown => "half_down",
-        Motion::Left => "left",
-        Motion::Right => "right",
-        Motion::LineHome => "line_home",
-        Motion::LineEnd => "line_end",
-    }
-}
-
-fn motion_from_str(s: &str) -> Option<Motion> {
-    Some(match s {
-        "up" => Motion::Up,
-        "down" => Motion::Down,
-        "top" => Motion::Top,
-        "bottom" => Motion::Bottom,
-        "page_up" => Motion::PageUp,
-        "page_down" => Motion::PageDown,
-        "half_up" => Motion::HalfUp,
-        "half_down" => Motion::HalfDown,
-        "left" => Motion::Left,
-        "right" => Motion::Right,
-        "line_home" => Motion::LineHome,
-        "line_end" => Motion::LineEnd,
-        _ => return None,
-    })
-}
-
 /// config string → Action. Unknown returns None (the caller warns). `tab_goto` is also None (fixed to digit keys).
 pub fn action_from_str(s: &str) -> Option<Action> {
-    if let Some(m) = s.strip_prefix("navigate:") {
-        return motion_from_str(m).map(Action::Navigate);
+    // Layers 0-3 are named by the shared table (`konoma_host_core::keymap`).
+    if let Some(c) = CoreAction::from_name(s) {
+        return Some(c.into());
     }
     Some(match s {
         "noop" | "disabled" => Action::Noop,
         // Global
         "tab_new" => Action::TabNew,
-        "tab_new_after" => Action::TabNewAfter,
         "tab_close" => Action::TabClose,
-        "tab_prev" => Action::TabPrev,
-        "tab_next" => Action::TabNext,
-        "toggle_help" => Action::ToggleHelp,
-        "copy_name" => Action::CopyPath(CopyKind::Name),
-        "copy_relative" => Action::CopyPath(CopyKind::Relative),
-        "copy_full" => Action::CopyPath(CopyKind::Full),
-        "copy_parent" => Action::CopyPath(CopyKind::Parent),
-        "copy_at_ref" => Action::CopyPath(CopyKind::AtRef),
         "copy_code_block" => Action::CopyCodeBlock,
-        "paste_jump" => Action::PasteJump,
         // Tree
-        "quit" => Action::Quit,
         "close_tab_or_quit" => Action::CloseTabOrQuit,
         "filter_start" => Action::FilterStart,
         "tree_descend" => Action::TreeDescend,
@@ -2820,8 +2577,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "toggle_hidden" => Action::ToggleHidden,
         "toggle_wrap" => Action::ToggleWrap,
         "toggle_info" => Action::ToggleInfo,
-        "request_edit" => Action::RequestEdit,
-        "open_external" => Action::OpenExternal,
         "open_git_view" => Action::OpenGitView,
         "refresh" => Action::Refresh,
         "cycle_path_style" => Action::CyclePathStyle,
@@ -2836,7 +2591,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "toggle_changed_filter" => Action::ToggleChangedFilter,
         "jump_next_change" => Action::JumpNextChange,
         "jump_prev_change" => Action::JumpPrevChange,
-        "toggle_follow" => Action::ToggleFollow,
         // File management
         "file_create" => Action::FileCreate,
         "file_rename" => Action::FileRename,
@@ -2850,7 +2604,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "visual_select_siblings" => Action::VisualSelectSiblings,
         "visual_select_all" => Action::VisualSelectAll,
         // Preview: text
-        "preview_back" => Action::PreviewBack,
         "search_start" => Action::SearchStart,
         "search_next" => Action::SearchNext,
         "search_prev" => Action::SearchPrev,
@@ -2867,29 +2620,15 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "open_link_new_tab" => Action::OpenLinkNewTab,
         "open_in_new_tab" => Action::OpenInNewTab,
         // Preview: image
-        "image_zoom_in" => Action::ImageZoomIn,
-        "image_zoom_out" => Action::ImageZoomOut,
-        "image_zoom_reset" => Action::ImageZoomReset,
         // `page_next` / `page_prev`, plus the names they replaced (kept as aliases).
-        "page_next" | "pdf_next_page" | "sheet_next" | "media_diff_page_next" => Action::PageNext,
-        "page_prev" | "pdf_prev_page" | "sheet_prev" | "media_diff_page_prev" => Action::PagePrev,
         "preview_next_file" => Action::PreviewFileNext,
         "preview_prev_file" => Action::PreviewFilePrev,
         // Preview: table (csv/tsv)
-        "table_copy_cell" => Action::TableCopy(TableCopyKind::Cell),
-        "table_copy_row" => Action::TableCopy(TableCopyKind::Row),
-        "table_copy_column" => Action::TableCopy(TableCopyKind::Column),
         // Sort
-        "sort_name" => Action::SortSet(SortKey::Name),
-        "sort_size" => Action::SortSet(SortKey::Size),
-        "sort_modified" => Action::SortSet(SortKey::Modified),
-        "sort_ext" => Action::SortSet(SortKey::Ext),
         "sort_toggle_reverse" => Action::SortToggleReverse,
         "sort_toggle_dirs_first" => Action::SortToggleDirsFirst,
         // Bookmark
-        "toggle_tab_list" => Action::ToggleTabList,
         "tab_list_close" => Action::TabListClose,
-        "toggle_outline" => Action::ToggleOutline,
         "bookmark_jump" => Action::BookmarkJump,
         "bookmark_edit" => Action::BookmarkEdit,
         "bookmark_delete" => Action::BookmarkDelete,
@@ -3016,23 +2755,35 @@ pub fn action_from_str(s: &str) -> Option<Action> {
 /// Action → config string (canonical). For conflict reports and round-tripping.
 pub fn action_name(a: Action) -> String {
     let s: &str = match a {
+        // The commands of layers 0-3: the shared table names them.
+        Action::Navigate(_)
+        | Action::Quit
+        | Action::ToggleFollow
+        | Action::TabNewAfter
+        | Action::ToggleTabList
+        | Action::PasteJump
+        | Action::TabPrev
+        | Action::TabNext
+        | Action::ToggleHelp
+        | Action::PreviewBack
+        | Action::ImageZoomIn
+        | Action::ImageZoomOut
+        | Action::ImageZoomReset
+        | Action::PageNext
+        | Action::PagePrev
+        | Action::ToggleOutline
+        | Action::RequestEdit
+        | Action::OpenExternal
+        | Action::CopyPath(_)
+        | Action::TableCopy(_)
+        | Action::SortSet(_) => {
+            return a.core().map(|c| c.name()).unwrap_or_default();
+        }
         Action::Noop => "noop",
-        Action::Navigate(m) => return format!("navigate:{}", motion_name(m)),
         Action::TabNew => "tab_new",
-        Action::TabNewAfter => "tab_new_after",
         Action::TabClose => "tab_close",
-        Action::TabPrev => "tab_prev",
-        Action::TabNext => "tab_next",
         Action::TabGoto(_) => "tab_goto",
-        Action::ToggleHelp => "toggle_help",
-        Action::CopyPath(CopyKind::Name) => "copy_name",
-        Action::CopyPath(CopyKind::Relative) => "copy_relative",
-        Action::CopyPath(CopyKind::Full) => "copy_full",
-        Action::CopyPath(CopyKind::Parent) => "copy_parent",
-        Action::CopyPath(CopyKind::AtRef) => "copy_at_ref",
         Action::CopyCodeBlock => "copy_code_block",
-        Action::PasteJump => "paste_jump",
-        Action::Quit => "quit",
         Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
         Action::TreeDescend => "tree_descend",
@@ -3041,8 +2792,6 @@ pub fn action_name(a: Action) -> String {
         Action::ToggleHidden => "toggle_hidden",
         Action::ToggleWrap => "toggle_wrap",
         Action::ToggleInfo => "toggle_info",
-        Action::RequestEdit => "request_edit",
-        Action::OpenExternal => "open_external",
         Action::OpenGitView => "open_git_view",
         Action::Refresh => "refresh",
         Action::CyclePathStyle => "cycle_path_style",
@@ -3057,7 +2806,6 @@ pub fn action_name(a: Action) -> String {
         Action::ToggleChangedFilter => "toggle_changed_filter",
         Action::JumpNextChange => "jump_next_change",
         Action::JumpPrevChange => "jump_prev_change",
-        Action::ToggleFollow => "toggle_follow",
         Action::FileCreate => "file_create",
         Action::FileRename => "file_rename",
         Action::FileDelete => "file_delete",
@@ -3068,7 +2816,6 @@ pub fn action_name(a: Action) -> String {
         Action::VisualCommit => "visual_commit",
         Action::VisualSelectSiblings => "visual_select_siblings",
         Action::VisualSelectAll => "visual_select_all",
-        Action::PreviewBack => "preview_back",
         Action::SearchStart => "search_start",
         Action::SearchNext => "search_next",
         Action::SearchPrev => "search_prev",
@@ -3084,25 +2831,11 @@ pub fn action_name(a: Action) -> String {
         Action::LinkOpen => "link_open",
         Action::OpenLinkNewTab => "open_link_new_tab",
         Action::OpenInNewTab => "open_in_new_tab",
-        Action::ImageZoomIn => "image_zoom_in",
-        Action::ImageZoomOut => "image_zoom_out",
-        Action::ImageZoomReset => "image_zoom_reset",
-        Action::PageNext => "page_next",
-        Action::PagePrev => "page_prev",
         Action::PreviewFileNext => "preview_next_file",
         Action::PreviewFilePrev => "preview_prev_file",
-        Action::TableCopy(TableCopyKind::Cell) => "table_copy_cell",
-        Action::TableCopy(TableCopyKind::Row) => "table_copy_row",
-        Action::TableCopy(TableCopyKind::Column) => "table_copy_column",
-        Action::SortSet(SortKey::Name) => "sort_name",
-        Action::SortSet(SortKey::Size) => "sort_size",
-        Action::SortSet(SortKey::Modified) => "sort_modified",
-        Action::SortSet(SortKey::Ext) => "sort_ext",
         Action::SortToggleReverse => "sort_toggle_reverse",
         Action::SortToggleDirsFirst => "sort_toggle_dirs_first",
-        Action::ToggleTabList => "toggle_tab_list",
         Action::TabListClose => "tab_list_close",
-        Action::ToggleOutline => "toggle_outline",
         Action::BookmarkJump => "bookmark_jump",
         Action::BookmarkEdit => "bookmark_edit",
         Action::BookmarkDelete => "bookmark_delete",

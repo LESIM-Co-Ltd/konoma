@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, EventSource, Next};
+use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, EventSource, Next};
 use konoma_plugin::prelude::*;
 use konoma_plugin::TermCaps;
 use konoma_test_support::unique_tmp;
@@ -54,7 +54,14 @@ fn run_events(
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut it = events.into_iter();
-    run_with(&mut term, &mut *opened.session, &mut it, &cx()).expect("runs");
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .expect("runs");
     (term, it.count())
 }
 
@@ -286,7 +293,14 @@ fn waits_for(plugin: TestPlugin, name: &str, timeouts: usize) -> Vec<Option<Dura
         seen: Vec::new(),
         timeouts,
     };
-    run_with(&mut term, &mut *opened.session, &mut w, &cx()).unwrap();
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut w,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .unwrap();
     w.seen
 }
 
@@ -329,7 +343,7 @@ fn a_timeout_draws_again() {
         seen: Vec::new(),
         timeouts: 3,
     };
-    run_with(&mut term, &mut s, &mut w, &cx()).unwrap();
+    run_with(&mut term, &mut s, &mut w, &cx(), &AppKeys::defaults()).unwrap();
     assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 4);
     assert_eq!(rows(&term)[0], "n=3");
 }
@@ -347,7 +361,7 @@ fn a_resize_event_asks_the_session_again() {
     let mut s = Sizes(seen.clone());
     let mut term = Terminal::new(TestBackend::new(10, 4)).unwrap();
     let mut ev = vec![AppEvent::Resize].into_iter();
-    run_with(&mut term, &mut s, &mut ev, &cx()).unwrap();
+    run_with(&mut term, &mut s, &mut ev, &cx(), &AppKeys::defaults()).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![(10, 3), (10, 3)]);
 }
 
@@ -392,7 +406,14 @@ fn a_text_file_that_cannot_be_read_any_more_is_shown_as_a_line_not_a_crash() {
     std::fs::remove_file(&p).unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 3)).unwrap();
     let mut it = Vec::<AppEvent>::new().into_iter();
-    run_with(&mut term, &mut *opened.session, &mut it, &cx()).unwrap();
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .unwrap();
     assert!(
         rows(&term)[0].starts_with("[can not read"),
         "{:?}",
