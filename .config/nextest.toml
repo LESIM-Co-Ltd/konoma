@@ -1,0 +1,3 @@
+[profile.default]
+# Report every failing test in one run instead of stopping at the first (CI and local alike).
+fail-fast = false

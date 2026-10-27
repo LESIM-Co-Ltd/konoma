@@ -34,8 +34,8 @@
 //! # Example
 //!
 //! ```
-//! use dagre::layout::intersect::{intersect_rect, intersect_ellipse, intersect_polygon};
-//! use dagre::Point;
+//! use konoma_mermaid_core::layout::layout::intersect::intersect_rect;
+//! use konoma_mermaid_core::layout::layout::types::Point;
 //!
 //! // Where does the line from (0,0) → (200,0) leave a 100×60 rect?
 //! let p = intersect_rect(0.0, 0.0, 100.0, 60.0, &Point { x: 200.0, y: 0.0 });
