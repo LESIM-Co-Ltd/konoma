@@ -110,11 +110,76 @@ fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// Neither the process nor anything of its process group exists (after a reap).
+/// The `(state, pgid)` of every process that exists, zombies included. `None` when the process
+/// table cannot be read.
+fn process_table() -> Option<Vec<(i32, char, i32)>> {
+    let mut all = Vec::new();
+    if std::path::Path::new("/proc/self/stat").exists() {
+        for e in std::fs::read_dir("/proc").ok()?.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+                continue;
+            };
+            // A process may end between the listing and the read: skip it.
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            // `pid (comm) S ppid pgrp ...`; comm may hold spaces and parentheses.
+            let rest = &stat[stat.rfind(')')? + 1..];
+            let mut f = rest.split_whitespace();
+            let state = f.next()?.chars().next()?;
+            let _ppid = f.next()?;
+            let pgid = f.next()?.parse().ok()?;
+            all.push((pid, state, pgid));
+        }
+    } else {
+        // macOS has no /proc.
+        let out = Command::new("ps")
+            .args(["-A", "-o", "pid=,pgid=,stat="])
+            .output()
+            .ok()?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut f = line.split_whitespace();
+            let pid = f.next()?.parse().ok()?;
+            let pgid = f.next()?.parse().ok()?;
+            let state = f.next()?.chars().next()?;
+            all.push((pid, state, pgid));
+        }
+    }
+    Some(all)
+}
+
+/// The process does not run any more. A zombie (killed, but not yet reaped by its parent or by
+/// the init of the container) counts as gone: it runs nothing and holds nothing.
+fn dead(pid: i32) -> bool {
+    if !alive(pid) {
+        return true;
+    }
+    match process_table() {
+        Some(t) => t.iter().all(|&(p, st, _)| p != pid || st == 'Z'),
+        None => false,
+    }
+}
+
+/// No process of the group runs (zombies do not count).
+fn group_empty(pgid: i32) -> bool {
+    if !alive(-pgid) {
+        return true;
+    }
+    match process_table() {
+        Some(t) => t.iter().all(|&(_, st, g)| g != pgid || st == 'Z'),
+        None => false,
+    }
+}
+
+/// Neither the process nor anything of its process group exists any more. The kill reaches the
+/// processes asynchronously, and on Linux a zombie stays until the init reaps it, so this waits
+/// (bounded) instead of looking once.
 fn gone(pid: u32) {
     let pid = pid as i32;
-    assert!(!alive(pid), "process {pid} is still there");
-    assert!(!alive(-pid), "the process group {pid} is not empty");
+    until(&format!("process {pid} is gone"), 10, || dead(pid));
+    until(&format!("the process group {pid} is empty"), 10, || {
+        group_empty(pid)
+    });
 }
 
 fn until(what: &str, secs: u64, f: impl Fn() -> bool) {
@@ -312,9 +377,7 @@ fn stop_kills_and_waits() {
     // The child leaves on its own at `stop`, but the grandchild would stay. The group is killed.
     p.stop();
     gone(pid);
-    until("the grandchild was killed with the group", 10, || {
-        !alive(gc)
-    });
+    until("the grandchild was killed with the group", 10, || dead(gc));
     // The session is dead afterwards.
     assert!(s.act("info", &ActCx::bare()).is_err());
 }
@@ -628,9 +691,7 @@ fn no_fd_leak_to_a_grandchild() {
         "the host never saw the end of the pipe: the grandchild holds it"
     );
     assert!(still_alive, "the grandchild was alive when the pipe ended");
-    until("the grandchild was killed with the group", 10, || {
-        !alive(gc)
-    });
+    until("the grandchild was killed with the group", 10, || dead(gc));
     gone(pid);
 }
 
@@ -661,7 +722,7 @@ fn rss_watch() {
         .expect_err("the child was ended for its memory");
     assert_eq!(f.kind, FailureKind::TooHeavy, "{f:?}");
     assert!(f.detail.unwrap_or_default().contains("MiB"));
-    until("the child is gone", 10, || !alive(pid as i32));
+    until("the child is gone", 10, || dead(pid as i32));
     p.stop();
     gone(pid);
 }
@@ -748,9 +809,7 @@ impl Hung {
         self.call.join().expect("the call ended with the child");
         gone(self.pid);
         let gc = self.grandchild;
-        until("the grandchild was killed with the group", 10, || {
-            !alive(gc)
-        });
+        until("the grandchild was killed with the group", 10, || dead(gc));
     }
 }
 
