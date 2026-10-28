@@ -77,9 +77,17 @@ pub use server::{cli_main, cli_main_many, serve, serve_io, ServeOptions};
 /// ```ignore
 /// konoma_plugin::export!(MyPlugin);
 /// konoma_plugin::export!(MyPlugin, MyOtherPlugin);
+/// konoma_plugin::export!(@program my_crate::program());
 /// ```
 #[macro_export]
 macro_rules! export {
+    // A program whose plugins come from one function of its library (`fn() -> Vec<Box<dyn
+    // Plugin>>`), so a test can read the same list.
+    (@program $plugins:expr) => {
+        fn main() -> ::std::process::ExitCode {
+            $crate::proc::cli_main_many($plugins)
+        }
+    };
     ($plugin:expr $(,)?) => {
         fn main() -> ::std::process::ExitCode {
             $crate::proc::cli_main($plugin)

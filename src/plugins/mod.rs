@@ -15,6 +15,8 @@ pub(crate) mod external;
 pub(crate) mod external_testkit;
 mod listing;
 mod profile;
+#[cfg(test)]
+mod program_parity_tests;
 pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]

@@ -353,3 +353,86 @@ fn the_panic_hook_restores_the_terminal_before_the_message_is_printed() {
     assert!(r.is_err());
     assert_eq!(*ORDER.lock().unwrap(), vec!["restore", "previous hook"]);
 }
+
+/// A plugin bound by content type only (like `image` and `video`), as the media program has.
+struct MimePlugin;
+
+impl Plugin for MimePlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("mime-test", "0.0.1")
+            .bind(Bind::mime("image/*"))
+            .shows(ViewKind::Text)
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Err(Failure::unsupported(t!(en: "opened")))
+    }
+}
+
+fn mime_only() -> Vec<Arc<dyn Plugin>> {
+    vec![Arc::new(MimePlugin)]
+}
+
+const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
+const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff";
+
+#[test]
+fn a_plugin_bound_by_content_type_takes_a_file_by_its_content_whatever_its_name() {
+    let d = dir("app_open_mime");
+    for (name, bytes) in [
+        ("pic", PNG),
+        ("pic.txt", PNG),
+        ("pic.png", PNG),
+        ("anim", GIF),
+        ("anim.dat", GIF),
+    ] {
+        let p = d.as_path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        // The plugin is picked (then its open fails on purpose): the refusal is the plugin's own.
+        let e = err(open(mime_only(), &p));
+        assert!(
+            matches!(e, AppError::Open(ref m) if m == "opened"),
+            "{name}: {e}"
+        );
+        assert_eq!(
+            konoma_plugin::app::pick_plugin(mime_only(), &p).unwrap(),
+            "mime-test",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_file_that_is_not_a_picture_is_not_taken_by_its_name() {
+    let d = dir("app_open_mime_no");
+    let p = d.as_path().join("fake.png");
+    std::fs::write(&p, "plain words\n").unwrap();
+    assert!(matches!(
+        err(open(mime_only(), &p)),
+        AppError::NotHandled { .. }
+    ));
+}
+
+#[test]
+fn the_text_judgment_is_the_one_konoma_makes() {
+    let d = dir("app_open_textjudge");
+    let why = |bytes: &[u8]| {
+        let p = d.as_path().join("f.zzz");
+        std::fs::write(&p, bytes).unwrap();
+        match err(open(all(), &p)) {
+            AppError::NotHandled { why, .. } => why,
+            e => panic!("{e}"),
+        }
+    };
+    // An empty file is text.
+    assert!(why(b"").contains("reads as text"));
+    assert!(why(b"words\n").contains("reads as text"));
+    // A NUL in the leading bytes makes it binary; one after the leading 8 KiB does not.
+    assert!(!why(&[b'a', 0, b'b']).contains("reads as text"));
+    let mut late = vec![b'a'; 9000];
+    late[8500] = 0;
+    assert!(why(&late).contains("reads as text"));
+    let mut early = vec![b'a'; 9000];
+    early[8000] = 0;
+    assert!(!why(&early).contains("reads as text"));
+}

@@ -20,7 +20,6 @@ mod term;
 mod window;
 
 use std::fmt;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -131,16 +130,52 @@ pub fn colors_of(colorterm: &str, term: &str) -> ColorDepth {
     }
 }
 
-/// Whether the start of a file reads as text: no NUL byte in its first 8 KiB.
-fn reads_as_text(path: &Path) -> bool {
-    let mut buf = Vec::new();
-    match std::fs::File::open(path) {
-        Ok(f) => {
-            let _ = f.take(8192).read_to_end(&mut buf);
-            !buf.contains(&0)
-        }
-        Err(_) => false,
+/// A registry holding `plugins` as the standard ones of the program.
+fn register_all(plugins: Vec<Arc<dyn Plugin>>) -> Result<Registry, AppError> {
+    let mut registry = Registry::new();
+    for p in plugins {
+        registry
+            .register(p, PluginOrigin::Standard)
+            .map_err(|e| AppError::Plugin(e.to_string()))?;
     }
+    Ok(registry)
+}
+
+/// The plugin `registry` picks for the file at `path`, and the hint of the binding. The facts are
+/// read the way konoma reads them: the MIME type from the content
+/// ([`konoma_host_core::sniff`]) and the text judgment of `konoma-widgets`.
+fn pick_in(registry: &Registry, path: &Path) -> Result<(String, Option<String>), AppError> {
+    let sniff = || konoma_host_core::sniff::mime_of_path(path);
+    let is_text = || konoma_widgets::text::is_probably_text(path);
+    let facts = FileFacts {
+        path,
+        sniff_mime: &sniff,
+        is_text: &is_text,
+    };
+    match registry.resolve_file(&[], &facts) {
+        Resolution::Plugin { id, hint } => Ok((id, hint)),
+        Resolution::Text => Err(AppError::NotHandled {
+            path: path.to_path_buf(),
+            why: "no plugin of this program takes it; it reads as text".to_string(),
+        }),
+        Resolution::CanNotPreview { ext } => Err(AppError::NotHandled {
+            path: path.to_path_buf(),
+            why: if ext.is_empty() {
+                "no plugin of this program takes it".to_string()
+            } else {
+                format!("no plugin of this program takes `.{}`", clean(&ext))
+            },
+        }),
+    }
+}
+
+/// The id of the plugin among `plugins` that shows the file at `path`, or the refusal
+/// [`open_file`] gives. Nothing is opened.
+pub fn pick_plugin(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<String, AppError> {
+    let path =
+        std::path::absolute(path).map_err(|e| AppError::Unreadable(path.to_path_buf(), e))?;
+    let registry = register_all(plugins)?;
+    pick_in(&registry, &path).map(|(id, _)| id)
 }
 
 /// What opening a file settled on: the session, and the name for the title line.
@@ -186,38 +221,8 @@ pub fn open_file_with(
         return Err(AppError::Unreadable(path, e));
     }
 
-    let mut registry = Registry::new();
-    for p in plugins {
-        registry
-            .register(p, PluginOrigin::Standard)
-            .map_err(|e| AppError::Plugin(e.to_string()))?;
-    }
-    let sniff = || None;
-    let is_text = || reads_as_text(&path);
-    let facts = FileFacts {
-        path: &path,
-        sniff_mime: &sniff,
-        is_text: &is_text,
-    };
-    let (id, hint) = match registry.resolve_file(&[], &facts) {
-        Resolution::Plugin { id, hint } => (id, hint),
-        Resolution::Text => {
-            return Err(AppError::NotHandled {
-                path,
-                why: "no plugin of this program takes it; it reads as text".to_string(),
-            })
-        }
-        Resolution::CanNotPreview { ext } => {
-            return Err(AppError::NotHandled {
-                path,
-                why: if ext.is_empty() {
-                    "no plugin of this program takes it".to_string()
-                } else {
-                    format!("no plugin of this program takes `.{}`", clean(&ext))
-                },
-            })
-        }
-    };
+    let registry = register_all(plugins)?;
+    let (id, hint) = pick_in(&registry, &path)?;
     let plugin = registry
         .plugin(&id)
         .ok_or_else(|| AppError::Plugin(format!("plugin `{id}` is not registered")))?;

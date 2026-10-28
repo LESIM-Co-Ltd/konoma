@@ -194,6 +194,12 @@ impl Plugin for ArchivePlugin {
     }
 }
 
+/// The plugins of the `konoma-table` program, in the order it carries them. The program's `main`
+/// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
+pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    vec![Box::new(CsvPlugin), Box::new(ArchivePlugin)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

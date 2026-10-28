@@ -77,11 +77,11 @@ fn old_rule_matches(rule: &Rule, path: &Path, sniff: Option<&[u8]>) -> bool {
     }
     if let Some(mime_pat) = &rule.mime {
         let kind = match sniff {
-            Some(bytes) => infer::get(bytes),
-            None => infer::get_from_path(path).ok().flatten(),
+            Some(bytes) => konoma_host_core::sniff::mime_of_bytes(bytes),
+            None => konoma_host_core::sniff::mime_of_path(path),
         };
         if let Some(kind) = kind {
-            if old_mime_glob_match(mime_pat, kind.mime_type()) {
+            if old_mime_glob_match(mime_pat, &kind) {
                 return true;
             }
         }

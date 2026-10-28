@@ -32,3 +32,8 @@ required-features = ["app"]
 name = "program"
 path = "tests/program.rs"
 required-features = ["app"]
+
+[[test]]
+name = "open"
+path = "tests/open.rs"
+required-features = ["app"]

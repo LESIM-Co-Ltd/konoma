@@ -152,12 +152,9 @@ pub(crate) fn resolve_kind(
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
     let user = user_rules(rules, path);
-    let mime = || {
-        let kind = match sniff {
-            Some(bytes) => infer::get(bytes),
-            None => infer::get_from_path(path).ok().flatten(),
-        };
-        kind.map(|k| k.mime_type().to_string())
+    let mime = || match sniff {
+        Some(bytes) => konoma_host_core::sniff::mime_of_bytes(bytes),
+        None => konoma_host_core::sniff::mime_of_path(path),
     };
     let text = || match sniff {
         Some(bytes) => crate::preview::text::is_probably_text_bytes(bytes),
@@ -177,12 +174,7 @@ pub(crate) fn resolve_kind(
 /// `resolve_kind` makes, read for the verbs a plugin declares (`o` opens through them).
 pub(crate) fn plugin_id_of(rules: &[Rule], disabled: &[String], path: &Path) -> Option<String> {
     let user = user_rules(rules, path);
-    let mime = || {
-        infer::get_from_path(path)
-            .ok()
-            .flatten()
-            .map(|k| k.mime_type().to_string())
-    };
+    let mime = || konoma_host_core::sniff::mime_of_path(path);
     let text = || crate::preview::text::is_probably_text(path);
     let facts = FileFacts {
         path,

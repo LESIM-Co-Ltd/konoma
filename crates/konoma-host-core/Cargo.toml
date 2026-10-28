@@ -19,6 +19,8 @@ crossterm.workspace = true
 signal-hook.workspace = true
 # The width of a key column in terminal cells (a full-width key is two).
 unicode-width.workspace = true
+# The MIME type read from a file's content (`sniff`).
+infer.workspace = true
 # Whether a formula color shows (the same parser the rasterizer uses).
 svgtypes.workspace = true
 

@@ -9,4 +9,5 @@ pub mod keymap;
 pub mod keys;
 pub mod lang;
 pub mod shared;
+pub mod sniff;
 pub mod term;

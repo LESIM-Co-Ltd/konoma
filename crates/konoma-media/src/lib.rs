@@ -321,3 +321,14 @@ plugin!(
     video_manifest,
     VideoSession
 );
+
+/// The plugins of the `konoma-media` program, in the order it carries them. The program's `main`
+/// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
+pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    vec![
+        Box::new(ImagePlugin),
+        Box::new(SvgPlugin),
+        Box::new(PdfPlugin),
+        Box::new(VideoPlugin),
+    ]
+}

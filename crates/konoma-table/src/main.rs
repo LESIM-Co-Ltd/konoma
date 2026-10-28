@@ -2,4 +2,4 @@
 //! shows a given file in a terminal, serves konoma on stdin and stdout (`--serve`) and answers
 //! `--manifest`, `--version` and `--help`.
 
-konoma_plugin::export!(konoma_table::CsvPlugin, konoma_table::ArchivePlugin);
+konoma_plugin::export!(@program konoma_table::program());
