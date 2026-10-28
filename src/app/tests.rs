@@ -12345,6 +12345,36 @@ fn table_page_and_half_page_move_by_viewport() {
     assert_eq!(app.table_cursor().0, 0, "先頭でクランプ");
 }
 
+/// A page of 0 is no move at all (`dir * page` rows): neither `table_page` nor `table_half_page`
+/// turns it into a PageDown / HalfDown.
+#[test]
+fn table_page_zero_does_not_move() {
+    let dir = unique_tmp("konoma_table_page_zero_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("tall.csv");
+    let mut body = String::from("c0,c1\n");
+    for i in 0..20 {
+        body.push_str(&format!("r{i}a,r{i}b\n"));
+    }
+    std::fs::write(&csv, body).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    app.table_viewport_rows = 6;
+    app.table_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_page(0) stays");
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_half_page(0) stays");
+    app.table_page(1);
+    let at = app.table_cursor();
+    assert_ne!(at.0, 0);
+    app.table_page(0);
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), at, "0 does not move from a later row");
+}
+
 #[test]
 fn table_cursor_survives_tab_roundtrip() {
     // The cell cursor is kept and the table is re-parsed across tab save/restore.

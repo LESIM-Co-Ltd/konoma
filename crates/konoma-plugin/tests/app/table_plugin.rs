@@ -141,6 +141,10 @@ impl Session for TableSession {
             .page
             .unwrap_or(0)
             .min(self.sheets.len().saturating_sub(1));
+        // A sheet that reads `FAIL` cannot be read: the plugin fails on that page.
+        if self.sheets[page].trim() == "FAIL" {
+            return Err(Failure::unsupported(t!(en: "sheet unreadable")));
+        }
         let grid = Rows::parse(&self.sheets[page], !self.book, self.book);
         Ok(View::Table(TableView {
             grid: Arc::new(grid),

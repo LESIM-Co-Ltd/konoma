@@ -312,7 +312,8 @@ const SPECS: &[&str] = &[
 fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
     let (dir, files) = fixtures();
     let root = canon(&dir);
-    let (mut checked, mut popups, mut paged, mut left) = (0, 0, 0, 0);
+    let (mut checked, mut skipped, mut popups, mut paged, mut left) = (0, 0, 0, 0, 0);
+    let mut seen_host_only = std::collections::BTreeSet::new();
     for (file, _) in &files {
         for spec in SPECS {
             let (h, _s) = host_rows(&root, file, HOST_H, spec);
@@ -344,7 +345,7 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
             // The host answers `Enter` on a table without columns with a flash in the footer;
             // the standalone app has no flash line, so only the frame is compared there.
             if hh == ["no cell to view"] {
-                checked += 1;
+                skipped += 1;
                 continue;
             }
             // What only one of them says: the host has search, copy, files and tabs; the app
@@ -352,8 +353,9 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
             let host_only: Vec<&String> = hh.iter().filter(|t| !ah.contains(t)).collect();
             let app_only: Vec<&String> = ah.iter().filter(|t| !hh.contains(t)).collect();
             for t in &host_only {
+                seen_host_only.insert((*t).clone());
                 assert!(
-                    HOST_ONLY.iter().any(|p| t.starts_with(p)),
+                    HOST_ONLY.contains(&t.as_str()),
                     "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
                 );
             }
@@ -368,16 +370,30 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
             paged += usize::from(af[0].contains("Two") || af[0].contains("Three"));
         }
     }
-    assert!(checked > 850, "{checked}");
+    // The footers really compared (the flash-only ones are counted apart, not here).
+    assert!(checked > 880, "{checked}");
+    assert!(skipped > 0 && skipped < 30, "{skipped}");
+    for p in HOST_ONLY {
+        assert!(seen_host_only.contains(*p), "HOST_ONLY `{p}` never occurs");
+    }
     assert!(popups > 200, "{popups}");
     assert!(paged > 30, "{paged}");
     assert!(left > 0 && left < 40, "{left}");
 }
 
-/// The hints only the host has (search, copy, the files, the tabs, `q` going back).
+/// The hints only the host has (search, copy, the files, the tabs, `q` going back), spelled out
+/// in full: a word the host adds that is not listed here fails the comparison.
 const HOST_ONLY: &[&str] = &[
-    "/:search", "y:copy", "C-n/C-p", "q:back", "t:", "[/]:", "e:", "o:", ",:", "n/N", "b:", "m:",
-    "T:", "Space", "O:",
+    ",:view",
+    "[/]:tab",
+    "/:search",
+    "C-n/C-p:next/prev file",
+    "e:edit",
+    "e:open",
+    "o:open in app",
+    "O:pages",
+    "q:back",
+    "y:copy",
 ];
 
 /// The text of a help panel, one string per row, the runs of spaces made one.

@@ -943,3 +943,35 @@ fn the_page_keys_are_called_sheet_only_for_sheets() {
     assert!(text(base).contains("J/K:page"), "{}", text(base));
     assert!(!help(base).contains("sheet"), "{}", help(base));
 }
+
+/// The host keeps the page keys after a page the plugin could not read (the message is shown,
+/// the page number is not rolled back, `J` / `K` turn on): the app does the same.
+#[test]
+fn the_page_keys_still_turn_after_a_sheet_that_fails() {
+    let (_d, p) = file("f.book", "a,b\n===\nFAIL\n===\ng,h\n");
+    let t = |ev: Vec<AppEvent>| run_counted(&p, SIZE, ev);
+    let (r, _, left) = t(chars("J"));
+    assert_eq!(left, 0);
+    assert!(
+        all(&r).contains("[can not preview: sheet unreadable]"),
+        "{}",
+        all(&r)
+    );
+    let (r, _, left) = t(chars("JJ"));
+    assert_eq!(left, 0, "the app did not quit");
+    assert!(title(&r).contains("Sheet3 (3/3)"), "{}", all(&r));
+    let (r, _, _) = t(chars("JK"));
+    assert!(
+        title(&r).contains("Sheet1 (1/3)"),
+        "back to the first sheet\n{}",
+        all(&r)
+    );
+    // Other keys on the message neither read the plugin again nor end the app.
+    let (r, views, left) = t(chars("Jjl"));
+    assert_eq!(left, 0);
+    assert_eq!(
+        views, 2,
+        "the first sheet + the failed one; nothing for j / l"
+    );
+    assert!(all(&r).contains("sheet unreadable"), "{}", all(&r));
+}

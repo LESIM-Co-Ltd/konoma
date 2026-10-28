@@ -765,6 +765,9 @@ impl App {
 
     /// Move the cursor down/up by whole pages (`dir` = +1 / -1). The page size is the last render's visible rows.
     pub fn table_page(&mut self, dir: i32) {
+        if dir == 0 {
+            return;
+        }
         self.table_step(if dir < 0 {
             TableStep::PageUp
         } else {
@@ -774,6 +777,9 @@ impl App {
 
     /// Move the cursor down/up by half a page (`dir` = +1 / -1).
     pub fn table_half_page(&mut self, dir: i32) {
+        if dir == 0 {
+            return;
+        }
         self.table_step(if dir < 0 {
             TableStep::HalfUp
         } else {

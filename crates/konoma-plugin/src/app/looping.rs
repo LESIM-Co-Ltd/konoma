@@ -628,6 +628,9 @@ struct State {
     table_page: usize,
     /// How many pages the session declares (`None` = it does not say, or has none).
     pages: Option<usize>,
+    /// The last `view` of a paged table failed: the message is on screen, and the page keys
+    /// still turn the pages (the host keeps them too: the page number is not rolled back).
+    table_failed: bool,
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
@@ -681,13 +684,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
             let view = match session.view(&req, &vcx) {
-                Ok(v) => v,
-                Err(f) => View::Message(crate::view::MessageView {
-                    lines: vec![Line::raw(format!(
-                        "[can not preview: {}]",
-                        f.message.get(&cx.lang)
-                    ))],
-                }),
+                Ok(v) => {
+                    st.table_failed = false;
+                    v
+                }
+                Err(f) => {
+                    st.table_failed = st.pages.is_some();
+                    View::Message(crate::view::MessageView {
+                        lines: vec![Line::raw(format!(
+                            "[can not preview: {}]",
+                            f.message.get(&cx.lang)
+                        ))],
+                    })
+                }
             };
             let (mut frame, redraw_after) = frame_of(
                 view,
@@ -791,13 +800,16 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Next::Event(AppEvent::Key(key)) => {
                 let table_mode = table_mode(&base, st.pages);
                 let popup_open = table_mode.is_some_and(|m| m.popup);
-                let act = match table_mode {
-                    Some(_) => keys.table_act(&key, popup_open && st.help.is_none()),
-                    None => keys.act(&key),
+                // After a failed page the message is on screen, but the table keys stay (the page
+                // keys turn on, as the host's do).
+                let table_keys = table_mode.is_some() || st.table_failed;
+                let act = match table_keys {
+                    true => keys.table_act(&key, popup_open && st.help.is_none()),
+                    false => keys.act(&key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`.
-                if table_mode.is_some() {
+                if table_keys {
                     need_view = false;
                 }
                 match (act, st.help) {
@@ -841,15 +853,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                     }
                     (Some(Act::Page(d)), None) => {
-                        if let (Frame::Table(t), Some(n)) = (&mut base, st.pages) {
+                        if let (true, Some(n)) = (table_keys, st.pages) {
                             let to = (st.table_page as i64 + i64::from(d))
                                 .clamp(0, n.saturating_sub(1) as i64)
                                 as usize;
                             if to != st.table_page {
                                 st.table_page = to;
                                 // The new sheet starts at its top left with no popup.
-                                t.state = Default::default();
-                                t.popup = None;
+                                if let Frame::Table(t) = &mut base {
+                                    t.state = Default::default();
+                                    // Never reached while a popup is open (no `Page` comes then);
+                                    // kept for when J/K are made to work inside the popup too.
+                                    t.popup = None;
+                                }
                                 need_view = true;
                             }
                         }
