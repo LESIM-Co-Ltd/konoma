@@ -10,13 +10,13 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode as KC, KeyModifiers as KM};
 
-const W: u16 = 200;
+pub(super) const W: u16 = 200;
 /// The host's screen is the app's plus the host's one status row on top.
-const HOST_H: u16 = 26;
-const APP_H: u16 = HOST_H - 1;
+pub(super) const HOST_H: u16 = 26;
+pub(super) const APP_H: u16 = HOST_H - 1;
 
 /// One key press from a token: a character, or `<C-f>`, `<CR>`, `<Esc>`, `<PgDn>`, ...
-fn token(t: &str) -> (KC, KM) {
+pub(super) fn token(t: &str) -> (KC, KM) {
     match t {
         "<CR>" => (KC::Enter, KM::NONE),
         "<Esc>" => (KC::Esc, KM::NONE),
@@ -37,12 +37,12 @@ fn token(t: &str) -> (KC, KM) {
 }
 
 /// `"j j <C-f>"` -> the presses.
-fn presses(spec: &str) -> Vec<(KC, KM)> {
+pub(super) fn presses(spec: &str) -> Vec<(KC, KM)> {
     spec.split_whitespace().map(token).collect()
 }
 
 /// The rows of a buffer, a wide symbol counted once.
-fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
+pub(super) fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
     (0..buf.area.height)
         .map(|y| {
@@ -132,7 +132,7 @@ fn frame(rows: &[String]) -> Vec<String> {
 }
 
 /// The footer's hints, split at the gaps.
-fn hints(footer: &str) -> Vec<String> {
+pub(super) fn hints(footer: &str) -> Vec<String> {
     footer
         .split("  ")
         .map(|t| t.trim().to_string())
@@ -397,7 +397,7 @@ const HOST_ONLY: &[&str] = &[
 ];
 
 /// The text of a help panel, one string per row, the runs of spaces made one.
-fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String> {
+pub(super) fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String> {
     rows.iter()
         .map(|r| {
             // `x` is a display column: a wide character to the left counts for two.
@@ -445,7 +445,7 @@ const HOST_ONLY_ROWS: &[&str] = &[
 ];
 
 /// The same row: the host's panel is narrower, so a long label may be cut where the app's is not.
-fn same_row(a: &str, b: &str) -> bool {
+pub(super) fn same_row(a: &str, b: &str) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 

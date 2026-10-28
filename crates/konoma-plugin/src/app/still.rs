@@ -42,6 +42,9 @@ use crate::canvas_pictures::{decode_picture_view, image_failure_message, Picture
 use crate::view::{ImageData, ImageView};
 use crate::ReadScope;
 
+/// What the protocol was last resized for: the crop of the source and the cells it is drawn in.
+type Geometry = (Option<(u32, u32, u32, u32)>, Option<Rect>);
+
 /// How long the loop waits while the picture is being decoded, a kitty build is out or the first
 /// resize has not come back (the short poll konoma keeps in the same cases).
 const BUSY_POLL: Duration = Duration::from_millis(16);
@@ -102,8 +105,8 @@ pub struct Still {
     spinner: usize,
     /// When a resize was last asked for (the non-kitty path), until its answer is applied.
     resize_asked: Option<Instant>,
-    /// The crop at the last draw, to see when a draw asked for a new resize.
-    drawn_crop: Option<(u32, u32, u32, u32)>,
+    /// The geometry at the last draw, to see when a draw asked for a new resize.
+    drawn_geometry: Option<Geometry>,
 }
 
 impl Still {
@@ -140,7 +143,7 @@ impl Still {
             viewer: ImageViewer::new(),
             spinner: 0,
             resize_asked: None,
-            drawn_crop: None,
+            drawn_geometry: None,
         }
     }
 
@@ -154,7 +157,7 @@ impl Still {
         self.state = State::Loading;
         self.pose.reset();
         self.viewer.clear();
-        self.drawn_crop = None;
+        self.drawn_geometry = None;
         self.resize_asked = None;
         self.gen += 1;
         let gen = self.gen;
@@ -182,7 +185,7 @@ impl Still {
         self.state = State::Loading;
         self.pose.reset();
         self.viewer.clear();
-        self.drawn_crop = None;
+        self.drawn_geometry = None;
         self.resize_asked = None;
     }
 
@@ -341,8 +344,11 @@ impl Still {
             logical: *logical,
         };
         let target = self.viewer.prepare(&mut self.pose, source, &backend, inner);
-        if !self.use_kitty && self.viewer.crop() != self.drawn_crop {
-            self.drawn_crop = self.viewer.crop();
+        // The protocol is resized on the worker whenever the crop or the size it is drawn at
+        // changes (a zoom at fit changes only the size), and the loop must wake to take the answer.
+        let geometry = (self.viewer.crop(), target);
+        if !self.use_kitty && Some(geometry) != self.drawn_geometry {
+            self.drawn_geometry = Some(geometry);
             self.resize_asked = Some(Instant::now());
         }
         let drawn = target.is_some_and(|t| self.viewer.render(t, buf));
@@ -402,5 +408,140 @@ fn same_picture(a: &ImageView, b: &ImageView) -> bool {
 impl Drop for Still {
     fn drop(&mut self) {
         self.cancel_job();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn iv(data: ImageData) -> ImageView {
+        ImageView::new(data)
+    }
+
+    fn svg(data: &[u8], base: Option<&str>, trusted: bool) -> ImageData {
+        ImageData::Svg {
+            data: Arc::from(data),
+            base_dir: base.map(PathBuf::from),
+            trusted,
+        }
+    }
+
+    fn rgba(w: u32, h: u32, fill: u8) -> ImageData {
+        ImageData::Rgba {
+            width: w,
+            height: h,
+            pixels: Arc::new(vec![fill; (w * h * 4) as usize]),
+        }
+    }
+
+    /// The same bytes are the same picture whichever allocation holds them; any differing field
+    /// is another picture. Counts how many comparisons were made.
+    #[test]
+    fn a_picture_is_the_same_only_when_every_part_that_is_drawn_is_the_same() {
+        let mut same = 0;
+        let mut other = 0;
+        let mut check = |a: ImageView, b: ImageView, want: bool, what: &str| {
+            assert_eq!(same_picture(&a, &b), want, "{what}");
+            assert_eq!(same_picture(&b, &a), want, "{what} (swapped)");
+            if want {
+                same += 1;
+            } else {
+                other += 1;
+            }
+        };
+        let file = |p: &str| iv(ImageData::File(PathBuf::from(p)));
+        check(file("/a.png"), file("/a.png"), true, "file, same path");
+        check(file("/a.png"), file("/b.png"), false, "file, other path");
+
+        let shared: Arc<[u8]> = Arc::from(&b"png bytes"[..]);
+        let enc = |a: &Arc<[u8]>| iv(ImageData::Encoded(Arc::clone(a)));
+        check(enc(&shared), enc(&shared), true, "encoded, same allocation");
+        check(
+            enc(&shared),
+            iv(ImageData::Encoded(Arc::from(&b"png bytes"[..]))),
+            true,
+            "encoded, equal bytes",
+        );
+        check(
+            enc(&shared),
+            iv(ImageData::Encoded(Arc::from(&b"png bytez"[..]))),
+            false,
+            "encoded, other bytes",
+        );
+
+        let s = |d: &[u8], b: Option<&str>, t: bool| iv(svg(d, b, t));
+        check(
+            s(b"<svg/>", Some("/d"), false),
+            s(b"<svg/>", Some("/d"), false),
+            true,
+            "svg, equal",
+        );
+        check(
+            s(b"<svg/>", Some("/d"), false),
+            s(b"<svg />", Some("/d"), false),
+            false,
+            "svg, other data",
+        );
+        check(
+            s(b"<svg/>", Some("/d"), false),
+            s(b"<svg/>", Some("/e"), false),
+            false,
+            "svg, other base_dir",
+        );
+        check(
+            s(b"<svg/>", Some("/d"), false),
+            s(b"<svg/>", None, false),
+            false,
+            "svg, base_dir dropped",
+        );
+        check(
+            s(b"<svg/>", Some("/d"), false),
+            s(b"<svg/>", Some("/d"), true),
+            false,
+            "svg, other trust",
+        );
+
+        check(iv(rgba(2, 2, 7)), iv(rgba(2, 2, 7)), true, "rgba, equal");
+        check(
+            iv(rgba(2, 2, 7)),
+            iv(rgba(2, 2, 8)),
+            false,
+            "rgba, other pixel",
+        );
+        check(
+            iv(rgba(2, 2, 7)),
+            iv(rgba(4, 1, 7)),
+            false,
+            "rgba, other shape",
+        );
+
+        let mut a = file("/a.png");
+        let mut b = file("/a.png");
+        b.sharp_zoom = true;
+        check(a.clone(), b, false, "other sharp_zoom");
+        let mut c = file("/a.png");
+        c.raster_max_px = Some(512);
+        check(a.clone(), c.clone(), false, "other raster_max_px");
+        a.raster_max_px = Some(512);
+        check(a, c, true, "equal raster_max_px");
+
+        check(file("/a.png"), enc(&shared), false, "file against encoded");
+        check(
+            iv(rgba(1, 1, 0)),
+            file("/a.png"),
+            false,
+            "rgba against file",
+        );
+        // No cheap identity: an animation is never held.
+        let frames = || {
+            iv(ImageData::Frames(vec![(
+                rgba(1, 1, 0),
+                Duration::from_millis(10),
+            )]))
+        };
+        check(frames(), frames(), false, "frames, never the same");
+
+        assert!(same >= 6 && other >= 13, "same {same}, other {other}");
     }
 }

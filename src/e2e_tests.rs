@@ -20864,4 +20864,5 @@ mod help_footer_snapshot;
 #[cfg(test)]
 mod render_snapshot;
 
+mod image_parity;
 mod table_parity;

@@ -457,19 +457,16 @@ impl AppKeys {
 
     // ---- Pictures ----
 
-    /// What the help and the footer say about a still picture: what the app does not act on is
-    /// off. Zoom acts once the picture is shown; the reset and the pan act once it is zoomed in
-    /// (at fit there is nothing to pan to and nothing to reset); the page turn, the outline, the
-    /// editor and the opener are not done by the app.
-    fn image_facts(&self, mode: ImageMode) -> HelpFacts {
-        let ready = mode.shape == StillShape::Ready;
+    /// What the help and the footer say about a still picture. The host names zoom, the reset and
+    /// the pan whatever the picture is doing, so the app does too; the page turn, the outline, the
+    /// editor and the opener are not done by the app, so they are off.
+    fn image_facts(&self) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
-            HelpOp::Act(CoreAction::ImageZoomIn | CoreAction::ImageZoomOut) => ready,
-            HelpOp::Act(CoreAction::ImageZoomReset) => ready && mode.zoomed,
+            HelpOp::Act(
+                CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
+            ) => true,
             HelpOp::Act(CoreAction::Navigate(m)) => {
-                ready
-                    && mode.zoomed
-                    && matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
+                matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
             }
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
@@ -503,10 +500,10 @@ impl AppKeys {
         }
     }
 
-    /// The footer's key hints of a still picture: zoom, the reset and the pan (once zoomed in),
-    /// what leaves, what opens the help. A hint is there only when its key acts.
-    pub fn image_footer_hints(&self, mode: ImageMode) -> Vec<CoreToken> {
-        let facts = self.image_facts(mode);
+    /// The footer's key hints of a still picture: zoom, the reset and the pan, what leaves, what
+    /// opens the help (the host's list, less what the app does not do).
+    pub fn image_footer_hints(&self) -> Vec<CoreToken> {
+        let facts = self.image_facts();
         let look = self.image_lookup();
         let tok = |f: CoreFoot| render_foot(f, CoreContext::Image, &facts, &look, self.lang);
         let mut out: Vec<CoreToken> = Vec::new();
@@ -523,25 +520,25 @@ impl AppKeys {
     }
 
     /// [`AppKeys::image_footer_hints`] as the text the footer shows.
-    pub fn image_footer_tokens(&self, mode: ImageMode) -> Vec<String> {
-        self.image_footer_hints(mode)
+    pub fn image_footer_tokens(&self) -> Vec<String> {
+        self.image_footer_hints()
             .into_iter()
             .map(|t| t.text)
             .collect()
     }
 
     /// The sections of the `?` help of a still picture.
-    pub fn image_help_sections(&self, mode: ImageMode) -> Vec<CoreSection> {
+    pub fn image_help_sections(&self) -> Vec<CoreSection> {
         core_sections(
             CoreContext::Image,
-            &self.image_facts(mode),
+            &self.image_facts(),
             &self.image_lookup(),
             self.lang,
         )
     }
 
-    fn image_help_lines(&self, mode: ImageMode) -> Vec<Line> {
-        lines_of(&self.image_help_sections(mode))
+    fn image_help_lines(&self) -> Vec<Line> {
+        lines_of(&self.image_help_sections())
     }
 
     /// The title of the `?` help over a picture (see [`AppKeys::help_title`]). The help scrolls
@@ -592,8 +589,9 @@ impl AppKeys {
         }
     }
 
-    /// Whether `key` does something over a still picture (in the `?` help when `in_help`). What
-    /// the hints and the help rows name must pass this.
+    /// Whether `key` does something over a still picture (in the `?` help when `in_help`).
+    /// The hints and rows follow the host and name the reset and the pan even at fit, where this
+    /// says no.
     pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
         let ready = mode.shape == StillShape::Ready;
         match self.image_act(key, in_help) {
@@ -932,7 +930,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Some(top) => {
                 let (lines, title) = match (mode, image_mode) {
                     (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
-                    (None, Some(m)) => (keys.image_help_lines(m), keys.image_help_title()),
+                    (None, Some(_)) => (keys.image_help_lines(), keys.image_help_title()),
                     (None, None) => (keys.help_lines(), keys.help_title()),
                 };
                 let rows = usize::from(body_rows);
@@ -970,7 +968,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         };
                         format!(
                             " {}{zoom}  {}",
-                            keys.image_footer_tokens(m).join("  "),
+                            keys.image_footer_tokens().join("  "),
                             cx.title
                         )
                     }

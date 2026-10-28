@@ -3297,4 +3297,40 @@ mod tests {
             "ALL_MSGS に重複 variant がある"
         );
     }
+
+    /// Every shared message maps to a host `Msg` and back to itself, says the same words in both
+    /// languages through either name, and every host `Msg` that maps to one is in the shared set.
+    #[test]
+    fn core_msgs_round_trip_with_the_host_catalog_and_say_the_same_words() {
+        use konoma_host_core::help_msg::CoreMsg;
+        assert!(CoreMsg::ALL.len() >= 60, "{}", CoreMsg::ALL.len());
+        for &c in CoreMsg::ALL {
+            let m = Msg::from_core(c);
+            // `QuitApp` is the app's own name for the host's `HintQuit` (the same word).
+            let back = if c == CoreMsg::QuitApp {
+                CoreMsg::HintQuit
+            } else {
+                c
+            };
+            assert_eq!(m.core(), Some(back), "{c:?}");
+            assert_eq!(tr(Lang::En, m), c.en(), "{c:?} en");
+            assert_eq!(tr(Lang::Jp, m), c.ja(), "{c:?} ja");
+        }
+        let mapped: Vec<Msg> = ALL_MSGS
+            .iter()
+            .copied()
+            .filter(|m| m.core().is_some())
+            .collect();
+        assert_eq!(
+            mapped.len() + 1,
+            CoreMsg::ALL.len(),
+            "a Msg maps to a shared message that is not in CoreMsg::ALL, or two Msg share one \
+             (only QuitApp shares HintQuit)"
+        );
+        for m in mapped {
+            let c = m.core().unwrap();
+            assert!(CoreMsg::ALL.contains(&c), "{m:?}");
+            assert_eq!(Msg::from_core(c), m, "{m:?}");
+        }
+    }
 }

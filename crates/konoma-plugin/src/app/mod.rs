@@ -5,7 +5,9 @@
 //! ratatui. It draws [`View::Message`](crate::View), [`View::Text`](crate::View) (a file read in
 //! windows, a string or styled lines), [`View::Canvas`](crate::View) and
 //! [`View::Table`](crate::View) (the grid drawn with the shared `konoma-widgets` table, the cell
-//! cursor, the sheets as pages, the full-cell popup). Any other view says it cannot be shown yet.
+//! cursor, the sheets as pages, the full-cell popup) and [`View::Image`](crate::View) (a still
+//! picture decoded off the loop and drawn through the `Pictures`, with zoom and pan; with no
+//! `Pictures` the line that names the terminal). Any other view says it cannot be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
