@@ -181,7 +181,6 @@ impl AppKeys {
         help_title(&close, &scroll_keys(&look, &facts), self.lang)
     }
 
-
     // ---- Tables ----
 
     /// What the help and the footer say about a table: what the app does not act on is off.
@@ -300,8 +299,7 @@ impl AppKeys {
             &look,
             self.lang,
         ));
-        if let Some(t) = render_foot(CoreFoot::Ends, CoreContext::Table, &facts, &look, self.lang)
-        {
+        if let Some(t) = render_foot(CoreFoot::Ends, CoreContext::Table, &facts, &look, self.lang) {
             out.push(CoreToken {
                 text: format!(
                     "{}:{}",
@@ -415,7 +413,8 @@ impl AppKeys {
             }
         }
         let kp = key_press(key)?;
-        let literal_page = key.mods.is_empty() && matches!(key.code, KeyCode::PageDown | KeyCode::PageUp);
+        let literal_page =
+            key.mods.is_empty() && matches!(key.code, KeyCode::PageDown | KeyCode::PageUp);
         match self.keys.resolve(CoreContext::Table, kp) {
             CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),

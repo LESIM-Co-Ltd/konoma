@@ -205,7 +205,10 @@ mod tests {
         assert_eq!(v.header, "B3");
         assert_eq!(v.text, "Type: text\nValue: ");
         let v = cell_view(&g, true, (0, 0), "ja").unwrap();
-        assert_eq!(v.text, "型: text\nValue: a", "a missing language falls back to English");
+        assert_eq!(
+            v.text, "型: text\nValue: a",
+            "a missing language falls back to English"
+        );
         // No detail from the plugin: the cell itself.
         let g = grid(false, false);
         let v = cell_view(&g, true, (0, 1), "en").unwrap();

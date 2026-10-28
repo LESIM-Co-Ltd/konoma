@@ -127,7 +127,9 @@ impl Session for TableSession {
         if self.book {
             l.pages = Some(PageLayout::Separate {
                 count: Some(self.sheets.len()),
-                titles: (1..=self.sheets.len()).map(|i| format!("Sheet{i}")).collect(),
+                titles: (1..=self.sheets.len())
+                    .map(|i| format!("Sheet{i}"))
+                    .collect(),
             });
         }
         l
@@ -135,7 +137,10 @@ impl Session for TableSession {
 
     fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
         self.views.fetch_add(1, Ordering::SeqCst);
-        let page = req.page.unwrap_or(0).min(self.sheets.len().saturating_sub(1));
+        let page = req
+            .page
+            .unwrap_or(0)
+            .min(self.sheets.len().saturating_sub(1));
         let grid = Rows::parse(&self.sheets[page], !self.book, self.book);
         Ok(View::Table(TableView {
             grid: Arc::new(grid),

@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::lang::Lang;
-use konoma_widgets::table::{render_cell_popup, render_table, CellPopup, TableOptions, TableViewState};
+use konoma_widgets::table::{
+    render_cell_popup, render_table, CellPopup, TableOptions, TableViewState,
+};
 
 use crate::ratatui_draw;
 use crate::style::Line;

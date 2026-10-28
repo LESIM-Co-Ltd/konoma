@@ -184,13 +184,18 @@ pub fn cell_popup_title(
     (row, col): (usize, usize),
     (nrows, ncols): (usize, usize),
 ) -> String {
-    format!(" {label} · {header}  r{row}/{} c{col}/{ncols} ", nrows.max(1))
+    format!(
+        " {label} · {header}  r{row}/{} c{col}/{ncols} ",
+        nrows.max(1)
+    )
 }
 
 /// The popup's scroll after moving it by `delta` wrapped rows (the upper bound is clamped when
 /// drawn).
 pub fn popup_scroll_by(scroll: u16, delta: i32) -> u16 {
-    i32::from(scroll).saturating_add(delta).clamp(0, i32::from(u16::MAX)) as u16
+    i32::from(scroll)
+        .saturating_add(delta)
+        .clamp(0, i32::from(u16::MAX)) as u16
 }
 
 /// The scroll of the popup's top (`bottom = false`) or bottom (clamped when drawn).
@@ -1184,7 +1189,13 @@ mod tests {
     #[test]
     fn the_title_of_a_sheet_names_the_cursor_cell_by_its_address() {
         assert_eq!(
-            table_title("b.xlsx", (5, 6), (2, 1), Some("Sales (1/3) +1 hidden"), None),
+            table_title(
+                "b.xlsx",
+                (5, 6),
+                (2, 1),
+                Some("Sales (1/3) +1 hidden"),
+                None
+            ),
             " b.xlsx  Sales (1/3) +1 hidden  B3  5×6 "
         );
         assert_eq!(

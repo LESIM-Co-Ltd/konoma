@@ -950,7 +950,8 @@ impl App {
     /// Scroll the popup by `delta` wrapped rows (the upper bound is clamped at render time,
     /// mirroring `preview_scroll`).
     pub fn table_cell_scroll_by(&mut self, delta: i32) {
-        self.table_cell_scroll = konoma_widgets::table::popup_scroll_by(self.table_cell_scroll, delta);
+        self.table_cell_scroll =
+            konoma_widgets::table::popup_scroll_by(self.table_cell_scroll, delta);
     }
 
     /// To the top (`bottom=false`) or bottom (`bottom=true`, clamped at render time via `u16::MAX`) of the popup.
