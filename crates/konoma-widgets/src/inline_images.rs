@@ -139,7 +139,7 @@ impl InlineImage {
 pub const MD_PROTO_SLOTS: usize = 3;
 
 /// Slots for the zoom family. Only one inline diagram can be focused at a time (`Tab` moves the
-/// focus, and `md_fence_zoom_proto` is only consulted for the focused fence), so one crop is all
+/// focus, and the host only asks for the zoom of the focused fence), so one crop is all
 /// that is ever *wanted* — but two are kept, because a slot is claimed when its encode is requested
 /// and every `+`/`-` step asks for a different crop. With one slot the step would blank the crop on
 /// screen and fall back to the unzoomed diagram until the new one landed; with two, the previous
@@ -221,9 +221,9 @@ pub struct MdImgEntry {
     pub outdated_encode_in_flight: bool,
     /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
     /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
-    /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
+    /// so advancing to the next frame (`InlineImageCache::advance_gifs_if_due`) is a cheap pointer clone into
     /// `decoded` rather than a full image copy — mirrors the full-screen `GifPlayer` mechanism
-    /// (`App::advance_gif_if_due`) but per cache entry, since several inline GIFs can animate at once.
+    /// but per cache entry, since several inline GIFs can animate at once.
     pub frames: Vec<(Arc<image::DynamicImage>, std::time::Duration)>,
     /// Index of the currently-displayed frame within `frames`.
     pub idx: usize,
@@ -231,25 +231,25 @@ pub struct MdImgEntry {
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     pub shown_at: Option<std::time::Instant>,
     /// `InlineImageCache::frame` of the last overlay pass that asked for this picture. The cache evicts the
-    /// pixels of the pictures asked for longest ago first (`App::evict_md_images_over_budget`).
+    /// pixels of the pictures asked for longest ago first (the host's eviction pass; the cache itself never evicts).
     pub last_used: u64,
     /// The decoded pixels were dropped to stay within `MD_IMAGE_CACHE_BYTES`. The entry itself stays
     /// (its layout size, SVG source, kitty ids and any finished encodes), so nothing on the page
     /// moves; the pixels are rebuilt from the file / SVG the next time a placement needs them.
     pub evicted: bool,
-    /// A rebuild of the evicted pixels is running (`App::ensure_md_pixels` started it, its result
+    /// A rebuild of the evicted pixels is running (the host started it, its result
     /// has not landed). Together with `evicted` this is the whole life of a rebuild: waiting
     /// (`evicted`, not `rebuilding`) -> running (`rebuilding`) -> back (`!evicted`) or `failed`.
     pub rebuilding: bool,
     /// A placement asked for the evicted pixels but the rebuild limit (`MD_MAX_REBUILDS`) was
     /// reached: ask again on the next frame, and keep the loading indicator (and so the redraw
-    /// loop) alive until it starts. It holds the `App::draw_seq` of the frame that asked and counts
-    /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
+    /// loop) alive until it starts. It holds the host's draw-pass number of the frame that asked and
+    /// counts only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
     /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
     pub rebuild_wanted: Option<u64>,
     /// For a slide picture: the longest edge, in pixels, its frame needs (0 = not asked yet). The
     /// first decode, a rebuild of evicted pixels and the re-raster of a frame that outgrew the
-    /// raster all draw at this size (`App::note_slide_raster_wish`).
+    /// raster all draw at this size (set by the host).
     pub want_px: u32,
     /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
     pub fail: Option<konoma_svg::image::ImageFailure>,
@@ -258,9 +258,9 @@ pub struct MdImgEntry {
     /// has not run yet.
     pub wish: konoma_svg::image::DecodeWish,
     /// Id of the one background decode / rebuild / re-raster that is still wanted for this entry
-    /// (`App::begin_md_request`; 0 = none was ever started, as for an entry placed by hand in a
+    /// (assigned by the host when it starts one; 0 = none was ever started, as for an entry placed by hand in a
     /// test). A result carrying any other id belongs to an earlier life of the same path (the entry
-    /// was dropped, then asked for again) and is ignored by `apply_md_image`, so a stale
+    /// was dropped, then asked for again) and is ignored by the host when it applies the result, so a stale
     /// "cancelled" cannot forget the new entry and a stale picture cannot fill it. At most one
     /// request runs per entry, so this is also the identity of the in-flight one.
     pub request: u64,
@@ -394,7 +394,7 @@ impl MdImgEntry {
 
 #[cfg(any(test, feature = "test-hooks"))]
 impl MdProtoSlot {
-    /// A slot holding a finished encode of `key` — the state `apply_md_encode` leaves behind.
+    /// A slot holding a finished encode of `key` — the state [`InlineImageCache::apply_encode`] leaves behind.
     pub fn encoded(key: MdEncodeKey, image: InlineImage) -> Self {
         Self {
             key,
@@ -522,7 +522,7 @@ pub struct MdEncodeRequest {
     pub cols: u16,
     pub rows: u16,
     /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
-    /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
+    /// slot's **fixed** id (see `InlineImageCache::kitty_ids`). None everywhere else = ratatui-image.
     pub kitty: Option<(u32, bool)>,
     /// `MdImgEntry::born` of the entry the request was made for.
     pub born: u64,
@@ -534,16 +534,16 @@ pub struct MdEncodeResult {
     pub key: MdEncodeKey,
     /// None = the encode failed. The worker **always** sends a result: swallowing failures left
     /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
-    /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
+    /// the host's "pictures are loading" state true forever (busy spinner + 16ms polling — idle CPU 0% broken).
     pub image: Option<InlineImage>,
-    /// `MdImgEntry::born` of the entry the request was made for; `apply_md_encode` drops a result
+    /// `MdImgEntry::born` of the entry the request was made for; [`InlineImageCache::apply_encode`] drops a result
     /// whose entry has since been replaced.
     pub born: u64,
 }
 
 /// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
 /// cloned Picker, so the UI thread never blocks on the resize/encode (principle #4). Exits when the
-/// request sender is dropped (App teardown).
+/// request sender is dropped (the host shutting down).
 pub fn md_encode_worker(
     picker: Picker,
     rx: std::sync::mpsc::Receiver<MdEncodeRequest>,
@@ -831,8 +831,9 @@ impl InlineImageCache {
     /// a canvas picture may hold (`None`: not a canvas picture; its family grows by one when every
     /// slot is live).
     ///
-    /// Every call stamps the position as wanted by the pass being drawn, **before** any early
-    /// return: a placement that has to wait for the in-flight ticket still needs its slot kept out
+    /// Without an encode worker nothing is ever encoded, so the call does nothing at all.
+    /// Otherwise it stamps the position as wanted by the pass being drawn, **before** any other
+    /// early return: a placement that has to wait for the in-flight ticket still needs its slot kept out
     /// of the recycling pool, otherwise two placements of one picture at two sizes take turns
     /// evicting each other and the draw→request→apply→draw loop never stops.
     pub fn ensure_encode(
@@ -1137,29 +1138,104 @@ mod tests {
         assert_eq!(soft.len(), 5);
     }
 
+    use std::sync::mpsc::{channel, Receiver, TryRecvError};
+    use std::time::{Duration, Instant};
+
+    /// An instant `d` in the past (the cache reads `Instant::now()` itself, so a test places the
+    /// timer relative to it instead of sleeping).
+    fn ago(d: Duration) -> Instant {
+        Instant::now().checked_sub(d).expect("uptime is longer")
+    }
+
+    /// A kitty image whose `cell_size` is `(cols, 1)`: tests tell images apart by it.
+    fn kimg(cols: u16) -> InlineImage {
+        InlineImage::Kitty(crate::kitty::KittyImage::build(
+            &image::RgbaImage::new(1, 1),
+            cols,
+            1,
+            1,
+            false,
+        ))
+    }
+
+    fn nothing_sent(rx: &Receiver<MdEncodeRequest>) {
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    /// A cache with a worker channel and one decoded entry (`born` 3) filed under `path`.
+    fn cache_with_entry(path: &str) -> (InlineImageCache, Receiver<MdEncodeRequest>) {
+        let (tx, rx) = channel();
+        let mut c = InlineImageCache {
+            enc_tx: Some(tx),
+            ..Default::default()
+        };
+        let e = c.cache.entry(PathBuf::from(path)).or_default();
+        e.decoded = Some(px());
+        e.born = 3;
+        (c, rx)
+    }
+
     #[test]
     fn a_gif_steps_one_frame_per_elapsed_delay_and_marks_the_slots_stale() {
+        let hour = Duration::from_secs(3600);
         let mut c = InlineImageCache::default();
         let path = PathBuf::from("/x/a.gif");
         let (f0, f1) = (px(), px());
         let e = c.cache.entry(path.clone()).or_default();
         e.decoded = Some(f0.clone());
-        e.frames = vec![
-            (f0, std::time::Duration::ZERO),
-            (f1.clone(), std::time::Duration::ZERO),
-        ];
-        e.full.push(MdProtoSlot::attempted(full(10)));
-        // The first tick only starts the timer.
+        e.frames = vec![(f0.clone(), hour), (f1.clone(), hour)];
+        e.full.push(MdProtoSlot::encoded(full(10), kimg(1)));
+        e.clip.push(MdProtoSlot::encoded(full(11), kimg(1)));
+        e.zoom.push(MdProtoSlot::encoded(full(12), kimg(1)));
+        e.enc_inflight = true;
+        // The first tick only starts the timer: nothing advances, nothing is marked.
+        let before = Instant::now();
         assert!(!c.advance_gifs_if_due());
+        let started = c.cache[&path].shown_at.expect("the timer started");
+        assert!(started >= before);
+        assert_eq!(c.cache[&path].idx, 0);
+        assert!(!c.cache[&path].full[0].stale && !c.cache[&path].outdated_encode_in_flight);
+        // Before the deadline (the frame has just begun, its delay is an hour): no step.
+        assert!(!c.advance_gifs_if_due());
+        assert_eq!(c.cache[&path].idx, 0);
+        assert!(!c.cache[&path].full[0].stale);
+        // Past the deadline: one step, however far past it is.
+        c.cache.get_mut(&path).unwrap().shown_at = Some(ago(hour * 5));
         assert!(c.advance_gifs_if_due());
         let e = &c.cache[&path];
         assert_eq!(e.idx, 1);
         assert!(Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f1));
-        assert!(e.full[0].stale);
-        // A still picture never advances.
+        // Every family is marked stale (not dropped), and the encode in flight is outdated.
+        assert!(e.full[0].stale && e.clip[0].stale && e.zoom[0].stale);
+        assert!(
+            e.full[0].image.is_some() && e.clip[0].image.is_some() && e.zoom[0].image.is_some()
+        );
+        assert!(e.outdated_encode_in_flight);
+        // The timer restarted: the next call is before the new deadline.
+        assert!(e.shown_at.unwrap() >= started);
+        assert!(!c.advance_gifs_if_due());
+        assert_eq!(c.cache[&path].idx, 1);
+        // The index wraps back to the first frame.
+        c.cache.get_mut(&path).unwrap().shown_at = Some(ago(hour * 5));
+        assert!(c.advance_gifs_if_due());
+        let e = &c.cache[&path];
+        assert_eq!(e.idx, 0);
+        assert!(Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f0));
+        // The delay that counts is the one of the frame being shown: frame 0 is short here.
+        let e = c.cache.get_mut(&path).unwrap();
+        e.frames[0].1 = Duration::from_millis(10);
+        e.shown_at = Some(ago(Duration::from_secs(1)));
+        assert!(c.advance_gifs_if_due());
+        assert_eq!(c.cache[&path].idx, 1);
+        // A still picture never advances, nor does a one-frame "animation".
         let mut still = InlineImageCache::default();
-        still.cache.entry(path).or_default().decoded = Some(px());
+        still.cache.entry(path.clone()).or_default().decoded = Some(px());
         assert!(!still.advance_gifs_if_due());
+        let e = still.cache.get_mut(&path).unwrap();
+        e.frames = vec![(px(), Duration::ZERO)];
+        e.shown_at = Some(ago(hour));
+        assert!(!still.advance_gifs_if_due());
+        assert_eq!(still.cache[&path].idx, 0);
     }
 
     #[test]
@@ -1170,36 +1246,531 @@ mod tests {
         e.born = 7;
         e.enc_inflight = true;
         e.full.push(MdProtoSlot::attempted(full(10)));
-        let res = |born, key| MdEncodeResult {
+        let res = |born, key, image| MdEncodeResult {
             path: PathBuf::from("/x/a.png"),
             key,
-            image: None,
+            image,
             born,
         };
         // Answered for an earlier life of the path: nothing is touched.
-        assert_eq!(c.apply_encode(res(6, full(10))), EncodeApplied::Dropped);
+        assert_eq!(
+            c.apply_encode(res(6, full(10), Some(kimg(5)))),
+            EncodeApplied::Dropped
+        );
         assert!(c.cache[&path].enc_inflight);
+        assert!(c.cache[&path].full[0].image.is_none());
         // Nothing drawable ever came back at any size: the picture degrades to its text.
-        assert_eq!(c.apply_encode(res(7, full(10))), EncodeApplied::Degraded);
+        assert_eq!(
+            c.apply_encode(res(7, full(10), None)),
+            EncodeApplied::Degraded
+        );
         assert!(c.cache[&path].failed && !c.cache[&path].enc_inflight);
+        // Once failed it is not reported as degraded again.
+        assert_eq!(
+            c.apply_encode(res(7, full(10), None)),
+            EncodeApplied::Applied
+        );
         // An unknown path is dropped.
         let mut other = InlineImageCache::default();
-        assert_eq!(other.apply_encode(res(7, full(10))), EncodeApplied::Dropped);
+        assert_eq!(
+            other.apply_encode(res(7, full(10), None)),
+            EncodeApplied::Dropped
+        );
+    }
+
+    #[test]
+    fn an_applied_encode_is_stored_and_updates_the_stale_state() {
+        let path = PathBuf::from("/x/a.png");
+        let res = |key, image| MdEncodeResult {
+            path: PathBuf::from("/x/a.png"),
+            key,
+            image,
+            born: 7,
+        };
+        let fresh = || {
+            let mut c = InlineImageCache::default();
+            let e = c.cache.entry(path.clone()).or_default();
+            e.born = 7;
+            e.enc_inflight = true;
+            let mut stale = MdProtoSlot::attempted(full(10));
+            stale.stale = true;
+            e.full.push(stale);
+            c
+        };
+        // A normal landing: stored, no longer stale, the ticket is given back.
+        let mut c = fresh();
+        assert_eq!(
+            c.apply_encode(res(full(10), Some(kimg(5)))),
+            EncodeApplied::Applied
+        );
+        let e = &c.cache[&path];
+        assert_eq!(e.full[0].image.as_ref().unwrap().cell_size(), (5, 1));
+        assert!(!e.full[0].stale && !e.enc_inflight && !e.failed);
+        // The encode was cut from pixels replaced since: it is stored (drawn meanwhile) but the
+        // slot stays stale, and the flag is consumed so the next landing is final.
+        let mut c = fresh();
+        c.cache.get_mut(&path).unwrap().outdated_encode_in_flight = true;
+        assert_eq!(
+            c.apply_encode(res(full(10), Some(kimg(6)))),
+            EncodeApplied::Applied
+        );
+        let e = &c.cache[&path];
+        assert_eq!(e.full[0].image.as_ref().unwrap().cell_size(), (6, 1));
+        assert!(e.full[0].stale && !e.outdated_encode_in_flight && !e.enc_inflight);
+        assert_eq!(
+            c.apply_encode(res(full(10), Some(kimg(7)))),
+            EncodeApplied::Applied
+        );
+        assert!(!c.cache[&path].full[0].stale);
+        // A failed encode of one size leaves the last good picture of that slot alone (and the
+        // stale state follows the flag), without degrading.
+        let mut c = fresh();
+        c.apply_encode(res(full(10), Some(kimg(5))));
+        c.cache.get_mut(&path).unwrap().full[0].stale = true;
+        assert_eq!(c.apply_encode(res(full(10), None)), EncodeApplied::Applied);
+        let e = &c.cache[&path];
+        assert_eq!(e.full[0].image.as_ref().unwrap().cell_size(), (5, 1));
+        assert!(!e.full[0].stale && !e.failed);
+        // A result whose slot was recycled (another key now) writes nothing.
+        let mut c = fresh();
+        c.cache.get_mut(&path).unwrap().full[0] = MdProtoSlot::encoded(full(20), kimg(9));
+        assert_eq!(
+            c.apply_encode(res(full(10), Some(kimg(5)))),
+            EncodeApplied::Applied
+        );
+        let e = &c.cache[&path];
+        assert_eq!(e.full.len(), 1);
+        assert_eq!(e.full[0].key, full(20));
+        assert_eq!(e.full[0].image.as_ref().unwrap().cell_size(), (9, 1));
+        assert!(!e.enc_inflight);
+        // A failed Full of one size does not degrade while another size has a picture.
+        let mut c = fresh();
+        c.cache
+            .get_mut(&path)
+            .unwrap()
+            .full
+            .push(MdProtoSlot::encoded(full(20), kimg(9)));
+        assert_eq!(c.apply_encode(res(full(10), None)), EncodeApplied::Applied);
+        assert!(!c.cache[&path].failed);
+    }
+
+    #[test]
+    fn a_failed_clip_or_zoom_encode_never_degrades_the_picture() {
+        let path = PathBuf::from("/x/a.png");
+        let clip = MdEncodeKey::Clip {
+            cols: 10,
+            full_rows: 4,
+            row_off: 1,
+            vis_rows: 2,
+        };
+        let zoom = MdEncodeKey::Zoom {
+            cols: 10,
+            rows: 4,
+            crop: (0, 0, 1, 1),
+        };
+        for key in [clip, zoom] {
+            let mut c = InlineImageCache::default();
+            let e = c.cache.entry(path.clone()).or_default();
+            e.born = 7;
+            e.enc_inflight = true;
+            // No full picture exists at all, which is what would degrade a failed Full.
+            e.full.push(MdProtoSlot::attempted(full(10)));
+            e.slots_mut(&key).push(MdProtoSlot::attempted(key));
+            let r = MdEncodeResult {
+                path: path.clone(),
+                key,
+                image: None,
+                born: 7,
+            };
+            assert_eq!(c.apply_encode(r), EncodeApplied::Applied, "{key:?}");
+            let e = &c.cache[&path];
+            assert!(!e.failed, "{key:?}");
+            assert!(!e.enc_inflight, "the ticket is given back: {key:?}");
+        }
     }
 
     #[test]
     fn take_kitty_deletes_is_empty_off_kitty_and_builds_escapes_on_it() {
+        // `LIVE_CANVAS_KITTY` is process-wide: these ids are far from the ones `kitty::next_id`
+        // hands out, and only they are asserted on.
+        const A: u32 = 3_900_001;
+        const B: u32 = 3_900_002;
+        const KEEP: u32 = 3_900_003;
+        const T: u32 = 3_900_004;
+        for id in [A, B, KEEP, T] {
+            LIVE_CANVAS_KITTY.note(id);
+        }
+        let live = |id: u32| LIVE_CANVAS_KITTY.snapshot().contains(&id);
+
+        // Off kitty: nothing to write, the list is taken anyway, and the ids stay noted.
         let mut c = InlineImageCache {
-            kitty_deletes: vec![4_000_001],
+            kitty_deletes: vec![A],
             ..Default::default()
         };
         assert!(c.take_kitty_deletes().is_empty());
         assert!(c.kitty_deletes.is_empty(), "taken either way");
+        assert!(live(A), "not deleted from the terminal, so not forgotten");
+
+        // On kitty: the escapes, in order, and the ids are forgotten process-wide.
         c.use_kitty = true;
-        c.kitty_deletes = vec![4_000_002];
+        c.kitty_deletes = vec![A, B];
         assert_eq!(
             c.take_kitty_deletes(),
-            vec![crate::kitty::build_delete(4_000_002, false)]
+            vec![
+                crate::kitty::build_delete(A, false),
+                crate::kitty::build_delete(B, false)
+            ]
+        );
+        assert!(!live(A) && !live(B));
+        assert!(live(KEEP) && live(T), "only the deleted ids are forgotten");
+        assert!(c.take_kitty_deletes().is_empty());
+
+        // Under tmux the escapes are wrapped for the passthrough.
+        c.kitty_is_tmux = true;
+        c.kitty_deletes = vec![T];
+        let wrapped = c.take_kitty_deletes();
+        assert_eq!(wrapped, vec![crate::kitty::build_delete(T, true)]);
+        assert_ne!(wrapped[0], crate::kitty::build_delete(T, false));
+        assert!(wrapped[0].starts_with("\x1bPtmux;"));
+        assert!(!live(T));
+
+        LIVE_CANVAS_KITTY.forget(KEEP);
+    }
+
+    #[test]
+    fn without_a_worker_ensure_encode_changes_nothing() {
+        let (mut c, _rx) = cache_with_entry("/x/a.png");
+        c.enc_tx = None;
+        c.use_kitty = true;
+        c.frame = 4;
+        c.ensure_encode(Path::new("/x/a.png"), 10, 4, 0, 4, None);
+        let e = &c.cache[Path::new("/x/a.png")];
+        assert!(e.full.is_empty() && e.clip.is_empty() && !e.enc_inflight);
+        assert!(
+            c.kitty_ids.is_empty(),
+            "no id is burned for a request never sent"
+        );
+        // An unknown path is ignored as well.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.ensure_encode(Path::new("/x/none.png"), 10, 4, 0, 4, None);
+        nothing_sent(&rx);
+    }
+
+    #[test]
+    fn ensure_encode_sends_one_request_with_its_key_crop_and_kitty_id() {
+        let path = Path::new("/x/a.png");
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.frame = 5;
+        // Not a kitty terminal: the whole image, no id.
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        let r = rx.try_recv().expect("a request");
+        assert_eq!(r.path, path);
+        assert_eq!(r.key, MdEncodeKey::Full { cols: 10, rows: 4 });
+        assert!(r.crop.is_none());
+        assert_eq!((r.cols, r.rows, r.born), (10, 4, 3));
+        assert!(r.kitty.is_none());
+        let e = &c.cache[path];
+        assert!(e.enc_inflight);
+        assert_eq!((e.full.len(), e.full[0].used), (1, 5));
+        assert!(c.kitty_ids.is_empty());
+        // The single ticket is taken: asking again (even for another size) sends nothing, but
+        // still stamps the slot it already holds.
+        c.frame = 6;
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        c.ensure_encode(path, 20, 4, 0, 4, None);
+        nothing_sent(&rx);
+        let e = &c.cache[path];
+        assert_eq!(
+            (e.full.len(), e.full[0].used),
+            (1, 6),
+            "no slot for the waiting size"
+        );
+
+        // A partially scrolled placement asks for the visible band only.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.use_kitty = true;
+        c.kitty_is_tmux = true;
+        c.ensure_encode(path, 10, 4, 1, 2, None);
+        let r = rx.try_recv().expect("a request");
+        assert_eq!(
+            r.key,
+            MdEncodeKey::Clip {
+                cols: 10,
+                full_rows: 4,
+                row_off: 1,
+                vis_rows: 2
+            }
+        );
+        let (y0, h) = md_band_pixels(4, 1, 2, 2);
+        assert_eq!(r.crop, Some((0, y0, 2, h)));
+        assert_eq!((r.cols, r.rows), (10, 2));
+        let id = c.kitty_ids[path][1][0];
+        assert_eq!(r.kitty, Some((id, true)));
+        let e = &c.cache[path];
+        assert!(e.enc_inflight && e.full.is_empty() && e.clip.len() == 1);
+        // A band cut off at the bottom (row_off 0, fewer rows visible) is a band too.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.ensure_encode(path, 10, 4, 0, 3, None);
+        assert!(matches!(
+            rx.try_recv().unwrap().key,
+            MdEncodeKey::Clip { .. }
+        ));
+    }
+
+    #[test]
+    fn ensure_encode_sends_nothing_for_a_settled_failed_or_undecoded_picture() {
+        let path = Path::new("/x/a.png");
+        // Settled: already encoded.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.cache
+            .get_mut(path)
+            .unwrap()
+            .full
+            .push(MdProtoSlot::encoded(full(10), kimg(1)));
+        c.frame = 8;
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        nothing_sent(&rx);
+        let e = &c.cache[path];
+        assert!(!e.enc_inflight);
+        assert_eq!(e.full[0].used, 8, "stamped");
+        // Attempted and failed: settled as well (never asked again).
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.cache
+            .get_mut(path)
+            .unwrap()
+            .full
+            .push(MdProtoSlot::attempted(full(10)));
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        nothing_sent(&rx);
+        // Stale is not settled: it is asked again, into the same slot and the same id.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.use_kitty = true;
+        let mut s = MdProtoSlot::encoded(full(10), kimg(1));
+        s.stale = true;
+        c.cache.get_mut(path).unwrap().full.push(s);
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        let r = rx.try_recv().expect("re-encode of the stale slot");
+        assert_eq!(r.kitty.unwrap().0, c.kitty_ids[path][0][0]);
+        assert_eq!(c.cache[path].full.len(), 1);
+        // The picture failed to decode/encode for good.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.cache.get_mut(path).unwrap().failed = true;
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        nothing_sent(&rx);
+        assert!(c.cache[path].full.is_empty());
+        // Still decoding: no pixels to send, and no slot is reserved for them.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.cache.get_mut(path).unwrap().decoded = None;
+        c.ensure_encode(path, 10, 4, 0, 4, None);
+        nothing_sent(&rx);
+        let e = &c.cache[path];
+        assert!(e.full.is_empty() && !e.enc_inflight);
+    }
+
+    #[test]
+    fn a_document_family_grows_when_every_slot_is_live_and_recycles_otherwise() {
+        let path = Path::new("/x/a.png");
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.use_kitty = true;
+        c.frame = 1;
+        // Five sizes in one pass: all live, so the soft family grows past MD_PROTO_SLOTS.
+        for n in 0..5u16 {
+            c.ensure_encode(path, 10 + n, 4, 0, 4, None);
+            assert!(rx.try_recv().is_ok(), "size {n} is requested");
+            c.cache.get_mut(path).unwrap().enc_inflight = false;
+        }
+        assert_eq!(c.cache[path].full.len(), 5);
+        assert_eq!(c.kitty_ids[path][0].len(), 5);
+        // A later pass wants one more size: the least recently wanted slot is recycled (and so is
+        // its id), the family does not grow.
+        c.frame = 2;
+        for n in 1..5u16 {
+            c.ensure_encode(path, 10 + n, 4, 0, 4, None); // stamp all but the first
+        }
+        let id0 = c.kitty_ids[path][0][0];
+        c.ensure_encode(path, 99, 4, 0, 4, None);
+        let r = rx.try_recv().expect("a request");
+        assert_eq!(r.kitty.unwrap().0, id0);
+        let e = &c.cache[path];
+        assert_eq!(e.full.len(), 5);
+        assert_eq!(e.full[0].key, MdEncodeKey::Full { cols: 99, rows: 4 });
+    }
+
+    #[test]
+    fn a_canvas_cap_refuses_a_slot_without_taking_the_ticket() {
+        let path = Path::new("/x/a.png");
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.use_kitty = true;
+        c.frame = 1;
+        for n in 0..2u16 {
+            c.ensure_encode(path, 10 + n, 4, 0, 4, Some(2));
+            assert!(rx.try_recv().is_ok());
+            c.cache.get_mut(path).unwrap().enc_inflight = false;
+        }
+        let ids_before = c.kitty_ids[path][0].clone();
+        // A third size while both slots are live in this pass: refused.
+        c.ensure_encode(path, 12, 4, 0, 4, Some(2));
+        nothing_sent(&rx);
+        let e = &c.cache[path];
+        assert!(!e.enc_inflight, "a refusal does not hold the ticket");
+        assert_eq!(e.full.len(), 2);
+        assert_eq!(c.kitty_ids[path][0], ids_before, "no id is burned");
+        // Since the ticket is free, the next pass recycles a slot for it.
+        c.frame = 2;
+        c.ensure_encode(path, 12, 4, 0, 4, Some(2));
+        let r = rx.try_recv().expect("a request once a slot is free");
+        assert!(ids_before.contains(&r.kitty.unwrap().0));
+        assert_eq!(c.cache[path].full.len(), 2);
+        // The same pass, under a document (no cap), would have grown instead.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.frame = 1;
+        for n in 0..4u16 {
+            c.ensure_encode(path, 10 + n, 4, 0, 4, None);
+            c.cache.get_mut(path).unwrap().enc_inflight = false;
+        }
+        assert_eq!(c.cache[path].full.len(), 4);
+        drop(rx);
+    }
+
+    #[test]
+    fn a_canvas_picture_notes_its_ids_process_wide() {
+        let path = Path::new("canvas://plug-widgets-test/7/00000000000000aa");
+        let (mut c, rx) = cache_with_entry("canvas://plug-widgets-test/7/00000000000000aa");
+        c.use_kitty = true;
+        c.ensure_encode(path, 10, 4, 0, 4, Some(2));
+        let id = rx.try_recv().unwrap().kitty.unwrap().0;
+        assert!(LIVE_CANVAS_KITTY.snapshot().contains(&id));
+        // Filed under the picture's identity, so new content takes over the id.
+        let slot_key = PathBuf::from("canvas://plug-widgets-test/7");
+        assert_eq!(c.kitty_ids[&slot_key][0], vec![id]);
+        LIVE_CANVAS_KITTY.forget(id);
+    }
+
+    #[test]
+    fn ensure_zoom_encode_sends_one_crop_and_keeps_its_slot_budget() {
+        let path = Path::new("/x/a.png");
+        let crop = |n: u32| (n, 0, 1, 1);
+        // No worker: the position is still stamped, nothing is reserved or sent.
+        let (mut c, _rx) = cache_with_entry("/x/a.png");
+        c.enc_tx = None;
+        c.frame = 9;
+        c.cache
+            .get_mut(path)
+            .unwrap()
+            .zoom
+            .push(MdProtoSlot::attempted(MdEncodeKey::Zoom {
+                cols: 10,
+                rows: 4,
+                crop: crop(0),
+            }));
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(0));
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(1));
+        let e = &c.cache[path];
+        assert_eq!(
+            (e.zoom.len(), e.zoom[0].used, e.enc_inflight),
+            (1, 9, false)
+        );
+        // An unknown path is ignored.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.ensure_zoom_encode(Path::new("/x/none.png"), px(), 10, 4, crop(0));
+        nothing_sent(&rx);
+
+        // A request: key, crop, size, id of the zoom family.
+        let (mut c, rx) = cache_with_entry("/x/a.png");
+        c.use_kitty = true;
+        c.kitty_is_tmux = true;
+        c.frame = 2;
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(0));
+        let r = rx.try_recv().expect("a request");
+        assert_eq!(
+            r.key,
+            MdEncodeKey::Zoom {
+                cols: 10,
+                rows: 4,
+                crop: crop(0)
+            }
+        );
+        assert_eq!((r.crop, r.cols, r.rows, r.born), (Some(crop(0)), 10, 4, 3));
+        assert_eq!(r.kitty, Some((c.kitty_ids[path][2][0], true)));
+        assert!(c.cache[path].enc_inflight);
+        // One in flight at a time.
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(1));
+        nothing_sent(&rx);
+        assert_eq!(c.cache[path].zoom.len(), 1);
+        // Settled: not asked again; a stale one is.
+        let e = c.cache.get_mut(path).unwrap();
+        e.enc_inflight = false;
+        e.zoom[0].image = Some(kimg(1));
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(0));
+        nothing_sent(&rx);
+        c.cache.get_mut(path).unwrap().zoom[0].stale = true;
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(0));
+        assert!(rx.try_recv().is_ok());
+        // The family is MD_ZOOM_SLOTS wide: a third crop in a later pass recycles the oldest.
+        c.cache.get_mut(path).unwrap().enc_inflight = false;
+        c.frame = 3;
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(1));
+        assert!(rx.try_recv().is_ok());
+        c.cache.get_mut(path).unwrap().enc_inflight = false;
+        c.frame = 4;
+        c.ensure_zoom_encode(path, px(), 10, 4, crop(2));
+        assert!(rx.try_recv().is_ok());
+        assert_eq!(c.cache[path].zoom.len(), MD_ZOOM_SLOTS);
+        assert!(c.kitty_ids[path][2].len() <= MD_ZOOM_SLOTS);
+    }
+
+    #[test]
+    fn proto_is_the_exact_encode_else_the_freshest_one() {
+        let path = Path::new("/x/a.png");
+        let clip = MdEncodeKey::Clip {
+            cols: 10,
+            full_rows: 4,
+            row_off: 1,
+            vis_rows: 2,
+        };
+        let (mut c, _rx) = cache_with_entry("/x/a.png");
+        // Nothing encoded yet, and an unknown path: nothing to draw.
+        assert!(c.proto(path, 10, 4, 0, 4).is_none());
+        assert!(c.proto(Path::new("/x/none.png"), 10, 4, 0, 4).is_none());
+        let e = c.cache.get_mut(path).unwrap();
+        let mut a = MdProtoSlot::encoded(full(10), kimg(11));
+        a.used = 5;
+        let mut b = MdProtoSlot::encoded(full(20), kimg(22));
+        b.used = 9;
+        e.full.push(a);
+        e.full.push(b);
+        e.full.push(MdProtoSlot::attempted(full(30))); // in flight / failed: holds no picture
+        let mut band = MdProtoSlot::encoded(clip, kimg(33));
+        band.used = 7;
+        e.clip.push(band);
+        let size = |i: Option<&InlineImage>| i.map(|i| i.cell_size().0);
+        // The exact key wins even when another one is newer.
+        assert_eq!(size(c.proto(path, 10, 4, 0, 4)), Some(11));
+        assert_eq!(size(c.proto(path, 20, 4, 0, 4)), Some(22));
+        assert_eq!(size(c.proto(path, 10, 4, 1, 2)), Some(33));
+        // A slot that holds no picture falls back to the freshest band-or-full one (the band, 7,
+        // beats the full 5; the full 20 at 9 is newer than both and is a full image too).
+        assert_eq!(size(c.proto(path, 30, 4, 0, 4)), Some(22));
+        // A size never encoded falls back as well, rather than blanking the picture.
+        assert_eq!(size(c.proto(path, 40, 4, 0, 4)), Some(22));
+        // A band that was never encoded falls back too.
+        assert_eq!(size(c.proto(path, 10, 4, 2, 2)), Some(22));
+        // The position decides the family: fully visible is a Full key, the rest a Clip key.
+        c.cache.get_mut(path).unwrap().full[1].used = 1;
+        assert_eq!(
+            size(c.proto(path, 40, 4, 0, 4)),
+            Some(33),
+            "the band is the freshest now"
+        );
+        assert_eq!(
+            size(c.proto(path, 20, 4, 0, 3)),
+            Some(33),
+            "cut at the bottom: a Clip key"
+        );
+        assert_eq!(
+            size(c.proto(path, 20, 4, 0, 5)),
+            Some(22),
+            "taller than the box is still full"
         );
     }
 }
