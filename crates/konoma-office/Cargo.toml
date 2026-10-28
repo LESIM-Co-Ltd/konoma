@@ -12,6 +12,18 @@ konoma-base = { path = "../konoma-base", version = "0.1.0" }
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 konoma-office-core = { path = "../konoma-office-core", version = "0.1.0" }
 
+[features]
+default = ["app"]
+# The standalone app: `konoma-office <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-office` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
+
 [dev-dependencies]
 konoma-office-core = { path = "../konoma-office-core", version = "0.1.0", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }
+
+[[bin]]
+name = "konoma-office"
+path = "src/main.rs"
+required-features = ["app"]

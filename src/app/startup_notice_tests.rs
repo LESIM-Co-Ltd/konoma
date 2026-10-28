@@ -479,3 +479,31 @@ fn read_only_is_a_host_key_of_a_plugin_table() {
     let settings = effective_settings(&cfg, "csv");
     assert!(settings.get("read_only").is_none() && settings.get("rainbow").is_some());
 }
+
+/// The moved-settings list is shared with the standalone app (`konoma_plugin::config`), which
+/// cannot name the plugin crates' id constants, so it holds the ids as text. Each must be the id of
+/// a plugin konoma registers, and the ones the host has constants for must be those constants.
+#[test]
+fn the_shared_moved_settings_list_names_registered_plugin_ids() {
+    let known = [
+        konoma_markdown::MARKDOWN_ID,
+        konoma_mermaid::MERMAID_ID,
+        konoma_math::MATH_ID,
+        konoma_table::CSV_ID,
+        konoma_code::CODE_ID,
+        konoma_media::SVG_ID,
+    ];
+    for (old, id, _) in MOVED_UI_SETTINGS {
+        assert!(known.contains(id), "{old} -> unknown plugin id {id}");
+    }
+    for id in known {
+        assert!(
+            MOVED_UI_SETTINGS.iter().any(|(_, owner, _)| *owner == id),
+            "{id} owns no moved setting"
+        );
+    }
+    let registry = crate::plugins::shared_registry(&[]);
+    for id in known {
+        assert!(registry.ids().contains(&id), "{id} is not registered");
+    }
+}

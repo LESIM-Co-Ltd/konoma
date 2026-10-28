@@ -54,6 +54,10 @@ pub struct SharedUi {
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
+    /// Every other `[ui]` key as written. The old plugin settings that lived in `[ui]` (`md_*`,
+    /// `mermaid_*`, ...) are read from here; konoma's own display keys are ignored by a small host.
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 impl Default for SharedUi {
@@ -62,6 +66,7 @@ impl Default for SharedUi {
             lang: "auto".into(),
             keys: "vim".into(),
             svg_max_px: 800,
+            extra: toml::Table::new(),
         }
     }
 }
@@ -94,6 +99,9 @@ pub struct SharedConfig {
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub external: SharedExternal,
+    /// The `[plugins.<id>]` tables as written (the host reads `enabled`; the rest is the plugin's
+    /// own settings, converted by `konoma_plugin::config`).
+    pub plugins: std::collections::BTreeMap<String, toml::Table>,
 }
 
 impl SharedConfig {
@@ -156,6 +164,26 @@ mod tests {
         assert_eq!(c.ui.lang, "jp");
         assert!(!c.external.open_links);
         assert!(c.external.office_apps, "unset stays default");
+    }
+
+    #[test]
+    fn plugin_tables_and_the_other_ui_keys_are_kept_as_written() {
+        let c = SharedConfig::parse(
+            "[ui]\nlang = \"jp\"\nmd_alerts = false\nwrap = true\n[plugins.markdown]\nemoji = false\n[plugins.csv]\nrainbow = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.ui.lang, "jp", "known keys are still read");
+        assert_eq!(
+            c.ui.extra.get("md_alerts"),
+            Some(&toml::Value::Boolean(false))
+        );
+        assert!(
+            !c.ui.extra.contains_key("lang"),
+            "a known key is not in the rest"
+        );
+        assert_eq!(c.plugins.len(), 2);
+        assert_eq!(c.plugins["markdown"]["emoji"], toml::Value::Boolean(false));
+        assert!(SharedConfig::parse("[plugins]\nmarkdown = 3\n").is_err());
     }
 
     #[test]

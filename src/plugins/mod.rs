@@ -252,81 +252,19 @@ pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
         .collect()
 }
 
-/// The plugin's own settings from its table (`enabled` is not one of them).
-pub(crate) fn settings_of(table: &toml::Table) -> Settings {
-    let mut out = Settings::new();
-    for (k, v) in table {
-        if !is_host_key(table, k) {
-            out.set(k.clone(), value_of(v));
-        }
-    }
-    out
-}
+/// The plugin's own settings from its table (`enabled` is not one of them): the reading the
+/// standalone app shares (`konoma_plugin::config`).
+pub(crate) use konoma_plugin::config::settings_of;
 
 fn value_of(v: &toml::Value) -> konoma_plugin::Value {
-    use konoma_plugin::Value;
-    match v {
-        toml::Value::Boolean(x) => Value::Bool(*x),
-        toml::Value::Integer(x) => Value::Int(*x),
-        toml::Value::Float(x) => Value::Float(*x),
-        toml::Value::String(x) => Value::Str(x.clone()),
-        toml::Value::Datetime(x) => Value::Str(x.to_string()),
-        toml::Value::Array(xs) => Value::List(xs.iter().map(value_of).collect()),
-        toml::Value::Table(t) => Value::Table(
-            t.iter()
-                .map(|(k, v)| (k.clone(), value_of(v)))
-                .collect::<BTreeMap<_, _>>(),
-        ),
-    }
+    konoma_plugin::config::value_of(v)
 }
 
-/// The `[ui]` settings that moved to `[plugins.<id>]` (S2-12 of the design): the old `[ui]` key, the
-/// plugin that owns it now, and its new name. [`effective_settings`] still reads the old keys; this
-/// list is what the startup message names, so a user learns where to write them. A key that was
-/// only renamed inside its plugin's table does not appear: the display settings (`wrap`,
-/// `line_numbers`, `git_gutter`, `tab_width`, `image_render_scale`) stay in `[ui]`.
-pub(crate) const MOVED_UI_SETTINGS: &[(&str, &str, &str)] = &[
-    (
-        "md_task_states",
-        konoma_markdown::MARKDOWN_ID,
-        "task_states",
-    ),
-    ("md_autolink", konoma_markdown::MARKDOWN_ID, "autolink"),
-    ("md_alerts", konoma_markdown::MARKDOWN_ID, "alerts"),
-    ("md_emoji", konoma_markdown::MARKDOWN_ID, "emoji"),
-    (
-        "md_frontmatter",
-        konoma_markdown::MARKDOWN_ID,
-        "frontmatter",
-    ),
-    ("md_footnotes", konoma_markdown::MARKDOWN_ID, "footnotes"),
-    (
-        "md_inline_html",
-        konoma_markdown::MARKDOWN_ID,
-        "inline_html",
-    ),
-    ("md_details", konoma_markdown::MARKDOWN_ID, "details"),
-    (
-        "md_table_align",
-        konoma_markdown::MARKDOWN_ID,
-        "table_align",
-    ),
-    (
-        "md_image_align",
-        konoma_markdown::MARKDOWN_ID,
-        "image_align",
-    ),
-    ("mermaid", konoma_mermaid::MERMAID_ID, "mode"),
-    ("mermaid_theme", konoma_mermaid::MERMAID_ID, "theme"),
-    ("mermaid_curve", konoma_mermaid::MERMAID_ID, "curve"),
-    ("mermaid_routing", konoma_mermaid::MERMAID_ID, "routing"),
-    ("mermaid_rows", konoma_mermaid::MERMAID_ID, "rows"),
-    ("math", konoma_math::MATH_ID, "mode"),
-    ("math_color", konoma_math::MATH_ID, "color"),
-    ("csv_rainbow", konoma_table::CSV_ID, "rainbow"),
-    ("syntax_highlight", konoma_code::CODE_ID, "syntax_highlight"),
-    ("svg_max_px", konoma_media::SVG_ID, "max_px"),
-];
+/// The `[ui]` settings that moved to `[plugins.<id>]` (S2-12 of the design): the one list both
+/// hosts read (`konoma_plugin::config::MOVED_UI_SETTINGS`). [`effective_settings`] still reads the
+/// old keys; this list is what the startup message names, so a user learns where to write them.
+pub(crate) const MOVED_UI_SETTINGS: &[(&str, &str, &str)] =
+    konoma_plugin::config::MOVED_UI_SETTINGS;
 
 /// The old `[ui]` names a config still uses, as `(what is written, what to write instead)`. `ui`
 /// is the config's raw `[ui]` table. A name is not reported once the new one is also set (the new
@@ -527,21 +465,10 @@ pub(crate) fn value_type_mismatch(
     (!fits).then(|| ValueType::of(default))
 }
 
-/// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
-/// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`), both booleans, and
-/// `read_dirs` (a list of folders, see [`read_scope`]).
-pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only", "read_dirs"];
-
-/// The keys that are the host's own only in the table of a program of its own (one with a
-/// `command`): the program to run and its arguments (`external::spec_of_table`). In the table of a
-/// plugin that runs in this process they are the plugin's own settings, if it declares them.
-pub(crate) const EXTERNAL_PLUGIN_KEYS: &[&str] = &["command", "args"];
-
-/// Whether `key` of `table` is read by the host rather than being a setting of the plugin.
-pub(crate) fn is_host_key(table: &toml::Table, key: &str) -> bool {
-    HOST_PLUGIN_KEYS.contains(&key)
-        || (table.contains_key("command") && EXTERNAL_PLUGIN_KEYS.contains(&key))
-}
+pub(crate) use konoma_plugin::config::HOST_PLUGIN_KEYS;
+// Only the tests ask the host's-own-key rule directly now; the reading itself is shared.
+#[cfg(test)]
+pub(crate) use konoma_plugin::config::is_host_key;
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.

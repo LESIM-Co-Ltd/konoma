@@ -13,5 +13,17 @@ konoma-mermaid-core = { path = "../konoma-mermaid-core", version = "0.1.0" }
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
 mermaid-text.workspace = true
 
+[features]
+default = ["app"]
+# The standalone app: `konoma-mermaid <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-mermaid` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
+
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+
+[[bin]]
+name = "konoma-mermaid"
+path = "src/main.rs"
+required-features = ["app"]

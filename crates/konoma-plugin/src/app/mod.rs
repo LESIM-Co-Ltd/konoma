@@ -153,6 +153,18 @@ pub fn open_file(
     lang: &str,
     term: TermCaps,
 ) -> Result<Opened, AppError> {
+    open_file_with(plugins, path, lang, term, &|_| Settings::new())
+}
+
+/// [`open_file`] with the settings of the chosen plugin: `settings_of(id)` is asked once, for the
+/// plugin the registry picked, and is what its `OpenCx::settings` holds.
+pub fn open_file_with(
+    plugins: Vec<Arc<dyn Plugin>>,
+    path: &Path,
+    lang: &str,
+    term: TermCaps,
+    settings_of: &dyn Fn(&str) -> Settings,
+) -> Result<Opened, AppError> {
     let path =
         std::path::absolute(path).map_err(|e| AppError::Unreadable(path.to_path_buf(), e))?;
     let meta = match std::fs::metadata(&path) {
@@ -202,7 +214,8 @@ pub fn open_file(
     let plugin = registry
         .plugin(&id)
         .ok_or_else(|| AppError::Plugin(format!("plugin `{id}` is not registered")))?;
-    let cx = OpenCx::new(Settings::empty(), lang).with_term(term);
+    let settings = settings_of(&id);
+    let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
         .open(
             Input::File {
@@ -237,6 +250,7 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     // terminal is back (the screen is the alternate one meanwhile).
     let loaded = konoma_host_core::shared::SharedConfig::load_default();
     let svg_max_px = loaded.0.ui.svg_max_px;
+    let (plugin_tables, ui_rest) = (loaded.0.plugins.clone(), loaded.0.ui.extra.clone());
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
@@ -244,7 +258,8 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     };
     // The file is checked and opened before the terminal is taken, so a refusal is a message on
     // the ordinary screen.
-    let mut opened = open_file(plugins, path, lang, term)?;
+    let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &ui_rest, id);
+    let mut opened = open_file_with(plugins, path, lang, term, &settings_of)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(AppError::NoTerminal);
     }

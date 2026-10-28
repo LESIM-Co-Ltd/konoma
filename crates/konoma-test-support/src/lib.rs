@@ -408,3 +408,26 @@ pub fn build_xlsx_with_styles(
     }
     zw.finish().unwrap();
 }
+
+/// Run a plugin program (`konoma-office <file>` and the like) without a terminal: standard input
+/// is closed and standard output and error are pipes, so the program can only refuse or stop at
+/// "must be a terminal", and never takes over a screen. `home` becomes `HOME` and
+/// `XDG_CONFIG_HOME` (`<home>/xdg`) so the user's own `config.toml` is never read.
+pub fn run_program_without_terminal(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+) -> std::process::Output {
+    std::process::Command::new(exe)
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env_remove("LC_ALL")
+        .env_remove("LC_MESSAGES")
+        .env("LANG", "C")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the program starts")
+}
