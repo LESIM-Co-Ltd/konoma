@@ -14,7 +14,7 @@ proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
 # host: raw mode, an alternate screen and the display types drawn with ratatui). Off by default,
 # and the host (konoma) does not turn it on, so it pulls in no terminal library.
-app = ["proc", "dep:ratatui", "dep:crossterm"]
+app = ["proc", "dep:ratatui", "dep:crossterm", "dep:konoma-host-core"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -36,6 +36,9 @@ serde_json = { workspace = true, optional = true }
 # The terminal of the standalone app (`app` feature).
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+# The key layers 0-3 the app shares with the host (`app` feature): one declaration, so a key means
+# the same in konoma and in a plugin program.
+konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }

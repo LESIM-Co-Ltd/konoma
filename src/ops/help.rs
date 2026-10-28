@@ -17,10 +17,12 @@ use crate::i18n::{tr, Msg};
 use crate::keymap::{Action, Context, KeyLayer, KeyPress, LeaderId, Motion};
 #[cfg(feature = "git")]
 use crate::keymap::{Backend, Screen};
+use crate::ops::core_help::{self, core_ctx};
 use crate::ops::decl::{decl, text};
 use crate::ops::gate::action_enabled;
 use crate::ops::keys::{columns, help_key};
 use crate::ui::help::HelpSection;
+use konoma_host_core::help::{CoreRow, CoreSec, HelpFacts};
 
 /// Where a row is listed.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,9 @@ struct Row {
     desc: Option<Msg>,
     ungated: bool,
     sec: Option<Sec>,
+    /// The row of the shared layers this is: in a context the standalone app also shows, the
+    /// shared builder (`konoma_host_core::help`) writes it, so both hosts print the same line.
+    core: Option<CoreRow>,
 }
 
 fn r(acts: &'static [Action]) -> Row {
@@ -56,6 +61,7 @@ fn r(acts: &'static [Action]) -> Row {
         desc: None,
         ungated: false,
         sec: None,
+        core: None,
     }
 }
 
@@ -68,6 +74,7 @@ fn lit_row(keys: &'static str, desc: Msg, sec: Sec) -> Row {
         desc: Some(desc),
         ungated: true,
         sec: Some(sec),
+        core: None,
     }
 }
 
@@ -96,6 +103,10 @@ impl Row {
     }
     fn ungated(mut self) -> Row {
         self.ungated = true;
+        self
+    }
+    fn core(mut self, c: CoreRow) -> Row {
+        self.core = Some(c);
         self
     }
     fn sec(mut self, s: Sec) -> Row {
@@ -219,9 +230,11 @@ fn global_rows() -> Vec<Row> {
         lit_row("1 - 9", Msg::HelpJumpTab, Sec::Tabs),
         r(&[Action::ToggleTabList]).sec(Sec::Tabs),
         r(&[Action::PasteJump]).sec(Sec::Global),
-        r(&[Action::ToggleHelp]).sec(Sec::Global),
+        r(&[Action::ToggleHelp])
+            .sec(Sec::Global)
+            .core(CoreRow::Help),
         r(&[Action::ToggleFollow]).sec(Sec::Global),
-        r(&[Action::Quit]).sec(Sec::Global),
+        r(&[Action::Quit]).sec(Sec::Global).core(CoreRow::Quit),
     ]
 }
 
@@ -315,26 +328,26 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
             vec![
                 r(FILE_JUMP),
                 r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
-                r(&[Action::RequestEdit]),
-                r(&[Action::OpenExternal]),
-                r(BACK_PREVIEW),
+                r(&[Action::RequestEdit]).core(CoreRow::Edit),
+                r(&[Action::OpenExternal]).core(CoreRow::Open),
+                r(BACK_PREVIEW).core(CoreRow::Back),
             ],
         );
     }
     let mut v = vec![
-        r(SCROLL).lit("↑ ↓"),
-        r(ENDS),
-        r(HSCROLL).lit("← →"),
-        r(LINE_ENDS),
+        r(SCROLL).core(CoreRow::Scroll),
+        r(ENDS).core(CoreRow::Ends),
+        r(HSCROLL).core(CoreRow::HScroll),
+        r(LINE_ENDS).core(CoreRow::LineEnds),
         r(SEARCH).then(SEARCH_MATCH).d(Msg::SearchHint),
     ];
     // Range selection is windowed (raw source / plain code or text): `preview_enter_visual`
     // requires it. The decorated view still has `Y`, which copies the whole-file `@path` there.
     v.push(r(SELECT));
     v.push(r(&[Action::PreviewCopySelectionRef]));
-    v.push(r(PAGE_TURN));
+    v.push(r(PAGE_TURN).core(CoreRow::PageTurn));
     v.push(r(&[Action::CycleRepresentation]));
-    v.push(r(&[Action::ToggleOutline]));
+    v.push(r(&[Action::ToggleOutline]).core(CoreRow::Outline));
     // The keys of the focused Markdown item are the reference for "press Tab, then ...": listed
     // for every decorated document, whether or not an item is focused right now.
     if ctx == Context::Document {
@@ -350,81 +363,81 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
     }
     v.push(r(FILE_JUMP));
     v.push(r(BOOKMARKS).d(Msg::PreviewBookmarkHint));
-    v.push(r(&[Action::RequestEdit]));
-    v.push(r(&[Action::OpenExternal]));
+    v.push(r(&[Action::RequestEdit]).core(CoreRow::Edit));
+    v.push(r(&[Action::OpenExternal]).core(CoreRow::Open));
     v.push(r(&[Action::OpenGitView]));
     #[cfg(feature = "git")]
     v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
     v.push(r(&[Action::Refresh]));
-    v.push(r(PAGE_KEYS));
-    v.push(r(HALF_KEYS));
+    v.push(r(PAGE_KEYS).core(CoreRow::PageKeys));
+    v.push(r(HALF_KEYS).core(CoreRow::HalfKeys));
     v.push(r(&[Action::CyclePathStyle]));
-    v.push(r(BACK_PREVIEW));
+    v.push(r(BACK_PREVIEW).core(CoreRow::Back));
     (Msg::PreviewTextMarkdown, v)
 }
 
 fn image_rows() -> Vec<Row> {
     vec![
-        r(ZOOM),
-        r(&[Action::ImageZoomReset]),
-        r(HJKL).lit("arrows").d(Msg::PanHint),
-        r(PAGE_TURN),
-        r(&[Action::ToggleOutline]),
+        r(ZOOM).core(CoreRow::Zoom),
+        r(&[Action::ImageZoomReset]).core(CoreRow::ZoomReset),
+        r(HJKL).core(CoreRow::Pan),
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
         r(&[Action::ImageReturnToDiff]),
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
-        r(&[Action::RequestEdit]),
-        r(&[Action::OpenExternal]),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
         r(&[Action::OpenGitView]),
         #[cfg(feature = "git")]
         r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(&[Action::Refresh]),
         r(&[Action::CyclePathStyle]),
-        r(BACK_PREVIEW),
+        r(BACK_PREVIEW).core(CoreRow::Back),
     ]
 }
 
 /// The keys the host keeps in a canvas; the plugin's own are the plugin's section.
 fn canvas_rows() -> Vec<Row> {
     vec![
-        r(PAGE_TURN),
-        r(&[Action::ToggleOutline]),
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
         r(&[Action::CycleRepresentation]),
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
-        r(&[Action::RequestEdit]),
-        r(&[Action::OpenExternal]),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
         r(&[Action::OpenGitView]),
         #[cfg(feature = "git")]
         r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(&[Action::Refresh]),
         r(&[Action::PreviewCopySelectionRef]),
-        r(BACK_PREVIEW),
+        r(BACK_PREVIEW).core(CoreRow::Back),
     ]
 }
 
 fn table_rows() -> Vec<Row> {
     vec![
-        r(HJKL).lit("arrows").d(Msg::TableMoveHelp),
-        r(ENDS),
-        r(LINE_ENDS).d(Msg::TableColsHelp),
-        r(PAGE_TURN),
-        r(&[Action::ToggleOutline]),
+        r(HJKL).core(CoreRow::TableMove),
+        r(ENDS).core(CoreRow::Ends),
+        r(LINE_ENDS).core(CoreRow::TableCols),
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
         r(&[Action::CycleRepresentation]),
         r(SEARCH).then(SEARCH_MATCH).d(Msg::TableSearchHelp),
         r(&[Action::ToggleTableCell]),
-        r(PAGE_KEYS),
-        r(HALF_KEYS),
+        r(PAGE_KEYS).core(CoreRow::PageKeys),
+        r(HALF_KEYS).core(CoreRow::HalfKeys),
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
-        r(&[Action::RequestEdit]),
-        r(&[Action::OpenExternal]),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
         r(&[Action::OpenGitView]),
         #[cfg(feature = "git")]
         r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(&[Action::Refresh]),
         r(&[Action::CyclePathStyle]),
-        r(BACK_PREVIEW),
+        r(BACK_PREVIEW).core(CoreRow::Back),
     ]
 }
 
@@ -654,7 +667,28 @@ impl std::fmt::Debug for Sec {
 }
 
 /// The keys of a row as the help writes them, and the description. `None` = nothing to list.
-fn render_row(app: &App, ctx: Context, row: &Row) -> Option<RowOut> {
+fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<RowOut> {
+    if let (Some(core), Some(cctx)) = (row.core, core_ctx(ctx)) {
+        let lookup = core_help::HostLookup { app, ctx };
+        let o = konoma_host_core::help::render_row(core, cctx, facts, &lookup, app.lang)?;
+        return Some(RowOut {
+            keys_text: o.keys_text,
+            desc: o.desc,
+            keys: o.keys,
+            actions: o
+                .ops
+                .iter()
+                .filter_map(|o| core_help::action_of(*o))
+                .collect(),
+            ungated: false,
+            sec: match o.sec {
+                CoreSec::View => Sec::View,
+                CoreSec::Move => Sec::Move,
+                CoreSec::Launch => Sec::Launch,
+                CoreSec::Global => Sec::Global,
+            },
+        });
+    }
     if let Some(keys) = row.lit_only {
         let desc = tr(app.lang, row.desc?).to_string();
         let keys = match row.lit_msg {
@@ -780,8 +814,9 @@ fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
 pub fn rows_for(app: &App, ctx: Context) -> Vec<RowOut> {
     let (_, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());
+    let facts = core_help::facts_for(app, ctx);
     rows.iter()
-        .filter_map(|r| render_row(app, ctx, r))
+        .filter_map(|r| render_row(app, ctx, r, &facts))
         .collect()
 }
 
@@ -793,9 +828,10 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());
+    let facts = core_help::facts_for(app, ctx);
     let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
     for row in &rows {
-        let Some(out) = render_row(app, ctx, row) else {
+        let Some(out) = render_row(app, ctx, row, &facts) else {
             continue;
         };
         let (sec, pair) = (out.sec, (out.keys_text, out.desc));

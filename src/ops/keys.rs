@@ -138,77 +138,13 @@ pub fn keys_of(app: &App, ctx: Context, action: Action) -> Vec<KeyPress> {
     v
 }
 
-/// The keys of an operation group as columns. A group of exactly two operations (`next` / `prev`)
-/// is zipped (`J K`, `PageDown PageUp`), anything else is one key per column.
+/// The keys of an operation group as columns (`konoma_host_core::help::zip_columns`: a group of
+/// exactly two operations is zipped, anything else is one key per column).
 pub fn columns(app: &App, ctx: Context, acts: &[Action]) -> (Vec<Vec<KeyPress>>, bool) {
-    if let [a, b] = acts {
-        let ka = keys_of(app, ctx, *a);
-        let kb = keys_of(app, ctx, *b);
-        let mut cols: Vec<Vec<KeyPress>> = Vec::new();
-        for i in 0..ka.len().max(kb.len()) {
-            let mut col = Vec::new();
-            col.extend(ka.get(i).copied());
-            col.extend(kb.get(i).copied());
-            cols.push(col);
-        }
-        return (cols, true);
-    }
-    let cols = acts
-        .iter()
-        .flat_map(|a| keys_of(app, ctx, *a))
-        .map(|k| vec![k])
-        .collect();
-    (cols, false)
+    konoma_host_core::help::zip_columns(acts, |a| keys_of(app, ctx, a))
 }
 
-/// A key as the `?` help writes it: `j`, `Space`, `Enter`, `Ctrl-t`, `PageDown`, `⇧Tab`.
-pub fn help_key(kp: KeyPress) -> String {
-    let base = match kp.code {
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        KeyCode::BackTab => "⇧Tab".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
-        KeyCode::F(n) => format!("F{n}"),
-        KeyCode::PageDown => "PageDown".to_string(),
-        KeyCode::PageUp => "PageUp".to_string(),
-        KeyCode::Home => "Home".to_string(),
-        KeyCode::End => "End".to_string(),
-        KeyCode::Up => "↑".to_string(),
-        KeyCode::Down => "↓".to_string(),
-        KeyCode::Left => "←".to_string(),
-        KeyCode::Right => "→".to_string(),
-        other => format!("{other:?}"),
-    };
-    if kp.ctrl {
-        format!("Ctrl-{base}")
-    } else {
-        base
-    }
-}
-
-/// A key as the footer writes it, shorter than the help: `C-t`, `PgDn`, `⇧Tab`. `short_enter`
-/// writes `Enter` as `↵` (the preview screens do).
-pub fn footer_key(kp: KeyPress, short_enter: bool) -> String {
-    let base = match kp.code {
-        KeyCode::Enter if short_enter => "↵".to_string(),
-        KeyCode::PageDown => "PgDn".to_string(),
-        KeyCode::PageUp => "PgUp".to_string(),
-        _ => {
-            return if kp.ctrl {
-                format!("C-{}", help_key(KeyPress { ctrl: false, ..kp }))
-            } else {
-                help_key(kp)
-            }
-        }
-    };
-    if kp.ctrl {
-        format!("C-{base}")
-    } else {
-        base
-    }
-}
+pub use konoma_host_core::help::{footer_key, help_key};
 
 /// Whether the screens of `ctx` write `Enter` as `↵` in the footer.
 pub fn short_enter(ctx: Context) -> bool {

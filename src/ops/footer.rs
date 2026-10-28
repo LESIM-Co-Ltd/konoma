@@ -15,6 +15,7 @@ use crate::ops::decl::text;
 use crate::ops::gate::action_enabled;
 use crate::ops::keys::{columns, footer_key, short_enter};
 use crate::plugins::PluginAct;
+use konoma_host_core::help::CoreFoot;
 
 /// One entry of a footer plan.
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub enum Foot {
     /// operations are zipped (`j/k`, `J/K/PgDn/PgUp`).
     Group(&'static [Action], Msg),
     /// Like `Group`, labelled as `decl::text` says for the first operation (`J/K:slide|sheet|page`).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GroupOp(&'static [Action]),
     /// The keys of several operations merged (`Space/↵:toggle`).
     Union(&'static [Action], Msg),
@@ -36,6 +38,9 @@ pub enum Foot {
     Dyn(fn(&App, Context) -> Option<String>),
     /// The key of an action the open plugin declared, under the plugin's own short label.
     Plugin(PluginAct),
+    /// An entry of the shared layers 1 to 3: the shared builder (`konoma_host_core::help`) writes
+    /// it, so the standalone app prints the same token. Only the contexts of `core_ctx` use it.
+    Core(CoreFoot),
 }
 
 const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
@@ -64,6 +69,7 @@ const HJKL: &[Action] = &[
 const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
 const FILE_JUMP: &[Action] = &[Action::PreviewFileNext, Action::PreviewFilePrev];
 const ZOOM: &[Action] = &[Action::ImageZoomIn, Action::ImageZoomOut];
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
 #[cfg(feature = "git")]
 const NEXT_PREV_CHANGE: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
@@ -214,22 +220,22 @@ pub fn changed_filter_plan() -> Vec<Foot> {
 
 fn table(_app: &App) -> Vec<Foot> {
     vec![
-        Foot::Group(HJKL, Msg::HintCell),
+        Foot::Core(CoreFoot::Cell),
         Foot::Op(Action::ToggleTableCell),
         Foot::Dyn(search_status),
-        Foot::GroupOp(PAGE_TURN),
-        Foot::Op(Action::ToggleOutline),
+        Foot::Core(CoreFoot::PageTurn),
+        Foot::Core(CoreFoot::Outline),
         Foot::Op(Action::CycleRepresentation),
         Foot::Op(Action::SearchStart),
         Foot::Leader(LeaderId::TableCopy, Msg::CopyHint),
-        Foot::Group(ENDS, Msg::HintEnds),
+        Foot::Core(CoreFoot::Ends),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Op(Action::PreviewBack),
-        Foot::Op(Action::ToggleHelp),
-        Foot::Op(Action::RequestEdit),
-        Foot::Op(Action::OpenExternal),
+        Foot::Core(CoreFoot::Back),
+        Foot::Core(CoreFoot::Help),
+        Foot::Core(CoreFoot::Edit),
+        Foot::Core(CoreFoot::Open),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Leader(LeaderId::Options, Msg::HintOptions),
+        Foot::Core(CoreFoot::Options),
     ]
 }
 
@@ -237,34 +243,34 @@ fn table(_app: &App) -> Vec<Foot> {
 /// operations are spliced in after the first entry (`plan`), so they come right after `q:back`.
 fn canvas(_app: &App) -> Vec<Foot> {
     vec![
-        Foot::Op(Action::PreviewBack),
-        Foot::GroupOp(PAGE_TURN),
-        Foot::Op(Action::ToggleOutline),
+        Foot::Core(CoreFoot::Back),
+        Foot::Core(CoreFoot::PageTurn),
+        Foot::Core(CoreFoot::Outline),
         Foot::Op(Action::CycleRepresentation),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Op(Action::ToggleHelp),
-        Foot::Op(Action::RequestEdit),
-        Foot::Op(Action::OpenExternal),
+        Foot::Core(CoreFoot::Help),
+        Foot::Core(CoreFoot::Edit),
+        Foot::Core(CoreFoot::Open),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Leader(LeaderId::Options, Msg::HintOptions),
+        Foot::Core(CoreFoot::Options),
     ]
 }
 
 fn image(_app: &App) -> Vec<Foot> {
     vec![
-        Foot::Group(ZOOM, Msg::Zoom),
-        Foot::Op(Action::ImageZoomReset),
-        Foot::Group(HJKL, Msg::HintPan),
-        Foot::GroupOp(PAGE_TURN),
-        Foot::Op(Action::ToggleOutline),
+        Foot::Core(CoreFoot::Zoom),
+        Foot::Core(CoreFoot::ZoomReset),
+        Foot::Core(CoreFoot::Pan),
+        Foot::Core(CoreFoot::PageTurn),
+        Foot::Core(CoreFoot::Outline),
         Foot::Op(Action::ImageReturnToDiff),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Op(Action::PreviewBack),
-        Foot::Op(Action::ToggleHelp),
-        Foot::Op(Action::RequestEdit),
-        Foot::Op(Action::OpenExternal),
+        Foot::Core(CoreFoot::Back),
+        Foot::Core(CoreFoot::Help),
+        Foot::Core(CoreFoot::Edit),
+        Foot::Core(CoreFoot::Open),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Leader(LeaderId::Options, Msg::HintOptions),
+        Foot::Core(CoreFoot::Options),
     ]
 }
 
@@ -281,20 +287,20 @@ fn text_preview(app: &App) -> Vec<Foot> {
         return vec![
             Foot::Op(Action::ToggleFollow),
             Foot::Group(FILE_JUMP, Msg::HintFileJump),
-            Foot::Op(Action::PreviewBack),
-            Foot::Op(Action::ToggleHelp),
-            Foot::Op(Action::RequestEdit),
-            Foot::Op(Action::OpenExternal),
+            Foot::Core(CoreFoot::Back),
+            Foot::Core(CoreFoot::Help),
+            Foot::Core(CoreFoot::Edit),
+            Foot::Core(CoreFoot::Open),
             Foot::Group(TABS, Msg::HintTab),
-            Foot::Leader(LeaderId::Options, Msg::HintOptions),
+            Foot::Core(CoreFoot::Options),
         ];
     }
     if is_decorated_footer(app) {
         // `Tab` always cycles focus; everything else here depends on the focused item.
         let mut v = vec![
-            Foot::Group(SCROLL, Msg::Scroll),
+            Foot::Core(CoreFoot::Scroll),
             Foot::Op(Action::LinkFocusNext),
-            Foot::GroupOp(PAGE_TURN),
+            Foot::Core(CoreFoot::PageTurn),
         ];
         match app.md_focused_kind() {
             Some(MdFocus::Task) | Some(MdFocus::Details) => {
@@ -317,26 +323,26 @@ fn text_preview(app: &App) -> Vec<Foot> {
             None => {}
         }
         v.extend([
-            Foot::Op(Action::ToggleOutline),
+            Foot::Core(CoreFoot::Outline),
             Foot::Op(Action::CycleRepresentation),
             Foot::Op(Action::SearchStart),
             Foot::Dyn(change_status),
             Foot::Op(Action::ToggleFollow),
             Foot::Group(FILE_JUMP, Msg::HintFileJump),
-            Foot::Op(Action::PreviewBack),
-            Foot::Op(Action::ToggleHelp),
-            Foot::Op(Action::RequestEdit),
-            Foot::Op(Action::OpenExternal),
-            Foot::Group(ENDS, Msg::HintEnds),
+            Foot::Core(CoreFoot::Back),
+            Foot::Core(CoreFoot::Help),
+            Foot::Core(CoreFoot::Edit),
+            Foot::Core(CoreFoot::Open),
+            Foot::Core(CoreFoot::Ends),
             Foot::Group(TABS, Msg::HintTab),
-            Foot::Leader(LeaderId::Options, Msg::HintOptions),
-            Foot::Group(PAGE_KEYS, Msg::HintPage),
+            Foot::Core(CoreFoot::Options),
+            Foot::Core(CoreFoot::PageKeys),
         ]);
         return v;
     }
     // Code / plain text. While searching, show n/N (match cur/total) up front.
     let mut v = vec![
-        Foot::Group(SCROLL, Msg::Scroll),
+        Foot::Core(CoreFoot::Scroll),
         Foot::Dyn(search_status),
         Foot::Op(Action::SearchStart),
         Foot::Dyn(change_status),
@@ -353,16 +359,16 @@ fn text_preview(app: &App) -> Vec<Foot> {
     v.extend([
         Foot::Op(Action::CycleRepresentation),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Op(Action::PreviewBack),
-        Foot::Op(Action::ToggleHelp),
-        Foot::Op(Action::RequestEdit),
-        Foot::Op(Action::OpenExternal),
-        Foot::Group(ENDS, Msg::HintEnds),
+        Foot::Core(CoreFoot::Back),
+        Foot::Core(CoreFoot::Help),
+        Foot::Core(CoreFoot::Edit),
+        Foot::Core(CoreFoot::Open),
+        Foot::Core(CoreFoot::Ends),
         Foot::Group(HSCROLL, Msg::HintHscroll),
         Foot::Group(LINE_ENDS, Msg::HintLineEnds),
         Foot::Group(TABS, Msg::HintTab),
-        Foot::Leader(LeaderId::Options, Msg::HintOptions),
-        Foot::Group(PAGE_KEYS, Msg::HintPage),
+        Foot::Core(CoreFoot::Options),
+        Foot::Core(CoreFoot::PageKeys),
     ]);
     v
 }
@@ -591,6 +597,16 @@ pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
                 v.extend(acts.iter().map(|a| (*a, label)));
             }
             Foot::Plugin(p) => v.push((Action::Plugin(p), None)),
+            Foot::Core(c) => {
+                if let Some(cctx) = crate::ops::core_help::core_ctx(ctx) {
+                    let facts = crate::ops::core_help::facts_for(app, ctx);
+                    for (op, label) in konoma_host_core::help::foot_priority(c, cctx, &facts) {
+                        if let Some(a) = crate::ops::core_help::action_of(op) {
+                            v.push((a, label.map(Msg::from_core)));
+                        }
+                    }
+                }
+            }
             Foot::Leader(..) | Foot::Dyn(_) => {}
         }
     }
@@ -673,6 +689,7 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
         })
     };
     let mut out = Vec::new();
+    let mut core_facts: Option<konoma_host_core::help::HelpFacts> = None;
     for item in plan {
         let t = match item {
             Foot::Op(a) => {
@@ -726,6 +743,23 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                 keys: Vec::new(),
                 actions: Vec::new(),
             }),
+            Foot::Core(c) => {
+                let Some(cctx) = crate::ops::core_help::core_ctx(ctx) else {
+                    continue;
+                };
+                let facts =
+                    core_facts.get_or_insert_with(|| crate::ops::core_help::facts_for(app, ctx));
+                let lookup = crate::ops::core_help::HostLookup { app, ctx };
+                konoma_host_core::help::render_foot(*c, cctx, facts, &lookup, lang).map(|t| Token {
+                    text: t.text,
+                    keys: t.keys,
+                    actions: t
+                        .ops
+                        .iter()
+                        .filter_map(|o| crate::ops::core_help::action_of(*o))
+                        .collect(),
+                })
+            }
             Foot::Plugin(p) => {
                 let action = Action::Plugin(*p);
                 if !action_enabled(app, ctx, action) {

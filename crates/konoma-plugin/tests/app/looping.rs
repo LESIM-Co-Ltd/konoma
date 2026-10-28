@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, EventSource, Next};
+use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, EventSource, Next};
 use konoma_plugin::prelude::*;
 use konoma_plugin::TermCaps;
 use konoma_test_support::unique_tmp;
@@ -54,7 +54,14 @@ fn run_events(
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut it = events.into_iter();
-    run_with(&mut term, &mut *opened.session, &mut it, &cx()).expect("runs");
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .expect("runs");
     (term, it.count())
 }
 
@@ -78,7 +85,7 @@ fn first_body(term: &Terminal<TestBackend>) -> String {
 #[test]
 fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     let (_d, p) = file("app_text", "a.t", &lines20());
-    let (term, _) = run_events(TestPlugin::all(), &p, (40, 6), vec![]);
+    let (term, _) = run_events(TestPlugin::all(), &p, (60, 6), vec![]);
     let r = rows(&term);
     assert_eq!(r.len(), 6);
     for (i, row) in r.iter().enumerate().take(5) {
@@ -86,8 +93,8 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     }
     assert!(r[5].contains("line 1"), "{r:?}");
     assert!(r[5].ends_with("title"), "{r:?}");
-    assert!(r[5].contains("q quit"), "{r:?}");
-    assert!(!r[4].contains("q quit"));
+    assert!(r[5].contains("q:quit"), "{r:?}");
+    assert!(!r[4].contains("q:quit"));
     // The footer row is reversed.
     let buf = term.backend().buffer();
     assert!(buf[(0, 5)]
@@ -230,7 +237,7 @@ fn a_canvas_is_sized_to_the_screen_and_drawn_cell_for_cell() {
     assert_eq!(r[1], "xxxxxxxxxx");
     assert_eq!(r[2], "xxxxxxxxxx");
     assert!(
-        r[3].contains("q quit"),
+        r[3].contains("q:quit"),
         "the footer owns the last row: {r:?}"
     );
     let buf = term.backend().buffer();
@@ -248,14 +255,14 @@ fn a_canvas_bigger_than_the_screen_is_clipped_without_a_panic() {
     let r = rows(&term);
     assert_eq!(r[0], "Axxxxxxx");
     assert_eq!(r[1], "xxxxxxxx");
-    assert!(r[2].contains("q quit"));
+    assert!(r[2].contains("q:quit"));
 }
 
 #[test]
 fn a_one_row_screen_has_only_the_footer() {
     let (_d, p) = file("app_one", "a.c", "");
     let (term, _) = run_events(TestPlugin::all(), &p, (10, 1), vec![]);
-    assert!(rows(&term)[0].contains("q quit"));
+    assert!(rows(&term)[0].contains("q:quit"));
     // And a zero-height screen does not panic.
     let (_term, _) = run_events(TestPlugin::all(), &p, (10, 0), vec![]);
 }
@@ -286,7 +293,14 @@ fn waits_for(plugin: TestPlugin, name: &str, timeouts: usize) -> Vec<Option<Dura
         seen: Vec::new(),
         timeouts,
     };
-    run_with(&mut term, &mut *opened.session, &mut w, &cx()).unwrap();
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut w,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .unwrap();
     w.seen
 }
 
@@ -329,7 +343,7 @@ fn a_timeout_draws_again() {
         seen: Vec::new(),
         timeouts: 3,
     };
-    run_with(&mut term, &mut s, &mut w, &cx()).unwrap();
+    run_with(&mut term, &mut s, &mut w, &cx(), &AppKeys::defaults()).unwrap();
     assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 4);
     assert_eq!(rows(&term)[0], "n=3");
 }
@@ -347,7 +361,7 @@ fn a_resize_event_asks_the_session_again() {
     let mut s = Sizes(seen.clone());
     let mut term = Terminal::new(TestBackend::new(10, 4)).unwrap();
     let mut ev = vec![AppEvent::Resize].into_iter();
-    run_with(&mut term, &mut s, &mut ev, &cx()).unwrap();
+    run_with(&mut term, &mut s, &mut ev, &cx(), &AppKeys::defaults()).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![(10, 3), (10, 3)]);
 }
 
@@ -392,7 +406,14 @@ fn a_text_file_that_cannot_be_read_any_more_is_shown_as_a_line_not_a_crash() {
     std::fs::remove_file(&p).unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 3)).unwrap();
     let mut it = Vec::<AppEvent>::new().into_iter();
-    run_with(&mut term, &mut *opened.session, &mut it, &cx()).unwrap();
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx(),
+        &AppKeys::defaults(),
+    )
+    .unwrap();
     assert!(
         rows(&term)[0].starts_with("[can not read"),
         "{:?}",

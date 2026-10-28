@@ -11,7 +11,6 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::i18n::tr;
 use crate::keymap::{KeyPress, LeaderId};
 
 /// One help section = heading + a sequence of "key notation / description" rows. Each view builds and returns this.
@@ -55,9 +54,18 @@ fn render_sections(sections: &[HelpSection]) -> Vec<Line<'static>> {
         for (key, desc) in &sec.rows {
             // A key column wider than its 16 cells (`Ctrl-f / Ctrl-b  ·  PageDown / PageUp`) still
             // leaves a gap before the description.
-            let pad = if key.chars().count() >= 16 { "  " } else { "" };
+            // Cells, not characters: a full-width key is two cells wide.
+            let pad = if unicode_width::UnicodeWidthStr::width(key.as_str()) >= 16 {
+                "  "
+            } else {
+                ""
+            };
             out.push(Line::from(vec![
-                Span::from(format!("  {key:<16}{pad}")).bold(),
+                Span::from(format!(
+                    "  {}{pad}",
+                    konoma_host_core::help::pad_cells(key, 16)
+                ))
+                .bold(),
                 Span::from(desc.clone()).dim(),
             ]));
         }
@@ -117,7 +125,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = app.help_scroll.min(max_scroll);
 
-    let title = tr(app.lang, crate::i18n::Msg::HelpTitle);
+    let title = crate::ops::core_help::help_title(app);
     let block = Block::bordered()
         .title(title)
         .border_style(Style::new().fg(ratatui::style::Color::Cyan));

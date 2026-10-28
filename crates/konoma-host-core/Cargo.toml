@@ -17,6 +17,8 @@ sys-locale.workspace = true
 crossterm.workspace = true
 # The thread that ends the program on SIGTERM / SIGHUP / SIGINT.
 signal-hook.workspace = true
+# The width of a key column in terminal cells (a full-width key is two).
+unicode-width.workspace = true
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
