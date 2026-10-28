@@ -52,6 +52,32 @@ pub(super) fn image_failure_of(
     }
 }
 
+/// Konoma's drawer of the SVGs a plugin hands over that are not trusted: a supervised child
+/// process of this executable (`preview::svg`).
+pub(super) struct SvgChild;
+
+impl konoma_plugin::canvas_pictures::SvgDraw for SvgChild {
+    fn untrusted(
+        &self,
+        data: &[u8],
+        base: &Path,
+        roots: Option<&[std::path::PathBuf]>,
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, crate::preview::svg::RasterError> {
+        crate::preview::svg::rasterize_untrusted_within(data, base, roots, max_px, cancelled)
+    }
+
+    fn embedded(
+        &self,
+        data: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, crate::preview::svg::RasterError> {
+        crate::preview::svg::rasterize_embedded(data, max_px, cancelled)
+    }
+}
+
 /// Decode what a picture plugin returned into the host's media payload. `None` is a failure with
 /// no reason to show (the render side falls back), as for any media job.
 ///
@@ -87,53 +113,22 @@ pub(super) fn decode_image_view(
             base_dir,
             trusted,
         } => {
-            // The SVG's relative references are read from the directory the plugin names, so that
-            // directory is a path the plugin gave: outside the read scope the SVG is refused with
-            // the scope's reason (not silently drawn without its pictures). One that cannot be
-            // resolved holds nothing to read, so the SVG names no directory. Every file the
-            // drawing reads is judged again against the scope (`roots`), whatever the SVG says.
-            let base_dir = match base_dir {
-                Some(d) if scope.is_restricted() => match scope.resolve(&d) {
-                    Ok(real) => Some(real),
-                    Err(konoma_plugin::ScopeError::Outside) => {
-                        return Some(MediaPayload::ImageFailed(ImageFailure::OutsideReadDirs));
-                    }
-                    Err(_) => None,
-                },
-                other => other,
-            };
-            let roots = scope.dirs();
-            // Relative references inside the SVG resolve from the directory the plugin names.
-            let base = match (&base_dir, path.file_name()) {
-                (Some(dir), Some(name)) => dir.join(name),
-                _ => path.to_path_buf(),
-            };
-            let (img, trust) = if trusted && trust_own_svg {
-                (
-                    crate::preview::svg::rasterize_trusted(&data, &base, max_px)?,
-                    SvgTrust::Trusted(base),
-                )
-            } else if base_dir.is_some() {
-                // A file the user opened: drawn by a supervised child process.
-                match crate::preview::svg::rasterize_untrusted_within(
-                    &data, &base, roots, max_px, &cancelled,
-                ) {
-                    Ok(img) => (
-                        img,
-                        match roots {
-                            Some(r) => SvgTrust::FileWithin(base, r.into()),
-                            None => SvgTrust::File(base),
-                        },
-                    ),
-                    Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
-                }
-            } else {
-                // The plugin names no directory: nothing to read relative to, so the drawing reads
-                // no file at all (the shown file's directory is not the SVG's).
-                match crate::preview::svg::rasterize_embedded(&data, max_px, &cancelled) {
-                    Ok(img) => (img, SvgTrust::Embedded),
-                    Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
-                }
+            // The scope, trust and which-drawer decisions are shared with the canvas pictures
+            // (`draw_plugin_svg`); this host draws an untrusted SVG in a supervised child.
+            let (img, trust) = match konoma_plugin::canvas_pictures::draw_plugin_svg(
+                &data,
+                base_dir,
+                trusted,
+                path,
+                max_px,
+                scope,
+                trust_own_svg,
+                &SvgChild,
+                &cancelled,
+            ) {
+                Ok(drawn) => drawn,
+                Err(None) => return None,
+                Err(Some(why)) => return Some(MediaPayload::ImageFailed(why)),
             };
             Some(if iv.sharp_zoom {
                 MediaPayload::Vector {

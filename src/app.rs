@@ -5855,12 +5855,9 @@ fn refusal_worth_telling(
     (why != SvgFail::Invalid).then_some(why)
 }
 
-/// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
-/// never shows more than its own width (a 250-column terminal at 20 px per cell is 5,000 px) and the
-/// in-place zoom of diagrams re-rasterizes from the SVG rather than from this copy, so a larger
-/// decode is memory the user cannot see: an 11,000 x 11,000 screenshot would keep 480 MB, this keeps
-/// 64 MB. Matches the 4096 cap on SVG rasters (`preview::svg::HARD_MAX_PX`).
-const MD_IMAGE_MAX_SIDE: u32 = 4096;
+/// Longest side, in pixels, that an inline Markdown image is kept at after decoding (the value
+/// every host shares: [`konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE`]).
+const MD_IMAGE_MAX_SIDE: u32 = konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.

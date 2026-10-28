@@ -138,6 +138,14 @@ impl InlineImage {
 /// one width plus the previous one still lingering right after a resize — without paying for more.
 pub const MD_PROTO_SLOTS: usize = 3;
 
+/// Longest side, in pixels, that an inline image (Markdown, or a plugin canvas's picture) is kept
+/// at after decoding. The terminal never shows more than its own width (a 250-column terminal at
+/// 20 px per cell is 5,000 px) and the in-place zoom of diagrams re-rasterizes from the SVG rather
+/// than from this copy, so a larger decode is memory the user cannot see: an 11,000 x 11,000
+/// screenshot would keep 480 MB, this keeps 64 MB. Matches the 4096 cap on SVG rasters. One value
+/// for every host, so a picture is the same size in konoma and in a standalone plugin app.
+pub const INLINE_IMAGE_MAX_SIDE: u32 = 4096;
+
 /// Slots for the zoom family. Only one inline diagram can be focused at a time (`Tab` moves the
 /// focus, and the host only asks for the zoom of the focused fence), so one crop is all
 /// that is ever *wanted* — but two are kept, because a slot is claimed when its encode is requested

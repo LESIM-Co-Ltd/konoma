@@ -1962,8 +1962,11 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "globset",
+ "image",
  "konoma-host-core",
+ "konoma-svg",
  "konoma-test-support",
+ "konoma-widgets",
  "libc",
  "ratatui",
  "rmp-serde",

@@ -83,6 +83,8 @@
 
 #[cfg(feature = "app")]
 pub mod app;
+#[cfg(feature = "pictures")]
+pub mod canvas_pictures;
 pub mod hints;
 pub mod input;
 pub mod key;
