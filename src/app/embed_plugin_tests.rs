@@ -117,7 +117,8 @@ fn a_switched_off_mermaid_plugin_leaves_a_fence_as_the_text_diagram() {
     assert!(!app.mermaid_image_mode());
     assert!(!has_fence(&app), "no picture is asked for");
     assert!(
-        app.md_image_cache
+        app.md_images
+            .cache
             .keys()
             .all(|k| !crate::preview::markdown::is_mermaid_fence_url(&k.to_string_lossy())),
         "nothing is rendered for it either"
@@ -157,8 +158,8 @@ fn rendering_a_fence_or_formula_with_no_plugin_is_a_failed_entry_not_a_panic() {
     app.picker = Some(picker());
     assert!(app.ensure_mermaid_fence_render("graph LR\n A-->B".into()));
     assert!(app.ensure_math_render("x^2".into(), false));
-    assert!(!app.md_image_cache.is_empty());
-    assert!(app.md_image_cache.values().all(|e| e.failed));
+    assert!(!app.md_images.cache.is_empty());
+    assert!(app.md_images.cache.values().all(|e| e.failed));
 }
 
 #[test]
@@ -260,7 +261,8 @@ fn red(trusted: bool, fail: bool) -> (StandIn, Asked) {
 
 fn entry_pixel(app: &App, url_pred: impl Fn(&str) -> bool) -> Option<[u8; 4]> {
     let (_, e) = app
-        .md_image_cache
+        .md_images
+        .cache
         .iter()
         .find(|(k, _)| url_pred(&k.to_string_lossy()))?;
     let img = e.decoded.as_ref()?;
@@ -313,7 +315,7 @@ fn a_picture_the_plugin_does_not_vouch_for_is_refused() {
     assert!(!asked.lock().unwrap().is_empty(), "the plugin was asked");
     assert!(entry_pixel(&app, crate::preview::markdown::is_mermaid_fence_url).is_none());
     assert!(
-        app.md_image_cache.values().all(|e| e.failed),
+        app.md_images.cache.values().all(|e| e.failed),
         "the fence is shown the way an undrawable one is"
     );
 }
@@ -322,7 +324,7 @@ fn a_picture_the_plugin_does_not_vouch_for_is_refused() {
 fn a_plugin_that_cannot_draw_the_fence_degrades_it_to_text() {
     let (_g, _asked) = red(true, true);
     let (app, _dir, _) = app_showing("konoma_embed_fail", "d.md", FENCE_DOC, Config::default());
-    assert!(app.md_image_cache.values().all(|e| e.failed));
+    assert!(app.md_images.cache.values().all(|e| e.failed));
     // A fence that was asked for and could not be drawn shows the Unicode text diagram (a fence
     // nobody is asked about, with the plugin off or in text mode, stays a code block).
     let text = cache_text(&app);
@@ -368,7 +370,8 @@ fn the_full_screen_fence_takes_its_picture_from_the_plugin_too() {
 
 fn svg_of_fence(app: &App) -> String {
     let (_, e) = app
-        .md_image_cache
+        .md_images
+        .cache
         .iter()
         .find(|(k, _)| crate::preview::markdown::is_mermaid_fence_url(&k.to_string_lossy()))
         .expect("the fence rendered");
@@ -377,7 +380,8 @@ fn svg_of_fence(app: &App) -> String {
 
 fn svg_of_math(app: &App) -> String {
     let (_, e) = app
-        .md_image_cache
+        .md_images
+        .cache
         .iter()
         .find(|(k, _)| crate::preview::markdown::is_math_url(&k.to_string_lossy()))
         .expect("the formula rendered");
@@ -658,7 +662,8 @@ fn the_entries_of_a_plugin_the_user_added_are_marked_untrusted_and_the_standard_
         Config::default(),
     );
     let kept: Vec<_> = app
-        .md_image_cache
+        .md_images
+        .cache
         .values()
         .filter(|e| e.svg.is_some())
         .collect();
@@ -679,7 +684,8 @@ fn the_entries_of_a_plugin_the_user_added_are_marked_untrusted_and_the_standard_
         crate::plugins::test_plugins::marker_config(&marker),
     );
     let kept: Vec<_> = app
-        .md_image_cache
+        .md_images
+        .cache
         .values()
         .filter(|e| e.svg.is_some())
         .collect();

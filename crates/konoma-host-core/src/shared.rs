@@ -51,6 +51,9 @@ pub struct SharedUi {
     pub lang: String,
     /// Preview paging key style: "vim" | "less".
     pub keys: String,
+    /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
+    /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
+    pub svg_max_px: u32,
 }
 
 impl Default for SharedUi {
@@ -58,6 +61,7 @@ impl Default for SharedUi {
         Self {
             lang: "auto".into(),
             keys: "vim".into(),
+            svg_max_px: 800,
         }
     }
 }
@@ -136,6 +140,7 @@ mod tests {
         let c = SharedConfig::parse("").expect("empty parses");
         assert_eq!(c.ui.lang, "auto");
         assert_eq!(c.ui.keys, "vim");
+        assert_eq!(c.ui.svg_max_px, 800);
         assert!(c.external.open_links && c.external.office_apps);
         assert!(c.editor.command.is_empty() && c.editor.ext.is_empty());
         assert!(c.keys.surfaces.is_empty());

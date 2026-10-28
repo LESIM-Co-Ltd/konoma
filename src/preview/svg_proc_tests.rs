@@ -2624,7 +2624,7 @@ fn red_png_in(dir: &Path) -> PathBuf {
 
 #[test]
 fn an_embedded_svg_reads_no_file_but_a_file_svg_reads_the_ones_next_to_it() {
-    use crate::app::SvgTrust;
+    use crate::app::{SvgTrust, SvgTrustExt};
     let _g = serial();
     no_children_left();
     let dir = unique_tmp("svg-proc-trust");
@@ -2658,7 +2658,7 @@ fn an_embedded_svg_reads_no_file_but_a_file_svg_reads_the_ones_next_to_it() {
 
 #[test]
 fn an_svg_of_unstated_origin_is_drawn_as_embedded_and_reads_no_file() {
-    use crate::app::SvgTrust;
+    use crate::app::{SvgTrust, SvgTrustExt};
     let _g = serial();
     no_children_left();
     assert_eq!(SvgTrust::default(), SvgTrust::Embedded);

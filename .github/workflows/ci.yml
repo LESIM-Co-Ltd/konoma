@@ -82,6 +82,15 @@ jobs:
       - name: Doctests (${{ matrix.features }})
         run: cargo test --workspace --doc ${{ matrix.flags }}
 
+      # The standalone app (`konoma-plugin` feature `app`, which includes `pictures`) is not
+      # switched on by any workspace member, so `--workspace` neither lints nor tests it.
+      - name: Standalone app features
+        if: matrix.flags == ''
+        run: |
+          cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
+          cargo clippy -p konoma-plugin --all-targets --features app -- -D warnings
+          cargo nextest run -p konoma-plugin --features app
+
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
   # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
@@ -211,6 +220,15 @@ jobs:
 
       - name: Doctests (${{ matrix.features }})
         run: cargo test --workspace --doc ${{ matrix.flags }}
+
+      # The standalone app (`konoma-plugin` feature `app`, which includes `pictures`) is not
+      # switched on by any workspace member, so `--workspace` neither lints nor tests it.
+      - name: Standalone app features
+        if: matrix.flags == ''
+        run: |
+          cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
+          cargo clippy -p konoma-plugin --all-targets --features app -- -D warnings
+          cargo nextest run -p konoma-plugin --features app
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list

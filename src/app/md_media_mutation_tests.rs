@@ -204,7 +204,7 @@ fn a_reloaded_document_keeps_only_the_pictures_it_still_has() {
         "office-img://d/keep",
         "office-img://d/gone",
     ] {
-        app.md_image_cache.insert(key(k), MdImgEntry::default());
+        app.md_images.cache.insert(key(k), MdImgEntry::default());
     }
     let mut pictures = HashMap::new();
     pictures.insert(
@@ -230,11 +230,17 @@ fn a_reloaded_document_keeps_only_the_pictures_it_still_has() {
         None,
     );
     assert!(
-        app.md_image_cache.contains_key(&key("/some/file.png")),
+        app.md_images.cache.contains_key(&key("/some/file.png")),
         "not a document picture"
     );
-    assert!(app.md_image_cache.contains_key(&key("office-img://d/keep")));
-    assert!(!app.md_image_cache.contains_key(&key("office-img://d/gone")));
+    assert!(app
+        .md_images
+        .cache
+        .contains_key(&key("office-img://d/keep")));
+    assert!(!app
+        .md_images
+        .cache
+        .contains_key(&key("office-img://d/gone")));
 }
 
 #[test]

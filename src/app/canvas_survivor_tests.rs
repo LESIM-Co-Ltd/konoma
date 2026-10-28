@@ -712,13 +712,13 @@ fn seeded_canvas_app(name: &str) -> H {
     let (tx, _rx) = channel();
     h.app.attach_md_encoder(tx);
     let key: Arc<str> = Arc::from("canvas://cs_known/3/00000000000000d1");
-    h.app.canvas_places.push(CanvasPlace {
+    h.app.canvas.places.push(CanvasPlace {
         id: 3,
         rect: konoma_plugin::view::CellRect::new(0, 0, 1, 1),
         key: Some(key.clone()),
     });
-    h.app.canvas_front.insert(3, key.clone());
-    h.app.canvas_kept.insert(
+    h.app.canvas.front.insert(3, key.clone());
+    h.app.canvas.kept.insert(
         3,
         KeptPicture {
             key: Some(key.clone()),
@@ -768,7 +768,7 @@ fn the_open_of_a_new_session_is_not_told_the_old_sessions_ids_or_kept_sources() 
     );
     // Any later job of the session is told, as before (the pictures were made under the scope
     // this job runs under).
-    h.app.canvas_scope_fp = open.read_scope.fingerprint();
+    h.app.canvas.scope_fp = open.read_scope.fingerprint();
     let session = h.show_mut().session.take().expect("the session is at hand");
     let view = h
         .app
@@ -797,13 +797,13 @@ fn a_job_under_another_read_scope_is_not_told_the_held_ids_or_kept_sources() {
     let probe = h
         .app
         .plugin_work(id.clone(), path.clone(), job(), req.clone());
-    h.app.canvas_scope_fp = probe.read_scope.fingerprint();
+    h.app.canvas.scope_fp = probe.read_scope.fingerprint();
     let same = h
         .app
         .plugin_work(id.clone(), path.clone(), job(), req.clone());
     assert!(same.canvas_known.unwrap().by_id.contains_key(&3));
     // Made under another one (the tab root moved): not told.
-    h.app.canvas_scope_fp ^= 0x5eed;
+    h.app.canvas.scope_fp ^= 0x5eed;
     let other = h.app.plugin_work(id, path, job(), req);
     let known = other.canvas_known.unwrap();
     assert!(known.by_id.is_empty());
@@ -1124,9 +1124,9 @@ impl std::io::Write for Wire {
 #[test]
 fn the_deleted_kitty_images_are_written_to_the_terminal_and_flushed() {
     let mut h = H::open("cs_wire", None, false);
-    h.app.use_kitty = true;
-    h.app.kitty_is_tmux = false;
-    h.app.kitty_deletes = vec![5, 6];
+    h.app.md_images.use_kitty = true;
+    h.app.md_images.kitty_is_tmux = false;
+    h.app.md_images.kitty_deletes = vec![5, 6];
     let mut wire = Wire::default();
     crate::flush_kitty_deletes(&mut h.app, &mut wire).unwrap();
     let want = format!(
@@ -1136,19 +1136,19 @@ fn the_deleted_kitty_images_are_written_to_the_terminal_and_flushed() {
     );
     assert_eq!(String::from_utf8(wire.written.clone()).unwrap(), want);
     assert_eq!(wire.flushes, 1);
-    assert!(h.app.kitty_deletes.is_empty(), "taken");
+    assert!(h.app.md_images.kitty_deletes.is_empty(), "taken");
     // Nothing to delete: nothing written, nothing flushed.
     let mut quiet = Wire::default();
     crate::flush_kitty_deletes(&mut h.app, &mut quiet).unwrap();
     assert!(quiet.written.is_empty());
     assert_eq!(quiet.flushes, 0);
     // Not a kitty terminal: the queue is emptied and nothing is written.
-    h.app.use_kitty = false;
-    h.app.kitty_deletes = vec![9];
+    h.app.md_images.use_kitty = false;
+    h.app.md_images.kitty_deletes = vec![9];
     crate::flush_kitty_deletes(&mut h.app, &mut quiet).unwrap();
     assert!(quiet.written.is_empty());
     assert_eq!(quiet.flushes, 0);
-    assert!(h.app.kitty_deletes.is_empty());
+    assert!(h.app.md_images.kitty_deletes.is_empty());
 }
 
 #[test]

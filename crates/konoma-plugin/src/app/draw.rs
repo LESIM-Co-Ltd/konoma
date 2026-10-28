@@ -33,12 +33,17 @@ pub fn footer(
     format!(" {}{pos}  {title}", hints.join("  "))
 }
 
+/// The part of `area` the body is drawn in: all of it but the footer row.
+pub fn body_of(area: Rect) -> Rect {
+    Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1))
+}
+
 pub fn draw(f: &mut ratatui::Frame, frame: &Frame, footer: &str) {
     let area = f.area();
     if area.height == 0 {
         return;
     }
-    let body = Rect::new(area.x, area.y, area.width, area.height - 1);
+    let body = body_of(area);
     match frame {
         Frame::Lines(lines) => {
             let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();

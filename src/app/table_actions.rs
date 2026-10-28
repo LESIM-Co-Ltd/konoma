@@ -15,76 +15,7 @@ fn grid_of(plugin: &Option<PluginShow>) -> Option<Grid<'_>> {
     }
 }
 
-/// Frees `value` on a thread of its own (one, shared, so holding a key does not start a thread
-/// per press). The UI thread must not spend tens of milliseconds freeing a large workbook; if the
-/// thread cannot be had the value is freed here, as it would have been.
-pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
-    #[cfg(test)]
-    DISCARDED.with(|d| d.borrow_mut().push(std::any::type_name::<T>()));
-    if let Some(tx) = reaper() {
-        // A send that fails hands the value back inside the error, which is freed right here.
-        if let Ok(tx) = tx.lock() {
-            let _ = tx.send(Box::new(value));
-            return;
-        }
-    }
-    drop(value);
-}
-
-type Junk = Box<dyn Send>;
-
-/// The sender of the shared reaper thread, started on first use; `None` if it could not start.
-fn reaper() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Sender<Junk>>> {
-    use std::sync::{mpsc, Mutex, OnceLock};
-    static REAPER: OnceLock<Option<Mutex<mpsc::Sender<Junk>>>> = OnceLock::new();
-    REAPER
-        .get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<Junk>();
-            std::thread::Builder::new()
-                .name("konoma-reaper".into())
-                .spawn(move || {
-                    // Dropping each item as it arrives is the whole job.
-                    for junk in rx {
-                        drop(junk);
-                    }
-                })
-                .ok()
-                .map(|_| Mutex::new(tx))
-        })
-        .as_ref()
-}
-
-/// Test-only: returns once everything handed to [`discard_in_background`] before this call has
-/// been dropped. The reaper's channel is FIFO, so a marker sent now is dropped only after every
-/// earlier value. Tests that judge a child's state (running, live sessions, reaped) after a
-/// session was closed must call this first: the session's `Drop` runs on the reaper thread.
-/// Returns at once if there is no reaper thread (the value was freed in place).
-#[cfg(test)]
-pub(crate) fn flush_discards() {
-    struct Marker(std::sync::mpsc::Sender<()>);
-    impl Drop for Marker {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let Some(sender) = reaper() else { return };
-    let Ok(sender) = sender.lock() else { return };
-    if sender.send(Box::new(Marker(tx))).is_err() {
-        return;
-    }
-    drop(sender);
-    rx.recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the reaper thread dropped everything discarded before the marker");
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Test-only: the type of every value handed to [`discard_in_background`] on this thread, so a
-    /// test can say that a large value was not freed on the calling (UI) thread.
-    pub(super) static DISCARDED: std::cell::RefCell<Vec<&'static str>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+pub(super) use konoma_base::discard::discard_in_background;
 
 /// A table lighter than this (see [`row_weight`]) is searched on the calling thread: starting
 /// threads costs a few hundred microseconds, which only a bigger table earns back.
@@ -1400,37 +1331,6 @@ mod needle_tests {
 mod release_and_cap_tests {
     use super::*;
     use crate::test_support::unique_tmp;
-
-    /// Records which thread it was dropped on.
-    struct Probe(std::sync::mpsc::Sender<std::thread::ThreadId>);
-
-    impl Drop for Probe {
-        fn drop(&mut self) {
-            let _ = self.0.send(std::thread::current().id());
-        }
-    }
-
-    #[test]
-    fn a_discarded_value_is_dropped_on_another_thread() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        discard_in_background(Probe(tx));
-        let on = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the value is dropped");
-        assert_ne!(on, std::thread::current().id());
-    }
-
-    #[test]
-    fn many_discards_are_all_freed_by_the_one_thread() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        for _ in 0..200 {
-            discard_in_background(Probe(tx.clone()));
-        }
-        drop(tx);
-        let ids: std::collections::HashSet<_> = rx.iter().take(200).collect();
-        assert_eq!(ids.len(), 1, "one reaper thread, not a thread per value");
-        assert!(!ids.contains(&std::thread::current().id()));
-    }
 
     #[test]
     fn a_search_records_at_most_the_cap_and_the_first_in_reading_order() {

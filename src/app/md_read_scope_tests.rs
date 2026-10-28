@@ -75,7 +75,7 @@ fn a_picture_outside_the_scope_of_a_user_plugin_is_refused_with_the_reason_and_a
     // Nothing is decoded or served for it.
     let url = f.out.to_string_lossy().into_owned();
     f.app.ensure_md_image(&url, 10, 5, 0, 5);
-    assert!(!f.app.md_image_cache.contains_key(&f.out), "not decoded");
+    assert!(!f.app.md_images.cache.contains_key(&f.out), "not decoded");
     assert!(f.app.md_image_proto(&url, 10, 5, 0, 5).is_none());
     // The reason is said once: the same page built again does not flash again.
     f.app.flash = None;
@@ -90,7 +90,7 @@ fn ensure_md_image_alone_refuses_and_flashes() {
     let mut f = fx("demo", Config::default(), outside);
     let url = f.out.to_string_lossy().into_owned();
     f.app.ensure_md_image(&url, 10, 5, 0, 5);
-    assert!(!f.app.md_image_cache.contains_key(&f.out));
+    assert!(!f.app.md_images.cache.contains_key(&f.out));
     assert!(f.app.flash.as_deref().is_some_and(|m| m.contains("demo")));
 }
 
@@ -186,7 +186,7 @@ fn a_picture_already_encoded_is_not_drawn_once_the_scope_refuses_it() {
     let (res_tx, results) = std::sync::mpsc::channel();
     let picker = ratatui_image::picker::Picker::halfblocks();
     std::thread::spawn(move || md_encode_worker(picker, job_rx, res_tx));
-    f.app.md_image_cache.insert(
+    f.app.md_images.cache.insert(
         f.out.clone(),
         MdImgEntry {
             decoded: Some(Arc::new(image::DynamicImage::ImageRgb8(

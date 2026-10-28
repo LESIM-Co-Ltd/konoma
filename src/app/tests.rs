@@ -7286,7 +7286,7 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
 
     let key = PathBuf::from("/tmp/one.gif");
     let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame.clone()),
@@ -7299,7 +7299,7 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
         !app.advance_md_gifs_if_due(),
         "1フレームしか無いエントリは進めない"
     );
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     assert_eq!(e.idx, 0);
     assert!(e.shown_at.is_none(), "アニメ対象外なので計時も始めない");
 }
@@ -7335,7 +7335,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         )
         .expect("halfblocks エンコードは端末無しでも成功する");
 
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(f0.clone()),
@@ -7365,7 +7365,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
     // Before the deadline (the first tick): only starts the timer, doesn't advance.
     assert!(!app.advance_md_gifs_if_due(), "最初の tick は計時開始だけ");
     {
-        let e = &app.md_image_cache[&key];
+        let e = &app.md_images.cache[&key];
         assert_eq!(e.idx, 0);
         assert!(e.shown_at.is_some(), "計時は始まる");
         assert!(
@@ -7376,12 +7376,12 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
 
     // Shift the deadline into the past to advance to the next frame.
     {
-        let e = app.md_image_cache.get_mut(&key).unwrap();
+        let e = app.md_images.cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     }
     assert!(app.advance_md_gifs_if_due(), "期限超過で次フレームへ進む");
     {
-        let e = &app.md_image_cache[&key];
+        let e = &app.md_images.cache[&key];
         assert_eq!(e.idx, 1, "次フレームへ進む");
         assert!(
             Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f1),
@@ -7403,12 +7403,12 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
 
     // Full cycle: shifting the deadline into the past once more returns idx to 0.
     {
-        let e = app.md_image_cache.get_mut(&key).unwrap();
+        let e = app.md_images.cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     }
     assert!(app.advance_md_gifs_if_due());
     assert_eq!(
-        app.md_image_cache[&key].idx, 0,
+        app.md_images.cache[&key].idx, 0,
         "2フレームを一周して先頭へ戻る"
     );
 }
@@ -7434,7 +7434,7 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
 
     let key = PathBuf::from("/tmp/anim2.gif");
     let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key,
         MdImgEntry {
             decoded: Some(frame.clone()),
@@ -7519,7 +7519,7 @@ fn inline_gif_app(
         })
         .collect();
     app.tab.mode = Mode::Preview;
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         file.clone(),
         MdImgEntry {
             decoded: Some(frames[0].0.clone()),
@@ -7596,7 +7596,7 @@ fn inline_gif_animation_never_transmits_a_second_kitty_image_id() {
 
     // Nothing accumulates in konoma either: one entry holds exactly one encoded full-image slot,
     // whose payload stays one frame's worth however long it has been playing.
-    let entry = &app.md_image_cache[&PathBuf::from(&url)];
+    let entry = &app.md_images.cache[&PathBuf::from(&url)];
     assert_eq!(
         entry.full.len(),
         1,
@@ -7691,18 +7691,18 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
     // Fully visible → the Full slot.
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
-    let full_req_id = app.md_kitty_ids[&key][0][0];
+    let full_req_id = app.md_images.kitty_ids[&key][0][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // Scrolled so only the lower band shows → the Clip slot, which needs an id of its own.
     app.ensure_md_image(&url, cols, full_rows, 3, 5);
-    let clip_id = app.md_kitty_ids[&key][1][0];
+    let clip_id = app.md_images.kitty_ids[&key][1][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // The in-place zoom of a focused diagram → the Zoom slot.
     app.tab.fence_zoom = 2.0;
     app.ensure_md_fence_zoom(&url, cols, full_rows);
-    let zoom_id = app.md_kitty_ids[&key][2][0];
+    let zoom_id = app.md_images.kitty_ids[&key][2][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     let ids = [full_req_id, clip_id, zoom_id];
@@ -7713,22 +7713,23 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
     );
 
     // Re-encoding any slot reuses that slot's id rather than taking a new one.
-    let entry = app.md_image_cache.get_mut(&key).unwrap();
+    let entry = app.md_images.cache.get_mut(&key).unwrap();
     entry.mark_stale(); // what a GIF frame advance does
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
     assert_eq!(
-        app.md_kitty_ids[&key],
+        app.md_images.kitty_ids[&key],
         [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "再エンコードでは ID を取り直さない"
     );
 
     // ...and neither does throwing the cache entry away, which is what moving to another file
     // does: the ids belong to the *picture*, not to whatever decode happens to be cached for it.
-    app.md_image_cache.remove(&key);
-    app.md_image_cache
+    app.md_images.cache.remove(&key);
+    app.md_images
+        .cache
         .insert(key.clone(), MdImgEntry::default());
     assert_eq!(
-        app.md_kitty_ids[&key],
+        app.md_images.kitty_ids[&key],
         [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "キャッシュ項目を捨てても ID は生き残る(開き直しで端末の常駐画像が増えない)"
     );
@@ -7738,7 +7739,7 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
 /// The cell size a full-image slot currently holds.
 fn full_slot_widths(app: &App, key: &PathBuf) -> std::collections::BTreeSet<u16> {
-    app.md_image_cache[key]
+    app.md_images.cache[key]
         .full
         .iter()
         .map(|s| match s.key {
@@ -7787,11 +7788,11 @@ fn inline_image_at_two_nearly_equal_sizes_gets_two_slots_and_two_kitty_ids() {
         std::collections::BTreeSet::from([20, 21]),
         "1桁違いでも別々のスロットに載る"
     );
-    let ids = &app.md_kitty_ids[&key][0];
+    let ids = &app.md_images.kitty_ids[&key][0];
     assert_eq!(ids.len(), 2, "サイズごとに ID が要る: {ids:?}");
     assert_ne!(ids[0], ids[1], "同じ ID を共有すると端末側で消し合う");
     assert!(
-        app.md_image_cache[&key]
+        app.md_images.cache[&key]
             .full
             .iter()
             .all(|s| s.image.is_some()),
@@ -7828,7 +7829,7 @@ fn resizing_recycles_a_protocol_slot_instead_of_burning_a_kitty_id() {
     }
 
     assert_eq!(
-        app.md_image_cache[&key].full.len(),
+        app.md_images.cache[&key].full.len(),
         MD_PROTO_SLOTS,
         "保持サイズ数は上限で頭打ちになる"
     );
@@ -7838,7 +7839,7 @@ fn resizing_recycles_a_protocol_slot_instead_of_burning_a_kitty_id() {
         "落ちるのは一番古いサイズ"
     );
     assert_eq!(
-        app.md_kitty_ids[&key][0].len(),
+        app.md_images.kitty_ids[&key][0].len(),
         MD_PROTO_SLOTS,
         "6回リサイズしても端末に載る画像は上限ぶんだけ(リサイズ回数に比例しない)"
     );
@@ -7901,7 +7902,7 @@ fn more_simultaneous_sizes_than_the_cap_still_go_quiet() {
 
     // What that retention costs, measured rather than assumed: the sizes on screen at one moment
     // occupy disjoint parts of the viewport, so their protocols add up to about one screenful.
-    let held: usize = app.md_image_cache[&key]
+    let held: usize = app.md_images.cache[&key]
         .full
         .iter()
         .filter_map(|s| s.image.as_ref())
@@ -7942,7 +7943,7 @@ fn a_size_still_encoding_keeps_the_previous_size_on_screen() {
         "新しい幅が届くまでは直前の幅の絵が出たまま"
     );
     assert_eq!(
-        app.md_image_cache[&key].full.len(),
+        app.md_images.cache[&key].full.len(),
         2,
         "新しい幅は空きスロットを取る(古い方を潰さない)"
     );
@@ -7995,7 +7996,7 @@ fn zooming_a_focused_diagram_keeps_the_previous_crop_on_screen() {
         "直前のクロップが出たまま(素の図へ戻ってちらつかない)"
     );
     assert_eq!(
-        app.md_image_cache[&key].zoom.len(),
+        app.md_images.cache[&key].zoom.len(),
         MD_ZOOM_SLOTS,
         "ズームは2枠を交互に使う"
     );
@@ -8022,7 +8023,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
 
     let (req_tx, req_rx) = std::sync::mpsc::channel();
     app.attach_md_encoder(req_tx);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         file.clone(),
         MdImgEntry {
             decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(
@@ -8035,7 +8036,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
     let req = req_rx.try_recv().expect("エンコードを要求する");
     assert!(req.kitty.is_none(), "非 kitty 端末では固定 ID を渡さない");
     // ...and no id was burned for a picture whose slots will never use one.
-    assert!(!app.md_kitty_ids.contains_key(&file));
+    assert!(!app.md_images.kitty_ids.contains_key(&file));
 }
 
 #[test]
@@ -11706,7 +11707,8 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
         "flowchart TD\nA-->B\n",
     ));
     for key in [&changed, &untouched, &remote_key, &fence] {
-        app.md_image_cache
+        app.md_images
+            .cache
             .insert(key.clone(), MdImgEntry::default());
     }
 
@@ -11714,30 +11716,31 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
     app.refresh_fs_watched(false, std::slice::from_ref(&changed));
 
     assert!(
-        !app.md_image_cache.contains_key(&changed),
+        !app.md_images.cache.contains_key(&changed),
         "書き換えられたローカル画像の項目は落ちる"
     );
     assert!(
-        app.md_image_cache.contains_key(&untouched),
+        app.md_images.cache.contains_key(&untouched),
         "同じ文書の他のローカル画像は残る(全消ししない)"
     );
     assert!(
-        app.md_image_cache.contains_key(&remote_key),
+        app.md_images.cache.contains_key(&remote_key),
         "リモート画像は対象外(監視ツリーの外に住んでいる)"
     );
     assert!(
-        app.md_image_cache.contains_key(&fence),
+        app.md_images.cache.contains_key(&fence),
         "mermaid/math の内容ハッシュ鍵は対象外(自分で陳腐化する)"
     );
 
     // A burst whose paths are unknown (empty = `.git`-only or over the cap) reloads the preview but
     // must not sweep the image cache: every `git` command produces one, and blanking every picture
     // on each of them would be a visible flicker for no gain.
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(changed.clone(), MdImgEntry::default());
     app.refresh_fs_watched(false, &[]);
     assert_eq!(
-        app.md_image_cache.len(),
+        app.md_images.cache.len(),
         4,
         "パス不明のバーストでは1件も落とさない"
     );
@@ -13653,7 +13656,8 @@ fn mermaid_curve_and_mermaid_rows_are_independent_axes() {
         // `App::vector_svg` — that field only ever holds the *full-screen* zoom surface's source
         // (standalone `.mmd` or an opened `MermaidFence`), neither of which this test opens.
         let svg = app
-            .md_image_cache
+            .md_images
+            .cache
             .get(&PathBuf::from(&img.url))
             .and_then(|e| e.svg.clone())
             .expect("the inline fence's SVG source must be retained");
@@ -14597,14 +14601,14 @@ fn mermaid_rows_is_an_upper_limit_not_a_fill_target() {
     app.ensure_md_cache(120);
     let p = app.md_images()[0].clone();
     let key = std::path::PathBuf::from(&p.url);
-    let layout_before = app.md_image_cache[&key].layout_px;
-    let before = app.md_image_cache[&key]
+    let layout_before = app.md_images.cache[&key].layout_px;
+    let before = app.md_images.cache[&key]
         .decoded
         .as_ref()
         .unwrap()
         .dimensions();
     app.ensure_md_fence_density(&p.url, p.cols, p.rows);
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     let after = e.decoded.as_ref().unwrap().dimensions();
     assert!(
         after.0.max(after.1) > before.0.max(before.1),
@@ -14935,7 +14939,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let code1 = crate::preview::markdown::collect_mermaid_fences(v1).remove(0);
     let key1 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code1));
     assert!(
-        app.md_image_cache.contains_key(&key1),
+        app.md_images.cache.contains_key(&key1),
         "前提: v1 がキャッシュ済み"
     );
 
@@ -14947,11 +14951,11 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let code2 = crate::preview::markdown::collect_mermaid_fences(v2).remove(0);
     let key2 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code2));
     assert!(
-        app.md_image_cache.contains_key(&key2),
+        app.md_images.cache.contains_key(&key2),
         "v2 はキャッシュ済み"
     );
     assert!(
-        !app.md_image_cache.contains_key(&key1),
+        !app.md_images.cache.contains_key(&key1),
         "旧内容のエントリは prune される(単調成長しない)"
     );
 }
@@ -15020,7 +15024,8 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     let code = crate::preview::markdown::collect_mermaid_fences(src).remove(0);
     let key = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
     let arc0 = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .and_then(|e| e.decoded.clone())
         .expect("前提: フェンスがレンダ済み");
@@ -15041,7 +15046,8 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
         "md ビューへ戻る"
     );
     let arc1 = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .and_then(|e| e.decoded.clone())
         .expect("復帰後もキャッシュが残る");
@@ -15066,7 +15072,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
 
     // Full failure, no protocol held -> degrades to failed and busy clears.
     let key = std::path::PathBuf::from("mermaid-fence://feedfeedfeedfeed");
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             enc_inflight: true,
@@ -15088,7 +15094,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     });
     assert!(redraw);
     {
-        let e = app.md_image_cache.get(&key).unwrap();
+        let e = app.md_images.cache.get(&key).unwrap();
         assert!(!e.enc_inflight, "inflight が解除される");
         assert!(e.failed, "表示できる protocol が無ければテキスト降格");
         assert_eq!(
@@ -15103,7 +15109,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     // A Zoom failure keeps the old display (does not mark failed) -- only the key is recorded.
     let key2 = std::path::PathBuf::from("mermaid-fence://cafecafecafecafe");
     let crop = (0u32, 0u32, 4u32, 4u32);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key2.clone(),
         MdImgEntry {
             enc_inflight: true,
@@ -15126,7 +15132,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
         image: None,
         born: 0,
     });
-    let e2 = app.md_image_cache.get(&key2).unwrap();
+    let e2 = app.md_images.cache.get(&key2).unwrap();
     assert!(!e2.enc_inflight);
     assert!(!e2.failed, "ズーム失敗で図全体を殺さない");
     assert_eq!(
@@ -15168,7 +15174,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     // Reproduce the state after ensure_math_render -> apply_md_image: a synthetic-key entry with decoded + layout_px.
     let url = math_url("E=mc^2", false);
     let key = std::path::PathBuf::from(&url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48))),
@@ -15342,7 +15348,7 @@ fn stale_md_image_result_is_dropped() {
     });
     assert!(!redraw, "陳腐化結果は再描画も要求しない");
     assert!(
-        !app.md_image_cache.contains_key(&stale),
+        !app.md_images.cache.contains_key(&stale),
         "エントリを復活させない"
     );
     assert!(
@@ -15369,7 +15375,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
 
     let key = std::path::PathBuf::from("mermaid-fence://deadbeefdeadbeef");
     let existing = std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(existing.clone()),
@@ -15391,7 +15397,8 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
     let redraw = app.apply_md_image(panic_fallback);
     assert!(redraw);
     let entry = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .expect("エントリは残る(消えない)");
     assert!(
@@ -25321,10 +25328,10 @@ fn md_cache_evicts_the_least_recently_used_pixels_first() {
     let dir = unique_tmp("konoma_md_lru_order");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 10;
+    app.md_images.frame = 10;
     // 4 pictures of 256 KB (256 x 256 x 4) with ascending recency.
     for i in 0..4u64 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("/x/img{i}.png")),
             entry_with_pixels(256, 256, i + 1),
         );
@@ -25337,7 +25344,7 @@ fn md_cache_evicts_the_least_recently_used_pixels_first() {
         "trimmed to the budget, no further"
     );
     for (i, gone) in [(0, true), (1, true), (2, false), (3, false)] {
-        let e = &app.md_image_cache[&PathBuf::from(format!("/x/img{i}.png"))];
+        let e = &app.md_images.cache[&PathBuf::from(format!("/x/img{i}.png"))];
         assert_eq!(e.decoded.is_none(), gone, "img{i}");
         assert_eq!(e.evicted, gone, "img{i}");
         assert_eq!(
@@ -25357,9 +25364,9 @@ fn md_cache_never_evicts_what_the_current_frame_draws() {
     let dir = unique_tmp("konoma_md_lru_visible");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     for i in 0..3 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("/x/v{i}.png")),
             entry_with_pixels(256, 256, 7),
         );
@@ -25379,25 +25386,26 @@ fn md_cache_only_evicts_what_it_can_rebuild() {
     let dir = unique_tmp("konoma_md_lru_rebuildable");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     let diff_key = PathBuf::from(crate::preview::media_diff::media_diff_url(
         crate::preview::media_diff::MediaDiffSide::Old,
         1,
         0,
         None,
     ));
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(diff_key.clone(), entry_with_pixels(256, 256, 1));
     let math_key = PathBuf::from(crate::preview::markdown::math_url("x^2", false));
     let mut math = entry_with_pixels(256, 256, 1);
     math.svg = Some(Arc::new(b"<svg/>".to_vec()));
-    app.md_image_cache.insert(math_key.clone(), math);
+    app.md_images.cache.insert(math_key.clone(), math);
     app.evict_md_images_to(0);
     assert!(
-        app.md_image_cache[&diff_key].decoded.is_some(),
+        app.md_images.cache[&diff_key].decoded.is_some(),
         "a media-diff picture stays"
     );
-    let m = &app.md_image_cache[&math_key];
+    let m = &app.md_images.cache[&math_key];
     assert!(m.decoded.is_none() && m.evicted, "a formula's raster goes");
     assert!(
         m.svg.is_some(),
@@ -25417,16 +25425,16 @@ fn md_cache_rebuilds_an_evicted_image_from_its_file() {
     app.attach_md_image_loader(tx);
     let mut entry = entry_with_pixels(40, 30, 1);
     entry.layout_px = Some((40, 30));
-    app.md_image_cache.insert(png.clone(), entry);
-    app.md_frame = 3;
+    app.md_images.cache.insert(png.clone(), entry);
+    app.md_images.frame = 3;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&png].evicted);
+    assert!(app.md_images.cache[&png].evicted);
     assert!(!app.ensure_md_pixels(&png), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("decode result");
     assert!(app.apply_md_image(res));
-    let e = &app.md_image_cache[&png];
+    let e = &app.md_images.cache[&png];
     assert_eq!(
         e.decoded.as_ref().map(|i| (i.width(), i.height())),
         Some((40, 30))
@@ -25449,10 +25457,10 @@ fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
     let mut entry = entry_with_pixels(8, 8, 1);
     entry.layout_px = Some((20, 10));
     entry.svg = Some(Arc::new(svg.to_vec()));
-    app.md_image_cache.insert(key.clone(), entry);
-    app.md_frame = 3;
+    app.md_images.cache.insert(key.clone(), entry);
+    app.md_images.frame = 3;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted);
+    assert!(app.md_images.cache[&key].evicted);
     assert!(!app.ensure_md_pixels(&key), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
@@ -25462,7 +25470,7 @@ fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
         "applied as a re-raster: layout and decoration cache untouched"
     );
     assert!(app.apply_md_image(res));
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     assert!(e.decoded.is_some() && !e.evicted);
     assert_eq!(
         e.layout_px,
@@ -25478,12 +25486,12 @@ fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
     let dir = unique_tmp("konoma_md_lru_formulas");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 2;
+    app.md_images.frame = 2;
     for i in 0..500 {
         let key = PathBuf::from(crate::preview::markdown::math_url(&format!("x_{i}"), false));
         let mut e = entry_with_pixels(1024, 440, 0);
         e.svg = Some(Arc::new(Vec::new()));
-        app.md_image_cache.insert(key, e);
+        app.md_images.cache.insert(key, e);
     }
     let before = app.md_image_cache_pixel_bytes();
     assert!(
@@ -25493,7 +25501,7 @@ fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
     app.evict_md_images_over_budget();
     assert!(app.md_image_cache_pixel_bytes() <= super::MD_IMAGE_CACHE_BYTES);
     assert_eq!(
-        app.md_image_cache.len(),
+        app.md_images.cache.len(),
         500,
         "entries (and so the layout) all remain"
     );
@@ -25545,7 +25553,8 @@ fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
         // What the worker reports when the supervisor stopped the drawing.
         let key = app.md_images()[0].url.clone();
         let path = resolve_md_image_path(&key, Some(&dir)).expect("the cached picture's path");
-        app.md_image_cache
+        app.md_images
+            .cache
             .insert(path.clone(), MdImgEntry::default());
         assert!(app.apply_md_image(MdImageResult {
             path: path.clone(),
@@ -25634,7 +25643,7 @@ fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("a.svg");
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_image_cache.insert(p.clone(), MdImgEntry::default());
+    app.md_images.cache.insert(p.clone(), MdImgEntry::default());
     let redraw = app.apply_md_image(MdImageResult {
         path: p.clone(),
         image: Err(crate::preview::image::ImageFailure::Cancelled
@@ -25646,7 +25655,7 @@ fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
         request: app.md_request_for_test(&p),
     });
     assert!(!redraw);
-    assert!(!app.md_image_cache.contains_key(&p));
+    assert!(!app.md_images.cache.contains_key(&p));
 }
 
 /// A full-screen SVG that was refused carries its reason to the screen.

@@ -11,6 +11,7 @@
 
 mod draw;
 mod looping;
+mod pictures;
 mod term;
 mod window;
 
@@ -23,7 +24,8 @@ use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
-pub use looping::{run_with, AppCx, AppEvent, AppKeys, EventSource, Next};
+pub use looping::{run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next};
+pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
@@ -139,6 +141,8 @@ pub struct Opened {
     pub session: Box<dyn Session>,
     pub title: String,
     pub plugin_id: String,
+    /// The absolute path of the file (where a picture's relative references resolve from).
+    pub path: PathBuf,
 }
 
 /// Check the file, pick the plugin by the registry's rules and open a session. Nothing here
@@ -216,6 +220,7 @@ pub fn open_file(
         session,
         title,
         plugin_id: id,
+        path,
     })
 }
 
@@ -230,7 +235,9 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     // The config comes first: `ui.lang` says the language of the session too. A missing or broken
     // config file gives the defaults; a broken one is reported on standard error once the
     // terminal is back (the screen is the alternate one meanwhile).
-    let (keys, load_error) = keys_from_load(konoma_host_core::shared::SharedConfig::load_default());
+    let loaded = konoma_host_core::shared::SharedConfig::load_default();
+    let svg_max_px = loaded.0.ui.svg_max_px;
+    let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
         konoma_host_core::lang::Lang::En => "en",
@@ -247,12 +254,27 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         title: opened.title.clone(),
     };
     let mut guard = term::TerminalGuard::enter()?;
-    let result = run_with(
+    // The terminal is asked what it can show once, on the alternate screen and before events are
+    // read (konoma does the same); what was typed meanwhile is replayed, and a late reply is
+    // dropped from the keys. Without an answer there are no pictures: the cells stay.
+    let konoma_widgets::term_query::Startup {
+        picker,
+        typed,
+        late_reply,
+    } = konoma_widgets::term_query::picker_from_terminal();
+    let window_size = crossterm::terminal::window_size()
+        .ok()
+        .map(|w| (w.columns, w.rows, w.width, w.height));
+    let pictures = picker
+        .map(|p| konoma_widgets::term_query::fix_picker_font_size(p, window_size))
+        .map(|p| Pictures::new(p, &opened.plugin_id, &opened.path, svg_max_px));
+    let result = run_with_pictures(
         guard.terminal(),
         &mut *opened.session,
-        &mut term::CrosstermEvents,
+        &mut term::CrosstermEvents::after_query(&typed, late_reply),
         &cx,
         &keys,
+        pictures,
     );
     guard.leave();
     // A failure to write to a closed standard error changes nothing about the run.

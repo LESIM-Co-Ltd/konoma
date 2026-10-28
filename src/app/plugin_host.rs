@@ -871,15 +871,16 @@ impl PluginWork {
                 // on the worker, in the same job (the view itself is kept as it is).
                 Ok(View::Canvas(c)) => {
                     picture = Picture::Canvas(canvas_known.as_ref().map(|known| {
-                        Box::new(super::canvas_images::decode_canvas(
-                            &id,
-                            &c,
-                            known,
-                            &path,
-                            default_raster_px,
-                            decode_cancel.as_ref(),
-                            trust_own_svg,
+                        let cancelled = || decode_cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                        let policy = konoma_plugin::canvas_pictures::CanvasPolicy::new(
                             &read_scope,
+                            &super::media_plugin::SvgChild,
+                            default_raster_px,
+                        )
+                        .cancelled(&cancelled)
+                        .trust_own_svg(trust_own_svg);
+                        Box::new(super::canvas_images::decode_canvas(
+                            &id, &c, known, &path, &policy,
                         ))
                     }));
                     (Some(View::Canvas(c)), None)
@@ -1547,7 +1548,7 @@ impl App {
                 // Pictures held under another read scope are not what `unchanged` may resolve to:
                 // the key of a picture carries the scope it was judged under, and the new scope
                 // judges again.
-                if self.canvas_scope_fp != scope_fp {
+                if self.canvas.scope_fp != scope_fp {
                     held.by_id.clear();
                     held.kept.clear();
                 }

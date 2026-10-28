@@ -14,11 +14,19 @@ proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
 # The display types drawn with ratatui (`ratatui_draw`): style/line conversion and the canvas
 # painter. The hosts (konoma and the standalone app) turn it on; a plugin does not need it.
 ratatui = ["dep:ratatui"]
+# The canvas pictures (`canvas_pictures`): hashing, decoding within the work limits, the read
+# scope, and the overlay arithmetic that both hosts (konoma and the standalone app) share, so a
+# picture a plugin places looks the same in either. Off by default: a plugin does not need it.
+pictures = ["ratatui", "dep:konoma-base", "dep:konoma-widgets", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
+# The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
+# while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
+test-hooks = ["konoma-base?/test-hooks"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
-# host: raw mode, an alternate screen and the display types drawn with `ratatui_draw`). Off by
+# host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
+# pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "dep:crossterm", "dep:konoma-host-core"]
+app = ["proc", "ratatui", "pictures", "dep:crossterm", "dep:konoma-host-core"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -37,6 +45,16 @@ libc = { workspace = true, optional = true }
 # The human-readable `--manifest` output and the host's manifest cache.
 serde_json = { workspace = true, optional = true }
 
+# Freeing a large value off the UI thread (`pictures` feature).
+konoma-base = { path = "../konoma-base", version = "0.1.0", optional = true }
+# The canvas pictures (`pictures` feature): the picture cache key, the SVG drawing seam and the
+# decoders. `konoma-widgets` must never depend on this crate (a cycle).
+konoma-widgets = { path = "../konoma-widgets", version = "0.1.0", optional = true }
+konoma-svg = { path = "../konoma-svg", version = "0.1.0", optional = true }
+image = { workspace = true, optional = true }
+# The terminal graphics `Picker` the app is given (`pictures` feature).
+ratatui-image = { workspace = true, optional = true }
+
 # Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
@@ -46,6 +64,8 @@ konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional =
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+# The test seams of the discard thread (the landing tests ask what was handed to it).
+konoma-base = { path = "../konoma-base", features = ["test-hooks"] }
 
 # Real-process tests: this binary is also the plugin program (it serves when an environment variable
 # says so). `harness = false` because the body must run as the child too; it speaks the part of

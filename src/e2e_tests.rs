@@ -14795,7 +14795,7 @@ fn e2e_ui_inline_gif_stops_polling_after_leaving_preview() {
 }
 
 /// Report 1, tab-switch companion: switching to a *different* file within the same tab already goes
-/// through `enter_preview`'s `if !same_file { self.md_image_cache.clear() }`, which is the one place
+/// through `enter_preview`'s `if !same_file { self.md_images.cache.clear() }`, which is the one place
 /// that genuinely empties the cache. Pins that this path keeps working once `back_to_tree`/mode
 /// gating is added elsewhere — a change scoped to `md_gif_poll_timeout`/`advance_md_gifs_if_due`
 /// alone must not weaken this existing behavior.

@@ -15,9 +15,20 @@ use ratatui_image::picker::Picker;
 use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse};
-use ratatui_image::{FilterType, Resize};
 
-use konoma_widgets::layout::{fence_crop, PxRect};
+use konoma_widgets::layout::fence_crop;
+
+// The inline-image cache machinery lives in the display crate (the standalone plugin app draws
+// canvas pictures with the very same code); the names stay reachable here for the host.
+#[cfg(test)]
+pub use konoma_widgets::inline_images::{
+    kitty_id_for, md_band_pixels, reserve_proto_slot_hard, MdProtoSlot, MD_PROTO_SLOTS,
+    MD_ZOOM_SLOTS,
+};
+pub use konoma_widgets::inline_images::{
+    md_encode_worker, EncodeApplied, Filed, InlineImage, InlineImageCache, MdEncodeKey,
+    MdEncodeRequest, MdEncodeResult, MdImgEntry, SvgTrust,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
@@ -81,7 +92,7 @@ mod tab_lifecycle;
 mod table_actions;
 /// Test-only: waits until the background reaper has dropped everything discarded so far.
 #[cfg(test)]
-pub(crate) use table_actions::flush_discards;
+pub(crate) use konoma_base::discard::flush_discards;
 mod text_plugin;
 
 use md_text::*;
@@ -781,34 +792,23 @@ pub fn sizeof_pertab() -> usize {
     std::mem::size_of::<PerTab>()
 }
 
-/// Who vouches for a retained SVG, and so how it is drawn again (sharp zoom, rebuilding evicted
-/// pixels). Decided by the host from where the SVG came from, never by what a plugin claims.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SvgTrust {
-    /// Made by konoma's own code (a mermaid diagram, a formula): drawn in this process. The path is
-    /// the base for relative resources (the diagrams have none).
-    Trusted(PathBuf),
-    /// From a file: drawn by the supervised child process, reading files relative to this path.
-    File(PathBuf),
-    /// From a file of a plugin the user added: like `File`, but every file the drawing reads must
-    /// be inside these real directories (the plugin's read scope), whatever the SVG references.
-    FileWithin(PathBuf, std::sync::Arc<[PathBuf]>),
-    /// From a document, a plugin or git, with no file to be relative to: drawn by the supervised
-    /// child process, which reads no file.
-    Embedded,
+/// The host's half of [`SvgTrust`]: drawing it again goes through the supervised child process
+/// (`preview::svg_proc`), which the display crates cannot depend on.
+pub trait SvgTrustExt {
+    #[cfg(test)]
+    fn is_untrusted(&self) -> bool;
+    fn draw(
+        &self,
+        svg: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<image::DynamicImage>;
 }
 
-impl Default for SvgTrust {
-    /// The safe answer for an entry whose origin was never stated: no file read, child process.
-    fn default() -> Self {
-        SvgTrust::Embedded
-    }
-}
-
-impl SvgTrust {
+impl SvgTrustExt for SvgTrust {
     /// Whether this SVG is drawn by the supervised child process (anything but konoma's own).
     #[cfg(test)]
-    pub(crate) fn is_untrusted(&self) -> bool {
+    fn is_untrusted(&self) -> bool {
         !matches!(self, SvgTrust::Trusted(_))
     }
 
@@ -816,7 +816,7 @@ impl SvgTrust {
     /// drawing again (sharp zoom, evicted pixels) and the full-screen re-raster all go through, so
     /// the same SVG never changes how it looks (a relative `<image href>` is read, or not, the
     /// same each time). `None`: it could not be drawn (or `cancelled` turned true).
-    pub(crate) fn draw(
+    fn draw(
         &self,
         svg: &[u8],
         max_px: u32,
@@ -1656,13 +1656,6 @@ pub struct App {
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     /// The drawing state of the full-screen still image (zoom/pan crop, the protocol built for it).
     pub image_viewer: konoma_widgets::image_view::ImageViewer,
-    /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
-    /// ratatui-image's `image`/`ThreadProtocol`: the pixels are **zlib-compressed** (`o=z`), which
-    /// shrinks the terminal transfer 2×–50× (the real latency; see docs/PERF-IMAGE-TRANSFER-2026-07).
-    /// `use_kitty` is set from the picker's protocol type; on other terminals (sixel/iterm2/
-    /// halfblocks) the viewer's kitty image stays None and its ratatui-image protocol is used.
-    use_kitty: bool,
-    kitty_is_tmux: bool,
     /// Offloads the kitty resize+compress (~30–50 ms) to a worker thread so rapid zoom/pan does not
     /// hitch the UI. The **first** build after opening a file stays synchronous (so the image appears
     /// without a blank frame); subsequent rebuilds (zoom/pan/resize) go async and the previous image
@@ -1690,11 +1683,7 @@ pub struct App {
     /// changes (scroll/focus moved a diagram, or the document was left), the run loop clears the
     /// terminal once to sweep orphaned kitty unicode-placeholder rows (they are printed into the
     /// terminal grid and a blank-over-blank diff never repaints them).
-    md_overlay_last: Option<u64>,
-    /// Overlay signature seen during the current frame (None until the overlay draws).
-    md_overlay_seen: Option<u64>,
-    /// The overlay moved/vanished since the previous frame → the run loop full-redraws once.
-    md_overlay_moved: bool,
+    md_overlay: konoma_widgets::inline_images::OverlayMoved,
 
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
@@ -1778,57 +1767,14 @@ pub struct App {
     /// Sending end that offloads heavy media loading (SVG rasterize / GIF full-frame decode) to a separate thread.
     /// The result is received by main's poll loop and applied in apply_media. None=synchronous fallback (tests, etc.).
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
-    /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
-    md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
-    /// The **fixed** kitty image ids of one picture: `[full, clip, zoom]` (the families of
-    /// `MdEncodeKey::slot`), and within each family one id per slot of `MdImgEntry`, at the matching
-    /// index. Allocated on a slot's first encode and reused for every later one.
-    ///
-    /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
-    /// terminal, so re-encoding a slot — an animated GIF advancing a frame, a scroll re-cropping a
-    /// band, the very same document being opened again tomorrow — costs the terminal one image
-    /// forever instead of one per re-encode. The three families need ids of their *own*, though: the
-    /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
-    /// families of the same picture can be on screen across consecutive frames, and sharing an id
-    /// there would let the band's transmit silently take over the cells the full image is still
-    /// drawn from.
-    ///
-    /// The *within*-family split exists for the same reason one step down. The same file drawn at
-    /// two cell sizes at once (a block image and a copy inside a narrower table column) is two
-    /// pictures as far as the terminal is concerned, so the two sizes cannot share one id either —
-    /// each transmit would delete the other, which is the terminal-side half of the very fight
-    /// `MD_PROTO_SLOTS` settles on konoma's side. Index-alignment with `MdImgEntry`'s slots is what
-    /// keeps the two halves honest: recycling a slot re-keys exactly one id, so konoma's retained
-    /// encodes and the terminal's resident pictures for a file are the same set, and **resizing
-    /// reuses slots** instead of burning an id per width.
-    ///
-    /// This lives on `App` rather than on the `MdImgEntry` it describes because `md_image_cache` is
-    /// **discarded whenever the preview moves to a different file** — so ids parked on the entry
-    /// died with it, and reopening a document handed the terminal a brand new image for a picture
-    /// it already held. The terminal's resident set then grew as "pictures × times opened", which
-    /// on a long agent-watch session is exactly the runaway the per-slot pinning existed to stop.
-    /// Keyed by the same path/synthetic key as the cache, so a picture keeps its ids for the whole
-    /// session no matter how often it is opened, closed, or reached from another tab.
-    ///
-    /// Nothing is ever removed: an id may be *needed* again at any moment (the same file reopened,
-    /// the same diagram re-rendered from an undo), and dropping one would silently reintroduce the
-    /// growth. The map only ever holds a handful of `u32`s per distinct picture the session has
-    /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
-    /// is by construction the cheaper of the two.
-    md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
-    /// The placements of the canvas on screen, in the order of `CanvasView::images`, with the
-    /// cache key made once when the answer landed (`app/canvas_images.rs`).
-    canvas_places: Vec<canvas_images::CanvasPlace>,
-    /// How many placements of the canvas on screen each picture (by `canvas_slot_of`) has: the
-    /// number of encodings it can need at once (one per placement, a clipped one has its own).
-    /// Built with `canvas_places`; the cap of a canvas picture's encode slots.
-    canvas_slot_counts: std::collections::HashMap<String, usize>,
-    /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
-    /// content of the id has no protocol yet, so a changing picture does not blink.
-    canvas_front: std::collections::HashMap<u64, Arc<str>>,
-    /// The read scope identity ([`konoma_plugin::ReadScope::fingerprint`]) the canvas pictures
-    /// held were made under; a job under another scope does not resolve `unchanged` to them.
-    canvas_scope_fp: u64,
+    /// Decoded/encoded cache for inline Markdown images (keyed by resolved absolute path), the
+    /// kitty ids pinned to their encodes and the encode worker's handle (`InlineImageCache`).
+    /// Also holds the `use_kitty` / `kitty_is_tmux` flags of the terminal.
+    md_images: InlineImageCache,
+    /// The canvas pictures on screen: the placements, the entry each id is drawn from, the kept
+    /// sources and the read scope they were made under (`konoma_plugin::canvas_pictures`, shared
+    /// with the standalone plugin app). Its methods take `md_images`, the cache they fill.
+    canvas: canvas_images::CanvasPictureHost,
     /// The (plugin id, reason) pairs of read-scope refusals already flashed, so a refusal is told
     /// once and not at every redraw.
     scope_flashed: std::collections::HashSet<(String, &'static str)>,
@@ -1838,22 +1784,6 @@ pub struct App {
     /// The read scope of the plugin document on screen, built once and reused between frames
     /// (see `App::with_scope_memo`); rebuilt when its inputs change.
     read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
-    /// The sources of the canvas pictures deferred or refused and not decoded yet, by id (kept
-    /// from the answer that sent them, so the plugin need not send them again).
-    canvas_kept: std::collections::HashMap<u64, canvas_images::KeptPicture>,
-    /// Kitty image ids of canvas pictures that are gone, waiting to be deleted from the terminal
-    /// (`App::take_kitty_deletes`).
-    kitty_deletes: Vec<u32>,
-    /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
-    /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
-    /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
-    /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
-    /// from "left over from an earlier position" (fair game).
-    md_frame: u64,
-    /// Last request id handed out by `App::begin_md_request` (ids start at 1). Every decode,
-    /// rebuild and re-raster of an inline picture is stamped with a fresh one, so a result can be
-    /// matched to the request that is still wanted (`MdImgEntry::request`).
-    md_request_seq: u64,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -1888,8 +1818,6 @@ pub struct App {
     md_remote_failed: std::collections::HashSet<String>,
     /// Sender that reports the completion of a background remote-image download to the run loop.
     md_remote_tx: Option<std::sync::mpsc::Sender<RemoteFetch>>,
-    /// Sender that offloads inline-image encoding (resize + protocol) to the encode worker thread.
-    md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
     /// `media_gen`, shared with the running loads so they can see that they were superseded
@@ -2392,136 +2320,8 @@ struct WinCache {
     lines: Vec<Line<'static>>,
 }
 
-/// One drawable inline Markdown image: either konoma's own compressed kitty transmit or
-/// ratatui-image's protocol for every other graphics backend.
-///
-/// The split exists because a kitty image is **addressable**: it carries an id, and re-transmitting
-/// that id replaces the picture instead of adding a second one. Everything else (sixel, iTerm2,
-/// halfblocks) is written as cell content — the terminal keeps nothing between frames — so those
-/// backends can keep re-encoding freely and stay on the ratatui-image path unchanged.
-#[derive(Clone)]
-pub enum InlineImage {
-    /// konoma's zlib-compressed (`o=z`) transmit + Unicode placeholders, on a fixed image id.
-    Kitty(crate::preview::kitty::KittyImage),
-    /// ratatui-image's fixed-size protocol (sixel / iTerm2 / halfblocks).
-    Proto(Protocol),
-}
-
-impl InlineImage {
-    /// Draw into `area`. Both arms refuse to draw when the encoded image is **larger** than the
-    /// area, matching `ratatui_image::Image`'s no-clipping rule: while a freshly scrolled band is
-    /// still encoding, the renderer deliberately hands the previous (taller) encode to this
-    /// function, and drawing it clipped would show the wrong slice of the picture rather than
-    /// simply nothing for one frame. The full-screen path keeps its own clamping behavior — this
-    /// rule is about matching what the inline path did before, not about `KittyImage` in general.
-    pub(crate) fn render(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-        match self {
-            Self::Kitty(ki) => {
-                let (cols, rows) = ki.cell_size();
-                if cols > area.width || rows > area.height {
-                    return;
-                }
-                ki.render(area, buf);
-            }
-            Self::Proto(p) => {
-                ratatui::widgets::Widget::render(ratatui_image::Image::new(p), area, buf)
-            }
-        }
-    }
-
-    /// Whether this went through konoma's compressed kitty transmit. Test-only: it is the one
-    /// difference the two arms are allowed to have, so a test can pin which backend a terminal got.
-    #[cfg(test)]
-    pub fn is_kitty(&self) -> bool {
-        matches!(self, Self::Kitty(_))
-    }
-
-    /// The encoded size in cells. Test-only, and deliberately readable from *both* arms: the kitty
-    /// arm reimplements `Picker::new_protocol`'s sizing, so the way to keep it honest is to run the
-    /// same request through both and compare this.
-    #[cfg(test)]
-    pub fn cell_size(&self) -> (u16, u16) {
-        match self {
-            Self::Kitty(ki) => ki.cell_size(),
-            Self::Proto(p) => {
-                let s = p.size();
-                (s.width, s.height)
-            }
-        }
-    }
-
-    /// Bytes of this image's one-shot transmit escape (0 for a protocol that is re-sent as cell
-    /// content every frame). Test-only, to state the compression win in real numbers.
-    #[cfg(test)]
-    pub fn transmit_len(&self) -> usize {
-        match self {
-            Self::Kitty(ki) => ki.transmit_len(),
-            Self::Proto(_) => 0,
-        }
-    }
-}
-
-/// How many distinct encode keys of **one picture** konoma keeps encoded protocols (and kitty image
-/// ids) for, within one protocol family.
-///
-/// The same file can be on screen at several sizes at once: a block image is laid out at the page
-/// width while a copy inside a table cell is shaved to that column's width, and one document can
-/// hold several tables whose columns are all different widths. Holding a single encode per picture
-/// is what made those placements fight — each one saw the other's size recorded, asked for its own,
-/// and the answer overwrote the first — so `draw → request → apply → draw → request → …` never
-/// stopped, with nobody touching the keyboard (measured at 40 columns: 0.31s of CPU across 30 idle
-/// seconds, and the losing placement never drew a picture at all).
-///
-/// The number is a **soft floor, not a hard ceiling**: `reserve_proto_slot` never recycles a slot
-/// the frame being drawn right now is using, and grows the family instead when every slot is live.
-/// That is what makes convergence unconditional — a document showing one picture at more
-/// simultaneous sizes than this keeps all of them rather than thrashing between them — and it is
-/// also what bounds the memory, because sizes that are on screen *at the same moment* occupy
-/// disjoint parts of the viewport: their cell areas sum to at most one screenful however many they
-/// are, and a protocol's bytes track its cell area.
-///
-/// So the constant only decides how many **off-screen** encodes stay warm, i.e. how much scrolling
-/// back (or dragging a pane edge back to a previous width) redraws instantly instead of re-encoding.
-/// Three covers the shapes that recur in practice — the page width plus two table column widths, or
-/// one width plus the previous one still lingering right after a resize — without paying for more.
-const MD_PROTO_SLOTS: usize = 3;
-
-/// Slots for the zoom family. Only one inline diagram can be focused at a time (`Tab` moves the
-/// focus, and `md_fence_zoom_proto` is only consulted for the focused fence), so one crop is all
-/// that is ever *wanted* — but two are kept, because a slot is claimed when its encode is requested
-/// and every `+`/`-` step asks for a different crop. With one slot the step would blank the crop on
-/// screen and fall back to the unzoomed diagram until the new one landed; with two, the previous
-/// crop stays visible right up to the moment it is replaced, and the pair simply alternates.
-const MD_ZOOM_SLOTS: usize = 2;
-
-/// One encoded protocol of an inline image, together with the exact request it answers.
-///
-/// A slot's **position** in its family is its identity: on a kitty terminal the image id at the same
-/// index of `App::md_kitty_ids` is pinned to it, so re-encoding into a slot hands the terminal a
-/// *replacement* rather than an additional picture — the property that keeps an animated GIF, and a
-/// document reopened all day long, at a constant cost in terminal image storage.
-struct MdProtoSlot {
-    /// The request this slot answers. Re-keying a slot is how it gets recycled, and is exactly when
-    /// its pinned kitty id starts holding a different picture.
-    key: MdEncodeKey,
-    /// None = the encode has been requested but has not landed yet, **or** it failed. Either way the
-    /// key stays recorded, which is what stops the renderer from asking again on every frame.
-    image: Option<InlineImage>,
-    /// `App::md_frame` at the last render pass that asked for this key. Slots the current pass is
-    /// drawing from are never recycled — see `MD_PROTO_SLOTS`.
-    used: u64,
-    /// The stored image belongs to a superseded animation frame: keep drawing it (clearing it would
-    /// flash a blank), but re-encode into this same slot so the id — and the terminal's picture
-    /// under it — is replaced rather than duplicated.
-    stale: bool,
-}
-
-/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
-/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
-/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
-/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
-/// by the latest overlay pass are never evicted, so a screenful always stays whole.
-const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+// The budget of the inline-image cache lives with the cache (shared with the standalone app).
+use konoma_widgets::inline_images::MD_IMAGE_CACHE_BYTES;
 
 /// The same budget while a presentation shows its slide pictures. A slide is drawn at the size of
 /// its frame (up to `SLIDE_RASTER_MAX_PX` on the long side, 4096 x 2304 x 4 = 38 MB), so a deck
@@ -2541,321 +2341,6 @@ const SLIDE_RASTER_MAX_PX: u32 = 4096;
 /// wait (and ask again) instead of all starting together.
 const MD_MAX_REBUILDS: usize = 4;
 
-/// A decoded inline Markdown image plus its background-encoded render protocol(s).
-#[derive(Default)]
-struct MdImgEntry {
-    /// The decoded source image (None while the background decode is in flight). Shared with the encode
-    /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread. Deliberately
-    /// **one per picture, not one per size**: the protocols below are what a size costs, while the
-    /// RGBA source is the big allocation and every size crops/resizes from the same one.
-    decoded: Option<Arc<image::DynamicImage>>,
-    /// Graphics protocols for the fully-visible image, one slot per (cols, rows) cell box it is
-    /// drawn at. See `MD_PROTO_SLOTS` for why this is a list and not a single encode.
-    full: Vec<MdProtoSlot>,
-    /// Graphics protocols for a partially-scrolled image: only the visible vertical band, cropped
-    /// and encoded so the image renders clipped instead of being hidden. One slot per
-    /// (cols, full_rows, row_off, vis_rows) band — a list for the same reason `full` is one, since
-    /// two placements of the same picture can be cut by the top and the bottom viewport edge at the
-    /// same time. A family of its own because the renderer keeps drawing the full-image encode until
-    /// a freshly scrolled band lands: the two are on screen across consecutive frames, so a band's
-    /// transmit must not land on the id the full image is still drawn from.
-    clip: Vec<MdProtoSlot>,
-    /// An encode request is in flight on the worker thread (at most one per image, so scrolling does not
-    /// queue a backlog — when it returns, the next render requests the then-current band).
-    enc_inflight: bool,
-    /// Decode or encode failed — do not retry; the placeholder/text fallback stays visible.
-    failed: bool,
-    /// In-place zoom protocols for a **focused inline mermaid diagram** (`+`/`-` while focused):
-    /// a crop of the source encoded into the same (cols, rows) cell area (the layout never moves).
-    /// Capped at `MD_ZOOM_SLOTS`.
-    zoom: Vec<MdProtoSlot>,
-    /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
-    /// density (sharp zoom, same mechanism as the full-screen vector zoom).
-    svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// Where `svg` came from, and so how it is drawn again (`SvgTrust`): konoma's own in this
-    /// process, a file's by the supervised child process with the file's directory as the base
-    /// for relative references (as the first drawing did), anything else by the child process
-    /// reading no file. Set where the entry is made.
-    svg_trust: SvgTrust,
-    /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
-    /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
-    /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
-    /// the same domain the renderer laid glyphs out in — see `mermaid_cells`/`math_cells`), not the
-    /// raster's pixel dimensions (those are scaled by `[ui] svg_max_px`, an unrelated setting).
-    /// Regular images use the raster's own dimensions, since there is no separate intrinsic size.
-    layout_px: Option<(u32, u32)>,
-    /// A sharpening re-raster is in flight (at most one per diagram).
-    reraster_inflight: bool,
-    /// The pixels changed (a re-raster landed, a GIF advanced) while an encode of the **previous**
-    /// pixels was still running. That encode holds the old picture, so when it lands its slot must
-    /// stay stale and be encoded again from the current pixels: clearing `stale` there froze the
-    /// picture at the old density for good (a bottom band cut from the 800 px raster instead of
-    /// the sharpened one, depending only on which thread finished first).
-    outdated_encode_in_flight: bool,
-    /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
-    /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
-    /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
-    /// `decoded` rather than a full image copy — mirrors the full-screen `GifPlayer` mechanism
-    /// (`App::advance_gif_if_due`) but per cache entry, since several inline GIFs can animate at once.
-    frames: Vec<(Arc<image::DynamicImage>, std::time::Duration)>,
-    /// Index of the currently-displayed frame within `frames`.
-    idx: usize,
-    /// The time the current frame began showing (mirrors the player's `shown_at`). None = before the
-    /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
-    shown_at: Option<std::time::Instant>,
-    /// `App::md_frame` of the last overlay pass that asked for this picture. The cache evicts the
-    /// pixels of the pictures asked for longest ago first (`App::evict_md_images_over_budget`).
-    last_used: u64,
-    /// The decoded pixels were dropped to stay within `MD_IMAGE_CACHE_BYTES`. The entry itself stays
-    /// (its layout size, SVG source, kitty ids and any finished encodes), so nothing on the page
-    /// moves; the pixels are rebuilt from the file / SVG the next time a placement needs them.
-    evicted: bool,
-    /// A rebuild of the evicted pixels is running (`App::ensure_md_pixels` started it, its result
-    /// has not landed). Together with `evicted` this is the whole life of a rebuild: waiting
-    /// (`evicted`, not `rebuilding`) -> running (`rebuilding`) -> back (`!evicted`) or `failed`.
-    rebuilding: bool,
-    /// A placement asked for the evicted pixels but the rebuild limit (`MD_MAX_REBUILDS`) was
-    /// reached: ask again on the next frame, and keep the loading indicator (and so the redraw
-    /// loop) alive until it starts. It holds the `App::draw_seq` of the frame that asked and counts
-    /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
-    /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
-    rebuild_wanted: Option<u64>,
-    /// For a slide picture: the longest edge, in pixels, its frame needs (0 = not asked yet). The
-    /// first decode, a rebuild of evicted pixels and the re-raster of a frame that outgrew the
-    /// raster all draw at this size (`App::note_slide_raster_wish`).
-    want_px: u32,
-    /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
-    fail: Option<crate::preview::image::ImageFailure>,
-    /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
-    /// the picture, and dropping the entry (document closed, file changed) withdraws a decode that
-    /// has not run yet.
-    wish: crate::preview::image::DecodeWish,
-    /// Id of the one background decode / rebuild / re-raster that is still wanted for this entry
-    /// (`App::begin_md_request`; 0 = none was ever started, as for an entry placed by hand in a
-    /// test). A result carrying any other id belongs to an earlier life of the same path (the entry
-    /// was dropped, then asked for again) and is ignored by `apply_md_image`, so a stale
-    /// "cancelled" cannot forget the new entry and a stale picture cannot fill it. At most one
-    /// request runs per entry, so this is also the identity of the in-flight one.
-    request: u64,
-    /// Id of the first request ever started for this entry, constant for its life: an encode
-    /// result carries it so that one computed for a dropped entry is not applied to a new one of
-    /// the same path (`request` cannot do this: a re-raster legitimately changes it while an
-    /// encode of the previous pixels may still be running). 0 = never started.
-    born: u64,
-}
-
-impl MdImgEntry {
-    /// Bytes of decoded pixels this entry keeps resident (frames of an animated GIF count once;
-    /// the first frame is shared with `decoded`).
-    fn pixel_bytes(&self) -> u64 {
-        use image::GenericImageView;
-        // The picture's own pixel format (3 bytes for an RGB8, 8 for an RGBA16), not an assumed 4.
-        let px = |im: &image::DynamicImage| {
-            let (w, h) = im.dimensions();
-            u64::from(w) * u64::from(h) * u64::from(im.color().bytes_per_pixel())
-        };
-        if self.frames.is_empty() {
-            self.decoded.as_deref().map_or(0, px)
-        } else {
-            self.frames.iter().map(|(im, _)| px(im)).sum()
-        }
-    }
-
-    /// Drop the decoded pixels (keeping everything that lets them be rebuilt).
-    fn evict_pixels(&mut self) {
-        self.decoded = None;
-        self.frames.clear();
-        self.idx = 0;
-        self.shown_at = None;
-        self.evicted = true;
-    }
-
-    /// The slot family a request belongs to (full / clip / zoom — `MdEncodeKey::slot`).
-    fn slots(&self, key: &MdEncodeKey) -> &[MdProtoSlot] {
-        match key.slot() {
-            0 => &self.full,
-            1 => &self.clip,
-            _ => &self.zoom,
-        }
-    }
-
-    fn slots_mut(&mut self, key: &MdEncodeKey) -> &mut Vec<MdProtoSlot> {
-        match key.slot() {
-            0 => &mut self.full,
-            1 => &mut self.clip,
-            _ => &mut self.zoom,
-        }
-    }
-
-    /// Record that the pass numbered `frame` wants this exact request, and say whether it is
-    /// already **settled** — encoded, or attempted and failed, so it must not be requested again.
-    /// A `stale` slot is deliberately not settled: its picture belongs to an animation frame that
-    /// has been superseded, so it needs re-encoding (into that same slot, keeping its id).
-    ///
-    /// Stamping happens even for a request that is not settled and cannot be sent yet (another
-    /// encode holds the single in-flight ticket). That is the whole point: a placement the renderer
-    /// is drawing right now must keep its slot out of the recycling pool while it waits its turn,
-    /// or two placements of one picture take turns evicting each other and never converge.
-    fn touch(&mut self, key: &MdEncodeKey, frame: u64) -> bool {
-        match self.slots_mut(key).iter_mut().find(|s| s.key == *key) {
-            Some(s) => {
-                s.used = frame;
-                !s.stale
-            }
-            None => false,
-        }
-    }
-
-    /// The image already encoded for exactly this request, if there is one. `None` also covers "the
-    /// slot exists but holds no image" (requested and still in flight, or failed) — the caller then
-    /// falls back to something drawable rather than blanking the picture.
-    fn proto(&self, key: &MdEncodeKey) -> Option<&InlineImage> {
-        self.slots(key)
-            .iter()
-            .find(|s| s.key == *key)?
-            .image
-            .as_ref()
-    }
-
-    /// The most recently wanted slot carrying an actual image, among `order`'s families. This is
-    /// what the renderer draws while the encode for the current position is still in flight, so
-    /// scrolling — or a resize, or a second placement at another width claiming the encoder — never
-    /// blinks an image out. Ties (both wanted by the same pass) go to the earlier family in `order`.
-    fn newest_in<'a>(&'a self, order: &[&'a [MdProtoSlot]]) -> Option<&'a InlineImage> {
-        let mut best: Option<&MdProtoSlot> = None;
-        for fam in order {
-            for s in fam.iter().filter(|s| s.image.is_some()) {
-                if best.is_none_or(|b| s.used > b.used) {
-                    best = Some(s);
-                }
-            }
-        }
-        best.and_then(|s| s.image.as_ref())
-    }
-
-    /// Fallback for a plain inline placement: the freshest band, else the freshest full image.
-    fn newest_proto(&self) -> Option<&InlineImage> {
-        self.newest_in(&[&self.clip, &self.full])
-    }
-
-    /// Fallback for the focused-diagram zoom: the freshest **unzoomed** full image (a zoom crop of
-    /// some other cell area would be drawn at the wrong scale).
-    fn newest_full(&self) -> Option<&InlineImage> {
-        self.newest_in(&[&self.full])
-    }
-
-    /// The source pixels changed underneath every encode — a GIF advanced a frame, or a diagram was
-    /// re-rasterized at a higher density. Mark each slot for re-encoding **without** dropping the
-    /// picture it holds: the old one keeps drawing until the new one lands (clearing it would flash
-    /// a blank), and re-encoding into the surviving slot reuses its kitty id, so the terminal
-    /// replaces that picture instead of collecting one per frame.
-    fn mark_stale(&mut self) {
-        // The single in-flight encode (if any) was cut from the pixels that just changed.
-        if self.enc_inflight {
-            self.outdated_encode_in_flight = true;
-        }
-        for slot in self
-            .full
-            .iter_mut()
-            .chain(self.clip.iter_mut())
-            .chain(self.zoom.iter_mut())
-        {
-            slot.stale = true;
-        }
-    }
-}
-
-#[cfg(test)]
-impl MdProtoSlot {
-    /// A slot holding a finished encode of `key` — the state `apply_md_encode` leaves behind.
-    fn encoded(key: MdEncodeKey, image: InlineImage) -> Self {
-        Self {
-            key,
-            image: Some(image),
-            used: 0,
-            stale: false,
-        }
-    }
-
-    /// A slot reserved for `key` that holds no picture: the encode is either still in flight or it
-    /// failed. Both look the same from here, and both mean "do not ask for this again".
-    fn attempted(key: MdEncodeKey) -> Self {
-        Self {
-            key,
-            image: None,
-            used: 0,
-            stale: false,
-        }
-    }
-}
-
-/// Choose the slot a fresh encode of `key` will be answered into, and return its index — which is
-/// also the index of the kitty image id pinned to it (`App::md_kitty_ids`).
-///
-/// Preference order: the slot already holding this key (a re-encode — same id, so the terminal
-/// *replaces* its picture instead of accumulating one), then a brand-new slot while the family is
-/// still under `cap`, then the least-recently-wanted slot. A slot the pass numbered `frame` is
-/// drawing from is never recycled: when every slot is live the family grows by one instead, which
-/// is what makes convergence unconditional (see `MD_PROTO_SLOTS`).
-fn reserve_proto_slot(
-    slots: &mut Vec<MdProtoSlot>,
-    key: MdEncodeKey,
-    frame: u64,
-    cap: usize,
-) -> usize {
-    reserve_proto_slot_inner(slots, key, frame, cap, false).expect("the soft family always grows")
-}
-
-/// [`reserve_proto_slot`] with a **hard** ceiling: when every slot of the family is live in this
-/// frame (and the family is already at `cap`), there is no slot to give (`None`) instead of the
-/// family growing. For a canvas picture, whose plugin is not trusted to place one picture at few
-/// sizes: its encodes can never outgrow `MD_PROTO_SLOTS`. (An honest canvas places an id at one
-/// size, `CanvasView::check`, so it never gets here.)
-fn reserve_proto_slot_hard(
-    slots: &mut Vec<MdProtoSlot>,
-    key: MdEncodeKey,
-    frame: u64,
-    cap: usize,
-) -> Option<usize> {
-    reserve_proto_slot_inner(slots, key, frame, cap, true)
-}
-
-fn reserve_proto_slot_inner(
-    slots: &mut Vec<MdProtoSlot>,
-    key: MdEncodeKey,
-    frame: u64,
-    cap: usize,
-    hard: bool,
-) -> Option<usize> {
-    if let Some(i) = slots.iter().position(|s| s.key == key) {
-        slots[i].used = frame;
-        return Some(i);
-    }
-    let fresh = MdProtoSlot {
-        key,
-        image: None,
-        used: frame,
-        stale: false,
-    };
-    if slots.len() >= cap {
-        let lru = slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.used < frame)
-            .min_by_key(|(i, s)| (s.used, *i))
-            .map(|(i, _)| i);
-        if let Some(i) = lru {
-            slots[i] = fresh;
-            return Some(i);
-        }
-        if hard {
-            return None;
-        }
-    }
-    slots.push(fresh);
-    Some(slots.len() - 1)
-}
-
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
 #[derive(PartialEq)]
 enum FenceSharpen {
@@ -2864,197 +2349,8 @@ enum FenceSharpen {
     AppliedSync,
 }
 
-/// Which protocol a background encode produces (so the result is stored in the right slot).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum MdEncodeKey {
-    /// The whole image at (cols, rows) cells.
-    Full { cols: u16, rows: u16 },
-    /// A cropped vertical band, keyed by (cols, full_rows, row_off, vis_rows).
-    Clip {
-        cols: u16,
-        full_rows: u16,
-        row_off: u16,
-        vis_rows: u16,
-    },
-    /// An in-place zoom crop of a focused inline mermaid diagram, encoded into the same
-    /// (cols, rows) area. Keyed by the pixel crop so pan/zoom/re-raster all re-encode naturally.
-    Zoom { cols: u16, rows: u16, crop: PxRect },
-}
-
-impl MdEncodeKey {
-    /// Which of `MdImgEntry`'s three protocol slots this result belongs in — and therefore which of
-    /// its three fixed kitty ids the encode must be transmitted under.
-    fn slot(&self) -> usize {
-        match self {
-            Self::Full { .. } => 0,
-            Self::Clip { .. } => 1,
-            Self::Zoom { .. } => 2,
-        }
-    }
-}
-
-/// A request to encode an inline image (or a cropped band of it) off the UI thread (principle #4).
-pub struct MdEncodeRequest {
-    path: PathBuf,
-    key: MdEncodeKey,
-    image: Arc<image::DynamicImage>,
-    /// Pixel band to crop before encoding; None encodes the whole image.
-    crop: Option<PxRect>,
-    cols: u16,
-    rows: u16,
-    /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
-    /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
-    kitty: Option<(u32, bool)>,
-    /// `MdImgEntry::born` of the entry the request was made for.
-    born: u64,
-}
-
-/// Result of a background inline-image encode, delivered to the run loop.
-pub struct MdEncodeResult {
-    path: PathBuf,
-    key: MdEncodeKey,
-    /// None = the encode failed. The worker **always** sends a result: swallowing failures left
-    /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
-    /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
-    image: Option<InlineImage>,
-    /// `MdImgEntry::born` of the entry the request was made for; `apply_md_encode` drops a result
-    /// whose entry has since been replaced.
-    born: u64,
-}
-
-/// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
-/// cloned Picker, so the UI thread never blocks on the resize/encode (principle #4). Exits when the
-/// request sender is dropped (App teardown).
-pub fn md_encode_worker(
-    picker: Picker,
-    rx: std::sync::mpsc::Receiver<MdEncodeRequest>,
-    tx: std::sync::mpsc::Sender<MdEncodeResult>,
-) {
-    while let Ok(req) = rx.recv() {
-        let (path, key, born) = (req.path.clone(), req.key, req.born);
-        let picker = &picker; // borrow: so the move closure doesn't consume picker across loop iterations
-                              // Wrap the whole request handling in a panic catch: even if one new_protocol/crop
-                              // panics, don't kill the worker thread (killing it would stop every future encode,
-                              // latching enc_inflight forever).
-        let image = crate::preview::markdown::catch_silent(move || {
-            let img = match req.crop {
-                Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
-                None => (*req.image).clone(),
-            };
-            let size = ratatui::layout::Size::new(req.cols, req.rows);
-            // A fence diagram (vector-derived) is **also scaled up** to the reserved grid (Scale):
-            // even if the raster is small, it fills the area instead of leaving a top-left-packed
-            // margin band — sharpness is handled by density-following re-rasterization instead.
-            // A photo keeps the previous Fit behavior (never scaled up past its natural size = never blurred).
-            //
-            // A media-diff picture is **also** `Scale`, for a different reason than the mermaid case:
-            // `preview::media_diff::layout`'s "shared scale" math already computed the *exact* target
-            // cell box (`req.cols`/`req.rows`, clamped to never exceed the natural size), using
-            // PDF-page **points** or a decode-budget-downscaled GIF frame as the "natural" unit —
-            // either of which differs from this image's own *actual* pixel dimensions. Letting `Fit`
-            // independently re-derive a fit from those actual dimensions doesn't reliably reproduce
-            // the same box: it can come out smaller (a real bug) or larger (silently blocked entirely
-            // — both `Image`/`KittyImage`'s `Widget::render` refuse to draw when the protocol's size
-            // exceeds the render area). `Scale` sidesteps both by always resizing to exactly `size`,
-            // matching what the caller then renders into.
-            let is_media_diff_picture =
-                crate::preview::media_diff::is_media_diff_url(&req.path.to_string_lossy());
-            let resize =
-                if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy())
-                    || is_media_diff_picture
-                {
-                    Resize::Scale(Some(FilterType::Lanczos3))
-                } else {
-                    Resize::Fit(Some(FilterType::Lanczos3))
-                };
-            // Always send back a result even on failure (Err/None): swallowing it would leave
-            // enc_inflight stuck true forever.
-            match req.kitty {
-                Some((id, is_tmux)) => encode_inline_kitty(picker, img, size, &resize, id, is_tmux)
-                    .map(InlineImage::Kitty),
-                None => picker
-                    .new_protocol(img, size, resize)
-                    .ok()
-                    .map(InlineImage::Proto),
-            }
-        })
-        .flatten();
-        if tx
-            .send(MdEncodeResult {
-                path,
-                key,
-                image,
-                born,
-            })
-            .is_err()
-        {
-            break;
-        }
-    }
-}
-
-/// Encode one inline image as konoma's own **compressed** kitty transmit under the fixed `id`.
-///
-/// The sizing is deliberately not reinvented: it replays `Picker::new_protocol`'s decision through
-/// `Resize`'s public API, so this lands on the exact same cell area — and the same transparent
-/// padding when the aspect ratio does not divide evenly into cells — that the ratatui-image path it
-/// replaces produced. Getting that wrong would not fail loudly; it would quietly stretch every
-/// diagram and equation by a few percent.
-///
-/// The one thing that does change is the payload: RGBA compressed with `o=z` (see `preview::kitty`),
-/// which is what makes re-encoding an animated frame affordable in the first place.
-fn encode_inline_kitty(
-    picker: &Picker,
-    img: image::DynamicImage,
-    target: ratatui::layout::Size,
-    resize: &Resize,
-    id: u32,
-    is_tmux: bool,
-) -> Option<crate::preview::kitty::KittyImage> {
-    let font = picker.font_size();
-    let natural = Resize::natural_size(&img, font);
-    // `new_protocol` skips the resize entirely when the image already fits the target at its
-    // natural cell size and lines up with the font grid on at least one axis (`needs_resize`'s
-    // early `None`). `Scale` never takes that shortcut — it is defined as "resize even when
-    // smaller". konoma passes no background color, so the padding color is ratatui-image's default.
-    let fits = natural.width <= target.width && natural.height <= target.height;
-    let on_grid = img.width() == u32::from(natural.width) * u32::from(font.width)
-        || img.height() == u32::from(natural.height) * u32::from(font.height);
-    let (img, area) = if !matches!(resize, Resize::Scale(_)) && fits && on_grid {
-        (img, natural)
-    } else {
-        let area = resize.size_for(&img, font, target);
-        (resize.resize(&img, font, area, None), area)
-    };
-    if area.width == 0 || area.height == 0 {
-        return None;
-    }
-    Some(crate::preview::kitty::KittyImage::build(
-        &img.to_rgba8(),
-        area.width,
-        area.height,
-        id,
-        is_tmux,
-    ))
-}
-
 /// Result of a background inline-image decode, delivered to the run loop.
-pub struct MdImageResult {
-    path: PathBuf,
-    image: Result<image::DynamicImage, String>,
-    /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
-    svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
-    /// replaced — the layout size and the decoration cache stay untouched.
-    reraster: bool,
-    /// All frames when this is an animated inline GIF (`image` above is just its first frame, kept
-    /// so the existing layout-sizing code path is unchanged). None for everything else, including a
-    /// static/single-frame GIF, which already fell back to the plain still-image decode.
-    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
-    /// The `MdImgEntry::request` this result answers (see there); `apply_md_image` drops it when
-    /// the entry has moved on to another request.
-    request: u64,
-}
+pub type MdImageResult = konoma_widgets::inline_images::DecodedImage;
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
 /// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
@@ -3558,17 +2854,13 @@ impl App {
             canvas_more_at: None,
             img_tx: None,
             image_viewer: konoma_widgets::image_view::ImageViewer::new(),
-            use_kitty: false,
-            kitty_is_tmux: false,
             kitty_tx: None,
             image_src: None,
             vector_svg: None,
             vector_trust: None,
             image_logical: None,
             vector_reraster_inflight: false,
-            md_overlay_last: None,
-            md_overlay_seen: None,
-            md_overlay_moved: false,
+            md_overlay: Default::default(),
             preview_media_mtime: None,
             plugin_stamp: None,
             plugin_stamp_taken: None,
@@ -3596,19 +2888,11 @@ impl App {
             preview_visual_linewise: false,
             gif: konoma_widgets::gif_player::GifPlayer::new(),
             media_tx: None,
-            md_image_cache: std::collections::HashMap::new(),
-            md_kitty_ids: std::collections::HashMap::new(),
-            canvas_places: Vec::new(),
-            canvas_slot_counts: std::collections::HashMap::new(),
-            canvas_front: std::collections::HashMap::new(),
-            canvas_scope_fp: 0,
+            canvas: canvas_images::CanvasPictureHost::default(),
+            md_images: InlineImageCache::default(),
             scope_flashed: std::collections::HashSet::new(),
             md_scope_refusals: std::cell::RefCell::new(Vec::new()),
             read_scope_memo: std::cell::RefCell::new(None),
-            canvas_kept: std::collections::HashMap::new(),
-            kitty_deletes: Vec::new(),
-            md_frame: 0,
-            md_request_seq: 0,
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -3616,7 +2900,6 @@ impl App {
             md_remote_inflight: std::collections::HashSet::new(),
             md_remote_failed: std::collections::HashSet::new(),
             md_remote_tx: None,
-            md_enc_tx: None,
             media_gen: 0,
             media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
@@ -4693,7 +3976,7 @@ impl App {
         self.md_cache = None; // Switching to a different file: invalidate the decoration cache
         self.md_items.clear();
         if !same_file {
-            self.md_image_cache.clear(); // A different file: also discard the inline-image cache
+            self.md_images.cache.clear(); // A different file: also discard the inline-image cache
         }
         self.tab.focused_item = None;
         self.close_outline(); // A new preview closes the outline overlay
@@ -6527,12 +5810,9 @@ fn refusal_worth_telling(
     (why != SvgFail::Invalid).then_some(why)
 }
 
-/// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
-/// never shows more than its own width (a 250-column terminal at 20 px per cell is 5,000 px) and the
-/// in-place zoom of diagrams re-rasterizes from the SVG rather than from this copy, so a larger
-/// decode is memory the user cannot see: an 11,000 x 11,000 screenshot would keep 480 MB, this keeps
-/// 64 MB. Matches the 4096 cap on SVG rasters (`preview::svg::HARD_MAX_PX`).
-const MD_IMAGE_MAX_SIDE: u32 = 4096;
+/// Longest side, in pixels, that an inline Markdown image is kept at after decoding (the value
+/// every host shares: [`konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE`]).
+const MD_IMAGE_MAX_SIDE: u32 = konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
@@ -6760,18 +6040,6 @@ fn md_decode_bytes_why(
         },
     }
 }
-
-/// The source-pixel band `(y0, height)` of an image `dh` pixels tall that corresponds to the visible
-/// cell rows `[row_off, row_off + vis_rows)` out of `full_rows` total. The result is always within
-/// `[0, dh]` (so `crop_imm(0, y0, _, height)` never exceeds the image and never panics), and the height
-/// is at least 1.
-fn md_band_pixels(full_rows: u16, row_off: u16, vis_rows: u16, dh: u32) -> (u32, u32) {
-    let fr = full_rows.max(1) as u32;
-    let y0 = (row_off as u32 * dh) / fr;
-    let y1 = ((row_off as u32 + vis_rows as u32).min(fr) * dh) / fr;
-    (y0, y1.saturating_sub(y0).max(1))
-}
-
 /// Pure core of `cache_root`. Falls back to the system temp directory (`std::env::temp_dir()` —
 /// always an absolute path, `$TMPDIR` or `/tmp` on Unix) when neither `$XDG_CACHE_HOME` nor `$HOME`
 /// is available, instead of the old `None`.

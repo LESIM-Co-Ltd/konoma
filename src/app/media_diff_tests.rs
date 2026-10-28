@@ -864,7 +864,7 @@ fn applied_pictures_land_in_md_image_cache_under_media_diff_keys() {
                         p.cache_key
                     );
                     assert!(
-                        app.md_image_cache.contains_key(&p.cache_key),
+                        app.md_images.cache.contains_key(&p.cache_key),
                         "md_image_cache に入っているはず"
                     );
                     assert_eq!(p.natural_px, (4, 4), "自然寸法が保存されているはず");
@@ -905,12 +905,13 @@ fn markdown_prune_on_rebuild_leaves_a_media_diff_key_alone() {
     // pass (a width/content rebuild of the *same, already-open* file) to exercise the prune.
     app.enter_preview(&md);
     app.ensure_md_cache(100);
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(media_key.clone(), MdImgEntry::default());
     app.md_cache = None; // force ensure_md_cache to actually rebuild (and prune) again
     app.ensure_md_cache(100);
     assert!(
-        app.md_image_cache.contains_key(&media_key),
+        app.md_images.cache.contains_key(&media_key),
         "media-diff:// キーは Markdown の mermaid/math prune に巻き込まれないはず"
     );
 }
@@ -991,7 +992,7 @@ fn switching_target_drops_the_old_media_diff_keys() {
         } => p.cache_key,
         other => panic!("a: Ready のはず: {other:?}"),
     };
-    assert!(app.md_image_cache.contains_key(&key_a));
+    assert!(app.md_images.cache.contains_key(&key_a));
 
     // Switching to a different target/page/raster is itself a new request — invalidate first
     // (mirrors what `App::invalidate_diff_caches` does on a real file/target switch), then poll.
@@ -1006,10 +1007,10 @@ fn switching_target_drops_the_old_media_diff_keys() {
     };
     assert_ne!(key_a, key_b, "別内容なのでキーも違うはず");
     assert!(
-        !app.md_image_cache.contains_key(&key_a),
+        !app.md_images.cache.contains_key(&key_a),
         "旧ターゲットのキーは prune されるはず"
     );
-    assert!(app.md_image_cache.contains_key(&key_b));
+    assert!(app.md_images.cache.contains_key(&key_b));
 }
 
 /// Mutation-proving: if the eviction predicate in `apply_media_diff` degenerated into a no-op
@@ -1032,7 +1033,8 @@ fn eviction_never_touches_a_mermaid_key() {
     let mermaid_key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
         "graph LR\nA-->B",
     ));
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(mermaid_key.clone(), MdImgEntry::default());
 
     app.poll_media_diff(&a, 1, (400, 300));
@@ -1040,7 +1042,7 @@ fn eviction_never_touches_a_mermaid_key() {
     app.poll_media_diff(&b, 1, (400, 300));
 
     assert!(
-        app.md_image_cache.contains_key(&mermaid_key),
+        app.md_images.cache.contains_key(&mermaid_key),
         "mermaid キーは media-diff の prune に巻き込まれないはず"
     );
 }
@@ -1515,7 +1517,8 @@ fn an_svg_side_lands_as_an_entry_that_is_drawn_again_only_by_the_child() {
         panic!("a picture was expected");
     };
     let entry = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&p.cache_key)
         .expect("the side is in the cache");
     assert!(entry.svg.is_some(), "the SVG is kept");
@@ -1552,16 +1555,16 @@ fn an_svg_side_of_the_media_diff_is_rebuilt_on_the_untrusted_path() {
     };
     let key = PathBuf::from(&pic.cache_key);
     assert!(
-        matches!(app.md_image_cache[&key].svg_trust, SvgTrust::File(_)),
+        matches!(app.md_images.cache[&key].svg_trust, SvgTrust::File(_)),
         "the entry records the file origin"
     );
     let untrusted0 = untrusted_count(&svg);
     assert!(untrusted0 >= 1, "setup: the first draw was supervised");
 
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
-    app.md_frame = 6;
+    assert!(app.md_images.cache[&key].evicted, "setup: evicted");
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
     let res = img_rx
         .recv_timeout(std::time::Duration::from_secs(20))

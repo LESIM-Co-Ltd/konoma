@@ -337,7 +337,10 @@ fn a_picture_crossing_the_bottom_edge_of_a_request_above_the_floor_is_still_draw
     let mut seen = Vec::new();
     for k in 0..n {
         let p = app.canvas_place(k).expect("place");
-        seen.push((p.id, crate::ui::canvas::visible_rect(inner, p.rect)));
+        seen.push((
+            p.id,
+            konoma_plugin::canvas_pictures::overlay::visible_rect(inner, p.rect),
+        ));
     }
     seen.sort_by_key(|(id, _)| *id);
     // The bottom one reaches the renderer as a band of its 2 visible rows, exactly as on the uncut

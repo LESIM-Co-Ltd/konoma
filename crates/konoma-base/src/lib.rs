@@ -1,11 +1,13 @@
 //! Process-wide basics of konoma, below every other crate of the workspace.
 //!
 //! - [`panic`]: catching a panic silently (background workers must always report back).
+//! - [`discard`]: freeing a large value off the calling thread.
 //! - [`epoch`]: formatting Unix epoch seconds as UTC dates.
 //! - [`size`]: human-readable byte counts.
 //! - [`process`]: whether this process is the application itself (gates the `test-hooks` seams).
 //! - [`private_dir`]: the per-process private temp directories (`konoma-<kind>-<pid>`).
 
+pub mod discard;
 pub mod epoch;
 pub mod panic;
 pub mod private_dir;

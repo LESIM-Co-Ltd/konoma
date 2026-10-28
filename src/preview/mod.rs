@@ -8,6 +8,7 @@ pub mod code;
 pub mod command;
 pub mod gitdiff;
 pub mod image;
+#[cfg(test)]
 pub mod kitty;
 pub mod markdown;
 #[cfg(test)]
