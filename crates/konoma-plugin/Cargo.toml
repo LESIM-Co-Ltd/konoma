@@ -10,7 +10,7 @@ description = "Plugin API of konoma: the entry traits, display types, declaratio
 [features]
 # Reading `[plugins.<id>]` from config.toml into `Settings` (`config`): the one reading konoma and the
 # standalone app share.
-config = ["dep:toml"]
+config = ["dep:toml", "dep:konoma-host-core"]
 # The child-process transport: wire types, framing, the SDK `serve` side and the host `ProcPlugin`
 # client. Off by default so a plugin linked in-process pays for none of it.
 proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]

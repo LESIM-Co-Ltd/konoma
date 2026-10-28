@@ -18,6 +18,8 @@ mod profile;
 pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]
+mod settings_parity_tests;
+#[cfg(test)]
 mod survivor_tests;
 #[cfg(test)]
 pub(crate) mod test_plugins;
@@ -76,14 +78,6 @@ impl Plugin for Declared {
             ja: "このプラグインは宣言のみで、まだプラグイン API では開かれません",
         )))
     }
-}
-
-fn s(v: &str) -> konoma_plugin::Value {
-    konoma_plugin::Value::Str(v.to_string())
-}
-
-fn b(v: bool) -> konoma_plugin::Value {
-    konoma_plugin::Value::Bool(v)
 }
 
 fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
@@ -279,72 +273,11 @@ pub(crate) fn moved_settings(ui: &toml::Table, plugins: &PluginTables) -> Vec<(S
         .collect()
 }
 
-/// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, with the old `[ui]`
-/// items it replaces filled in under their new names (S2-12). The new name wins when both are set.
-/// Each plugin that is wired to the display adds its old names here.
+/// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, completed from the old
+/// `[ui]` items it replaces (S2-12). Decided by `konoma_plugin::config::plugin_settings`, the one
+/// function the standalone app calls too; this is only konoma's config handed to it.
 pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Settings {
-    let mut settings = cfg.plugin_settings(id);
-    let mut fill_missing = |key: &str, value: konoma_plugin::Value| {
-        if settings.get(key).is_none() {
-            settings.set(key, value);
-        }
-    };
-    if id == konoma_markdown::MARKDOWN_ID {
-        let ui = &cfg.ui;
-        fill_missing(
-            "task_states",
-            konoma_plugin::Value::List(ui.md_task_states.iter().map(|x| s(x)).collect()),
-        );
-        fill_missing("autolink", b(ui.md_autolink));
-        fill_missing("alerts", b(ui.md_alerts));
-        fill_missing("emoji", b(ui.md_emoji));
-        fill_missing("frontmatter", b(ui.md_frontmatter));
-        fill_missing("footnotes", b(ui.md_footnotes));
-        fill_missing("inline_html", b(ui.md_inline_html));
-        fill_missing("details", s(&ui.md_details));
-        fill_missing("table_align", s(&ui.md_table_align));
-        fill_missing("image_align", s(&ui.md_image_align));
-    }
-    if id == konoma_table::CSV_ID {
-        fill_missing("rainbow", b(cfg.ui.csv_rainbow));
-    }
-    if id == konoma_office::SPREADSHEET_ID {
-        // A sheet's columns follow `[plugins.csv] rainbow` (and the old `[ui] csv_rainbow`) until
-        // the sheet is given a value of its own.
-        let csv = effective_settings(cfg, konoma_table::CSV_ID);
-        fill_missing("rainbow", b(csv.bool("rainbow", true)));
-    }
-    if id == konoma_code::CODE_ID {
-        fill_missing("syntax_highlight", b(cfg.ui.syntax_highlight));
-        // The theme is shared with the Markdown code blocks, so it stays `[ui.theme] code_theme`;
-        // the host hands it to the plugin as a value, not as a `[plugins.code]` setting.
-        fill_missing("code_theme", s(&cfg.ui.theme.code_theme));
-    }
-    if id == konoma_media::SVG_ID {
-        fill_missing(
-            "max_px",
-            konoma_plugin::Value::Int(i64::from(cfg.ui.svg_max_px)),
-        );
-    }
-    if id == konoma_mermaid::MERMAID_ID {
-        fill_missing("mode", s(&cfg.ui.mermaid));
-        fill_missing("theme", s(&cfg.ui.mermaid_theme));
-        fill_missing("curve", s(&cfg.ui.mermaid_curve));
-        fill_missing("routing", s(&cfg.ui.mermaid_routing));
-        fill_missing(
-            "rows",
-            konoma_plugin::Value::Int(i64::from(cfg.ui.mermaid_rows)),
-        );
-    }
-    if id == konoma_math::MATH_ID {
-        fill_missing("mode", s(&cfg.ui.math));
-        fill_missing("color", s(cfg.ui.math_color()));
-        // A color from `[plugins.math]` is held to the same test as the old `[ui] math_color`: one
-        // the rasterizer would paint black (invisible on a dark terminal) falls back to the default.
-        let color = crate::config::visible_math_color(settings.str("color", ""));
-        settings.set("color", s(color));
-    }
-    settings
+    konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id)
 }
 
 /// `[plugins.<id>] <key>` when it is a string, otherwise the old `[ui]` value `old`. The same rule

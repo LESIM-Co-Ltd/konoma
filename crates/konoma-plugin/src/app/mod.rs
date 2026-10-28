@@ -237,6 +237,63 @@ pub fn open_file_with(
     })
 }
 
+/// Everything `run` settles before the terminal is taken.
+pub struct Prepared {
+    pub opened: Opened,
+    pub keys: AppKeys,
+    /// The language of the session: `"ja"` or `"en"`.
+    pub lang: &'static str,
+    pub svg_max_px: u32,
+    /// The config load error, still to be reported ([`write_load_error`]).
+    pub load_error: Option<String>,
+}
+
+/// A refusal before the terminal is taken, with the config load error that is still unreported.
+pub struct PrepareFailure {
+    pub error: AppError,
+    pub load_error: Option<String>,
+}
+
+impl PrepareFailure {
+    /// Write the config load error (one line, before the refusal itself, which the caller prints)
+    /// and hand the refusal on.
+    pub fn report(self, w: &mut dyn std::io::Write) -> AppError {
+        // A failure to write to a closed standard error changes nothing about the run.
+        let _ = write_load_error(w, self.load_error.as_deref());
+        self.error
+    }
+}
+
+/// The part of `run` before the terminal: from a loaded config, the language, the keys, and the
+/// file opened with the settings of the plugin that takes it (`[plugins.<id>]` and the old `[ui]`
+/// names, [`crate::config::plugin_settings`]). The file is checked and opened here, so a refusal
+/// is a message on the ordinary screen.
+pub fn prepare(
+    plugins: Vec<Arc<dyn Plugin>>,
+    path: &Path,
+    term: TermCaps,
+    loaded: (konoma_host_core::shared::SharedConfig, Option<String>),
+) -> Result<Prepared, PrepareFailure> {
+    let svg_max_px = loaded.0.ui.svg_max_px;
+    let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
+    let (keys, load_error) = keys_from_load(loaded);
+    let lang = match keys.lang() {
+        konoma_host_core::lang::Lang::Jp => "ja",
+        konoma_host_core::lang::Lang::En => "en",
+    };
+    let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &moved_ui, id);
+    match open_file_with(plugins, path, lang, term, &settings_of) {
+        Ok(opened) => Ok(Prepared {
+            opened,
+            keys,
+            lang,
+            svg_max_px,
+            load_error,
+        }),
+        Err(error) => Err(PrepareFailure { error, load_error }),
+    }
+}
+
 /// `<program> <file>`: open the file in the terminal. Returns when the user quits.
 pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     use std::io::IsTerminal;
@@ -247,21 +304,30 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     let term = TermCaps::new().colors(colors);
     // The config comes first: `ui.lang` says the language of the session too. A missing or broken
     // config file gives the defaults; a broken one is reported on standard error once the
-    // terminal is back (the screen is the alternate one meanwhile).
-    let loaded = konoma_host_core::shared::SharedConfig::load_default();
-    let svg_max_px = loaded.0.ui.svg_max_px;
-    let (plugin_tables, ui_rest) = (loaded.0.plugins.clone(), loaded.0.ui.extra.clone());
-    let (keys, load_error) = keys_from_load(loaded);
-    let lang = match keys.lang() {
-        konoma_host_core::lang::Lang::Jp => "ja",
-        konoma_host_core::lang::Lang::En => "en",
+    // terminal is back (the screen is the alternate one meanwhile), or at once when the run ends
+    // before the terminal is taken.
+    let prepared = prepare(
+        plugins,
+        path,
+        term,
+        konoma_host_core::shared::SharedConfig::load_default(),
+    );
+    let Prepared {
+        mut opened,
+        keys,
+        lang,
+        svg_max_px,
+        load_error,
+    } = match prepared {
+        Ok(p) => p,
+        Err(f) => return Err(f.report(&mut std::io::stderr())),
     };
-    // The file is checked and opened before the terminal is taken, so a refusal is a message on
-    // the ordinary screen.
-    let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &ui_rest, id);
-    let mut opened = open_file_with(plugins, path, lang, term, &settings_of)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err(AppError::NoTerminal);
+        return Err(PrepareFailure {
+            error: AppError::NoTerminal,
+            load_error,
+        }
+        .report(&mut std::io::stderr()));
     }
     let cx = AppCx {
         lang: lang.to_string(),

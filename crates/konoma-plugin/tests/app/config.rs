@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use konoma_host_core::shared::SharedConfig;
-use konoma_plugin::app::{keys_from_load, open_file_with};
+use konoma_plugin::app::{keys_from_load, open_file_with, AppError};
 use konoma_plugin::config::plugin_settings;
 use konoma_plugin::prelude::*;
 use konoma_plugin::TermCaps;
@@ -47,7 +47,7 @@ fn settings_seen(id: &'static str, config: &str) -> Settings {
         id,
         seen: Arc::clone(&seen),
     });
-    let of = |id: &str| plugin_settings(&cfg.plugins, &cfg.ui.extra, id);
+    let of = |id: &str| plugin_settings(&cfg.plugins, &cfg.ui.moved(), id);
     // The spy refuses to open (it only wants to look), which is fine: the settings are kept first.
     let _ = open_file_with(vec![plugin], &p, "en", TermCaps::new(), &of);
     let got = seen.lock().unwrap().take();
@@ -94,9 +94,20 @@ fn a_value_of_the_wrong_type_is_passed_on_and_the_plugin_reads_its_default() {
 }
 
 #[test]
-fn without_a_config_the_plugin_gets_no_settings() {
+fn without_a_config_the_plugin_gets_the_values_konoma_would_hand_it() {
+    // Konoma completes a plugin's settings with the defaults of the moved `[ui]` keys; the app
+    // does the same (konoma's own side is pinned equal in its settings parity tests).
     let s = settings_seen("markdown", "");
-    assert_eq!(s, Settings::new());
+    let want = plugin_settings(
+        &std::collections::BTreeMap::new(),
+        &konoma_host_core::shared::MovedUi::default(),
+        "markdown",
+    );
+    assert_eq!(s, want);
+    assert!(
+        s.get("alerts").is_some(),
+        "the defaults are really handed over"
+    );
 }
 
 #[test]
@@ -145,8 +156,14 @@ fn write_config(dir: &std::path::Path, lang: &str, alerts: bool) {
 }
 
 /// Run the child half of `test` with `xdg` as `XDG_CONFIG_HOME` (unset when `None`) and `home`
-/// as `HOME`, expecting `want` (`"<lang>/<alerts>"`) from the loader.
-fn in_child(test: &str, xdg: Option<&std::path::Path>, home: &std::path::Path, want: &str) {
+/// as `HOME`; `want` is handed to the child in `CHILD_MARK`. The child's standard input and output
+/// are not a terminal. Returns the finished child (it has been checked to have run the test).
+fn spawn_child(
+    test: &str,
+    xdg: Option<&std::path::Path>,
+    home: &std::path::Path,
+    want: &str,
+) -> std::process::Output {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
     cmd.args([
         &format!("config::{test}"),
@@ -174,6 +191,11 @@ fn in_child(test: &str, xdg: Option<&std::path::Path>, home: &std::path::Path, w
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    out
+}
+
+fn in_child(test: &str, xdg: Option<&std::path::Path>, home: &std::path::Path, want: &str) {
+    spawn_child(test, xdg, home, want);
 }
 
 /// The child half: what the loader finds under this environment.
@@ -183,7 +205,7 @@ fn child_loads(test_name: &str) -> bool {
     };
     let (cfg, err) = SharedConfig::load_default();
     assert!(err.is_none(), "{test_name}: {err:?}");
-    let alerts = plugin_settings(&cfg.plugins, &cfg.ui.extra, "markdown").bool("alerts", true);
+    let alerts = plugin_settings(&cfg.plugins, &cfg.ui.moved(), "markdown").bool("alerts", true);
     assert_eq!(format!("{}/{alerts}", cfg.ui.lang), want, "{test_name}");
     true
 }
@@ -235,4 +257,146 @@ fn without_xdg_config_home_it_is_home_config() {
         &home,
         "en/false",
     );
+}
+
+// `app::run` before the terminal: the config found through the environment reaches the plugin
+// (`prepare`, which `run` calls with `SharedConfig::load_default()`), and a config error is still
+// reported when the run ends before the screen.
+
+const WIRING_CONFIG: &str = "[ui]\nlang = \"en\"\nmd_alerts = false\n\
+    [plugins.markdown]\nemoji = false\ndetails = \"open\"\nenabled = true\n";
+
+fn write_raw_config(dir: &std::path::Path, text: &str) {
+    let d = dir.join("konoma");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("config.toml"), text).unwrap();
+}
+
+#[test]
+fn the_config_file_reaches_the_plugin_through_the_wiring_of_run() {
+    if std::env::var(CHILD_MARK).is_ok() {
+        let (_d, p) = file();
+        let seen = Arc::new(Mutex::new(None));
+        let plugin: Arc<dyn Plugin> = Arc::new(Spy {
+            id: "markdown",
+            seen: Arc::clone(&seen),
+        });
+        let r = konoma_plugin::app::prepare(
+            vec![plugin],
+            &p,
+            TermCaps::new(),
+            SharedConfig::load_default(),
+        );
+        assert!(r.is_err(), "the spy refuses to open");
+        let s = seen.lock().unwrap().take().expect("the plugin was opened");
+        assert_eq!(s.get("emoji"), Some(&Value::Bool(false)), "[plugins] value");
+        assert_eq!(s.str("details", ""), "open", "[plugins] value");
+        assert!(s.get("enabled").is_none(), "the host's key stays out");
+        assert_eq!(s.get("alerts"), Some(&Value::Bool(false)), "old [ui] name");
+        assert!(s.get("footnotes").is_some(), "a default fills in");
+        return;
+    }
+    let d = unique_tmp("app_wiring");
+    let (xdg, home) = (d.as_path().join("xdg"), d.as_path().join("home"));
+    write_raw_config(&xdg, WIRING_CONFIG);
+    in_child(
+        "the_config_file_reaches_the_plugin_through_the_wiring_of_run",
+        Some(&xdg),
+        &home,
+        "1",
+    );
+}
+
+#[test]
+fn a_broken_config_is_reported_when_the_plugin_refuses_the_file() {
+    if std::env::var(CHILD_MARK).is_ok() {
+        let (_d, p) = file();
+        let plugin: Arc<dyn Plugin> = Arc::new(Spy {
+            id: "markdown",
+            seen: Arc::new(Mutex::new(None)),
+        });
+        let e = konoma_plugin::app::run(vec![plugin], &p).expect_err("the spy refuses");
+        println!("RESULT: {e}");
+        return;
+    }
+    let d = unique_tmp("app_broken_refused");
+    let (xdg, home) = (d.as_path().join("xdg"), d.as_path().join("home"));
+    write_raw_config(&xdg, "[plugins.markdown\nemoji = ");
+    let out = spawn_child(
+        "a_broken_config_is_reported_when_the_plugin_refuses_the_file",
+        Some(&xdg),
+        &home,
+        "1",
+    );
+    let (so, se) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        so.contains("RESULT: cannot open the file: spy: seen"),
+        "{so}"
+    );
+    assert_eq!(
+        se.matches("config error (using defaults): ").count(),
+        1,
+        "{se}"
+    );
+}
+
+#[test]
+fn a_broken_config_is_reported_when_there_is_no_terminal() {
+    if std::env::var(CHILD_MARK).is_ok() {
+        let d = unique_tmp("app_broken_noterm_file");
+        std::fs::create_dir_all(d.as_path()).unwrap();
+        let p = d.as_path().join("note.t");
+        std::fs::write(&p, "x").unwrap();
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(crate::plugin::TestPlugin::all())];
+        let e = konoma_plugin::app::run(plugins, &p).expect_err("no terminal here");
+        println!("RESULT: {e}");
+        return;
+    }
+    let d = unique_tmp("app_broken_noterm");
+    let (xdg, home) = (d.as_path().join("xdg"), d.as_path().join("home"));
+    write_raw_config(&xdg, "[plugins.markdown\nemoji = ");
+    let out = spawn_child(
+        "a_broken_config_is_reported_when_there_is_no_terminal",
+        Some(&xdg),
+        &home,
+        "1",
+    );
+    let (so, se) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        so.contains("RESULT: standard input and output must be a terminal"),
+        "{so}"
+    );
+    assert_eq!(
+        se.matches("config error (using defaults): ").count(),
+        1,
+        "{se}"
+    );
+}
+
+#[test]
+fn a_refusal_is_preceded_by_the_config_line_and_a_good_config_adds_none() {
+    let mut w = Vec::new();
+    let e = konoma_plugin::app::PrepareFailure {
+        error: AppError::NoTerminal,
+        load_error: Some("config error (using defaults): x".to_string()),
+    }
+    .report(&mut w);
+    assert!(matches!(e, AppError::NoTerminal));
+    assert_eq!(
+        String::from_utf8(w).unwrap(),
+        "config error (using defaults): x\n"
+    );
+    let mut w = Vec::new();
+    konoma_plugin::app::PrepareFailure {
+        error: AppError::NoTerminal,
+        load_error: None,
+    }
+    .report(&mut w);
+    assert!(w.is_empty());
 }

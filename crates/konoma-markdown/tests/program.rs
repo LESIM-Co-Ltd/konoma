@@ -61,10 +61,8 @@ fn a_format_it_shows_is_accepted_and_stops_at_the_terminal_check() {
     std::fs::write(&f, b"# t\n").unwrap();
     let (code, err) = run(d.as_path(), &f);
     assert!(!err.contains("does not show this file"), "{err}");
-    // Opened (or refused as unreadable content), but never taken to a screen: no terminal here.
-    assert!(
-        err.contains("must be a terminal") || err.contains("cannot open the file"),
-        "{err}"
-    );
+    // Really opened (a refusal would say "cannot open the file"), then stopped at the terminal
+    // check: no terminal here, so no screen is taken.
+    assert!(err.contains("must be a terminal"), "{err}");
     assert_eq!(code, Some(1), "{err}");
 }

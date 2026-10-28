@@ -26,3 +26,8 @@ app = ["konoma-plugin/app"]
 name = "konoma-math"
 path = "src/main.rs"
 required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

@@ -41,3 +41,8 @@ test-hooks = []
 name = "konoma-table"
 path = "src/main.rs"
 required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

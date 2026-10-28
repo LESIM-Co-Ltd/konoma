@@ -26,3 +26,8 @@ konoma-test-support = { path = "../konoma-test-support" }
 name = "konoma-code"
 path = "src/main.rs"
 required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

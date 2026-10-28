@@ -55,16 +55,18 @@ fn a_missing_file_is_named() {
 
 #[test]
 fn a_format_it_shows_is_accepted_and_stops_at_the_terminal_check() {
-    let d = unique_tmp("office_bin_accept");
-    std::fs::create_dir_all(d.as_path()).unwrap();
-    let f = d.as_path().join("x.xlsx");
-    std::fs::write(&f, b"not a workbook").unwrap();
-    let (code, err) = run(d.as_path(), &f);
-    assert!(!err.contains("does not show this file"), "{err}");
-    // Opened (or refused as unreadable content), but never taken to a screen: no terminal here.
-    assert!(
-        err.contains("must be a terminal") || err.contains("cannot open the file"),
-        "{err}"
-    );
-    assert_eq!(code, Some(1), "{err}");
+    // One real file of each kind the program binds: a workbook, a Word document and a deck.
+    let samples = konoma_test_support::repo_root().join("samples");
+    for name in ["sample.xlsx", "sample.docx", "sample.pptx"] {
+        let d = unique_tmp("office_bin_accept");
+        std::fs::create_dir_all(d.as_path()).unwrap();
+        let f = d.as_path().join(name);
+        std::fs::copy(samples.join(name), &f).unwrap();
+        let (code, err) = run(d.as_path(), &f);
+        assert!(!err.contains("does not show this file"), "{name}: {err}");
+        // Really opened (a refusal would say "cannot open the file"), then stopped at the terminal
+        // check: no terminal here, so no screen is taken.
+        assert!(err.contains("must be a terminal"), "{name}: {err}");
+        assert_eq!(code, Some(1), "{name}: {err}");
+    }
 }

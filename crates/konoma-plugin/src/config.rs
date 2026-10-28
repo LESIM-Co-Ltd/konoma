@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use konoma_host_core::shared::{visible_math_color, MovedUi};
+
 use crate::{Settings, Value};
 
 /// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`,
@@ -80,28 +82,75 @@ pub const MOVED_UI_SETTINGS: &[(&str, &str, &str)] = &[
     ("svg_max_px", "svg", "max_px"),
 ];
 
-/// What plugin `id` receives from a config file: its `[plugins.<id>]` table, with the old `[ui]`
-/// items that moved into it filled in under their new names ([`MOVED_UI_SETTINGS`]). The new name
-/// wins when both are set; a value of the wrong type is passed on as it is (the plugin falls back
-/// to its declared default, as with any setting). `ui` is the raw `[ui]` table.
+/// What plugin `id` receives from a config file: its `[plugins.<id>]` table, completed from the
+/// old `[ui]` items that moved into it ([`MOVED_UI_SETTINGS`]; `ui` is [`MovedUi`], whose
+/// defaults stand in for an item the file does not set). The new name wins when both are set; a
+/// value of the wrong type in the plugin's own table is passed on as it is (the plugin falls back
+/// to its declared default, as with any setting).
+///
+/// The one place this is decided: konoma (`plugins::effective_settings`) and the standalone app
+/// both call it, so a plugin receives the same values from the same config file in either.
+/// A plugin that is wired to the display adds its old names here.
 pub fn plugin_settings(
     plugins: &BTreeMap<String, toml::Table>,
-    ui: &toml::Table,
+    ui: &MovedUi,
     id: &str,
 ) -> Settings {
     let mut settings = plugins.get(id).map(settings_of).unwrap_or_default();
-    for (old, owner, new) in MOVED_UI_SETTINGS {
-        if *owner == id && settings.get(new).is_none() {
-            if let Some(v) = ui.get(*old) {
-                settings.set(*new, value_of(v));
-            }
+    let mut fill_missing = |key: &str, value: Value| {
+        if settings.get(key).is_none() {
+            settings.set(key, value);
         }
-    }
-    // A sheet's columns follow the CSV plugin's `rainbow` until it is given a value of its own.
-    if id == "spreadsheet" && settings.get("rainbow").is_none() {
-        if let Some(v) = plugin_settings(plugins, ui, "csv").get("rainbow") {
-            settings.set("rainbow", v.clone());
+    };
+    let s = |v: &str| Value::Str(v.to_string());
+    match id {
+        "markdown" => {
+            fill_missing(
+                "task_states",
+                Value::List(ui.md_task_states.iter().map(|x| s(x)).collect()),
+            );
+            fill_missing("autolink", Value::Bool(ui.md_autolink));
+            fill_missing("alerts", Value::Bool(ui.md_alerts));
+            fill_missing("emoji", Value::Bool(ui.md_emoji));
+            fill_missing("frontmatter", Value::Bool(ui.md_frontmatter));
+            fill_missing("footnotes", Value::Bool(ui.md_footnotes));
+            fill_missing("inline_html", Value::Bool(ui.md_inline_html));
+            fill_missing("details", s(&ui.md_details));
+            fill_missing("table_align", s(&ui.md_table_align));
+            fill_missing("image_align", s(&ui.md_image_align));
         }
+        "csv" => fill_missing("rainbow", Value::Bool(ui.csv_rainbow)),
+        "spreadsheet" => {
+            // A sheet's columns follow `[plugins.csv] rainbow` (and the old `[ui] csv_rainbow`)
+            // until the sheet is given a value of its own.
+            let csv = plugin_settings(plugins, ui, "csv");
+            fill_missing("rainbow", Value::Bool(csv.bool("rainbow", true)));
+        }
+        "code" => {
+            fill_missing("syntax_highlight", Value::Bool(ui.syntax_highlight));
+            // The theme is shared with the Markdown code blocks, so it stays `[ui.theme]
+            // code_theme`; the host hands it to the plugin as a value, not as a
+            // `[plugins.code]` setting.
+            fill_missing("code_theme", s(&ui.code_theme));
+        }
+        "svg" => fill_missing("max_px", Value::Int(i64::from(ui.svg_max_px))),
+        "mermaid" => {
+            fill_missing("mode", s(&ui.mermaid));
+            fill_missing("theme", s(&ui.mermaid_theme));
+            fill_missing("curve", s(&ui.mermaid_curve));
+            fill_missing("routing", s(&ui.mermaid_routing));
+            fill_missing("rows", Value::Int(i64::from(ui.mermaid_rows)));
+        }
+        "math" => {
+            fill_missing("mode", s(&ui.math));
+            fill_missing("color", s(ui.math_color()));
+            // A color from `[plugins.math]` is held to the same test as the old `[ui]
+            // math_color`: one the rasterizer would paint black (invisible on a dark terminal)
+            // falls back to the default.
+            let color = visible_math_color(settings.str("color", "")).to_string();
+            settings.set("color", Value::Str(color));
+        }
+        _ => {}
     }
     settings
 }
@@ -112,6 +161,10 @@ mod tests {
 
     fn table(s: &str) -> toml::Table {
         toml::from_str(s).unwrap()
+    }
+
+    fn moved(s: &str) -> MovedUi {
+        toml::from_str(s).expect("the [ui] text is typed right")
     }
 
     fn plugins(s: &str) -> BTreeMap<String, toml::Table> {
@@ -167,7 +220,7 @@ mod tests {
     #[test]
     fn an_old_ui_name_fills_in_and_the_new_name_wins() {
         let p = plugins("[plugins.markdown]\nalerts = true\n");
-        let ui = table("md_alerts = false\nmd_emoji = false\nunrelated = 1");
+        let ui = moved("md_alerts = false\nmd_emoji = false\nunrelated = 1");
         let s = plugin_settings(&p, &ui, "markdown");
         assert_eq!(s.get("alerts"), Some(&Value::Bool(true)), "new name wins");
         assert_eq!(
@@ -180,19 +233,62 @@ mod tests {
         assert!(other.get("alerts").is_none() && other.get("emoji").is_none());
     }
 
+    /// A sample of each old `[ui]` key, of the type it has, different from its default.
+    const MOVED_SAMPLES: &[(&str, &str)] = &[
+        ("md_task_states", "[\"-\", \"x\"]"),
+        ("md_autolink", "false"),
+        ("md_alerts", "false"),
+        ("md_emoji", "false"),
+        ("md_frontmatter", "false"),
+        ("md_footnotes", "false"),
+        ("md_inline_html", "false"),
+        ("md_details", "\"open\""),
+        ("md_table_align", "\"right\""),
+        ("md_image_align", "\"left\""),
+        ("mermaid", "\"text\""),
+        ("mermaid_theme", "\"forest\""),
+        ("mermaid_curve", "\"linear\""),
+        ("mermaid_routing", "\"konoma-orthogonal\""),
+        ("mermaid_rows", "7"),
+        ("math", "\"text\""),
+        ("math_color", "\"#123456\""),
+        ("csv_rainbow", "false"),
+        ("syntax_highlight", "false"),
+        ("svg_max_px", "123"),
+    ];
+
     #[test]
     fn every_moved_name_reaches_its_owner() {
+        assert_eq!(
+            MOVED_SAMPLES.len(),
+            MOVED_UI_SETTINGS.len(),
+            "a moved key without a sample"
+        );
         for (old, id, new) in MOVED_UI_SETTINGS {
-            let ui = table(&format!("{old} = 7"));
+            let (_, text) = MOVED_SAMPLES
+                .iter()
+                .find(|(k, _)| k == old)
+                .unwrap_or_else(|| panic!("no sample for {old}"));
+            // `svg_max_px` is the host's own key (the owner of `[ui]` sets it in `moved()`).
+            let mut ui = moved(&format!("{old} = {text}"));
+            if *old == "svg_max_px" {
+                ui.svg_max_px = 123;
+            }
             let s = plugin_settings(&BTreeMap::new(), &ui, id);
-            assert_eq!(s.get(new), Some(&Value::Int(7)), "{old} -> {id}.{new}");
+            let got = s.get(new).unwrap_or_else(|| panic!("{old} -> {id}.{new}"));
+            let default = plugin_settings(&BTreeMap::new(), &MovedUi::default(), id);
+            assert_ne!(
+                Some(got),
+                default.get(new),
+                "{old} -> {id}.{new} is not the default"
+            );
         }
     }
 
     #[test]
     fn a_wrong_typed_value_is_passed_on_and_reads_as_the_default() {
         let p = plugins("[plugins.markdown]\nalerts = \"yes\"\n");
-        let s = plugin_settings(&p, &table(""), "markdown");
+        let s = plugin_settings(&p, &MovedUi::default(), "markdown");
         assert_eq!(s.get("alerts"), Some(&Value::Str("yes".into())));
         assert!(
             s.bool("alerts", true),
@@ -203,15 +299,15 @@ mod tests {
     #[test]
     fn a_sheet_follows_the_csv_rainbow_until_it_has_its_own() {
         let p = plugins("[plugins.csv]\nrainbow = false\n");
-        let s = plugin_settings(&p, &table(""), "spreadsheet");
+        let s = plugin_settings(&p, &MovedUi::default(), "spreadsheet");
         assert_eq!(s.get("rainbow"), Some(&Value::Bool(false)));
         let own =
             plugins("[plugins.csv]\nrainbow = false\n[plugins.spreadsheet]\nrainbow = true\n");
-        let s = plugin_settings(&own, &table(""), "spreadsheet");
+        let s = plugin_settings(&own, &MovedUi::default(), "spreadsheet");
         assert_eq!(s.get("rainbow"), Some(&Value::Bool(true)));
         let old = plugin_settings(
             &BTreeMap::new(),
-            &table("csv_rainbow = false"),
+            &moved("csv_rainbow = false"),
             "spreadsheet",
         );
         assert_eq!(
