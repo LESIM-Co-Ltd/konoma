@@ -477,7 +477,7 @@ const HELP_SPECS: &[(&str, bool)] = &[
 fn the_table_help_rows_agree_with_the_host() {
     let (dir, _files) = fixtures();
     let root = canon(&dir);
-    let (mut compared, mut skipped) = (0, 0);
+    let mut compared = 0;
     for file in [
         "plain.csv",
         "cjk.csv",
@@ -488,10 +488,9 @@ fn the_table_help_rows_agree_with_the_host() {
         "three.xlsx",
     ] {
         for (spec, popup_open) in HELP_SPECS {
-            // The popup is open while the help is asked for, which the host draws UNDER the popup
-            // (a host bug fixed on another branch): drop it from the comparison once that is fixed.
             // Whether a popup shows before `?` must match the flag (a table without cells
-            // never opens one).
+            // never opens one). The help is compared with the popup open too: the host draws
+            // it above the other overlays.
             let before = spec.trim_end_matches('?').trim();
             let (h0, _s0) = host_rows(&root, file, 70, before);
             let has_cells = file != "empty.csv";
@@ -500,10 +499,6 @@ fn the_table_help_rows_agree_with_the_host() {
                 *popup_open && has_cells,
                 "{file} [{spec}]: the popup flag is wrong"
             );
-            if *popup_open {
-                skipped += 1;
-                continue;
-            }
             let (h, _s) = host_rows(&root, file, 70, spec);
             let a = app_rows(&root.join(file), 69, spec);
             let what = format!("{file} [{spec}]");
@@ -562,14 +557,7 @@ fn the_table_help_rows_agree_with_the_host() {
             );
         }
     }
-    assert!(compared > 300, "{compared}");
-    // 7 files, 8 flagged key lists; `?` after a popup that exists in every file ("empty.csv"
-    // has no cell, so its popup does not open and it is still compared above, not skipped).
-    assert_eq!(
-        skipped,
-        7 * HELP_SPECS.iter().filter(|(_, p)| *p).count(),
-        "{skipped}"
-    );
+    assert!(compared > 800, "{compared}");
 }
 
 /// A table without columns has no cell to view: the footer and the help leave `view cell` out and
