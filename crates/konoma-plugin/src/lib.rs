@@ -85,8 +85,6 @@
 pub mod app;
 #[cfg(feature = "pictures")]
 pub mod canvas_pictures;
-#[cfg(feature = "pictures")]
-pub mod table_ui;
 #[cfg(feature = "config")]
 pub mod config;
 pub mod hints;
@@ -105,6 +103,8 @@ pub mod scope;
 pub mod session;
 pub mod settings;
 pub mod style;
+#[cfg(feature = "widgets")]
+pub mod table_ui;
 pub mod testing;
 pub mod text;
 pub mod view;

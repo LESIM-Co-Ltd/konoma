@@ -17,10 +17,14 @@ proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
 # The display types drawn with ratatui (`ratatui_draw`): style/line conversion and the canvas
 # painter. The hosts (konoma and the standalone app) turn it on; a plugin does not need it.
 ratatui = ["dep:ratatui"]
+# What a host reads of a plugin's table through konoma's own table widget (`table_ui`): this is the
+# `konoma-widgets` dependency alone, so it does not depend on the pictures. Both hosts turn it on
+# (through `pictures`, which uses the same crate).
+widgets = ["dep:konoma-widgets"]
 # The canvas pictures (`canvas_pictures`): hashing, decoding within the work limits, the read
 # scope, and the overlay arithmetic that both hosts (konoma and the standalone app) share, so a
 # picture a plugin places looks the same in either. Off by default: a plugin does not need it.
-pictures = ["ratatui", "dep:konoma-base", "dep:konoma-widgets", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
+pictures = ["ratatui", "widgets", "dep:konoma-base", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
 # while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
 test-hooks = ["konoma-base?/test-hooks"]
