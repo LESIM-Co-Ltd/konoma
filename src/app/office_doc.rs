@@ -1029,14 +1029,6 @@ impl App {
 }
 
 #[cfg(test)]
-impl MdImageResult {
-    /// Test-only: the failure code the result carries (`None` for a picture).
-    pub fn error_code_for_test(&self) -> Option<&str> {
-        self.image.as_ref().err().map(String::as_str)
-    }
-}
-
-#[cfg(test)]
 mod slide_tests {
     use super::*;
 

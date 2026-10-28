@@ -69,8 +69,10 @@ use crate::view::{CellRect, ImageData};
 
 mod budget;
 mod decode;
+mod draw;
 pub mod files;
 mod hash;
+mod host;
 pub mod overlay;
 mod policy;
 mod worker;
@@ -81,8 +83,10 @@ pub use budget::{decoded_bytes, source_bytes};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use decode::decode_one;
 pub use decode::draw_plugin_svg;
+pub use draw::draw_images;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
+pub use host::{CanvasPictureHost, Landed};
 pub use policy::{CanvasPolicy, SvgDraw, DEFAULT_SVG_MAX_PX};
 pub use worker::decode_canvas;
 #[cfg(any(test, feature = "test-hooks"))]

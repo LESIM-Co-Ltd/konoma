@@ -1963,6 +1963,7 @@ dependencies = [
  "crossterm",
  "globset",
  "image",
+ "konoma-base",
  "konoma-host-core",
  "konoma-svg",
  "konoma-test-support",

@@ -12,9 +12,10 @@
 //! - A continuation cell (the empty right half of a wide character) is skipped: the wide
 //!   character in the cell to its left covers both columns.
 //!
-//! The picture placements (`CanvasView::images`) are drawn over the cells by [`draw_images`], with
-//! the machinery Markdown inline images use (`ensure_md_image`, `md_image_proto`; the pictures are
-//! decoded on the worker, `app/canvas_images.rs`, the decoding in `konoma_plugin::canvas_pictures`):
+//! The picture placements (`CanvasView::images`) are drawn over the cells by [`draw_images`], which is
+//! `konoma_plugin::canvas_pictures::draw_images` over the inline-image cache Markdown images use
+//! (the pictures are decoded on the worker, `app/canvas_images.rs`, the decoding in
+//! `konoma_plugin::canvas_pictures`):
 //!
 //! - A picture is placed at its cell rectangle inside the content area. One that starts outside
 //!   the area is skipped; one that reaches below the bottom edge is clipped to the visible band
@@ -30,7 +31,7 @@
 //!   overlay signature, so the run loop's one-time clear (placeholder debris) also covers a canvas
 //!   picture that moved or vanished, and a picture whose pixels change in place does not clear.
 //! - A picture whose content changed keeps drawing its previous entry until the new one can be
-//!   drawn (`App::canvas_shown_key`).
+//!   drawn (`CanvasPictureHost::shown_key`).
 //!
 //! Text input and the redraw timer are the app's (`App::canvas_view` tells what the view asks
 //! for).
@@ -38,10 +39,8 @@
 use ratatui::layout::Rect;
 use ratatui::widgets::Block;
 use ratatui::Frame;
-use std::sync::Arc;
 
 use crate::app::App;
-use konoma_plugin::canvas_pictures::overlay::{visible_rect, OverlaySig, MAX_PICTURE_AREA_FACTOR};
 
 /// Draw the canvas of the plugin show into `area` (the preview frame and its content).
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -71,74 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draw the pictures of the canvas over the cells already painted (see the module comment).
 fn draw_images(frame: &mut Frame, app: &mut App, inner: Rect) {
-    let count = app.canvas_place_count();
-    if count == 0 {
-        return;
-    }
-    // One pass = one frame for the slot bookkeeping: every `ensure_md_image` below stamps this
-    // number, which keeps the encodes of the pictures on screen from being recycled.
-    app.begin_md_image_frame();
-    let mut sig = OverlaySig::new(inner);
-    let mut drawn = 0usize;
-    // The total area the pictures may be encoded at: each placement is its own encoding (a
-    // protocol payload the size of its cells), and the plugin may stack many ids over the whole
-    // area. Placements past the budget, in the plugin's order, keep their cells.
-    let mut area_left = u64::from(inner.width) * u64::from(inner.height) * MAX_PICTURE_AREA_FACTOR;
-    for n in 0..count {
-        // The placement and its key were made when the answer landed: no string is built here.
-        let Some(place) = app.canvas_place(n) else {
-            continue;
-        };
-        let Some(wanted) = place.key else {
-            continue; // `unchanged` for a picture the host does not hold: the cells stay
-        };
-        let r = place.rect;
-        let target = match visible_rect(inner, r) {
-            Some(t) => t,
-            None => continue,
-        };
-        let area = u64::from(target.width) * u64::from(target.height);
-        if area > area_left {
-            continue; // over the budget: the cells stay
-        }
-        area_left -= area;
-        // Asked every frame (cheap when settled): decoding is already done, the encode is the
-        // worker's.
-        app.ensure_md_image(&wanted, r.cols, r.rows, 0, target.height);
-        // The content the plugin named once it can be drawn; until then the one drawn before (so
-        // a picture whose content changes does not blink).
-        let shown = app.canvas_shown_key(place.id, &wanted, r.cols, r.rows, target.height);
-        if !Arc::ptr_eq(&shown, &wanted) {
-            app.ensure_md_image(&shown, r.cols, r.rows, 0, target.height);
-        }
-        let Some(img) = app.md_image_proto(&shown, r.cols, r.rows, 0, target.height) else {
-            continue; // not encoded yet, or failed: the plugin's cells stay
-        };
-        // A kitty placeholder assumes a clean SGR state: reset the attributes and the foreground
-        // of the cells under the picture, keeping the background (a transparent picture is
-        // composited over it).
-        let buf = frame.buffer_mut();
-        for y in target.top()..target.bottom() {
-            for x in target.left()..target.right() {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    let bg = cell.style().bg;
-                    let mut s = ratatui::style::Style::reset();
-                    if let Some(bg) = bg {
-                        s = s.bg(bg);
-                    }
-                    cell.set_style(s);
-                }
-            }
-        }
-        img.render(target, buf);
-        // The signature follows what is where, never the content: a picture whose pixels change
-        // under the same id must not look like a picture that moved (that clears the screen).
-        sig.add(place.id, target);
-        drawn += 1;
-    }
-    // A frame that drew no picture records nothing: the finish side then clears once when
-    // pictures were drawn just before ("they left"), and not again.
-    if drawn > 0 {
-        app.note_md_overlay(sig.finish());
+    if let Some(sig) = app.draw_canvas_images(frame.buffer_mut(), inner) {
+        app.note_md_overlay(sig);
     }
 }

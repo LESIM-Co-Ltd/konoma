@@ -17,6 +17,8 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FilterType, Resize};
 
+use konoma_svg::image::ImageFailure;
+
 use crate::layout::PxRect;
 
 /// Who vouches for a retained SVG, and so how it is drawn again (sharp zoom, rebuilding evicted
@@ -828,9 +830,224 @@ pub struct InlineImageCache {
     pub use_kitty: bool,
     /// The kitty escapes must be wrapped for tmux's passthrough.
     pub kitty_is_tmux: bool,
+    /// The last request id handed out by [`Self::next_request`]: one counter per cache, so an id
+    /// is never reused by two entries of it (a result is matched to its entry by this id).
+    pub request_seq: u64,
+}
+
+/// A finished background decode of one picture, as the host hands it to the cache
+/// ([`InlineImageCache::file_decoded`]).
+pub struct DecodedImage {
+    /// The cache key the decode was started for.
+    pub path: PathBuf,
+    /// The pixels, or the code of the failure ([`ImageFailure::code`]).
+    pub image: Result<image::DynamicImage, String>,
+    /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
+    pub svg: Option<Arc<Vec<u8>>>,
+    /// True when this is a sharpening re-raster of an already-shown picture: only the pixels are
+    /// replaced — the layout size stays.
+    pub reraster: bool,
+    /// All frames when this is an animation (`image` is just its first frame). None for everything
+    /// else, including a single-frame GIF, which already fell back to the plain still decode.
+    pub frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
+    /// The `MdImgEntry::request` this result answers; [`InlineImageCache::file_decoded`] drops it
+    /// when the entry has moved on to another request.
+    pub request: u64,
+}
+
+impl DecodedImage {
+    /// Test-only: the failure code the result carries (`None` for a picture).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn error_code_for_test(&self) -> Option<&str> {
+        self.image.as_ref().err().map(String::as_str)
+    }
+}
+
+/// What [`InlineImageCache::file_decoded`] did with a result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filed {
+    /// No entry, or the entry answers to another request: nothing changed.
+    Dropped,
+    /// The decode was cancelled (nobody wants it): the entry was forgotten, so the picture is asked
+    /// for again if it comes back.
+    Forgotten,
+    /// The pixels were filed.
+    Pixels,
+    /// The picture cannot be shown: the entry is `failed` for good (the host lays the picture out
+    /// as its text fallback).
+    Failed,
+    /// The entry was left as it was: a failed re-raster of a picture that has pixels, or a
+    /// cancelled one.
+    Kept,
+}
+
+/// Whether a cache key names a picture whose pixels can be made again once dropped: a regular
+/// inline image (read from its file again) or a picture of the open Word/OpenDocument document
+/// (decoded again from the bytes the converted document keeps), as opposed to a media-diff or
+/// canvas picture whose bytes came from git or a plugin and are held nowhere else.
+pub fn is_rebuildable_key(k: &Path) -> bool {
+    let s = k.to_string_lossy();
+    !crate::markdown::is_synthetic_md_url(&s) || crate::markdown::is_office_image_url(&s)
 }
 
 impl InlineImageCache {
+    /// Begin one draw pass: every encode request the pass makes is stamped with the new number, and
+    /// the slots it draws from are protected from being recycled underneath it.
+    pub fn begin_pass(&mut self) {
+        self.frame = self.frame.saturating_add(1);
+    }
+
+    /// Start a new request (decode, rebuild of evicted pixels or re-raster) for the existing entry
+    /// `path` and return its id, which the worker puts into its [`DecodedImage`] (and encodes carry
+    /// the entry's `born`). The entry then answers to this id alone: whatever an earlier request of
+    /// the same path is still running is stale from here on ([`MdImgEntry::request`]). The id is
+    /// taken from the cache's one counter, so an entry created again after it was dropped never
+    /// repeats an id of its earlier life.
+    pub fn next_request(&mut self, path: &Path) -> u64 {
+        self.request_seq += 1;
+        let id = self.request_seq;
+        if let Some(e) = self.cache.get_mut(path) {
+            e.request = id;
+            if e.born == 0 {
+                e.born = id;
+            }
+        }
+        id
+    }
+
+    /// Stamp the picture filed under `path` as drawn by the pass in progress (so the eviction and
+    /// the slot recycling see it in use). Returns whether the entry exists.
+    pub fn stamp_drawn(&mut self, path: &Path) -> bool {
+        let frame = self.frame;
+        let Some(entry) = self.cache.get_mut(path) else {
+            return false;
+        };
+        entry.last_used = frame;
+        entry.wish.set_priority(frame);
+        true
+    }
+
+    /// File a finished decode into the entry `res.path` (which the host placed when it started the
+    /// decode). `intrinsic` is the layout size to reserve for a picture whose first decode this is,
+    /// when it is not the raster's own (a diagram's or formula's SVG size); `None` = the raster's
+    /// pixel size. The host does the rest of what a result means for it (invalidating its layout,
+    /// the eviction) from the returned [`Filed`].
+    pub fn file_decoded(&mut self, res: DecodedImage, intrinsic: Option<(u32, u32)>) -> Filed {
+        let Some(entry) = self.cache.get(&res.path) else {
+            return Filed::Dropped;
+        };
+        // A result of an earlier request: the entry it was made for was dropped and the path asked
+        // for again (or a newer request superseded it). Nothing in it may touch the current
+        // entry, whatever it says: a stale "cancelled" would forget the new entry, a stale picture
+        // would fill it and a stale re-raster would clear the in-flight flag of the newer one.
+        if entry.request != res.request {
+            return Filed::Dropped;
+        }
+        // The drawing process was stopped because the preview moved on: forget the entry, so the
+        // picture is asked for again (and drawn) if its document comes back, instead of staying
+        // "failed".
+        if !res.reraster && matches!(&res.image, Err(e) if e == ImageFailure::Cancelled.code()) {
+            self.cache.remove(&res.path);
+            return Filed::Forgotten;
+        }
+        let entry = self.cache.entry(res.path).or_default();
+        // Whatever was running for this entry (an initial decode, a sharpening re-raster or a
+        // rebuild of evicted pixels) has landed.
+        entry.rebuilding = false;
+        entry.rebuild_wanted = None;
+        if res.reraster {
+            entry.reraster_inflight = false;
+        }
+        match res.image {
+            Ok(img) => {
+                use image::GenericImageView;
+                if entry.layout_px.is_none() {
+                    entry.layout_px = intrinsic.or_else(|| Some(img.dimensions()));
+                }
+                // Animated GIF: keep all frames (as cheap-to-clone Arcs from here on) and start the
+                // cycle at frame 0; the host's playback swaps `decoded` to the current frame as it
+                // advances. `res.frames` only arrives on the initial decode — GIFs never go
+                // through the sharpening re-raster path (that's for vector sources), so this can't
+                // race a later reraster result and clobber mid-playback state.
+                if let Some(frames) = res.frames {
+                    entry.frames = frames
+                        .into_iter()
+                        .map(|(im, d)| (Arc::new(im), d))
+                        .collect();
+                    entry.idx = 0;
+                    entry.shown_at = None;
+                    entry.decoded = entry.frames.first().map(|(im, _)| im.clone());
+                } else {
+                    entry.decoded = Some(Arc::new(img));
+                }
+                entry.failed = false;
+                entry.fail = None;
+                if let Some(svg) = res.svg {
+                    entry.svg = Some(svg);
+                }
+                entry.evicted = false;
+                if res.reraster {
+                    // Trigger a re-encode with the high-density raster, keeping the old protocol
+                    // displayed until the new encode arrives (clearing it would leave a momentary
+                    // blank).
+                    entry.mark_stale();
+                }
+                Filed::Pixels
+            }
+            // A re-raster failure leaves the current raster in place (the display stays alive) —
+            // unless there is none: a rebuild of evicted pixels that fails must end the wait
+            // (`failed`), or the entry would stay "loading" forever.
+            Err(_) if res.reraster && entry.decoded.is_some() => Filed::Kept,
+            Err(why) => {
+                entry.failed = true;
+                entry.fail = ImageFailure::from_code(&why);
+                // Cancelled = nobody wants it (the entry is about to go, or already stale): not a
+                // failure to show.
+                if entry.fail == Some(ImageFailure::Cancelled) {
+                    entry.failed = false;
+                    entry.fail = None;
+                    Filed::Kept
+                } else {
+                    Filed::Failed
+                }
+            }
+        }
+    }
+
+    /// Keep the decoded pixels within `budget` bytes: drop those of the pictures asked for longest
+    /// ago, never one the latest pass drew, and never one that cannot be rebuilt (media-diff and
+    /// canvas pictures come from bytes held nowhere else). Their entries stay, so layout does not
+    /// move; a picture needed again is rebuilt on demand by the host.
+    pub fn evict_to(&mut self, budget: u64) {
+        let mut total: u64 = self.cache.values().map(MdImgEntry::pixel_bytes).sum();
+        if total <= budget {
+            return;
+        }
+        let frame = self.frame;
+        let mut candidates: Vec<(u64, PathBuf)> = self
+            .cache
+            .iter()
+            .filter(|(k, e)| {
+                e.decoded.is_some()
+                    && e.last_used < frame.max(1)
+                    && !e.enc_inflight
+                    && !e.reraster_inflight
+                    && (e.svg.is_some() || is_rebuildable_key(k))
+            })
+            .map(|(k, e)| (e.last_used, k.clone()))
+            .collect();
+        candidates.sort();
+        for (_, k) in candidates {
+            if total <= budget {
+                break;
+            }
+            if let Some(e) = self.cache.get_mut(&k) {
+                total = total.saturating_sub(e.pixel_bytes());
+                e.evict_pixels();
+            }
+        }
+    }
+
     /// Ask for the encode of the placement `(cols, full_rows, row_off, vis_rows)` of the picture
     /// filed under `path`, unless it is settled, failed, or another encode is in flight (one at a
     /// time, so scrolling never queues a backlog). Fully visible → the whole image at
@@ -1780,5 +1997,150 @@ mod tests {
             Some(22),
             "taller than the box is still full"
         );
+    }
+
+    fn decoded(
+        path: &Path,
+        image: Result<image::DynamicImage, String>,
+        request: u64,
+    ) -> DecodedImage {
+        DecodedImage {
+            path: path.to_path_buf(),
+            image,
+            svg: None,
+            reraster: false,
+            frames: None,
+            request,
+        }
+    }
+
+    #[test]
+    fn requests_are_numbered_by_the_cache_across_paths_and_lives_of_a_path() {
+        let mut c = InlineImageCache::default();
+        let (a, b) = (PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png"));
+        c.cache.entry(a.clone()).or_default();
+        c.cache.entry(b.clone()).or_default();
+        let (ra, rb) = (c.next_request(&a), c.next_request(&b));
+        assert_ne!(ra, rb, "one counter for every path");
+        assert_eq!(c.cache[&a].request, ra);
+        assert_eq!(
+            c.cache[&a].born, ra,
+            "born is the first request of the entry"
+        );
+        // A second request of the same life moves `request` and keeps `born`.
+        let ra2 = c.next_request(&a);
+        assert!(ra2 > rb);
+        assert_eq!((c.cache[&a].request, c.cache[&a].born), (ra2, ra));
+        // The entry is dropped and made again under the same path: a new life, a new `born`.
+        c.cache.remove(&a);
+        c.cache.entry(a.clone()).or_default();
+        let ra3 = c.next_request(&a);
+        assert!(ra3 > ra2);
+        assert_eq!(c.cache[&a].born, ra3, "a re-created entry has a new born");
+        // A request for a path with no entry still takes a number and creates nothing.
+        let none = c.next_request(Path::new("/x/none.png"));
+        assert!(none > ra3);
+        assert!(!c.cache.contains_key(Path::new("/x/none.png")));
+    }
+
+    #[test]
+    fn what_was_asked_of_an_earlier_life_of_a_path_is_dropped() {
+        let mut c = InlineImageCache::default();
+        let path = PathBuf::from("/x/a.png");
+        c.cache.entry(path.clone()).or_default();
+        let old = c.next_request(&path);
+        let old_born = c.cache[&path].born;
+        c.cache.remove(&path);
+        c.cache.entry(path.clone()).or_default();
+        let new = c.next_request(&path);
+        // The decode of the old life lands: it must not fill the new entry.
+        let late = decoded(&path, Ok(image::DynamicImage::new_rgba8(2, 2)), old);
+        assert_eq!(c.file_decoded(late, None), Filed::Dropped);
+        assert!(c.cache[&path].decoded.is_none());
+        // Nor may a stale cancel forget it.
+        let late = decoded(&path, Err(ImageFailure::Cancelled.code().to_string()), old);
+        assert_eq!(c.file_decoded(late, None), Filed::Dropped);
+        assert!(c.cache.contains_key(&path));
+        // The encode of the old life is dropped by its `born`.
+        c.cache.get_mut(&path).unwrap().enc_inflight = true;
+        let res = MdEncodeResult {
+            path: path.clone(),
+            key: full(10),
+            image: None,
+            born: old_born,
+        };
+        assert_eq!(c.apply_encode(res), EncodeApplied::Dropped);
+        assert!(c.cache[&path].enc_inflight);
+        // The answer to the current request is filed.
+        let now = decoded(&path, Ok(image::DynamicImage::new_rgba8(2, 2)), new);
+        assert_eq!(c.file_decoded(now, None), Filed::Pixels);
+        assert!(c.cache[&path].decoded.is_some());
+    }
+
+    #[test]
+    fn a_decoded_result_is_filed_failed_forgotten_or_kept() {
+        let mut c = InlineImageCache::default();
+        let path = PathBuf::from("/x/a.png");
+        // No entry: dropped.
+        assert_eq!(
+            c.file_decoded(
+                decoded(&path, Ok(image::DynamicImage::new_rgba8(3, 2)), 1),
+                None
+            ),
+            Filed::Dropped
+        );
+        // Ok: pixels and the layout size from the image (or from the intrinsic size when given).
+        c.cache.entry(path.clone()).or_default();
+        let r = c.next_request(&path);
+        c.cache.get_mut(&path).unwrap().rebuilding = true;
+        let f = c.file_decoded(
+            decoded(&path, Ok(image::DynamicImage::new_rgba8(3, 2)), r),
+            Some((30, 20)),
+        );
+        assert_eq!(f, Filed::Pixels);
+        let e = &c.cache[&path];
+        assert!(e.decoded.is_some() && !e.failed && !e.rebuilding && !e.evicted);
+        assert_eq!(e.layout_px, Some((30, 20)));
+        // Err: failed for good, with the reason.
+        let bad = PathBuf::from("/x/bad.png");
+        c.cache.entry(bad.clone()).or_default();
+        let r = c.next_request(&bad);
+        let why = ImageFailure::UnsupportedFormat.code().to_string();
+        assert_eq!(
+            c.file_decoded(decoded(&bad, Err(why), r), None),
+            Filed::Failed
+        );
+        assert!(c.cache[&bad].failed);
+        assert_eq!(c.cache[&bad].fail, Some(ImageFailure::UnsupportedFormat));
+        // Cancelled: the entry is forgotten so it is asked for again.
+        let gone = PathBuf::from("/x/gone.png");
+        c.cache.entry(gone.clone()).or_default();
+        let r = c.next_request(&gone);
+        let why = ImageFailure::Cancelled.code().to_string();
+        assert_eq!(
+            c.file_decoded(decoded(&gone, Err(why.clone()), r), None),
+            Filed::Forgotten
+        );
+        assert!(!c.cache.contains_key(&gone));
+        // A cancelled re-raster of a picture with pixels leaves it as it is.
+        let r = c.next_request(&path);
+        let mut res = decoded(&path, Err(why), r);
+        res.reraster = true;
+        assert_eq!(c.file_decoded(res, None), Filed::Kept);
+        assert!(c.cache[&path].decoded.is_some() && !c.cache[&path].failed);
+    }
+
+    #[test]
+    fn refilling_an_evicted_picture_makes_it_whole_again() {
+        let mut c = InlineImageCache::default();
+        let path = PathBuf::from("/x/a.png");
+        let e = c.cache.entry(path.clone()).or_default();
+        e.evicted = true;
+        e.rebuilding = true;
+        let r = c.next_request(&path);
+        let res = decoded(&path, Ok(image::DynamicImage::new_rgba8(2, 2)), r);
+        assert_eq!(c.file_decoded(res, None), Filed::Pixels);
+        let e = &c.cache[&path];
+        assert!(!e.evicted && !e.rebuilding && e.decoded.is_some());
     }
 }

@@ -2256,3 +2256,5 @@ fn a_base_dir_outside_the_scope_is_refused_before_any_drawing() {
         assert!(rec.calls.borrow().is_empty());
     }
 }
+
+mod host;

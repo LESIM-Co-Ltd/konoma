@@ -22,11 +22,12 @@ use konoma_widgets::layout::fence_crop;
 // canvas pictures with the very same code); the names stay reachable here for the host.
 #[cfg(test)]
 pub use konoma_widgets::inline_images::{
-    kitty_id_for, md_band_pixels, reserve_proto_slot_hard, MdProtoSlot, MD_ZOOM_SLOTS,
+    kitty_id_for, md_band_pixels, reserve_proto_slot_hard, MdProtoSlot, MD_PROTO_SLOTS,
+    MD_ZOOM_SLOTS,
 };
 pub use konoma_widgets::inline_images::{
-    md_encode_worker, EncodeApplied, InlineImage, InlineImageCache, MdEncodeKey, MdEncodeRequest,
-    MdEncodeResult, MdImgEntry, SvgTrust, MD_PROTO_SLOTS,
+    md_encode_worker, EncodeApplied, Filed, InlineImage, InlineImageCache, MdEncodeKey,
+    MdEncodeRequest, MdEncodeResult, MdImgEntry, SvgTrust,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -91,7 +92,7 @@ mod tab_lifecycle;
 mod table_actions;
 /// Test-only: waits until the background reaper has dropped everything discarded so far.
 #[cfg(test)]
-pub(crate) use table_actions::flush_discards;
+pub(crate) use konoma_base::discard::flush_discards;
 mod text_plugin;
 
 use md_text::*;
@@ -1774,19 +1775,10 @@ pub struct App {
     /// kitty ids pinned to their encodes and the encode worker's handle (`InlineImageCache`).
     /// Also holds the `use_kitty` / `kitty_is_tmux` flags of the terminal.
     md_images: InlineImageCache,
-    /// The placements of the canvas on screen, in the order of `CanvasView::images`, with the
-    /// cache key made once when the answer landed (`app/canvas_images.rs`).
-    canvas_places: Vec<canvas_images::CanvasPlace>,
-    /// How many placements of the canvas on screen each picture (by `canvas_slot_of`) has: the
-    /// number of encodings it can need at once (one per placement, a clipped one has its own).
-    /// Built with `canvas_places`; the cap of a canvas picture's encode slots.
-    canvas_slot_counts: std::collections::HashMap<String, usize>,
-    /// The cache entry each canvas picture (by id) is drawn from now. It stays while a newer
-    /// content of the id has no protocol yet, so a changing picture does not blink.
-    canvas_front: std::collections::HashMap<u64, Arc<str>>,
-    /// The read scope identity ([`konoma_plugin::ReadScope::fingerprint`]) the canvas pictures
-    /// held were made under; a job under another scope does not resolve `unchanged` to them.
-    canvas_scope_fp: u64,
+    /// The canvas pictures on screen: the placements, the entry each id is drawn from, the kept
+    /// sources and the read scope they were made under (`konoma_plugin::canvas_pictures`, shared
+    /// with the standalone plugin app). Its methods take `md_images`, the cache they fill.
+    canvas: canvas_images::CanvasPictureHost,
     /// The (plugin id, reason) pairs of read-scope refusals already flashed, so a refusal is told
     /// once and not at every redraw.
     scope_flashed: std::collections::HashSet<(String, &'static str)>,
@@ -1796,13 +1788,6 @@ pub struct App {
     /// The read scope of the plugin document on screen, built once and reused between frames
     /// (see `App::with_scope_memo`); rebuilt when its inputs change.
     read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
-    /// The sources of the canvas pictures deferred or refused and not decoded yet, by id (kept
-    /// from the answer that sent them, so the plugin need not send them again).
-    canvas_kept: std::collections::HashMap<u64, canvas_images::KeptPicture>,
-    /// Last request id handed out by `App::begin_md_request` (ids start at 1). Every decode,
-    /// rebuild and re-raster of an inline picture is stamped with a fresh one, so a result can be
-    /// matched to the request that is still wanted (`MdImgEntry::request`).
-    md_request_seq: u64,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -2373,22 +2358,7 @@ enum FenceSharpen {
 }
 
 /// Result of a background inline-image decode, delivered to the run loop.
-pub struct MdImageResult {
-    path: PathBuf,
-    image: Result<image::DynamicImage, String>,
-    /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
-    svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
-    /// replaced — the layout size and the decoration cache stay untouched.
-    reraster: bool,
-    /// All frames when this is an animated inline GIF (`image` above is just its first frame, kept
-    /// so the existing layout-sizing code path is unchanged). None for everything else, including a
-    /// static/single-frame GIF, which already fell back to the plain still-image decode.
-    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
-    /// The `MdImgEntry::request` this result answers (see there); `apply_md_image` drops it when
-    /// the entry has moved on to another request.
-    request: u64,
-}
+pub type MdImageResult = konoma_widgets::inline_images::DecodedImage;
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
 /// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
@@ -2928,16 +2898,11 @@ impl App {
             preview_visual_linewise: false,
             gif: konoma_widgets::gif_player::GifPlayer::new(),
             media_tx: None,
-            canvas_places: Vec::new(),
-            canvas_slot_counts: std::collections::HashMap::new(),
+            canvas: canvas_images::CanvasPictureHost::default(),
             md_images: InlineImageCache::default(),
-            canvas_front: std::collections::HashMap::new(),
-            canvas_scope_fp: 0,
             scope_flashed: std::collections::HashSet::new(),
             md_scope_refusals: std::cell::RefCell::new(Vec::new()),
             read_scope_memo: std::cell::RefCell::new(None),
-            canvas_kept: std::collections::HashMap::new(),
-            md_request_seq: 0,
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,

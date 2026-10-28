@@ -1548,7 +1548,7 @@ impl App {
                 // Pictures held under another read scope are not what `unchanged` may resolve to:
                 // the key of a picture carries the scope it was judged under, and the new scope
                 // judges again.
-                if self.canvas_scope_fp != scope_fp {
+                if self.canvas.scope_fp != scope_fp {
                     held.by_id.clear();
                     held.kept.clear();
                 }
