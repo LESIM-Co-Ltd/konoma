@@ -4415,6 +4415,140 @@ fn e2e_info_popup() {
     assert!(!s.app.is_info());
 }
 
+/// `?` opens help from every overlay that inherits the Global keys (bookmarks, tab list, outline,
+/// info, table cell popup). The help panel must be drawn **above** that overlay: its title and a
+/// row deep inside the panel (which a centered overlay would cover) must both be visible.
+#[track_caller]
+fn assert_help_over_overlay(s: &mut Sim, is_open: impl Fn(&App) -> bool, what: &str) {
+    assert!(is_open(&s.app), "{what}: overlay should be open before ?");
+    s.key('?');
+    assert!(s.app.show_help, "{what}: ? opens help over the overlay");
+    s.see("Help");
+    // Every help line the frame actually shows must be intact on screen, row by row (a small
+    // centered overlay drawn after the help would punch a hole in the middle rows without hiding
+    // the title or the first lines). The visible range comes from the same layout `render` uses;
+    // lines past the frame (the help scrolls) are not expected.
+    let lines = crate::ui::help::help_lines(&s.app);
+    let buf = s.term.backend().buffer().clone();
+    let (popup, inner_h) = crate::ui::help::popup_layout(lines.len(), buf.area);
+    assert_eq!(s.app.help_scroll, 0, "{what}: help opens unscrolled");
+    if lines.len() + 2 <= buf.area.height as usize {
+        // Fits entirely: the whole text, including the last rows, is on screen.
+        s.see("toggle this help");
+    }
+    let mut checked = 0;
+    for (i, line) in lines.iter().take(inner_h as usize).enumerate() {
+        let want: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        let want: String = want.trim().chars().take(30).collect();
+        let y = popup.y + 1 + i as u16;
+        let row: String = (popup.x + 1..popup.x + popup.width - 1)
+            .map(|x| buf[(x, y)].symbol())
+            .collect();
+        assert!(
+            row.contains(&want),
+            "{what}: help line {i} {want:?} is hidden (row: {row:?}):\n{}",
+            s.screen()
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        lines.len().min(inner_h as usize),
+        "{what}: compared every visible row"
+    );
+    assert!(checked >= 20, "{what}: only {checked} help rows compared");
+    // Closing help returns to the overlay underneath.
+    s.key('?');
+    assert!(!s.app.show_help, "{what}: second ? closes help");
+    assert!(is_open(&s.app), "{what}: overlay is still open under help");
+}
+
+/// A terminal tall enough for every help section, wide enough for 80%-sized popups.
+fn tall_sim(root: &std::path::Path) -> Sim {
+    Sim::with_config_sized(root, Config::default(), 100, 70)
+}
+
+/// A short terminal: the help is taller than the frame, so only part of it is visible. The
+/// visible rows must still be intact over an overlay.
+#[test]
+fn e2e_help_draws_over_overlay_when_help_is_taller_than_screen() {
+    let dir = sandbox("help_over_short");
+    seed_files(&dir);
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 100, 40);
+    s.key('T');
+    let total = crate::ui::help::help_lines(&s.app).len();
+    assert!(
+        total > 38,
+        "help ({total} lines) must exceed the 38-row frame for this test"
+    );
+    assert_help_over_overlay(&mut s, |a| a.is_tab_list(), "tab list (short screen)");
+}
+
+#[test]
+fn e2e_help_draws_over_table_cell_popup() {
+    let dir = sandbox("help_over_cell");
+    seed_files(&dir);
+    let mut s = tall_sim(&canon(&dir));
+    s.select("data.csv");
+    s.enter();
+    s.enter(); // Enter on the table opens the cell popup
+    assert_help_over_overlay(&mut s, |a| a.is_table_cell_open(), "table cell popup");
+}
+
+#[test]
+fn e2e_help_draws_over_info_popup() {
+    let dir = sandbox("help_over_info");
+    seed_files(&dir);
+    let mut s = tall_sim(&canon(&dir));
+    s.select("notes.txt");
+    s.key('i');
+    assert_help_over_overlay(&mut s, |a| a.is_info(), "info");
+}
+
+#[test]
+fn e2e_help_draws_over_outline() {
+    let (mut s, _dir) = md_preview(
+        Config::default(),
+        "help_over_outline",
+        "# Top\n\nbody\n\n## Sub\n\nmore\n",
+    );
+    s.term.backend_mut().resize(100, 70);
+    s.term
+        .resize(ratatui::layout::Rect::new(0, 0, 100, 70))
+        .unwrap();
+    s.key('O');
+    assert_help_over_overlay(&mut s, |a| a.is_outline(), "outline");
+}
+
+#[test]
+fn e2e_help_draws_over_tab_list() {
+    let dir = sandbox("help_over_tabs");
+    seed_files(&dir);
+    let mut s = tall_sim(&canon(&dir));
+    s.key('T');
+    assert_help_over_overlay(&mut s, |a| a.is_tab_list(), "tab list (tree)");
+    s.key('q');
+    s.select("notes.txt");
+    s.enter();
+    s.key('T');
+    assert_help_over_overlay(&mut s, |a| a.is_tab_list(), "tab list (preview)");
+}
+
+#[test]
+fn e2e_help_draws_over_bookmark_list() {
+    let root = sandbox("help_over_bm");
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    seed_files(&proj);
+    let proj = canon(&proj);
+    let mut s = tall_sim(&proj);
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
+    s.select("notes.txt");
+    s.keys("mb");
+    s.key('\'');
+    assert_help_over_overlay(&mut s, |a| a.is_bookmark_list(), "bookmark list");
+}
+
 // =============================================================================
 // Focused simulation of recently-changed complex paths
 // (custom task states, focus round-trip, closing the last tab, global BM absolute display,
