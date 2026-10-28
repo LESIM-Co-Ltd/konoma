@@ -14,7 +14,9 @@
 //! old picture stays on screen. The page count reaches the host as soon as `open` returns, before
 //! the first page is drawn.
 
-use konoma_plugin::view::{ImageData, ImageView, ViewReq};
+#[cfg(test)]
+use konoma_plugin::view::ImageData;
+use konoma_plugin::view::{ImageView, ViewReq};
 use konoma_plugin::{Failure, FailureKind, Input, Plugin};
 
 use super::plugin_host::{PluginJob, PluginPhase, PluginShow, Wait};
@@ -92,95 +94,28 @@ pub(super) fn decode_image_view(
     trust_own_svg: bool,
     scope: &konoma_plugin::ReadScope,
 ) -> Option<MediaPayload> {
-    use crate::preview::image::ImageFailure;
-    let cancelled = || cancel.is_some_and(|c| c.is_cancelled());
-    let max_px = iv.raster_max_px.unwrap_or(default_raster_px);
-    match iv.data {
-        // A file: the host tells an animation from a still by the first bytes, and decodes it
-        // under its size limits and the shared decode gate. It is opened by the one door every
-        // plugin-named picture file goes through (a regular file only, never a FIFO or a device,
-        // opened without blocking; a relative path is relative to the previewed file's folder),
-        // and decoded from that handle -- nothing opens the path a second time. (No 64 MiB read
-        // cap here: a large still is bounded by the decoders' own limits, as it always was.)
-        ImageData::File(p) => Some(
-            match super::canvas_images::open_picture_file(path, &p, scope) {
-                Ok((file, named)) => decode_picture_handle(file, &named),
-                Err(why) => MediaPayload::ImageFailed(why),
-            },
-        ),
-        ImageData::Svg {
-            data,
-            base_dir,
-            trusted,
-        } => {
-            // The scope, trust and which-drawer decisions are shared with the canvas pictures
-            // (`draw_plugin_svg`); this host draws an untrusted SVG in a supervised child.
-            let (img, trust) = match konoma_plugin::canvas_pictures::draw_plugin_svg(
-                &data,
-                base_dir,
-                trusted,
-                path,
-                max_px,
-                scope,
-                trust_own_svg,
-                &SvgChild,
-                &cancelled,
-            ) {
-                Ok(drawn) => drawn,
-                Err(None) => return None,
-                Err(Some(why)) => return Some(MediaPayload::ImageFailed(why)),
-            };
-            Some(if iv.sharp_zoom {
-                MediaPayload::Vector {
-                    img,
-                    svg: Arc::new(data.to_vec()),
-                    trust,
-                }
-            } else {
-                MediaPayload::Static(img)
-            })
-        }
-        ImageData::Rgba {
-            width,
-            height,
-            pixels,
-        } => {
-            // The plugin handed over the only reference: the buffer is taken, not copied.
-            let raw = Arc::try_unwrap(pixels).unwrap_or_else(|shared| (*shared).clone());
-            let img = image::RgbaImage::from_raw(width, height, raw)?;
-            Some(MediaPayload::Static(image::DynamicImage::ImageRgba8(img)))
-        }
-        // Not made by the picture plugins; a plugin that returns them gets the honest reason.
-        // (`ImageData` is non-exhaustive: a kind this host does not know is refused the same way.)
-        _ => Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat)),
-    }
+    // The decoding itself is shared with the standalone app (`decode_picture_view`); this host
+    // draws an untrusted SVG in a supervised child (`SvgChild`) and keeps the result as a payload.
+    konoma_plugin::canvas_pictures::decode_picture_view(
+        iv,
+        path,
+        default_raster_px,
+        &|| cancel.is_some_and(|c| c.is_cancelled()),
+        trust_own_svg,
+        scope,
+        &SvgChild,
+    )
+    .map(payload_of)
 }
 
-/// Decode the opened picture file: an animation when its first bytes say GIF (and it has more
-/// than one frame), otherwise a still.
-fn decode_picture_handle(mut file: std::fs::File, named: &Path) -> MediaPayload {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut head = [0u8; 6];
-    let gif = file.read_exact(&mut head).is_ok() && &head[..4] == b"GIF8";
-    if file.seek(SeekFrom::Start(0)).is_err() {
-        return MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Corrupt);
-    }
-    if gif {
-        // A single-frame / non-animated GIF is shown as a still image.
-        let frames = file
-            .try_clone()
-            .ok()
-            .and_then(crate::preview::image::decode_gif_file);
-        if let Some(frames) = frames {
-            return MediaPayload::Gif(frames);
-        }
-        if file.seek(SeekFrom::Start(0)).is_err() {
-            return MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Corrupt);
-        }
-    }
-    match crate::preview::image::decode_static_file_why(file, Some(named)) {
-        Ok(img) => MediaPayload::Static(img),
-        Err(why) => MediaPayload::ImageFailed(why),
+/// What the shared decoding made, as the host's media payload.
+pub(super) fn payload_of(view: konoma_plugin::canvas_pictures::PictureView) -> MediaPayload {
+    use konoma_plugin::canvas_pictures::PictureView;
+    match view {
+        PictureView::Still(img) => MediaPayload::Static(img),
+        PictureView::Vector { img, svg, trust } => MediaPayload::Vector { img, svg, trust },
+        PictureView::Gif(frames) => MediaPayload::Gif(frames),
+        PictureView::Failed(why) => MediaPayload::ImageFailed(why),
     }
 }
 

@@ -74,6 +74,7 @@ pub mod files;
 mod hash;
 mod host;
 pub mod overlay;
+mod picture_view;
 mod policy;
 mod worker;
 
@@ -87,6 +88,7 @@ pub use draw::draw_images;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
 pub use host::{CanvasPictureHost, Landed};
+pub use picture_view::{decode_picture_view, PictureFrames, PictureView};
 pub use policy::{CanvasPolicy, SvgDraw, DEFAULT_SVG_MAX_PX};
 pub use worker::decode_canvas;
 #[cfg(any(test, feature = "test-hooks"))]

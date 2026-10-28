@@ -1525,3 +1525,116 @@ mod read_scope {
         assert!(failed(&got) && !refused(&got));
     }
 }
+
+// ---- the mapping from the shared decoding (`decode_picture_view`) to the media payload --------
+
+mod payload_mapping {
+    use super::super::payload_of;
+    use super::*;
+    use crate::preview::image::ImageFailure;
+    use konoma_plugin::canvas_pictures::PictureView;
+
+    fn img(w: u32) -> image::DynamicImage {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, 1))
+    }
+
+    #[test]
+    fn a_still_is_a_static_payload() {
+        match payload_of(PictureView::Still(img(7))) {
+            MediaPayload::Static(i) => assert_eq!(i.width(), 7),
+            _ => panic!("a still is Static"),
+        }
+    }
+
+    #[test]
+    fn a_vector_keeps_its_svg_and_its_trust() {
+        let svg = Arc::new(b"<svg/>".to_vec());
+        let trust = SvgTrust::File(PathBuf::from("/x/a.svg"));
+        match payload_of(PictureView::Vector {
+            img: img(3),
+            svg: svg.clone(),
+            trust: trust.clone(),
+        }) {
+            MediaPayload::Vector {
+                img: i,
+                svg: s,
+                trust: t,
+            } => {
+                assert_eq!(i.width(), 3);
+                assert!(Arc::ptr_eq(&s, &svg));
+                assert_eq!(t, trust);
+            }
+            _ => panic!("a vector is Vector"),
+        }
+    }
+
+    #[test]
+    fn frames_are_a_gif_payload_in_order_with_their_delays() {
+        let frames = vec![
+            (img(1), Duration::from_millis(30)),
+            (img(2), Duration::from_millis(70)),
+        ];
+        match payload_of(PictureView::Gif(frames)) {
+            MediaPayload::Gif(f) => {
+                let got: Vec<(u32, Duration)> = f.iter().map(|(i, d)| (i.width(), *d)).collect();
+                assert_eq!(
+                    got,
+                    vec![
+                        (1, Duration::from_millis(30)),
+                        (2, Duration::from_millis(70))
+                    ]
+                );
+            }
+            _ => panic!("frames are Gif"),
+        }
+    }
+
+    #[test]
+    fn every_failure_reason_is_carried_unchanged() {
+        use crate::preview::svg_guard::SvgFail;
+        let all = [
+            ImageFailure::TooLarge,
+            ImageFailure::Corrupt,
+            ImageFailure::UnsupportedFormat,
+            ImageFailure::Cancelled,
+            ImageFailure::Svg(SvgFail::TooLarge),
+            ImageFailure::Svg(SvgFail::Invalid),
+            ImageFailure::OutsideReadDirs,
+        ];
+        // Distinct reasons stay distinct (a stable code each), none is turned into another.
+        let codes: std::collections::HashSet<_> = all.iter().map(|f| f.code()).collect();
+        assert_eq!(codes.len(), all.len());
+        for why in all {
+            match payload_of(PictureView::Failed(why)) {
+                MediaPayload::ImageFailed(got) => assert_eq!(got, why),
+                _ => panic!("a failure is ImageFailed"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_decoding_through_the_host_maps_each_kind() {
+        let shown = Path::new("/x/a.svg");
+        let scope = konoma_plugin::ReadScope::unrestricted();
+        let rgba = ImageView::new(ImageData::Rgba {
+            width: 2,
+            height: 1,
+            pixels: Arc::new(vec![0; 8]),
+        });
+        assert!(matches!(
+            decode_image_view(rgba, shown, 100, None, false, &scope),
+            Some(MediaPayload::Static(_))
+        ));
+        let lazy_kind = ImageView::new(ImageData::Frames(vec![]));
+        assert!(matches!(
+            decode_image_view(lazy_kind, shown, 100, None, false, &scope),
+            Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat))
+        ));
+        let bad = ImageView::new(ImageData::Rgba {
+            width: 9,
+            height: 9,
+            pixels: Arc::new(vec![0; 4]),
+        });
+        assert!(decode_image_view(bad, shown, 100, None, false, &scope).is_none());
+    }
+}
