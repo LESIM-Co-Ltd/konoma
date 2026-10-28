@@ -612,7 +612,7 @@ impl Default for UiConfig {
             statusbar: "split".into(),
             theme: ThemeConfig::default(),
             image_render_scale: 1.0,
-            svg_max_px: 800,
+            svg_max_px: konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX,
             sort: SortConfig::default(),
             details: Vec::new(),
             graph_max_branches: 12,

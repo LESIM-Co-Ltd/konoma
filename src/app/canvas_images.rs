@@ -3,7 +3,11 @@
 //! What is decoded, how a picture is keyed and what bounds the work is host-neutral and lives in
 //! [`konoma_plugin::canvas_pictures`] (the identity of a picture, `image: None`, the kept
 //! pictures, failure being final for a content, the bounds, the untrusted SVG, files and
-//! animation; see its module doc). This module is the part bound to [`App`]:
+//! animation; see its module doc). This module is the part bound to [`App`]: the landing of
+//! a decoded answer into the app's caches (the cache entries, the kitty image ids, the held-bytes
+//! count, the prune and the once-per-reason flash of a scope refusal), the cell placements
+//! `ui/canvas.rs` draws, and the re-exports of the shared items the rest of the app and its tests
+//! use. What the landing does is described below.
 //!
 //! A canvas picture goes through the same machinery as a Markdown inline image and a media-diff
 //! side: its pixels sit in `App::md_image_cache` under a synthetic key, the encode worker turns

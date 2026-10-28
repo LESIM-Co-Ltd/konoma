@@ -176,7 +176,7 @@ pub fn decode_canvas(
     for (id, key) in &key_of {
         if let Some(f) = held.front.get(id) {
             // The entry an id is drawn from is replaced by its new content when that lands (the
-            // landing frees it for the room, `canvas_pictures_landed_within`), so it is not extra
+            // host's landing step frees it for the room), so it is not extra
             // held next to the new content. One whose new content is already in the cache stays
             // counted: the cache holds both until the next landing's prune.
             let being_replaced = **f != **key && !held.keys.contains_key(Path::new(&**key));

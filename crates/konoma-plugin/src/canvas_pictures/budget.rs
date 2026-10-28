@@ -8,8 +8,8 @@ use super::CanvasDecoded;
 use crate::view::ImageData;
 
 /// The bytes of pixels a decoded image holds: in the image's own pixel format (3 bytes for an
-/// RGB8, 8 for an RGBA16, 16 for a float image), the measure of `MdImgEntry::pixel_bytes`, so the
-/// worker, the landing and the cache all count the same.
+/// RGB8, 8 for an RGBA16, 16 for a float image), the measure a host's picture cache should use for
+/// a held image, so the worker, the landing and the cache all count the same.
 pub(super) fn pixel_bytes_of(i: &image::DynamicImage) -> u64 {
     use image::GenericImageView;
     let (w, h) = i.dimensions();

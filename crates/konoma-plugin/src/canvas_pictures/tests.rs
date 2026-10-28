@@ -2103,3 +2103,156 @@ fn the_input_of_a_picture_is_the_bytes_the_decode_reads() {
     ]);
     assert_eq!(input_bytes(&frames, Path::new("/x/a.spr")), 104);
 }
+
+// ---- draw_plugin_svg: who draws what -------------------------------------------------------------
+
+const TINY_SVG: &[u8] =
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#;
+
+/// Records which `SvgDraw` method was called (and with which directory), and draws a 1x1 image.
+#[derive(Default)]
+struct RecordingSvg {
+    calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl SvgDraw for RecordingSvg {
+    fn untrusted(
+        &self,
+        _: &[u8],
+        base: &Path,
+        roots: Option<&[PathBuf]>,
+        _: u32,
+        _: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, konoma_svg::svg::RasterError> {
+        self.calls
+            .borrow_mut()
+            .push(format!("untrusted:{}:{}", base.display(), roots.is_some()));
+        Ok(image::DynamicImage::new_rgba8(1, 1))
+    }
+
+    fn embedded(
+        &self,
+        _: &[u8],
+        _: u32,
+        _: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, konoma_svg::svg::RasterError> {
+        self.calls.borrow_mut().push("embedded".into());
+        Ok(image::DynamicImage::new_rgba8(1, 1))
+    }
+}
+
+fn draw_svg(
+    base_dir: Option<PathBuf>,
+    trusted: bool,
+    scope: &crate::ReadScope,
+    trust_own_svg: bool,
+    rec: &RecordingSvg,
+) -> Result<(image::DynamicImage, konoma_widgets::inline_images::SvgTrust), Option<ImageFailure>> {
+    draw_plugin_svg(
+        TINY_SVG,
+        base_dir,
+        trusted,
+        Path::new("/x/shown.md"),
+        64,
+        scope,
+        trust_own_svg,
+        rec,
+        &|| false,
+    )
+}
+
+#[test]
+fn an_svg_is_drawn_in_process_only_when_the_plugin_claims_trust_and_the_host_believes_it() {
+    use konoma_widgets::inline_images::SvgTrust;
+    let scope = crate::ReadScope::unrestricted();
+    let rec = RecordingSvg::default();
+    let (_, trust) = draw_svg(Some(PathBuf::from("/x")), true, &scope, true, &rec).expect("draws");
+    assert!(matches!(trust, SvgTrust::Trusted(_)), "{trust:?}");
+    assert!(
+        rec.calls.borrow().is_empty(),
+        "a trusted SVG is not handed to the drawer"
+    );
+    // Trusted with no directory too.
+    let (_, trust) = draw_svg(None, true, &scope, true, &rec).expect("draws");
+    assert!(matches!(trust, SvgTrust::Trusted(_)), "{trust:?}");
+    assert!(rec.calls.borrow().is_empty());
+}
+
+#[test]
+fn an_untrusted_svg_never_draws_in_process() {
+    use konoma_widgets::inline_images::SvgTrust;
+    let scope = crate::ReadScope::unrestricted();
+    // (plugin claims trust, host believes the claim) with at least one false.
+    for (claim, believe) in [(false, true), (true, false), (false, false)] {
+        let rec = RecordingSvg::default();
+        let (_, trust) =
+            draw_svg(Some(PathBuf::from("/x")), claim, &scope, believe, &rec).expect("draws");
+        assert!(
+            matches!(trust, SvgTrust::File(_)),
+            "claim={claim} believe={believe}: {trust:?}"
+        );
+        assert_eq!(
+            *rec.calls.borrow(),
+            vec!["untrusted:/x/shown.md:false".to_string()],
+            "claim={claim} believe={believe}"
+        );
+
+        let rec = RecordingSvg::default();
+        let (_, trust) = draw_svg(None, claim, &scope, believe, &rec).expect("draws");
+        assert!(
+            matches!(trust, SvgTrust::Embedded),
+            "claim={claim} believe={believe}: {trust:?}"
+        );
+        assert_eq!(*rec.calls.borrow(), vec!["embedded".to_string()]);
+    }
+}
+
+#[test]
+fn an_untrusted_svg_in_a_restricted_scope_passes_the_roots_to_the_drawer() {
+    use konoma_widgets::inline_images::SvgTrust;
+    let dir = konoma_test_support::unique_tmp("cvi_svgroots");
+    std::fs::create_dir_all(&dir).unwrap();
+    let scope = scoped(&[dir.as_path()]);
+    let rec = RecordingSvg::default();
+    let (_, trust) = draw_svg(
+        Some(dir.as_path().to_path_buf()),
+        false,
+        &scope,
+        false,
+        &rec,
+    )
+    .expect("a directory inside the scope draws");
+    assert!(matches!(trust, SvgTrust::FileWithin(..)), "{trust:?}");
+    let calls = rec.calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].starts_with("untrusted:") && calls[0].ends_with(":true"),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_base_dir_outside_the_scope_is_refused_before_any_drawing() {
+    let inside = konoma_test_support::unique_tmp("cvi_svgin");
+    std::fs::create_dir_all(&inside).unwrap();
+    let outside = konoma_test_support::unique_tmp("cvi_svgout");
+    std::fs::create_dir_all(&outside).unwrap();
+    let scope = scoped(&[inside.as_path()]);
+    // Whatever the trust: the refusal comes first, so neither the drawer nor the in-process
+    // drawing is reached.
+    for (claim, believe) in [(false, false), (true, true), (true, false)] {
+        let rec = RecordingSvg::default();
+        let r = draw_svg(
+            Some(outside.as_path().to_path_buf()),
+            claim,
+            &scope,
+            believe,
+            &rec,
+        );
+        assert!(
+            matches!(r, Err(Some(ImageFailure::OutsideReadDirs))),
+            "claim={claim} believe={believe}"
+        );
+        assert!(rec.calls.borrow().is_empty());
+    }
+}

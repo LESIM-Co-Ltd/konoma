@@ -145,7 +145,7 @@ pub fn decode_one(data: &ImageData, path: &Path, policy: &CanvasPolicy) -> Canva
     };
     let animated = match data {
         // A GIF is an animation when it has more than one frame; anything else (a single frame,
-        // a damaged one) falls through to the still decode, as an inline Markdown image does.
+        // a damaged one) falls through to the still decode, as a host's other inline images do.
         ImageData::Encoded(b) if b.starts_with(b"GIF8") => {
             konoma_svg::image::decode_gif_bytes_inline(b).map(|(frames, _)| frames)
         }

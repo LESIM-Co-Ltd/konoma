@@ -8,7 +8,7 @@ use std::path::Path;
 use super::files::resolve_picture_path;
 use crate::view::ImageData;
 
-/// FNV-1a 64 over several pieces (the same constants as `media_diff_url`'s hash).
+/// FNV-1a 64 over several pieces (the standard offset basis and prime).
 pub(super) struct Fnv(pub(super) u64);
 
 impl Fnv {

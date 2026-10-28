@@ -83,7 +83,7 @@ pub use decode::decode_one;
 pub use decode::draw_plugin_svg;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
-pub use policy::{CanvasPolicy, SvgDraw};
+pub use policy::{CanvasPolicy, SvgDraw, DEFAULT_SVG_MAX_PX};
 pub use worker::decode_canvas;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use worker::seen_for_tests;

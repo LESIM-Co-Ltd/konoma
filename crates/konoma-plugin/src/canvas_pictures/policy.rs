@@ -12,9 +12,9 @@ use super::CanvasLimits;
 use crate::ReadScope;
 
 /// Draws the SVG a plugin hands over when it is not trusted. The host owns this because the safe
-/// way to draw an untrusted document is a supervised child process of the host's own executable
-/// (konoma: `svg_proc`), which a library cannot start. A host with no such process may draw in
-/// its own process (`konoma_svg::svg::rasterize_guarded_within`); the shared code does the
+/// way to draw an untrusted document is a supervised child process of the host's own executable,
+/// which a library cannot start. A host with no such process may draw in its own process
+/// (`konoma_svg::svg::rasterize_guarded_within`); the shared code does the
 /// cheap refusals (scope, trust) before it calls here.
 ///
 /// Both methods block (call from a worker) and poll `cancelled`; a drawing that is stopped returns
@@ -46,8 +46,11 @@ pub struct CanvasPolicy<'a> {
     /// The folders the host may read for the plugin ([`ReadScope::unrestricted`] for a standard
     /// plugin).
     pub scope: &'a ReadScope,
-    /// The work limits of one answer ([`CanvasLimits::PRODUCTION`]; a test uses smaller ones).
-    pub limits: CanvasLimits,
+    /// The work limits of one answer. They decide which picture is refused as too large and
+    /// which waits for a following answer, i.e. what the user sees, so a production host cannot
+    /// change them: they are [`CanvasLimits::PRODUCTION`]. Only a test (`cfg(test)` or the
+    /// `test-hooks` feature) may set smaller ones, with `CanvasPolicy::limits`.
+    pub(super) limits: CanvasLimits,
     /// Whether the job was superseded: polled while hashing, between pictures and frames, and by
     /// the decoders that can stop.
     pub cancelled: &'a dyn Fn() -> bool,
@@ -56,9 +59,15 @@ pub struct CanvasPolicy<'a> {
     /// Whether the host believes the `trusted` claim of an SVG the plugin returns (decided by
     /// where the plugin comes from, never by what it says).
     pub trust_own_svg: bool,
-    /// The longest side, in pixels, an SVG is drawn at (the user's `ui.svg_max_px`).
+    /// The longest side, in pixels, an SVG is drawn at. A host passes the user's setting
+    /// (`ui.svg_max_px`; default [`DEFAULT_SVG_MAX_PX`]), so both hosts draw an SVG at the same
+    /// resolution for the same configuration.
     pub raster_px: u32,
 }
+
+/// The default of the user setting for the longest side, in pixels, an SVG is drawn at
+/// (`ui.svg_max_px`). Every host's configuration starts from this one value.
+pub const DEFAULT_SVG_MAX_PX: u32 = 800;
 
 fn never() -> bool {
     false
@@ -77,7 +86,8 @@ impl<'a> CanvasPolicy<'a> {
         }
     }
 
-    /// The same with `limits`.
+    /// The same with `limits` (tests only: a production host always has the production limits).
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn limits(mut self, limits: CanvasLimits) -> CanvasPolicy<'a> {
         self.limits = limits;
         self
