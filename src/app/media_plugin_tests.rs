@@ -1677,7 +1677,7 @@ fn gif_page_then(
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
     let next = match next {
-        Reply::File(_) => Reply::File(still),
+        Reply::File(p) if p.as_os_str().is_empty() => Reply::File(still),
         other => other,
     };
     let (plugin, _seen) = stand(Reply::Pages(vec![Reply::File(gif), next]), Some(2));
@@ -1848,4 +1848,71 @@ fn a_cancelled_page_answer_keeps_the_picture_of_the_page_before() {
         "a dropped answer lets go of nothing"
     );
     assert!(app.image_failure().is_none());
+}
+
+// ---- a page whose view is fine but whose picture cannot be decoded ---------------------------------
+
+/// A file of the given name that is not a picture, in a directory of its own.
+fn junk_file(tag: &str, name: &str, body: &[u8]) -> (PathBuf, crate::test_support::TmpDir) {
+    let dir = unique_tmp(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    (p, dir)
+}
+
+/// The same release for the failure the host finds while decoding (the plugin's view was fine):
+/// the page before goes, and the reason is drawn.
+fn still_then_undecodable(tag: &str, id: &str, name: &str, junk: &str, body: &[u8]) {
+    let (bad, _jd) = junk_file(&format!("{tag}_junk"), junk, body);
+    let (mut app, rx, _dir) = picture_then(tag, id, name, Reply::Picture, Reply::File(bad));
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some(), "{id}: the decode failed");
+    assert!(app.image_src.is_none(), "{id}: the old still is let go");
+    assert!(app.vector_svg.is_none(), "{id}: no vector source is kept");
+    assert!(!app.is_gif_active());
+    let text = preview_text(&mut app);
+    // The reason is drawn: in the picture frame, or above the file's text for a vector.
+    assert!(
+        text.contains("[image]")
+            || text.contains("[svg]")
+            || text.contains("unsupported image format"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_image_page_that_cannot_be_decoded_after_a_still_page_shows_the_reason() {
+    still_then_undecodable(
+        "konoma_png_undecodable",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        "junk.png",
+        b"this is not a png",
+    );
+}
+
+#[test]
+fn an_svg_page_that_cannot_be_decoded_after_a_still_page_shows_the_reason() {
+    still_then_undecodable(
+        "konoma_svg_undecodable",
+        konoma_media::SVG_ID,
+        "doc.svg",
+        "junk.svg",
+        b"<svg>not closed",
+    );
+}
+
+#[test]
+fn a_gif_page_that_cannot_be_decoded_after_an_animation_shows_the_reason() {
+    let (bad, _jd) = junk_file("konoma_gif_undecodable_junk", "junk.gif", b"GIF89a-broken");
+    let (mut app, rx, _dir) = gif_page_then("konoma_gif_undecodable", Reply::File(bad));
+    app.next_page();
+    settle_turn(&mut app, &rx);
+    assert!(!app.is_gif_active(), "the animation is let go");
+    assert!(app.image_src.is_none());
+    assert!(app.image_failure().is_some());
+    assert!(preview_text(&mut app).contains("[image]"));
 }

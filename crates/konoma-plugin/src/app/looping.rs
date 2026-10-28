@@ -905,11 +905,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     st.last_image = matches!(v, View::Image(_));
                     Ok(v)
                 }
+                // A dropped stale answer says nothing and changes nothing (konoma does the same).
+                Err(f) if f.kind == crate::session::FailureKind::Cancelled => Err(None),
                 Err(f) => {
                     st.table_failed = st.pages.is_some() && !st.last_image;
                     st.image_failed = st.pages.is_some() && st.last_image;
                     st.scrolls = false;
-                    Err(failure_frame(&f, cx, keys.lang(), usize::from(body_rows)))
+                    Err(Some(failure_frame(
+                        &f,
+                        cx,
+                        keys.lang(),
+                        usize::from(body_rows),
+                        &mut st,
+                    )))
                 }
             };
             let (mut frame, redraw_after) = match shown {
@@ -920,7 +928,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (&cx.lang, keys.lang()),
                     &cx.title,
                 ),
-                Err(frame) => (frame, None),
+                Err(Some(frame)) => (frame, None),
+                // The frame on screen stays.
+                Err(None) => (std::mem::replace(&mut base, Frame::Lines(Vec::new())), None),
             };
             if let Frame::Table(new) = &mut frame {
                 // A table read again (a resize, a page turn) keeps the cursor and the popup; a
@@ -1080,9 +1090,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
                 let table_keys = table_mode.is_some() || st.table_failed;
-                let image_keys = image_mode.is_some();
+                // A failed page that shows the file as text scrolls like any text; the page keys
+                // stay (as the host's do).
+                let failed_text = st.image_failed && st.scrolls && st.help.is_none();
+                let image_keys = image_mode.is_some() && !failed_text;
+                // The page keys act over a picture (a failed page too) whatever scrolls.
+                let on_image = image_mode.is_some();
                 let act = match (table_keys, image_mode) {
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
+                    (false, Some(_)) if failed_text => keys.act(&key).or_else(|| {
+                        keys.image_act(&key, false)
+                            .filter(|a| matches!(a, Act::Page(_)))
+                    }),
                     (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
                     (false, None) => keys.act(&key),
                 };
@@ -1147,7 +1166,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(Act::Page(d)), None) => {
                         let count = st.pages.map(|n| n as u32);
                         if let (true, Some(to)) = (
-                            table_keys || image_keys,
+                            table_keys || on_image,
                             pages::turn(st.at_page as u32 + 1, count, d),
                         ) {
                             st.at_page = to as usize - 1;
@@ -1159,8 +1178,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 t.popup = None;
                             }
                             // A picture stays on screen until the new page's picture lands.
-                            st.turned = image_keys;
-                            if let (true, Some(p)) = (image_keys, pictures.as_mut()) {
+                            st.turned = on_image;
+                            if let (true, Some(p)) = (on_image, pictures.as_mut()) {
                                 p.still_turn_page();
                             }
                             need_view = true;
@@ -1440,8 +1459,14 @@ fn frame_of(
 /// reason above it (an SVG), the plugin's sentence, or the failure's message; the last three end
 /// with the path. The mapping and the words are shared with konoma
 /// (`canvas_pictures::image_failure_for`, `unavailable_text`).
-fn failure_frame(f: &crate::session::Failure, cx: &AppCx, lang: Lang, rows: usize) -> Frame {
-    use crate::canvas_pictures::{image_failure_for, unavailable_text};
+fn failure_frame(
+    f: &crate::session::Failure,
+    cx: &AppCx,
+    lang: Lang,
+    rows: usize,
+    st: &mut State,
+) -> Frame {
+    use crate::canvas_pictures::{image_failure_for, raw_file_body, unavailable_text};
     let why = image_failure_for(&cx.unavailable, f);
     let text = unavailable_text(
         &cx.unavailable,
@@ -1450,13 +1475,23 @@ fn failure_frame(f: &crate::session::Failure, cx: &AppCx, lang: Lang, rows: usiz
         (&cx.lang, lang),
         &cx.plugin_id,
         &cx.path,
-        &|| {
-            window::read_window(&cx.path, 0, rows)
-                .map(|w| w.join("\n"))
-                .unwrap_or_default()
-        },
+        &|| raw_file_body(&cx.path, lang),
     );
     match text {
+        // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma.
+        Some(t) if matches!(cx.unavailable, crate::manifest::Unavailable::RawText { .. }) => {
+            let lines: Vec<&str> = t.lines().collect();
+            clamp(st, lines.len(), rows);
+            st.scrolls = true;
+            Frame::Lines(
+                lines
+                    .iter()
+                    .skip(st.scroll)
+                    .take(rows)
+                    .map(|l| Line::raw(window::clean_line(l.as_bytes())))
+                    .collect(),
+            )
+        }
         Some(t) => Frame::Lines(t.lines().map(Line::raw).collect()),
         None => Frame::ImageFailed(FailedImage {
             name: cx.title.clone(),

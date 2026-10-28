@@ -90,8 +90,8 @@ pub use decode::draw_plugin_svg;
 pub use draw::draw_images;
 #[cfg(feature = "config")]
 pub use failure_msg::{
-    image_failure_for, image_failure_message, image_failure_msg, plain_failure_text, svg_fail_msg,
-    unavailable_text,
+    image_failure_for, image_failure_message, image_failure_msg, plain_failure_text, raw_file_body,
+    svg_fail_msg, unavailable_text,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;

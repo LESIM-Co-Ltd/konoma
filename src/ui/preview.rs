@@ -18,7 +18,7 @@ use ratatui_image::Image;
 use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
 use crate::preview::image::ImageFailureMessage;
-use crate::preview::{text, PreviewKind};
+use crate::preview::PreviewKind;
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
 pub fn context(app: &App) -> Vec<Span<'static>> {
@@ -1625,17 +1625,8 @@ pub(crate) fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, boo
 /// Load the text body with a size cap and turn it into a display string.
 /// A load failure does not crash; it falls back to a safe-side message.
 fn load_body(path: &Path, lang: crate::i18n::Lang) -> String {
-    match text::load(path) {
-        Ok(content) => {
-            let mut s = content.lines.join("\n");
-            if content.truncated {
-                s.push_str(tr(lang, crate::i18n::Msg::PreviewTruncated));
-            }
-            s
-        }
-        // The `[can not preview: …]` marker is a fixed English string by spec (cf. CanNotPreview's <ext>).
-        Err(e) => format!("[can not preview: load failed] {e}"),
-    }
+    // Shared with the standalone app (a failed SVG shows the same body there).
+    konoma_plugin::canvas_pictures::raw_file_body(path, lang)
 }
 
 /// Scroll position indicator: the `Top`/`Bot`/`All`/`NN%` title label and the thumb drawn on the

@@ -381,6 +381,15 @@ impl Still {
                 continue; // superseded
             }
             self.cancel = None;
+            // A dropped stale answer says nothing and changes nothing (konoma does the same): the
+            // picture on screen stays, and is no longer waiting for a new one.
+            if matches!(
+                done.view,
+                Some(PictureView::Failed(ImageFailure::Cancelled))
+            ) {
+                self.held = false;
+                continue;
+            }
             if self.held {
                 // The new page replaces the one kept on screen: nothing of the old protocol is
                 // reused (the pose is, as the host's: it is not touched when a picture lands).
@@ -1116,6 +1125,37 @@ mod tests {
             .unwrap();
         s.poll_at(Instant::now());
         assert!(matches!(s.state, State::Failed(None)));
+    }
+
+    #[test]
+    fn a_cancelled_decode_changes_nothing_and_lets_the_held_picture_go_on() {
+        let dir = unique_tmp("still_cancelled_answer");
+        let png = png_file(&dir, "a.png");
+        let t0 = Instant::now();
+        let mut s = new_still(false, &png);
+        land(&mut s, &png, false, t0);
+        // The next page is asked for (the old one is held) and its answer says "cancelled".
+        s.submit(
+            &ImageView::new(ImageData::File(dir.join("other.png"))),
+            true,
+        );
+        assert!(s.held);
+        let gen = s.gen;
+        s.done_tx
+            .send(Done {
+                gen,
+                view: Some(PictureView::Failed(ImageFailure::Cancelled)),
+            })
+            .unwrap();
+        s.poll_at(t0);
+        assert!(matches!(s.state, State::Ready { .. }), "the picture stays");
+        assert!(!s.held);
+        let text: String = drawn(&mut s)
+            .content()
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        assert!(!text.contains("cannot display"), "{text}");
     }
 
     // ---- sharp zoom of a vector picture ----

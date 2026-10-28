@@ -107,6 +107,23 @@ pub fn unavailable_text(
     }
 }
 
+/// The file as text for a failed vector file (`RawText`), the one body konoma and the standalone
+/// app both show under the reason: the whole file within the preview's size and line caps, ending
+/// with a note when it was cut, or the read error. The caller scrolls and wraps it.
+pub fn raw_file_body(path: &Path, lang: Lang) -> String {
+    match konoma_widgets::text::load(path) {
+        Ok(content) => {
+            let mut s = content.lines.join("\n");
+            if content.truncated {
+                s.push_str(CoreMsg::PreviewTruncated.tr(lang));
+            }
+            s
+        }
+        // The `[can not preview: ...]` marker is a fixed English string by spec.
+        Err(e) => format!("[can not preview: load failed] {e}"),
+    }
+}
+
 /// The failure's message, then the file's path: what a plugin with nothing declared shows.
 pub fn plain_failure_text(message: &str, path: &Path) -> String {
     format!("{message}\n{}", path.display())

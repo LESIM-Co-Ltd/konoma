@@ -62,6 +62,7 @@ pub enum CoreMsg {
     ImageReasonCorrupt,
     ImageReasonUnsupportedFormat,
     ImageReasonOutsideReadDirs,
+    PreviewTruncated,
     SvgTooDeep,
     SvgTooLarge,
     SvgTooComplex,
@@ -132,6 +133,7 @@ impl CoreMsg {
         CoreMsg::ImageReasonCorrupt,
         CoreMsg::ImageReasonUnsupportedFormat,
         CoreMsg::ImageReasonOutsideReadDirs,
+        CoreMsg::PreviewTruncated,
         CoreMsg::SvgTooDeep,
         CoreMsg::SvgTooLarge,
         CoreMsg::SvgTooComplex,
@@ -196,6 +198,7 @@ impl CoreMsg {
             CoreMsg::FtClose => "close",
             CoreMsg::FtTopBottom => "top/bottom",
             CoreMsg::Loading => "loading…",
+            CoreMsg::PreviewTruncated => "\n\n— (truncated: display limit reached) —",
             CoreMsg::ImageUnsupported => {
                 "[image] cannot display image in this terminal, or failed to load"
             }
@@ -274,6 +277,7 @@ impl CoreMsg {
             CoreMsg::FtClose => "閉じる",
             CoreMsg::FtTopBottom => "先頭/末尾",
             CoreMsg::Loading => "読み込み中…",
+            CoreMsg::PreviewTruncated => "\n\n— (省略: 表示上限に達しました) —",
             CoreMsg::ImageUnsupported => {
                 "[image] この端末では画像を表示できません、または読み込みに失敗しました"
             }

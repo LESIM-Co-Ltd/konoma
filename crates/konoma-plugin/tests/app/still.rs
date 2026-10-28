@@ -186,7 +186,11 @@ impl EventSource for Driver {
                         *m.entry(format!("{:?}/{:?}/{}", c.1, c.2, c.0)).or_default() += 1;
                         m
                     });
-                panic!("the screen never got there: {cols:?} {:#?}", self.log);
+                panic!(
+                    "the screen never got there: {cols:?} {:#?}\n{}",
+                    self.log,
+                    rows(b.buffer()).join("\n")
+                );
             }
             // A real source returns only when its wait is up; with none it blocks until an event.
             // So the loop is asked for a new view on a timeout only when it asked to wake.
@@ -992,7 +996,9 @@ impl Session for PagedSession {
     }
 }
 
+use konoma_plugin::session::FailureKind;
 use konoma_plugin::view::{Layout, PageLayout};
+use konoma_plugin::Unavailable;
 
 /// The pages asked for, one after the other with repeats of the same page folded.
 fn pages_asked(asked: &Arc<Mutex<Vec<Option<usize>>>>) -> Vec<usize> {
@@ -1768,4 +1774,179 @@ fn run_paged_failing_gif(
     steps: impl FnOnce(&Arc<Mutex<TestBackend>>) -> Vec<Step>,
 ) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
     run_paged_on_screen(count, false, true, fail, pictures, steps)
+}
+
+// ---- a page that fails after a page that drew: what the failure changes ----
+
+/// Page 0 is a red picture; page 1 fails with `kind` (and, when it is asked for, the second
+/// page of a file that is also on disk as `a.pic`, for the raw-text words).
+struct FlakyPlugin {
+    dir: PathBuf,
+    kind: FailureKind,
+    calls: Arc<AtomicUsize>,
+}
+
+struct FlakySession {
+    dir: PathBuf,
+    kind: FailureKind,
+    calls: Arc<AtomicUsize>,
+}
+
+impl Plugin for FlakyPlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("img-test", "0.0.1")
+            .bind(Bind::files(["*.pic"]))
+            .shows(ViewKind::Image)
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(FlakySession {
+            dir: self.dir.clone(),
+            kind: self.kind,
+            calls: Arc::clone(&self.calls),
+        }))
+    }
+}
+
+impl Session for FlakySession {
+    fn layout(&self) -> Layout {
+        Layout {
+            pages: Some(PageLayout::Separate {
+                count: Some(3),
+                titles: Vec::new(),
+            }),
+            ..Layout::default()
+        }
+    }
+
+    fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if req.page.unwrap_or(0) == 1 {
+            return Err(Failure::new(self.kind, t!(en: "page broken on purpose")));
+        }
+        Ok(file_view(&png_file(&self.dir, "flaky.png", &red_image())))
+    }
+}
+
+/// Run the app over [`FlakyPlugin`] (`body` is the file's text) with the steps made from the
+/// number of `view` calls so far.
+fn run_flaky(
+    kind: FailureKind,
+    unavailable: Unavailable,
+    body: &str,
+    steps: impl FnOnce(&Arc<AtomicUsize>) -> Vec<Step>,
+) -> (Out, Arc<AtomicUsize>) {
+    let dir = unique_tmp("app_still_flaky");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let path = dir.as_path().join("a.pic");
+    std::fs::write(&path, body).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let plugin = FlakyPlugin {
+        dir: dir.as_path().to_path_buf(),
+        kind,
+        calls: Arc::clone(&calls),
+    };
+    let mut opened =
+        open_file(vec![Arc::new(plugin)], &path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(W, H)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let mut events = Driver {
+        screen: Arc::clone(&screen),
+        steps: steps(&calls).into(),
+        started: Instant::now(),
+        log: Vec::new(),
+        waits: Arc::clone(&waits),
+    };
+    let pictures = half(&opened.path);
+    let cx = AppCx {
+        unavailable,
+        plugin_id: "img-test".into(),
+        path: opened.path.clone(),
+        ..cx()
+    };
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        pictures,
+    )
+    .expect("runs");
+    drop(dir);
+    (
+        Out {
+            screen,
+            calls: Arc::new(AtomicUsize::new(0)),
+            waits,
+        },
+        calls,
+    )
+}
+
+#[test]
+fn a_cancelled_page_changes_nothing_on_screen_whatever_the_plugin_declared() {
+    for unavailable in [
+        Unavailable::Picture,
+        Unavailable::RawText { with_reason: true },
+        Unavailable::Notice(t!(en: "[x] nothing to show")),
+        Unavailable::Message,
+    ] {
+        let (out, calls) = run_flaky(FailureKind::Cancelled, unavailable.clone(), "x", |calls| {
+            let c = Arc::clone(calls);
+            vec![
+                step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+                // Page 1 was asked for (and said "cancelled"): one more event to draw after it.
+                step(move |_| c.load(Ordering::SeqCst) >= 2, Some(key('x'))),
+                step(|_| true, None),
+            ]
+        });
+        assert!(calls.load(Ordering::SeqCst) >= 2, "{unavailable:?}");
+        let r = out.rows();
+        let b = out.screen.lock().unwrap();
+        assert!(
+            has_red(b.buffer()),
+            "{unavailable:?}: the picture stays\n{r:#?}"
+        );
+        for words in [
+            "cannot display",
+            "broken on purpose",
+            "nothing to show",
+            "not drawn",
+        ] {
+            assert!(
+                !r.iter().any(|l| l.contains(words)),
+                "{unavailable:?}: cancelled says {words:?}\n{r:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_page_that_fails_with_its_file_as_text_scrolls_and_keeps_the_page_keys() {
+    let body: String = (0..90).map(|i| format!("junk-line-{i:03}\n")).collect();
+    let (out, _) = run_flaky(
+        FailureKind::Corrupt,
+        Unavailable::RawText { with_reason: true },
+        &body,
+        |_| {
+            vec![
+                step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+                step(|b| shows(b, "junk-line-000"), Some(key('G'))),
+                step(
+                    |b| shows(b, "junk-line-089") && !shows(b, "junk-line-000"),
+                    Some(key('g')),
+                ),
+                // The reason and a blank row are above the body: three lines scroll 000 away.
+                step(|b| shows(b, "junk-line-000"), Some(key('j'))),
+                step(|_| true, Some(key('j'))),
+                step(|_| true, Some(key('j'))),
+                step(|b| !shows(b, "junk-line-000"), Some(key('K'))),
+                // The page keys turned on: `K` goes back to page 1, which draws.
+                step(has_red, None),
+            ]
+        },
+    );
+    assert!(has_red(out.screen.lock().unwrap().buffer()));
 }

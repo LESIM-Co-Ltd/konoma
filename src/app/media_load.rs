@@ -71,8 +71,9 @@ impl App {
     /// failure and says nothing).
     fn set_image_failure(&mut self, why: crate::preview::image::ImageFailure) {
         if why != crate::preview::image::ImageFailure::Cancelled {
-            // A page that fails to draw replaces the animation of the page before it.
-            self.gif.clear();
+            // A page that fails to draw replaces the picture of the page before it (a still, a
+            // vector's source, an animation), whichever path the failure came by.
+            self.release_picture();
             self.image_failure = Some(why);
         }
     }
