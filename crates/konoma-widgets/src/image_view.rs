@@ -23,7 +23,7 @@ use ratatui::widgets::StatefulWidget;
 use ratatui_image::picker::Picker;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::kitty::{self, KittyImage};
 use crate::layout::{image_layout, ImageLayout, PxRect};
@@ -32,8 +32,61 @@ use crate::layout::{image_layout, ImageLayout, PxRect};
 pub const ZOOM_MIN: f64 = 1.0;
 /// The largest zoom.
 pub const ZOOM_MAX: f64 = 16.0;
+/// The factor one zoom key press multiplies the zoom by (zoom out divides by it).
+pub const ZOOM_FACTOR: f64 = 1.25;
 /// One pan step, as a fraction of the visible window.
 pub const PAN_STEP: f64 = 0.25;
+
+/// What the resize worker answers with: the encoded protocol, or why it could not be made.
+pub type ResizeResult = Result<ResizeResponse, ratatui_image::errors::Errors>;
+
+/// The body of the resize worker thread that serves [`ImageBackend::resize_tx`]: one request is
+/// one resize + encode, answered on `tx` (the app applies it with [`ImageViewer::apply_resize`]).
+/// Returns when the requests stop coming or the answering side is gone. Both hosts (konoma and the
+/// standalone app) run this on a thread of their own.
+pub fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else {
+        return;
+    };
+    rt.block_on(async move {
+        while let Some(req) = rx.recv().await {
+            if tx.send(req.resize_encode()).is_err() {
+                break; // the answering side has terminated
+            }
+        }
+    });
+}
+
+/// A resize worker thread with both ends of its channels: a host that does not want to name the
+/// channel types itself (the standalone app) owns one of these. The thread ends when this is
+/// dropped (the request side closes).
+pub struct ResizeChannel {
+    /// Where [`ImageBackend::resize_tx`] points.
+    pub tx: UnboundedSender<ResizeRequest>,
+    rx: UnboundedReceiver<ResizeResult>,
+}
+
+impl ResizeChannel {
+    /// Start the worker thread ([`resize_worker`]).
+    pub fn spawn() -> ResizeChannel {
+        let (tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
+        let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        std::thread::spawn(move || resize_worker(req_rx, resp_tx));
+        ResizeChannel { tx, rx }
+    }
+
+    /// The next finished resize, if one is waiting. A resize that failed is dropped (`None`
+    /// then, as when nothing is waiting): the picture stays as it was.
+    pub fn try_recv(&mut self) -> Option<ResizeResponse> {
+        loop {
+            match self.rx.try_recv() {
+                Ok(Ok(resp)) => return Some(resp),
+                Ok(Err(_)) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+}
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
 pub type KittyGeom = (PxRect, u16, u16);
@@ -954,6 +1007,34 @@ mod tests {
         v.clear();
         assert!(v.protocol().is_none());
         assert!(!v.apply_resize(resp));
+    }
+
+    #[test]
+    fn the_resize_worker_answers_each_request_and_ends_with_its_sender() {
+        let img = solid(40, 40, [9, 9, 9]);
+        let (rig, rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let t = v
+            .prepare(&mut st, src(&img), &rig.backend(), area(20, 10))
+            .unwrap();
+        let mut buf = Buffer::empty(area(20, 10));
+        v.render(t, &mut buf);
+        let (tx, mut answers) = unbounded_channel::<ResizeResult>();
+        // Both the request side and the answering side are closed when the worker returns, so
+        // the thread must end on its own once the rig's sender is dropped.
+        drop(rig);
+        let worker = std::thread::spawn(move || resize_worker(rx, tx));
+        // The viewer still holds a sender inside its protocol: drop it so the worker can end.
+        let resp = loop {
+            match answers.try_recv() {
+                Ok(r) => break r,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        };
+        assert!(v.apply_resize(resp.expect("an encoded protocol")));
+        v.clear();
+        worker.join().unwrap();
     }
 
     // --- the kitty path -------------------------------------------------------------------

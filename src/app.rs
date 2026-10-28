@@ -4183,8 +4183,7 @@ impl App {
 
     /// The current spinner glyph (no emoji; the classic braille-pattern spinner = single-width and color-free in the terminal).
     pub fn spinner_glyph(&self) -> &'static str {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        FRAMES[self.spinner_frame % FRAMES.len()]
+        konoma_widgets::loading::spinner_glyph(self.spinner_frame)
     }
 
     /// `e`: decide the target to open in the external editor and raise the request. Tree=the selected file / Preview=the file being shown.

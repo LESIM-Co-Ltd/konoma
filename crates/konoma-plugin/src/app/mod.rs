@@ -13,6 +13,7 @@
 mod draw;
 mod looping;
 mod pictures;
+mod still;
 mod term;
 mod window;
 
@@ -26,9 +27,10 @@ use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
 pub use looping::{
-    run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next, TableMode,
+    run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
+pub use still::{failure_line, StillShape};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.

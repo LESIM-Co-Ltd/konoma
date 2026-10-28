@@ -70,6 +70,8 @@ use crate::view::{CellRect, ImageData};
 mod budget;
 mod decode;
 mod draw;
+#[cfg(feature = "config")]
+mod failure_msg;
 pub mod files;
 mod hash;
 mod host;
@@ -85,6 +87,8 @@ pub use budget::{decoded_bytes, source_bytes};
 pub use decode::decode_one;
 pub use decode::draw_plugin_svg;
 pub use draw::draw_images;
+#[cfg(feature = "config")]
+pub use failure_msg::{image_failure_message, image_failure_msg, svg_fail_msg};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
 pub use host::{CanvasPictureHost, Landed};

@@ -17,8 +17,9 @@ use ratatui::Terminal;
 
 use konoma_widgets::table::{popup_page_step, popup_scroll_by, popup_scroll_to, TableStep};
 
-use super::draw::{self, Frame, PopupState, TableFrame};
+use super::draw::{self, Frame, ImageFrame, PopupState, TableFrame};
 use super::pictures::Pictures;
+use super::still::StillShape;
 use super::window;
 use super::AppError;
 use crate::key::{Key, KeyCode, KeyMods};
@@ -454,6 +455,168 @@ impl AppKeys {
         }
     }
 
+    // ---- Pictures ----
+
+    /// What the help and the footer say about a still picture: what the app does not act on is
+    /// off. Zoom acts once the picture is shown; the reset and the pan act once it is zoomed in
+    /// (at fit there is nothing to pan to and nothing to reset); the page turn, the outline, the
+    /// editor and the opener are not done by the app.
+    fn image_facts(&self, mode: ImageMode) -> HelpFacts {
+        let ready = mode.shape == StillShape::Ready;
+        let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::ImageZoomIn | CoreAction::ImageZoomOut) => ready,
+            HelpOp::Act(CoreAction::ImageZoomReset) => ready && mode.zoomed,
+            HelpOp::Act(CoreAction::Navigate(m)) => {
+                ready
+                    && mode.zoomed
+                    && matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
+            }
+            HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
+                true
+            }
+            HelpOp::Cancel => true,
+            _ => false,
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Image) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        off.push(HelpOp::Menu(konoma_host_core::keymap::CoreMenu::Options));
+        HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        }
+    }
+
+    fn image_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Image,
+        }
+    }
+
+    /// The footer's key hints of a still picture: zoom, the reset and the pan (once zoomed in),
+    /// what leaves, what opens the help. A hint is there only when its key acts.
+    pub fn image_footer_hints(&self, mode: ImageMode) -> Vec<CoreToken> {
+        let facts = self.image_facts(mode);
+        let look = self.image_lookup();
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Image, &facts, &look, self.lang);
+        let mut out: Vec<CoreToken> = Vec::new();
+        out.extend(tok(CoreFoot::Zoom));
+        out.extend(tok(CoreFoot::ZoomReset));
+        out.extend(tok(CoreFoot::Pan));
+        out.push(
+            tok(CoreFoot::Back)
+                .or_else(|| tok(CoreFoot::Quit))
+                .unwrap_or_else(|| ctrl_c_token(self.lang)),
+        );
+        out.extend(tok(CoreFoot::Help));
+        out
+    }
+
+    /// [`AppKeys::image_footer_hints`] as the text the footer shows.
+    pub fn image_footer_tokens(&self, mode: ImageMode) -> Vec<String> {
+        self.image_footer_hints(mode)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// The sections of the `?` help of a still picture.
+    pub fn image_help_sections(&self, mode: ImageMode) -> Vec<CoreSection> {
+        core_sections(
+            CoreContext::Image,
+            &self.image_facts(mode),
+            &self.image_lookup(),
+            self.lang,
+        )
+    }
+
+    fn image_help_lines(&self, mode: ImageMode) -> Vec<Line> {
+        lines_of(&self.image_help_sections(mode))
+    }
+
+    /// The title of the `?` help over a picture (see [`AppKeys::help_title`]). The help scrolls
+    /// on the vertical motions whatever the picture is doing, so they are named from the text's
+    /// facts.
+    pub fn image_help_title(&self) -> String {
+        let look = self.image_lookup();
+        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
+        help_title(&close, &scroll_keys(&look, &self.facts()), self.lang)
+    }
+
+    /// What the app does for `key` over a still picture (`None` = nothing). Over the picture the
+    /// four directions pan; in the `?` help (`in_help`) every motion is the help's.
+    fn image_act(&self, key: &Key, in_help: bool) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        let allowed = |m: Motion| {
+            in_help || matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
+        };
+        if key.mods.is_empty() {
+            let fixed = match key.code {
+                KeyCode::Down => Some(Motion::Down),
+                KeyCode::Up => Some(Motion::Up),
+                KeyCode::Left => Some(Motion::Left),
+                KeyCode::Right => Some(Motion::Right),
+                KeyCode::Home => Some(Motion::Top),
+                KeyCode::End => Some(Motion::Bottom),
+                _ => None,
+            };
+            if let Some(m) = fixed {
+                return allowed(m).then_some(Act::Move(m));
+            }
+            if matches!(key.code, KeyCode::Esc) {
+                return Some(Act::Back);
+            }
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(CoreContext::Image, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::Navigate(m)) => allowed(m).then_some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ImageZoomIn) => Some(Act::Zoom(1)),
+            CoreResolution::Action(CoreAction::ImageZoomOut) => Some(Act::Zoom(-1)),
+            CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
+            _ => None,
+        }
+    }
+
+    /// Whether `key` does something over a still picture (in the `?` help when `in_help`). What
+    /// the hints and the help rows name must pass this.
+    pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
+        let ready = mode.shape == StillShape::Ready;
+        match self.image_act(key, in_help) {
+            None => false,
+            Some(Act::Zoom(_)) => !in_help && ready,
+            Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
+            // The help scrolls on the vertical motions; over the picture the directions pan.
+            Some(Act::Move(m)) if in_help => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            Some(Act::Move(_)) => ready && mode.zoomed,
+            Some(_) => true,
+        }
+    }
+
     /// The built-in keys (no overrides, vim paging).
     pub fn defaults() -> AppKeys {
         AppKeys::new(&KeysConfig::default(), "vim")
@@ -509,6 +672,15 @@ fn lines_of(secs: &[CoreSection]) -> Vec<Line> {
     out
 }
 
+/// What a still picture on screen lets the keys do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageMode {
+    /// Loading, shown or failed.
+    pub shape: StillShape,
+    /// It is zoomed in (reset and pan act).
+    pub zoomed: bool,
+}
+
 /// What a table on screen lets the keys do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TableMode {
@@ -538,6 +710,10 @@ enum Act {
     Back,
     Move(Motion),
     Help,
+    /// Zoom a still picture: 1 in, -1 out.
+    Zoom(i32),
+    /// A still picture back to fit.
+    ZoomReset,
 }
 
 /// The key as the shared tables name it. Alt and the keys that are not part of the shared
@@ -727,8 +903,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
             if let Some(p) = pictures.as_mut() {
                 match &frame {
-                    Frame::Canvas(c) => p.submit(c),
-                    _ => p.forget(),
+                    Frame::Canvas(c) => {
+                        p.submit(c);
+                        p.forget_still();
+                    }
+                    Frame::Image(i) => {
+                        p.forget();
+                        p.submit_image(&i.view);
+                    }
+                    _ => {
+                        p.forget();
+                        p.forget_still();
+                    }
                 }
             }
             view_wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
@@ -739,13 +925,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             p.poll();
         }
         let mode = shown_mode(&base, &st);
+        let image_mode = image_mode(&base, pictures.as_ref());
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
             Some(top) => {
-                let (lines, title) = match mode {
-                    Some(m) => (keys.table_help_lines(m), keys.table_help_title(m)),
-                    None => (keys.help_lines(), keys.help_title()),
+                let (lines, title) = match (mode, image_mode) {
+                    (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
+                    (None, Some(m)) => (keys.image_help_lines(m), keys.image_help_title()),
+                    (None, None) => (keys.help_lines(), keys.help_title()),
                 };
                 let rows = usize::from(body_rows);
                 let top = top.min(lines.len().saturating_sub(rows));
@@ -768,6 +956,23 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                         }
                         format!(" {}", keys.table_footer_tokens(m).join("  "))
+                    }
+                    None if image_mode.is_some() => {
+                        let m = image_mode.unwrap_or(ImageMode {
+                            shape: StillShape::Failed,
+                            zoomed: false,
+                        });
+                        let zoom = match (m.shape, pictures.as_ref()) {
+                            (StillShape::Ready, Some(p)) => {
+                                format!("  x{:.2}", p.still_zoom())
+                            }
+                            _ => String::new(),
+                        };
+                        format!(
+                            " {}{zoom}  {}",
+                            keys.image_footer_tokens(m).join("  "),
+                            cx.title
+                        )
                     }
                     None => draw::footer(
                         &keys.footer_tokens(st.scrolls),
@@ -807,13 +1012,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
                 let table_keys = table_mode.is_some() || st.table_failed;
-                let act = match table_keys {
-                    true => keys.table_act(&key, popup_open && st.help.is_none()),
-                    false => keys.act(&key),
+                let act = match (table_keys, image_mode) {
+                    (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
+                    (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
+                    (false, None) => keys.act(&key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
-                // spreadsheet is read again on every `view`.
-                if table_keys {
+                // spreadsheet is read again on every `view`. Nor does a key over a picture: the
+                // picture is held, and the pose is the app's.
+                if table_keys || image_mode.is_some() {
                     need_view = false;
                 }
                 match (act, st.help) {
@@ -844,6 +1051,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     (Some(Act::Move(m)), None) => match &mut base {
                         Frame::Table(t) => table_move(t, m),
+                        Frame::Image(_) => {
+                            if let Some(p) = pictures.as_mut() {
+                                let (dx, dy) = match m {
+                                    Motion::Left => (-1.0, 0.0),
+                                    Motion::Right => (1.0, 0.0),
+                                    Motion::Up => (0.0, -1.0),
+                                    Motion::Down => (0.0, 1.0),
+                                    _ => (0.0, 0.0),
+                                };
+                                p.still_pan(dx, dy);
+                            }
+                        }
                         _ if st.scrolls => scroll_by(m, &mut st),
                         _ => {}
                     },
@@ -874,7 +1093,17 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                         }
                     }
-                    (Some(Act::Cell | Act::Page(_)), Some(_)) => {}
+                    (Some(Act::Zoom(d)), None) => {
+                        if let Some(p) = pictures.as_mut() {
+                            p.still_zoom_steps(d);
+                        }
+                    }
+                    (Some(Act::ZoomReset), None) => {
+                        if let Some(p) = pictures.as_mut() {
+                            p.still_zoom_reset();
+                        }
+                    }
+                    (Some(Act::Cell | Act::Page(_) | Act::Zoom(_) | Act::ZoomReset), Some(_)) => {}
                     (None, _) => {}
                 }
             }
@@ -893,6 +1122,21 @@ fn table_mode(base: &Frame, pages: Option<usize>) -> Option<TableMode> {
         }),
         _ => None,
     }
+}
+
+/// The mode of the picture on screen (`None` = the frame is not a picture). With no pictures
+/// (no terminal graphics) a picture cannot be shown: only leaving and the help act.
+fn image_mode(base: &Frame, pictures: Option<&Pictures>) -> Option<ImageMode> {
+    let Frame::Image(_) = base else {
+        return None;
+    };
+    let shape = pictures
+        .and_then(Pictures::still_shape)
+        .unwrap_or(StillShape::Failed);
+    Some(ImageMode {
+        shape,
+        zoomed: pictures.is_some_and(|p| p.still_zoom() > 1.0),
+    })
 }
 
 /// What the footer and the help say about the screen: a table's mode, or, after a page that
@@ -952,14 +1196,31 @@ fn draw_frame<B: Backend>(
 ) -> Result<(), AppError> {
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     let on_canvas = matches!(frame, Frame::Canvas(_));
+    let image = match frame {
+        Frame::Image(i) => Some(i.lang),
+        _ => None,
+    };
     let _writing = konoma_host_core::term::terminal_write();
     for pass in 0..2 {
         terminal
             .draw(|f| {
                 draw::draw(f, frame, footer);
+                let body = draw::body_of(f.area());
                 if let Some(p) = pictures.as_deref_mut() {
-                    let body = draw::body_of(f.area());
                     p.draw(f.buffer_mut(), body, on_canvas);
+                }
+                if let Some(lang) = image {
+                    let inner = draw::image_inner(body);
+                    match pictures.as_deref_mut() {
+                        Some(p) => p.draw_still(f.buffer_mut(), inner, lang),
+                        None => ratatui::widgets::Widget::render(
+                            ratatui::widgets::Paragraph::new(super::still::failure_line(
+                                None, lang, "",
+                            )),
+                            inner,
+                            f.buffer_mut(),
+                        ),
+                    }
                 }
             })
             .map_err(|e| terr(&e))?;
@@ -1019,6 +1280,14 @@ fn frame_of(
             None,
         ),
         View::Message(m) => (Frame::Lines(m.lines), None),
+        View::Image(view) => (
+            Frame::Image(ImageFrame {
+                view,
+                name: name.to_string(),
+                lang,
+            }),
+            None,
+        ),
         View::Canvas(c) => {
             let after = c.redraw_after;
             (Frame::Canvas(c), after)

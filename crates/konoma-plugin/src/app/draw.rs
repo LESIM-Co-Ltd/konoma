@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier as RModifier, Style as RStyle};
 use ratatui::text::Line as RLine;
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget};
 
 use std::sync::Arc;
 
@@ -26,6 +26,36 @@ pub enum Frame {
     Canvas(CanvasView),
     /// A table with its cursor (and the full-cell popup while it is open).
     Table(Box<TableFrame>),
+    /// A still picture in a bordered frame. The border is drawn here; what is inside (the
+    /// spinner, the failure line or the picture) is drawn by the pictures
+    /// ([`crate::app::Pictures::draw_still`]), or, with no pictures, the line that says the
+    /// terminal cannot show it.
+    Image(ImageFrame),
+}
+
+/// The picture of a `View::Image` on screen.
+#[derive(Clone, Debug)]
+pub struct ImageFrame {
+    pub view: crate::view::ImageView,
+    /// The file name, in the frame title.
+    pub name: String,
+    pub lang: Lang,
+}
+
+impl ImageFrame {
+    /// The frame title: the file name between spaces (konoma's shape), or ` image ` with none.
+    pub fn title(&self) -> String {
+        if self.name.is_empty() {
+            " image ".to_string()
+        } else {
+            format!(" {} ", self.name)
+        }
+    }
+}
+
+/// The inside of the border of an image frame drawn in `body`.
+pub fn image_inner(body: Rect) -> Rect {
+    Block::bordered().inner(body)
 }
 
 /// The full-cell popup while it is open.
@@ -172,6 +202,9 @@ pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
             Paragraph::new(text).render(body, f.buffer_mut());
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
+        Frame::Image(i) => Block::bordered()
+            .title(i.title())
+            .render(body, f.buffer_mut()),
         Frame::Table(t) => {
             let screen = f.area();
             t.draw(f.buffer_mut(), body, screen)

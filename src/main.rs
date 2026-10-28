@@ -541,18 +541,8 @@ fn init_terminal() -> ratatui::DefaultTerminal {
         })
 }
 
-fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else {
-        return;
-    };
-    rt.block_on(async move {
-        while let Some(req) = rx.recv().await {
-            // 1 request = 1 encode. Return completion to the UI (the UI applies it via try_recv).
-            if tx.send(req.resize_encode()).is_err() {
-                break; // the UI side has terminated
-            }
-        }
-    });
+fn resize_worker(rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
+    konoma_widgets::image_view::resize_worker(rx, tx)
 }
 
 /// Classify the paths from an fs event. Returns `(meaningful, ignore_rules_changed)`:
@@ -1895,8 +1885,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::OpenInNewTab if sfc == Surface::GitChanges => app.git_view_open_in_new_tab()?,
         Action::OpenInNewTab => app.tab_new_from_selection()?,
-        Action::ImageZoomIn => app.image_zoom_by(1.25),
-        Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
+        Action::ImageZoomIn => app.image_zoom_by(konoma_widgets::image_view::ZOOM_FACTOR),
+        Action::ImageZoomOut => app.image_zoom_by(1.0 / konoma_widgets::image_view::ZOOM_FACTOR),
         Action::ImageZoomReset => app.image_zoom_reset(),
         Action::PageNext => app.page_turn(1),
         Action::PagePrev => app.page_turn(-1),

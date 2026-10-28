@@ -56,6 +56,20 @@ pub enum CoreMsg {
     SheetCappedWord,
     FtClose,
     FtTopBottom,
+    Loading,
+    ImageUnsupported,
+    ImageReasonTooLarge,
+    ImageReasonCorrupt,
+    ImageReasonUnsupportedFormat,
+    ImageReasonOutsideReadDirs,
+    SvgTooDeep,
+    SvgTooLarge,
+    SvgTooComplex,
+    SvgTooHeavy,
+    SvgTimeout,
+    SvgMemory,
+    SvgCrashed,
+    SvgInvalid,
 }
 impl CoreMsg {
     /// Every message, for the tests that walk the whole set.
@@ -112,6 +126,20 @@ impl CoreMsg {
         CoreMsg::SheetCappedWord,
         CoreMsg::FtClose,
         CoreMsg::FtTopBottom,
+        CoreMsg::Loading,
+        CoreMsg::ImageUnsupported,
+        CoreMsg::ImageReasonTooLarge,
+        CoreMsg::ImageReasonCorrupt,
+        CoreMsg::ImageReasonUnsupportedFormat,
+        CoreMsg::ImageReasonOutsideReadDirs,
+        CoreMsg::SvgTooDeep,
+        CoreMsg::SvgTooLarge,
+        CoreMsg::SvgTooComplex,
+        CoreMsg::SvgTooHeavy,
+        CoreMsg::SvgTimeout,
+        CoreMsg::SvgMemory,
+        CoreMsg::SvgCrashed,
+        CoreMsg::SvgInvalid,
     ];
     pub fn en(self) -> &'static str {
         match self {
@@ -167,6 +195,28 @@ impl CoreMsg {
             CoreMsg::SheetCappedWord => "capped",
             CoreMsg::FtClose => "close",
             CoreMsg::FtTopBottom => "top/bottom",
+            CoreMsg::Loading => "loading…",
+            CoreMsg::ImageUnsupported => {
+                "[image] cannot display image in this terminal, or failed to load"
+            }
+            CoreMsg::ImageReasonTooLarge => {
+                "too large to display (limits: 32,768 px per side, 150 megapixels, 512 MiB decoded)"
+            }
+            CoreMsg::ImageReasonCorrupt => "the file is damaged or could not be read",
+            CoreMsg::ImageReasonUnsupportedFormat => "unsupported image format",
+            CoreMsg::ImageReasonOutsideReadDirs => {
+                "outside what plugin <id> may read: add its folder to read_dirs in [plugins.<id>]"
+            }
+            CoreMsg::SvgTooDeep => "[svg] not drawn: its elements are nested too deeply",
+            CoreMsg::SvgTooLarge => "[svg] not drawn: the file is too large",
+            CoreMsg::SvgTooComplex => "[svg] not drawn: it contains too many elements",
+            CoreMsg::SvgTooHeavy => {
+                "[svg] not drawn: it asks for more drawing work than is allowed"
+            }
+            CoreMsg::SvgTimeout => "[svg] not drawn: drawing it took too long",
+            CoreMsg::SvgMemory => "[svg] not drawn: drawing it needed too much memory",
+            CoreMsg::SvgCrashed => "[svg] not drawn: the renderer stopped while drawing it",
+            CoreMsg::SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
         }
     }
     pub fn ja(self) -> &'static str {
@@ -223,6 +273,28 @@ impl CoreMsg {
             CoreMsg::SheetCappedWord => "打ち切り",
             CoreMsg::FtClose => "閉じる",
             CoreMsg::FtTopBottom => "先頭/末尾",
+            CoreMsg::Loading => "読み込み中…",
+            CoreMsg::ImageUnsupported => {
+                "[image] この端末では画像を表示できません、または読み込みに失敗しました"
+            }
+            CoreMsg::ImageReasonTooLarge => {
+                "大きすぎて表示できません(上限: 1 辺 32,768px、1.5 億画素、展開後 512 MiB)"
+            }
+            CoreMsg::ImageReasonCorrupt => "ファイルが壊れているか、読み込めません",
+            CoreMsg::ImageReasonUnsupportedFormat => "対応していない画像形式です",
+            CoreMsg::ImageReasonOutsideReadDirs => {
+                "プラグイン <id> が読める範囲の外です: [plugins.<id>] の read_dirs にフォルダを追加"
+            }
+            CoreMsg::SvgTooDeep => "[svg] 描画しません: 要素の入れ子が深すぎます",
+            CoreMsg::SvgTooLarge => "[svg] 描画しません: ファイルが大きすぎます",
+            CoreMsg::SvgTooComplex => "[svg] 描画しません: 要素が多すぎます",
+            CoreMsg::SvgTooHeavy => "[svg] 描画しません: 描画に必要な処理が上限を超えています",
+            CoreMsg::SvgTimeout => "[svg] 描画しません: 描画に時間がかかりすぎました",
+            CoreMsg::SvgMemory => "[svg] 描画しません: 描画にメモリを使いすぎました",
+            CoreMsg::SvgCrashed => "[svg] 描画しません: 描画の途中で描画処理が止まりました",
+            CoreMsg::SvgInvalid => {
+                "[svg] 描画しません: ファイルが壊れているか、SVG として正しくありません"
+            }
         }
     }
     pub fn tr(self, lang: Lang) -> &'static str {

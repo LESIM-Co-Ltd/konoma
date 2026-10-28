@@ -1511,15 +1511,7 @@ fn caret_display_col(lines: &[ratatui::text::Line<'static>]) -> Option<(usize, u
 /// Used both while waiting on code highlighting (indicator) and while loading SVG/GIF on a separate thread.
 /// The spinner **keeps spinning** because the run loop advances it via `tick_spinner` while waiting (braille ⠋⠙⠹…).
 fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str) {
-    let y = inner.y + inner.height / 2;
-    let line_area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    let text = format!("{spinner}  {msg}");
-    frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), line_area);
+    konoma_widgets::loading::render_spinner_line(frame.buffer_mut(), inner, spinner, msg);
 }
 
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
