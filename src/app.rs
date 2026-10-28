@@ -628,14 +628,8 @@ pub struct Entry {
     pub expanded: bool,
 }
 
-/// Tree sort key (FR / M7 auxiliary). Switch via the footer menu (`s`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
-    Name,
-    Size,
-    Modified,
-    Ext,
-}
+// The kinds the key layers name live with the shared key tables (`konoma_host_core::keymap`).
+pub use konoma_host_core::keymap::{CopyKind, SortKey, TableCopyKind};
 
 /// Sort settings. `reverse`=flip ascending/descending, `dirs_first`=group directories at the top.
 /// Default is "name, ascending, directories first" (matches the previous behavior). Global (not per-tab).
@@ -652,18 +646,6 @@ impl Default for Sort {
             key: SortKey::Name,
             reverse: false,
             dirs_first: true,
-        }
-    }
-}
-
-impl SortKey {
-    /// Parse a config string (case-insensitive). Unknown/empty falls back to Name.
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
-            "size" => SortKey::Size,
-            "modified" | "mtime" | "mod" => SortKey::Modified,
-            "ext" | "extension" | "type" => SortKey::Ext,
-            _ => SortKey::Name,
         }
     }
 }
@@ -2164,23 +2146,6 @@ pub struct App {
     gitop_pending: Option<GitOpKind>,
 }
 
-/// Path-copy kind (FR-6). Chosen by the key after `c`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyKind {
-    /// File name only (`cn`).
-    Name,
-    /// Full path (`cp`).
-    Full,
-    /// Path relative to where it was opened (`cr`).
-    Relative,
-    /// Full path of the parent directory (`cd`).
-    Parent,
-    /// `@relative/path` reference for AI agents (`y@`). Claude Code reads `@path` as file context, so
-    /// the path is strictly relative to `open_dir` (the launch/anchor dir where the agent usually runs),
-    /// **without** the leading directory name that `Relative` prepends for display.
-    AtRef,
-}
-
 /// Commit-info copy kind (chosen after `y` in git log/graph/detail).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -2212,17 +2177,6 @@ enum SearchTarget {
     Markdown,
     /// Media and diffs — no search model (`/` flashes a hint).
     Unsupported,
-}
-
-/// CSV/TSV table copy kind (chosen after `y` in the table preview).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TableCopyKind {
-    /// The current cell's value.
-    Cell,
-    /// The current row's cells joined by the delimiter (`,` / tab).
-    Row,
-    /// The current column's header plus every cell value, one per line.
-    Column,
 }
 
 /// Cache of decorated preview content. The key is (path, display width).

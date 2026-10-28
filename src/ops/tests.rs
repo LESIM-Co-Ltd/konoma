@@ -69,6 +69,11 @@ fn plan_actions(plan: &[Foot]) -> Vec<Action> {
                 v.extend(acts.iter().copied())
             }
             Foot::Plugin(p) => v.push(Action::Plugin(*p)),
+            Foot::Core(c) => v.extend(
+                c.ops()
+                    .into_iter()
+                    .filter_map(crate::ops::core_help::action_of),
+            ),
             Foot::Leader(..) | Foot::Dyn(_) => {}
         }
     }

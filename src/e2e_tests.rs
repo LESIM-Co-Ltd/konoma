@@ -20858,6 +20858,7 @@ mod survivors_f7;
 mod survivors_f8b;
 
 #[cfg(test)]
+mod help_agreement;
 mod help_footer_snapshot;
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
-pub use looping::{run_with, AppCx, AppEvent, EventSource, Next};
+pub use looping::{run_with, AppCx, AppEvent, AppKeys, EventSource, Next};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
@@ -92,6 +92,15 @@ impl fmt::Display for AppError {
 }
 
 impl std::error::Error for AppError {}
+
+/// The locale of the environment (`LC_ALL`, `LC_MESSAGES`, `LANG`; empty when none is set).
+fn os_locale() -> String {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
 
 /// `"ja"` when the locale names Japanese, `"en"` otherwise.
 pub fn lang_of(locale: &str) -> &'static str {
@@ -213,17 +222,19 @@ pub fn open_file(
 /// `<program> <file>`: open the file in the terminal. Returns when the user quits.
 pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     use std::io::IsTerminal;
-    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .find(|v| !v.is_empty())
-        .unwrap_or_default();
-    let lang = lang_of(&locale);
     let colors = colors_of(
         &std::env::var("COLORTERM").unwrap_or_default(),
         &std::env::var("TERM").unwrap_or_default(),
     );
     let term = TermCaps::new().colors(colors);
+    // The config comes first: `ui.lang` says the language of the session too. A missing or broken
+    // config file gives the defaults; a broken one is reported on standard error once the
+    // terminal is back (the screen is the alternate one meanwhile).
+    let (keys, load_error) = keys_from_load(konoma_host_core::shared::SharedConfig::load_default());
+    let lang = match keys.lang() {
+        konoma_host_core::lang::Lang::Jp => "ja",
+        konoma_host_core::lang::Lang::En => "en",
+    };
     // The file is checked and opened before the terminal is taken, so a refusal is a message on
     // the ordinary screen.
     let mut opened = open_file(plugins, path, lang, term)?;
@@ -241,7 +252,32 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         &mut *opened.session,
         &mut term::CrosstermEvents,
         &cx,
+        &keys,
     );
     guard.leave();
+    // A failure to write to a closed standard error changes nothing about the run.
+    let _ = write_load_error(&mut std::io::stderr(), load_error.as_deref());
     result
+}
+
+/// The keys of a loaded config, and the load error (if any) passed on for [`write_load_error`].
+pub fn keys_from_load(
+    (shared, error): (konoma_host_core::shared::SharedConfig, Option<String>),
+) -> (AppKeys, Option<String>) {
+    let lang = konoma_host_core::lang::Lang::resolve_with(&shared.ui.lang, || {
+        konoma_host_core::lang::Lang::parse(lang_of(&os_locale()))
+    });
+    (
+        AppKeys::new(&shared.keys, &shared.ui.keys).with_lang(lang),
+        error,
+    )
+}
+
+/// Write the config load error as one line (nothing when there is none). The message is the one
+/// the shared loader made with `format_load_error`, the wording konoma shows too.
+pub fn write_load_error(w: &mut dyn std::io::Write, error: Option<&str>) -> std::io::Result<()> {
+    match error {
+        Some(e) => writeln!(w, "{}", clean(e)),
+        None => Ok(()),
+    }
 }

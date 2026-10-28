@@ -17,6 +17,7 @@
 // - `footer` and `help` list, per context, which operations appear and in what order; the key
 //   notation is generated from `keys`.
 
+pub mod core_help;
 pub mod decl;
 pub mod footer;
 pub mod gate;

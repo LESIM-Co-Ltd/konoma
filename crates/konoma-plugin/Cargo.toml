@@ -18,7 +18,7 @@ ratatui = ["dep:ratatui"]
 # host: raw mode, an alternate screen and the display types drawn with `ratatui_draw`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "dep:crossterm"]
+app = ["proc", "ratatui", "dep:crossterm", "dep:konoma-host-core"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -40,6 +40,9 @@ serde_json = { workspace = true, optional = true }
 # Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+# The key layers 0-3 the app shares with the host (`app` feature): one declaration, so a key means
+# the same in konoma and in a plugin program.
+konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
