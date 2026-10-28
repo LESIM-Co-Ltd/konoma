@@ -11,6 +11,7 @@ pub mod gif_player;
 pub mod gitdiff;
 pub mod icons;
 pub mod image_view;
+pub mod inline_images;
 pub mod kitty;
 pub mod layout;
 pub mod markdown;

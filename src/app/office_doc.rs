@@ -433,7 +433,7 @@ impl App {
     #[cfg(test)]
     pub fn fake_office_decodes_in_flight_for_test(&mut self, n: usize) {
         for i in 0..n {
-            self.md_image_cache.insert(
+            self.md_images.cache.insert(
                 PathBuf::from(format!("office-img://fake-{i}")),
                 MdImgEntry::default(),
             );
@@ -443,34 +443,36 @@ impl App {
     /// Test-only: drops the placeholders `fake_office_decodes_in_flight_for_test` made.
     #[cfg(test)]
     pub fn clear_fake_office_decodes_for_test(&mut self) {
-        self.md_image_cache
+        self.md_images
+            .cache
             .retain(|k, _| !k.to_string_lossy().starts_with("office-img://fake-"));
     }
 
     /// Test-only: forgets the cache entry of picture `url`.
     #[cfg(test)]
     pub fn forget_office_picture_for_test(&mut self, url: &str) {
-        self.md_image_cache.remove(&PathBuf::from(url));
+        self.md_images.cache.remove(&PathBuf::from(url));
     }
 
     /// Test-only: whether the picture `url` has a cache entry (its decode was started).
     #[cfg(test)]
     pub fn office_picture_started_for_test(&self, url: &str) -> bool {
-        self.md_image_cache.contains_key(&PathBuf::from(url))
+        self.md_images.cache.contains_key(&PathBuf::from(url))
     }
 
     /// Test-only: the size of the decoded pixels of picture `url`, `None` while there are none.
     #[cfg(test)]
     pub fn office_picture_pixels_for_test(&self, url: &str) -> Option<(u32, u32)> {
         use image::GenericImageView;
-        let e = self.md_image_cache.get(&PathBuf::from(url))?;
+        let e = self.md_images.cache.get(&PathBuf::from(url))?;
         e.decoded.as_ref().map(|d| d.dimensions())
     }
 
     /// Test-only: whether a sharper redraw of picture `url` is running.
     #[cfg(test)]
     pub fn office_picture_reraster_inflight_for_test(&self, url: &str) -> bool {
-        self.md_image_cache
+        self.md_images
+            .cache
             .get(&PathBuf::from(url))
             .is_some_and(|e| e.reraster_inflight)
     }
@@ -479,7 +481,7 @@ impl App {
     #[cfg(test)]
     pub fn office_picture_rgba_for_test(&self, url: &str, fx: f64, fy: f64) -> Option<[u8; 4]> {
         use image::GenericImageView;
-        let e = self.md_image_cache.get(&PathBuf::from(url))?;
+        let e = self.md_images.cache.get(&PathBuf::from(url))?;
         let d = e.decoded.as_ref()?;
         let (w, h) = d.dimensions();
         let x = ((w - 1) as f64 * fx).round() as u32;
@@ -493,7 +495,7 @@ impl App {
         &self,
         url: &str,
     ) -> Option<crate::preview::image::ImageFailure> {
-        self.md_image_cache.get(&PathBuf::from(url))?.fail
+        self.md_images.cache.get(&PathBuf::from(url))?.fail
     }
 
     /// Test-only: makes the next layout pass rebuild the page from scratch.
@@ -521,7 +523,8 @@ impl App {
     /// Test-only: how many pictures of the document the cache holds pixels for right now.
     #[cfg(test)]
     pub fn office_pictures_with_pixels_for_test(&self) -> usize {
-        self.md_image_cache
+        self.md_images
+            .cache
             .iter()
             .filter(|(k, e)| {
                 crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
@@ -534,7 +537,8 @@ impl App {
     /// by the cache (they wait for a rebuild; no decode runs for them).
     #[cfg(test)]
     pub fn office_pictures_evicted_for_test(&self) -> usize {
-        self.md_image_cache
+        self.md_images
+            .cache
             .iter()
             .filter(|(k, e)| {
                 crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
@@ -625,7 +629,7 @@ impl App {
         });
         // Pictures are filed under a hash of their bytes, so a reload cannot leave a *wrong* entry
         // behind, only unreferenced ones: reclaim those.
-        self.md_image_cache.retain(|k, _| {
+        self.md_images.cache.retain(|k, _| {
             let s = k.to_string_lossy();
             !crate::preview::markdown::is_office_image_url(&s) || doc.pictures.contains_key(&*s)
         });

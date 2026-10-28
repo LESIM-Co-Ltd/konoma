@@ -11,6 +11,8 @@ description = "konoma's display parts for ratatui: windowed file reading, kitty 
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
 konoma-code-core = { path = "../konoma-code-core", version = "0.1.0" }
 konoma-markdown-core = { path = "../konoma-markdown-core", version = "0.1.0" }
+# The inline-image cache keeps the decode-failure reason and the decode queue ticket of each picture.
+konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
 konoma-mermaid-core = { path = "../konoma-mermaid-core", version = "0.1.0" }
 konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
 ratatui.workspace = true
@@ -36,7 +38,6 @@ pulldown-cmark.workspace = true
 # The core's `cfg(test)` helpers and corpora, which this crate's own tests use.
 konoma-markdown-core = { path = "../konoma-markdown-core", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }
-konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
 
 [features]
 # Keeps the `cfg(test)` seams (the call counters, the test-only render shorthands) active when the

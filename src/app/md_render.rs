@@ -238,7 +238,7 @@ impl App {
                     .iter()
                     .map(|(l, d)| PathBuf::from(crate::preview::markdown::math_url(l, *d))),
             );
-            self.md_image_cache.retain(|k, _| {
+            self.md_images.cache.retain(|k, _| {
                 let s = k.to_string_lossy();
                 !(crate::preview::markdown::is_mermaid_fence_url(&s)
                     || crate::preview::markdown::is_math_url(&s))
@@ -663,7 +663,7 @@ impl App {
     /// image/mermaid/math resolution setup below — `font`/`base_dir`/`avail` and the `slot_of`/
     /// `mermaid_slot`/`math_slot` closures — is built exactly **once**, shared verbatim by both
     /// branches: resolving a picture, a ```mermaid fence, or a LaTeX expression depends only on
-    /// `path`'s own directory and content-hash-keyed caches (`self.md_image_cache`), never on which
+    /// `path`'s own directory and content-hash-keyed caches (`self.md_images.cache`), never on which
     /// of the diff's two versions a particular block happens to come from — so the `Rendered`
     /// presentation draws real images/diagrams/equations exactly the way an ordinary preview does,
     /// not a text-only fallback of its own.
@@ -718,7 +718,8 @@ impl App {
                 // Said once, like a file picture: a decode that failed keeps its reason, and a
                 // picture whose header is already over the limits is refused before any decode.
                 if let Some(e) = self
-                    .md_image_cache
+                    .md_images
+                    .cache
                     .get(&PathBuf::from(url))
                     .filter(|e| e.failed)
                 {
@@ -783,7 +784,7 @@ impl App {
                     };
                 }
                 // A picture that already failed to decode says why (the entry keeps the reason).
-                if let Some(e) = self.md_image_cache.get(&p).filter(|e| e.failed) {
+                if let Some(e) = self.md_images.cache.get(&p).filter(|e| e.failed) {
                     return match e.fail.and_then(|f| f.message(lang, &pid)) {
                         Some(why) => ImageSlot::Failed(why),
                         None => ImageSlot::Unavailable,
@@ -848,7 +849,7 @@ impl App {
                 return MermaidSlot::Text;
             };
             let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
-            match self.md_image_cache.get(&key) {
+            match self.md_images.cache.get(&key) {
                 Some(e) if e.failed => MermaidSlot::Text,
                 // `layout_px` is set when the first result lands and survives eviction of the
                 // pixels, so a picture whose pixels were dropped keeps its reserved size.
@@ -892,7 +893,7 @@ impl App {
                 return MathSlot::Raw;
             };
             let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
-            match self.md_image_cache.get(&key) {
+            match self.md_images.cache.get(&key) {
                 Some(e) if e.failed => MathSlot::Raw,
                 Some(e) => match (Some(()), e.layout_px) {
                     // For math, layout_px holds the SVG's **intrinsic size (in em

@@ -1124,9 +1124,9 @@ impl std::io::Write for Wire {
 #[test]
 fn the_deleted_kitty_images_are_written_to_the_terminal_and_flushed() {
     let mut h = H::open("cs_wire", None, false);
-    h.app.use_kitty = true;
-    h.app.kitty_is_tmux = false;
-    h.app.kitty_deletes = vec![5, 6];
+    h.app.md_images.use_kitty = true;
+    h.app.md_images.kitty_is_tmux = false;
+    h.app.md_images.kitty_deletes = vec![5, 6];
     let mut wire = Wire::default();
     crate::flush_kitty_deletes(&mut h.app, &mut wire).unwrap();
     let want = format!(
@@ -1136,19 +1136,19 @@ fn the_deleted_kitty_images_are_written_to_the_terminal_and_flushed() {
     );
     assert_eq!(String::from_utf8(wire.written.clone()).unwrap(), want);
     assert_eq!(wire.flushes, 1);
-    assert!(h.app.kitty_deletes.is_empty(), "taken");
+    assert!(h.app.md_images.kitty_deletes.is_empty(), "taken");
     // Nothing to delete: nothing written, nothing flushed.
     let mut quiet = Wire::default();
     crate::flush_kitty_deletes(&mut h.app, &mut quiet).unwrap();
     assert!(quiet.written.is_empty());
     assert_eq!(quiet.flushes, 0);
     // Not a kitty terminal: the queue is emptied and nothing is written.
-    h.app.use_kitty = false;
-    h.app.kitty_deletes = vec![9];
+    h.app.md_images.use_kitty = false;
+    h.app.md_images.kitty_deletes = vec![9];
     crate::flush_kitty_deletes(&mut h.app, &mut quiet).unwrap();
     assert!(quiet.written.is_empty());
     assert_eq!(quiet.flushes, 0);
-    assert!(h.app.kitty_deletes.is_empty());
+    assert!(h.app.md_images.kitty_deletes.is_empty());
 }
 
 #[test]

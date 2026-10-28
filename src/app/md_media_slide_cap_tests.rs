@@ -294,7 +294,7 @@ fn a_failed_sharpening_redraw_is_not_asked_for_again_by_every_frame() {
     let (mut app, _dir, cap, rx) = app_with_slide(Default::default());
     let url = "office-img://deck/slide-1";
     let key = PathBuf::from(url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(Arc::new(image::DynamicImage::new_rgba8(400, 225))),
@@ -311,7 +311,7 @@ fn a_failed_sharpening_redraw_is_not_asked_for_again_by_every_frame() {
     for _ in 0..5 {
         app.note_slide_raster_wish(url, &key, 2000);
         assert!(
-            !app.md_image_cache[&key].reraster_inflight,
+            !app.md_images.cache[&key].reraster_inflight,
             "a redraw was started again"
         );
     }
@@ -321,7 +321,7 @@ fn a_failed_sharpening_redraw_is_not_asked_for_again_by_every_frame() {
     );
     // The premise: without what the failure recorded, the same wish does start a redraw.
     let (mut app, _dir, _cap, rx) = app_with_slide(Default::default());
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(Arc::new(image::DynamicImage::new_rgba8(400, 225))),
@@ -329,7 +329,7 @@ fn a_failed_sharpening_redraw_is_not_asked_for_again_by_every_frame() {
         },
     );
     app.note_slide_raster_wish(url, &key, 2000);
-    assert!(app.md_image_cache[&key].reraster_inflight);
+    assert!(app.md_images.cache[&key].reraster_inflight);
     assert!(rx.recv_timeout(Duration::from_secs(60)).is_ok());
 }
 
@@ -642,7 +642,8 @@ fn a_slide_cancelled_by_a_media_generation_bump_is_forgotten_and_asked_for_again
     let (mut app, _dir, _cap, rx) = app_with_slide(Default::default());
     let url = "office-img://deck/slide-1";
     let key = PathBuf::from(url);
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(key.clone(), MdImgEntry::default());
     assert!(app.md_images_loading(), "premise: waiting for the decode");
     app.media_gen_shared
@@ -652,7 +653,7 @@ fn a_slide_cancelled_by_a_media_generation_bump_is_forgotten_and_asked_for_again
         .recv_timeout(Duration::from_secs(60))
         .expect("a cancelled decode still reports");
     assert!(!app.apply_md_image(res));
-    assert!(!app.md_image_cache.contains_key(&key), "forgotten");
+    assert!(!app.md_images.cache.contains_key(&key), "forgotten");
     assert!(!app.md_images_loading(), "no longer waiting");
 }
 
@@ -670,7 +671,7 @@ fn a_cancelled_result_for_a_removed_entry_is_ignored() {
         request: app.md_request_for_test(&key),
     });
     assert!(!redraw);
-    assert!(app.md_image_cache.is_empty());
+    assert!(app.md_images.cache.is_empty());
 }
 
 // ---- pixel work that is pending but is not "loading" -----------------------------------------
@@ -682,7 +683,7 @@ fn a_sharpening_redraw_in_flight_is_pending_pixel_work_though_the_picture_is_not
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(!app.md_pixels_pending());
     let key = PathBuf::from("office-img://deck/slide-1");
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(Arc::new(image::DynamicImage::new_rgba8(4, 4))),
@@ -690,12 +691,12 @@ fn a_sharpening_redraw_in_flight_is_pending_pixel_work_though_the_picture_is_not
         },
     );
     assert!(!app.md_images_loading() && !app.md_pixels_pending(), "idle");
-    app.md_image_cache.get_mut(&key).unwrap().reraster_inflight = true;
+    app.md_images.cache.get_mut(&key).unwrap().reraster_inflight = true;
     assert!(!app.md_images_loading(), "its old pixels are on screen");
     assert!(app.md_pixels_pending(), "the new ones are owed");
-    app.md_image_cache.get_mut(&key).unwrap().reraster_inflight = false;
+    app.md_images.cache.get_mut(&key).unwrap().reraster_inflight = false;
     assert!(!app.md_pixels_pending());
     // Everything `md_images_loading` covers is covered.
-    app.md_image_cache.get_mut(&key).unwrap().decoded = None;
+    app.md_images.cache.get_mut(&key).unwrap().decoded = None;
     assert!(app.md_images_loading() && app.md_pixels_pending());
 }

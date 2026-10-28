@@ -76,67 +76,11 @@ use konoma_plugin::view::{CanvasView, CellRect, ImageData, ImageView};
 
 use super::*;
 
-/// The kitty image ids of canvas pictures that are on the terminal now, **process-wide**: the
-/// places that end the program (the normal exit, the panic hook, the signal thread) have no `App`
-/// to ask, and an image left in the terminal's storage outlives the program (it is counted
-/// against the terminal's quota until the terminal evicts something). Ids are noted when a canvas
-/// picture is given one (`md_media::kitty_id_for`) and forgotten when their delete is handed out
-/// (`App::take_kitty_deletes`).
-pub(crate) struct LiveKittyIds {
-    ids: std::sync::Mutex<std::collections::BTreeSet<u32>>,
-    tmux: std::sync::atomic::AtomicBool,
-}
-
-impl LiveKittyIds {
-    pub(crate) const fn new() -> LiveKittyIds {
-        LiveKittyIds {
-            ids: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-            tmux: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    pub(crate) fn note(&self, id: u32) {
-        self.ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id);
-    }
-
-    pub(crate) fn forget(&self, id: u32) {
-        self.ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
-    }
-
-    pub(crate) fn set_tmux(&self, tmux: bool) {
-        self.tmux.store(tmux, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// The ids noted now (for a test).
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> Vec<u32> {
-        self.ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .copied()
-            .collect()
-    }
-
-    /// The escapes that delete every id noted, and the table emptied. Never blocks on a lock that
-    /// a panicking thread poisoned.
-    pub(crate) fn take_delete_escapes(&self) -> Vec<String> {
-        let tmux = self.tmux.load(std::sync::atomic::Ordering::SeqCst);
-        std::mem::take(&mut *self.ids.lock().unwrap_or_else(|e| e.into_inner()))
-            .into_iter()
-            .map(|id| crate::preview::kitty::build_delete(id, tmux))
-            .collect()
-    }
-}
-
-/// The ids of the canvas pictures on the terminal now (see [`LiveKittyIds`]).
-pub(crate) static LIVE_CANVAS_KITTY: LiveKittyIds = LiveKittyIds::new();
+// The table of the kitty ids on the terminal (and the key they are filed under) lives with the
+// cache that allocates them, in the display crate.
+#[cfg(test)]
+pub(crate) use konoma_widgets::inline_images::kitty_key;
+pub(crate) use konoma_widgets::inline_images::{LiveKittyIds, LIVE_CANVAS_KITTY};
 
 /// Write to `out` the deletes of every id `table` holds, and flush; the table is emptied. Every
 /// failure is dropped: the terminal may be gone (SIGHUP).
@@ -506,15 +450,6 @@ fn same_source(a: &ImageData, b: &ImageData) -> bool {
         }
         _ => false,
     }
-}
-
-/// The key the kitty image ids of a cache key are filed under: the picture's identity
-/// (`canvas://<plugin>/<id>`) for a canvas picture, so new content takes over the ids of the old
-/// and the terminal's copy is replaced; the key itself for everything else.
-pub(super) fn kitty_key(path: &Path) -> PathBuf {
-    path.to_str()
-        .and_then(crate::preview::markdown::canvas_slot_of)
-        .map_or_else(|| path.to_path_buf(), PathBuf::from)
 }
 
 /// The most bytes of a picture file the host reads for a plugin (`ImageData::File`).
@@ -1362,7 +1297,7 @@ impl App {
     /// Whether canvas pictures can be shown at all: an image backend and the encode worker are
     /// attached. Without them no picture is decoded and the plugin's cells stay.
     pub(super) fn canvas_pictures_drawable(&self) -> bool {
-        self.picker.is_some() && self.md_enc_tx.is_some()
+        self.picker.is_some() && self.md_images.enc_tx.is_some()
     }
 
     /// What the cache holds of the canvas pictures (given to the next job so it decodes only
@@ -1370,7 +1305,8 @@ impl App {
     pub(super) fn canvas_known_keys(&self) -> Option<CanvasHeld> {
         self.canvas_pictures_drawable().then(|| CanvasHeld {
             keys: self
-                .md_image_cache
+                .md_images
+                .cache
                 .iter()
                 .filter(|(k, _)| crate::preview::markdown::is_canvas_url(&k.to_string_lossy()))
                 .map(|(k, e)| (k.clone(), e.pixel_bytes()))
@@ -1387,7 +1323,8 @@ impl App {
 
     /// The bytes of decoded pixels the canvas entries of the cache hold.
     pub(super) fn canvas_held_bytes(&self) -> u64 {
-        self.md_image_cache
+        self.md_images
+            .cache
             .iter()
             .filter(|(k, _)| crate::preview::markdown::is_canvas_url(&k.to_string_lossy()))
             .map(|(_, e)| e.pixel_bytes())
@@ -1449,7 +1386,7 @@ impl App {
         for (key, decoded) in pics.fresh {
             // Already held (a job that was out before the previous answer landed): keep the
             // entry, with its encodes and its kitty ids, as it is.
-            if self.md_image_cache.contains_key(&key) {
+            if self.md_images.cache.contains_key(&key) {
                 continue;
             }
             let bytes = decoded_bytes(&decoded);
@@ -1495,7 +1432,7 @@ impl App {
             added_any = true;
             // Pre-placed, as every synthetic key is: `apply_md_image` drops a result whose entry
             // is not there.
-            self.md_image_cache.entry(key.clone()).or_default();
+            self.md_images.cache.entry(key.clone()).or_default();
             let request = self.begin_md_request(&key);
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -1518,7 +1455,7 @@ impl App {
             .filter(|(_, k)| {
                 k.key
                     .as_deref()
-                    .is_none_or(|key| !self.md_image_cache.contains_key(Path::new(key)))
+                    .is_none_or(|key| !self.md_images.cache.contains_key(Path::new(key)))
             })
             .map(|(id, mut k)| {
                 if let Some(n) = k
@@ -1584,10 +1521,10 @@ impl App {
     /// Drop the cache entries of the canvas pictures not in `live` (and the drawn-from pointer of
     /// an id that points at one).
     pub(super) fn prune_canvas_pictures(&mut self, live: &HashSet<PathBuf>) {
-        self.md_image_cache.retain(|k, _| {
+        self.md_images.cache.retain(|k, _| {
             !crate::preview::markdown::is_canvas_url(&k.to_string_lossy()) || live.contains(k)
         });
-        let cache = &self.md_image_cache;
+        let cache = &self.md_images.cache;
         self.canvas_front
             .retain(|_, k| cache.contains_key(Path::new(&**k)));
     }
@@ -1637,12 +1574,14 @@ impl App {
     /// so its ids stay and the new content is transmitted over them.
     pub(super) fn sweep_canvas_kitty_ids(&mut self) {
         let alive: HashSet<&str> = self
-            .md_image_cache
+            .md_images
+            .cache
             .keys()
             .filter_map(|k| crate::preview::markdown::canvas_slot_of(k.to_str()?))
             .collect();
         let dead: Vec<PathBuf> = self
-            .md_kitty_ids
+            .md_images
+            .kitty_ids
             .keys()
             .filter(|k| {
                 let s = k.to_string_lossy();
@@ -1651,8 +1590,10 @@ impl App {
             .cloned()
             .collect();
         for k in dead {
-            if let Some(families) = self.md_kitty_ids.remove(&k) {
-                self.kitty_deletes.extend(families.into_iter().flatten());
+            if let Some(families) = self.md_images.kitty_ids.remove(&k) {
+                self.md_images
+                    .kitty_deletes
+                    .extend(families.into_iter().flatten());
             }
         }
     }
@@ -1661,16 +1602,7 @@ impl App {
     /// that went (to be written to the terminal after the frame). Empty on any other terminal:
     /// no id is ever pinned there.
     pub fn take_kitty_deletes(&mut self) -> Vec<String> {
-        let ids = std::mem::take(&mut self.kitty_deletes);
-        if !self.use_kitty {
-            return Vec::new();
-        }
-        for id in &ids {
-            LIVE_CANVAS_KITTY.forget(*id);
-        }
-        ids.into_iter()
-            .map(|id| crate::preview::kitty::build_delete(id, self.kitty_is_tmux))
-            .collect()
+        self.md_images.take_kitty_deletes()
     }
 
     /// How many placements the canvas on screen has.
@@ -1712,7 +1644,8 @@ impl App {
             return wanted.clone();
         }
         if self
-            .md_image_cache
+            .md_images
+            .cache
             .get(Path::new(&**wanted))
             .is_some_and(|e| e.failed)
         {
@@ -1721,7 +1654,8 @@ impl App {
         }
         match self.canvas_front.get(&id) {
             Some(front)
-                if **front != **wanted && self.md_image_cache.contains_key(Path::new(&**front)) =>
+                if **front != **wanted
+                    && self.md_images.cache.contains_key(Path::new(&**front)) =>
             {
                 front.clone()
             }
@@ -1749,7 +1683,7 @@ impl App {
         let long_ago = std::time::Instant::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(std::time::Instant::now);
-        for e in self.md_image_cache.values_mut() {
+        for e in self.md_images.cache.values_mut() {
             if e.frames.len() >= 2 && e.shown_at.is_some() {
                 e.shown_at = Some(long_ago);
             }
@@ -1760,8 +1694,8 @@ impl App {
     #[cfg(test)]
     pub(crate) fn md_frame_and_last_used_for_test(&self, key: &Path) -> (u64, Option<u64>) {
         (
-            self.md_frame,
-            self.md_image_cache.get(key).map(|e| e.last_used),
+            self.md_images.frame,
+            self.md_images.cache.get(key).map(|e| e.last_used),
         )
     }
 
@@ -1781,7 +1715,7 @@ impl App {
             front: self.canvas_front.clone(),
             kept: self.canvas_kept.clone(),
         };
-        for (k, e) in &self.md_image_cache {
+        for (k, e) in &self.md_images.cache {
             if crate::preview::markdown::is_canvas_url(&k.to_string_lossy()) {
                 h.keys.insert(k.clone(), e.pixel_bytes());
             }
@@ -1797,7 +1731,7 @@ impl App {
     /// Test-only: the kitty image ids pinned for a cache key, per slot family.
     #[cfg(test)]
     pub(crate) fn md_kitty_ids_for_test(&self, key: &Path) -> Option<[Vec<u32>; 3]> {
-        self.md_kitty_ids.get(&kitty_key(key)).cloned()
+        self.md_images.kitty_ids.get(&kitty_key(key)).cloned()
     }
 }
 

@@ -6,7 +6,7 @@ impl App {
     /// promptly and the image appears without waiting for the next key press).
     pub fn md_images_loading(&self) -> bool {
         !self.md_remote_inflight.is_empty()
-            || self.md_image_cache.values().any(|e| {
+            || self.md_images.cache.values().any(|e| {
                 // Waiting for pixels: the first decode, a rebuild running, or one that wants to
                 // start. An evicted entry nobody asks for is idle, not loading.
                 (e.decoded.is_none()
@@ -23,7 +23,7 @@ impl App {
     /// true so the redraw lands promptly, and the end-to-end tests wait on it: waiting on
     /// `md_images_loading` alone ends while a redraw started by the last frame is still running.
     pub fn md_pixels_pending(&self) -> bool {
-        self.md_images_loading() || self.md_image_cache.values().any(|e| e.reraster_inflight)
+        self.md_images_loading() || self.md_images.cache.values().any(|e| e.reraster_inflight)
     }
 
     /// Test-only: whether an inline-image encode request has been sent and its result not yet
@@ -32,7 +32,7 @@ impl App {
     /// from "the renderer has stopped asking" — the property the convergence tests assert.
     #[cfg(test)]
     pub fn md_encode_in_flight(&self) -> bool {
-        self.md_image_cache.values().any(|e| e.enc_inflight)
+        self.md_images.cache.values().any(|e| e.enc_inflight)
     }
 
     /// Drop tx and the image state on exit (to terminate the worker thread).
@@ -821,8 +821,8 @@ impl App {
         let picker = self.picker.as_ref()?;
         let backend = konoma_widgets::image_view::ImageBackend {
             picker,
-            use_kitty: self.use_kitty,
-            is_tmux: self.kitty_is_tmux,
+            use_kitty: self.md_images.use_kitty,
+            is_tmux: self.md_images.kitty_is_tmux,
             resize_tx: self.img_tx.as_ref(),
             kitty_tx: self.kitty_tx.as_ref(),
             render_scale: self.cfg.ui.image_render_scale,
@@ -855,7 +855,7 @@ impl App {
     /// Whether still images are drawn via konoma's own compressed kitty transmit (kitty terminal).
     #[cfg(test)]
     pub fn uses_kitty_image(&self) -> bool {
-        self.use_kitty
+        self.md_images.use_kitty
     }
 
     /// The prepared compressed kitty image for the current crop, if built.

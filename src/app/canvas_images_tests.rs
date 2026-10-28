@@ -934,7 +934,7 @@ fn a_cancelled_picture_leaves_no_entry_behind() {
         sources: Vec::new(),
     });
     assert!(
-        !app.md_image_cache.contains_key(&key),
+        !app.md_images.cache.contains_key(&key),
         "asked for again next time"
     );
 }
@@ -963,7 +963,7 @@ fn a_cancelled_picture_is_neither_progress_nor_a_failure_on_landing() {
         sources: Vec::new(),
     });
     assert!(!more, "a cancelled decode is not progress");
-    assert!(!app.md_image_cache.contains_key(&key));
+    assert!(!app.md_images.cache.contains_key(&key));
     assert_eq!(app.canvas_held_bytes(), 0);
 }
 
@@ -974,7 +974,7 @@ fn landing_inserts_prunes_and_forgets() {
     let p1 = decode("pl", &c1, &nothing_held());
     let keys1 = keys(&p1);
     app.canvas_pictures_landed(p1);
-    assert_eq!(app.md_image_cache.len(), 2);
+    assert_eq!(app.md_images.cache.len(), 2);
     let placed: Vec<_> = app
         .canvas_places
         .iter()
@@ -982,7 +982,8 @@ fn landing_inserts_prunes_and_forgets() {
         .collect();
     assert_eq!(placed, keys1);
     // An unrelated (Markdown / media-diff) entry is not touched by a canvas landing.
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(PathBuf::from("media-diff://o/00/1"), Default::default());
     // The next answer keeps picture 1 and replaces picture 2's content. Nothing has been drawn,
     // so no entry is "drawn from": the replaced content goes.
@@ -990,7 +991,8 @@ fn landing_inserts_prunes_and_forgets() {
     let held = {
         let mut h = nothing_held();
         h.keys = app
-            .md_image_cache
+            .md_images
+            .cache
             .iter()
             .filter(|(k, _)| crate::preview::markdown::is_canvas_url(&k.to_string_lossy()))
             .map(|(k, e)| (k.clone(), e.pixel_bytes()))
@@ -1004,19 +1006,22 @@ fn landing_inserts_prunes_and_forgets() {
     assert_eq!(keys2[0], keys1[0]);
     assert_ne!(keys2[1], keys1[1]);
     let has = |k: &Option<String>| {
-        app.md_image_cache
+        app.md_images
+            .cache
             .contains_key(Path::new(k.as_ref().unwrap()))
     };
     assert!(has(&keys1[0]));
     assert!(!has(&keys1[1]), "the replaced one is dropped");
     assert!(has(&keys2[1]));
     assert!(app
-        .md_image_cache
+        .md_images
+        .cache
         .contains_key(&PathBuf::from("media-diff://o/00/1")));
     // A canvas without pictures drops them all.
     app.canvas_pictures_landed(decode("pl", &canvas_of(vec![]), &nothing_held()));
     assert!(app
-        .md_image_cache
+        .md_images
+        .cache
         .keys()
         .all(|k| !crate::preview::markdown::is_canvas_url(&k.to_string_lossy())));
     assert!(app.canvas_places.is_empty());
@@ -1025,7 +1030,8 @@ fn landing_inserts_prunes_and_forgets() {
     app.forget_canvas_pictures();
     assert!(app.canvas_places.is_empty());
     assert!(app
-        .md_image_cache
+        .md_images
+        .cache
         .keys()
         .all(|k| !crate::preview::markdown::is_canvas_url(&k.to_string_lossy())));
 }
@@ -1051,20 +1057,24 @@ fn the_entry_an_id_is_drawn_from_stays_while_its_new_content_waits() {
     assert_ne!(old, new);
     app.canvas_pictures_landed(second);
     assert!(
-        app.md_image_cache.contains_key(Path::new(&*old)),
+        app.md_images.cache.contains_key(Path::new(&*old)),
         "still drawn from"
     );
-    assert!(app.md_image_cache.contains_key(Path::new(&*new)));
-    assert_eq!(app.md_image_cache.len(), 2);
+    assert!(app.md_images.cache.contains_key(Path::new(&*new)));
+    assert_eq!(app.md_images.cache.len(), 2);
     // The new content failed for good: the old picture ends (the cells show). The frame only
     // moved the pointer: the entry itself goes when the next answer lands (the prune), never in a
     // frame.
-    app.md_image_cache.get_mut(Path::new(&*new)).unwrap().failed = true;
+    app.md_images
+        .cache
+        .get_mut(Path::new(&*new))
+        .unwrap()
+        .failed = true;
     let shown = app.canvas_shown_key(1, &new, 2, 2, 2);
     assert_eq!(&*shown, &*new);
     assert!(!app.canvas_front.contains_key(&1));
     assert!(
-        app.md_image_cache.contains_key(Path::new(&*old)),
+        app.md_images.cache.contains_key(Path::new(&*old)),
         "a frame removes no entry"
     );
     let next = decode(
@@ -1073,8 +1083,8 @@ fn the_entry_an_id_is_drawn_from_stays_while_its_new_content_waits() {
         &app.canvas_known_keys_for_test(),
     );
     app.canvas_pictures_landed(next);
-    assert!(!app.md_image_cache.contains_key(Path::new(&*old)));
-    assert!(app.md_image_cache.contains_key(Path::new(&*new)));
+    assert!(!app.md_images.cache.contains_key(Path::new(&*old)));
+    assert!(app.md_images.cache.contains_key(Path::new(&*new)));
 }
 
 #[test]
@@ -1100,7 +1110,7 @@ fn while_the_new_content_has_nothing_to_draw_the_old_entry_is_shown() {
     // An id never drawn has nothing to fall back on.
     assert_eq!(&*app.canvas_shown_key(5, &new, 2, 2, 2), &*new);
     // The old entry going (evicted) leaves the new one as the only candidate.
-    app.md_image_cache.remove(Path::new(&*old));
+    app.md_images.cache.remove(Path::new(&*old));
     assert_eq!(&*app.canvas_shown_key(1, &new, 2, 2, 2), &*new);
 }
 
@@ -1116,9 +1126,9 @@ fn a_picture_refused_for_the_memory_bound_has_no_entry_and_is_not_remembered_as_
     // The app's bound is smaller than what the worker thought was free (a race): 60,000 bytes.
     let more = app.canvas_pictures_landed_within(got, 60_000);
     assert!(!more);
-    assert!(app.md_image_cache.contains_key(Path::new(&*k1)));
+    assert!(app.md_images.cache.contains_key(Path::new(&*k1)));
     assert!(
-        !app.md_image_cache.contains_key(Path::new(&*k2)),
+        !app.md_images.cache.contains_key(Path::new(&*k2)),
         "refused: no entry, so not 'known' and not failed"
     );
     assert_eq!(app.canvas_held_bytes(), 40_000);
@@ -1154,8 +1164,8 @@ fn what_the_canvas_no_longer_names_is_freed_before_the_memory_bound_is_judged() 
     );
     let k2 = next.places[0].key.clone().unwrap();
     app.canvas_pictures_landed_within(next, 60_000);
-    assert!(app.md_image_cache.contains_key(Path::new(&*k2)));
-    assert_eq!(app.md_image_cache.len(), 1);
+    assert!(app.md_images.cache.contains_key(Path::new(&*k2)));
+    assert_eq!(app.md_images.cache.len(), 1);
     assert_eq!(app.canvas_held_bytes(), 40_000);
 }
 
@@ -1201,7 +1211,7 @@ fn canvas_entries_are_never_evicted_by_the_cache_budget() {
     app.begin_md_image_frame();
     app.evict_md_images_to(0);
     assert!(
-        app.md_image_cache[&key].decoded.is_some(),
+        app.md_images.cache[&key].decoded.is_some(),
         "the pixels are still there"
     );
 }
@@ -1253,27 +1263,33 @@ fn kitty_ids_are_filed_under_the_picture_not_its_content() {
 #[test]
 fn the_ids_of_a_picture_that_is_gone_are_deleted_and_those_of_a_replaced_one_are_kept() {
     let (mut app, _dir) = new_app("cvi_sweep");
-    app.use_kitty = true;
+    app.md_images.use_kitty = true;
     let c = canvas_of(vec![im(1, rgba(4, 4, 1)), im(2, rgba(4, 4, 2))]);
     app.canvas_pictures_landed(decode("pk", &c, &nothing_held()));
     // The encodes pinned ids for both slots (and Markdown has its own, which stay).
     let slot1 = PathBuf::from("canvas://pk/1");
     let slot2 = PathBuf::from("canvas://pk/2");
-    app.md_kitty_ids
+    app.md_images
+        .kitty_ids
         .insert(slot1.clone(), [vec![11, 12], vec![13], vec![]]);
-    app.md_kitty_ids
+    app.md_images
+        .kitty_ids
         .insert(slot2.clone(), [vec![21], vec![], vec![]]);
-    app.md_kitty_ids
+    app.md_images
+        .kitty_ids
         .insert(PathBuf::from("/doc/a.png"), [vec![99], vec![], vec![]]);
     // Picture 1's content changes and picture 2 leaves.
     let c2 = canvas_of(vec![im(1, rgba(4, 4, 7))]);
     app.canvas_pictures_landed(decode("pk", &c2, &nothing_held()));
     assert!(
-        app.md_kitty_ids.contains_key(&slot1),
+        app.md_images.kitty_ids.contains_key(&slot1),
         "same picture: ids kept"
     );
-    assert!(!app.md_kitty_ids.contains_key(&slot2));
-    assert!(app.md_kitty_ids.contains_key(&PathBuf::from("/doc/a.png")));
+    assert!(!app.md_images.kitty_ids.contains_key(&slot2));
+    assert!(app
+        .md_images
+        .kitty_ids
+        .contains_key(&PathBuf::from("/doc/a.png")));
     let escapes = app.take_kitty_deletes();
     assert_eq!(
         escapes,
@@ -1291,25 +1307,28 @@ fn the_ids_of_a_picture_that_is_gone_are_deleted_and_those_of_a_replaced_one_are
         .collect();
     want.sort();
     assert_eq!(gone, want);
-    assert!(app.md_kitty_ids.contains_key(&PathBuf::from("/doc/a.png")));
+    assert!(app
+        .md_images
+        .kitty_ids
+        .contains_key(&PathBuf::from("/doc/a.png")));
 }
 
 #[test]
 fn deletes_go_only_to_a_kitty_terminal_and_follow_the_tmux_wrapping() {
     let (mut app, _dir) = new_app("cvi_deletes");
-    app.kitty_deletes = vec![5];
-    app.use_kitty = false;
+    app.md_images.kitty_deletes = vec![5];
+    app.md_images.use_kitty = false;
     assert!(
         app.take_kitty_deletes().is_empty(),
         "no kitty, nothing is written"
     );
     assert!(
-        app.kitty_deletes.is_empty(),
+        app.md_images.kitty_deletes.is_empty(),
         "and the queue does not pile up"
     );
-    app.use_kitty = true;
-    app.kitty_deletes = vec![5, 6];
-    app.kitty_is_tmux = true;
+    app.md_images.use_kitty = true;
+    app.md_images.kitty_deletes = vec![5, 6];
+    app.md_images.kitty_is_tmux = true;
     assert_eq!(
         app.take_kitty_deletes(),
         vec![
@@ -1337,7 +1356,7 @@ fn a_picture_deferred_by_the_work_limits_is_decoded_when_a_later_answer_says_unc
             .collect(),
     );
     let held = land(&mut app, decode("pk", &sends, &nothing_held()));
-    assert_eq!(app.md_image_cache.len(), MAX_DECODES_PER_ANSWER);
+    assert_eq!(app.md_images.cache.len(), MAX_DECODES_PER_ANSWER);
     assert_eq!(held.kept.len(), 8, "the host kept the 8 it deferred");
     // The plugin does what the API tells it: pixels once, then `unchanged` for all.
     let unchanged = canvas_of((0..n).map(none).collect());
@@ -1345,7 +1364,7 @@ fn a_picture_deferred_by_the_work_limits_is_decoded_when_a_later_answer_says_unc
     for _ in 0..3 {
         held = land(&mut app, decode("pk", &unchanged, &held));
     }
-    assert_eq!(app.md_image_cache.len(), n as usize, "all arrived");
+    assert_eq!(app.md_images.cache.len(), n as usize, "all arrived");
     assert!(app.canvas_kept.is_empty(), "nothing is kept any more");
     assert!(app.canvas_places.iter().all(|p| p.key.is_some()));
 }
@@ -1383,7 +1402,7 @@ fn a_picture_refused_for_the_memory_bound_is_decoded_later_even_when_the_plugin_
     assert_eq!(decoded_count(hb), 2);
     app.canvas_pictures_landed_within(later, 60_000);
     assert!(app.canvas_kept.is_empty());
-    assert_eq!(app.md_image_cache.len(), 1);
+    assert_eq!(app.md_images.cache.len(), 1);
 }
 
 #[test]
@@ -1402,7 +1421,7 @@ fn a_refusal_at_landing_keeps_the_source_with_what_it_needs() {
     let next = decode("pkl", &canvas_of(vec![none(1), none(2)]), &held);
     assert_eq!(next.fresh.len(), 1);
     app.canvas_pictures_landed(next);
-    assert!(app.md_image_cache.contains_key(Path::new(&*k2)));
+    assert!(app.md_images.cache.contains_key(Path::new(&*k2)));
     assert!(app.canvas_kept.is_empty());
 }
 
@@ -1428,7 +1447,7 @@ fn newer_content_for_a_kept_id_replaces_the_kept_data() {
     );
     assert_eq!(decoded_count(hnew), 1);
     assert!(app.canvas_kept.is_empty());
-    assert_eq!(app.md_image_cache.len(), 2);
+    assert_eq!(app.md_images.cache.len(), 2);
 }
 
 #[test]
@@ -1466,10 +1485,10 @@ fn a_front_entry_survives_until_an_answer_lands_so_a_flip_flop_never_shows_the_o
     let snapshot = app.canvas_known_keys_for_test();
     assert!(snapshot.keys.contains_key(Path::new(&*ka)));
     // The frame draws B (failed-path stand-in: the pointer moves, nothing is removed).
-    app.md_image_cache.get_mut(Path::new(&*kb)).unwrap().failed = true;
+    app.md_images.cache.get_mut(Path::new(&*kb)).unwrap().failed = true;
     app.canvas_shown_key(1, &kb, 2, 2, 2);
     assert!(
-        app.md_image_cache.contains_key(Path::new(&*ka)),
+        app.md_images.cache.contains_key(Path::new(&*ka)),
         "no frame drops an entry"
     );
     // The answer of the job names A again.
@@ -1477,7 +1496,7 @@ fn a_front_entry_survives_until_an_answer_lands_so_a_flip_flop_never_shows_the_o
     assert!(ga2.fresh.is_empty(), "A is held, so nothing is decoded");
     app.canvas_pictures_landed(ga2);
     assert!(
-        app.md_image_cache.contains_key(Path::new(&*ka)),
+        app.md_images.cache.contains_key(Path::new(&*ka)),
         "the placement names an entry that is there"
     );
 }
@@ -1570,7 +1589,7 @@ fn the_input_budget_is_applied_before_hashing_and_the_unhashed_picture_keeps_its
     assert_eq!(next.fresh.len(), 1, "only the third");
     assert!(next.places[2].key.is_some());
     app.canvas_pictures_landed(next);
-    assert_eq!(app.md_image_cache.len(), 3);
+    assert_eq!(app.md_images.cache.len(), 3);
     assert!(app.canvas_kept.is_empty());
 }
 
@@ -1686,10 +1705,10 @@ fn a_page_flip_replaces_the_pictures_of_its_ids_even_with_the_bound_full() {
     let more = app.canvas_pictures_landed_within(second, bound);
     assert!(!more, "nothing waits");
     for k in &new {
-        assert!(app.md_image_cache.contains_key(Path::new(&**k)), "{k}");
+        assert!(app.md_images.cache.contains_key(Path::new(&**k)), "{k}");
     }
     for k in &old {
-        assert!(!app.md_image_cache.contains_key(Path::new(&**k)), "{k}");
+        assert!(!app.md_images.cache.contains_key(Path::new(&**k)), "{k}");
     }
     assert_eq!(app.canvas_held_bytes(), bound);
     assert!(app.canvas_kept.is_empty());
@@ -1720,9 +1739,9 @@ fn the_front_of_another_id_is_not_replaced_by_a_new_content() {
     assert_eq!(second.fresh.len(), 1);
     let k_new = second.places[0].key.clone().unwrap();
     app.canvas_pictures_landed_within(second, bound);
-    assert!(app.md_image_cache.contains_key(Path::new(&*k_new)));
-    assert!(app.md_image_cache.contains_key(Path::new(&*keys1[1])));
-    assert!(!app.md_image_cache.contains_key(Path::new(&*keys1[0])));
+    assert!(app.md_images.cache.contains_key(Path::new(&*k_new)));
+    assert!(app.md_images.cache.contains_key(Path::new(&*keys1[1])));
+    assert!(!app.md_images.cache.contains_key(Path::new(&*keys1[0])));
 }
 
 #[test]
@@ -1757,7 +1776,7 @@ fn a_new_content_refused_for_memory_ends_the_old_picture_of_its_id_and_comes_whe
         "the old picture of id 0 is not shown in place of the new one"
     );
     assert!(
-        !app.md_image_cache.contains_key(Path::new(&*old[0])),
+        !app.md_images.cache.contains_key(Path::new(&*old[0])),
         "and its pixels are freed"
     );
     assert_eq!(app.canvas_kept[&0].needs, Some(79_524));
@@ -1875,7 +1894,7 @@ fn the_kept_sources_are_bounded_and_the_oldest_go_first() {
         l,
     );
     assert!(again.fresh.is_empty());
-    assert!(!app.md_image_cache.contains_key(Path::new(
+    assert!(!app.md_images.cache.contains_key(Path::new(
         &*again.places[0].key.clone().unwrap_or_else(|| Arc::from(""))
     )));
 }
@@ -2155,14 +2174,14 @@ fn pictures_are_drawable_only_with_an_image_backend_and_the_encode_worker() {
     let (mut app, _dir) = new_app("cvi_drawable");
     assert!(!app.canvas_pictures_drawable());
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    assert!(app.md_enc_tx.is_none());
+    assert!(app.md_images.enc_tx.is_none());
     assert!(
         !app.canvas_pictures_drawable(),
         "a picker without the encode worker"
     );
     assert!(app.canvas_known_keys().is_none());
     let (tx, _rx) = std::sync::mpsc::channel();
-    app.md_enc_tx = Some(tx);
+    app.md_images.enc_tx = Some(tx);
     assert!(app.canvas_pictures_drawable());
     assert!(app.canvas_known_keys().is_some());
     app.picker = None;
@@ -2183,7 +2202,7 @@ fn a_decoded_picture_for_a_key_already_held_leaves_the_entry_as_it_is() {
     let key = first.fresh[0].0.clone();
     let places = first.places.clone();
     app.canvas_pictures_landed(first);
-    let before = app.md_image_cache[&key].pixel_bytes();
+    let before = app.md_images.cache[&key].pixel_bytes();
     assert_eq!(before, 64);
     // A job that was out before that landing answers with the same key (decoded bigger here, to
     // see whether it replaces the entry).
@@ -2200,9 +2219,9 @@ fn a_decoded_picture_for_a_key_already_held_leaves_the_entry_as_it_is() {
         sources: Vec::new(),
     };
     app.canvas_pictures_landed(second);
-    assert_eq!(app.md_image_cache.len(), 1);
+    assert_eq!(app.md_images.cache.len(), 1);
     assert_eq!(
-        app.md_image_cache[&key].pixel_bytes(),
+        app.md_images.cache[&key].pixel_bytes(),
         before,
         "the entry (with its encodes and kitty ids) is kept"
     );
@@ -2267,7 +2286,7 @@ fn the_old_picture_of_an_id_stays_when_the_new_content_exactly_fits_next_to_it()
     app.canvas_pictures_landed_within(new, 80_000);
     // 40,000 + 40,000 is exactly the bound: it fits, so nothing had to give way (the old picture
     // is still drawn until the new one can be).
-    assert_eq!(app.md_image_cache.len(), 2);
+    assert_eq!(app.md_images.cache.len(), 2);
     assert_eq!(app.canvas_front.get(&1), Some(&old_key));
 }
 
@@ -2681,10 +2700,10 @@ fn a_canvas_picture_given_a_kitty_id_is_noted_for_the_exit_and_other_pictures_ar
 #[test]
 fn the_ids_whose_deletes_were_handed_out_are_forgotten() {
     let (mut app, _dir) = new_app("cvi_exit_forget");
-    app.use_kitty = true;
+    app.md_images.use_kitty = true;
     let id = crate::preview::kitty::next_id();
     LIVE_CANVAS_KITTY.note(id);
-    app.kitty_deletes = vec![id];
+    app.md_images.kitty_deletes = vec![id];
     assert_eq!(app.take_kitty_deletes().len(), 1);
     assert!(
         !LIVE_CANVAS_KITTY.snapshot().contains(&id),

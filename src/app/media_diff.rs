@@ -250,7 +250,7 @@ impl App {
         } else {
             let outcome = self.materialize_media_diff(res.computed);
             let live = live_cache_keys(&outcome);
-            self.md_image_cache.retain(|k, _| {
+            self.md_images.cache.retain(|k, _| {
                 let s = k.to_string_lossy();
                 !crate::preview::media_diff::is_media_diff_url(&s) || live.contains(k)
             });
@@ -303,7 +303,7 @@ impl App {
         key: &Path,
         max_px: u32,
     ) -> Option<(image::DynamicImage, image::DynamicImage)> {
-        let entry = self.md_image_cache.get(key)?;
+        let entry = self.md_images.cache.get(key)?;
         let first = (**entry.decoded.as_ref()?).clone();
         let svg = entry.svg.clone()?;
         let again = crate::app::redraw_svg(&svg, &entry.svg_trust, max_px).ok()?;
@@ -324,7 +324,8 @@ impl App {
                 // The SVG it keeps is a file's (git's old version, the working file): drawn again
                 // only by the supervised child process.
                 // Drawn again from the same base as the first drawing (`decode_svg_side`).
-                self.md_image_cache
+                self.md_images
+                    .cache
                     .entry(p.cache_key.clone())
                     .or_default()
                     .svg_trust = match &p.svg_base {
@@ -394,7 +395,8 @@ impl App {
     /// memory-vs-recompute behavior, not a bug: at most one tab's media-diff pixels are ever resident
     /// at a time.
     pub(crate) fn prune_media_diff_picture_cache(&mut self) {
-        self.md_image_cache
+        self.md_images
+            .cache
             .retain(|k, _| !crate::preview::media_diff::is_media_diff_url(&k.to_string_lossy()));
     }
 
@@ -423,7 +425,7 @@ impl App {
     /// `evict_md_image_cache_key_for_test` reproduces that directly for tests.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn md_image_cache_contains(&self, key: &Path) -> bool {
-        self.md_image_cache.contains_key(key)
+        self.md_images.cache.contains_key(key)
     }
 
     /// Test-only: remove `key` from `md_image_cache` directly, simulating the eviction
@@ -432,7 +434,7 @@ impl App {
     #[cfg(test)]
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn evict_md_image_cache_key_for_test(&mut self, key: &Path) {
-        self.md_image_cache.remove(key);
+        self.md_images.cache.remove(key);
     }
 
     /// Test-only: every `media-diff://` key currently in `md_image_cache` — lets a test discover the
@@ -442,7 +444,8 @@ impl App {
     #[cfg(test)]
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn md_image_cache_media_diff_keys_for_test(&self) -> Vec<PathBuf> {
-        self.md_image_cache
+        self.md_images
+            .cache
             .keys()
             .filter(|k| crate::preview::media_diff::is_media_diff_url(&k.to_string_lossy()))
             .cloned()
