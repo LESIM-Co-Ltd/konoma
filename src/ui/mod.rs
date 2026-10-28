@@ -130,10 +130,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         status::render_combined(frame, app, bottom);
     }
 
-    // `?` help overlays on top of everything.
-    if app.show_help {
-        help::render(frame, app, frame.area());
-    }
     // The bookmark list overlay also sits on top.
     if app.is_bookmark_list() {
         bookmarks::render(frame, app, frame.area());
@@ -153,6 +149,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // The table cell full-text popup (`Enter`).
     if app.is_table_cell_open() {
         table::render_cell_popup(frame, app, frame.area());
+    }
+    // `?` help sits above every other overlay (bookmarks, tab list, outline, info, cell popup),
+    // matching its key priority (`frontmost_layer`: dialogs, then help). Keep it right before the dialog.
+    if app.show_help {
+        help::render(frame, app, frame.area());
     }
     // A confirm/input dialog has top priority (it also intercepts keys), so it sits on top of everything.
     if app.is_dialog() {
