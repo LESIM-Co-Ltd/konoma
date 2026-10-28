@@ -88,7 +88,10 @@ pub use decode::decode_one;
 pub use decode::draw_plugin_svg;
 pub use draw::draw_images;
 #[cfg(feature = "config")]
-pub use failure_msg::{image_failure_message, image_failure_msg, svg_fail_msg};
+pub use failure_msg::{
+    image_failure_for, image_failure_message, image_failure_msg, plain_failure_text, svg_fail_msg,
+    unavailable_text,
+};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
 pub use host::{CanvasPictureHost, Landed};

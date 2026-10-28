@@ -31,6 +31,9 @@ pub enum Frame {
     /// ([`crate::app::Pictures::draw_still`]), or, with no pictures, the line that says the
     /// terminal cannot show it.
     Image(ImageFrame),
+    /// The same frame for a picture that could not be asked for (the session's `view` failed):
+    /// the reason is drawn inside it ([`crate::app::failure_line`]).
+    ImageFailed(FailedImage),
 }
 
 /// The picture of a `View::Image` on screen.
@@ -42,14 +45,31 @@ pub struct ImageFrame {
     pub lang: Lang,
 }
 
+/// The frame of a picture whose `view` failed, with the reason inside.
+#[derive(Clone, Debug)]
+pub struct FailedImage {
+    /// The file name, in the frame title.
+    pub name: String,
+    pub lang: Lang,
+    /// Why, when the plugin's failure maps to a reason of a picture.
+    pub why: Option<konoma_svg::image::ImageFailure>,
+    /// The plugin whose settings the reason may name.
+    pub plugin_id: String,
+}
+
+/// The frame title: the file name between spaces (konoma's shape), or ` image ` with none.
+fn frame_title(name: &str) -> String {
+    if name.is_empty() {
+        " image ".to_string()
+    } else {
+        format!(" {name} ")
+    }
+}
+
 impl ImageFrame {
     /// The frame title: the file name between spaces (konoma's shape), or ` image ` with none.
     pub fn title(&self) -> String {
-        if self.name.is_empty() {
-            " image ".to_string()
-        } else {
-            format!(" {} ", self.name)
-        }
+        frame_title(&self.name)
     }
 }
 
@@ -205,6 +225,17 @@ pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
         Frame::Image(i) => Block::bordered()
             .title(i.title())
             .render(body, f.buffer_mut()),
+        Frame::ImageFailed(i) => {
+            let block = Block::bordered().title(frame_title(&i.name));
+            let inner = block.inner(body);
+            block.render(body, f.buffer_mut());
+            Paragraph::new(super::still::failure_line(
+                i.why.as_ref(),
+                i.lang,
+                &i.plugin_id,
+            ))
+            .render(inner, f.buffer_mut());
+        }
         Frame::Table(t) => {
             let screen = f.area();
             t.draw(f.buffer_mut(), body, screen)

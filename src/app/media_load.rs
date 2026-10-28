@@ -55,6 +55,18 @@ impl App {
         }
     }
 
+    /// Let go of the picture on screen (a still, an animation, the viewer's drawn state) without
+    /// touching the page or the plugin's show. A page whose answer is a failure lands here, so
+    /// the picture of the page before never stays under the failure's words.
+    pub(super) fn release_picture(&mut self) {
+        self.image_viewer.clear();
+        self.image_src = None;
+        self.vector_svg = None;
+        self.vector_trust = None;
+        self.image_logical = None;
+        self.gif.clear();
+    }
+
     /// Record why the full-screen image could not be loaded (a request dropped as stale is not a
     /// failure and says nothing).
     fn set_image_failure(&mut self, why: crate::preview::image::ImageFailure) {

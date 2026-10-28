@@ -1737,3 +1737,115 @@ fn a_dropped_stale_answer_does_not_stop_the_animation() {
     ));
     assert!(app.is_gif_active(), "a cancelled load says nothing");
 }
+
+// ---- a failure that lands lets go of the picture of the page before ------------------------------
+
+/// The screen text of the preview, drawn as the host does.
+fn preview_text(app: &mut App) -> String {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
+    term.draw(|f| crate::ui::preview::render(f, app, f.area()))
+        .unwrap();
+    let buf = term.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A document of two pages for the plugin `id` (a file named `name`): page 1 is a picture that has
+/// landed, page 2 is `second`. Returns the app on page 1.
+fn picture_then(
+    tag: &str,
+    id: &str,
+    name: &str,
+    first: Reply,
+    second: Reply,
+) -> (
+    App,
+    std::sync::mpsc::Receiver<MediaResult>,
+    crate::test_support::TmpDir,
+) {
+    let dir = unique_tmp(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::plugin(id, p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let (plugin, _seen) = stand(Reply::Pages(vec![first, second]), Some(2));
+    STAND_IN.with(|s| *s.borrow_mut() = Some(plugin));
+    app.start_media_plugin(id, &p);
+    while app.is_media_loading() {
+        let r = recv_any(&rx);
+        app.apply_media(r);
+    }
+    assert!(app.image_src.is_some(), "page 1 is on screen");
+    (app, rx, dir)
+}
+
+/// A non-picture plugin (a PDF): its page that fails to draw does not leave the page before on
+/// screen; the host's own words for the plugin come instead.
+#[test]
+fn a_pdf_page_that_fails_lets_go_of_the_page_before_and_says_the_pdf_words() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_pdf_fail_release",
+        konoma_media::PDF_ID,
+        "doc.pdf",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Corrupt),
+    );
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.plugin_failure().is_some(), "the failure landed");
+    assert!(app.image_src.is_none(), "the old page is let go");
+    assert!(!app.is_image_preview());
+    let text = preview_text(&mut app);
+    assert!(text.contains("[pdf] cannot render"), "{text}");
+    assert!(text.contains("doc.pdf"), "{text}");
+}
+
+/// A picture plugin: the page that fails after a still page shows the reason, not the still.
+#[test]
+fn an_image_page_that_fails_after_a_still_page_shows_the_reason_and_not_the_still() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_img_fail_release",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Corrupt),
+    );
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some());
+    assert!(app.image_src.is_none(), "the old picture is let go");
+    let text = preview_text(&mut app);
+    assert!(text.contains("[image]"), "{text}");
+}
+
+/// A stale answer that was dropped (`Cancelled`) says nothing: the picture stays.
+#[test]
+fn a_cancelled_page_answer_keeps_the_picture_of_the_page_before() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_img_cancel_keep",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Cancelled),
+    );
+    app.next_page();
+    settle_turn(&mut app, &rx);
+    assert!(
+        app.image_src.is_some(),
+        "a dropped answer lets go of nothing"
+    );
+    assert!(app.image_failure().is_none());
+}

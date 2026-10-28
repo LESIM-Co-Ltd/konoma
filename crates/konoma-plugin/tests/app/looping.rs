@@ -19,6 +19,7 @@ fn cx() -> AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "title".into(),
+        ..AppCx::default()
     }
 }
 
@@ -54,11 +55,17 @@ fn run_events(
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut it = events.into_iter();
+    // What `run` hands the loop: the file and what the plugin declared it shows when it cannot.
+    let cx = AppCx {
+        path: opened.path.clone(),
+        unavailable: opened.unavailable.clone(),
+        ..cx()
+    };
     run_with(
         &mut term,
         &mut *opened.session,
         &mut it,
-        &cx(),
+        &cx,
         &AppKeys::defaults(),
     )
     .expect("runs");
@@ -441,8 +448,11 @@ fn a_view_that_is_not_drawn_yet_says_so_in_one_line() {
 #[test]
 fn a_failing_view_is_shown_not_fatal_and_q_still_quits() {
     let (_d, p) = file("app_fail", "a.fail", "");
-    let (term, left) = run_events(TestPlugin::all(), &p, (40, 4), vec![key('q'), key('j')]);
-    assert_eq!(rows(&term)[0], "[can not preview: broken on purpose]");
+    let (term, left) = run_events(TestPlugin::all(), &p, (300, 4), vec![key('q'), key('j')]);
+    // The lines konoma itself shows for the same failure: the message, then the path.
+    let r = rows(&term);
+    assert_eq!(r[0].trim_end(), "broken on purpose");
+    assert_eq!(r[1].trim_end(), p.display().to_string());
     assert_eq!(left, 1);
 }
 

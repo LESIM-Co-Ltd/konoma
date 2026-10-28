@@ -178,6 +178,7 @@ fn app_gif_shot(path: &std::path::Path, h: u16, spec: &str, until: Until, pictur
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        ..AppCx::default()
     };
     let keys = presses(spec)
         .into_iter()
@@ -386,6 +387,7 @@ fn a_gif_of_one_frame_and_a_broken_gif_are_shown_as_in_the_host() {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        ..AppCx::default()
     };
     let keys = presses("+")
         .into_iter()
@@ -484,30 +486,66 @@ use konoma_plugin::prelude::{
 use konoma_plugin::t;
 use konoma_plugin::view::{ImageData, ImageView, Layout, PageLayout, ViewReq};
 
-/// A document of two pages: page 1 is the animation `gif`, page 2 the picture file `second`, or a
-/// page that fails to draw when there is none. Stands in for the plugin in the host
-/// (`STAND_IN`) and is the plugin of the app.
+/// A document of two pages: page 1 is the animation (or picture) file `gif`, page 2 the picture
+/// file `second`, or a page that fails to draw when there is none; with `first_fails` page 1 is
+/// the one that fails. Stands in for the plugin in the host (`STAND_IN`) and is the plugin of the
+/// app, which declares the `unavailable` the host's table holds for the same kind of file.
 struct TurnPlugin {
     gif: std::path::PathBuf,
     second: Option<std::path::PathBuf>,
+    first_fails: bool,
+    unavailable: konoma_plugin::Unavailable,
+    /// The file name it is bound to.
+    file: &'static str,
+    /// The id of the host's plugin it stands in for.
+    kind: &'static str,
+    /// The color page 1 shows (the animation's first frame is red).
+    before: [u8; 3],
+}
+
+impl TurnPlugin {
+    /// A picture plugin (the host's `image` one) bound to `turn.png`.
+    fn new(gif: std::path::PathBuf, second: Option<std::path::PathBuf>) -> TurnPlugin {
+        TurnPlugin {
+            gif,
+            second,
+            first_fails: false,
+            unavailable: crate::plugins::unavailable_of("image"),
+            file: "turn.png",
+            kind: "image",
+            before: RED,
+        }
+    }
+
+    /// The same document as the plugin `id` of the host shows `file` (its declared
+    /// `unavailable`, read from the host's table).
+    fn of_kind(mut self, id: &'static str, file: &'static str) -> TurnPlugin {
+        self.unavailable = crate::plugins::unavailable_of(id);
+        self.file = file;
+        self.kind = id;
+        self
+    }
 }
 
 struct TurnSession {
     gif: std::path::PathBuf,
     second: Option<std::path::PathBuf>,
+    first_fails: bool,
 }
 
 impl Plugin for TurnPlugin {
     fn manifest(&self) -> Manifest {
         Manifest::new("turn-parity", "0.0.1")
-            .bind(Bind::files(["turn.png"]))
+            .bind(Bind::files([self.file]))
             .shows(ViewKind::Image)
+            .unavailable(self.unavailable.clone())
     }
 
     fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
         Ok(Box::new(TurnSession {
             gif: self.gif.clone(),
             second: self.second.clone(),
+            first_fails: self.first_fails,
         }))
     }
 }
@@ -526,6 +564,7 @@ impl Session for TurnSession {
     fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
         let file = |p: &std::path::Path| Ok(View::Image(ImageView::new(ImageData::File(p.into()))));
         match (req.page.unwrap_or(0), &self.second) {
+            (0, _) if self.first_fails => Err(Failure::corrupt(t!(en: "page broken on purpose"))),
             (0, _) => file(&self.gif),
             (_, Some(p)) => file(p),
             (_, None) => Err(Failure::corrupt(t!(en: "page broken on purpose"))),
@@ -574,15 +613,27 @@ const GREEN: [u8; 3] = [0, 255, 0];
 /// What the host shows after `J` on page 1 (the animation, standing on its first frame).
 fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     use crate::app::media_plugin::STAND_IN;
+    let (file, first_fails, before) = (plugin.file, plugin.first_fails, plugin.before);
     STAND_IN.with(|s| *s.borrow_mut() = Some(Arc::new(plugin)));
     let mut s = Sim::with_config_sized(root, cfg_en(), W, HOST_H)
         .with_picker()
         .with_media();
     let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
     s.app.attach_image_backend(Picker::halfblocks(), req_tx);
-    s.select("turn.png");
+    s.select(file);
     s.enter();
-    s.drain_media();
+    if first_fails {
+        // The failure of the very first page may be handed over on the spot (no message left in
+        // the channel to wait for): take what comes, then draw.
+        let rx = s.media_rx.take().expect("with_media");
+        while let Ok(res) = rx.recv_timeout(Duration::from_millis(500)) {
+            s.app.apply_media(res);
+        }
+        s.media_rx = Some(rx);
+        s.draw();
+    } else {
+        s.drain_media();
+    }
     let settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
         s.draw();
         while let Ok(req) = req_rx.try_recv() {
@@ -592,20 +643,28 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
         }
     };
     settle(&mut s, &mut req_rx);
-    assert!(
-        shows_color(s.term.backend().buffer(), RED),
-        "page 1 is the animation on its first frame\n{}",
-        super::image_parity::shot(&s.term).rows.join("\n")
-    );
-    s.press(KeyCode::Char('J'), KeyModifiers::NONE);
-    s.drain_media();
-    settle(&mut s, &mut req_rx);
+    if !first_fails {
+        assert!(
+            shows_color(s.term.backend().buffer(), before),
+            "page 1 shows its picture\n{}",
+            super::image_parity::shot(&s.term).rows.join("\n")
+        );
+        s.press(KeyCode::Char('J'), KeyModifiers::NONE);
+        s.drain_media();
+        settle(&mut s, &mut req_rx);
+    }
     STAND_IN.with(|s| *s.borrow_mut() = None);
     super::image_parity::shot(&s.term)
 }
 
 /// What the app shows after `J`, once it shows what the host ended on (`after`).
 fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Shot {
+    let (unavailable, kind, first_fails, before) = (
+        plugin.unavailable.clone(),
+        plugin.kind,
+        plugin.first_fails,
+        plugin.before,
+    );
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let screen = Arc::new(Mutex::new(TestBackend::new(W, APP_H)));
     let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
@@ -613,6 +672,9 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        unavailable,
+        plugin_id: kind.into(),
+        path: opened.path.clone(),
     };
     let key = presses("J")
         .into_iter()
@@ -623,7 +685,11 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         .remove(0);
     let mut events = TurnSource {
         screen: Arc::clone(&screen),
-        steps: [(Until::Color(RED), key)].into(),
+        steps: if first_fails {
+            std::collections::VecDeque::new()
+        } else {
+            [(Until::Color(before), key)].into()
+        },
         after,
         started: Instant::now(),
     };
@@ -663,10 +729,8 @@ fn turning_from_an_animation_to_a_still_page_or_a_failing_page_agrees_with_the_h
         .save(dir.join("green.png"))
         .unwrap();
     let root = canon(&dir);
-    let plugin = |second: bool| TurnPlugin {
-        gif: root.join("a0.gif"),
-        second: second.then(|| root.join("green.png")),
-    };
+    let plugin =
+        |second: bool| TurnPlugin::new(root.join("a0.gif"), second.then(|| root.join("green.png")));
     // To a still picture: the same cells, and the animation's red is gone in both.
     let h = host_turn_shot(&root, plugin(true));
     let a = app_turn_shot(&root.join("turn.png"), plugin(true), Until::Color(GREEN));
@@ -683,29 +747,147 @@ fn turning_from_an_animation_to_a_still_page_or_a_failing_page_agrees_with_the_h
     assert_eq!(count(&a.cells, RED), 0, "app: the old animation is gone");
     assert_eq!(h.cells, a.cells, "the still page is drawn alike");
     // To a page whose picture is broken: the same words, and no animation left behind.
-    let broken = |name: &str| TurnPlugin {
-        gif: root.join("a0.gif"),
-        second: Some(root.join(name)),
-    };
+    let broken = |name: &str| TurnPlugin::new(root.join("a0.gif"), Some(root.join(name)));
     let h = host_turn_shot(&root, broken("junk.gif"));
     let a = app_turn_shot(&root.join("turn.png"), broken("junk.gif"), Until::Failure);
     assert!(failure_line(&h.rows).is_some(), "{}", h.rows.join("\n"));
     assert_eq!(failure_line(&h.rows), failure_line(&a.rows));
     assert_eq!(count(&h.cells, RED), 0, "host: the old animation is gone");
     assert_eq!(count(&a.cells, RED), 0, "app: the old animation is gone");
-    // To a page the plugin fails to draw: each says it in its own words (the host knows the
-    // picture plugin's failure kinds, the app shows the plugin's reason), neither keeps the red.
+    // To a page the plugin fails to draw: the same words, neither keeps the red.
     let h = host_turn_shot(&root, plugin(false));
     let a = app_turn_shot(
         &root.join("turn.png"),
         plugin(false),
-        Until::Text("can not preview"),
+        Until::Text("[image]"),
     );
     assert_eq!(count(&h.cells, RED), 0, "host: the old animation is gone");
     assert_eq!(count(&a.cells, RED), 0, "app: the old animation is gone");
-    assert!(
-        h.rows.iter().any(|r| r.contains("[image]")),
-        "{}",
+    assert!(failure_line(&h.rows).is_some(), "{}", h.rows.join("\n"));
+    assert_eq!(failure_line(&h.rows), failure_line(&a.rows));
+    assert_eq!(h.cells, a.cells, "the failing page is drawn alike");
+}
+
+/// The rows of what a screen says, without the frame's border and the status/footer rows: the
+/// host draws its text in a bordered block under a status row, the app has no border.
+fn content_rows(rows: &[String]) -> Vec<String> {
+    let inner: Vec<&String> = match rows.iter().position(|r| r.starts_with('┌')) {
+        Some(top) => {
+            let end = rows.iter().position(|r| r.starts_with('└')).unwrap();
+            rows[top + 1..end].iter().collect()
+        }
+        // The last row is the footer.
+        None => rows[..rows.len() - 1].iter().collect(),
+    };
+    let mut out: Vec<String> = inner
+        .iter()
+        .map(|r| {
+            r.trim_start_matches('│')
+                .trim_end_matches(['│', ' '])
+                .to_string()
+        })
+        .collect();
+    while out.last().is_some_and(|r| r.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+/// One cell of the parity matrix: the plugin `id` (whose file is `file`) fails to draw either its
+/// first page (`first_fails`) or the page after `before` (a still or the animation).
+/// Returns the removal-proof numbers it checked.
+fn failing_page_agrees(
+    id: &'static str,
+    file: &'static str,
+    first_fails: bool,
+    still_before: bool,
+) {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+        .save(dir.join("turn.png"))
+        .unwrap();
+    std::fs::write(dir.join("turn.svg"), "<svg>junk-body</svg>").unwrap();
+    std::fs::write(dir.join("turn.pdf"), "%PDF junk").unwrap();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    let root = canon(&dir);
+    let mk = || {
+        let gif = if still_before { "green.png" } else { "a0.gif" };
+        let mut p = TurnPlugin::new(root.join(gif), None).of_kind(id, file);
+        p.first_fails = first_fails;
+        p.before = if still_before { GREEN } else { RED };
+        p
+    };
+    let what = format!("{id} first_fails={first_fails} still_before={still_before}");
+    let until = match id {
+        "image" => Until::Failure,
+        "svg" => Until::Text("junk-body"),
+        _ => Until::Text("turn.pdf"),
+    };
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join(file), mk(), until);
+    let old = if still_before { GREEN } else { RED };
+    let count = |cells: &[(String, RColor, RColor)]| {
+        cells
+            .iter()
+            .filter(|c| near(c.1, old) || near(c.2, old))
+            .count()
+    };
+    assert_eq!(
+        count(&h.cells),
+        0,
+        "{what}: host keeps the old picture\n{}",
         h.rows.join("\n")
     );
+    assert_eq!(
+        count(&a.cells),
+        0,
+        "{what}: app keeps the old picture\n{}",
+        a.rows.join("\n")
+    );
+    if id == "image" {
+        assert!(
+            failure_line(&h.rows).is_some(),
+            "{what}\n{}",
+            h.rows.join("\n")
+        );
+        assert_eq!(failure_line(&h.rows), failure_line(&a.rows), "{what}");
+        assert_eq!(h.cells, a.cells, "{what}: the failing page is drawn alike");
+    } else {
+        let (hr, ar) = (content_rows(&h.rows), content_rows(&a.rows));
+        assert!(
+            ar.len() >= 2,
+            "{what}: the app says something\n{}",
+            a.rows.join("\n")
+        );
+        assert_eq!(
+            hr,
+            ar,
+            "{what}\nhost:\n{}\napp:\n{}",
+            h.rows.join("\n"),
+            a.rows.join("\n")
+        );
+    }
+}
+
+#[test]
+fn a_picture_plugin_that_fails_a_page_says_the_same_in_the_host_and_the_app() {
+    failing_page_agrees("image", "turn.png", true, false);
+    failing_page_agrees("image", "turn.png", false, true);
+    failing_page_agrees("image", "turn.png", false, false);
+}
+
+#[test]
+fn an_svg_plugin_that_fails_a_page_says_the_same_in_the_host_and_the_app() {
+    failing_page_agrees("svg", "turn.svg", true, false);
+    failing_page_agrees("svg", "turn.svg", false, true);
+    failing_page_agrees("svg", "turn.svg", false, false);
+}
+
+#[test]
+fn a_pdf_plugin_that_fails_a_page_says_the_same_in_the_host_and_the_app() {
+    failing_page_agrees("pdf", "turn.pdf", true, false);
+    failing_page_agrees("pdf", "turn.pdf", false, true);
+    failing_page_agrees("pdf", "turn.pdf", false, false);
 }

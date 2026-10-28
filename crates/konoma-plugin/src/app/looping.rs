@@ -17,7 +17,7 @@ use ratatui::Terminal;
 
 use konoma_widgets::table::{popup_page_step, popup_scroll_by, popup_scroll_to, TableStep};
 
-use super::draw::{self, Frame, ImageFrame, PopupState, TableFrame};
+use super::draw::{self, FailedImage, Frame, ImageFrame, PopupState, TableFrame};
 use super::pictures::Pictures;
 use super::still::StillShape;
 use super::window;
@@ -35,6 +35,27 @@ pub struct AppCx {
     pub term: TermCaps,
     /// Shown in the footer.
     pub title: String,
+    /// What the plugin declared it shows when it shows nothing: it picks the words of a `view`
+    /// that fails (the same ones konoma shows, see `canvas_pictures::unavailable_text`).
+    pub unavailable: crate::manifest::Unavailable,
+    /// The id of the plugin (the reason of a picture that failed can name its settings).
+    pub plugin_id: String,
+    /// The absolute path of the file (a failure's words end with it, as konoma's do).
+    pub path: std::path::PathBuf,
+}
+
+impl Default for AppCx {
+    /// English, no terminal graphics, nothing declared, no file.
+    fn default() -> AppCx {
+        AppCx {
+            lang: "en".into(),
+            term: TermCaps::new(),
+            title: String::new(),
+            unavailable: crate::manifest::Unavailable::default(),
+            plugin_id: String::new(),
+            path: std::path::PathBuf::new(),
+        }
+    }
 }
 
 /// The keys of the app: layers 0 to 3 of the key design, shared with the host
@@ -877,31 +898,30 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let view = match session.view(&req, &vcx) {
+            let shown = match session.view(&req, &vcx) {
                 Ok(v) => {
                     st.table_failed = false;
                     st.image_failed = false;
                     st.last_image = matches!(v, View::Image(_));
-                    v
+                    Ok(v)
                 }
                 Err(f) => {
                     st.table_failed = st.pages.is_some() && !st.last_image;
                     st.image_failed = st.pages.is_some() && st.last_image;
-                    View::Message(crate::view::MessageView {
-                        lines: vec![Line::raw(format!(
-                            "[can not preview: {}]",
-                            f.message.get(&cx.lang)
-                        ))],
-                    })
+                    st.scrolls = false;
+                    Err(failure_frame(&f, cx, keys.lang(), usize::from(body_rows)))
                 }
             };
-            let (mut frame, redraw_after) = frame_of(
-                view,
-                &mut st,
-                usize::from(body_rows),
-                (&cx.lang, keys.lang()),
-                &cx.title,
-            );
+            let (mut frame, redraw_after) = match shown {
+                Ok(view) => frame_of(
+                    view,
+                    &mut st,
+                    usize::from(body_rows),
+                    (&cx.lang, keys.lang()),
+                    &cx.title,
+                ),
+                Err(frame) => (frame, None),
+            };
             if let Frame::Table(new) = &mut frame {
                 // A table read again (a resize, a page turn) keeps the cursor and the popup; a
                 // page turn has reset them before asking.
@@ -1412,6 +1432,38 @@ fn frame_of(
             ))]),
             None,
         ),
+    }
+}
+
+/// What a `view` that failed shows, in the words konoma shows for the same failure: a picture's
+/// frame with the reason inside (a plugin that names the picture frame), the file as text with the
+/// reason above it (an SVG), the plugin's sentence, or the failure's message; the last three end
+/// with the path. The mapping and the words are shared with konoma
+/// (`canvas_pictures::image_failure_for`, `unavailable_text`).
+fn failure_frame(f: &crate::session::Failure, cx: &AppCx, lang: Lang, rows: usize) -> Frame {
+    use crate::canvas_pictures::{image_failure_for, unavailable_text};
+    let why = image_failure_for(&cx.unavailable, f);
+    let text = unavailable_text(
+        &cx.unavailable,
+        f.message.get(&cx.lang),
+        why,
+        (&cx.lang, lang),
+        &cx.plugin_id,
+        &cx.path,
+        &|| {
+            window::read_window(&cx.path, 0, rows)
+                .map(|w| w.join("\n"))
+                .unwrap_or_default()
+        },
+    );
+    match text {
+        Some(t) => Frame::Lines(t.lines().map(Line::raw).collect()),
+        None => Frame::ImageFailed(FailedImage {
+            name: cx.title.clone(),
+            lang,
+            why,
+            plugin_id: cx.plugin_id.clone(),
+        }),
     }
 }
 

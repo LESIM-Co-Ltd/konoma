@@ -75,6 +75,7 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
         .into_iter()
@@ -634,10 +635,15 @@ fn a_sheet_that_fails_has_the_same_footer_and_help_as_the_host() {
         let what = format!("broken.xlsx [{spec}]");
         let (h, _s) = host_rows(&root, "broken.xlsx", HOST_H, spec);
         let a = app_rows(&root.join("broken.xlsx"), APP_H, spec);
+        // The failure line is the same string in both (the host draws it inside its frame).
+        let line = |rows: &[String]| {
+            rows.iter()
+                .find(|l| l.contains("cannot preview"))
+                .map(|l| l.trim_matches(['│', ' ']).to_string())
+        };
         assert!(
-            h.iter().any(|l| l.contains("cannot preview"))
-                && a.iter().any(|l| l.contains("can not preview")),
-            "{what}: both show the failure\nhost:\n{}\napp:\n{}",
+            line(&h).is_some() && line(&h) == line(&a),
+            "{what}: both show the same failure line\nhost:\n{}\napp:\n{}",
             h.join("\n"),
             a.join("\n")
         );

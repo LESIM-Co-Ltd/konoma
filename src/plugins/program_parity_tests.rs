@@ -110,8 +110,8 @@ fn host_kind(path: &Path) -> PreviewKind {
 }
 
 /// The files a program takes by a lower-priority binding, because the plugin konoma picks first
-/// is not in the program: (program, file name).
-const LOWER_PRIORITY: &[(&str, &str)] = &[("konoma-media", "png_as.md")];
+/// is not in the program: (program, file name, the plugin the program picks instead).
+const LOWER_PRIORITY: &[(&str, &str, &str)] = &[("konoma-media", "png_as.md", "image")];
 
 /// Compare one program over the corpus; returns how many files it picked a plugin for.
 fn check_program(name: &str, make: fn() -> Vec<Box<dyn Plugin>>, files: &[PathBuf]) -> usize {
@@ -132,7 +132,11 @@ fn check_program(name: &str, make: fn() -> Vec<Box<dyn Plugin>>, files: &[PathBu
                 Err(AppError::NotHandled { .. }) => {}
                 Ok(g) if own.contains(g) => {
                     assert!(
-                        LOWER_PRIORITY.contains(&(name, f.file_name().unwrap().to_str().unwrap())),
+                        LOWER_PRIORITY.contains(&(
+                            name,
+                            f.file_name().unwrap().to_str().unwrap(),
+                            g.as_str()
+                        )),
                         "{ctx}: konoma picks `{id}`, the program picks `{g}`"
                     );
                     picked += 1;

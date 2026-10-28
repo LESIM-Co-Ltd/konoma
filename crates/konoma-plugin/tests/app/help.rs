@@ -49,6 +49,7 @@ fn run_as(
         lang: "en".into(),
         term: TermCaps::new(),
         title: "title".into(),
+        ..AppCx::default()
     };
     let mut it = events.into_iter();
     run_with(&mut term, &mut *opened.session, &mut it, &cx, k).expect("runs");

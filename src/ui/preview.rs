@@ -350,19 +350,19 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
             (app.plugin_message_body().unwrap_or_default(), false)
         }
         Some(PreviewKind::Plugin { path, .. }) => (
-            format!(
-                "{}\n{}",
-                app.plugin_failure().map_or_else(
+            konoma_plugin::canvas_pictures::plain_failure_text(
+                &app.plugin_failure().map_or_else(
                     || "[can not preview]".to_string(),
-                    |f| f
-                        .message
-                        .get(match app.lang {
-                            crate::i18n::Lang::Jp => "ja",
-                            crate::i18n::Lang::En => "en",
-                        })
-                        .to_string()
+                    |f| {
+                        f.message
+                            .get(match app.lang {
+                                crate::i18n::Lang::Jp => "ja",
+                                crate::i18n::Lang::En => "en",
+                            })
+                            .to_string()
+                    },
                 ),
-                path.display()
+                path,
             ),
             false,
         ),
@@ -1603,26 +1603,22 @@ pub(crate) fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, boo
         crate::i18n::Lang::Jp => "ja",
         crate::i18n::Lang::En => "en",
     };
-    match crate::plugins::unavailable_of(id) {
-        Unavailable::RawText { with_reason } => {
-            let body = load_body(path, app.lang);
-            // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
-            match app
-                .image_failure()
-                .and_then(|f| f.message(app.lang, id))
-                .filter(|_| with_reason)
-            {
-                Some(why) => (format!("{why}\n\n{body}"), true),
-                None => (body, true),
-            }
-        }
-        Unavailable::Notice(words) => (
-            format!("{}\n{}", words.get(lang_code), path.display()),
-            false,
-        ),
-        Unavailable::Picture => (format!("[image] {}", path.display()), false),
-        // (Not reached: the caller handles the default.)
-        Unavailable::Message => (format!("[can not preview]\n{}", path.display()), false),
+    let unavailable = crate::plugins::unavailable_of(id);
+    // The words are shared with the standalone app (`unavailable_text`).
+    let text = konoma_plugin::canvas_pictures::unavailable_text(
+        &unavailable,
+        "[can not preview]",
+        app.image_failure(),
+        (lang_code, app.lang),
+        id,
+        path,
+        &|| load_body(path, app.lang),
+    );
+    match (&unavailable, text) {
+        (Unavailable::RawText { .. }, Some(body)) => (body, true),
+        (_, Some(body)) => (body, false),
+        // The frame of a picture that is missing (not reached: the picture frame draws it).
+        (_, None) => (format!("[image] {}", path.display()), false),
     }
 }
 

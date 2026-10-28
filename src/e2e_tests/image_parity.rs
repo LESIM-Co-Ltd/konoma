@@ -106,6 +106,7 @@ fn app_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> Shot 
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        ..AppCx::default()
     };
     let keys = presses(spec)
         .into_iter()

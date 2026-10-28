@@ -2301,6 +2301,7 @@ impl App {
             _ => None,
         };
         let mut image_failure = None;
+        let mut release_picture = false;
         // Whether this very result carried a text view (the source of a document): a text view
         // that was already there, kept while a document landed, is not "landed" again.
         let mut text_landed = false;
@@ -2326,6 +2327,9 @@ impl App {
                     super::table_actions::discard_in_background(old);
                 }
                 image_failure = image_failure_of(&id, &failure);
+                // A dropped stale answer (`Cancelled`) says nothing; any other failure that
+                // lands replaces the page, so the picture of the page before goes with it.
+                release_picture = failure.kind != konoma_plugin::FailureKind::Cancelled;
                 show.phase = PluginPhase::Failed(failure);
                 canvas_now = Some(None);
             }
@@ -2344,6 +2348,9 @@ impl App {
                     show.phase = PluginPhase::Ready;
                 }
             }
+        }
+        if release_picture {
+            self.release_picture();
         }
         if let Some(layout) = &res.layout {
             self.adopt_layout(layout);

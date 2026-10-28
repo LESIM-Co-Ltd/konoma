@@ -17,7 +17,7 @@
 #[cfg(test)]
 use konoma_plugin::view::ImageData;
 use konoma_plugin::view::{ImageView, ViewReq};
-use konoma_plugin::{Failure, FailureKind, Input, Plugin};
+use konoma_plugin::{Failure, Input, Plugin};
 
 use super::plugin_host::{PluginJob, PluginPhase, PluginShow, Wait};
 use super::*;
@@ -34,24 +34,8 @@ pub(super) fn image_failure_of(
     id: &str,
     f: &Failure,
 ) -> Option<crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    use konoma_plugin::Unavailable;
-    match (crate::plugins::unavailable_of(id), f.kind) {
-        (_, FailureKind::Cancelled) => Some(ImageFailure::Cancelled),
-        (Unavailable::RawText { with_reason: true }, FailureKind::TooLarge) => {
-            Some(ImageFailure::Svg(SvgFail::TooLarge))
-        }
-        (Unavailable::RawText { with_reason: true }, _) => {
-            Some(ImageFailure::Svg(SvgFail::Invalid))
-        }
-        (Unavailable::Picture, FailureKind::TooLarge | FailureKind::TooHeavy) => {
-            Some(ImageFailure::TooLarge)
-        }
-        (Unavailable::Picture, FailureKind::Unsupported) => Some(ImageFailure::UnsupportedFormat),
-        (Unavailable::Picture, _) => Some(ImageFailure::Corrupt),
-        _ => None,
-    }
+    // The mapping is shared with the standalone app (`image_failure_for`).
+    konoma_plugin::canvas_pictures::image_failure_for(&crate::plugins::unavailable_of(id), f)
 }
 
 /// Konoma's drawer of the SVGs a plugin hands over that are not trusted: a supervised child

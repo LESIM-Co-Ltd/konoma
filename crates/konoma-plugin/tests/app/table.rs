@@ -19,6 +19,7 @@ fn cx() -> AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "title".into(),
+        ..AppCx::default()
     }
 }
 
@@ -67,7 +68,13 @@ fn run_keyed(
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut it = events.into_iter();
-    run_with(&mut term, &mut *opened.session, &mut it, &cx(), keys).expect("runs");
+    // What `run` hands the loop: the file and what the plugin declared it shows when it cannot.
+    let cx = AppCx {
+        path: opened.path.clone(),
+        unavailable: opened.unavailable.clone(),
+        ..cx()
+    };
+    run_with(&mut term, &mut *opened.session, &mut it, &cx, keys).expect("runs");
     let left = it.count();
     let buf = term.backend().buffer();
     let rows = (0..buf.area.height)
@@ -103,6 +110,8 @@ fn title(rows: &[String]) -> String {
 }
 
 const SIZE: (u16, u16) = (80, 12);
+/// Wide enough for a temporary file's whole path on one row.
+const WIDE: (u16, u16) = (300, 12);
 
 fn people() -> (TmpDir, PathBuf) {
     file("p.grid", "name,age\nann,30\nbob,41\ncy,52\n")
@@ -949,14 +958,12 @@ fn the_page_keys_are_called_sheet_only_for_sheets() {
 #[test]
 fn the_page_keys_still_turn_after_a_sheet_that_fails() {
     let (_d, p) = file("f.book", "a,b\n===\nFAIL\n===\ng,h\n");
-    let t = |ev: Vec<AppEvent>| run_counted(&p, SIZE, ev);
+    let t = |ev: Vec<AppEvent>| run_counted(&p, WIDE, ev);
     let (r, _, left) = t(chars("J"));
     assert_eq!(left, 0);
-    assert!(
-        all(&r).contains("[can not preview: sheet unreadable]"),
-        "{}",
-        all(&r)
-    );
+    // The lines konoma itself shows for the same failure: the message, then the path.
+    assert_eq!(r[0].trim_end(), "sheet unreadable", "{}", all(&r));
+    assert_eq!(r[1].trim_end(), p.display().to_string(), "{}", all(&r));
     let (r, _, left) = t(chars("JJ"));
     assert_eq!(left, 0, "the app did not quit");
     assert!(title(&r).contains("Sheet3 (3/3)"), "{}", all(&r));
@@ -981,8 +988,9 @@ fn the_page_keys_still_turn_after_a_sheet_that_fails() {
 #[test]
 fn the_footer_and_help_of_a_sheet_that_fails_name_the_page_keys() {
     let (_d, p) = file("f.book", "a,b\n===\nFAIL\n===\ng,h\n");
-    let (r, _, _) = run_counted(&p, SIZE, chars("J"));
-    assert!(all(&r).contains("[can not preview:"), "{}", all(&r));
+    let (r, _, _) = run_counted(&p, WIDE, chars("J"));
+    assert_eq!(r[0].trim_end(), "sheet unreadable", "{}", all(&r));
+    assert_eq!(r[1].trim_end(), p.display().to_string(), "{}", all(&r));
     let f = footer(&r);
     assert!(f.contains("J/K:"), "{f}");
     assert!(
@@ -990,7 +998,7 @@ fn the_footer_and_help_of_a_sheet_that_fails_name_the_page_keys() {
         "{f}"
     );
     // The same words as before the failure (sheet or page).
-    let before = footer(&run_counted(&p, SIZE, vec![]).0);
+    let before = footer(&run_counted(&p, WIDE, vec![]).0);
     let word = |f: &str| {
         f.split_whitespace()
             .find(|t| t.starts_with("J/K:"))

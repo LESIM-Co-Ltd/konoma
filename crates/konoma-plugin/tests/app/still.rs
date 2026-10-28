@@ -212,6 +212,7 @@ fn cx() -> AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "title".into(),
+        ..AppCx::default()
     }
 }
 

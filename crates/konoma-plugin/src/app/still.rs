@@ -946,21 +946,19 @@ mod tests {
         s.poll_at(t0);
         s.submit(&ImageView::new(ImageData::File(png.clone())), true);
         // Until the new page lands the old one stays and still plays.
-        if s.loading() {
-            assert!(s.gif.has_frames() || !s.held);
-            // The wait is the nearer of the busy poll and the frame still on screen.
-            assert!(s.gif.is_active() && s.held);
-            assert_eq!(
-                s.wake_in_at(t0),
-                Some(BUSY_POLL),
-                "busy poll is nearer than 100 ms"
-            );
-            assert_eq!(
-                s.wake_in_at(t0 + ms(99)),
-                Some(konoma_widgets::gif_player::POLL_MIN),
-                "the frame is nearer than the busy poll"
-            );
-        }
+        assert!(s.loading());
+        // The wait is the nearer of the busy poll and the frame still on screen.
+        assert!(s.gif.is_active() && s.held);
+        assert_eq!(
+            s.wake_in_at(t0),
+            Some(BUSY_POLL),
+            "busy poll is nearer than 100 ms"
+        );
+        assert_eq!(
+            s.wake_in_at(t0 + ms(99)),
+            Some(konoma_widgets::gif_player::POLL_MIN),
+            "the frame is nearer than the busy poll"
+        );
         let started = Instant::now();
         while s.loading() {
             s.poll_at(t0);

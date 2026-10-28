@@ -185,6 +185,8 @@ pub struct Opened {
     pub plugin_id: String,
     /// The absolute path of the file (where a picture's relative references resolve from).
     pub path: PathBuf,
+    /// What the plugin declared it shows when it shows nothing ([`Manifest::unavailable`]).
+    pub unavailable: crate::manifest::Unavailable,
 }
 
 /// Check the file, pick the plugin by the registry's rules and open a session. Nothing here
@@ -226,6 +228,9 @@ pub fn open_file_with(
     let plugin = registry
         .plugin(&id)
         .ok_or_else(|| AppError::Plugin(format!("plugin `{id}` is not registered")))?;
+    let unavailable = registry
+        .manifest(&id)
+        .map_or_else(|| plugin.manifest().unavailable, |m| m.unavailable.clone());
     let settings = settings_of(&id);
     let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
@@ -246,6 +251,7 @@ pub fn open_file_with(
         title,
         plugin_id: id,
         path,
+        unavailable,
     })
 }
 
@@ -345,6 +351,9 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         lang: lang.to_string(),
         term,
         title: opened.title.clone(),
+        unavailable: opened.unavailable.clone(),
+        plugin_id: opened.plugin_id.clone(),
+        path: opened.path.clone(),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are
