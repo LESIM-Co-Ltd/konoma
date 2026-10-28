@@ -732,12 +732,15 @@ impl App {
         ) else {
             return;
         };
-        let cur_side = src.dimensions().0.max(src.dimensions().1);
-        let want = ((lw.max(lh) as f64) * self.tab.image_view.zoom).ceil() as u32;
-        // Do nothing if the current raster is already sufficient (+12% margin) or already at the cap (4096).
-        if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
+        // Whether to draw again, and at what size, is decided by the shared function (the
+        // standalone app asks the same one).
+        let Some(want) = konoma_plugin::canvas_pictures::sharp_zoom_target(
+            src.dimensions(),
+            (lw, lh),
+            self.tab.image_view.zoom,
+        ) else {
             return;
-        }
+        };
         // Don't spawn for the synchronous fallback (no media_tx = tests) — there's no room for
         // duplication there, so don't set the flag either.
         if self.media_tx.is_some() {

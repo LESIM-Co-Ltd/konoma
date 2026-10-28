@@ -37,6 +37,7 @@ use konoma_widgets::gif_player::GifPlayer;
 use konoma_widgets::image_view::{
     ImageBackend, ImageSource, ImageViewState, ImageViewer, KittyResult, ResizeChannel, ZOOM_FACTOR,
 };
+use konoma_widgets::inline_images::SvgTrust;
 use konoma_widgets::loading::{render_spinner_line, spinner_glyph};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -44,7 +45,9 @@ use ratatui::widgets::{Paragraph, Widget};
 use ratatui_image::picker::Picker;
 use ratatui_image::Image;
 
-use crate::canvas_pictures::{decode_picture_view, image_failure_message, PictureView, SvgDraw};
+use crate::canvas_pictures::{
+    decode_picture_view, image_failure_message, redraw_svg, sharp_zoom_target, PictureView, SvgDraw,
+};
 use crate::view::{ImageData, ImageView};
 use crate::ReadScope;
 
@@ -88,6 +91,19 @@ struct Done {
     view: Option<PictureView>,
 }
 
+/// The answer of a sharp-zoom redraw.
+struct SharpDone {
+    gen: u64,
+    /// `None`: the drawing failed, was cancelled or panicked.
+    img: Option<DynamicImage>,
+}
+
+/// The SVG of the picture on screen and how it was drawn, kept for a sharp-zoom redraw.
+struct VectorSource {
+    svg: Arc<Vec<u8>>,
+    trust: SvgTrust,
+}
+
 /// The picture on screen and everything that gets it there.
 pub struct Still {
     picker: Picker,
@@ -103,8 +119,16 @@ pub struct Still {
     kitty_rx: Receiver<KittyResult>,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
+    sharp_tx: Sender<SharpDone>,
+    sharp_rx: Receiver<SharpDone>,
     gen: u64,
     cancel: Option<Arc<AtomicBool>>,
+    /// The retained SVG of a vector picture that asks for sharp zoom (`ImageView::sharp_zoom`).
+    vector: Option<VectorSource>,
+    /// A sharp redraw is out (one at a time, as in konoma); its answer carries the `gen` it was
+    /// started under, so a newer picture makes it stale.
+    sharp_inflight: bool,
+    sharp_cancel: Option<Arc<AtomicBool>>,
     /// The picture the state belongs to (what the session returned for the last view).
     key: Option<ImageView>,
     state: State,
@@ -135,6 +159,7 @@ impl Still {
     ) -> Still {
         let (kitty_tx, kitty_rx) = channel();
         let (done_tx, done_rx) = channel();
+        let (sharp_tx, sharp_rx) = channel();
         Still {
             picker: picker.clone(),
             use_kitty,
@@ -149,8 +174,13 @@ impl Still {
             kitty_rx,
             done_tx,
             done_rx,
+            sharp_tx,
+            sharp_rx,
             gen: 0,
             cancel: None,
+            vector: None,
+            sharp_inflight: false,
+            sharp_cancel: None,
             key: None,
             state: State::Loading,
             held: false,
@@ -225,6 +255,52 @@ impl Still {
         if let Some(c) = self.cancel.take() {
             c.store(true, Ordering::Relaxed);
         }
+        // A redraw of the picture that is going away is dropped with it (its answer is stale by
+        // `gen` as well).
+        if let Some(c) = self.sharp_cancel.take() {
+            c.store(true, Ordering::Relaxed);
+        }
+        self.sharp_inflight = false;
+        self.vector = None;
+    }
+
+    /// Sharp zoom, as konoma's `maybe_sharpen_vector`: when the zoom has outgrown the density of
+    /// the raster on screen, draw the retained SVG again at the size the zoom needs, on a worker,
+    /// and swap it in when it lands. Until then the pixel zoom shows. One redraw at a time; the
+    /// answer is judged again against the zoom of that moment.
+    fn maybe_sharpen(&mut self) {
+        if self.sharp_inflight || self.held {
+            return;
+        }
+        let (
+            State::Ready {
+                img,
+                logical: Some(logical),
+            },
+            Some(v),
+        ) = (&self.state, &self.vector)
+        else {
+            return;
+        };
+        let Some(want) = sharp_zoom_target((img.width(), img.height()), *logical, self.pose.zoom)
+        else {
+            return;
+        };
+        self.sharp_inflight = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.sharp_cancel = Some(Arc::clone(&cancel));
+        let (svg, trust, gen) = (Arc::clone(&v.svg), v.trust.clone(), self.gen);
+        let draw = Arc::clone(&self.svg);
+        let tx = self.sharp_tx.clone();
+        std::thread::spawn(move || {
+            let cancelled = || cancel.load(Ordering::Relaxed);
+            let img = konoma_base::panic::catch_silent(move || {
+                redraw_svg(&svg, &trust, want, &*draw, &cancelled).ok()
+            })
+            .flatten();
+            // Always answered, even after a panic: the in-flight flag waits on it.
+            let _ = tx.send(SharpDone { gen, img });
+        });
     }
 
     /// A page key was pressed: the picture on screen goes back to fit and centred at once (the
@@ -278,6 +354,7 @@ impl Still {
         } else {
             1.0 / ZOOM_FACTOR
         });
+        self.maybe_sharpen();
     }
 
     /// Back to fit and centred.
@@ -314,13 +391,16 @@ impl Still {
             }
             // Whatever lands replaces an animation that was held: its frames go with it.
             self.gif.clear();
+            let mut vector = None;
             self.state = match done.view {
                 Some(PictureView::Still(img)) => State::Ready {
                     img: Arc::new(img),
                     logical: None,
                 },
-                Some(PictureView::Vector { img, .. }) => {
+                Some(PictureView::Vector { img, svg, trust }) => {
                     let logical = Some((img.width(), img.height()));
+                    // The decoder returns a vector only for a picture that asks for sharp zoom.
+                    vector = Some(VectorSource { svg, trust });
                     State::Ready {
                         img: Arc::new(img),
                         logical,
@@ -344,7 +424,29 @@ impl Still {
                 Some(PictureView::Failed(why)) => State::Failed(Some(why)),
                 None => State::Failed(None),
             };
+            self.vector = vector;
+            // The zoom may have advanced while the picture was being decoded (a page turn keeps
+            // the pose): converge on it.
+            self.maybe_sharpen();
             changed = true;
+        }
+        while let Ok(done) = self.sharp_rx.try_recv() {
+            if done.gen != self.gen || !self.sharp_inflight {
+                continue; // a picture came after it started
+            }
+            self.sharp_inflight = false;
+            self.sharp_cancel = None;
+            // A failed redraw leaves the raster as it is and is not retried until the next zoom.
+            let Some(sharp) = done.img else { continue };
+            if let State::Ready { img, .. } = &mut self.state {
+                // Only the pixels change: `logical` stays, so the layout never moves.
+                *img = Arc::new(sharp);
+                self.viewer.set_crop(None);
+                self.viewer.invalidate();
+                self.drawn_geometry = None;
+                changed = true;
+                self.maybe_sharpen();
+            }
         }
         while let Some(resp) = self.resize.try_recv() {
             if self.viewer.apply_resize(resp) {
@@ -1014,5 +1116,355 @@ mod tests {
             .unwrap();
         s.poll_at(Instant::now());
         assert!(matches!(s.state, State::Failed(None)));
+    }
+
+    // ---- sharp zoom of a vector picture ----
+
+    const SVG_2X1: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' \
+        viewBox='0 0 200 100'><rect width='200' height='100' fill='#c33'/></svg>";
+    const SVG_1X1: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' \
+        viewBox='0 0 100 100'><rect width='100' height='100' fill='#36c'/></svg>";
+
+    /// Counts the drawings the app asks of its SVG drawer.
+    struct CountingSvg(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl SvgDraw for CountingSvg {
+        fn untrusted(
+            &self,
+            data: &[u8],
+            base: &Path,
+            roots: Option<&[PathBuf]>,
+            max_px: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<DynamicImage, konoma_svg::svg::RasterError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            InProcessSvg.untrusted(data, base, roots, max_px, cancelled)
+        }
+        fn embedded(
+            &self,
+            data: &[u8],
+            max_px: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<DynamicImage, konoma_svg::svg::RasterError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            InProcessSvg.embedded(data, max_px, cancelled)
+        }
+    }
+
+    fn counting_still() -> (Still, Arc<std::sync::atomic::AtomicUsize>) {
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let s = Still::new(
+            &Picker::halfblocks(),
+            false,
+            false,
+            "t",
+            Path::new("/x/a.svg"),
+            800,
+            Arc::new(CountingSvg(Arc::clone(&n))),
+        );
+        (s, n)
+    }
+
+    fn svg_view(data: &[u8], sharp: bool) -> ImageView {
+        let mut v = iv(svg(data, None, false));
+        v.sharp_zoom = sharp;
+        v
+    }
+
+    fn land_view(s: &mut Still, v: &ImageView, keep_old: bool) {
+        s.submit(v, keep_old);
+        let started = Instant::now();
+        while s.loading() {
+            s.poll_at(Instant::now());
+            assert!(started.elapsed() < TMO, "the picture never landed");
+            std::thread::sleep(ms(2));
+        }
+    }
+
+    /// Poll until no sharp redraw is out.
+    fn settle(s: &mut Still) {
+        let started = Instant::now();
+        while s.sharp_inflight {
+            s.poll_at(Instant::now());
+            assert!(started.elapsed() < TMO, "the redraw never came back");
+            std::thread::sleep(ms(2));
+        }
+    }
+
+    fn raster(s: &Still) -> (u32, u32) {
+        match &s.state {
+            State::Ready { img, .. } => (img.width(), img.height()),
+            _ => panic!("not ready"),
+        }
+    }
+
+    fn logical(s: &Still) -> Option<(u32, u32)> {
+        match &s.state {
+            State::Ready { logical, .. } => *logical,
+            _ => panic!("not ready"),
+        }
+    }
+
+    #[test]
+    fn zooming_a_sharp_vector_draws_it_again_bigger_and_the_layout_stays() {
+        let (mut s, n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        assert_eq!(raster(&s), (800, 400));
+        assert_eq!(logical(&s), Some((800, 400)));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        // One step (1.25): want 1000 > 900.
+        s.zoom_steps(1);
+        assert!(s.sharp_inflight);
+        settle(&mut s);
+        assert_eq!(raster(&s), (1000, 500));
+        assert_eq!(logical(&s), Some((800, 400)), "the layout size never moves");
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        // Zoom out again: the denser raster stays, nothing is drawn.
+        s.zoom_steps(-1);
+        assert!(!s.sharp_inflight);
+        assert_eq!(raster(&s), (1000, 500));
+        // The drawn picture still lays out in the logical size.
+        let buf = drawn(&mut s);
+        assert!(!colors(&buf).is_empty());
+        assert_eq!(logical(&s), Some((800, 400)));
+    }
+
+    #[test]
+    fn a_zoom_inside_the_margin_draws_nothing() {
+        let (mut s, n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        // 1.0 -> 1.25 is over the margin; pose at 1.125 is not reachable by steps, so set it.
+        s.pose.zoom = 1.125;
+        s.maybe_sharpen();
+        assert!(!s.sharp_inflight);
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        s.pose.zoom = 1.1251;
+        s.maybe_sharpen();
+        assert!(s.sharp_inflight, "just over the margin asks");
+        settle(&mut s);
+    }
+
+    #[test]
+    fn a_vector_that_does_not_ask_for_sharp_zoom_is_never_drawn_again() {
+        let (mut s, n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, false), false);
+        for _ in 0..4 {
+            s.zoom_steps(1);
+        }
+        assert!(!s.sharp_inflight);
+        assert!(s.vector.is_none());
+        std::thread::sleep(ms(50));
+        s.poll_at(Instant::now());
+        assert_eq!(raster(&s), (800, 400));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_still_picture_is_never_drawn_again() {
+        let dir = unique_tmp("still_sharp_png");
+        let f = png_file(&dir, "a.png");
+        let mut s = new_still(false, &f);
+        land(&mut s, &f, false, Instant::now());
+        for _ in 0..4 {
+            s.zoom_steps(1);
+        }
+        assert!(!s.sharp_inflight);
+        assert_eq!(raster(&s), (60, 60));
+    }
+
+    #[test]
+    fn repeated_zoom_keeps_one_redraw_out_and_converges_on_the_last_zoom() {
+        let (mut s, n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        for _ in 0..4 {
+            s.zoom_steps(1);
+        }
+        // Nothing was polled meanwhile: only the first redraw can have been started.
+        settle(&mut s);
+        let zoom = s.zoom();
+        let want = (800.0 * zoom).ceil() as u32;
+        // (The drawer rounds the scale up, so it may be one pixel over.)
+        assert!(
+            raster(&s).0.abs_diff(want) <= 1,
+            "converged on the zoom of the moment it landed: {} vs {want}",
+            raster(&s).0
+        );
+        // The first drawing, the redraw for the first step, the one that converged. Not one per key.
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+        assert_eq!(logical(&s), Some((800, 400)));
+    }
+
+    #[test]
+    fn a_redraw_never_goes_past_the_cap() {
+        let (mut s, _n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        for _ in 0..30 {
+            s.zoom_steps(1);
+        }
+        settle(&mut s);
+        assert!(raster(&s).0 <= 4096, "{:?}", raster(&s));
+        assert!(!s.sharp_inflight);
+        // At the cap nothing more is asked.
+        s.zoom_steps(1);
+        if raster(&s).0 >= 4096 {
+            assert!(!s.sharp_inflight);
+        }
+        settle(&mut s);
+    }
+
+    #[test]
+    fn a_new_picture_drops_the_redraw_of_the_old_one() {
+        let (mut s, _n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        s.zoom_steps(1);
+        assert!(s.sharp_inflight);
+        // Another picture before the redraw is polled.
+        land_view(&mut s, &svg_view(SVG_1X1, true), false);
+        std::thread::sleep(ms(100));
+        s.poll_at(Instant::now());
+        assert_eq!(
+            raster(&s),
+            (800, 800),
+            "the old redraw did not replace the new picture"
+        );
+        assert_eq!(logical(&s), Some((800, 800)));
+        assert!(!s.sharp_inflight);
+        assert_eq!(s.zoom(), 1.0, "a new picture starts at fit");
+    }
+
+    #[test]
+    fn an_answer_of_an_older_generation_is_not_applied() {
+        let (mut s, _n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_1X1, true), false);
+        s.pose.zoom = 2.0;
+        s.maybe_sharpen();
+        assert!(s.sharp_inflight);
+        // A stale answer (an older picture's) arrives while the current redraw is out.
+        s.sharp_tx
+            .send(SharpDone {
+                gen: s.gen - 1,
+                img: Some(DynamicImage::new_rgba8(3000, 3000)),
+            })
+            .unwrap();
+        s.poll_at(Instant::now());
+        // (The real answer may or may not have been polled as well; the stale one never lands.)
+        assert_ne!(raster(&s), (3000, 3000));
+        settle(&mut s);
+        assert_eq!(raster(&s), (1600, 1600));
+    }
+
+    /// Draws the first picture, then fails every drawing.
+    struct FailAfterFirst(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl SvgDraw for FailAfterFirst {
+        fn untrusted(
+            &self,
+            data: &[u8],
+            base: &Path,
+            roots: Option<&[PathBuf]>,
+            max_px: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<DynamicImage, konoma_svg::svg::RasterError> {
+            InProcessSvg.untrusted(data, base, roots, max_px, cancelled)
+        }
+        fn embedded(
+            &self,
+            data: &[u8],
+            max_px: u32,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<DynamicImage, konoma_svg::svg::RasterError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(konoma_svg::svg::RasterError::Cancelled);
+            }
+            InProcessSvg.embedded(data, max_px, cancelled)
+        }
+    }
+
+    #[test]
+    fn a_redraw_that_fails_leaves_the_raster_and_is_not_retried_by_itself() {
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut s = Still::new(
+            &Picker::halfblocks(),
+            false,
+            false,
+            "t",
+            Path::new("/x/a.svg"),
+            800,
+            Arc::new(FailAfterFirst(Arc::clone(&n))),
+        );
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        s.zoom_steps(1);
+        assert!(s.sharp_inflight);
+        settle(&mut s);
+        assert_eq!(raster(&s), (800, 400), "the failed redraw swapped nothing");
+        assert_eq!(logical(&s), Some((800, 400)));
+        std::thread::sleep(ms(50));
+        s.poll_at(Instant::now());
+        assert_eq!(n.load(Ordering::SeqCst), 2, "no retry by itself");
+        // The next zoom asks again.
+        s.zoom_steps(1);
+        settle(&mut s);
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_trusted_svg_is_drawn_again_in_process_not_by_the_drawer() {
+        let (mut s, n) = counting_still();
+        let mut v = iv(svg(SVG_2X1, Some("/x"), true));
+        v.sharp_zoom = true;
+        land_view(&mut s, &v, false);
+        assert_eq!(
+            n.load(Ordering::SeqCst),
+            0,
+            "a trusted drawing is konoma's own"
+        );
+        assert!(matches!(
+            s.vector.as_ref().map(|v| &v.trust),
+            Some(SvgTrust::Trusted(_))
+        ));
+        s.zoom_steps(1);
+        settle(&mut s);
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        assert_eq!(raster(&s), (1000, 500));
+    }
+
+    #[test]
+    fn an_svg_with_a_folder_is_drawn_again_by_the_drawer_the_way_it_was_the_first_time() {
+        let (mut s, n) = counting_still();
+        let dir = unique_tmp("still_sharp_dir");
+        let mut v = iv(svg(SVG_2X1, Some(dir.as_path().to_str().unwrap()), false));
+        v.sharp_zoom = true;
+        land_view(&mut s, &v, false);
+        assert!(matches!(
+            s.vector.as_ref().map(|v| &v.trust),
+            Some(SvgTrust::File(_))
+        ));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        s.zoom_steps(1);
+        settle(&mut s);
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        assert_eq!(raster(&s), (1000, 500));
+    }
+
+    #[test]
+    fn a_page_turn_keeps_the_old_picture_and_does_not_redraw_it() {
+        let (mut s, n) = counting_still();
+        land_view(&mut s, &svg_view(SVG_2X1, true), false);
+        // The next page: submitted, not landed (the old one is held).
+        s.submit(&svg_view(SVG_1X1, true), true);
+        assert!(s.held);
+        s.zoom_steps(1);
+        assert!(!s.sharp_inflight, "the held picture is not redrawn");
+        let started = Instant::now();
+        while s.loading() {
+            s.poll_at(Instant::now());
+            assert!(started.elapsed() < TMO);
+            std::thread::sleep(ms(2));
+        }
+        settle(&mut s);
+        // The pose was kept: the page that landed converges on it.
+        assert_eq!(logical(&s), Some((800, 800)));
+        assert_eq!(raster(&s), (1000, 1000));
+        assert!(n.load(Ordering::SeqCst) >= 3);
     }
 }
