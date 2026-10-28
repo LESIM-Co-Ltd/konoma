@@ -23,6 +23,7 @@ use super::still::StillShape;
 use super::window;
 use super::AppError;
 use crate::key::{Key, KeyCode, KeyMods};
+use crate::pages;
 use crate::session::{Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
 use crate::{Line, Settings};
@@ -458,10 +459,12 @@ impl AppKeys {
     // ---- Pictures ----
 
     /// What the help and the footer say about a still picture. The host names zoom, the reset and
-    /// the pan whatever the picture is doing, so the app does too; the page turn, the outline, the
-    /// editor and the opener are not done by the app, so they are off.
-    fn image_facts(&self) -> HelpFacts {
+    /// the pan whatever the picture is doing, so the app does too; the page turn is named only
+    /// when the picture has pages to turn (`paged`, as the host does); the outline, the editor and
+    /// the opener are not done by the app, so they are off.
+    fn image_facts(&self, paged: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
             HelpOp::Act(
                 CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
             ) => true,
@@ -502,14 +505,15 @@ impl AppKeys {
 
     /// The footer's key hints of a still picture: zoom, the reset and the pan, what leaves, what
     /// opens the help (the host's list, less what the app does not do).
-    pub fn image_footer_hints(&self) -> Vec<CoreToken> {
-        let facts = self.image_facts();
+    pub fn image_footer_hints(&self, paged: bool) -> Vec<CoreToken> {
+        let facts = self.image_facts(paged);
         let look = self.image_lookup();
         let tok = |f: CoreFoot| render_foot(f, CoreContext::Image, &facts, &look, self.lang);
         let mut out: Vec<CoreToken> = Vec::new();
         out.extend(tok(CoreFoot::Zoom));
         out.extend(tok(CoreFoot::ZoomReset));
         out.extend(tok(CoreFoot::Pan));
+        out.extend(tok(CoreFoot::PageTurn));
         out.push(
             tok(CoreFoot::Back)
                 .or_else(|| tok(CoreFoot::Quit))
@@ -520,25 +524,25 @@ impl AppKeys {
     }
 
     /// [`AppKeys::image_footer_hints`] as the text the footer shows.
-    pub fn image_footer_tokens(&self) -> Vec<String> {
-        self.image_footer_hints()
+    pub fn image_footer_tokens(&self, paged: bool) -> Vec<String> {
+        self.image_footer_hints(paged)
             .into_iter()
             .map(|t| t.text)
             .collect()
     }
 
     /// The sections of the `?` help of a still picture.
-    pub fn image_help_sections(&self) -> Vec<CoreSection> {
+    pub fn image_help_sections(&self, paged: bool) -> Vec<CoreSection> {
         core_sections(
             CoreContext::Image,
-            &self.image_facts(),
+            &self.image_facts(paged),
             &self.image_lookup(),
             self.lang,
         )
     }
 
-    fn image_help_lines(&self) -> Vec<Line> {
-        lines_of(&self.image_help_sections())
+    fn image_help_lines(&self, paged: bool) -> Vec<Line> {
+        lines_of(&self.image_help_sections(paged))
     }
 
     /// The title of the `?` help over a picture (see [`AppKeys::help_title`]). The help scrolls
@@ -585,6 +589,8 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::ImageZoomIn) => Some(Act::Zoom(1)),
             CoreResolution::Action(CoreAction::ImageZoomOut) => Some(Act::Zoom(-1)),
             CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
+            CoreResolution::Action(CoreAction::PageNext) if !in_help => Some(Act::Page(1)),
+            CoreResolution::Action(CoreAction::PagePrev) if !in_help => Some(Act::Page(-1)),
             _ => None,
         }
     }
@@ -598,6 +604,8 @@ impl AppKeys {
             None => false,
             Some(Act::Zoom(_)) => !in_help && ready,
             Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
+            // As the host's gate: any picture with several pages, whatever it is doing.
+            Some(Act::Page(_)) => !in_help && mode.paged,
             // The help scrolls on the vertical motions; over the picture the directions pan.
             Some(Act::Move(m)) if in_help => matches!(
                 m,
@@ -675,6 +683,8 @@ fn lines_of(secs: &[CoreSection]) -> Vec<Line> {
 pub struct ImageMode {
     /// Loading, shown or failed.
     pub shape: StillShape,
+    /// It is one of several pages: `J` `K` turn them.
+    pub paged: bool,
     /// It is zoomed in (reset and pan act).
     pub zoomed: bool,
 }
@@ -698,7 +708,7 @@ pub struct TableMode {
 enum Act {
     /// `Enter` over a table: opens the full-cell popup, or closes it.
     Cell,
-    /// A page turn over a table: 1 next, -1 previous.
+    /// A page turn over a table or a picture: 1 next, -1 previous.
     Page(i32),
     /// Ends the app, even from the help (`Q`, `Ctrl-C`): the host's `Q` quits with its help open
     /// too.
@@ -798,10 +808,17 @@ struct State {
     help: Option<usize>,
     /// Whether the frame on screen scrolls (a text does; a message and a canvas do not).
     scrolls: bool,
-    /// The page (sheet) of a table, from 0.
-    table_page: usize,
+    /// The page (sheet) of a table or a picture the session is asked for, from 0.
+    at_page: usize,
     /// How many pages the session declares (`None` = it does not say, or has none).
     pages: Option<usize>,
+    /// The last view on screen was a picture (so are the pages `pages` counts).
+    last_image: bool,
+    /// The last `view` of a paged picture failed: the message is on screen, and the page keys
+    /// still turn the pages (the host keeps them too: the page number is not rolled back).
+    image_failed: bool,
+    /// The next view is the page a page key asked for: the picture on screen stays until it lands.
+    turned: bool,
     /// The last `view` of a paged table failed: the message is on screen, and the page keys
     /// still turn the pages (the host keeps them too: the page number is not rolled back).
     table_failed: bool,
@@ -856,17 +873,20 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let mut view_wait = None;
         if need_view {
             let mut req = ViewReq::new(size.width, body_rows);
-            if st.table_page > 0 {
-                req = req.page(st.table_page);
+            if st.at_page > 0 {
+                req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
             let view = match session.view(&req, &vcx) {
                 Ok(v) => {
                     st.table_failed = false;
+                    st.image_failed = false;
+                    st.last_image = matches!(v, View::Image(_));
                     v
                 }
                 Err(f) => {
-                    st.table_failed = st.pages.is_some();
+                    st.table_failed = st.pages.is_some() && !st.last_image;
+                    st.image_failed = st.pages.is_some() && st.last_image;
                     View::Message(crate::view::MessageView {
                         lines: vec![Line::raw(format!(
                             "[can not preview: {}]",
@@ -899,6 +919,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     _ => None,
                 };
             }
+            if matches!(frame, Frame::Image(_)) {
+                // A picture's pages are what the host counts: the count the layout reports.
+                let layout = session.layout().clipped();
+                st.pages = pages::count_of(&layout)
+                    .flatten()
+                    .map(|n| n as usize)
+                    .filter(|n| *n > 0);
+                if let Some(n) = st.pages {
+                    st.at_page = st.at_page.min(n - 1);
+                }
+            }
+            let turned = std::mem::take(&mut st.turned);
             if let Some(p) = pictures.as_mut() {
                 match &frame {
                     Frame::Canvas(c) => {
@@ -907,7 +939,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     Frame::Image(i) => {
                         p.forget();
-                        p.submit_image(&i.view);
+                        p.submit_image(&i.view, turned);
                     }
                     _ => {
                         p.forget();
@@ -923,14 +955,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             p.poll();
         }
         let mode = shown_mode(&base, &st);
-        let image_mode = image_mode(&base, pictures.as_ref());
+        let image_mode = image_mode(&base, pictures.as_ref(), &st);
+        let paged = image_mode.is_some_and(|m| m.paged);
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
             Some(top) => {
                 let (lines, title) = match (mode, image_mode) {
                     (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
-                    (None, Some(_)) => (keys.image_help_lines(), keys.image_help_title()),
+                    (None, Some(_)) => (keys.image_help_lines(paged), keys.image_help_title()),
                     (None, None) => (keys.help_lines(), keys.help_title()),
                 };
                 let rows = usize::from(body_rows);
@@ -958,6 +991,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     None if image_mode.is_some() => {
                         let m = image_mode.unwrap_or(ImageMode {
                             shape: StillShape::Failed,
+                            paged: false,
                             zoomed: false,
                         });
                         let zoom = match (m.shape, pictures.as_ref()) {
@@ -966,9 +1000,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                             _ => String::new(),
                         };
+                        // The host's status row says the page after the zoom (`2/5`), and a
+                        // spinner while the picture of a page is on its way.
+                        let page = if pictures.is_some() {
+                            pages::indicator(st.at_page as u32 + 1, st.pages.map(|n| n as u32))
+                                .map(|(cur, total)| {
+                                    format!("  {}", pages::indicator_text(cur, total))
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let busy = pictures
+                            .as_ref()
+                            .and_then(Pictures::still_busy)
+                            .map(|g| format!("{g} "))
+                            .unwrap_or_default();
                         format!(
-                            " {}{zoom}  {}",
-                            keys.image_footer_tokens().join("  "),
+                            " {busy}{}{zoom}{page}  {}",
+                            keys.image_footer_tokens(m.paged).join("  "),
                             cx.title
                         )
                     }
@@ -1010,6 +1060,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
                 let table_keys = table_mode.is_some() || st.table_failed;
+                let image_keys = image_mode.is_some();
                 let act = match (table_keys, image_mode) {
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
@@ -1018,7 +1069,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`. Nor does a key over a picture: the
                 // picture is held, and the pose is the app's.
-                if table_keys || image_mode.is_some() {
+                if table_keys || image_keys {
                     need_view = false;
                 }
                 match (act, st.help) {
@@ -1074,21 +1125,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                     }
                     (Some(Act::Page(d)), None) => {
-                        if let (true, Some(n)) = (table_keys, st.pages) {
-                            let to = (st.table_page as i64 + i64::from(d))
-                                .clamp(0, n.saturating_sub(1) as i64)
-                                as usize;
-                            if to != st.table_page {
-                                st.table_page = to;
-                                // The new sheet starts at its top left with no popup.
-                                if let Frame::Table(t) = &mut base {
-                                    t.state = Default::default();
-                                    // Never reached while a popup is open (no `Page` comes then);
-                                    // kept for when J/K are made to work inside the popup too.
-                                    t.popup = None;
-                                }
-                                need_view = true;
+                        let count = st.pages.map(|n| n as u32);
+                        if let (true, Some(to)) = (
+                            table_keys || image_keys,
+                            pages::turn(st.at_page as u32 + 1, count, d),
+                        ) {
+                            st.at_page = to as usize - 1;
+                            // The new sheet starts at its top left with no popup.
+                            if let Frame::Table(t) = &mut base {
+                                t.state = Default::default();
+                                // Never reached while a popup is open (no `Page` comes then);
+                                // kept for when J/K are made to work inside the popup too.
+                                t.popup = None;
                             }
+                            // A picture stays on screen until the new page's picture lands.
+                            st.turned = image_keys;
+                            if let (true, Some(p)) = (image_keys, pictures.as_mut()) {
+                                p.still_turn_page();
+                            }
+                            need_view = true;
                         }
                     }
                     (Some(Act::Zoom(d)), None) => {
@@ -1124,15 +1179,25 @@ fn table_mode(base: &Frame, pages: Option<usize>) -> Option<TableMode> {
 
 /// The mode of the picture on screen (`None` = the frame is not a picture). With no pictures
 /// (no terminal graphics) a picture cannot be shown: only leaving and the help act.
-fn image_mode(base: &Frame, pictures: Option<&Pictures>) -> Option<ImageMode> {
+fn image_mode(base: &Frame, pictures: Option<&Pictures>, st: &State) -> Option<ImageMode> {
+    // Pages are turned only where a picture can be shown (the host does not even open the file
+    // with no graphics backend).
+    let paged = pictures.is_some() && pages::can_turn(st.pages.map(|n| n as u32));
     let Frame::Image(_) = base else {
-        return None;
+        // After a page that failed the message is on screen, but the page keys stay (the page
+        // number is not rolled back, as the host's).
+        return st.image_failed.then_some(ImageMode {
+            shape: StillShape::Failed,
+            paged,
+            zoomed: false,
+        });
     };
     let shape = pictures
         .and_then(Pictures::still_shape)
         .unwrap_or(StillShape::Failed);
     Some(ImageMode {
         shape,
+        paged,
         zoomed: pictures.is_some_and(|p| p.still_zoom() > 1.0),
     })
 }

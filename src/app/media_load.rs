@@ -600,8 +600,7 @@ impl App {
         if let Some((cur, total)) = self.anchored_position() {
             return Some((cur as u32, total as u32));
         }
-        let total = self.tab.page_count?;
-        Some((self.tab.page.min(total), total))
+        konoma_plugin::pages::indicator(self.tab.page, self.tab.page_count)
     }
 
     /// Whether the page keys turn pages of the preview: a known multi-page one. The page count is
@@ -610,7 +609,7 @@ impl App {
     /// left (macOS `qlmanage`/`sips`) is first-page-only, so navigating past page 1 depends on
     /// `hayro` alone, never on an installed tool.
     pub fn can_turn_pages(&self) -> bool {
-        matches!(self.tab.page_count, Some(n) if n > 1) || self.anchored_can_turn()
+        konoma_plugin::pages::can_turn(self.tab.page_count) || self.anchored_can_turn()
     }
 
     /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
@@ -636,12 +635,12 @@ impl App {
 
     /// Go to the next page (clamped to the last page). The plugin draws that page on demand (one at a time).
     pub fn next_page(&mut self) {
-        self.goto_page(self.tab.page.saturating_add(1));
+        self.goto_page(konoma_plugin::pages::target(self.tab.page, 1));
     }
 
     /// Go to the previous page (clamped to page 1).
     pub fn prev_page(&mut self) {
-        self.goto_page(self.tab.page.saturating_sub(1));
+        self.goto_page(konoma_plugin::pages::target(self.tab.page, -1));
     }
 
     /// Jump to a 1-based page (clamped to [1, total]). No-op if the preview has no pages to turn or
@@ -652,13 +651,10 @@ impl App {
         if !self.can_turn_pages() {
             return;
         }
-        let Some(total) = self.tab.page_count else {
+        let Some(page) = konoma_plugin::pages::goto(self.tab.page, self.tab.page_count, page)
+        else {
             return;
         };
-        let page = page.clamp(1, total);
-        if page == self.tab.page {
-            return;
-        }
         self.tab.page = page;
         if self.shows_media_plugin() {
             // Reset to fit so the whole new page is visible (set_static_image doesn't touch

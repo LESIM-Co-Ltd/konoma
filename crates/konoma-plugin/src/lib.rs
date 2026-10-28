@@ -93,6 +93,7 @@ pub mod key;
 pub mod keys;
 pub mod launch;
 pub mod manifest;
+pub mod pages;
 pub mod prelude;
 #[cfg(feature = "proc")]
 pub mod proc;

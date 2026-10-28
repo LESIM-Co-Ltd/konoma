@@ -213,7 +213,10 @@ impl Pictures {
 
     /// The session returned the picture `iv` (a `View::Image`): decode it unless it is the one
     /// already held.
-    pub fn submit_image(&mut self, iv: &ImageView) {
+    ///
+    /// `page_turn` keeps the picture on screen until `iv` lands (the loop asked the session for
+    /// another page).
+    pub fn submit_image(&mut self, iv: &ImageView, page_turn: bool) {
         if self.still.is_none() {
             self.still = Some(Still::new(
                 &self.picker,
@@ -226,7 +229,7 @@ impl Pictures {
             ));
         }
         if let Some(s) = self.still.as_mut() {
-            s.submit(iv);
+            s.submit(iv, page_turn);
         }
     }
 
@@ -240,6 +243,15 @@ impl Pictures {
     /// What the still picture is (`None`: no picture is held).
     pub fn still_shape(&self) -> Option<StillShape> {
         self.still.as_ref().filter(|s| s.holds()).map(Still::shape)
+    }
+
+    /// The spinner's glyph while the still picture is being decoded (a page turn waiting for its
+    /// picture), else `None`.
+    pub fn still_busy(&self) -> Option<&'static str> {
+        self.still
+            .as_ref()
+            .filter(|s| s.loading())
+            .map(Still::spinner_now)
     }
 
     /// The zoom of the still picture (1.0 when there is none).
@@ -256,6 +268,13 @@ impl Pictures {
     pub fn still_zoom_steps(&mut self, dir: i32) {
         if let Some(s) = self.still.as_mut() {
             s.zoom_steps(dir);
+        }
+    }
+
+    /// A page key was pressed over the still picture: it goes back to fit at once.
+    pub fn still_turn_page(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.turn_page();
         }
     }
 

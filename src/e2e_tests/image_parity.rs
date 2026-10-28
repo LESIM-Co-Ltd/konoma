@@ -52,10 +52,10 @@ impl Session for PngSession {
 
 /// The keys one after the other, each only when the app is idle (nothing in flight: no decode,
 /// no resize, no spinner), then the end. A wait is answered at once as a timeout.
-struct WhenIdle {
-    keys: std::collections::VecDeque<AppEvent>,
+pub(super) struct WhenIdle {
+    pub(super) keys: std::collections::VecDeque<AppEvent>,
     /// How many turns the loop took (a lower bound for the "it really ran" checks).
-    turns: usize,
+    pub(super) turns: usize,
 }
 
 impl EventSource for WhenIdle {
@@ -75,12 +75,12 @@ impl EventSource for WhenIdle {
 }
 
 /// A screen: its rows, and the cells inside the picture's frame (symbol and both colors).
-struct Shot {
-    rows: Vec<String>,
-    cells: Vec<(String, RColor, RColor)>,
+pub(super) struct Shot {
+    pub(super) rows: Vec<String>,
+    pub(super) cells: Vec<(String, RColor, RColor)>,
 }
 
-fn shot(term: &Terminal<TestBackend>) -> Shot {
+pub(super) fn shot(term: &Terminal<TestBackend>) -> Shot {
     let rows = rows_of(term);
     let buf = term.backend().buffer();
     let top = rows.iter().position(|l| l.starts_with('┌'));
@@ -170,7 +170,7 @@ fn host_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker: boo
 }
 
 /// The zoom the host's status row shows (`x1.25`), or None.
-fn host_zoom(rows: &[String]) -> Option<String> {
+pub(super) fn host_zoom(rows: &[String]) -> Option<String> {
     rows[0]
         .split_whitespace()
         .find(|w| w.starts_with('x') && w[1..].parse::<f64>().is_ok())
@@ -178,7 +178,7 @@ fn host_zoom(rows: &[String]) -> Option<String> {
 }
 
 /// The zoom the app's footer shows.
-fn app_zoom(rows: &[String]) -> Option<String> {
+pub(super) fn app_zoom(rows: &[String]) -> Option<String> {
     hints(rows.last()?)
         .into_iter()
         .find(|w| w.starts_with('x') && w[1..].parse::<f64>().is_ok())
@@ -277,7 +277,7 @@ const SPECS: &[&str] = &[
 
 /// What only the host's footer says (the files, the editor, the tabs, the pages, `q` going
 /// back), spelled out in full: a word the host adds that is not listed here fails the comparison.
-const HOST_ONLY: &[&str] = &[
+pub(super) const HOST_ONLY: &[&str] = &[
     ",:view",
     "[/]:tab",
     "C-n/C-p:next/prev file",
@@ -415,7 +415,7 @@ fn a_picture_that_cannot_be_shown_says_the_same_as_the_host() {
 }
 
 /// The rows of the image section of a help: from its heading to the blank row.
-fn image_section(lines: &[String]) -> Vec<String> {
+pub(super) fn image_section(lines: &[String]) -> Vec<String> {
     let start = lines
         .iter()
         .position(|l| l == "Preview: image")
@@ -428,7 +428,7 @@ fn image_section(lines: &[String]) -> Vec<String> {
 }
 
 /// What only the host's image help lists (the files, bookmarks, refresh), spelled out in full.
-const HOST_ONLY_ROWS: &[&str] = &["Ctrl-n / Ctrl-p", "m / '", "r refresh"];
+pub(super) const HOST_ONLY_ROWS: &[&str] = &["Ctrl-n / Ctrl-p", "m / '", "r refresh"];
 
 #[test]
 fn the_image_help_rows_agree_with_the_host() {

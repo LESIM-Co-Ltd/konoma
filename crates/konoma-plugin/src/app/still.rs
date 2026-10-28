@@ -100,6 +100,10 @@ pub struct Still {
     /// The picture the state belongs to (what the session returned for the last view).
     key: Option<ImageView>,
     state: State,
+    /// The picture in `state` is the one of the page before: the new page is being decoded and the
+    /// old picture stays on screen, at fit and still zoomable, until it lands (as the host keeps
+    /// its old page).
+    held: bool,
     pose: ImageViewState,
     viewer: ImageViewer,
     spinner: usize,
@@ -139,6 +143,7 @@ impl Still {
             cancel: None,
             key: None,
             state: State::Loading,
+            held: false,
             pose: ImageViewState::default(),
             viewer: ImageViewer::new(),
             spinner: 0,
@@ -148,17 +153,30 @@ impl Still {
     }
 
     /// The session returned `iv`: start decoding it unless it is the picture already held.
-    pub fn submit(&mut self, iv: &ImageView) {
+    ///
+    /// `keep_old` is a page turn: a picture on screen stays there, back at fit, until the new one
+    /// lands (the spinner shows meanwhile). Without it, or with no picture on screen, the frame
+    /// shows the loading line.
+    pub fn submit(&mut self, iv: &ImageView, keep_old: bool) {
         if self.key.as_ref().is_some_and(|k| same_picture(k, iv)) {
             return;
         }
         self.cancel_job();
         self.key = Some(iv.clone());
-        self.state = State::Loading;
-        self.pose.reset();
-        self.viewer.clear();
-        self.drawn_geometry = None;
-        self.resize_asked = None;
+        if keep_old && matches!(self.state, State::Ready { .. }) {
+            // The page before stays on screen in the pose it has (the loop has already put it back
+            // to fit, [`Still::turn_page`], and the keys move it from there as on the host).
+            self.held = true;
+        } else {
+            self.pose.reset();
+            self.held = false;
+            self.state = State::Loading;
+            self.viewer.clear();
+        }
+        if !self.held {
+            self.drawn_geometry = None;
+            self.resize_asked = None;
+        }
         self.gen += 1;
         let gen = self.gen;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -182,6 +200,7 @@ impl Still {
     pub fn forget(&mut self) {
         self.cancel_job();
         self.key = None;
+        self.held = false;
         self.state = State::Loading;
         self.pose.reset();
         self.viewer.clear();
@@ -195,9 +214,27 @@ impl Still {
         }
     }
 
+    /// A page key was pressed: the picture on screen goes back to fit and centred at once (the
+    /// host's `goto_page`), before the new page is even asked for. What is zoomed or panned
+    /// while the new page is awaited stays when it lands.
+    pub fn turn_page(&mut self) {
+        self.pose.reset();
+    }
+
     /// Whether a picture (loading, shown or failed) is held.
     pub fn holds(&self) -> bool {
         self.key.is_some()
+    }
+
+    /// Whether a picture is being decoded: the loading line, or a page turn that keeps the page
+    /// before on screen.
+    pub fn loading(&self) -> bool {
+        self.key.is_some() && (self.held || matches!(self.state, State::Loading))
+    }
+
+    /// The spinner's glyph now.
+    pub fn spinner_now(&self) -> &'static str {
+        spinner_glyph(self.spinner)
     }
 
     pub fn shape(&self) -> StillShape {
@@ -253,6 +290,14 @@ impl Still {
                 continue; // superseded
             }
             self.cancel = None;
+            if self.held {
+                // The new page replaces the one kept on screen: nothing of the old protocol is
+                // reused (the pose is, as the host's: it is not touched when a picture lands).
+                self.held = false;
+                self.viewer.clear();
+                self.drawn_geometry = None;
+                self.resize_asked = None;
+            }
             self.state = match done.view {
                 Some(PictureView::Still(img)) => State::Ready {
                     img: Arc::new(img),
@@ -287,7 +332,7 @@ impl Still {
         while let Ok(res) = self.kitty_rx.try_recv() {
             changed |= self.viewer.apply_kitty(res);
         }
-        if matches!(self.state, State::Loading) && self.key.is_some() {
+        if self.loading() {
             self.spinner = self.spinner.wrapping_add(1);
             changed = true;
         }
@@ -296,7 +341,7 @@ impl Still {
 
     /// How long the loop may wait before it has to look at the picture again.
     pub fn wake_in(&self) -> Option<Duration> {
-        let loading = self.key.is_some() && matches!(self.state, State::Loading);
+        let loading = self.loading();
         let resizing = self
             .resize_asked
             .is_some_and(|at| at.elapsed() < RESIZE_WAIT);

@@ -50,7 +50,7 @@
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use konoma_plugin::view::{DocOptions, DocumentView, Layout, PageLayout, TableView, View, ViewReq};
+use konoma_plugin::view::{DocOptions, DocumentView, Layout, TableView, View, ViewReq};
 use konoma_plugin::{
     t, ActCx, Cancel, ColorDepth, Failure, Input, OpenCx, Outcome, Plugin, Session, Settings,
     TermCaps, ViewCx,
@@ -1164,14 +1164,6 @@ pub(super) enum Wait {
     Layout(Duration),
 }
 
-/// Whether the page layout of a session is one the host's page keys turn.
-fn page_count_of(layout: &Layout) -> Option<Option<u32>> {
-    match &layout.pages {
-        Some(PageLayout::Separate { count, .. }) => Some(count.and_then(|n| u32::try_from(n).ok())),
-        _ => None,
-    }
-}
-
 impl App {
     /// Whether the preview is a plugin's and its first result has not landed: the "Loading..."
     /// screen. (A file read *again* keeps its old view on screen instead; and a picture's loading
@@ -2211,10 +2203,10 @@ impl App {
     /// (`PerTab::page_count`, and the page clamped to it).
     pub(super) fn adopt_layout(&mut self, layout: &Layout) {
         self.forget_outline_pages();
-        if let Some(count) = page_count_of(layout) {
+        if let Some(count) = konoma_plugin::pages::count_of(layout) {
             self.tab.page_count = count;
             if let Some(n) = count {
-                self.tab.page = self.tab.page.clamp(1, n.max(1));
+                self.tab.page = konoma_plugin::pages::clamp(self.tab.page, n);
             }
         } else if layout.pages.is_none() {
             // The content has no pages (a workbook that failed to open has no sheets to switch

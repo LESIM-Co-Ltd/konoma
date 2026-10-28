@@ -39,7 +39,13 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
                 .replace("{total}", &total.to_string());
             spans.push(Span::from(format!("  {t}")).bold());
         } else {
-            spans.push(Span::from(format!("  {cur}/{total}")).bold());
+            spans.push(
+                Span::from(format!(
+                    "  {}",
+                    konoma_plugin::pages::indicator_text(cur, total)
+                ))
+                .bold(),
+            );
         }
     }
     spans

@@ -265,6 +265,10 @@ fn stripes() -> image::RgbaImage {
     })
 }
 
+fn code(k: KeyCode) -> AppEvent {
+    AppEvent::Key(Key::new(k))
+}
+
 fn file_view(p: &Path) -> View {
     View::Image(ImageView::new(ImageData::File(p.to_path_buf())))
 }
@@ -773,4 +777,779 @@ fn a_view_that_is_not_a_picture_any_more_leaves_no_picture_behind() {
             ]
         },
     );
+}
+
+// ---- pages: a picture with several pages is turned with J / K ----
+
+fn is_blue(c: &(String, RColor, RColor)) -> bool {
+    let blue = |col: &RColor| matches!(col, RColor::Rgb(r, g, b) if *r < 60 && *g < 60 && *b > 200);
+    if c.0 == " " {
+        blue(&c.2)
+    } else {
+        blue(&c.1) || blue(&c.2)
+    }
+}
+
+fn has_blue(b: &Buffer) -> bool {
+    inner(b).iter().filter(|c| is_blue(c)).count() >= 8
+}
+
+fn is_green(c: &(String, RColor, RColor)) -> bool {
+    let g = |col: &RColor| matches!(col, RColor::Rgb(r, g, b) if *r < 60 && *g > 200 && *b < 60);
+    g(&c.1) || g(&c.2)
+}
+
+fn has_green(b: &Buffer) -> bool {
+    inner(b).iter().filter(|c| is_green(c)).count() >= 8
+}
+
+/// Page 1 of the svg pages: red on the top half, yellow on the bottom, so a zoom or a pan that
+/// moves the window shows in the colors on screen.
+const TWO_TONE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="20" fill="#ff0000"/><rect y="20" width="40" height="20" fill="#ffff00"/></svg>"##;
+const BLUE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#0000ff"/></svg>"##;
+const GREEN_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#00ff00"/></svg>"##;
+
+/// An `SvgDraw` that holds the decode of the blue page until `release` is set (it gives up when
+/// it is cancelled), so a page turn can be looked at while its picture is on its way.
+struct BlueHeld(Arc<AtomicBool>);
+
+impl BlueHeld {
+    fn hold(&self, data: &[u8], c: &dyn Fn() -> bool) -> Result<(), konoma_svg::svg::RasterError> {
+        if !String::from_utf8_lossy(data).contains("0000ff") {
+            return Ok(());
+        }
+        let t = Instant::now();
+        while !self.0.load(Ordering::SeqCst) {
+            if c() {
+                return Err(konoma_svg::svg::RasterError::Cancelled);
+            }
+            assert!(t.elapsed() < DEADLINE, "never released");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Ok(())
+    }
+}
+
+impl SvgDraw for BlueHeld {
+    fn untrusted(
+        &self,
+        data: &[u8],
+        base: &Path,
+        roots: Option<&[PathBuf]>,
+        max_px: u32,
+        c: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, konoma_svg::svg::RasterError> {
+        self.hold(data, c)?;
+        InProcessSvg.untrusted(data, base, roots, max_px, c)
+    }
+    fn embedded(
+        &self,
+        data: &[u8],
+        max_px: u32,
+        c: &dyn Fn() -> bool,
+    ) -> Result<image::DynamicImage, konoma_svg::svg::RasterError> {
+        self.hold(data, c)?;
+        InProcessSvg.embedded(data, max_px, c)
+    }
+}
+
+/// `Pictures` whose blue page is held until `release`.
+fn blue_held(release: &Arc<AtomicBool>) -> impl FnOnce(&Path) -> Option<Pictures> {
+    let release = Arc::clone(release);
+    move |p| {
+        Some(
+            Pictures::new(Picker::halfblocks(), "img-test", p, 800)
+                .with_svg(Arc::new(BlueHeld(release))),
+        )
+    }
+}
+
+fn is_yellow(c: &(String, RColor, RColor)) -> bool {
+    let y = |col: &RColor| matches!(col, RColor::Rgb(r, g, b) if *r > 200 && *g > 200 && *b < 60);
+    y(&c.1) || y(&c.2)
+}
+
+/// A cell the picture painted (a color of its own, not the terminal's).
+fn is_picture(c: &(String, RColor, RColor)) -> bool {
+    matches!(c.1, RColor::Rgb(..)) || matches!(c.2, RColor::Rgb(..))
+}
+
+/// The cells of the picture in the color `is` says.
+fn cells(b: &Buffer, is: fn(&(String, RColor, RColor)) -> bool) -> usize {
+    inner(b).iter().filter(|c| is(c)).count()
+}
+
+/// A picture with `count` pages (red, blue, green, red, ...) that records the page of every
+/// `view` it is asked for. With `svg` the pages are SVGs, red or blue, so a decode can be held.
+struct PagedPlugin {
+    count: usize,
+    asked: Arc<Mutex<Vec<Option<usize>>>>,
+    dir: PathBuf,
+    svg: bool,
+    /// The page (from 0) whose `view` fails.
+    fail: Option<usize>,
+}
+
+struct PagedSession {
+    count: usize,
+    asked: Arc<Mutex<Vec<Option<usize>>>>,
+    dir: PathBuf,
+    svg: bool,
+    fail: Option<usize>,
+}
+
+impl Plugin for PagedPlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("img-test", "0.0.1")
+            .bind(Bind::files(["*.pic"]))
+            .shows(ViewKind::Image)
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(PagedSession {
+            count: self.count,
+            asked: Arc::clone(&self.asked),
+            dir: self.dir.clone(),
+            svg: self.svg,
+            fail: self.fail,
+        }))
+    }
+}
+
+impl Session for PagedSession {
+    fn layout(&self) -> Layout {
+        Layout {
+            pages: Some(PageLayout::Separate {
+                count: Some(self.count),
+                titles: Vec::new(),
+            }),
+            ..Layout::default()
+        }
+    }
+
+    fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        self.asked.lock().unwrap().push(req.page);
+        let page = req.page.unwrap_or(0).min(self.count - 1);
+        if self.fail == Some(page) {
+            return Err(Failure::corrupt(t!(en: "page broken on purpose")));
+        }
+        if self.svg {
+            let data = [TWO_TONE_SVG, BLUE_SVG, GREEN_SVG][page % 3];
+            return Ok(View::Image(ImageView::new(ImageData::Svg {
+                data: Arc::from(data.as_bytes()),
+                base_dir: None,
+                trusted: false,
+            })));
+        }
+        let rgb = [[255u8, 0, 0], [0, 0, 255], [0, 255, 0]][page % 3];
+        let img =
+            image::RgbaImage::from_pixel(160, 160, image::Rgba([rgb[0], rgb[1], rgb[2], 255]));
+        Ok(file_view(&png_file(
+            &self.dir,
+            &format!("page{page}.png"),
+            &img,
+        )))
+    }
+}
+
+use konoma_plugin::view::{Layout, PageLayout};
+
+/// The pages asked for, one after the other with repeats of the same page folded.
+fn pages_asked(asked: &Arc<Mutex<Vec<Option<usize>>>>) -> Vec<usize> {
+    let mut v: Vec<usize> = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|p| p.unwrap_or(0))
+        .collect();
+    v.dedup();
+    v
+}
+
+fn run_paged(
+    count: usize,
+    svg: bool,
+    pictures: impl FnOnce(&Path) -> Option<Pictures>,
+    steps: Vec<Step>,
+) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
+    run_paged_failing(count, svg, None, pictures, steps)
+}
+
+fn run_paged_failing(
+    count: usize,
+    svg: bool,
+    fail: Option<usize>,
+    pictures: impl FnOnce(&Path) -> Option<Pictures>,
+    steps: Vec<Step>,
+) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
+    run_paged_on_screen(count, svg, fail, pictures, |_| steps)
+}
+
+/// [`run_paged`] where the steps are made with the screen in hand (a step may resize it).
+fn run_paged_on_screen(
+    count: usize,
+    svg: bool,
+    fail: Option<usize>,
+    pictures: impl FnOnce(&Path) -> Option<Pictures>,
+    steps: impl FnOnce(&Arc<Mutex<TestBackend>>) -> Vec<Step>,
+) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
+    let dir = unique_tmp("app_still_pages");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let path = dir.as_path().join("a.pic");
+    std::fs::write(&path, "x").unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let plugin = PagedPlugin {
+        count,
+        asked: Arc::clone(&asked),
+        dir: dir.as_path().to_path_buf(),
+        svg,
+        fail,
+    };
+    let mut opened =
+        open_file(vec![Arc::new(plugin)], &path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(W, H)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let mut events = Driver {
+        screen: Arc::clone(&screen),
+        steps: steps(&screen).into(),
+        started: Instant::now(),
+        log: Vec::new(),
+    };
+    let pictures = pictures(&opened.path);
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx(),
+        &AppKeys::defaults(),
+        pictures,
+    )
+    .expect("runs");
+    drop(dir);
+    (
+        Out {
+            screen,
+            calls: Arc::new(AtomicUsize::new(0)),
+        },
+        asked,
+    )
+}
+
+#[test]
+fn j_and_k_ask_the_session_for_the_next_and_the_previous_page() {
+    let (out, asked) = run_paged(
+        3,
+        false,
+        half,
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(|b| has_blue(b) && footer(b).contains("2/3"), Some(key('J'))),
+            step(
+                |b| has_green(b) && footer(b).contains("3/3"),
+                Some(key('K')),
+            ),
+            step(|b| has_blue(b) && footer(b).contains("2/3"), Some(key('K'))),
+            step(|b| has_red(b) && footer(b).contains("1/3"), None),
+        ],
+    );
+    assert_eq!(pages_asked(&asked), vec![0, 1, 2, 1, 0]);
+    assert!(footer(out.screen.lock().unwrap().buffer()).contains("J/K/PgDn/PgUp:page"));
+}
+
+#[test]
+fn page_down_and_page_up_turn_the_page_too() {
+    let (_, asked) = run_paged(
+        3,
+        false,
+        half,
+        vec![
+            step(
+                |b| has_red(b) && footer(b).contains("1/3"),
+                Some(code(KeyCode::PageDown)),
+            ),
+            step(
+                |b| has_blue(b) && footer(b).contains("2/3"),
+                Some(code(KeyCode::PageUp)),
+            ),
+            step(|b| has_red(b) && footer(b).contains("1/3"), None),
+        ],
+    );
+    assert_eq!(pages_asked(&asked), vec![0, 1, 0]);
+}
+
+#[test]
+fn the_page_stops_at_both_ends_and_does_not_wrap() {
+    // At the first page `K` does nothing: the next `J` must reach page 2 (a wrap would have
+    // moved to the last page and `J` on to the first).
+    // At the last page `J` does nothing: the next `K` must reach page 2.
+    let (_, asked) = run_paged(
+        3,
+        false,
+        half,
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('K'))),
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('K'))),
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(|b| has_blue(b) && footer(b).contains("2/3"), Some(key('J'))),
+            step(
+                |b| has_green(b) && footer(b).contains("3/3"),
+                Some(key('J')),
+            ),
+            step(
+                |b| has_green(b) && footer(b).contains("3/3"),
+                Some(key('J')),
+            ),
+            step(
+                |b| has_green(b) && footer(b).contains("3/3"),
+                Some(key('K')),
+            ),
+            step(|b| has_blue(b) && footer(b).contains("2/3"), None),
+        ],
+    );
+    // The no-op keys asked for nothing.
+    assert_eq!(pages_asked(&asked), vec![0, 1, 2, 1]);
+}
+
+#[test]
+fn a_single_page_has_no_page_keys_and_says_1_of_1() {
+    let (out, asked) = run_paged(
+        1,
+        false,
+        half,
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/1"), Some(key('J'))),
+            step(has_red, Some(key('K'))),
+            step(has_red, Some(key('+'))),
+            step(|b| has_red(b) && footer(b).contains("x1.25"), None),
+        ],
+    );
+    assert_eq!(pages_asked(&asked), vec![0], "no page was asked for");
+    let f = footer(out.screen.lock().unwrap().buffer());
+    assert!(!f.contains("page"), "no page hint: {f}");
+    assert!(f.contains("1/1"), "{f}");
+}
+
+#[test]
+fn a_picture_without_pages_shows_no_number_and_no_page_hint() {
+    let out = run_img(png_script(red_image), half, |_| {
+        vec![step(|b| has_red(b) && footer(b).contains("x1.00"), None)]
+    });
+    let f = out.rows().pop().unwrap();
+    let numbered = f.split_whitespace().any(|w| {
+        w.split_once('/')
+            .is_some_and(|(a, b)| a.parse::<u32>().is_ok() && b.parse::<u32>().is_ok())
+    });
+    assert!(!f.contains("page") && !numbered, "{f}");
+}
+
+/// The cells the first page paints at fit (the size every page of these tests has at x1.00).
+fn fit_cells(svg: bool) -> usize {
+    let (out, _) = run_paged(3, svg, half, vec![step(has_red, None)]);
+    let n = cells(out.screen.lock().unwrap().buffer(), is_picture);
+    assert!(n >= 100, "the first page is drawn: {n}");
+    n
+}
+
+#[test]
+fn the_old_picture_stays_until_the_new_page_has_been_drawn() {
+    let release = Arc::new(AtomicBool::new(false));
+    let r_step = Arc::clone(&release);
+    let mut turned = step(
+        // The page number moved, the decode is out: the red page is still there, no loading line,
+        // and the footer has the spinner.
+        |b| {
+            let f = footer(b);
+            f.contains("2/3")
+                && has_red(b)
+                && !has_blue(b)
+                && !shows(b, "loading")
+                && f.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        },
+        None,
+    );
+    turned.act = Some(Box::new(move || r_step.store(true, Ordering::SeqCst)));
+    turned.then = Some(AppEvent::Resize); // ignored by the loop; the next step takes over
+                                          // Then the new page lands and stays: no answer meant for the old page may paint it over the
+                                          // new one.
+    let mut settled = 0;
+    let stays = step(
+        move |b| {
+            if has_blue(b) && !has_red(b) && footer(b).contains("x1.00") {
+                settled += 1;
+            } else {
+                settled = 0;
+            }
+            settled >= 300
+        },
+        None,
+    );
+    let (out, _) = run_paged(
+        3,
+        true,
+        blue_held(&release),
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            turned,
+            stays,
+        ],
+    );
+    assert!(
+        release.load(Ordering::SeqCst),
+        "the decode was held and released"
+    );
+    let f = footer(out.screen.lock().unwrap().buffer());
+    assert!(f.contains("2/3") && f.contains("x1.00"), "{f}");
+}
+
+#[test]
+fn each_page_is_drawn_whole_and_alone_when_it_has_landed() {
+    // The whole page (as many cells as the first at fit) and not a trace of the page before.
+    let n = fit_cells(true);
+    let (_, _) = run_paged(
+        3,
+        true,
+        half,
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(
+                move |b| {
+                    cells(b, is_blue) == n
+                        && !has_red(b)
+                        && !has_green(b)
+                        && footer(b).contains("2/3")
+                },
+                Some(key('J')),
+            ),
+            step(
+                move |b| {
+                    cells(b, is_green) == n
+                        && !has_red(b)
+                        && !has_blue(b)
+                        && footer(b).contains("3/3")
+                },
+                None,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_page_turn_returns_to_fit() {
+    let n = fit_cells(false);
+    let (out, _) = run_paged(
+        3,
+        false,
+        half,
+        vec![
+            step(has_red, Some(key('+'))),
+            step(|b| footer(b).contains("x1.25"), Some(key('+'))),
+            step(|b| footer(b).contains("x1.56"), Some(code(KeyCode::Right))),
+            step(|b| footer(b).contains("x1.56"), Some(key('J'))),
+            // The new page is at x1.00 and drawn at the size of a fit, whole and centred.
+            step(
+                move |b| {
+                    has_blue(b)
+                        && footer(b).contains("2/3")
+                        && footer(b).contains("x1.00")
+                        && cells(b, is_picture) == n
+                },
+                None,
+            ),
+        ],
+    );
+    let b = out.screen.lock().unwrap();
+    assert!(!footer(b.buffer()).contains("x1.56"));
+}
+
+/// The red and the yellow of the two-tone page: the yellow is more when the window has moved
+/// down, as many as the red when it is centred.
+fn tones(b: &Buffer) -> (usize, usize) {
+    (cells(b, is_red), cells(b, is_yellow))
+}
+
+fn centred(b: &Buffer) -> bool {
+    let (r, y) = tones(b);
+    r >= 20 && r.abs_diff(y) <= 28
+}
+
+fn moved_down(b: &Buffer) -> bool {
+    let (r, y) = tones(b);
+    y >= r + 32
+}
+
+#[test]
+fn zoom_pan_and_reset_act_on_the_old_page_while_the_new_one_is_awaited() {
+    let release = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&release);
+    let n = fit_cells(true);
+    let mut settled = 0;
+    let (out, _) = run_paged(
+        3,
+        true,
+        blue_held(&release),
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            // Waiting for page 2: the old page is at fit.
+            step(
+                |b| centred(b) && footer(b).contains("2/3") && footer(b).contains("x1.00"),
+                Some(key('+')),
+            ),
+            // The footer's zoom is the zoom of what is drawn: the window is zoomed and centred...
+            step(
+                |b| centred(b) && footer(b).contains("x1.25") && footer(b).contains("2/3"),
+                Some(key('j')),
+            ),
+            // ...and a pan moves it (the footer still says the same zoom)...
+            step(
+                move |b| moved_down(b) && footer(b).contains("x1.25") && cells(b, is_picture) >= n,
+                Some(key('=')),
+            ),
+            // ...and the reset puts it back at fit.
+            step(
+                |b| centred(b) && footer(b).contains("x1.00") && footer(b).contains("2/3"),
+                Some(key('+')),
+            ),
+            {
+                let mut s = step(
+                    |b| centred(b) && footer(b).contains("x1.25") && !has_blue(b),
+                    Some(AppEvent::Resize),
+                );
+                s.act = Some(Box::new(move || r.store(true, Ordering::SeqCst)));
+                s
+            },
+            step(
+                move |b| {
+                    // What was zoomed while waiting stays on the new page, as on the host.
+                    if has_blue(b) && !has_red(b) && footer(b).contains("x1.25") {
+                        settled += 1;
+                    } else {
+                        settled = 0;
+                    }
+                    settled >= 200
+                },
+                None,
+            ),
+        ],
+    );
+    assert!(release.load(Ordering::SeqCst));
+    assert!(has_blue(out.screen.lock().unwrap().buffer()));
+}
+
+#[test]
+fn j_on_a_zoomed_page_returns_the_old_picture_to_fit_at_once() {
+    let release = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&release);
+    let (out, _) = run_paged(
+        3,
+        true,
+        blue_held(&release),
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('+'))),
+            step(|b| footer(b).contains("x1.25"), Some(key('+'))),
+            step(|b| footer(b).contains("x1.56"), Some(key('j'))),
+            step(
+                |b| moved_down(b) && footer(b).contains("x1.56"),
+                Some(key('J')),
+            ),
+            // The new page is still being decoded (the blue is held), and the old one is already
+            // back at fit and centred, the footer saying so.
+            {
+                let mut s = step(
+                    |b| {
+                        centred(b)
+                            && !has_blue(b)
+                            && footer(b).contains("x1.00")
+                            && footer(b).contains("2/3")
+                    },
+                    Some(AppEvent::Resize),
+                );
+                s.act = Some(Box::new(move || r.store(true, Ordering::SeqCst)));
+                s
+            },
+            step(
+                |b| has_blue(b) && !has_red(b) && footer(b).contains("x1.00"),
+                None,
+            ),
+        ],
+    );
+    assert!(release.load(Ordering::SeqCst));
+    assert!(has_blue(out.screen.lock().unwrap().buffer()));
+}
+
+#[test]
+fn j_pressed_again_while_waiting_lands_on_the_last_page_asked() {
+    let release = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&release);
+    // Page 2 (blue) is held; the second `J` asks for page 3 (green) before it lands.
+    let third = step(|b| has_red(b) && footer(b).contains("2/3"), Some(key('J')));
+    let mut settled = 0;
+    let (out, asked) = run_paged(
+        3,
+        true,
+        blue_held(&release),
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            third,
+            step(
+                move |b| has_green(b) && !has_red(b) && footer(b).contains("3/3"),
+                Some(AppEvent::Resize),
+            ),
+            {
+                // The page that was cancelled never paints, even when its decoder is let go.
+                let mut s = step(
+                    move |b| {
+                        if has_green(b) && !has_blue(b) && !has_red(b) && footer(b).contains("3/3")
+                        {
+                            settled += 1;
+                        } else {
+                            settled = 0;
+                        }
+                        settled >= 200
+                    },
+                    None,
+                );
+                s.act = Some(Box::new(move || r.store(true, Ordering::SeqCst)));
+                s
+            },
+        ],
+    );
+    assert_eq!(pages_asked(&asked), vec![0, 1, 2]);
+    let b = out.screen.lock().unwrap();
+    assert!(has_green(b.buffer()) && !has_blue(b.buffer()));
+}
+
+#[test]
+fn a_session_that_fails_while_a_page_is_awaited_shows_why_and_the_keys_turn_on() {
+    let release = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&release);
+    // Page 2 (blue) is held; page 3 fails in the session.
+    let mut back = step(
+        |b| shows(b, "page broken on purpose") && footer(b).contains("3/3") && !has_red(b),
+        Some(key('K')),
+    );
+    back.act = Some(Box::new(move || r.store(true, Ordering::SeqCst)));
+    let (out, asked) = run_paged_failing(
+        3,
+        true,
+        Some(2),
+        blue_held(&release),
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(|b| has_red(b) && footer(b).contains("2/3"), Some(key('J'))),
+            back,
+            // The page that failed did not roll the number back, `K` goes to page 2, which lands.
+            step(
+                |b| has_blue(b) && !shows(b, "broken") && footer(b).contains("2/3"),
+                None,
+            ),
+        ],
+    );
+    assert_eq!(pages_asked(&asked), vec![0, 1, 2, 1]);
+    assert!(release.load(Ordering::SeqCst));
+    let b = out.screen.lock().unwrap();
+    assert!(has_blue(b.buffer()));
+}
+
+#[test]
+fn a_terminal_resize_while_a_page_is_awaited_and_after_it_lands_leaves_only_the_new_page() {
+    // The halfblocks path asks a worker to resize the picture for the cells it is drawn in; an
+    // answer meant for the page before must never be drawn over the page that replaced it.
+    let release = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&release);
+    let (out, _) = run_paged_on_screen(3, true, None, blue_held(&release), move |screen| {
+        let resize_to = |w: u16, h: u16| {
+            let screen = Arc::clone(screen);
+            Box::new(move || screen.lock().unwrap().resize(w, h)) as Box<dyn FnOnce()>
+        };
+        let mut during = step(
+            |b| has_red(b) && footer(b).contains("2/3"),
+            Some(AppEvent::Resize),
+        );
+        during.act = Some(resize_to(W - 20, H + 4));
+        let mut release_step = step(
+            |b| has_red(b) && footer(b).contains("2/3") && b.area.width == W - 20,
+            Some(AppEvent::Resize),
+        );
+        release_step.act = Some(Box::new(move || r.store(true, Ordering::SeqCst)));
+        let mut after = step(
+            |b| has_blue(b) && !has_red(b) && footer(b).contains("2/3"),
+            Some(AppEvent::Resize),
+        );
+        after.act = Some(resize_to(W, H));
+        let mut settled = 0;
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            during,
+            release_step,
+            after,
+            step(
+                move |b| {
+                    // Settled at the first size on the new page, for many turns of the loop.
+                    if has_blue(b) && !has_red(b) && b.area.width == W {
+                        settled += 1;
+                    } else {
+                        settled = 0;
+                    }
+                    settled >= 300
+                },
+                None,
+            ),
+        ]
+    });
+    assert!(release.load(Ordering::SeqCst));
+    assert!(has_blue(out.screen.lock().unwrap().buffer()));
+}
+
+#[test]
+fn the_footer_and_the_help_name_the_page_keys_only_on_a_picture_with_pages() {
+    let help_rows = |count| {
+        let (out, _) = run_paged(
+            count,
+            false,
+            half,
+            vec![
+                step(has_red, Some(key('?'))),
+                step(|b| shows(b, "Preview: image"), None),
+            ],
+        );
+        out.rows()
+    };
+    let paged = help_rows(3);
+    let single = help_rows(1);
+    assert!(paged.iter().any(|r| r.contains("J / K")), "{paged:#?}");
+    assert!(!single.iter().any(|r| r.contains("J / K")), "{single:#?}");
+}
+
+#[test]
+fn the_page_keys_act_and_are_named_exactly_when_the_picture_has_pages() {
+    use konoma_plugin::app::{ImageMode, StillShape};
+    let k = AppKeys::defaults();
+    let (mut asked, mut acted) = (0, 0);
+    for shape in [StillShape::Loading, StillShape::Ready, StillShape::Failed] {
+        for paged in [false, true] {
+            for zoomed in [false, true] {
+                let mode = ImageMode {
+                    shape,
+                    paged,
+                    zoomed,
+                };
+                for helping in [false, true] {
+                    for c in ['J', 'K'] {
+                        let acts = k.image_acts_on(&Key::char(c), helping, mode);
+                        assert_eq!(acts, paged && !helping, "{c} {mode:?} help={helping}");
+                        asked += 1;
+                        acted += usize::from(acts);
+                    }
+                    for code in [KeyCode::PageDown, KeyCode::PageUp] {
+                        let acts = k.image_acts_on(&Key::new(code.clone()), helping, mode);
+                        assert_eq!(acts, paged && !helping, "{code:?} {mode:?}");
+                    }
+                }
+                let named = |v: &[String]| v.iter().any(|t| t.contains("page"));
+                assert_eq!(named(&k.image_footer_tokens(paged)), paged);
+            }
+        }
+    }
+    assert_eq!(asked, 3 * 2 * 2 * 2 * 2);
+    assert_eq!(acted, 3 * 2 * 2);
 }
