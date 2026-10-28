@@ -82,14 +82,15 @@ jobs:
       - name: Doctests (${{ matrix.features }})
         run: cargo test --workspace --doc ${{ matrix.flags }}
 
-      # The standalone app (`konoma-plugin` feature `app`, which includes `pictures`) is not
-      # switched on by any workspace member, so `--workspace` neither lints nor tests it.
-      - name: Standalone app features
+      # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
+      # programs), so `--workspace` lints and tests the standalone app. These cover `konoma-plugin`
+      # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
+      # refused when the app is not compiled in).
+      - name: Plugin SDK without the standalone app
         if: matrix.flags == ''
         run: |
           cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
-          cargo clippy -p konoma-plugin --all-targets --features app -- -D warnings
-          cargo nextest run -p konoma-plugin --features app
+          cargo nextest run -p konoma-plugin
 
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
@@ -221,14 +222,15 @@ jobs:
       - name: Doctests (${{ matrix.features }})
         run: cargo test --workspace --doc ${{ matrix.flags }}
 
-      # The standalone app (`konoma-plugin` feature `app`, which includes `pictures`) is not
-      # switched on by any workspace member, so `--workspace` neither lints nor tests it.
-      - name: Standalone app features
+      # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
+      # programs), so `--workspace` lints and tests the standalone app. These cover `konoma-plugin`
+      # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
+      # refused when the app is not compiled in).
+      - name: Plugin SDK without the standalone app
         if: matrix.flags == ''
         run: |
           cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
-          cargo clippy -p konoma-plugin --all-targets --features app -- -D warnings
-          cargo nextest run -p konoma-plugin --features app
+          cargo nextest run -p konoma-plugin
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list
