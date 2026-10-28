@@ -17,15 +17,16 @@ ratatui = ["dep:ratatui"]
 # The canvas pictures (`canvas_pictures`): hashing, decoding within the work limits, the read
 # scope, and the overlay arithmetic that both hosts (konoma and the standalone app) share, so a
 # picture a plugin places looks the same in either. Off by default: a plugin does not need it.
-pictures = ["ratatui", "dep:konoma-base", "dep:konoma-widgets", "dep:konoma-svg", "dep:image", "dep:libc"]
+pictures = ["ratatui", "dep:konoma-base", "dep:konoma-widgets", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
 # while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
 test-hooks = ["konoma-base?/test-hooks"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
-# host: raw mode, an alternate screen and the display types drawn with `ratatui_draw`). Off by
+# host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
+# pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "dep:crossterm", "dep:konoma-host-core"]
+app = ["proc", "ratatui", "pictures", "dep:crossterm", "dep:konoma-host-core"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -51,6 +52,8 @@ konoma-base = { path = "../konoma-base", version = "0.1.0", optional = true }
 konoma-widgets = { path = "../konoma-widgets", version = "0.1.0", optional = true }
 konoma-svg = { path = "../konoma-svg", version = "0.1.0", optional = true }
 image = { workspace = true, optional = true }
+# The terminal graphics `Picker` the app is given (`pictures` feature).
+ratatui-image = { workspace = true, optional = true }
 
 # Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
 ratatui = { workspace = true, optional = true }

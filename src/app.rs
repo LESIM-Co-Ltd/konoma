@@ -1683,11 +1683,7 @@ pub struct App {
     /// changes (scroll/focus moved a diagram, or the document was left), the run loop clears the
     /// terminal once to sweep orphaned kitty unicode-placeholder rows (they are printed into the
     /// terminal grid and a blank-over-blank diff never repaints them).
-    md_overlay_last: Option<u64>,
-    /// Overlay signature seen during the current frame (None until the overlay draws).
-    md_overlay_seen: Option<u64>,
-    /// The overlay moved/vanished since the previous frame → the run loop full-redraws once.
-    md_overlay_moved: bool,
+    md_overlay: konoma_widgets::inline_images::OverlayMoved,
 
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
@@ -2324,12 +2320,8 @@ struct WinCache {
     lines: Vec<Line<'static>>,
 }
 
-/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
-/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
-/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
-/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
-/// by the latest overlay pass are never evicted, so a screenful always stays whole.
-const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+// The budget of the inline-image cache lives with the cache (shared with the standalone app).
+use konoma_widgets::inline_images::MD_IMAGE_CACHE_BYTES;
 
 /// The same budget while a presentation shows its slide pictures. A slide is drawn at the size of
 /// its frame (up to `SLIDE_RASTER_MAX_PX` on the long side, 4096 x 2304 x 4 = 38 MB), so a deck
@@ -2868,9 +2860,7 @@ impl App {
             vector_trust: None,
             image_logical: None,
             vector_reraster_inflight: false,
-            md_overlay_last: None,
-            md_overlay_seen: None,
-            md_overlay_moved: false,
+            md_overlay: Default::default(),
             preview_media_mtime: None,
             plugin_stamp: None,
             plugin_stamp_taken: None,

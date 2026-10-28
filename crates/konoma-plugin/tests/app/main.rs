@@ -4,4 +4,5 @@ mod help;
 mod keys;
 mod looping;
 mod open;
+mod pictures;
 mod plugin;

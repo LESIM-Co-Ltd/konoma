@@ -1615,7 +1615,7 @@ mermaid_rows = 100000
     /// shared field to a non-default value (the examples mostly restate defaults).
     #[test]
     fn shared_config_agrees_with_config_on_the_common_fields() {
-        let rich = "[ui]\nlang = \"jp\"\nkeys = \"less\"\n[editor]\ncommand = \"nvim\"\n[editor.ext]\nmd = \"code -w\"\n[keys]\ncopy_name = \"m\"\n[keys.tree]\n\"space d\" = \"file_delete\"\n[external]\nopen_links = false\noffice_apps = false\n";
+        let rich = "[ui]\nlang = \"jp\"\nkeys = \"less\"\nsvg_max_px = 1600\n[editor]\ncommand = \"nvim\"\n[editor.ext]\nmd = \"code -w\"\n[keys]\ncopy_name = \"m\"\n[keys.tree]\n\"space d\" = \"file_delete\"\n[external]\nopen_links = false\noffice_apps = false\n";
         for (name, text) in [
             ("en", include_str!("../../config.example.toml")),
             ("ja", include_str!("../../config.example.ja.toml")),
@@ -1627,6 +1627,7 @@ mermaid_rows = 100000
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(c.ui.lang, s.ui.lang, "{name}: ui.lang");
             assert_eq!(c.ui.keys, s.ui.keys, "{name}: ui.keys");
+            assert_eq!(c.ui.svg_max_px, s.ui.svg_max_px, "{name}: ui.svg_max_px");
             assert_eq!(c.external.open_links, s.external.open_links, "{name}");
             assert_eq!(c.external.office_apps, s.external.office_apps, "{name}");
             assert_eq!(c.editor.command, s.editor.command, "{name}: editor.command");

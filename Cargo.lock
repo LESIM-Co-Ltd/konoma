@@ -1970,6 +1970,7 @@ dependencies = [
  "konoma-widgets",
  "libc",
  "ratatui",
+ "ratatui-image",
  "rmp-serde",
  "serde",
  "serde_json",

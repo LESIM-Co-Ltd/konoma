@@ -13,31 +13,9 @@ use super::*;
 /// whole app down (nothing wraps this loop in `catch_unwind`).
 const MAX_SYNTHETIC_RENDERS_IN_FLIGHT: usize = 16;
 
-/// Whether we're running inside tmux, for deciding whether konoma's own full-screen kitty transfer
-/// (`preview/kitty.rs`) must wrap its escapes in tmux's DCS passthrough (`kitty_is_tmux`).
-///
-/// OR's `$TMUX`'s mere *presence* together with `ratatui-image`'s own (private) detection rule —
-/// `TERM` starting with `"tmux"`, or `TERM_PROGRAM == "tmux"` (`picker.rs`'s
-/// `detect_tmux_and_outer_protocol_from_env`) — because the Markdown *inline*-image path asks the
-/// picker to build its own protocol (which uses that private `is_tmux`), while the full-screen path
-/// reads this crate's own `kitty_is_tmux`: two independent flags fed by two different rules, each
-/// only consulted by one of the two image paths. Checking `$TMUX` alone left them disagreeing behind
-/// an ssh hop out of a tmux pane, or under `sudo` inside one — both forward `TERM` but drop `$TMUX`
-/// (`sudo`'s `env_reset` keeps `TERM` via `env_keep` while clearing everything not on that list) — so
-/// the picker correctly detected tmux and wrapped its escapes while this flag stayed `false` and sent
-/// *unwrapped* kitty escapes for the full-screen path only: an unwrapped-vs-wrapped mismatch between
-/// the two paths, not present in either path taken alone. The other direction (this returns `true`
-/// when the picker's own rule would say `false`, e.g. a pre-3.2 tmux session where `$TMUX` is set but
-/// `TERM` is still `screen-*` and no known `TERM_PROGRAM` is set) is harmless: the picker then never
-/// detects `Kitty` as the `protocol_type` in the first place, so `use_kitty` is `false` and this flag
-/// is never read.
-///
-/// Takes the three env values as parameters instead of reading `std::env::var`/`var_os` directly, so
-/// it is a pure function safe to unit-test — `std::env::set_var` mutates process-wide state shared by
-/// every test thread (this crate's established convention, see `bookmarks::xdg_base_dir`).
-fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option<&str>) -> bool {
-    tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
-}
+// The tmux detection lives with the cache that reads it (`InlineImageCache::attach_picker`).
+#[cfg(test)]
+use konoma_widgets::inline_images::is_tmux_from_env;
 
 /// Test seam for [`kitty_id_for`] (the allocation itself lives with the cache, in
 /// `konoma_widgets::inline_images`).
@@ -58,18 +36,7 @@ pub(super) use konoma_widgets::inline_images::is_rebuildable_key as is_rebuildab
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
-        // Use konoma's own compressed transmit only on a kitty-graphics terminal; other protocols
-        // (sixel/iterm2/halfblocks) keep the ratatui-image path.
-        self.md_images.use_kitty = matches!(
-            picker.protocol_type(),
-            ratatui_image::picker::ProtocolType::Kitty
-        );
-        self.md_images.kitty_is_tmux = is_tmux_from_env(
-            std::env::var_os("TMUX").is_some(),
-            std::env::var("TERM").ok().as_deref(),
-            std::env::var("TERM_PROGRAM").ok().as_deref(),
-        );
-        super::canvas_images::LIVE_CANVAS_KITTY.set_tmux(self.md_images.kitty_is_tmux);
+        self.md_images.attach_picker(&picker);
         self.picker = Some(picker);
         self.img_tx = Some(tx);
     }
@@ -332,28 +299,23 @@ impl App {
     /// start, recorded by the overlay, compared at frame end. A change after a drawn state marks
     /// the frame "moved" so the run loop clears the terminal once (placeholder-orphan sweep).
     pub fn begin_md_overlay_frame(&mut self) {
-        self.md_overlay_seen = None;
+        self.md_overlay.begin();
     }
 
     /// Record the overlay signature for this frame (urls + screen rects of drawn inline images).
     pub fn note_md_overlay(&mut self, sig: u64) {
-        self.md_overlay_seen = Some(sig);
+        self.md_overlay.note(sig);
     }
 
     /// Compare this frame's overlay against the previous frame; latch "moved" on any change away
     /// from a previously drawn state (position shift, or the images left the screen entirely).
     pub fn finish_md_overlay_frame(&mut self) {
-        if self.md_overlay_last != self.md_overlay_seen {
-            if self.md_overlay_last.is_some() {
-                self.md_overlay_moved = true;
-            }
-            self.md_overlay_last = self.md_overlay_seen;
-        }
+        self.md_overlay.finish();
     }
 
     /// Whether the run loop should full-clear once to sweep orphaned placeholder rows (resets).
     pub fn take_md_overlay_moved(&mut self) -> bool {
-        std::mem::take(&mut self.md_overlay_moved)
+        self.md_overlay.take_moved()
     }
 
     /// How many mermaid-fence/math renders currently have a placeholder in `md_image_cache` but no
@@ -1518,22 +1480,7 @@ impl App {
         if !matches!(self.tab.mode, Mode::Preview) {
             return None;
         }
-        use std::time::Duration;
-        let mut min: Option<Duration> = None;
-        for entry in self.md_images.cache.values() {
-            if entry.frames.len() < 2 {
-                continue;
-            }
-            let remaining = match entry.shown_at {
-                None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
-                Some(t) => entry.frames[entry.idx]
-                    .1
-                    .checked_sub(t.elapsed())
-                    .unwrap_or(Duration::ZERO),
-            };
-            min = Some(min.map_or(remaining, |m| m.min(remaining)));
-        }
-        min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+        self.md_images.gif_poll_timeout()
     }
 }
 

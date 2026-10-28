@@ -57,14 +57,7 @@ pub(crate) use konoma_widgets::inline_images::{LiveKittyIds, LIVE_CANVAS_KITTY};
 /// Write to `out` the deletes of every id `table` holds, and flush; the table is emptied. Every
 /// failure is dropped: the terminal may be gone (SIGHUP).
 pub(crate) fn delete_kitty_images_in(table: &LiveKittyIds, out: &mut dyn std::io::Write) {
-    let escapes = table.take_delete_escapes();
-    if escapes.is_empty() {
-        return;
-    }
-    for e in escapes {
-        let _ = out.write_all(e.as_bytes());
-    }
-    let _ = out.flush();
+    table.delete_to(out);
 }
 
 /// Write to `out` the deletes of every canvas picture still on the terminal. What the ways out of

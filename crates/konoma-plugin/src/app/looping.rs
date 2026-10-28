@@ -1,6 +1,6 @@
 //! The loop: ask the session for its view, draw it, wait for a key.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
     core_sections, ctrl_c_token, help_title, pad_cells, render_foot, scroll_keys, CoreFoot,
@@ -16,6 +16,7 @@ use ratatui::backend::Backend;
 use ratatui::Terminal;
 
 use super::draw::{self, Frame};
+use super::pictures::Pictures;
 use super::window;
 use super::AppError;
 use crate::key::{Key, KeyCode, KeyMods};
@@ -326,7 +327,8 @@ struct State {
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
-/// `events`). `keys` says what each key does.
+/// `events`). `keys` says what each key does. A canvas shows its cells only: see
+/// [`run_with_pictures`] for the pictures a canvas places.
 pub fn run_with<B: Backend, E: EventSource>(
     terminal: &mut Terminal<B>,
     session: &mut dyn Session,
@@ -334,49 +336,109 @@ pub fn run_with<B: Backend, E: EventSource>(
     cx: &AppCx,
     keys: &AppKeys,
 ) -> Result<(), AppError> {
+    run_with_pictures(terminal, session, events, cx, keys, None)
+}
+
+/// [`run_with`] with the pictures a canvas places (`pictures`: `None` is a terminal that cannot
+/// show any, where the canvas shows its cells and nothing is decoded).
+///
+/// Every wait is bounded: while a decode or an encode is out, or a GIF plays, the loop wakes
+/// every few milliseconds to draw what the workers finished. Such a wake does not ask the
+/// session for a view again (it would not have changed): only a key, a resize and the view's
+/// own redraw timer do. Leaving drops `pictures`, which cancels the decode in flight and
+/// deletes every kitty image placed.
+pub fn run_with_pictures<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    keys: &AppKeys,
+    mut pictures: Option<Pictures>,
+) -> Result<(), AppError> {
     let mut st = State::default();
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
+    // The frame of the last view, and when that view is due again (a wake for the pictures
+    // draws this frame again).
+    let mut base = Frame::Lines(Vec::new());
+    let mut view_due: Option<Instant> = None;
+    let mut need_view = true;
     loop {
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
-        let req = ViewReq::new(size.width, body_rows);
-        let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-        let view = match session.view(&req, &vcx) {
-            Ok(v) => v,
-            Err(f) => View::Message(crate::view::MessageView {
-                lines: vec![Line::raw(format!(
-                    "[can not preview: {}]",
-                    f.message.get(&cx.lang)
-                ))],
-            }),
-        };
-        let (mut frame, redraw_after) = frame_of(view, &mut st, usize::from(body_rows));
-        let footer = match st.help {
+        if view_due.is_some_and(|d| Instant::now() >= d) {
+            need_view = true;
+        }
+        let mut view_wait = None;
+        if need_view {
+            let req = ViewReq::new(size.width, body_rows);
+            let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
+            let view = match session.view(&req, &vcx) {
+                Ok(v) => v,
+                Err(f) => View::Message(crate::view::MessageView {
+                    lines: vec![Line::raw(format!(
+                        "[can not preview: {}]",
+                        f.message.get(&cx.lang)
+                    ))],
+                }),
+            };
+            let (frame, redraw_after) = frame_of(view, &mut st, usize::from(body_rows));
+            if let Some(p) = pictures.as_mut() {
+                match &frame {
+                    Frame::Canvas(c) => p.submit(c),
+                    _ => p.forget(),
+                }
+            }
+            view_wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
+            view_due = view_wait.map(|d| Instant::now() + d);
+            base = frame;
+        }
+        if let Some(p) = pictures.as_mut() {
+            p.poll();
+        }
+        let base_frame = &base;
+        let help_frame;
+        let (frame, footer) = match st.help {
             Some(top) => {
                 let lines = keys.help_lines();
                 let rows = usize::from(body_rows);
                 let top = top.min(lines.len().saturating_sub(rows));
                 st.help = Some(top);
-                frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
-                format!(" {}", keys.help_title().trim())
+                help_frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
+                (&help_frame, format!(" {}", keys.help_title().trim()))
             }
-            None => draw::footer(
-                &keys.footer_tokens(st.scrolls),
-                &cx.title,
-                &frame,
-                st.scroll,
-                st.scrolls,
+            None => (
+                base_frame,
+                draw::footer(
+                    &keys.footer_tokens(st.scrolls),
+                    &cx.title,
+                    base_frame,
+                    st.scroll,
+                    st.scrolls,
+                ),
             ),
         };
-        terminal
-            .draw(|f| draw::draw(f, &frame, &footer))
-            .map_err(|e| terr(&e))?;
+        draw_frame(terminal, frame, &footer, pictures.as_mut())?;
 
-        let wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
+        // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
+        // came from the pictures' shorter wake leaves the view as it is.
+        let view_left = match view_wait {
+            Some(w) => Some(w),
+            None => view_due.map(|d| d.saturating_duration_since(Instant::now())),
+        };
+        let pic_wait = pictures.as_ref().and_then(Pictures::wake_in);
+        let picture_first = match (view_left, pic_wait) {
+            (Some(v), Some(p)) => p < v,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        let wait = if picture_first { pic_wait } else { view_left };
+        // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
+        need_view = true;
         match events.next(wait) {
             Next::End => return Ok(()),
-            Next::Timeout | Next::Event(AppEvent::Resize) => {}
+            Next::Timeout => need_view = !picture_first,
+            Next::Event(AppEvent::Resize) => need_view = true,
             Next::Event(AppEvent::Key(key)) => match (keys.act(&key), st.help) {
                 // `Q` and Ctrl-C end the app even from the help (the host's `Q` does); `q` and
                 // `Esc` close it.
@@ -403,6 +465,42 @@ pub fn run_with<B: Backend, E: EventSource>(
             },
         }
     }
+}
+
+/// Draw `frame` and `footer`, then the pictures over it. A frame on which a picture moved or went
+/// is cleared and drawn again (the cells of its old place would stay on screen otherwise), and the
+/// deletes of the kitty images that went are written after it. The right to write to the terminal
+/// is held for all of it, so an exit's cleanup never lands between the chunks of a transmit.
+fn draw_frame<B: Backend>(
+    terminal: &mut Terminal<B>,
+    frame: &Frame,
+    footer: &str,
+    mut pictures: Option<&mut Pictures>,
+) -> Result<(), AppError> {
+    let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
+    let on_canvas = matches!(frame, Frame::Canvas(_));
+    let _writing = konoma_host_core::term::terminal_write();
+    for pass in 0..2 {
+        terminal
+            .draw(|f| {
+                draw::draw(f, frame, footer);
+                if let Some(p) = pictures.as_deref_mut() {
+                    let body = draw::body_of(f.area());
+                    p.draw(f.buffer_mut(), body, on_canvas);
+                }
+            })
+            .map_err(|e| terr(&e))?;
+        let moved = pictures.as_deref_mut().is_some_and(Pictures::take_moved);
+        if pass == 0 && moved {
+            terminal.clear().map_err(|e| terr(&e))?;
+        } else {
+            break;
+        }
+    }
+    if let Some(p) = pictures {
+        p.flush_deletes();
+    }
+    Ok(())
 }
 
 fn scroll_by(m: Motion, st: &mut State) {

@@ -736,11 +736,110 @@ impl LiveKittyIds {
     }
 }
 
+impl LiveKittyIds {
+    /// Write to `out` the deletes of every id noted, and flush; the table is emptied. Every
+    /// failure is dropped: the terminal may be gone (SIGHUP), and this runs on the ways out of
+    /// the program. Nothing is written (and nothing flushed) when no id is noted.
+    pub fn delete_to(&self, out: &mut dyn std::io::Write) {
+        let escapes = self.take_delete_escapes();
+        if escapes.is_empty() {
+            return;
+        }
+        for e in escapes {
+            let _ = out.write_all(e.as_bytes());
+        }
+        let _ = out.flush();
+    }
+}
+
 impl Default for LiveKittyIds {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// Whether we're running inside tmux, for deciding whether konoma's own full-screen kitty transfer
+/// (`preview/kitty.rs`) must wrap its escapes in tmux's DCS passthrough (`kitty_is_tmux`).
+///
+/// OR's `$TMUX`'s mere *presence* together with `ratatui-image`'s own (private) detection rule —
+/// `TERM` starting with `"tmux"`, or `TERM_PROGRAM == "tmux"` (`picker.rs`'s
+/// `detect_tmux_and_outer_protocol_from_env`) — because the Markdown *inline*-image path asks the
+/// picker to build its own protocol (which uses that private `is_tmux`), while the full-screen path
+/// reads this crate's own `kitty_is_tmux`: two independent flags fed by two different rules, each
+/// only consulted by one of the two image paths. Checking `$TMUX` alone left them disagreeing behind
+/// an ssh hop out of a tmux pane, or under `sudo` inside one — both forward `TERM` but drop `$TMUX`
+/// (`sudo`'s `env_reset` keeps `TERM` via `env_keep` while clearing everything not on that list) — so
+/// the picker correctly detected tmux and wrapped its escapes while this flag stayed `false` and sent
+/// *unwrapped* kitty escapes for the full-screen path only: an unwrapped-vs-wrapped mismatch between
+/// the two paths, not present in either path taken alone. The other direction (this returns `true`
+/// when the picker's own rule would say `false`, e.g. a pre-3.2 tmux session where `$TMUX` is set but
+/// `TERM` is still `screen-*` and no known `TERM_PROGRAM` is set) is harmless: the picker then never
+/// detects `Kitty` as the `protocol_type` in the first place, so `use_kitty` is `false` and this flag
+/// is never read.
+///
+/// Takes the three env values as parameters instead of reading `std::env::var`/`var_os` directly, so
+/// it is a pure function safe to unit-test — `std::env::set_var` mutates process-wide state shared by
+/// every test thread (this crate's established convention, see `bookmarks::xdg_base_dir`).
+pub fn is_tmux_from_env(
+    tmux_var_set: bool,
+    term: Option<&str>,
+    term_program: Option<&str>,
+) -> bool {
+    tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
+}
+
+/// The frame bookkeeping of a picture overlay: a signature of what is drawn where, kept from the
+/// previous frame. A change away from a drawn state (a picture moved, or all of them left) latches
+/// "moved", and the run loop clears the terminal once: kitty placeholder rows are printed into the
+/// terminal grid, and a blank-over-blank diff never repaints the orphans.
+///
+/// Call order per frame: [`Self::begin`], [`Self::note`] when the overlay drew something,
+/// [`Self::finish`]; the run loop asks [`Self::take_moved`] after the frame.
+#[derive(Debug, Default)]
+pub struct OverlayMoved {
+    last: Option<u64>,
+    seen: Option<u64>,
+    moved: bool,
+}
+
+impl OverlayMoved {
+    pub fn new() -> OverlayMoved {
+        OverlayMoved::default()
+    }
+
+    /// A frame starts: nothing is drawn yet.
+    pub fn begin(&mut self) {
+        self.seen = None;
+    }
+
+    /// The overlay drew this frame, with this signature (what is where).
+    pub fn note(&mut self, sig: u64) {
+        self.seen = Some(sig);
+    }
+
+    /// The frame ended: compare with the previous one and latch "moved" on any change away from a
+    /// previously drawn state.
+    pub fn finish(&mut self) {
+        if self.last != self.seen {
+            if self.last.is_some() {
+                self.moved = true;
+            }
+            self.last = self.seen;
+        }
+    }
+
+    /// Whether the run loop should clear the terminal once (resets the latch).
+    pub fn take_moved(&mut self) -> bool {
+        std::mem::take(&mut self.moved)
+    }
+}
+
+/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
+/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
+/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
+/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
+/// by the latest overlay pass are never evicted, so a screenful always stays whole.
+pub const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The ids of the canvas pictures on the terminal now (see [`LiveKittyIds`]).
 pub static LIVE_CANVAS_KITTY: LiveKittyIds = LiveKittyIds::new();
@@ -1294,6 +1393,51 @@ impl InlineImageCache {
             advanced = true;
         }
         advanced
+    }
+
+    /// Wait time until the soonest GIF frame change across every animating entry (the loop's poll
+    /// timeout), clamped to 10-100 ms. `None` when nothing animates. Whether to tick at all (the
+    /// host's mode) is the caller's call, as for [`Self::advance_gifs_if_due`].
+    pub fn gif_poll_timeout(&self) -> Option<std::time::Duration> {
+        use std::time::Duration;
+        let mut min: Option<Duration> = None;
+        for entry in self.cache.values() {
+            if entry.frames.len() < 2 {
+                continue;
+            }
+            let remaining = match entry.shown_at {
+                None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
+                Some(t) => entry.frames[entry.idx]
+                    .1
+                    .checked_sub(t.elapsed())
+                    .unwrap_or(Duration::ZERO),
+            };
+            min = Some(min.map_or(remaining, |m| m.min(remaining)));
+        }
+        min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+    }
+
+    /// Set what the encoders need to know about the terminal from its `picker`: konoma's own
+    /// compressed transmit is used only on a kitty-graphics terminal (the other protocols keep
+    /// the ratatui-image path), and whether the kitty escapes are wrapped for tmux (also told to
+    /// [`LIVE_CANVAS_KITTY`], which deletes at exit). The environment is read here.
+    pub fn attach_picker(&mut self, picker: &Picker) {
+        self.use_kitty = matches!(
+            picker.protocol_type(),
+            ratatui_image::picker::ProtocolType::Kitty
+        );
+        self.kitty_is_tmux = is_tmux_from_env(
+            std::env::var_os("TMUX").is_some(),
+            std::env::var("TERM").ok().as_deref(),
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+        );
+        LIVE_CANVAS_KITTY.set_tmux(self.kitty_is_tmux);
+    }
+
+    /// Whether any entry has an encode request out whose result is not applied yet (the host's
+    /// loop keeps a short wait while this is true, so the result is drawn as soon as it lands).
+    pub fn encodes_in_flight(&self) -> bool {
+        self.cache.values().any(|e| e.enc_inflight)
     }
 
     /// The escapes that delete from a kitty-graphics terminal the images of the pictures that went
@@ -2142,5 +2286,82 @@ mod tests {
         assert_eq!(c.file_decoded(res, None), Filed::Pixels);
         let e = &c.cache[&path];
         assert!(!e.evicted && !e.rebuilding && e.decoded.is_some());
+    }
+
+    #[test]
+    fn the_overlay_latches_moved_on_any_change_away_from_a_drawn_state() {
+        let mut o = OverlayMoved::new();
+        let frame = |o: &mut OverlayMoved, sig: Option<u64>| {
+            o.begin();
+            if let Some(s) = sig {
+                o.note(s);
+            }
+            o.finish();
+            o.take_moved()
+        };
+        // Nothing drawn, then drawn: not a move (no old placement to sweep).
+        assert!(!frame(&mut o, None));
+        assert!(!frame(&mut o, Some(1)));
+        // The same again: no move.
+        assert!(!frame(&mut o, Some(1)));
+        // Shifted: moved, and the latch resets once taken.
+        assert!(frame(&mut o, Some(2)));
+        assert!(!frame(&mut o, Some(2)));
+        // Left entirely: moved; stays quiet after.
+        assert!(frame(&mut o, None));
+        assert!(!frame(&mut o, None));
+    }
+
+    #[test]
+    fn delete_to_writes_and_flushes_only_when_an_id_is_noted_and_empties_the_table() {
+        struct Out {
+            bytes: Vec<u8>,
+            flushes: usize,
+        }
+        impl std::io::Write for Out {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+        let table = LiveKittyIds::new();
+        let mut out = Out {
+            bytes: Vec::new(),
+            flushes: 0,
+        };
+        table.delete_to(&mut out);
+        assert!(out.bytes.is_empty() && out.flushes == 0);
+        table.note(7);
+        table.note(9);
+        table.delete_to(&mut out);
+        let text = String::from_utf8(out.bytes.clone()).unwrap();
+        assert!(text.contains("i=7") && text.contains("i=9"), "{text:?}");
+        assert_eq!(out.flushes, 1);
+        let written = out.bytes.len();
+        table.delete_to(&mut out);
+        assert_eq!(out.bytes.len(), written, "the table was emptied");
+        assert_eq!(out.flushes, 1);
+    }
+
+    #[test]
+    fn gif_poll_timeout_is_none_without_an_animation_and_clamped_with_one() {
+        let mut c = InlineImageCache::default();
+        assert_eq!(c.gif_poll_timeout(), None);
+        let still = c.cache.entry(PathBuf::from("/x/a.png")).or_default();
+        still.frames = vec![(px(), Duration::from_secs(1))];
+        assert_eq!(c.gif_poll_timeout(), None, "one frame is not an animation");
+        let e = c.cache.entry(PathBuf::from("/x/a.gif")).or_default();
+        e.frames = vec![
+            (px(), Duration::from_secs(3600)),
+            (px(), Duration::from_secs(3600)),
+        ];
+        e.shown_at = Some(Instant::now());
+        assert_eq!(c.gif_poll_timeout(), Some(Duration::from_millis(100)));
+        c.cache.get_mut(Path::new("/x/a.gif")).unwrap().frames[0].1 = Duration::ZERO;
+        assert_eq!(c.gif_poll_timeout(), Some(Duration::from_millis(10)));
     }
 }
