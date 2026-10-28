@@ -48,7 +48,11 @@ fn file(name: &str, body: &str) -> (TmpDir, PathBuf) {
 
 /// Run the app over `path`; returns the drawn rows, the number of `view` calls, and how many
 /// events were left unread (0 = all were consumed, so the app did not quit before the end).
-fn run_counted(path: &Path, size: (u16, u16), events: Vec<AppEvent>) -> (Vec<String>, usize, usize) {
+fn run_counted(
+    path: &Path,
+    size: (u16, u16),
+    events: Vec<AppEvent>,
+) -> (Vec<String>, usize, usize) {
     run_keyed(path, size, events, &AppKeys::defaults())
 }
 
@@ -63,14 +67,7 @@ fn run_keyed(
     let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let mut it = events.into_iter();
-    run_with(
-        &mut term,
-        &mut *opened.session,
-        &mut it,
-        &cx(),
-        keys,
-    )
-    .expect("runs");
+    run_with(&mut term, &mut *opened.session, &mut it, &cx(), keys).expect("runs");
     let left = it.count();
     let buf = term.backend().buffer();
     let rows = (0..buf.area.height)
@@ -154,11 +151,23 @@ fn the_cursor_moves_by_every_cell_key_and_stops_at_the_edges() {
     let at = |ev: Vec<AppEvent>| title(&run(&p, SIZE, ev));
     assert!(at(chars("j")).contains("r2/3 c1/2"));
     assert!(at(chars("jj")).contains("r3/3 c1/2"));
-    assert!(at(chars("jjjjj")).contains("r3/3 c1/2"), "stops at the last row");
-    assert!(at(chars("k")).contains("r1/3 c1/2"), "stops at the first row");
+    assert!(
+        at(chars("jjjjj")).contains("r3/3 c1/2"),
+        "stops at the last row"
+    );
+    assert!(
+        at(chars("k")).contains("r1/3 c1/2"),
+        "stops at the first row"
+    );
     assert!(at(chars("l")).contains("r1/3 c2/2"));
-    assert!(at(chars("ll")).contains("r1/3 c2/2"), "stops at the last column");
-    assert!(at(chars("h")).contains("r1/3 c1/2"), "stops at the first column");
+    assert!(
+        at(chars("ll")).contains("r1/3 c2/2"),
+        "stops at the last column"
+    );
+    assert!(
+        at(chars("h")).contains("r1/3 c1/2"),
+        "stops at the first column"
+    );
     assert!(at(chars("lh")).contains("r1/3 c1/2"));
     assert!(at(chars("G")).contains("r3/3 c1/2"));
     assert!(at(chars("Gg")).contains("r1/3 c1/2"));
@@ -183,11 +192,18 @@ fn the_page_keys_move_by_a_screenful_and_clamp() {
     let two = t(vec![ctrl('f'), ctrl('b')]);
     assert!(two.contains("r1/100"), "{two}");
     let pd = t(vec![kc(KeyCode::PageDown)]);
-    assert_eq!(pd.replace(' ', ""), down.replace(' ', ""), "PageDown = Ctrl-f");
+    assert_eq!(
+        pd.replace(' ', ""),
+        down.replace(' ', ""),
+        "PageDown = Ctrl-f"
+    );
     let half = t(vec![ctrl('d')]);
     assert!(half.contains("r4/100"), "half a screenful: {half}");
     assert!(t(vec![ctrl('d'), ctrl('u')]).contains("r1/100"));
-    assert!(t(vec![kc(KeyCode::PageUp)]).contains("r1/100"), "clamps at the top");
+    assert!(
+        t(vec![kc(KeyCode::PageUp)]).contains("r1/100"),
+        "clamps at the top"
+    );
     let end = t((0..40).map(|_| ctrl('f')).collect());
     assert!(end.contains("r100/100"), "{end}");
 }
@@ -245,7 +261,10 @@ fn full_width_cells_are_drawn_and_navigated_by_cell() {
     let w = |l: &String| unicode_width::UnicodeWidthStr::width(l.as_str());
     assert_eq!(w(&rows[0]), 80, "{s}");
     assert_eq!(w(&rows[10]), 80, "{s}");
-    assert!(rows[1..10].iter().all(|l| w(l) == 80 && l.ends_with('│')), "{s}");
+    assert!(
+        rows[1..10].iter().all(|l| w(l) == 80 && l.ends_with('│')),
+        "{s}"
+    );
 }
 
 #[test]
@@ -268,9 +287,15 @@ fn j_and_k_turn_the_sheets_and_clamp_at_the_ends() {
     assert!(title(&r).contains("Sheet3 (3/3)"), "{}", all(&r));
     assert!(all(&r).contains("│2 i"), "{}", all(&r));
     let r = t(chars("JJJJ"));
-    assert!(title(&r).contains("Sheet3 (3/3)"), "stops at the last sheet");
+    assert!(
+        title(&r).contains("Sheet3 (3/3)"),
+        "stops at the last sheet"
+    );
     let r = t(chars("K"));
-    assert!(title(&r).contains("Sheet1 (1/3)"), "stops at the first sheet");
+    assert!(
+        title(&r).contains("Sheet1 (1/3)"),
+        "stops at the first sheet"
+    );
     let r = t(chars("JK"));
     assert!(title(&r).contains("Sheet1 (1/3)"));
     let (_, views, _) = run_counted(&p, SIZE, chars("J"));
@@ -330,7 +355,10 @@ fn q_closes_the_popup_first_and_then_quits() {
     let (r, _, left) = run_counted(&p, SIZE, vec![kc(KeyCode::Enter), kk('q'), kk('j')]);
     assert_eq!(left, 0, "q did not quit while the popup was open");
     assert!(!all(&r).contains("Cell ·"));
-    assert!(title(&r).contains("r2/3"), "the key after the close moved the cursor");
+    assert!(
+        title(&r).contains("r2/3"),
+        "the key after the close moved the cursor"
+    );
     let (_, _, left) = run_counted(&p, SIZE, vec![kk('q'), kk('j')]);
     assert_eq!(left, 1, "q quits the table");
 }
@@ -350,7 +378,10 @@ fn the_popup_names_the_cell_it_shows_and_follows_the_cursor() {
     let r = run(&b, SIZE, ev);
     let s = all(&r);
     assert!(s.contains("Cell · B2"), "{s}");
-    assert!(s.contains("value: d"), "the plugin's detail lines are shown: {s}");
+    assert!(
+        s.contains("value: d"),
+        "the plugin's detail lines are shown: {s}"
+    );
 }
 
 #[test]
@@ -367,8 +398,13 @@ fn the_cursor_stays_while_the_popup_is_open() {
 
 /// The text inside the popup frame only (the table behind it shows the first lines too).
 fn popup_body(rows: &[String]) -> String {
-    let top = rows.iter().position(|l| l.contains("┌ Cell")).expect("a popup is open");
-    let col = rows[top][..rows[top].find("┌ Cell").unwrap()].chars().count();
+    let top = rows
+        .iter()
+        .position(|l| l.contains("┌ Cell"))
+        .expect("a popup is open");
+    let col = rows[top][..rows[top].find("┌ Cell").unwrap()]
+        .chars()
+        .count();
     let mut out = Vec::new();
     for l in &rows[top + 1..] {
         if l.chars().nth(col) == Some('└') {
@@ -401,14 +437,20 @@ fn the_popup_scrolls_with_the_motion_keys() {
     assert!(open(chars("jjk")).contains("L01"));
     assert!(open(chars("jjkkkk")).contains("L00"), "clamps at the top");
     let bottom = open(chars("G"));
-    assert!(bottom.contains("L39") && !bottom.contains("L00"), "{bottom}");
+    assert!(
+        bottom.contains("L39") && !bottom.contains("L00"),
+        "{bottom}"
+    );
     assert!(open(chars("Gg")).contains("L00"));
     let paged = open(vec![kc(KeyCode::PageDown)]);
     assert!(!paged.contains("L00"), "{paged}");
     let back = open(vec![kc(KeyCode::PageDown), kc(KeyCode::PageUp)]);
     assert!(back.contains("L00"), "{back}");
     let arrows = open(vec![kc(KeyCode::Down)]);
-    assert!(arrows.contains("L01") && !arrows.contains("L00"), "{arrows}");
+    assert!(
+        arrows.contains("L01") && !arrows.contains("L00"),
+        "{arrows}"
+    );
     // A key that is not a popup key moves nothing.
     assert_eq!(open(chars("l")), top);
     assert_eq!(open(chars("$")), top);
@@ -432,7 +474,10 @@ fn the_popup_follows_a_resize_by_redrawing_in_the_new_size() {
     let small = all(&run(&p, (40, 10), ev.clone()));
     let big = all(&run(&p, (100, 30), ev));
     assert!(small.contains("L00") && big.contains("L00"));
-    assert!(big.contains("L20"), "a taller screen shows more lines: {big}");
+    assert!(
+        big.contains("L20"),
+        "a taller screen shows more lines: {big}"
+    );
     assert!(!small.contains("L20"), "{small}");
 }
 
@@ -468,7 +513,10 @@ fn the_footer_shows_a_hint_only_for_a_key_that_acts() {
     assert!(f.contains("h/j/k/l:cell"), "{f}");
     assert!(f.contains("view cell"), "{f}");
     assert!(!f.contains("J/K"), "no pages in a csv: {f}");
-    assert!(f.contains("g/G:ends") && f.contains("q:quit") && f.contains("?:help"), "{f}");
+    assert!(
+        f.contains("g/G:ends") && f.contains("q:quit") && f.contains("?:help"),
+        "{f}"
+    );
     let (_d, b) = book();
     let f = footer(&run(&b, SIZE, vec![]));
     assert!(f.contains("J/K:sheet"), "{f}");
@@ -516,11 +564,23 @@ fn table_configs() -> Vec<(&'static str, &'static str)> {
     vec![
         ("default", ""),
         ("unbind j", "[keys.table]\nj = \"noop\"\n"),
-        ("unbind j k h l", "[keys.table]\nj = \"noop\"\nk = \"noop\"\nh = \"noop\"\nl = \"noop\"\n"),
+        (
+            "unbind j k h l",
+            "[keys.table]\nj = \"noop\"\nk = \"noop\"\nh = \"noop\"\nl = \"noop\"\n",
+        ),
         ("unbind q", "[keys.table]\nq = \"noop\"\n"),
-        ("unbind q Q", "[keys.table]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n"),
-        ("rebind page turn", "[keys.table]\nn = \"page_next\"\nJ = \"noop\"\n"),
-        ("page keys rebound", "[keys.table]\n\"m\" = \"navigate:page_down\"\n"),
+        (
+            "unbind q Q",
+            "[keys.table]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n",
+        ),
+        (
+            "rebind page turn",
+            "[keys.table]\nn = \"page_next\"\nJ = \"noop\"\n",
+        ),
+        (
+            "page keys rebound",
+            "[keys.table]\n\"m\" = \"navigate:page_down\"\n",
+        ),
         ("less", "[ui]\nkeys = \"less\"\n"),
         ("full width", "[keys.table]\n\"あ\" = \"navigate:down\"\n"),
     ]
@@ -535,7 +595,12 @@ fn all_modes() -> Vec<TableMode> {
                 if popup && !cells {
                     continue;
                 }
-                v.push(TableMode { popup, paged, cells, sheets: false });
+                v.push(TableMode {
+                    popup,
+                    paged,
+                    cells,
+                    sheets: false,
+                });
             }
         }
     }
@@ -575,7 +640,10 @@ fn every_key_the_table_footer_and_help_name_acts() {
                             // cell or a page turn are named only when they act.
                             // The help describes the table under a popup: its rows are those of
                             // the table with no popup.
-                            let under = TableMode { popup: false, ..mode };
+                            let under = TableMode {
+                                popup: false,
+                                ..mode
+                            };
                             assert!(
                                 k.table_acts_on(&key, true, under)
                                     || k.table_acts_on(&key, false, under),
@@ -596,15 +664,42 @@ fn every_key_the_table_footer_and_help_name_acts() {
 fn the_footer_and_help_leave_out_what_does_not_act() {
     let k = keys_of("", Lang::En);
     let none = TableMode::default();
-    let has = |mode: TableMode, text: &str| {
-        k.table_footer_tokens(mode).iter().any(|t| t.contains(text))
-    };
+    let has =
+        |mode: TableMode, text: &str| k.table_footer_tokens(mode).iter().any(|t| t.contains(text));
     assert!(!has(none, "J/K"), "no pages");
-    assert!(has(TableMode { paged: true, ..none }, "J/K"));
+    assert!(has(
+        TableMode {
+            paged: true,
+            ..none
+        },
+        "J/K"
+    ));
     assert!(!has(none, "view cell"), "no cell");
-    assert!(has(TableMode { cells: true, ..none }, "view cell"));
-    assert!(!has(TableMode { popup: true, paged: true, cells: true, sheets: false }, "J/K"));
-    assert!(!has(TableMode { popup: true, paged: true, cells: true, sheets: false }, "h/j/k/l"));
+    assert!(has(
+        TableMode {
+            cells: true,
+            ..none
+        },
+        "view cell"
+    ));
+    assert!(!has(
+        TableMode {
+            popup: true,
+            paged: true,
+            cells: true,
+            sheets: false
+        },
+        "J/K"
+    ));
+    assert!(!has(
+        TableMode {
+            popup: true,
+            paged: true,
+            cells: true,
+            sheets: false
+        },
+        "h/j/k/l"
+    ));
     let help = |mode: TableMode| {
         k.table_help_sections(mode)
             .iter()
@@ -614,9 +709,17 @@ fn the_footer_and_help_leave_out_what_does_not_act() {
             .join("\n")
     };
     assert!(!help(none).contains("J / K"));
-    assert!(help(TableMode { paged: true, ..none }).contains("J / K"));
+    assert!(help(TableMode {
+        paged: true,
+        ..none
+    })
+    .contains("J / K"));
     assert!(!help(none).contains("view the full cell"));
-    assert!(help(TableMode { cells: true, ..none }).contains("view the full cell"));
+    assert!(help(TableMode {
+        cells: true,
+        ..none
+    })
+    .contains("view the full cell"));
 }
 
 /// 6 rows x 3 columns, with a sheet before and after when `book`.
@@ -632,7 +735,10 @@ fn middle_table(book: bool) -> (TmpDir, PathBuf) {
 const REAL: (u16, u16) = (100, 8);
 
 fn key_candidates() -> Vec<Key> {
-    let mut v: Vec<Key> = "hjklgG0$JKeoqQ?xnm \u{3042}Hz".chars().map(Key::char).collect();
+    let mut v: Vec<Key> = "hjklgG0$JKeoqQ?xnm \u{3042}Hz"
+        .chars()
+        .map(Key::char)
+        .collect();
     for c in ['f', 'b', 'd', 'u', 'c'] {
         v.push(Key::ctrl(c));
     }
@@ -689,7 +795,11 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
         let mid: Vec<AppEvent> = vec![kc(KeyCode::Down), kc(KeyCode::Down), kc(KeyCode::Right)];
         // On the middle sheet both `J` and `K` turn (at an end the other is clamped).
         // (`J` is the key unless the config moved the page turn to another one.)
-        let paged = TableMode { cells: true, paged: true, ..Default::default() };
+        let paged = TableMode {
+            cells: true,
+            paged: true,
+            ..Default::default()
+        };
         let next_sheet = ['J', 'n']
             .into_iter()
             .find(|c| k.table_acts_on(&Key::new(KeyCode::Char(*c)), false, paged))
@@ -697,19 +807,67 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
         let mut on_sheet2 = vec![next_sheet.clone()];
         on_sheet2.extend(mid.clone());
         let mut cases: Vec<(&Path, TableMode, Vec<AppEvent>, bool, bool)> = vec![
-            (&grid_p, TableMode { cells: true, ..Default::default() }, mid.clone(), false, false),
-            (&book_p, TableMode { cells: true, paged: true, ..Default::default() }, on_sheet2, false, false),
+            (
+                &grid_p,
+                TableMode {
+                    cells: true,
+                    ..Default::default()
+                },
+                mid.clone(),
+                false,
+                false,
+            ),
+            (
+                &book_p,
+                TableMode {
+                    cells: true,
+                    paged: true,
+                    ..Default::default()
+                },
+                on_sheet2,
+                false,
+                false,
+            ),
         ];
         let mut popup_setup = vec![kc(KeyCode::Enter)];
         popup_setup.extend((0..3).map(|_| kc(KeyCode::Down)));
-        cases.push((&tall_p, TableMode { cells: true, popup: true, ..Default::default() }, popup_setup, false, true));
+        cases.push((
+            &tall_p,
+            TableMode {
+                cells: true,
+                popup: true,
+                ..Default::default()
+            },
+            popup_setup,
+            false,
+            true,
+        ));
         if let Some(o) = &opener {
             let mut s = vec![AppEvent::Key(o.clone())];
             s.extend((0..3).map(|_| kc(KeyCode::Down)));
-            cases.push((&grid_p, TableMode { cells: true, ..Default::default() }, s.clone(), true, false));
+            cases.push((
+                &grid_p,
+                TableMode {
+                    cells: true,
+                    ..Default::default()
+                },
+                s.clone(),
+                true,
+                false,
+            ));
             let mut sb = vec![next_sheet.clone()];
             sb.extend(s);
-            cases.push((&book_p, TableMode { cells: true, paged: true, ..Default::default() }, sb, true, false));
+            cases.push((
+                &book_p,
+                TableMode {
+                    cells: true,
+                    paged: true,
+                    ..Default::default()
+                },
+                sb,
+                true,
+                false,
+            ));
         }
         for (path, mode, setup, helping, popup) in cases {
             for key in key_candidates() {
@@ -731,4 +889,57 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
     assert!(checked > 1500, "{checked}");
     assert!(yes > 300 && no > 300, "{yes} {no}");
     assert!(in_help > 300 && in_popup > 300, "{in_help} {in_popup}");
+}
+
+/// `Enter` over a table with no cell does nothing, so the key is not said to act (the hint and
+/// the help row are left out for it); over a table with cells it acts.
+#[test]
+fn enter_acts_only_over_a_table_with_a_cell() {
+    let k = keys_of("", Lang::En);
+    let enter = Key::new(KeyCode::Enter);
+    let none = TableMode::default();
+    let cells = TableMode {
+        cells: true,
+        ..none
+    };
+    assert!(!k.table_acts_on(&enter, false, none));
+    assert!(k.table_acts_on(&enter, false, cells));
+    // Said to act = acts for real.
+    let (_d1, empty) = file("z.grid", "");
+    let (_d2, full) = middle_table(false);
+    assert!(!acts_for_real(&k, &empty, &[], &enter));
+    assert!(acts_for_real(&k, &full, &[], &enter));
+}
+
+/// A book's page keys are called `sheet`; a paged table without sheets calls them `page`.
+#[test]
+fn the_page_keys_are_called_sheet_only_for_sheets() {
+    let k = keys_of("", Lang::En);
+    let base = TableMode {
+        paged: true,
+        cells: true,
+        ..TableMode::default()
+    };
+    let text = |m: TableMode| k.table_footer_tokens(m).join("  ");
+    let help = |m: TableMode| {
+        k.table_help_sections(m)
+            .iter()
+            .flat_map(|s| s.rows.clone())
+            .map(|(a, b)| format!("{a} {b}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let sheets = TableMode {
+        sheets: true,
+        ..base
+    };
+    assert!(text(sheets).contains("J/K:sheet"), "{}", text(sheets));
+    assert!(
+        help(sheets).contains("next / previous sheet"),
+        "{}",
+        help(sheets)
+    );
+    assert!(!text(base).contains("sheet"), "{}", text(base));
+    assert!(text(base).contains("J/K:page"), "{}", text(base));
+    assert!(!help(base).contains("sheet"), "{}", help(base));
 }
