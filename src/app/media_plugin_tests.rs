@@ -50,6 +50,8 @@ enum Reply {
     Fail(FailureKind),
     /// A picture file the host is asked to read.
     File(PathBuf),
+    /// Another reply for each page (from 1; the last one repeats).
+    Pages(Vec<Reply>),
 }
 
 struct Stand {
@@ -120,7 +122,11 @@ impl Session for StandSession {
         *self.seen.view_thread.lock().unwrap() = Some(std::thread::current().id());
         self.seen.pages.lock().unwrap().push(req.page);
         std::thread::sleep(self.view_delay);
-        match &self.reply {
+        let mut reply = &self.reply;
+        if let Reply::Pages(each) = reply {
+            reply = &each[req.page.unwrap_or(0).min(each.len() - 1)];
+        }
+        match reply {
             Reply::Picture => Ok(View::Image(ImageView::new(ImageData::Rgba {
                 width: 4,
                 height: 3,
@@ -143,6 +149,7 @@ impl Session for StandSession {
             })),
             Reply::File(p) => Ok(View::Image(ImageView::new(ImageData::File(p.clone())))),
             Reply::Fail(kind) => Err(Failure::new(*kind, t!(en: "nope", ja: "だめ"))),
+            Reply::Pages(_) => unreachable!("pages do not nest"),
         }
     }
 }
@@ -1637,4 +1644,96 @@ mod payload_mapping {
         });
         assert!(decode_image_view(bad, shown, 100, None, false, &scope).is_none());
     }
+}
+
+// ---- turning from an animation to another kind of page -----------------------------------------
+
+/// A document of pages: page 1 is a two-frame animation, then `next`. Returns the app (on page 1,
+/// its animation playing) and the worker's receiver.
+fn gif_page_then(
+    name: &str,
+    next: Reply,
+) -> (
+    App,
+    std::sync::mpsc::Receiver<MediaResult>,
+    crate::test_support::TmpDir,
+) {
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let gif = dir.join("anim.gif");
+    std::fs::write(
+        &gif,
+        konoma_test_support::build_animated_gif(8, 8, &[([255, 0, 0], 600_000), ([0, 0, 255], 20)]),
+    )
+    .unwrap();
+    let still = dir.join("still.png");
+    png(&still, 8, 8);
+    let p = dir.join("doc.png");
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::image(p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let next = match next {
+        Reply::File(_) => Reply::File(still),
+        other => other,
+    };
+    let (plugin, _seen) = stand(Reply::Pages(vec![Reply::File(gif), next]), Some(2));
+    STAND_IN.with(|s| *s.borrow_mut() = Some(plugin));
+    app.start_media_plugin("image", &p);
+    while app.is_media_loading() || !app.is_gif_active() {
+        let r = recv_any(&rx);
+        app.apply_media(r);
+    }
+    assert!(app.is_gif_active(), "page 1 is an animation");
+    (app, rx, dir)
+}
+
+fn settle_turn(app: &mut App, rx: &std::sync::mpsc::Receiver<MediaResult>) {
+    while app.is_media_loading() {
+        let r = recv_any(rx);
+        app.apply_media(r);
+    }
+}
+
+#[test]
+fn turning_from_an_animation_to_a_still_page_shows_the_still_and_stops_the_animation() {
+    let (mut app, rx, _dir) = gif_page_then("konoma_gif_to_still", Reply::File(PathBuf::new()));
+    app.next_page();
+    assert!(
+        app.is_gif_active(),
+        "the animation stays on screen while the next page is drawn"
+    );
+    settle_turn(&mut app, &rx);
+    assert!(app.image_src.is_some(), "the still page landed");
+    assert!(
+        !app.is_gif_active(),
+        "the animation of the page before is gone once a still lands"
+    );
+    assert!(app.gif_protocol().is_none());
+}
+
+#[test]
+fn turning_from_an_animation_to_a_failing_page_says_why_and_stops_the_animation() {
+    let (mut app, rx, _dir) =
+        gif_page_then("konoma_gif_to_fail", Reply::Fail(FailureKind::Corrupt));
+    app.next_page();
+    assert!(app.is_gif_active(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some(), "the failure is recorded");
+    assert!(
+        !app.is_gif_active(),
+        "a page that fails does not leave the animation of the page before"
+    );
+}
+
+#[test]
+fn a_dropped_stale_answer_does_not_stop_the_animation() {
+    let (mut app, _rx, _dir) = gif_page_then("konoma_gif_cancelled", Reply::File(PathBuf::new()));
+    app.apply_payload(MediaPayload::ImageFailed(
+        crate::preview::image::ImageFailure::Cancelled,
+    ));
+    assert!(app.is_gif_active(), "a cancelled load says nothing");
 }

@@ -59,6 +59,8 @@ impl App {
     /// failure and says nothing).
     fn set_image_failure(&mut self, why: crate::preview::image::ImageFailure) {
         if why != crate::preview::image::ImageFailure::Cancelled {
+            // A page that fails to draw replaces the animation of the page before it.
+            self.gif.clear();
             self.image_failure = Some(why);
         }
     }
@@ -67,6 +69,9 @@ impl App {
     /// zoom/center are left untouched (enter_preview has the preceding clear_image set defaults, and tab restore has already
     /// overwritten them with the restored values; so that a late asynchronous result does not break the restored zoom/center).
     pub(super) fn set_static_image(&mut self, img: image::DynamicImage) {
+        // A still landing replaces whatever animation was playing (`render_image` looks at the
+        // animation first, so a stale one would hide the new picture).
+        self.gif.clear();
         self.image_src = Some(std::sync::Arc::new(img));
         // Let the next render (prepare_image) build the protocol.
         self.image_viewer.set_crop(None);
@@ -496,6 +501,12 @@ impl App {
     /// Returns true if advanced (the caller re-renders). Always false if not a GIF.
     pub fn advance_gif_if_due(&mut self) -> bool {
         self.gif.advance_if_due(std::time::Instant::now())
+    }
+
+    /// Test seam: put the full-screen GIF on frame `idx` without waiting for its time.
+    #[cfg(test)]
+    pub(crate) fn force_gif_frame_for_test(&mut self, idx: usize) {
+        self.gif.force_frame_index(idx);
     }
 
     /// Whether a GIF animation is active (used for branching in the render path and footer/zoom checks).
