@@ -322,6 +322,11 @@ impl Pictures {
     /// [`CanvasPictureHost::landed`]), the GIF frames that are due, and the follow-up job for
     /// pictures that waited.
     pub fn poll(&mut self) {
+        self.poll_at(Instant::now());
+    }
+
+    /// What [`poll`](Self::poll) does at the time `now` (the animation's clock).
+    pub fn poll_at(&mut self, now: Instant) {
         while let Ok(res) = self.enc_rx.try_recv() {
             self.cache.apply_encode(res);
         }
@@ -348,7 +353,7 @@ impl Pictures {
             self.last = Some(job.images);
         }
         if let Some(s) = self.still.as_mut() {
-            s.poll();
+            s.poll_at(now);
         }
         self.cache.advance_gifs_if_due();
         if let Some(at) = self.again_at {
@@ -367,6 +372,11 @@ impl Pictures {
     /// once it landed), and until the next GIF frame (only while the canvas is the frame shown).
     /// `None` when nothing is going on.
     pub fn wake_in(&self) -> Option<Duration> {
+        self.wake_in_at(Instant::now())
+    }
+
+    /// What [`wake_in`](Self::wake_in) says at the time `now`.
+    pub fn wake_in_at(&self, now: Instant) -> Option<Duration> {
         let mut wake: Option<Duration> = None;
         let mut want = |d: Duration| wake = Some(wake.map_or(d, |w| w.min(d)));
         if self.job.is_some() || self.cache.encodes_in_flight() {
@@ -374,10 +384,10 @@ impl Pictures {
         }
         if self.job.is_none() {
             if let Some(at) = self.again_at {
-                want(at.saturating_duration_since(Instant::now()));
+                want(at.saturating_duration_since(now));
             }
         }
-        if let Some(w) = self.still.as_ref().and_then(Still::wake_in) {
+        if let Some(w) = self.still.as_ref().and_then(|s| s.wake_in_at(now)) {
             want(w);
         }
         if self.on_canvas {

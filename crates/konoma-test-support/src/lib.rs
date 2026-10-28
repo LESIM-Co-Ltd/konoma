@@ -450,3 +450,22 @@ pub fn run_program_without_terminal(
         .output()
         .expect("the program starts")
 }
+
+/// An animated GIF (looping) of solid-color frames: each `(rgb, delay_ms)` is one frame of
+/// `w` x `h` pixels shown for its delay. Delays are rounded to 10 ms by the format.
+pub fn build_animated_gif(w: u32, h: u32, frames: &[([u8; 3], u32)]) -> Vec<u8> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).expect("repeat is written");
+        for (c, ms) in frames {
+            let img = RgbaImage::from_pixel(w, h, Rgba([c[0], c[1], c[2], 255]));
+            let delay = Delay::from_numer_denom_ms(*ms, 1);
+            enc.encode_frame(Frame::from_parts(img, 0, 0, delay))
+                .expect("a frame is written");
+        }
+    }
+    out
+}

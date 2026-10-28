@@ -128,15 +128,33 @@ fn step(until: impl FnMut(&Buffer) -> bool + 'static, then: Option<AppEvent>) ->
     }
 }
 
+/// The waits the loop asked for, each with the color on screen at the time.
+type Waits = Arc<Mutex<Vec<(Option<Duration>, char)>>>;
+
 struct Driver {
     screen: Arc<Mutex<TestBackend>>,
     steps: VecDeque<Step>,
     started: Instant,
     log: Vec<String>,
+    /// Every wait the loop asked for, in order, with the color on screen then (r, b, g or `-`).
+    waits: Waits,
 }
 
 impl EventSource for Driver {
     fn next(&mut self, wait: Option<Duration>) -> Next {
+        {
+            let b = self.screen.lock().unwrap();
+            let on = if has_red(b.buffer()) {
+                'r'
+            } else if has_blue(b.buffer()) {
+                'b'
+            } else if has_green(b.buffer()) {
+                'g'
+            } else {
+                '-'
+            };
+            self.waits.lock().unwrap().push((wait, on));
+        }
         loop {
             let Some(front) = self.steps.front_mut() else {
                 return Next::End;
@@ -281,6 +299,7 @@ fn half(path: &Path) -> Option<Pictures> {
 struct Out {
     screen: Arc<Mutex<TestBackend>>,
     calls: Arc<AtomicUsize>,
+    waits: Waits,
 }
 
 impl Out {
@@ -310,11 +329,13 @@ fn run_img(
         open_file(vec![Arc::new(plugin)], &path, "en", TermCaps::new()).expect("opens");
     let screen = Arc::new(Mutex::new(TestBackend::new(W, H)));
     let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let waits = Arc::new(Mutex::new(Vec::new()));
     let mut events = Driver {
         screen: Arc::clone(&screen),
         steps: steps(&calls).into(),
         started: Instant::now(),
         log: Vec::new(),
+        waits: Arc::clone(&waits),
     };
     let pictures = pictures(&opened.path);
     run_with_pictures(
@@ -327,7 +348,11 @@ fn run_img(
     )
     .expect("runs");
     drop(dir);
-    Out { screen, calls }
+    Out {
+        screen,
+        calls,
+        waits,
+    }
 }
 
 /// A picture file made in the run's directory, then shown.
@@ -886,6 +911,8 @@ struct PagedPlugin {
     asked: Arc<Mutex<Vec<Option<usize>>>>,
     dir: PathBuf,
     svg: bool,
+    /// Page 0 is a two-frame animation, red then green (the other pages are as without it).
+    gif: bool,
     /// The page (from 0) whose `view` fails.
     fail: Option<usize>,
 }
@@ -895,6 +922,7 @@ struct PagedSession {
     asked: Arc<Mutex<Vec<Option<usize>>>>,
     dir: PathBuf,
     svg: bool,
+    gif: bool,
     fail: Option<usize>,
 }
 
@@ -911,6 +939,7 @@ impl Plugin for PagedPlugin {
             asked: Arc::clone(&self.asked),
             dir: self.dir.clone(),
             svg: self.svg,
+            gif: self.gif,
             fail: self.fail,
         }))
     }
@@ -932,6 +961,16 @@ impl Session for PagedSession {
         let page = req.page.unwrap_or(0).min(self.count - 1);
         if self.fail == Some(page) {
             return Err(Failure::corrupt(t!(en: "page broken on purpose")));
+        }
+        if self.gif && page == 0 {
+            let bytes = konoma_test_support::build_animated_gif(
+                64,
+                64,
+                &[([255, 0, 0], 20), ([0, 255, 0], 20)],
+            );
+            let p = self.dir.join("anim.gif");
+            std::fs::write(&p, bytes).expect("a gif is written");
+            return Ok(file_view(&p));
         }
         if self.svg {
             let data = [TWO_TONE_SVG, BLUE_SVG, GREEN_SVG][page % 3];
@@ -982,13 +1021,14 @@ fn run_paged_failing(
     pictures: impl FnOnce(&Path) -> Option<Pictures>,
     steps: Vec<Step>,
 ) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
-    run_paged_on_screen(count, svg, fail, pictures, |_| steps)
+    run_paged_on_screen(count, svg, false, fail, pictures, |_| steps)
 }
 
 /// [`run_paged`] where the steps are made with the screen in hand (a step may resize it).
 fn run_paged_on_screen(
     count: usize,
     svg: bool,
+    gif: bool,
     fail: Option<usize>,
     pictures: impl FnOnce(&Path) -> Option<Pictures>,
     steps: impl FnOnce(&Arc<Mutex<TestBackend>>) -> Vec<Step>,
@@ -1003,17 +1043,20 @@ fn run_paged_on_screen(
         asked: Arc::clone(&asked),
         dir: dir.as_path().to_path_buf(),
         svg,
+        gif,
         fail,
     };
     let mut opened =
         open_file(vec![Arc::new(plugin)], &path, "en", TermCaps::new()).expect("opens");
     let screen = Arc::new(Mutex::new(TestBackend::new(W, H)));
     let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let waits = Arc::new(Mutex::new(Vec::new()));
     let mut events = Driver {
         screen: Arc::clone(&screen),
         steps: steps(&screen).into(),
         started: Instant::now(),
         log: Vec::new(),
+        waits: Arc::clone(&waits),
     };
     let pictures = pictures(&opened.path);
     run_with_pictures(
@@ -1030,6 +1073,7 @@ fn run_paged_on_screen(
         Out {
             screen,
             calls: Arc::new(AtomicUsize::new(0)),
+            waits,
         },
         asked,
     )
@@ -1456,7 +1500,7 @@ fn a_terminal_resize_while_a_page_is_awaited_and_after_it_lands_leaves_only_the_
     // answer meant for the page before must never be drawn over the page that replaced it.
     let release = Arc::new(AtomicBool::new(false));
     let r = Arc::clone(&release);
-    let (out, _) = run_paged_on_screen(3, true, None, blue_held(&release), move |screen| {
+    let (out, _) = run_paged_on_screen(3, true, false, None, blue_held(&release), move |screen| {
         let resize_to = |w: u16, h: u16| {
             let screen = Arc::clone(screen);
             Box::new(move || screen.lock().unwrap().resize(w, h)) as Box<dyn FnOnce()>
@@ -1552,4 +1596,175 @@ fn the_page_keys_act_and_are_named_exactly_when_the_picture_has_pages() {
     }
     assert_eq!(asked, 3 * 2 * 2 * 2 * 2);
     assert_eq!(acted, 3 * 2 * 2);
+}
+
+// ---- an animation, through the real loop ----
+
+/// A two-frame animation of 20 ms frames, red then green, as a view.
+fn gif_script(_: usize, dir: &Path) -> View {
+    let bytes =
+        konoma_test_support::build_animated_gif(64, 64, &[([255, 0, 0], 20), ([0, 255, 0], 20)]);
+    let p = dir.join("anim.gif");
+    std::fs::write(&p, bytes).expect("a gif is written");
+    file_view(&p)
+}
+
+/// The waits the loop asked for while `on` was on screen.
+fn waits_on(out: &Out, on: &[char]) -> Vec<Option<Duration>> {
+    out.waits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, c)| on.contains(c))
+        .map(|(w, _)| *w)
+        .collect()
+}
+
+#[test]
+fn an_animation_plays_through_the_loop_on_its_own_wakeups_and_every_wait_is_bounded() {
+    let seen = Arc::new(Mutex::new(String::new()));
+    let s = Arc::clone(&seen);
+    // Red, then green, then red again: the frames come and the loop wraps, with no key.
+    let out = run_img(gif_script, half, move |_| {
+        vec![step(
+            move |b| {
+                let mut s = s.lock().unwrap();
+                let now = if has_red(b) {
+                    'r'
+                } else if has_green(b) {
+                    'g'
+                } else {
+                    return false;
+                };
+                if !s.ends_with(now) {
+                    s.push(now);
+                }
+                s.as_str() == "rgr"
+            },
+            None,
+        )]
+    });
+    assert_eq!(*seen.lock().unwrap(), "rgr");
+    let w = waits_on(&out, &['r', 'g']);
+    assert!(w.len() >= 3, "the loop was woken for the frames: {w:?}");
+    for w in w {
+        let w = w.expect("a playing animation never lets the loop sleep without a deadline");
+        assert!(
+            w >= Duration::from_millis(10) && w <= Duration::from_millis(100),
+            "wait {w:?} is out of the 10..=100 ms bounds"
+        );
+    }
+    assert_eq!(out.calls.load(Ordering::SeqCst), 1, "playing asks no one");
+}
+
+#[test]
+fn a_still_picture_lets_the_loop_sleep_with_no_deadline() {
+    let out = run_img(png_script(red_image), half, |_| vec![step(has_red, None)]);
+    let w = waits_on(&out, &['r']);
+    assert!(
+        !w.is_empty(),
+        "the loop asked for a wait with the picture on screen"
+    );
+    assert!(
+        w.iter().all(Option::is_none),
+        "a picture with no animation woke the loop: {w:?}"
+    );
+}
+
+#[test]
+fn turning_from_an_animation_to_a_still_page_stops_it_and_leaves_no_old_frame() {
+    let seen = Arc::new(Mutex::new(String::new()));
+    let s = Arc::clone(&seen);
+    let s_turn = Arc::clone(&seen);
+    // The page with the blue picture is page 1 (pages are red, blue, green).
+    let (out, _) = run_paged_on_screen(2, false, true, None, half, move |_| {
+        vec![
+            step(has_red, Some(key('J'))),
+            step(
+                move |b| {
+                    // From the turn on, a red or a green cell is a frame of the animation that
+                    // should be gone.
+                    if has_blue(b) {
+                        return true;
+                    }
+                    if has_red(b) || has_green(b) {
+                        s.lock().unwrap().push('x');
+                    }
+                    false
+                },
+                Some(key('+')),
+            ),
+            // Give a stale animation time to show up: many frames of 20 ms pass.
+            {
+                let turns = Arc::new(AtomicUsize::new(0));
+                let s = s_turn;
+                step(
+                    move |b| {
+                        if has_red(b) || has_green(b) {
+                            s.lock().unwrap().push('y');
+                        }
+                        turns.fetch_add(1, Ordering::SeqCst) >= 150
+                    },
+                    None,
+                )
+            },
+        ]
+    });
+    let stale = seen.lock().unwrap().clone();
+    assert!(
+        !stale.contains('y'),
+        "a frame of the animation came back after the turn: {stale:?}"
+    );
+    // On the blue page nothing is playing: the loop sleeps with no deadline.
+    let w = waits_on(&out, &['b']);
+    assert!(!w.is_empty());
+    assert!(
+        w.last().unwrap().is_none(),
+        "the animation kept waking the loop on a still page: {w:?}"
+    );
+}
+
+#[test]
+fn turning_from_an_animation_to_a_failing_page_stops_it_and_leaves_no_frame() {
+    let stale = Arc::new(AtomicBool::new(false));
+    let turns = Arc::new(AtomicUsize::new(0));
+    let (st, tu) = (Arc::clone(&stale), Arc::clone(&turns));
+    let (out, asked) = run_paged_failing_gif(2, Some(1), half, move |_| {
+        vec![
+            step(has_red, Some(key('J'))),
+            step(
+                |b| rows(b).iter().any(|l| l.contains("page broken on purpose")),
+                Some(key('+')),
+            ),
+            // Many frames of 20 ms pass: a stale animation would show up as color.
+            step(
+                move |b| {
+                    if has_red(b) || has_green(b) {
+                        st.store(true, Ordering::SeqCst);
+                    }
+                    tu.fetch_add(1, Ordering::SeqCst) >= 150
+                },
+                None,
+            ),
+        ]
+    });
+    assert_eq!(pages_asked(&asked), [0, 1]);
+    assert!(
+        !stale.load(Ordering::SeqCst),
+        "a frame of the animation stayed on screen after the page failed"
+    );
+    let w = waits_on(&out, &['-']);
+    assert!(
+        w.last().is_some_and(Option::is_none),
+        "the animation kept waking the loop on a failed page: {w:?}"
+    );
+}
+
+fn run_paged_failing_gif(
+    count: usize,
+    fail: Option<usize>,
+    pictures: impl FnOnce(&Path) -> Option<Pictures>,
+    steps: impl FnOnce(&Arc<Mutex<TestBackend>>) -> Vec<Step>,
+) -> (Out, Arc<Mutex<Vec<Option<usize>>>>) {
+    run_paged_on_screen(count, false, true, fail, pictures, steps)
 }

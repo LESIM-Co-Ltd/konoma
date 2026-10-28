@@ -22,12 +22,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// A plugin that shows every `*.png` as a still picture of the file itself.
-struct PngPlugin;
+pub(super) struct PngPlugin;
 
 impl Plugin for PngPlugin {
     fn manifest(&self) -> Manifest {
         Manifest::new("png-parity", "0.0.1")
-            .bind(Bind::files(["*.png"]))
+            .bind(Bind::files(["*.png", "*.gif"]))
             .shows(ViewKind::Image)
     }
 
@@ -135,6 +135,19 @@ fn app_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> Shot 
 
 /// What the host shows for `file` after the presses (`picker` false: no picture backend).
 fn host_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker: bool) -> Shot {
+    host_shot_at(root, file, h, spec, picker, None)
+}
+
+/// [`host_shot`] with an animation put on its frame `frame` before the presses (no waiting for
+/// the frame's time).
+pub(super) fn host_shot_at(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+    picker: bool,
+    frame: Option<usize>,
+) -> Shot {
     let mut s = Sim::with_config_sized(root, cfg_en(), W, h);
     let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
     if picker {
@@ -161,6 +174,10 @@ fn host_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker: boo
         }
     };
     settle(&mut s, &mut req_rx);
+    if let Some(i) = frame {
+        s.app.force_gif_frame_for_test(i);
+        settle(&mut s, &mut req_rx);
+    }
     for (code, mods) in presses(spec) {
         s.press(code, mods);
         assert!(!s.quit, "the host ended before the keys ran out: {spec}");

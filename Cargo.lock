@@ -2024,6 +2024,7 @@ name = "konoma-test-support"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "image",
  "zip",
 ]
 

@@ -15,7 +15,11 @@
 //!   protocol elsewhere (resized on a worker, [`ResizeChannel`]).
 //! - **A failure says why** (too large, damaged, unsupported format, ...) in konoma's words; with
 //!   no reason known the terminal is the suspect.
-//! - **An animation** shows its first frame (playing it is not done here yet).
+//! - **An animation plays** as in konoma: the shared [`GifPlayer`] steps the frames on their own
+//!   delays (looping), each frame encoded synchronously to the display size and drawn through
+//!   ratatui-image's protocol on every terminal (konoma does the same, kitty included). Zoom and
+//!   pan are the still picture's own [`ImageViewState`] and [`ImageViewer`]. The loop sleeps until
+//!   the next frame is due ([`Still::wake_in_at`]) and not shorter; a one-frame GIF is a still.
 //! - The kitty images of a still are never deleted while the app runs, as in konoma: a placement
 //!   with no placeholder cell left shows nothing, and the terminal drops them at exit.
 
@@ -29,6 +33,7 @@ use image::DynamicImage;
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::lang::Lang;
 use konoma_svg::image::ImageFailure;
+use konoma_widgets::gif_player::GifPlayer;
 use konoma_widgets::image_view::{
     ImageBackend, ImageSource, ImageViewState, ImageViewer, KittyResult, ResizeChannel, ZOOM_FACTOR,
 };
@@ -37,6 +42,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui_image::picker::Picker;
+use ratatui_image::Image;
 
 use crate::canvas_pictures::{decode_picture_view, image_failure_message, PictureView, SvgDraw};
 use crate::view::{ImageData, ImageView};
@@ -70,6 +76,8 @@ enum State {
         /// For a vector source: the size of its first raster, so the layout never moves.
         logical: Option<(u32, u32)>,
     },
+    /// An animation (two frames or more), held by [`Still::gif`].
+    Gif,
     /// `None`: no reason is known.
     Failed(Option<ImageFailure>),
 }
@@ -106,6 +114,8 @@ pub struct Still {
     held: bool,
     pose: ImageViewState,
     viewer: ImageViewer,
+    /// The frames and the playback position of a [`State::Gif`]; empty in every other state.
+    gif: GifPlayer,
     spinner: usize,
     /// When a resize was last asked for (the non-kitty path), until its answer is applied.
     resize_asked: Option<Instant>,
@@ -146,6 +156,7 @@ impl Still {
             held: false,
             pose: ImageViewState::default(),
             viewer: ImageViewer::new(),
+            gif: GifPlayer::new(),
             spinner: 0,
             resize_asked: None,
             drawn_geometry: None,
@@ -163,7 +174,7 @@ impl Still {
         }
         self.cancel_job();
         self.key = Some(iv.clone());
-        if keep_old && matches!(self.state, State::Ready { .. }) {
+        if keep_old && matches!(self.state, State::Ready { .. } | State::Gif) {
             // The page before stays on screen in the pose it has (the loop has already put it back
             // to fit, [`Still::turn_page`], and the keys move it from there as on the host).
             self.held = true;
@@ -171,6 +182,7 @@ impl Still {
             self.pose.reset();
             self.held = false;
             self.state = State::Loading;
+            self.gif.clear();
             self.viewer.clear();
         }
         if !self.held {
@@ -202,6 +214,7 @@ impl Still {
         self.key = None;
         self.held = false;
         self.state = State::Loading;
+        self.gif.clear();
         self.pose.reset();
         self.viewer.clear();
         self.drawn_geometry = None;
@@ -240,7 +253,7 @@ impl Still {
     pub fn shape(&self) -> StillShape {
         match self.state {
             State::Loading => StillShape::Loading,
-            State::Ready { .. } => StillShape::Ready,
+            State::Ready { .. } | State::Gif => StillShape::Ready,
             State::Failed(_) => StillShape::Failed,
         }
     }
@@ -282,8 +295,9 @@ impl Still {
     }
 
     /// Apply what the workers finished: the decode, the resizes, the kitty builds; advance the
-    /// spinner. Returns whether anything changed on screen.
-    pub fn poll(&mut self) -> bool {
+    /// spinner; step the animation if its frame is due at `now` (the animation's clock, which
+    /// tests set themselves). Returns whether anything changed on screen.
+    pub fn poll_at(&mut self, now: Instant) -> bool {
         let mut changed = false;
         while let Ok(done) = self.done_rx.try_recv() {
             if done.gen != self.gen {
@@ -298,6 +312,8 @@ impl Still {
                 self.drawn_geometry = None;
                 self.resize_asked = None;
             }
+            // Whatever lands replaces an animation that was held: its frames go with it.
+            self.gif.clear();
             self.state = match done.view {
                 Some(PictureView::Still(img)) => State::Ready {
                     img: Arc::new(img),
@@ -310,13 +326,20 @@ impl Still {
                         logical,
                     }
                 }
-                // The first frame (the animation is not played here yet).
-                Some(PictureView::Gif(frames)) => match frames.into_iter().next() {
-                    Some((img, _)) => State::Ready {
-                        img: Arc::new(img),
+                // Two frames or more play; one frame is a still picture.
+                Some(PictureView::Gif(frames)) => match frames.len() {
+                    0 => State::Failed(None),
+                    1 => State::Ready {
+                        img: Arc::new(frames.into_iter().next().map(|f| f.0).unwrap_or_default()),
                         logical: None,
                     },
-                    None => State::Failed(None),
+                    _ => {
+                        // No `set_crop(None)` as konoma's `set_gif_frames` has: the viewer
+                        // was cleared on `submit` (or just above, for a held page), so its crop
+                        // is already `None` whenever a picture lands.
+                        self.gif.set_frames(frames);
+                        State::Gif
+                    }
                 },
                 Some(PictureView::Failed(why)) => State::Failed(Some(why)),
                 None => State::Failed(None),
@@ -332,6 +355,10 @@ impl Still {
         while let Ok(res) = self.kitty_rx.try_recv() {
             changed |= self.viewer.apply_kitty(res);
         }
+        // The frame that is due, once per call (a late tick advances one frame, as konoma's).
+        if matches!(self.state, State::Gif) && self.gif.advance_if_due(now) {
+            changed = true;
+        }
         if self.loading() {
             self.spinner = self.spinner.wrapping_add(1);
             changed = true;
@@ -339,8 +366,21 @@ impl Still {
         changed
     }
 
-    /// How long the loop may wait before it has to look at the picture again.
-    pub fn wake_in(&self) -> Option<Duration> {
+    /// How long the loop may wait before it has to look at the picture again, at the time `now`.
+    /// While an animation plays the wait is the time left of the frame on screen (konoma's
+    /// `gif_poll_timeout`); with none playing it adds nothing.
+    pub fn wake_in_at(&self, now: Instant) -> Option<Duration> {
+        let busy = self.busy_wake();
+        let frame = matches!(self.state, State::Gif)
+            .then(|| self.gif.poll_timeout(now))
+            .flatten();
+        match (busy, frame) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn busy_wake(&self) -> Option<Duration> {
         let loading = self.loading();
         let resizing = self
             .resize_asked
@@ -367,6 +407,25 @@ impl Still {
             State::Failed(why) => {
                 let msg = failure_line(why.as_ref(), lang, &self.plugin_id);
                 Paragraph::new(msg).render(inner, buf);
+                return;
+            }
+            State::Gif => {
+                // Prepared (laid out and encoded to the display size) and drawn as one piece,
+                // as konoma's `render_image` does for an animation.
+                let target = self.gif.prepare(
+                    &mut self.pose,
+                    &mut self.viewer,
+                    &self.picker,
+                    self.render_scale,
+                    inner,
+                );
+                match (target, self.gif.protocol()) {
+                    (Some(target), Some(proto)) => Image::new(proto).render(target, buf),
+                    _ => {
+                        let msg = failure_line(None, lang, &self.plugin_id);
+                        Paragraph::new(msg).render(inner, buf);
+                    }
+                }
                 return;
             }
             State::Ready { .. } => {}
@@ -459,6 +518,8 @@ impl Drop for Still {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::pictures::InProcessSvg;
+    use konoma_test_support::{build_animated_gif, unique_tmp as unique, TmpDir};
 
     fn iv(data: ImageData) -> ImageView {
         ImageView::new(data)
@@ -588,5 +649,372 @@ mod tests {
         check(frames(), frames(), false, "frames, never the same");
 
         assert!(same >= 6 && other >= 13, "same {same}, other {other}");
+    }
+
+    // ---- the animation ----
+
+    fn unique_tmp(name: &str) -> TmpDir {
+        let dir = unique(name);
+        std::fs::create_dir_all(dir.as_path()).unwrap();
+        dir
+    }
+
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    const GREEN: [u8; 3] = [0, 255, 0];
+    const TMO: Duration = Duration::from_secs(20);
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn new_still(use_kitty: bool, path: &Path) -> Still {
+        Still::new(
+            &Picker::halfblocks(),
+            use_kitty,
+            false,
+            "t",
+            path,
+            800,
+            Arc::new(InProcessSvg),
+        )
+    }
+
+    /// Submit `file` and let the worker land it (the clock is `t0` throughout, so the
+    /// animation's timing starts there and nothing waits on real time).
+    fn land(s: &mut Still, file: &Path, keep_old: bool, t0: Instant) {
+        s.submit(
+            &ImageView::new(ImageData::File(file.to_path_buf())),
+            keep_old,
+        );
+        let started = Instant::now();
+        while s.loading() {
+            s.poll_at(t0);
+            assert!(started.elapsed() < TMO, "the picture never landed");
+            std::thread::sleep(ms(2));
+        }
+    }
+
+    fn gif_file(dir: &TmpDir, name: &str, w: u32, frames: &[([u8; 3], u32)]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, build_animated_gif(w, w, frames)).unwrap();
+        p
+    }
+
+    fn png_file(dir: &TmpDir, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        image::RgbaImage::from_pixel(60, 60, image::Rgba([0, 255, 0, 255]))
+            .save(&p)
+            .unwrap();
+        p
+    }
+
+    /// The colors the picture cells show: the (fg, bg) of every cell of `buf` that has one.
+    fn colors(buf: &Buffer) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for c in buf.content() {
+            out.insert(format!("{:?}/{:?}", c.fg, c.bg));
+        }
+        out
+    }
+
+    fn drawn(s: &mut Still) -> Buffer {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+        s.draw(&mut buf, area, Lang::En);
+        buf
+    }
+
+    fn has_rgb(buf: &Buffer, want: [u8; 3]) -> bool {
+        buf.content().iter().any(|c| {
+            c.fg == ratatui::style::Color::Rgb(want[0], want[1], want[2])
+                || c.bg == ratatui::style::Color::Rgb(want[0], want[1], want[2])
+        })
+    }
+
+    #[test]
+    fn an_animation_steps_its_frames_on_their_own_delays_and_loops() {
+        let dir = unique_tmp("still_gif_steps");
+        let f = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 200), (GREEN, 100)]);
+        let mut s = new_still(false, &f);
+        let t0 = Instant::now();
+        land(&mut s, &f, false, t0);
+        assert!(matches!(s.state, State::Gif));
+        assert_eq!(s.shape(), StillShape::Ready);
+        assert_eq!(s.gif.frame_index(), 0);
+        // The clock started at t0: 99 ms is early, 100 ms is due.
+        assert!(!s.poll_at(t0 + ms(99)));
+        assert_eq!(s.gif.frame_index(), 0);
+        assert!(s.poll_at(t0 + ms(100)), "a new frame is a change on screen");
+        assert_eq!(s.gif.frame_index(), 1);
+        // The second frame is shown for 200 ms from the tick that advanced.
+        assert!(!s.poll_at(t0 + ms(299)));
+        assert!(s.poll_at(t0 + ms(300)));
+        assert_eq!(s.gif.frame_index(), 2);
+        assert!(!s.poll_at(t0 + ms(399)));
+        assert!(s.poll_at(t0 + ms(400)));
+        assert_eq!(
+            s.gif.frame_index(),
+            0,
+            "after the last frame the first returns"
+        );
+        // A late tick advances one frame, not several.
+        assert!(s.poll_at(t0 + ms(10_000)));
+        assert_eq!(s.gif.frame_index(), 1);
+    }
+
+    #[test]
+    fn each_frame_is_drawn_and_a_kitty_terminal_draws_the_same_cells() {
+        let dir = unique_tmp("still_gif_draw");
+        let f = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        let mut plain = new_still(false, &f);
+        let mut kitty = new_still(true, &f);
+        land(&mut plain, &f, false, t0);
+        land(&mut kitty, &f, false, t0);
+        let (p0, k0) = (drawn(&mut plain), drawn(&mut kitty));
+        assert!(has_rgb(&p0, RED) && !has_rgb(&p0, BLUE), "the first frame");
+        assert_eq!(p0, k0, "kitty and the others draw an animation alike");
+        plain.poll_at(t0);
+        plain.poll_at(t0 + ms(100));
+        let p1 = drawn(&mut plain);
+        assert!(has_rgb(&p1, BLUE) && !has_rgb(&p1, RED), "the second frame");
+        assert_ne!(colors(&p0), colors(&p1));
+        plain.poll_at(t0 + ms(200));
+        assert_eq!(drawn(&mut plain), p0, "and around again to the first");
+    }
+
+    #[test]
+    fn the_loop_wakes_for_the_next_frame_and_for_nothing_else() {
+        let dir = unique_tmp("still_gif_wake");
+        let t0 = Instant::now();
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 60), (BLUE, 60)]);
+        let mut s = new_still(false, &g);
+        land(&mut s, &g, false, t0);
+        // Timing has started at t0: the time left of the frame on screen.
+        assert_eq!(s.wake_in_at(t0), Some(ms(60)));
+        assert_eq!(s.wake_in_at(t0 + ms(35)), Some(ms(25)));
+        // Never shorter than konoma's floor, never longer than its ceiling.
+        assert_eq!(
+            s.wake_in_at(t0 + ms(58)),
+            Some(konoma_widgets::gif_player::POLL_MIN)
+        );
+        let slow = gif_file(&dir, "slow.gif", 40, &[(RED, 5000), (BLUE, 5000)]);
+        land(&mut s, &slow, false, t0);
+        assert_eq!(s.wake_in_at(t0), Some(konoma_widgets::gif_player::POLL_MAX));
+        // A still picture, a failure and a held-nothing Still need no wake at all.
+        let png = png_file(&dir, "a.png");
+        land(&mut s, &png, false, t0);
+        assert_eq!(s.wake_in_at(t0), None, "a still never wakes the loop");
+        assert_eq!(s.wake_in_at(t0 + ms(100_000)), None);
+        let junk = dir.join("junk.gif");
+        std::fs::write(&junk, b"GIF89a-not-a-gif").unwrap();
+        land(&mut s, &junk, false, t0);
+        assert_eq!(s.shape(), StillShape::Failed);
+        assert_eq!(s.wake_in_at(t0), None, "a failure never wakes the loop");
+    }
+
+    #[test]
+    fn zoom_and_pan_move_the_window_over_an_animation() {
+        let dir = unique_tmp("still_gif_zoom");
+        let f = gif_file(&dir, "a.gif", 400, &[(RED, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        let mut s = new_still(false, &f);
+        land(&mut s, &f, false, t0);
+        drawn(&mut s);
+        let fit = s.viewer.crop().expect("laid out at fit");
+        assert_eq!(s.zoom(), 1.0);
+        s.zoom_steps(1);
+        s.zoom_steps(1);
+        assert!(s.zoom() > 1.0);
+        drawn(&mut s);
+        let zoomed = s.viewer.crop().expect("laid out zoomed");
+        assert!(zoomed.2 * zoomed.3 < fit.2 * fit.3, "{fit:?} -> {zoomed:?}");
+        let c0 = s.center();
+        s.pan(1.0, 1.0);
+        drawn(&mut s);
+        // Only the clipped axis (the vertical one here) moves.
+        assert!(s.center().1 > c0.1, "panned");
+        assert_eq!(s.center().0, c0.0, "the unclipped axis stays");
+        assert_ne!(s.viewer.crop(), Some(zoomed));
+        // A frame change keeps the pose.
+        let pose = (s.zoom(), s.center());
+        s.poll_at(t0);
+        assert!(s.poll_at(t0 + ms(100)));
+        drawn(&mut s);
+        assert_eq!(pose, (s.zoom(), s.center()));
+        s.zoom_reset();
+        assert_eq!((s.zoom(), s.center()), (1.0, (0.5, 0.5)));
+    }
+
+    #[test]
+    fn leaving_an_animation_stops_it_and_leaves_no_frame_behind() {
+        let dir = unique_tmp("still_gif_leave");
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let png = png_file(&dir, "a.png");
+        let junk = dir.join("junk.png");
+        std::fs::write(&junk, b"\x89PNG\r\n\x1a\nnot a picture").unwrap();
+        let g2 = gif_file(&dir, "b.gif", 40, &[(GREEN, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        // Each way out: a still, a failure, the next page (kept on screen meanwhile), a
+        // different animation, and the session dropping the picture.
+        for (way, next) in [("still", &png), ("failure", &junk), ("held page", &png)] {
+            let mut s = new_still(false, &g);
+            land(&mut s, &g, false, t0);
+            s.poll_at(t0);
+            assert!(s.poll_at(t0 + ms(100)), "{way}: it plays before");
+            land(&mut s, next, way == "held page", t0);
+            assert!(!s.gif.has_frames(), "{way}: the frames are gone");
+            assert!(!s.poll_at(t0 + ms(50_000)), "{way}: nothing advances");
+            assert_eq!(s.gif.frame_index(), 0, "{way}");
+            assert_eq!(s.wake_in_at(t0 + ms(50_000)), None, "{way}");
+            let buf = drawn(&mut s);
+            assert!(
+                !has_rgb(&buf, BLUE) && !has_rgb(&buf, RED),
+                "{way}: no frame of the old animation is drawn"
+            );
+        }
+        // Another animation starts from its own first frame.
+        let mut s = new_still(false, &g);
+        land(&mut s, &g, false, t0);
+        s.poll_at(t0);
+        s.poll_at(t0 + ms(100));
+        assert_eq!(s.gif.frame_index(), 1);
+        land(&mut s, &g2, true, t0);
+        assert_eq!(s.gif.frame_index(), 0);
+        assert!(has_rgb(&drawn(&mut s), GREEN));
+        // The session's view is no picture any more.
+        s.forget();
+        assert!(!s.holds() && !s.gif.has_frames());
+        assert!(!s.poll_at(t0 + ms(50_000)));
+        assert_eq!(s.wake_in_at(t0 + ms(50_000)), None);
+    }
+
+    #[test]
+    fn a_new_picture_without_a_turn_drops_the_old_frames_at_once() {
+        // Not held: the old animation's frames are freed when the next picture is asked for,
+        // not only when it lands (a big animation would sit in memory under the spinner).
+        let dir = unique_tmp("still_gif_free");
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let png = png_file(&dir, "a.png");
+        let t0 = Instant::now();
+        let mut s = new_still(false, &g);
+        land(&mut s, &g, false, t0);
+        assert!(s.gif.has_frames());
+        s.submit(&ImageView::new(ImageData::File(png)), false);
+        assert!(!s.gif.has_frames(), "freed while the next one loads");
+        assert!(matches!(s.state, State::Loading));
+        // The session dropping the picture frees them too.
+        let mut s = new_still(false, &g);
+        land(&mut s, &g, false, t0);
+        s.forget();
+        assert!(!s.gif.has_frames());
+    }
+
+    #[test]
+    fn an_animation_landing_over_a_held_still_starts_at_fit_with_no_crop_of_the_old_one() {
+        let dir = unique_tmp("still_gif_crop");
+        let png = png_file(&dir, "a.png");
+        let g = gif_file(&dir, "a.gif", 400, &[(RED, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        let mut s = new_still(false, &png);
+        land(&mut s, &png, false, t0);
+        s.zoom_steps(2);
+        // Draw until the zoomed still has laid itself out (its resize runs on a worker).
+        let started = Instant::now();
+        while s.viewer.crop().is_none() {
+            drawn(&mut s);
+            s.poll_at(t0);
+            assert!(started.elapsed() < TMO, "the still never laid out");
+            std::thread::sleep(ms(2));
+        }
+        s.turn_page();
+        land(&mut s, &g, true, t0);
+        assert!(matches!(s.state, State::Gif));
+        assert_eq!(s.viewer.crop(), None, "the old picture's crop is gone");
+        assert_eq!(s.zoom(), 1.0);
+    }
+
+    #[test]
+    fn a_page_waiting_keeps_the_playing_animation_on_screen_until_it_lands() {
+        let dir = unique_tmp("still_gif_held");
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let png = png_file(&dir, "a.png");
+        let t0 = Instant::now();
+        let mut s = new_still(false, &g);
+        land(&mut s, &g, false, t0);
+        s.poll_at(t0);
+        s.submit(&ImageView::new(ImageData::File(png.clone())), true);
+        // Until the new page lands the old one stays and still plays.
+        if s.loading() {
+            assert!(s.gif.has_frames() || !s.held);
+            // The wait is the nearer of the busy poll and the frame still on screen.
+            assert!(s.gif.is_active() && s.held);
+            assert_eq!(
+                s.wake_in_at(t0),
+                Some(BUSY_POLL),
+                "busy poll is nearer than 100 ms"
+            );
+            assert_eq!(
+                s.wake_in_at(t0 + ms(99)),
+                Some(konoma_widgets::gif_player::POLL_MIN),
+                "the frame is nearer than the busy poll"
+            );
+        }
+        let started = Instant::now();
+        while s.loading() {
+            s.poll_at(t0);
+            assert!(started.elapsed() < TMO);
+            std::thread::sleep(ms(2));
+        }
+        assert!(matches!(s.state, State::Ready { .. }));
+        assert!(!s.gif.has_frames());
+    }
+
+    #[test]
+    fn a_one_frame_gif_is_a_still_picture() {
+        let dir = unique_tmp("still_gif_one");
+        let f = gif_file(&dir, "one.gif", 40, &[(RED, 100)]);
+        let t0 = Instant::now();
+        let mut s = new_still(false, &f);
+        land(&mut s, &f, false, t0);
+        assert!(matches!(s.state, State::Ready { .. }), "drawn as a still");
+        assert!(!s.gif.has_frames() && !s.gif.is_active());
+        assert!(!s.poll_at(t0 + ms(50_000)));
+        assert_eq!(s.wake_in_at(t0), None, "nothing to wait for");
+        // A still is resized on a worker: draw and take the answer until the picture is there.
+        let started = Instant::now();
+        while !has_rgb(&drawn(&mut s), RED) {
+            s.poll_at(t0);
+            assert!(started.elapsed() < TMO, "the still never appeared");
+            std::thread::sleep(ms(2));
+        }
+    }
+
+    #[test]
+    fn a_decoded_animation_with_one_frame_or_none_is_handled_like_a_still_or_a_failure() {
+        // `PictureView::Gif` straight from the decoder with 1 frame -> a still; 0 -> failed.
+        let dir = unique_tmp("still_gif_len");
+        let f = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let mut s = new_still(false, &f);
+        s.done_tx
+            .send(Done {
+                gen: 0,
+                view: Some(PictureView::Gif(vec![(
+                    image::DynamicImage::new_rgba8(8, 8),
+                    ms(10),
+                )])),
+            })
+            .unwrap();
+        s.poll_at(Instant::now());
+        assert!(matches!(s.state, State::Ready { .. }));
+        s.done_tx
+            .send(Done {
+                gen: 0,
+                view: Some(PictureView::Gif(Vec::new())),
+            })
+            .unwrap();
+        s.poll_at(Instant::now());
+        assert!(matches!(s.state, State::Failed(None)));
     }
 }

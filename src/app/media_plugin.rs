@@ -122,7 +122,7 @@ pub(super) fn payload_of(view: konoma_plugin::canvas_pictures::PictureView) -> M
 #[cfg(test)]
 thread_local! {
     /// Test-only: a plugin that stands in for whatever the registry would give, on this thread.
-    pub(super) static STAND_IN: std::cell::RefCell<Option<Arc<dyn Plugin>>> =
+    pub(crate) static STAND_IN: std::cell::RefCell<Option<Arc<dyn Plugin>>> =
         const { std::cell::RefCell::new(None) };
 }
 

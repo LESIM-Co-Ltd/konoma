@@ -54,7 +54,7 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
-mod media_plugin;
+pub(crate) mod media_plugin;
 #[cfg(test)]
 pub(crate) use embed_plugin::probe_fence_picture;
 #[cfg(test)]
