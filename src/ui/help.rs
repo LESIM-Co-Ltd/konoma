@@ -138,26 +138,33 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
     out
 }
 
-/// Render the full key list in a centered popup. `area` is the whole screen.
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let lines = help_lines(app);
-    // Popup size: width caps at 66, fitted to the screen. Height is content + border, fitted to
-    // the screen.
+/// The help popup's frame and the number of body rows inside it. Width caps at 66, height is
+/// content + border; both are fitted to `area`. Shared by `render` and the e2e tests so the
+/// tests know which help lines are actually on screen.
+pub fn popup_layout(line_count: usize, area: Rect) -> (Rect, u16) {
     let w = 66.min(area.width.saturating_sub(2)).max(20);
-    let h = (lines.len() as u16 + 2)
+    let h = (line_count as u16 + 2)
         .min(area.height.saturating_sub(2))
         .max(3);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    };
+    (
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        },
+        h.saturating_sub(2),
+    )
+}
+
+/// Render the full key list in a centered popup. `area` is the whole screen.
+pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let lines = help_lines(app);
+    let (popup, inner_h) = popup_layout(lines.len(), area);
 
     // Clamp the body's vertical scroll to the inner height.
-    let inner_h = h.saturating_sub(2);
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = app.help_scroll.min(max_scroll);
 

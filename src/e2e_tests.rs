@@ -4296,18 +4296,39 @@ fn assert_help_over_overlay(s: &mut Sim, is_open: impl Fn(&App) -> bool, what: &
     s.key('?');
     assert!(s.app.show_help, "{what}: ? opens help over the overlay");
     s.see("Help");
-    s.see("toggle this help");
-    // Every help line must be intact on screen (a small centered overlay drawn after the help
-    // would punch a hole in the middle rows without hiding the title or the first lines).
-    let screen = s.screen();
-    for line in crate::ui::help::help_lines(&s.app) {
-        let text: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
-        let text: String = text.trim().chars().take(30).collect();
-        assert!(
-            screen.contains(&text),
-            "{what}: help line {text:?} is hidden:\n{screen}"
-        );
+    // Every help line the frame actually shows must be intact on screen, row by row (a small
+    // centered overlay drawn after the help would punch a hole in the middle rows without hiding
+    // the title or the first lines). The visible range comes from the same layout `render` uses;
+    // lines past the frame (the help scrolls) are not expected.
+    let lines = crate::ui::help::help_lines(&s.app);
+    let buf = s.term.backend().buffer().clone();
+    let (popup, inner_h) = crate::ui::help::popup_layout(lines.len(), buf.area);
+    assert_eq!(s.app.help_scroll, 0, "{what}: help opens unscrolled");
+    if lines.len() + 2 <= buf.area.height as usize {
+        // Fits entirely: the whole text, including the last rows, is on screen.
+        s.see("toggle this help");
     }
+    let mut checked = 0;
+    for (i, line) in lines.iter().take(inner_h as usize).enumerate() {
+        let want: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        let want: String = want.trim().chars().take(30).collect();
+        let y = popup.y + 1 + i as u16;
+        let row: String = (popup.x + 1..popup.x + popup.width - 1)
+            .map(|x| buf[(x, y)].symbol())
+            .collect();
+        assert!(
+            row.contains(&want),
+            "{what}: help line {i} {want:?} is hidden (row: {row:?}):\n{}",
+            s.screen()
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        lines.len().min(inner_h as usize),
+        "{what}: compared every visible row"
+    );
+    assert!(checked >= 20, "{what}: only {checked} help rows compared");
     // Closing help returns to the overlay underneath.
     s.key('?');
     assert!(!s.app.show_help, "{what}: second ? closes help");
@@ -4317,6 +4338,22 @@ fn assert_help_over_overlay(s: &mut Sim, is_open: impl Fn(&App) -> bool, what: &
 /// A terminal tall enough for every help section, wide enough for 80%-sized popups.
 fn tall_sim(root: &std::path::Path) -> Sim {
     Sim::with_config_sized(root, Config::default(), 100, 70)
+}
+
+/// A short terminal: the help is taller than the frame, so only part of it is visible. The
+/// visible rows must still be intact over an overlay.
+#[test]
+fn e2e_help_draws_over_overlay_when_help_is_taller_than_screen() {
+    let dir = sandbox("help_over_short");
+    seed_files(&dir);
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 100, 40);
+    s.key('T');
+    let total = crate::ui::help::help_lines(&s.app).len();
+    assert!(
+        total > 38,
+        "help ({total} lines) must exceed the 38-row frame for this test"
+    );
+    assert_help_over_overlay(&mut s, |a| a.is_tab_list(), "tab list (short screen)");
 }
 
 #[test]
