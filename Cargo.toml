@@ -283,7 +283,7 @@ konoma-vcs-core = { path = "crates/konoma-vcs-core", features = ["test-hooks"] }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", features = ["test-hooks"] }
 konoma-table = { path = "crates/konoma-table", default-features = false, features = ["test-hooks"] }
 konoma-widgets = { path = "crates/konoma-widgets", features = ["test-hooks"] }
-konoma-plugin = { path = "crates/konoma-plugin", features = ["test-hooks"] }
+konoma-plugin = { path = "crates/konoma-plugin", features = ["test-hooks", "app"] }
 
 [features]
 default = ["git"]

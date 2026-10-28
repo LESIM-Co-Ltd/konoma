@@ -58,6 +58,16 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // --- A plugin's own action: the session's word, the same one the footer and the help read ---
         A::Plugin(p) => gate_plugin(app, ctx, p),
 
+        // --- Opening a cell needs a cell: an empty file has no columns, so `Enter` flashes and the
+        // hint and the help row are left out. Closing the popup always acts. ---
+        A::ToggleTableCell if ctx == Context::Table => {
+            if app.grid().is_some_and(|g| g.ncols() > 0) {
+                Gate::On
+            } else {
+                Gate::Off(Some(Msg::TableCellEmpty))
+            }
+        }
+
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]

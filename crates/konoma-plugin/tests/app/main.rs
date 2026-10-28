@@ -7,3 +7,5 @@ mod looping;
 mod open;
 mod pictures;
 mod plugin;
+mod table;
+mod table_plugin;

@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 
-use konoma_plugin::view::{CellDetail, Grid as PluginGrid};
+use konoma_plugin::view::Grid as PluginGrid;
 
 /// What the host's tests read a CSV with: the parser, its row cap, the parsed table, and the
 /// (thread-local) counter of full-file parses.
@@ -56,7 +56,7 @@ impl<'a> Grid<'a> {
     /// sheet's are the column letters `A`, `B`, .. `AA`).
     pub fn header(&self, col: usize) -> Cow<'a, str> {
         match self {
-            Grid::Plugin(g) => Cow::Owned(g.header(col).unwrap_or_default()),
+            Grid::Plugin(g) => konoma_plugin::table_ui::header_of(*g, col),
         }
     }
 
@@ -65,10 +65,7 @@ impl<'a> Grid<'a> {
     /// text is borrowed, so reading every cell (the search does) copies nothing.
     pub fn cell(&self, row: usize, col: usize) -> Cow<'a, str> {
         match self {
-            Grid::Plugin(g) => match g.cell_str(row, col) {
-                Some(s) => Cow::Borrowed(s),
-                None => Cow::Owned(g.cell(row, col)),
-            },
+            Grid::Plugin(g) => konoma_plugin::table_ui::cell_of(*g, row, col),
         }
     }
 
@@ -94,13 +91,6 @@ impl<'a> Grid<'a> {
             Grid::Plugin(g) => g.visit_row(row, f),
         }
     }
-
-    /// The labelled lines of the cell popup, if the table has them (a sheet's).
-    pub fn detail(&self, row: usize, col: usize) -> Option<CellDetail> {
-        match self {
-            Grid::Plugin(g) => g.detail(row, col),
-        }
-    }
 }
 
 impl konoma_widgets::table::TableSource for Grid<'_> {
@@ -118,23 +108,8 @@ impl konoma_widgets::table::TableSource for Grid<'_> {
     }
 }
 
-/// Spreadsheet column letters for a 0-based column: `0 -> A`, `25 -> Z`, `26 -> AA`, `16383 -> XFD`.
-pub fn column_letters(col: usize) -> String {
-    let mut n = col + 1;
-    let mut out = Vec::new();
-    while n > 0 {
-        n -= 1;
-        out.push(b'A' + (n % 26) as u8);
-        n /= 26;
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
-}
-
-/// The A1-style address of a 0-based cell (`(2, 1) -> "B3"`).
-pub fn cell_address(row: usize, col: usize) -> String {
-    format!("{}{}", column_letters(col), row + 1)
-}
+#[cfg(test)]
+pub use konoma_widgets::table::{cell_address, column_letters};
 
 #[cfg(test)]
 mod tests {

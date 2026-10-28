@@ -49,6 +49,13 @@ pub enum CoreMsg {
     HelpTitleNoScroll,
     HintOptions,
     QuitApp,
+    HintViewCell,
+    TableCellViewHelp,
+    TableCellTitle,
+    SheetEmptyWord,
+    SheetCappedWord,
+    FtClose,
+    FtTopBottom,
 }
 impl CoreMsg {
     /// Every message, for the tests that walk the whole set.
@@ -98,6 +105,13 @@ impl CoreMsg {
         CoreMsg::HelpTitleNoScroll,
         CoreMsg::HintOptions,
         CoreMsg::QuitApp,
+        CoreMsg::HintViewCell,
+        CoreMsg::TableCellViewHelp,
+        CoreMsg::TableCellTitle,
+        CoreMsg::SheetEmptyWord,
+        CoreMsg::SheetCappedWord,
+        CoreMsg::FtClose,
+        CoreMsg::FtTopBottom,
     ];
     pub fn en(self) -> &'static str {
         match self {
@@ -146,6 +160,13 @@ impl CoreMsg {
             CoreMsg::HelpTitleNoScroll => " Help  ({close} to close) ",
             CoreMsg::HintOptions => "view",
             CoreMsg::QuitApp => "quit",
+            CoreMsg::HintViewCell => "view cell",
+            CoreMsg::TableCellViewHelp => "view the full cell text (wraps; scroll with j/k)",
+            CoreMsg::TableCellTitle => "Cell",
+            CoreMsg::SheetEmptyWord => "empty",
+            CoreMsg::SheetCappedWord => "capped",
+            CoreMsg::FtClose => "close",
+            CoreMsg::FtTopBottom => "top/bottom",
         }
     }
     pub fn ja(self) -> &'static str {
@@ -195,6 +216,13 @@ impl CoreMsg {
             CoreMsg::HelpTitleNoScroll => " ヘルプ  ({close} で閉じる) ",
             CoreMsg::HintOptions => "表示",
             CoreMsg::QuitApp => "終了",
+            CoreMsg::HintViewCell => "セル表示",
+            CoreMsg::TableCellViewHelp => "セルの全文を表示(折返し・j/k でスクロール)",
+            CoreMsg::TableCellTitle => "セル",
+            CoreMsg::SheetEmptyWord => "空",
+            CoreMsg::SheetCappedWord => "打ち切り",
+            CoreMsg::FtClose => "閉じる",
+            CoreMsg::FtTopBottom => "先頭/末尾",
         }
     }
     pub fn tr(self, lang: Lang) -> &'static str {

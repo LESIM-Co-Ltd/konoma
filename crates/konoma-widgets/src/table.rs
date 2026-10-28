@@ -80,6 +80,133 @@ impl TableViewState {
     }
 }
 
+/// One step of the cell cursor (a table's `Motion`s).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableStep {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// First data row.
+    FirstRow,
+    /// Last data row.
+    LastRow,
+    /// First column.
+    FirstCol,
+    /// Last column.
+    LastCol,
+    PageDown,
+    PageUp,
+    HalfDown,
+    HalfUp,
+}
+
+impl TableViewState {
+    /// Moves the cursor by one `step` in a `nrows` x `ncols` table. A page is the rows the last
+    /// drawing showed (`viewport_rows`, at least 1) and half a page is half of that (at least 1).
+    /// `FirstRow` / `LastRow` / `FirstCol` / `LastCol` jump even when the table is empty (they land
+    /// on 0 then); the other steps leave an empty table alone.
+    pub fn step(&mut self, step: TableStep, nrows: usize, ncols: usize) {
+        let page = i32::from(self.viewport_rows).max(1);
+        let half = (i32::from(self.viewport_rows) / 2).max(1);
+        match step {
+            TableStep::Up => self.move_cursor(-1, 0, nrows, ncols),
+            TableStep::Down => self.move_cursor(1, 0, nrows, ncols),
+            TableStep::Left => self.move_cursor(0, -1, nrows, ncols),
+            TableStep::Right => self.move_cursor(0, 1, nrows, ncols),
+            TableStep::FirstRow => self.cursor_row = 0,
+            TableStep::LastRow => self.cursor_row = nrows.saturating_sub(1),
+            TableStep::FirstCol => self.cursor_col = 0,
+            TableStep::LastCol => self.cursor_col = ncols.saturating_sub(1),
+            TableStep::PageDown => self.move_cursor(page, 0, nrows, ncols),
+            TableStep::PageUp => self.move_cursor(-page, 0, nrows, ncols),
+            TableStep::HalfDown => self.move_cursor(half, 0, nrows, ncols),
+            TableStep::HalfUp => self.move_cursor(-half, 0, nrows, ncols),
+        }
+    }
+}
+
+/// Spreadsheet column letters for a 0-based column: `0 -> A`, `25 -> Z`, `26 -> AA`, `16383 -> XFD`.
+pub fn column_letters(col: usize) -> String {
+    let mut n = col + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// The A1-style address of a 0-based cell (`(2, 1) -> "B3"`).
+pub fn cell_address(row: usize, col: usize) -> String {
+    format!("{}{}", column_letters(col), row + 1)
+}
+
+/// The frame title of a table: `path`, the size, the cursor and a note when the table was cut.
+///
+/// `sheet` is `Some(note)` for a table with spreadsheet addresses (the note is the sheet's name
+/// and position, or what the plugin gave): the title then names the cursor cell by its address
+/// (` book.xlsx  Sales (1/3) +1 hidden  B3  5×6  (capped) `). Else it counts rows and columns
+/// (` data.csv  r3/100 c2/5  100×5  (capped) `). `capped` is the word for a table cut at a limit.
+pub fn table_title(
+    path: &str,
+    (nrows, ncols): (usize, usize),
+    (cur_row, cur_col): (usize, usize),
+    sheet: Option<&str>,
+    capped: Option<&str>,
+) -> String {
+    let cap = capped.map(|w| format!("  ({w})")).unwrap_or_default();
+    if let Some(note) = sheet {
+        let addr = if nrows > 0 && ncols > 0 {
+            format!("  {}", cell_address(cur_row, cur_col))
+        } else {
+            String::new()
+        };
+        return format!(" {path}  {note}{addr}  {nrows}×{ncols}{cap} ");
+    }
+    format!(
+        " {path}  r{}/{} c{}/{}  {}×{}{cap} ",
+        cur_row + 1,
+        nrows.max(1),
+        cur_col + 1,
+        ncols,
+        nrows,
+        ncols,
+    )
+}
+
+/// The title of the full-cell popup: ` Cell · B3  r3/10 c2/5 `. `row` and `col` are 1-based.
+pub fn cell_popup_title(
+    label: &str,
+    header: &str,
+    (row, col): (usize, usize),
+    (nrows, ncols): (usize, usize),
+) -> String {
+    format!(" {label} · {header}  r{row}/{} c{col}/{ncols} ", nrows.max(1))
+}
+
+/// The popup's scroll after moving it by `delta` wrapped rows (the upper bound is clamped when
+/// drawn).
+pub fn popup_scroll_by(scroll: u16, delta: i32) -> u16 {
+    i32::from(scroll).saturating_add(delta).clamp(0, i32::from(u16::MAX)) as u16
+}
+
+/// The scroll of the popup's top (`bottom = false`) or bottom (clamped when drawn).
+pub fn popup_scroll_to(bottom: bool) -> u16 {
+    if bottom {
+        u16::MAX
+    } else {
+        0
+    }
+}
+
+/// How many wrapped rows a page of the popup moves: one less than it shows, at least 1.
+pub fn popup_page_step(viewport: u16) -> i32 {
+    i32::from(viewport.saturating_sub(1).max(1))
+}
+
 /// How one drawing looks. The texts and the choices belong to the app.
 pub struct TableOptions<'a> {
     /// The frame's title (the app builds it: file name, cursor position, ...).
@@ -877,6 +1004,247 @@ mod tests {
         // One cell: always that cell.
         st.move_cursor(3, -3, 1, 1);
         assert_eq!((st.cursor_row, st.cursor_col), (0, 0));
+    }
+
+    // ---- step ------------------------------------------------------------------------------
+
+    fn at(row: usize, col: usize, viewport_rows: u16) -> TableViewState {
+        TableViewState {
+            cursor_row: row,
+            cursor_col: col,
+            viewport_rows,
+            ..Default::default()
+        }
+    }
+
+    /// Steps `from` once in a 20 x 5 table and returns where the cursor lands.
+    fn stepped(from: (usize, usize), vp: u16, step: TableStep) -> (usize, usize) {
+        let mut st = at(from.0, from.1, vp);
+        st.step(step, 20, 5);
+        (st.cursor_row, st.cursor_col)
+    }
+
+    #[test]
+    fn step_moves_one_cell_and_clamps_at_every_edge() {
+        assert_eq!(stepped((5, 2), 8, TableStep::Up), (4, 2));
+        assert_eq!(stepped((5, 2), 8, TableStep::Down), (6, 2));
+        assert_eq!(stepped((5, 2), 8, TableStep::Left), (5, 1));
+        assert_eq!(stepped((5, 2), 8, TableStep::Right), (5, 3));
+        assert_eq!(stepped((0, 0), 8, TableStep::Up), (0, 0));
+        assert_eq!(stepped((0, 0), 8, TableStep::Left), (0, 0));
+        assert_eq!(stepped((19, 4), 8, TableStep::Down), (19, 4));
+        assert_eq!(stepped((19, 4), 8, TableStep::Right), (19, 4));
+    }
+
+    #[test]
+    fn step_jumps_to_the_ends() {
+        assert_eq!(stepped((5, 2), 8, TableStep::FirstRow), (0, 2));
+        assert_eq!(stepped((5, 2), 8, TableStep::LastRow), (19, 2));
+        assert_eq!(stepped((5, 2), 8, TableStep::FirstCol), (5, 0));
+        assert_eq!(stepped((5, 2), 8, TableStep::LastCol), (5, 4));
+        // Already there: stays.
+        assert_eq!(stepped((0, 0), 8, TableStep::FirstRow), (0, 0));
+        assert_eq!(stepped((19, 4), 8, TableStep::LastCol), (19, 4));
+    }
+
+    #[test]
+    fn step_pages_by_the_rows_the_last_drawing_showed() {
+        assert_eq!(stepped((0, 1), 7, TableStep::PageDown), (7, 1));
+        assert_eq!(stepped((10, 1), 7, TableStep::PageUp), (3, 1));
+        assert_eq!(stepped((0, 1), 7, TableStep::HalfDown), (3, 1));
+        assert_eq!(stepped((10, 1), 7, TableStep::HalfUp), (7, 1));
+        // Clamped to the table.
+        assert_eq!(stepped((15, 1), 7, TableStep::PageDown), (19, 1));
+        assert_eq!(stepped((3, 1), 7, TableStep::PageUp), (0, 1));
+        assert_eq!(stepped((18, 1), 7, TableStep::HalfDown), (19, 1));
+        assert_eq!(stepped((1, 1), 7, TableStep::HalfUp), (0, 1));
+    }
+
+    #[test]
+    fn step_pages_move_at_least_one_row_before_anything_was_drawn() {
+        // viewport_rows is 0 until the first drawing: a page is 1 row, half a page is 1 row.
+        assert_eq!(stepped((5, 0), 0, TableStep::PageDown), (6, 0));
+        assert_eq!(stepped((5, 0), 0, TableStep::PageUp), (4, 0));
+        assert_eq!(stepped((5, 0), 0, TableStep::HalfDown), (6, 0));
+        assert_eq!(stepped((5, 0), 1, TableStep::HalfUp), (4, 0));
+        assert_eq!(stepped((5, 0), 3, TableStep::HalfDown), (6, 0), "3 / 2 = 1");
+        assert_eq!(stepped((5, 0), 2, TableStep::HalfDown), (6, 0));
+        assert_eq!(stepped((5, 0), 4, TableStep::HalfDown), (7, 0));
+    }
+
+    #[test]
+    fn step_in_an_empty_table_leaves_the_cursor_but_the_jumps_land_on_zero() {
+        for step in [
+            TableStep::Up,
+            TableStep::Down,
+            TableStep::Left,
+            TableStep::Right,
+            TableStep::PageDown,
+            TableStep::PageUp,
+            TableStep::HalfDown,
+            TableStep::HalfUp,
+        ] {
+            for (nr, nc) in [(0, 0), (0, 3), (3, 0)] {
+                let mut st = at(2, 2, 5);
+                st.step(step, nr, nc);
+                assert_eq!((st.cursor_row, st.cursor_col), (2, 2), "{step:?} {nr}x{nc}");
+            }
+        }
+        let mut st = at(2, 2, 5);
+        st.step(TableStep::FirstRow, 0, 0);
+        st.step(TableStep::FirstCol, 0, 0);
+        assert_eq!((st.cursor_row, st.cursor_col), (0, 0));
+        let mut st = at(2, 2, 5);
+        st.step(TableStep::LastRow, 0, 0);
+        st.step(TableStep::LastCol, 0, 0);
+        assert_eq!((st.cursor_row, st.cursor_col), (0, 0), "saturates at 0");
+    }
+
+    #[test]
+    fn step_in_a_one_cell_table_stays_on_it() {
+        for step in [
+            TableStep::Up,
+            TableStep::Down,
+            TableStep::Left,
+            TableStep::Right,
+            TableStep::FirstRow,
+            TableStep::LastRow,
+            TableStep::FirstCol,
+            TableStep::LastCol,
+            TableStep::PageDown,
+            TableStep::PageUp,
+            TableStep::HalfDown,
+            TableStep::HalfUp,
+        ] {
+            let mut st = at(0, 0, 9);
+            st.step(step, 1, 1);
+            assert_eq!((st.cursor_row, st.cursor_col), (0, 0), "{step:?}");
+        }
+    }
+
+    #[test]
+    fn step_leaves_the_viewport_and_the_scroll_alone() {
+        let mut st = at(3, 1, 6);
+        st.step(TableStep::PageDown, 50, 4);
+        assert_eq!(st.viewport_rows, 6);
+        assert_eq!(st.cursor_row, 9);
+    }
+
+    // ---- titles and addresses --------------------------------------------------------------
+
+    #[test]
+    fn column_letters_carry_like_a_spreadsheet() {
+        for (col, want) in [
+            (0, "A"),
+            (1, "B"),
+            (25, "Z"),
+            (26, "AA"),
+            (27, "AB"),
+            (51, "AZ"),
+            (52, "BA"),
+            (701, "ZZ"),
+            (702, "AAA"),
+            (16383, "XFD"),
+        ] {
+            assert_eq!(column_letters(col), want, "{col}");
+        }
+    }
+
+    #[test]
+    fn cell_address_is_a_column_then_a_one_based_row() {
+        assert_eq!(cell_address(0, 0), "A1");
+        assert_eq!(cell_address(2, 1), "B3");
+        assert_eq!(cell_address(99, 26), "AA100");
+    }
+
+    #[test]
+    fn the_title_of_a_plain_table_counts_rows_and_columns() {
+        assert_eq!(
+            table_title("d.csv", (100, 5), (2, 1), None, None),
+            " d.csv  r3/100 c2/5  100×5 "
+        );
+        assert_eq!(
+            table_title("d.csv", (100, 5), (0, 0), None, Some("capped")),
+            " d.csv  r1/100 c1/5  100×5  (capped) "
+        );
+    }
+
+    #[test]
+    fn the_title_of_an_empty_plain_table_never_shows_row_zero_of_zero() {
+        assert_eq!(
+            table_title("d.csv", (0, 2), (0, 0), None, None),
+            " d.csv  r1/1 c1/2  0×2 "
+        );
+        assert_eq!(
+            table_title("d.csv", (0, 0), (0, 0), None, None),
+            " d.csv  r1/1 c1/0  0×0 "
+        );
+    }
+
+    #[test]
+    fn the_title_of_a_sheet_names_the_cursor_cell_by_its_address() {
+        assert_eq!(
+            table_title("b.xlsx", (5, 6), (2, 1), Some("Sales (1/3) +1 hidden"), None),
+            " b.xlsx  Sales (1/3) +1 hidden  B3  5×6 "
+        );
+        assert_eq!(
+            table_title("b.xlsx", (5, 6), (0, 0), Some("S"), Some("capped")),
+            " b.xlsx  S  A1  5×6  (capped) "
+        );
+        // A sheet with no cells has no address to name.
+        assert_eq!(
+            table_title("b.xlsx", (0, 6), (0, 0), Some("S"), None),
+            " b.xlsx  S  0×6 "
+        );
+        assert_eq!(
+            table_title("b.xlsx", (4, 0), (0, 0), Some("S"), None),
+            " b.xlsx  S  4×0 "
+        );
+    }
+
+    #[test]
+    fn the_popup_title_names_the_cell_and_its_place() {
+        assert_eq!(
+            cell_popup_title("Cell", "name", (3, 2), (10, 5)),
+            " Cell · name  r3/10 c2/5 "
+        );
+        assert_eq!(
+            cell_popup_title("Cell", "B3", (1, 1), (0, 4)),
+            " Cell · B3  r1/1 c1/4 ",
+            "an empty table counts one row"
+        );
+    }
+
+    // ---- popup scroll ----------------------------------------------------------------------
+
+    #[test]
+    fn popup_scroll_by_clamps_at_the_top_and_saturates_at_the_bottom() {
+        assert_eq!(popup_scroll_by(5, 3), 8);
+        assert_eq!(popup_scroll_by(5, -3), 2);
+        assert_eq!(popup_scroll_by(5, -100), 0);
+        assert_eq!(popup_scroll_by(0, -1), 0);
+        // After a jump to the bottom (`u16::MAX`) a further step must not wrap back to the top.
+        assert_eq!(popup_scroll_by(u16::MAX, 1), u16::MAX);
+        assert_eq!(popup_scroll_by(u16::MAX, 100_000), u16::MAX);
+        assert_eq!(popup_scroll_by(u16::MAX - 1, 5), u16::MAX);
+        assert_eq!(popup_scroll_by(7, i32::MIN), 0);
+        assert_eq!(popup_scroll_by(7, i32::MAX), u16::MAX);
+    }
+
+    #[test]
+    fn popup_scroll_to_is_the_top_or_the_clamped_bottom() {
+        assert_eq!(popup_scroll_to(false), 0);
+        assert_eq!(popup_scroll_to(true), u16::MAX);
+    }
+
+    #[test]
+    fn popup_page_step_is_one_less_than_the_viewport_and_at_least_one() {
+        assert_eq!(popup_page_step(0), 1);
+        assert_eq!(popup_page_step(1), 1);
+        assert_eq!(popup_page_step(2), 1);
+        assert_eq!(popup_page_step(3), 2);
+        assert_eq!(popup_page_step(10), 9);
+        assert_eq!(popup_page_step(u16::MAX), i32::from(u16::MAX) - 1);
     }
 
     // ---- cell popup ----------------------------------------------------------------------

@@ -85,6 +85,8 @@
 pub mod app;
 #[cfg(feature = "pictures")]
 pub mod canvas_pictures;
+#[cfg(feature = "pictures")]
+pub mod table_ui;
 #[cfg(feature = "config")]
 pub mod config;
 pub mod hints;

@@ -1,7 +1,8 @@
 use super::plugin_host::PluginShow;
 use super::search::SEARCH_MATCH_CAP;
 use super::*;
-use crate::preview::table::{cell_address, Grid};
+use crate::preview::table::Grid;
+use konoma_widgets::table::{TableStep, TableViewState};
 
 /// What the table renderer shows right now, built from a borrowed *field* (not `&self`) so callers
 /// can keep reading the grid while writing a different field such as `tab.table_cur_row`: the
@@ -711,13 +712,30 @@ impl App {
         self.table_viewport_rows = viewport_rows;
     }
 
+    /// One step of the cell cursor (`konoma_widgets::table::TableViewState::step`, the same code
+    /// the standalone app runs), clamped to the table. The renderer scrolls to follow.
+    pub fn table_step(&mut self, step: TableStep) {
+        let Some((nr, nc)) = self.grid().map(|g| (g.nrows(), g.ncols())) else {
+            return;
+        };
+        let mut state = TableViewState {
+            cursor_row: self.tab.table_cur_row,
+            cursor_col: self.tab.table_cur_col,
+            viewport_rows: self.table_viewport_rows,
+            ..Default::default()
+        };
+        state.step(step, nr, nc);
+        self.tab.table_cur_row = state.cursor_row;
+        self.tab.table_cur_col = state.cursor_col;
+    }
+
     /// Move the cell cursor by (drow, dcol), clamped to the table. The renderer scrolls to follow.
     pub fn table_cursor_move(&mut self, drow: i32, dcol: i32) {
         let Some(g) = self.grid() else {
             return;
         };
         let (nr, nc) = (g.nrows(), g.ncols());
-        let mut state = konoma_widgets::table::TableViewState {
+        let mut state = TableViewState {
             cursor_row: self.tab.table_cur_row,
             cursor_col: self.tab.table_cur_col,
             ..Default::default()
@@ -729,30 +747,38 @@ impl App {
 
     /// Jump to the first (`bottom=false`) or last (`bottom=true`) data row.
     pub fn table_row_to(&mut self, bottom: bool) {
-        let Some(nr) = self.grid().map(|g| g.nrows()) else {
-            return;
-        };
-        self.tab.table_cur_row = if bottom { nr.saturating_sub(1) } else { 0 };
+        self.table_step(if bottom {
+            TableStep::LastRow
+        } else {
+            TableStep::FirstRow
+        });
     }
 
     /// Jump to the first (`end=false`) or last (`end=true`) column.
     pub fn table_col_to(&mut self, end: bool) {
-        let Some(nc) = self.grid().map(|g| g.ncols()) else {
-            return;
-        };
-        self.tab.table_cur_col = if end { nc.saturating_sub(1) } else { 0 };
+        self.table_step(if end {
+            TableStep::LastCol
+        } else {
+            TableStep::FirstCol
+        });
     }
 
     /// Move the cursor down/up by whole pages (`dir` = +1 / -1). The page size is the last render's visible rows.
     pub fn table_page(&mut self, dir: i32) {
-        let page = self.table_viewport_rows.max(1) as i32;
-        self.table_cursor_move(dir * page, 0);
+        self.table_step(if dir < 0 {
+            TableStep::PageUp
+        } else {
+            TableStep::PageDown
+        });
     }
 
     /// Move the cursor down/up by half a page (`dir` = +1 / -1).
     pub fn table_half_page(&mut self, dir: i32) {
-        let half = (self.table_viewport_rows / 2).max(1) as i32;
-        self.table_cursor_move(dir * half, 0);
+        self.table_step(if dir < 0 {
+            TableStep::HalfUp
+        } else {
+            TableStep::HalfDown
+        });
     }
 
     /// Build the text a table copy would place on the clipboard (None when there is no table).
@@ -900,41 +926,13 @@ impl App {
     /// while open). None when there is no table, or it has no columns (nothing to show).
     pub fn table_cell_view(&self) -> Option<TableCellView> {
         let g = self.grid()?;
-        if g.ncols() == 0 {
-            return None;
-        }
-        let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
-        let addressed = self.table_addressed();
-        let text = if addressed {
-            // A spreadsheet cell: the address, what Excel shows, and everything behind it (the
-            // plugin's labelled lines, one `label: value` per line).
-            match g.detail(r, c) {
-                Some(detail) => detail
-                    .lines
-                    .iter()
-                    .map(|(label, value)| format!("{}: {value}", label.get(self.plugin_lang())))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None => g.cell(r, c).to_string(),
-            }
-        } else if g.nrows() == 0 {
-            String::new() // a header-only file: the content is empty.
-        } else {
-            g.cell(r, c).to_string()
-        };
-        Some(TableCellView {
-            // For a sheet the "header" is the cell address (`B3`), the natural name of the cell.
-            header: if addressed {
-                cell_address(r, c)
-            } else {
-                g.header(c).to_string()
-            },
-            row: r + 1,
-            col: c + 1,
-            nrows: g.nrows(),
-            ncols: g.ncols(),
-            text,
-        })
+        let Grid::Plugin(g) = g;
+        konoma_plugin::table_ui::cell_view(
+            g,
+            self.table_addressed(),
+            (self.tab.table_cur_row, self.tab.table_cur_col),
+            self.plugin_lang(),
+        )
     }
 
     /// The popup's current vertical scroll offset (wrapped-row units).
@@ -952,32 +950,22 @@ impl App {
     /// Scroll the popup by `delta` wrapped rows (the upper bound is clamped at render time,
     /// mirroring `preview_scroll`).
     pub fn table_cell_scroll_by(&mut self, delta: i32) {
-        let v = self.table_cell_scroll as i32 + delta;
-        self.table_cell_scroll = v.max(0) as u16;
+        self.table_cell_scroll = konoma_widgets::table::popup_scroll_by(self.table_cell_scroll, delta);
     }
 
     /// To the top (`bottom=false`) or bottom (`bottom=true`, clamped at render time via `u16::MAX`) of the popup.
     pub fn table_cell_scroll_to(&mut self, bottom: bool) {
-        self.table_cell_scroll = if bottom { u16::MAX } else { 0 };
+        self.table_cell_scroll = konoma_widgets::table::popup_scroll_to(bottom);
     }
 
     /// Page the popup up/down (`dir` = -1/+1). The page size is the last render's visible rows.
     pub fn table_cell_page(&mut self, dir: i32) {
-        let page = self.table_cell_viewport.saturating_sub(1).max(1) as i32;
+        let page = konoma_widgets::table::popup_page_step(self.table_cell_viewport);
         self.table_cell_scroll_by(dir * page);
     }
 }
 
-/// The full-cell popup's content: the cursor cell's header/position/untruncated text.
-/// `row`/`col` are 1-based (display convention, matching the table grid's own title).
-pub struct TableCellView {
-    pub header: String,
-    pub row: usize,
-    pub col: usize,
-    pub nrows: usize,
-    pub ncols: usize,
-    pub text: String,
-}
+pub use konoma_plugin::table_ui::TableCellView;
 
 #[cfg(test)]
 mod needle_tests {

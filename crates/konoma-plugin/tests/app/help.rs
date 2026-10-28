@@ -441,7 +441,7 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
 // ---------------------------------------------------------------------------------------------
 
 /// A key as the footer writes it, back to a key.
-fn parse_footer_key(s: &str) -> Key {
+pub(crate) fn parse_footer_key(s: &str) -> Key {
     if let Some(rest) = s.strip_prefix("C-") {
         let mut it = rest.chars();
         let c = it.next().expect("a key after C-");
@@ -452,7 +452,7 @@ fn parse_footer_key(s: &str) -> Key {
 }
 
 /// A key as the help writes it, back to a key.
-fn parse_help_key(s: &str) -> Key {
+pub(crate) fn parse_help_key(s: &str) -> Key {
     if let Some(rest) = s.strip_prefix("Ctrl-") {
         return parse_help_key_plain(rest, true);
     }
@@ -501,13 +501,13 @@ fn named_or_char(s: &str, extra: &[(&str, KeyCode)]) -> Key {
 }
 
 /// The keys of a footer token's text (`j/k:scroll` -> `j`, `k`).
-fn token_keys(text: &str) -> Vec<Key> {
+pub(crate) fn token_keys(text: &str) -> Vec<Key> {
     let (keys, _label) = text.rsplit_once(':').expect("a token is keys:label");
     keys.split('/').map(parse_footer_key).collect()
 }
 
 /// The keys of a help row's key column (`j / k / \u{2191} \u{2193}`, `Ctrl-f / Ctrl-b  \u{b7}  PageDown`).
-fn row_keys(text: &str) -> Vec<Key> {
+pub(crate) fn row_keys(text: &str) -> Vec<Key> {
     text.split_whitespace()
         .filter(|p| *p != "/" && *p != "\u{b7}")
         .map(parse_help_key)

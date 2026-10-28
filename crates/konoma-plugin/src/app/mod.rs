@@ -2,9 +2,10 @@
 //!
 //! This is a small host. It picks the plugin with the registry's rules (the same
 //! [`Registry::resolve_file`] the konoma host uses), opens a session, and draws the view with
-//! ratatui. Only the display types that need no shared widget code are drawn here:
-//! [`View::Message`](crate::View), [`View::Text`](crate::View) (a file read in windows, a string or
-//! styled lines) and [`View::Canvas`](crate::View). Any other view says it cannot be shown yet.
+//! ratatui. It draws [`View::Message`](crate::View), [`View::Text`](crate::View) (a file read in
+//! windows, a string or styled lines), [`View::Canvas`](crate::View) and
+//! [`View::Table`](crate::View) (the grid drawn with the shared `konoma-widgets` table, the cell
+//! cursor, the sheets as pages, the full-cell popup). Any other view says it cannot be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
@@ -24,7 +25,9 @@ use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
-pub use looping::{run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next};
+pub use looping::{
+    run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next, TableMode,
+};
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
