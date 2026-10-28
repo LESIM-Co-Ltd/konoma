@@ -18,62 +18,15 @@
 //! with it (the lines it returned are what a window shows). A `TextSource::File` of a file other
 //! than the one opened is read in place.
 
-use ratatui::style::{Modifier, Style};
-
 use konoma_plugin::view::{LineStyler, TextSource, TextView, View};
-use konoma_plugin::{Color as PColor, Line as PLine, Modifier as PModifier, Style as PStyle};
+use konoma_plugin::Line as PLine;
 
 use super::plugin_host::MadeText;
 use super::*;
 
-fn color_of(c: PColor) -> ratatui::style::Color {
-    use ratatui::style::Color as R;
-    match c {
-        PColor::Reset => R::Reset,
-        PColor::Black => R::Black,
-        PColor::Red => R::Red,
-        PColor::Green => R::Green,
-        PColor::Yellow => R::Yellow,
-        PColor::Blue => R::Blue,
-        PColor::Magenta => R::Magenta,
-        PColor::Cyan => R::Cyan,
-        PColor::Gray => R::Gray,
-        PColor::DarkGray => R::DarkGray,
-        PColor::LightRed => R::LightRed,
-        PColor::LightGreen => R::LightGreen,
-        PColor::LightYellow => R::LightYellow,
-        PColor::LightBlue => R::LightBlue,
-        PColor::LightMagenta => R::LightMagenta,
-        PColor::LightCyan => R::LightCyan,
-        PColor::White => R::White,
-        PColor::Indexed(i) => R::Indexed(i),
-        PColor::Rgb(r, g, b) => R::Rgb(r, g, b),
-    }
-}
-
-fn modifier_of(m: PModifier) -> Modifier {
-    // The bits are at the same positions (the API promises it); bits ratatui does not know are
-    // dropped.
-    Modifier::from_bits_truncate(m.bits())
-}
-
-pub(crate) fn style_of(s: PStyle) -> Style {
-    let mut out = Style::default()
-        .add_modifier(modifier_of(s.add))
-        .remove_modifier(modifier_of(s.sub));
-    out.fg = s.fg.map(color_of);
-    out.bg = s.bg.map(color_of);
-    out
-}
-
 /// A plugin's line as the host draws it.
 pub(super) fn ratatui_line(l: PLine) -> Line<'static> {
-    let spans: Vec<Span<'static>> = l
-        .spans
-        .into_iter()
-        .map(|s| Span::styled(s.text, style_of(s.style)))
-        .collect();
-    Line::from(spans).style(style_of(l.style))
+    konoma_plugin::ratatui_draw::into_line(l)
 }
 
 impl App {

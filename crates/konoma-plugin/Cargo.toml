@@ -11,10 +11,14 @@ description = "Plugin API of konoma: the entry traits, display types, declaratio
 # The child-process transport: wire types, framing, the SDK `serve` side and the host `ProcPlugin`
 # client. Off by default so a plugin linked in-process pays for none of it.
 proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
+# The display types drawn with ratatui (`ratatui_draw`): style/line conversion and the canvas
+# painter. The hosts (konoma and the standalone app) turn it on; a plugin does not need it.
+ratatui = ["dep:ratatui"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
-# host: raw mode, an alternate screen and the display types drawn with ratatui). Off by default,
-# and the host (konoma) does not turn it on, so it pulls in no terminal library.
-app = ["proc", "dep:ratatui", "dep:crossterm"]
+# host: raw mode, an alternate screen and the display types drawn with `ratatui_draw`). Off by
+# default, and the host (konoma) does not turn it on, so it pulls in no terminal library
+# (crossterm).
+app = ["proc", "ratatui", "dep:crossterm"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -33,7 +37,7 @@ libc = { workspace = true, optional = true }
 # The human-readable `--manifest` output and the host's manifest cache.
 serde_json = { workspace = true, optional = true }
 
-# The terminal of the standalone app (`app` feature).
+# Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
 

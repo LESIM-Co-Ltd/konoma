@@ -246,7 +246,7 @@ konoma-office-core = { path = "crates/konoma-office-core", version = "0.1.0" }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 # `proc`: the child-process transport (stage 3: plugins that run as programs of their own).
-konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0", features = ["proc"] }
+konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0", features = ["proc", "ratatui"] }
 konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
 konoma-office = { path = "crates/konoma-office", version = "0.1.0" }
 konoma-media = { path = "crates/konoma-media", version = "0.1.0" }

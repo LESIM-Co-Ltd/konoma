@@ -60,7 +60,6 @@ pub(crate) use plugin_input::plugin_key_of;
 pub(crate) use plugin_input::{
     MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_QUEUED_PASTE_BYTES, MAX_REDRAW_AFTER, MIN_REDRAW_AFTER,
 };
-pub(crate) use text_plugin::style_of as plugin_style_of;
 mod office_doc;
 pub(crate) mod open_app;
 pub(crate) use office_doc::is_presentation_path;
