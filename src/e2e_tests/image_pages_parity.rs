@@ -42,6 +42,7 @@ fn app_pdf_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> S
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        unavailable: opened.unavailable.clone(),
         ..AppCx::default()
     };
     let keys = presses(spec)

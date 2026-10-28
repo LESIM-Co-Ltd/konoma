@@ -146,11 +146,15 @@ impl EventSource for OnceShowing {
 fn shot_of(buf: &Buffer) -> Shot {
     let rows: Vec<String> = (0..buf.area.height)
         .map(|y| {
-            (0..buf.area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
+            // A wide glyph's trailing cell is skipped, as the host's `rows_of` reads the buffer.
+            let mut line = String::new();
+            let mut x = 0;
+            while x < buf.area.width {
+                let sym = buf[(x, y)].symbol();
+                line.push_str(sym);
+                x += (unicode_width::UnicodeWidthStr::width(sym) as u16).max(1);
+            }
+            line.trim_end().to_string()
         })
         .collect();
     let top = rows.iter().position(|l| l.starts_with('┌'));
@@ -178,6 +182,7 @@ fn app_gif_shot(path: &std::path::Path, h: u16, spec: &str, until: Until, pictur
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        unavailable: opened.unavailable.clone(),
         ..AppCx::default()
     };
     let keys = presses(spec)
@@ -387,6 +392,7 @@ fn a_gif_of_one_frame_and_a_broken_gif_are_shown_as_in_the_host() {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        unavailable: opened.unavailable.clone(),
         ..AppCx::default()
     };
     let keys = presses("+")
@@ -627,6 +633,10 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     let (file, first_fails, before, then) =
         (plugin.file, plugin.first_fails, plugin.before, plugin.then);
     let end_on = plugin.end_on;
+    // The page the host stands on (of two, or of one without pages): a page key starts a job only
+    // when it turns the page.
+    let pages: usize = if plugin.paged { 2 } else { 1 };
+    let mut at: usize = if first_fails { 0 } else { 1.min(pages - 1) };
     STAND_IN.with(|s| *s.borrow_mut() = Some(Arc::new(plugin)));
     let mut s = Sim::with_config_sized(root, cfg_en(), W, HOST_H)
         .with_picker()
@@ -669,7 +679,18 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     for (code, mods) in presses(then) {
         // Scrolling a failed page starts no job: there is nothing to wait for.
         s.press(code, mods);
-        if end_on.is_some() {
+        let turned = match code {
+            KeyCode::Char('J') if at + 1 < pages => {
+                at += 1;
+                true
+            }
+            KeyCode::Char('K') if at > 0 => {
+                at -= 1;
+                true
+            }
+            _ => false,
+        };
+        if end_on.is_some() || turned {
             // A page turn starts one.
             s.drain_media();
         }
@@ -1025,6 +1046,12 @@ fn failed_picture_chrome_agrees(first_fails: bool, still_before: bool, help: boo
     let what = format!("first_fails={first_fails} still_before={still_before} help={help}");
     let h = host_turn_shot(&root, mk());
     let a = app_turn_shot(&root.join("turn.png"), mk(), Until::Failure);
+    picture_chrome_agrees(&what, &h, &a, help, true);
+}
+
+/// The footer (or, with `help`, the `?` help) of a picture's own frame that holds a failure: what
+/// the app names is what the host names.
+fn picture_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool, paged: bool) {
     if !help {
         let (hh, ah) = (
             hints(h.rows.last().expect("footer")),
@@ -1032,7 +1059,17 @@ fn failed_picture_chrome_agrees(first_fails: bool, still_before: bool, help: boo
         );
         // The app's footer ends with the title.
         let (ah, _title) = ah.split_at(ah.len() - 1);
-        assert!(ah.len() > 2, "{what}: {ah:?}");
+        assert!(ah.len() >= 2, "{what}: {ah:?}");
+        // No text is on screen to scroll: no motion is named (the hint is there iff the key acts).
+        for (side, hs) in [("host", &hh), ("app", &ah.to_vec())] {
+            assert!(
+                !hs.iter().any(|t| t.ends_with(":scroll")
+                    || t.ends_with(":ends")
+                    || t.ends_with(":hscroll")
+                    || t.ends_with(":line ends")),
+                "{what}: the {side} footer names a motion that does nothing\n{hs:?}"
+            );
+        }
         for t in ah {
             assert!(
                 hh.contains(t) || t == "q:quit",
@@ -1059,8 +1096,18 @@ fn failed_picture_chrome_agrees(first_fails: bool, still_before: bool, help: boo
     let hl = help_lines(&h.rows[py + 1..], Some(px));
     let al = help_lines(&a.rows, None);
     let has = |l: &[String], p: &str| l.iter().any(|r| r.starts_with(p));
-    assert!(has(&hl, "J / K"), "{what}: host\n{hl:#?}");
-    assert!(has(&al, "J / K"), "{what}: app\n{al:#?}");
+    // No text is on screen to scroll: no motion row is named by either.
+    for (side, l) in [("host", &hl), ("app", &al)] {
+        for motion in ["j / k", "g / G", "h / l", "0 / $", "Ctrl-f", "C-f"] {
+            assert!(
+                !has(l, motion),
+                "{what}: the {side} help names `{motion}`, which scrolls nothing here\n{l:#?}"
+            );
+        }
+    }
+    // The page turn is named by both (a paged document) or by neither.
+    assert_eq!(has(&hl, "J / K"), paged, "{what}: host\n{hl:#?}");
+    assert_eq!(has(&al, "J / K"), paged, "{what}: app\n{al:#?}");
     // The sections the app draws for a picture are the host's rows.
     for row in al.iter().filter(|r| !r.is_empty()) {
         if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
@@ -1259,6 +1306,105 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
     shot_of(guard.buffer()).rows
 }
 
+/// A plugin that fails with words that carry control characters (a tab, an escape sequence, a
+/// bell): the host draws them through ratatui, which drops them. The app does the same.
+struct SaysCtl;
+
+impl Plugin for SaysCtl {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("says-ctl", "0.0.1").bind(Bind::files(["*.sayctl"]))
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(SaysCtlSession))
+    }
+}
+
+struct SaysCtlSession;
+
+impl Session for SaysCtlSession {
+    fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        Err(Failure::corrupt(
+            t!(en: "left\tright \u{1b}[31mred\u{7}bell \u{9b}c1 tail"),
+        ))
+    }
+}
+
+/// A failure message with control characters, and a full-width file name in the path under it:
+/// the rows of the host and the app are the same.
+#[test]
+fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in_the_host() {
+    let dir = fixtures();
+    let name = "全角のファイル名.sayctl";
+    std::fs::write(dir.join(name), "body").unwrap();
+    let root = canon(&dir);
+    let marker = crate::plugins::test_plugins::register("says-ctl", Arc::new(SaysCtl));
+    let mut s = Sim::with_config_sized(
+        &root,
+        {
+            let mut c = crate::plugins::test_plugins::marker_config(&marker);
+            c.ui.lang = "en".into();
+            c
+        },
+        W,
+        HOST_H,
+    );
+    s.select(name);
+    s.enter();
+    s.draw();
+    let h = super::image_parity::shot(&s.term);
+
+    let path = root.join(name);
+    let mut opened =
+        open_file(vec![Arc::new(SaysCtl)], &path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(W, APP_H)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "t".into(),
+        unavailable: opened.unavailable.clone(),
+        plugin_id: "says-ctl".into(),
+        path: opened.path.clone(),
+        shows: opened.shows.clone(),
+    };
+    let mut events = OnceShowing {
+        screen: Arc::clone(&screen),
+        want: Until::Text("tail"),
+        seen: false,
+        keys: std::collections::VecDeque::new(),
+        started: Instant::now(),
+    };
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        None,
+    )
+    .unwrap();
+    let a = shot_of(screen.lock().unwrap().buffer()).rows;
+    let (hr, ar) = (content_rows(&h.rows), content_rows(&a));
+    assert!(
+        hr.iter()
+            .any(|r| r.contains("redbell") && r.contains("tail")),
+        "{}",
+        h.rows.join("\n")
+    );
+    assert!(
+        hr.iter().any(|r| r.contains(name)),
+        "the path is shown whole: {hr:?}"
+    );
+    assert_eq!(
+        hr,
+        ar,
+        "host:\n{}\napp:\n{}",
+        h.rows.join("\n"),
+        a.join("\n")
+    );
+}
+
 // ---- the footer and the help of a failed page shown as text ------------------------------------
 
 /// The footer hints of the host's text view that the app does not have: the app names fewer
@@ -1324,6 +1470,397 @@ fn failed_text_chrome_agrees(
     );
     let h = host_turn_shot(&root, mk());
     let a = app_turn_shot(&root.join("turn.svg"), mk(), Until::Text("junk-line-000"));
+    text_chrome_agrees(&what, &h, &a, help)
+}
+
+/// A paged document whose page 2 is a broken SVG longer than the screen (the picture is handed
+/// over and fails to decode, the plugin's `view` does not fail): after `J` and `keys` the rows,
+/// the footer and the help are the host's.
+fn paged_decode_failure_agrees(kind: &'static str, keys: &'static str, help: bool) {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    // The broken page is the document's own file for an SVG (its text is what the failure shows).
+    let (file, second) = if kind == "svg" {
+        std::fs::write(dir.join("turn.svg"), long_broken_svg(90)).unwrap();
+        ("turn.svg", "turn.svg")
+    } else {
+        std::fs::write(dir.join("page2.png"), b"not a png at all").unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+            .save(dir.join("turn.png"))
+            .unwrap();
+        ("turn.png", "page2.png")
+    };
+    let root = canon(&dir);
+    let spec: &'static str = Box::leak(format!("{keys} ?").into_boxed_str());
+    let mk = || {
+        let mut p =
+            TurnPlugin::new(root.join("green.png"), Some(root.join(second))).of_kind(kind, file);
+        p.before = GREEN;
+        p.then = if help { spec } else { keys };
+        p
+    };
+    let what = format!("kind={kind} [{keys}] help={help}");
+    let until = if kind == "svg" {
+        Until::Text("junk-line-000")
+    } else {
+        Until::Failure
+    };
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join(file), mk(), until);
+    if kind == "svg" {
+        if !help {
+            let (hr, ar) = (content_rows(&h.rows), content_rows(&a.rows));
+            let n = hr.len().min(ar.len());
+            assert!(n >= 15, "{what}: a screenful to compare");
+            let (hs, as_) = if keys.ends_with('G') {
+                (&hr[hr.len() - n..], &ar[ar.len() - n..])
+            } else {
+                (&hr[..n], &ar[..n])
+            };
+            assert_eq!(
+                hs,
+                as_,
+                "{what}\nhost:\n{}\napp:\n{}",
+                h.rows.join("\n"),
+                a.rows.join("\n")
+            );
+        }
+        let (compared, _) = text_chrome_agrees(&what, &h, &a, help);
+        assert!(compared > 0 || help, "{what}: something was compared");
+    } else {
+        if !help {
+            assert!(
+                failure_line(&h.rows).is_some(),
+                "{what}\n{}",
+                h.rows.join("\n")
+            );
+            assert_eq!(failure_line(&h.rows), failure_line(&a.rows), "{what}");
+        }
+        picture_chrome_agrees(&what, &h, &a, help, true);
+    }
+}
+
+#[test]
+fn a_page_that_fails_to_decode_in_a_paged_document_is_shown_as_in_the_host() {
+    for kind in ["svg", "image"] {
+        for keys in ["", "j j j j j j j j j j j j j j j", "j j j G"] {
+            if kind == "image" && !keys.is_empty() {
+                continue;
+            }
+            for help in [false, true] {
+                paged_decode_failure_agrees(kind, keys, help);
+            }
+        }
+    }
+}
+
+/// Two pages that both fail to draw, the document being a long broken SVG: after `keys` (a page
+/// turn among them) the rows are those the host shows, so the scroll goes on, or restarts, alike.
+fn turning_between_failed_text_pages_agrees(keys: &'static str) {
+    let dir = fixtures();
+    std::fs::write(dir.join("turn.svg"), long_broken_svg(90)).unwrap();
+    let root = canon(&dir);
+    let mk = || {
+        let mut p = TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
+        p.first_fails = true;
+        p.then = keys;
+        p
+    };
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join("turn.svg"), mk(), Until::Text("junk-line-000"));
+    let (hr, ar) = (content_rows(&h.rows), content_rows(&a.rows));
+    let n = hr.len().min(ar.len());
+    assert!(n >= 15, "[{keys}] a screenful to compare");
+    if keys != "J" {
+        // The scroll is not reset by the page turn: the first lines are gone in both.
+        assert!(
+            !hr.iter().any(|r| r.contains("junk-line-000")),
+            "[{keys}] host scrolled"
+        );
+        assert!(
+            !ar.iter().any(|r| r.contains("junk-line-000")),
+            "[{keys}] app scrolled"
+        );
+    }
+    // The app has no border: after `G` the rows are compared from the bottom.
+    let (hs, as_) = if keys.contains('G') {
+        (&hr[hr.len() - n..], &ar[ar.len() - n..])
+    } else {
+        (&hr[..n], &ar[..n])
+    };
+    assert_eq!(
+        hs,
+        as_,
+        "[{keys}]\nhost:\n{}\napp:\n{}",
+        h.rows.join("\n"),
+        a.rows.join("\n")
+    );
+}
+
+#[test]
+fn a_page_turn_between_failed_text_pages_scrolls_as_in_the_host() {
+    let many = "j j j j j j j j j j j j j j j";
+    for keys in [
+        "J",
+        &*Box::leak(format!("{many} J").into_boxed_str()),
+        &*Box::leak(format!("{many} J K").into_boxed_str()),
+        "G J",
+        &*Box::leak(format!("J {many}").into_boxed_str()),
+    ] {
+        turning_between_failed_text_pages_agrees(keys);
+    }
+}
+
+/// A [`TurnPlugin`] that records the page of every `view` it is asked for.
+struct CountedPlugin {
+    inner: TurnPlugin,
+    log: Arc<Mutex<Vec<usize>>>,
+}
+
+struct CountedSession {
+    inner: Box<dyn Session>,
+    log: Arc<Mutex<Vec<usize>>>,
+}
+
+impl Plugin for CountedPlugin {
+    fn manifest(&self) -> Manifest {
+        self.inner.manifest()
+    }
+
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(CountedSession {
+            inner: self.inner.open(input, cx)?,
+            log: Arc::clone(&self.log),
+        }))
+    }
+}
+
+impl Session for CountedSession {
+    fn layout(&self) -> Layout {
+        self.inner.layout()
+    }
+
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        self.log.lock().unwrap().push(req.page.unwrap_or(0));
+        self.inner.view(req, cx)
+    }
+}
+
+/// Keys once the screen shows `want`; `at_first_key` runs before the first one, `at_end` after
+/// the last (the app has handled every key by then).
+struct Watched {
+    screen: Arc<Mutex<TestBackend>>,
+    want: Until,
+    seen: bool,
+    keys: std::collections::VecDeque<AppEvent>,
+    started: Instant,
+    at_first_key: Option<Box<dyn FnOnce()>>,
+    at_end: Option<Box<dyn FnOnce()>>,
+}
+
+impl EventSource for Watched {
+    fn next(&mut self, wait: Option<Duration>) -> Next {
+        if !self.seen {
+            self.seen = self.want.met(self.screen.lock().unwrap().buffer());
+        }
+        if !self.seen {
+            assert!(
+                self.started.elapsed() < Duration::from_secs(20),
+                "never got there"
+            );
+            std::thread::sleep(wait.unwrap_or_default().min(Duration::from_millis(2)));
+            return Next::Timeout;
+        }
+        if let Some(f) = self.at_first_key.take() {
+            f();
+        }
+        match self.keys.pop_front() {
+            Some(k) => Next::Event(k),
+            None => {
+                if let Some(f) = self.at_end.take() {
+                    f();
+                }
+                Next::End
+            }
+        }
+    }
+}
+
+fn key_events(spec: &str) -> std::collections::VecDeque<AppEvent> {
+    presses(spec)
+        .into_iter()
+        .map(|(code, mods)| {
+            AppEvent::Key(key_from_crossterm(&KeyEvent::new(code, mods)).expect("a key"))
+        })
+        .collect()
+}
+
+/// Runs the app over `plugin` bound to `path`, with or without pictures, the keys sent once the
+/// screen shows `want`. Returns the final screen.
+#[allow(clippy::too_many_arguments)]
+fn run_watched(
+    plugin: CountedPlugin,
+    path: &std::path::Path,
+    pictures: bool,
+    want: Until,
+    spec: &str,
+    at_first_key: Option<Box<dyn FnOnce()>>,
+    at_end: Option<Box<dyn FnOnce()>>,
+) -> Shot {
+    let (unavailable, kind) = (plugin.inner.unavailable.clone(), plugin.inner.kind);
+    let mut opened = open_file(vec![Arc::new(plugin)], path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(W, APP_H)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "t".into(),
+        unavailable,
+        plugin_id: kind.into(),
+        path: opened.path.clone(),
+        shows: opened.shows.clone(),
+    };
+    let mut events = Watched {
+        screen: Arc::clone(&screen),
+        want,
+        seen: false,
+        keys: key_events(spec),
+        started: Instant::now(),
+        at_first_key,
+        at_end,
+    };
+    let pics =
+        pictures.then(|| Pictures::new(Picker::halfblocks(), "turn-parity", &opened.path, 800));
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        pics,
+    )
+    .unwrap();
+    assert!(events.keys.is_empty(), "the app ended early: {spec}");
+    let guard = screen.lock().unwrap();
+    shot_of(guard.buffer())
+}
+
+/// Scrolling the text of a page that failed to draw asks the plugin for nothing and reads no file:
+/// the plugin is asked once, the file is gone before the first key, and the text still scrolls.
+#[test]
+fn scrolling_a_failed_text_page_does_not_ask_the_plugin_or_read_the_file_again() {
+    let dir = fixtures();
+    std::fs::write(dir.join("turn.svg"), long_broken_svg(90)).unwrap();
+    let root = canon(&dir);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut inner = TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
+    inner.first_fails = true;
+    let plugin = CountedPlugin {
+        inner,
+        log: Arc::clone(&log),
+    };
+    let (before, after) = (Arc::new(Mutex::new(0)), Arc::clone(&log));
+    let (b2, file) = (Arc::clone(&before), root.join("turn.svg"));
+    let l2 = Arc::clone(&log);
+    let many = "j j j j j j j j j j j j j j j j j j j j j j j j j j j j j j j";
+    let a = run_watched(
+        plugin,
+        &root.join("turn.svg"),
+        true,
+        Until::Text("junk-line-000"),
+        &format!("{many} g {many} G"),
+        Some(Box::new(move || {
+            *b2.lock().unwrap() = l2.lock().unwrap().len();
+            std::fs::remove_file(&file).unwrap();
+        })),
+        None,
+    );
+    let (b, n) = (*before.lock().unwrap(), after.lock().unwrap().len());
+    assert!(b >= 1, "the plugin was asked for the page once at least");
+    assert_eq!(
+        n,
+        b,
+        "scrolling asked the plugin again: {:?}",
+        after.lock().unwrap()
+    );
+    let rows = content_rows(&a.rows);
+    assert!(
+        rows.iter().any(|r| r.contains("junk-line-089")),
+        "the kept text scrolled to its end although the file is gone:\n{}",
+        a.rows.join("\n")
+    );
+}
+
+/// With no pictures (no graphics backend) a paged document's page keys do nothing and are not
+/// named: the plugin is never asked for page 2, and the footer does not name the page turn.
+#[test]
+fn without_pictures_the_page_keys_do_nothing_and_are_not_named() {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+        .save(dir.join("turn.png"))
+        .unwrap();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    let root = canon(&dir);
+    for (kind, file, first_fails) in [("image", "turn.png", false), ("svg", "turn.svg", true)] {
+        std::fs::write(dir.join("turn.svg"), long_broken_svg(90)).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut inner = TurnPlugin::new(root.join("green.png"), Some(root.join("green.png")))
+            .of_kind(kind, file);
+        inner.first_fails = first_fails;
+        let plugin = CountedPlugin {
+            inner,
+            log: Arc::clone(&log),
+        };
+        let a = run_watched(
+            plugin,
+            &root.join(file),
+            false,
+            Until::Nothing,
+            "J K J",
+            None,
+            None,
+        );
+        assert!(
+            log.lock().unwrap().iter().all(|p| *p == 0),
+            "{kind}: a page key asked for another page: {:?}",
+            log.lock().unwrap()
+        );
+        let foot = a.rows.last().unwrap();
+        assert!(
+            !foot.contains("J/K"),
+            "{kind}: the footer names the page turn: {foot}"
+        );
+    }
+}
+
+/// On a failed picture frame j/k do nothing visible in either (the host draws `j/k:scroll` there,
+/// a hint for a key that does not act: reported, not fixed): the screens stay as they were.
+#[test]
+fn j_and_k_leave_a_failed_picture_frame_alone_in_both() {
+    let dir = fixtures();
+    let root = canon(&dir);
+    let h0 = host_shot_at(&root, "junk.gif", HOST_H, "", true, None);
+    let h1 = host_shot_at(&root, "junk.gif", HOST_H, "j j k j", true, None);
+    let a0 = app_gif_shot(&root.join("junk.gif"), APP_H, "", Until::Failure, true);
+    let a1 = app_gif_shot(
+        &root.join("junk.gif"),
+        APP_H,
+        "j j k j",
+        Until::Failure,
+        true,
+    );
+    assert_eq!(content_rows(&h0.rows), content_rows(&h1.rows), "host");
+    assert_eq!(content_rows(&a0.rows), content_rows(&a1.rows), "app");
+}
+
+/// The footer (or, with `help`, the `?` help) of the text of a failed page: what the app names is
+/// what the host names. Returns the number of hints and rows compared, and whether both named
+/// the page turn.
+fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, bool) {
     let mut compared = 0;
     if !help {
         let (hh, ah) = (
@@ -1409,4 +1946,176 @@ fn the_footer_and_the_help_of_a_failed_page_shown_as_text_agree_with_the_host() 
     assert!(compared >= 100, "{compared}");
     assert_eq!(turns, 3 * 5, "the paged help names the page turn");
     assert_eq!(plain, 6);
+}
+
+// ---- a page the real plugin hands over and the draw fails ---------------------------------------
+//
+// The plugins above fail in `view`. The real ones (`konoma_media`) answer `view` with a picture and
+// fail later, when it is decoded or rasterised: the screen, the footer and the help must be the
+// same as for a `view` that failed, because the host decides them from the plugin's declared
+// `unavailable` whichever step failed.
+
+/// What the app shows for `path` opened by the real plugin `plugin` (id `id`), after the keys
+/// `spec`, once the screen shows `until`.
+fn app_real_shot(
+    plugin: Arc<dyn Plugin>,
+    id: &'static str,
+    path: &std::path::Path,
+    spec: &str,
+    until: Until,
+) -> Shot {
+    let mut opened = open_file(vec![plugin], path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(W, APP_H)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "t".into(),
+        unavailable: opened.unavailable.clone(),
+        plugin_id: id.into(),
+        path: opened.path.clone(),
+        shows: opened.shows.clone(),
+    };
+    let keys = presses(spec)
+        .into_iter()
+        .map(|(code, mods)| {
+            AppEvent::Key(key_from_crossterm(&KeyEvent::new(code, mods)).expect("a key"))
+        })
+        .collect();
+    let mut events = OnceShowing {
+        screen: Arc::clone(&screen),
+        want: until,
+        seen: false,
+        keys,
+        started: Instant::now(),
+    };
+    let pics = Pictures::new(Picker::halfblocks(), id, &opened.path, 800);
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        Some(pics),
+    )
+    .unwrap();
+    assert!(events.keys.is_empty(), "the app ended early: {spec}");
+    let guard = screen.lock().unwrap();
+    shot_of(guard.buffer())
+}
+
+/// A valid SVG of `n` rows, each with its number, cut off by a start tag that never ends.
+fn broken_svg_after(n: usize) -> String {
+    let rows: Vec<String> = (0..n)
+        .map(|i| format!(r#"<rect id="svg-row-{i:03}" x="0" y="0" width="1" height="1"/>"#))
+        .collect();
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">\n{}\n<g><broken",
+        rows.join("\n")
+    )
+}
+
+/// The rows of the text both screens show, from the top (or, after `G`, from the bottom): the
+/// app has no border and no status row, so it shows a row or two more than the host.
+fn same_text_rows(what: &str, h: &Shot, a: &Shot, at_end: bool) {
+    let (hr, ar) = (content_rows(&h.rows), content_rows(&a.rows));
+    let n = hr.len().min(ar.len());
+    assert!(n >= 15, "{what}: a screenful to compare");
+    let (hs, as_) = if at_end {
+        (&hr[hr.len() - n..], &ar[ar.len() - n..])
+    } else {
+        (&hr[..n], &ar[..n])
+    };
+    assert_eq!(
+        hs,
+        as_,
+        "{what}\nhost:\n{}\napp:\n{}",
+        h.rows.join("\n"),
+        a.rows.join("\n")
+    );
+}
+
+#[test]
+fn a_broken_svg_the_real_plugin_hands_over_is_shown_as_in_the_host() {
+    let dir = fixtures();
+    std::fs::write(dir.join("cut.svg"), broken_svg_after(80)).unwrap();
+    let root = canon(&dir);
+    let mut texts = 0;
+    for keys in [
+        "",
+        "j j j",
+        "j j j j j j j j j j j j j j j",
+        "G",
+        "G g",
+        "j j j G",
+    ] {
+        for help in [false, true] {
+            let spec = if help {
+                format!("{keys} ?")
+            } else {
+                keys.to_string()
+            };
+            let what = format!("cut.svg [{spec}]");
+            let h = host_shot_at(&root, "cut.svg", HOST_H, &spec, true, None);
+            let a = app_real_shot(
+                Arc::new(konoma_media::SvgPlugin),
+                "svg",
+                &root.join("cut.svg"),
+                &spec,
+                Until::Text("svg-row-000"),
+            );
+            if !help {
+                // The reason first, then the file as text; scrolls like any text.
+                assert!(
+                    h.rows.iter().any(|r| r.contains("svg-row-")),
+                    "{what}: the host shows the file\n{}",
+                    h.rows.join("\n")
+                );
+                assert!(
+                    a.rows.iter().any(|r| r.contains("svg-row-")),
+                    "{what}: the app shows the file\n{}",
+                    a.rows.join("\n")
+                );
+                same_text_rows(&what, &h, &a, keys.ends_with('G'));
+                texts += 1;
+            }
+            text_chrome_agrees(&what, &h, &a, help);
+        }
+    }
+    assert_eq!(texts, 6);
+}
+
+#[test]
+fn a_broken_png_the_real_plugin_hands_over_is_shown_as_in_the_host() {
+    let dir = fixtures();
+    std::fs::write(
+        dir.join("cut.png"),
+        b"\x89PNG\r\n\x1a\nnot really a picture",
+    )
+    .unwrap();
+    let root = canon(&dir);
+    for keys in ["", "j", "j k G g", "+ - 0"] {
+        for help in [false, true] {
+            let spec = if help {
+                format!("{keys} ?")
+            } else {
+                keys.to_string()
+            };
+            let what = format!("cut.png [{spec}]");
+            let h = host_shot_at(&root, "cut.png", HOST_H, &spec, true, None);
+            let a = app_real_shot(
+                Arc::new(konoma_media::ImagePlugin),
+                "image",
+                &root.join("cut.png"),
+                &spec,
+                Until::Failure,
+            );
+            if !help {
+                let (hl, al) = (failure_line(&h.rows), failure_line(&a.rows));
+                assert!(hl.is_some(), "{what}\n{}", h.rows.join("\n"));
+                assert_eq!(hl, al, "{what}");
+            }
+            picture_chrome_agrees(&what, &h, &a, help, false);
+        }
+    }
 }

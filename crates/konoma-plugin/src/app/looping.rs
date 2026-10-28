@@ -12,6 +12,7 @@ use konoma_host_core::keymap::{
 };
 use konoma_host_core::keys::KeysConfig;
 use konoma_host_core::lang::Lang;
+use konoma_svg::image::ImageFailure;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
@@ -22,6 +23,7 @@ use super::pictures::Pictures;
 use super::still::StillShape;
 use super::window;
 use super::AppError;
+use crate::canvas_pictures::image_failure_for;
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::ViewKind;
 use crate::pages;
@@ -111,19 +113,29 @@ impl AppKeys {
     /// is named too, as the host names it over any text of a paged document. That is the text
     /// of a page that failed to draw.
     pub fn facts_paged(&self, paged: bool) -> HelpFacts {
+        self.facts_scrolling(paged, true)
+    }
+
+    /// [`AppKeys::facts_paged`] for a text that `scrolls` or not: the picture's own frame that
+    /// holds a failure has no text, so the motions do nothing there and are not named (as the
+    /// host's gate leaves them out).
+    pub fn facts_scrolling(&self, paged: bool, scrolls: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
             HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
-            HelpOp::Act(CoreAction::Navigate(m)) => matches!(
-                m,
-                Motion::Down
-                    | Motion::Up
-                    | Motion::Top
-                    | Motion::Bottom
-                    | Motion::PageDown
-                    | Motion::PageUp
-                    | Motion::HalfDown
-                    | Motion::HalfUp
-            ),
+            HelpOp::Act(CoreAction::Navigate(m)) => {
+                scrolls
+                    && matches!(
+                        m,
+                        Motion::Down
+                            | Motion::Up
+                            | Motion::Top
+                            | Motion::Bottom
+                            | Motion::PageDown
+                            | Motion::PageUp
+                            | Motion::HalfDown
+                            | Motion::HalfUp
+                    )
+            }
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
             }
@@ -206,21 +218,26 @@ impl AppKeys {
 
     /// [`AppKeys::help_sections`] over a text of a document with pages (`paged`).
     pub fn help_sections_paged(&self, paged: bool) -> Vec<CoreSection> {
+        self.help_sections_scrolling(paged, true)
+    }
+
+    /// [`AppKeys::help_sections_paged`] over a text that `scrolls` or not.
+    pub fn help_sections_scrolling(&self, paged: bool, scrolls: bool) -> Vec<CoreSection> {
         let look = CoreLookup {
             keys: &self.keys,
             ctx: CoreContext::Text,
         };
         core_sections(
             CoreContext::Text,
-            &self.facts_paged(paged),
+            &self.facts_scrolling(paged, scrolls),
             &look,
             self.lang,
         )
     }
 
     /// The `?` help as lines: a heading and the aligned rows of each section.
-    fn help_lines(&self, paged: bool) -> Vec<Line> {
-        lines_of(&self.help_sections_paged(paged))
+    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<Line> {
+        lines_of(&self.help_sections_scrolling(paged, scrolls))
     }
 
     /// The title of the `?` help, shown in the footer while it is open.
@@ -880,6 +897,15 @@ struct State {
     /// Whether the last table on screen had spreadsheet addresses (its pages are sheets): the
     /// footer and the help of a failed page keep saying `sheet`.
     table_sheets: bool,
+    /// The text of the page that failed to draw as the file's text (an SVG that cannot be drawn),
+    /// read once: a key scrolls it without asking the session again or reading the file again.
+    failed_body: Option<FailedBody>,
+}
+
+/// The lines (the reason, then the file) a failed page shows, and the page they belong to.
+struct FailedBody {
+    page: usize,
+    lines: Vec<String>,
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
@@ -936,6 +962,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 Ok(v) => {
                     st.table_failed = false;
                     st.image_failed = false;
+                    st.failed_body = None;
                     st.last_image = matches!(v, View::Image(_));
                     Ok(v)
                 }
@@ -944,30 +971,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 Err(f) => {
                     // What kind of paged page failed: what the plugin declares it shows, else
                     // what was on screen before (a first page that fails has nothing before it).
-                    let declared = match (
-                        cx.shows.contains(&ViewKind::Image),
-                        cx.shows.contains(&ViewKind::Table),
-                    ) {
-                        (true, false) => Some(true),
-                        (false, true) => Some(false),
-                        _ => None,
-                    };
-                    let picture = declared.unwrap_or(st.last_image);
-                    // The pages the session declares are known before any page was read.
-                    if st.pages.is_none() && declared.is_some() {
-                        st.pages = declared_pages(session, picture);
-                        // Pages that carry names are a workbook's sheets.
-                        st.table_sheets = !picture
-                            && matches!(
-                                session.layout().pages,
-                                Some(PageLayout::Separate { ref titles, .. }) if !titles.is_empty()
-                            );
-                    }
-                    st.table_failed = st.pages.is_some() && !picture;
-                    st.image_failed = st.pages.is_some() && picture;
-                    st.scrolls = false;
+                    let picture = failed_page_is_picture(cx, &st);
+                    note_failed_page(session, cx, &mut st, picture);
                     Err(Some(failure_frame(
-                        &f,
+                        image_failure_for(&cx.unavailable, &f),
+                        f.message.get(&cx.lang),
                         cx,
                         keys.lang(),
                         usize::from(body_rows),
@@ -1039,15 +1047,31 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         if let Some(p) = pictures.as_mut() {
             p.poll();
         }
+        // A picture whose decode failed is a page that failed to draw, as one whose `view`
+        // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
+        if let (Frame::Image(_), Some(why)) =
+            (&base, pictures.as_ref().and_then(Pictures::still_failure))
+        {
+            note_failed_page(session, cx, &mut st, true);
+            base = failure_frame(
+                why,
+                "[can not preview]",
+                cx,
+                keys.lang(),
+                usize::from(body_rows),
+                &mut st,
+            );
+        }
         let mode = shown_mode(&base, &st);
         let image_mode = image_mode(&base, pictures.as_ref(), &st);
         let paged = image_mode.is_some_and(|m| m.paged);
         // After a page that failed and shows the file as text, or in the picture's own frame
         // (the host draws that as a text too), the screen is a text (the host's): its footer and
         // help, with the page turn named.
-        let failed_text_screen = image_mode.is_some()
-            && st.image_failed
-            && (st.scrolls || matches!(base, Frame::ImageFailed(_)));
+        let failed_text_screen = matches!(base, Frame::ImageFailed(_))
+            || (image_mode.is_some() && st.image_failed && st.scrolls);
+        // The picture's own frame holds no text: no motion scrolls it, and none is named.
+        let text_scrolls = !matches!(base, Frame::ImageFailed(_));
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
@@ -1057,7 +1081,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (None, Some(_)) if !failed_text_screen => {
                         (keys.image_help_lines(paged), keys.image_help_title())
                     }
-                    (None, _) => (keys.help_lines(paged), keys.help_title()),
+                    (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
                 };
                 let rows = usize::from(body_rows);
                 let top = top.min(lines.len().saturating_sub(rows));
@@ -1116,7 +1140,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &keys.footer_tokens_paged(st.scrolls || failed_text_screen, paged),
+                        &keys.footer_tokens_paged(
+                            st.scrolls || (failed_text_screen && text_scrolls),
+                            paged,
+                        ),
                         &cx.title,
                         &base,
                         st.scroll,
@@ -1157,8 +1184,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // stay (as the host's do).
                 let failed_text = failed_text_screen && st.help.is_none();
                 let image_keys = image_mode.is_some() && !failed_text;
-                // The page keys act over a picture (a failed page too) whatever scrolls.
-                let on_image = image_mode.is_some();
+                // The page keys act over a picture (a failed page too) whatever scrolls, where the
+                // footer and the help name them (`ImageMode::paged`): with no pictures to draw
+                // them they do nothing, and are not named.
+                let on_image = image_mode.is_some_and(|m| m.paged);
                 let act = match (table_keys, image_mode) {
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) if failed_text => keys.act(&key).or_else(|| {
@@ -1171,7 +1200,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`. Nor does a key over a picture: the
                 // picture is held, and the pose is the app's.
-                if table_keys || image_keys {
+                // Nor does a key over the text of a page that failed to draw: it is kept, and
+                // scrolled from there (a page key asks again below).
+                let kept_failure = st
+                    .failed_body
+                    .as_ref()
+                    .is_some_and(|b| b.page == st.at_page)
+                    && matches!(base, Frame::Lines(_));
+                if table_keys || image_keys || kept_failure {
                     need_view = false;
                 }
                 match (act, st.help) {
@@ -1260,6 +1296,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     (Some(Act::Cell | Act::Page(_) | Act::Zoom(_) | Act::ZoomReset), Some(_)) => {}
                     (None, _) => {}
+                }
+                if kept_failure && !need_view {
+                    base = failed_window(&mut st, usize::from(body_rows));
                 }
             }
         }
@@ -1517,23 +1556,65 @@ fn frame_of(
     }
 }
 
-/// What a `view` that failed shows, in the words konoma shows for the same failure: a picture's
-/// frame with the reason inside (a plugin that names the picture frame), the file as text with the
-/// reason above it (an SVG), the plugin's sentence, or the failure's message; the last three end
-/// with the path. The mapping and the words are shared with konoma
+/// Whether the page that failed is a picture: what the plugin declares it shows, else what was
+/// on screen before (a first page that fails has nothing before it).
+fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
+    let declared = match (
+        cx.shows.contains(&ViewKind::Image),
+        cx.shows.contains(&ViewKind::Table),
+    ) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    };
+    declared.unwrap_or(st.last_image)
+}
+
+/// What a page that failed to draw leaves in the state, whichever step failed (the `view`, or the
+/// picture's decode): the kind of paged page it was, the pages the session declares (known before
+/// any page was read), and that the page keys still turn them.
+fn note_failed_page(session: &dyn Session, cx: &AppCx, st: &mut State, picture: bool) {
+    let declared = matches!(
+        (
+            cx.shows.contains(&ViewKind::Image),
+            cx.shows.contains(&ViewKind::Table),
+        ),
+        (true, false) | (false, true)
+    );
+    if st.pages.is_none() && declared {
+        st.pages = declared_pages(session, picture);
+        // Pages that carry names are a workbook's sheets.
+        st.table_sheets = !picture
+            && matches!(
+                session.layout().pages,
+                Some(PageLayout::Separate { ref titles, .. }) if !titles.is_empty()
+            );
+    }
+    st.table_failed = st.pages.is_some() && !picture;
+    st.image_failed = st.pages.is_some() && picture;
+    st.scrolls = false;
+}
+
+/// What a page that failed to draw shows, in the words konoma shows for the same failure: a
+/// picture's frame with the reason inside (a plugin that names the picture frame), the file as
+/// text with the reason above it (an SVG), the plugin's sentence, or the failure's message; the
+/// last three end with the path. The same function serves a `view` that failed and a picture
+/// whose decode failed (`why` is the reason, `message` the failure's own words), as konoma's one
+/// `unavailable_body` serves both. The mapping and the words are shared with konoma
 /// (`canvas_pictures::image_failure_for`, `unavailable_text`).
 fn failure_frame(
-    f: &crate::session::Failure,
+    why: Option<ImageFailure>,
+    message: &str,
     cx: &AppCx,
     lang: Lang,
     rows: usize,
     st: &mut State,
 ) -> Frame {
-    use crate::canvas_pictures::{image_failure_for, raw_file_body, unavailable_text};
-    let why = image_failure_for(&cx.unavailable, f);
+    use crate::canvas_pictures::{raw_file_body, unavailable_text};
+    st.failed_body = None;
     let text = unavailable_text(
         &cx.unavailable,
-        f.message.get(&cx.lang),
+        message,
         why,
         (&cx.lang, lang),
         &cx.plugin_id,
@@ -1541,19 +1622,16 @@ fn failure_frame(
         &|| raw_file_body(&cx.path, lang),
     );
     match text {
-        // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma.
+        // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma. It
+        // is kept: a key scrolls it, the file is not read again.
         Some(t) if matches!(cx.unavailable, crate::manifest::Unavailable::RawText { .. }) => {
-            let lines: Vec<&str> = t.lines().collect();
-            clamp(st, lines.len(), rows);
-            st.scrolls = true;
-            Frame::Lines(
-                lines
-                    .iter()
-                    .skip(st.scroll)
-                    .take(rows)
-                    .map(|l| Line::raw(window::clean_line(l.as_bytes())))
-                    .collect(),
-            )
+            st.failed_body = Some(FailedBody {
+                page: st.at_page,
+                // Not cleaned: konoma hands the text to ratatui as it is, which drops the control
+                // characters (a tab too) when it draws.
+                lines: t.lines().map(str::to_string).collect(),
+            });
+            failed_window(st, rows)
         }
         Some(t) => Frame::Lines(t.lines().map(Line::raw).collect()),
         None => Frame::ImageFailed(FailedImage {
@@ -1563,6 +1641,24 @@ fn failure_frame(
             plugin_id: cx.plugin_id.clone(),
         }),
     }
+}
+
+/// The rows of the kept text of a failed page, from the scroll the state has (clamped).
+fn failed_window(st: &mut State, rows: usize) -> Frame {
+    let body = st.failed_body.take();
+    let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
+    clamp(st, lines.len(), rows);
+    st.scrolls = true;
+    let frame = Frame::Lines(
+        lines
+            .iter()
+            .skip(st.scroll)
+            .take(rows)
+            .map(Line::raw)
+            .collect(),
+    );
+    st.failed_body = body;
+    frame
 }
 
 /// The page count the session declares for a picture's pages or a table's sheets (what a page

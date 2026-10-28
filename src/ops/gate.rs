@@ -75,6 +75,12 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             _ => app.can_turn_pages(),
         }),
 
+        // --- The picture's own frame (the picture failed or is not there yet) has no text: the
+        // motions scroll nothing, so the footer and the help leave them out ---
+        A::Navigate(_) if ctx == Context::Text && app.shows_picture_frame_plugin() => {
+            Gate::Off(None)
+        }
+
         // --- The decorated document: what the focused item lets a key do ---
         A::LinkOpen => when(matches!(
             app.md_focused_kind(),

@@ -320,6 +320,17 @@ fn run_img(
     pictures: impl FnOnce(&Path) -> Option<Pictures>,
     steps: impl FnOnce(&Arc<AtomicUsize>) -> Vec<Step>,
 ) -> Out {
+    run_img_in(cx(), script, pictures, steps)
+}
+
+/// [`run_img`] with the app's context `cx` (what the plugin declares for a picture that is not
+/// there, say).
+fn run_img_in(
+    cx: AppCx,
+    script: impl Fn(usize, &Path) -> View + Send + Sync + 'static,
+    pictures: impl FnOnce(&Path) -> Option<Pictures>,
+    steps: impl FnOnce(&Arc<AtomicUsize>) -> Vec<Step>,
+) -> Out {
     let dir = unique_tmp("app_still");
     std::fs::create_dir_all(dir.as_path()).unwrap();
     let path = dir.as_path().join("a.pic");
@@ -347,7 +358,7 @@ fn run_img(
         &mut term,
         &mut *opened.session,
         &mut events,
-        &cx(),
+        &cx,
         &AppKeys::defaults(),
         pictures,
     )
@@ -485,7 +496,13 @@ fn failure_run(
     script: impl Fn(usize, &Path) -> View + Send + Sync + 'static,
     pictures: bool,
 ) -> Vec<String> {
-    let out = run_img(
+    // The `image` plugin names the picture's own frame for a picture that is not there.
+    let picture_plugin = AppCx {
+        unavailable: konoma_plugin::Unavailable::Picture,
+        ..cx()
+    };
+    let out = run_img_in(
+        picture_plugin,
         script,
         move |p| if pictures { half(p) } else { None },
         |_| {

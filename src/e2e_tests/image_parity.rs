@@ -29,6 +29,7 @@ impl Plugin for PngPlugin {
         Manifest::new("png-parity", "0.0.1")
             .bind(Bind::files(["*.png", "*.gif"]))
             .shows(ViewKind::Image)
+            .unavailable(konoma_plugin::Unavailable::Picture)
     }
 
     fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -106,6 +107,7 @@ fn app_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> Shot 
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        unavailable: opened.unavailable.clone(),
         ..AppCx::default()
     };
     let keys = presses(spec)

@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
+use konoma_svg::image::ImageFailure;
 use konoma_svg::svg::RasterError;
 use konoma_widgets::inline_images::{
     md_encode_worker, InlineImageCache, MdEncodeResult, OverlayMoved, LIVE_CANVAS_KITTY,
@@ -238,6 +239,11 @@ impl Pictures {
         if let Some(s) = self.still.as_mut() {
             s.forget();
         }
+    }
+
+    /// Why the still picture could not be drawn: see [`Still::failure`].
+    pub fn still_failure(&self) -> Option<Option<ImageFailure>> {
+        self.still.as_ref().and_then(Still::failure)
     }
 
     /// What the still picture is (`None`: no picture is held).

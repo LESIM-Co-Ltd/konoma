@@ -326,6 +326,15 @@ impl Still {
         spinner_glyph(self.spinner)
     }
 
+    /// Why the picture asked for could not be drawn (`Some(None)`: no reason is known), or `None`
+    /// while it loads or is shown. A page turn that keeps the old page on screen is not a failure.
+    pub fn failure(&self) -> Option<Option<ImageFailure>> {
+        match self.state {
+            State::Failed(why) if self.key.is_some() && !self.held => Some(why),
+            _ => None,
+        }
+    }
+
     pub fn shape(&self) -> StillShape {
         match self.state {
             State::Loading => StillShape::Loading,
@@ -387,7 +396,14 @@ impl Still {
                 done.view,
                 Some(PictureView::Failed(ImageFailure::Cancelled))
             ) {
+                // With no old page on screen to keep, nothing is going to land: the loading line
+                // gives way to the picture's failure (the spinner never stops otherwise).
+                let first_load = !self.held && matches!(self.state, State::Loading);
                 self.held = false;
+                if first_load {
+                    self.state = State::Failed(None);
+                    changed = true;
+                }
                 continue;
             }
             if self.held {
@@ -1158,6 +1174,27 @@ mod tests {
         assert!(!text.contains("cannot display"), "{text}");
     }
 
+    #[test]
+    fn a_cancelled_first_decode_ends_the_loading_instead_of_spinning_for_ever() {
+        let dir = unique_tmp("still_cancelled_first");
+        let png = png_file(&dir, "a.png");
+        let mut s = new_still(false, &png);
+        s.submit(&ImageView::new(ImageData::File(png.clone())), false);
+        assert!(!s.held);
+        assert_eq!(s.shape(), StillShape::Loading);
+        assert!(s.failure().is_none(), "still loading");
+        let gen = s.gen;
+        s.done_tx
+            .send(Done {
+                gen,
+                view: Some(PictureView::Failed(ImageFailure::Cancelled)),
+            })
+            .unwrap();
+        assert!(s.poll_at(Instant::now()), "the screen changes");
+        assert_eq!(s.shape(), StillShape::Failed, "nothing is going to land");
+        assert_eq!(s.failure(), Some(None));
+    }
+
     // ---- sharp zoom of a vector picture ----
 
     const SVG_2X1: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' \
@@ -1342,14 +1379,14 @@ mod tests {
             s.zoom_steps(1);
         }
         settle(&mut s);
-        assert!(raster(&s).0 <= 4096, "{:?}", raster(&s));
+        // A 2:1 picture zoomed past the cap is drawn at the cap on its long side, no more.
+        assert_eq!(raster(&s), (4096, 2048));
         assert!(!s.sharp_inflight);
         // At the cap nothing more is asked.
         s.zoom_steps(1);
-        if raster(&s).0 >= 4096 {
-            assert!(!s.sharp_inflight);
-        }
+        assert!(!s.sharp_inflight, "no redraw is asked at the cap");
         settle(&mut s);
+        assert_eq!(raster(&s), (4096, 2048));
     }
 
     #[test]
@@ -1505,6 +1542,8 @@ mod tests {
         // The pose was kept: the page that landed converges on it.
         assert_eq!(logical(&s), Some((800, 800)));
         assert_eq!(raster(&s), (1000, 1000));
-        assert!(n.load(Ordering::SeqCst) >= 3);
+        // Three drawings: page 1, page 2 as it lands, and page 2 again sharp at the kept zoom.
+        // The held page 1 was not drawn again when the zoom changed over it.
+        assert_eq!(n.load(Ordering::SeqCst), 3);
     }
 }
