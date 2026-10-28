@@ -259,6 +259,65 @@ fn a_canvas_bigger_than_the_screen_is_clipped_without_a_panic() {
 }
 
 #[test]
+fn a_canvas_follows_the_safety_rules_of_the_host_painter() {
+    use konoma_plugin::ratatui_draw::paint_canvas;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let (_d, p) = file("app_hostile", "a.hostile", "");
+    // 6 columns and 2 body rows: the 8-column canvas is cut at column 6, so the wide character
+    // at column 5 of the first row would need column 6 and is not drawn.
+    let (term, _) = run_events(TestPlugin::all(), &p, (6, 3), vec![]);
+    let got = term.backend().buffer();
+    let mut want = Buffer::empty(Rect::new(0, 0, 6, 2));
+    paint_canvas(
+        &mut want,
+        Rect::new(0, 0, 6, 2),
+        &crate::plugin::hostile_canvas(),
+    );
+    for y in 0..2u16 {
+        for x in 0..6u16 {
+            assert_eq!(
+                got[(x, y)].symbol(),
+                want[(x, y)].symbol(),
+                "symbol {x},{y}"
+            );
+            assert_eq!(got[(x, y)].style(), want[(x, y)].style(), "style {x},{y}");
+        }
+    }
+    // And the rules themselves, spelled out.
+    let sym = |x: u16, y: u16| got[(x, y)].symbol().to_string();
+    assert_eq!(sym(0, 0), "a");
+    assert_eq!(sym(1, 0), " ", "a control character is a space");
+    assert_eq!(sym(2, 0), "日");
+    assert_eq!(
+        got[(3, 0)].bg,
+        RColor::Reset,
+        "a continuation cell is skipped"
+    );
+    assert_eq!(sym(4, 0), " ", "the kitty placeholder is a space");
+    assert_eq!(got[(4, 0)].fg, RColor::Green, "...and keeps its style");
+    assert_eq!(
+        sym(5, 0),
+        " ",
+        "a wide character cut by the edge is not drawn"
+    );
+    assert_eq!(sym(0, 1), " ");
+    assert_eq!(sym(1, 1), "b");
+    assert_eq!(sym(2, 1), " ");
+    assert_eq!(sym(3, 1), "日");
+    assert_eq!(
+        got[(4, 1)].bg,
+        RColor::Reset,
+        "a continuation cell is skipped"
+    );
+    assert!(
+        rows(&term)[2].contains("q:qui"),
+        "the footer owns the last row"
+    );
+}
+
+#[test]
 fn a_one_row_screen_has_only_the_footer() {
     let (_d, p) = file("app_one", "a.c", "");
     let (term, _) = run_events(TestPlugin::all(), &p, (10, 1), vec![]);

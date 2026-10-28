@@ -5,192 +5,54 @@
 //! csvlens), so opening is instant even for large files. Vertical/horizontal scrolling is done by
 //! adjusting the scroll offsets to keep the cursor visible, then writing them back to `App`.
 
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::layout::Rect;
 use ratatui::Frame;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use konoma_widgets::table::{render_table, CellPopup, TableOptions, TableViewState};
 
 use crate::app::{App, TableCellView};
 use crate::i18n::tr;
 use crate::preview::table::Grid;
 
-/// Rotating palette for rainbow columns. Mid-tone hues that read on both light and dark terminals
-/// (the same idea as Rainbow CSV / csvlens: color = which column).
-const RAINBOW: [Color; 7] = [
-    Color::Rgb(102, 178, 255), // blue
-    Color::Rgb(120, 200, 120), // green
-    Color::Rgb(224, 176, 92),  // amber
-    Color::Rgb(200, 130, 220), // purple
-    Color::Rgb(110, 200, 200), // teal
-    Color::Rgb(226, 138, 138), // red
-    Color::Rgb(190, 190, 120), // olive
-];
-
-/// Max display width any single column is given (wider cells are truncated with `…`).
-const MAX_COL_W: usize = 40;
-/// Min column width so short/empty columns still show a cell.
-const MIN_COL_W: usize = 3;
-/// Spaces between columns.
-const COL_GAP: usize = 1;
-
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (cur_row, cur_col) = app.table_cursor();
-    let (mut top, mut left) = app.table_scroll();
-
+    let (top, left) = app.table_scroll();
+    let mut state = TableViewState {
+        cursor_row: cur_row,
+        cursor_col: cur_col,
+        top,
+        left,
+        viewport_rows: 0,
+    };
     let Some(t) = app.grid() else {
         return; // The caller (preview::render) has already confirmed is_table_preview. Defensive no-op.
     };
-    let nrows = t.nrows();
-    let ncols = t.ncols();
-    // A spreadsheet sheet gets a row-number gutter on the left (1-based, like Excel); it is not
-    // data (never copied/searched) and stays put while the columns scroll sideways.
     let addressed = app.table_addressed();
-    let gutter_w = if addressed {
-        nrows.max(1).to_string().len() + COL_GAP
-    } else {
-        0
+    let opts = TableOptions {
+        // Decided once per frame: it reads the plugin's view (or the csv plugin's setting for a sheet).
+        rainbow: app.table_rainbow(),
+        title: build_title(app, &t, cur_row, cur_col, addressed),
+        empty_label: tr(app.lang, crate::i18n::Msg::SheetEmptyWord).to_string(),
+        gutter: addressed,
+        is_hit: &|r, c| app.table_cell_is_hit(r, c),
     };
-
-    // Decided once per frame: it reads the plugin's view (or the csv plugin's setting for a sheet).
-    let rainbow = app.table_rainbow();
-    let title = build_title(app, &t, cur_row, cur_col, addressed);
-    let block = Block::bordered().title(title);
-    let inner = block.inner(area);
-
-    // When there are no columns (an empty file), show only a placeholder.
-    if ncols == 0 || inner.width == 0 || inner.height == 0 {
-        let para = Paragraph::new(Line::from(Span::styled(
-            format!(" ({}) ", tr(app.lang, crate::i18n::Msg::SheetEmptyWord)),
-            Style::default().fg(Color::DarkGray),
-        )))
-        .block(block);
-        frame.render_widget(para, area);
-        return;
+    let laid_out = render_table(frame.buffer_mut(), area, &t, &mut state, &opts);
+    // The borrow of the grid ends here -> App can now be updated mutably. A draw that laid
+    // nothing out (no columns, or a collapsed area) must not overwrite the last real view.
+    if laid_out {
+        app.set_table_view(state.top, state.left, state.viewport_rows);
     }
-
-    // Layout: 0 = header / 1 = separator line / 2.. = data rows. 0 data rows if the height doesn't allow it.
-    let visible_rows = (inner.height as usize).saturating_sub(2);
-
-    // --- Vertical scroll: adjust top so the cursor row is visible ---
-    if visible_rows > 0 {
-        if cur_row < top {
-            top = cur_row;
-        } else if cur_row >= top + visible_rows {
-            top = cur_row + 1 - visible_rows;
-        }
-        // Suppress wasted scroll toward the end (don't leave empty space at the bottom edge). But keep the cursor within the visible range.
-        let max_top = nrows.saturating_sub(visible_rows);
-        top = top.min(max_top).min(cur_row);
-    } else {
-        top = cur_row.min(nrows.saturating_sub(1));
-    }
-    let row_end = (top + visible_rows).min(nrows);
-
-    // --- Horizontal scroll: adjust left so the cursor column is visible, and settle which columns fit and at what width ---
-    if cur_col < left {
-        left = cur_col;
-    }
-    let data_rows = row_end.saturating_sub(top).max(1);
-    let avail = inner.width.saturating_sub(gutter_w as u16);
-    // The smallest `left` (not before the current one) from which the cursor column still fits:
-    // count the columns that fit leftwards from the cursor. (Stepping `left` forward one column
-    // at a time and re-fitting every time cost 400 ms at the last of 16,384 columns.)
-    left = leftmost_visible(t, cur_col, left, data_rows, top, avail);
-    let cols = fit_columns(t, left, data_rows, top, avail);
-
-    // --- Assembling rows (all owned String = 'static) ---
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows + 2);
-
-    // Header row (bold, column color).
-    let mut header = compose_line(&cols, |col, w| {
-        let text = fit_to_width(&t.header(col), w);
-        Span::styled(
-            text,
-            Style::default()
-                .fg(column_color(rainbow, col))
-                .add_modifier(Modifier::BOLD),
-        )
-    });
-    if gutter_w > 0 {
-        header.spans.insert(0, Span::raw(" ".repeat(gutter_w)));
-    }
-    lines.push(header);
-
-    // Separator line (dim).
-    let sep_w: usize = gutter_w
-        + cols.iter().map(|(_, w)| *w).sum::<usize>()
-        + COL_GAP * cols.len().saturating_sub(1);
-    lines.push(Line::from(Span::styled(
-        "─".repeat(sep_w.min(inner.width as usize)),
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    // Data rows. The cursor cell is reversed. A search-match cell is shown underlined + bold (using a
-    // modifier rather than a background so as not to blot out the rainbow column color). The current match is at the cursor, so reversal makes it clear.
-    for r in top..row_end {
-        let mut line = compose_line(&cols, |col, w| {
-            let text = fit_to_width(&t.cell(r, col), w);
-            let mut style = Style::default().fg(column_color(rainbow, col));
-            if app.table_cell_is_hit(r, col) {
-                style = style
-                    .add_modifier(Modifier::UNDERLINED)
-                    .add_modifier(Modifier::BOLD);
-            }
-            if r == cur_row && col == cur_col {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
-            Span::styled(text, style)
-        });
-        if gutter_w > 0 {
-            // Muted so it reads as chrome, not data; the cursor's row number stands out a little.
-            let num_style = if r == cur_row {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            line.spans.insert(
-                0,
-                Span::styled(
-                    format!(
-                        "{:>w$}{}",
-                        r + 1,
-                        " ".repeat(COL_GAP),
-                        w = gutter_w - COL_GAP
-                    ),
-                    num_style,
-                ),
-            );
-        }
-        lines.push(line);
-    }
-
-    // The borrow of t ends here (lines holds only owned Strings) → App can now be updated mutably.
-    let viewport_rows = visible_rows as u16;
-    app.set_table_view(top, left, viewport_rows);
-
-    let para = Paragraph::new(lines).block(block);
-    frame.render_widget(para, area);
 }
 
-/// Fraction of the screen the full-cell popup occupies (generous — the point is reading long
-/// content comfortably, not a small dialog like Outline/Info).
-const CELL_POPUP_FRACTION: u32 = 4; // out of 5 (80%)
-const CELL_POPUP_DENOM: u32 = 5;
-
 /// `Enter` in a table preview: a centered popup showing the **cursor cell's untruncated text**
-/// (wrapped, scrollable with j/k/g/G/PageUp/PageDown). This is the read counterpart to `y → c`
-/// (which already copies the full, un-truncated cell) — the grid above always shows `…`-truncated
-/// cells, with no way to read the rest on screen until now. Reads the cell live from `App` each
-/// frame (so an external edit reloading the table, or the popup staying open across an unrelated
-/// redraw, always shows the current value) and writes the clamped scroll back, mirroring the
-/// render/`set_table_view` convention used by the grid above.
+/// (wrapped, scrollable with j/k/g/G/PageUp/PageDown). Reads the cell live from `App` each frame
+/// (so an external edit reloading the table, or the popup staying open across an unrelated redraw,
+/// always shows the current value) and writes the clamped scroll back, mirroring the
+/// render/`set_table_view` convention of the grid.
 pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(view): Option<TableCellView> = app.table_cell_view() else {
         return; // The caller (ui::render) has already confirmed is_table_cell_open. Defensive no-op.
     };
-
     let title = format!(
         " {} · {}  r{}/{} c{}/{} ",
         tr(app.lang, crate::i18n::Msg::TableCellTitle),
@@ -200,67 +62,18 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
         view.col,
         view.ncols
     );
-
-    // Popup size: base it on 80% of the screen, fitting it with margin reserved (larger than
-    // Outline/Info because this one is for the "read long content comfortably" use case).
-    //
-    // `.min(upper).max(lower)` — not `.clamp(lower, upper)` — because `upper` is a runtime value
-    // (terminal size) that can fall below the fixed `lower` floor on a small terminal, and
-    // `Ord::clamp` asserts `min <= max` (a real `assert!`, not `debug_assert!`, so it panics in
-    // release builds too). `.min(..).max(..)` has no such ordering to violate; it's the same
-    // convention `ui/help.rs`/`ui/dialog.rs` already use for their popups.
-    let w = ((area.width as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
-        .min(area.width.saturating_sub(2))
-        .max(20);
-    let h = ((area.height as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
-        .min(area.height.saturating_sub(2))
-        .max(6);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    };
-
-    let block = Block::bordered()
-        .title(title)
-        .title_bottom(
-            Line::from(
-                crate::ops::footer::tokens(app, crate::keymap::Context::TableCell).join("  "),
-            )
-            .centered()
-            .dim(),
-        )
-        .border_style(Style::new().fg(Color::Cyan));
-    let inner = block.inner(popup);
-
-    // ratatui doesn't expand tab characters to the terminal's tab stops (which would mismatch
-    // unicode-width's width calculation) and instead draws them as a single column as-is, so we
-    // flatten them to spaces before wrapping. Real newlines (e.g. a CSV cell with an embedded newline
-    // inside quotes) are already line-split by Text::raw (via String::from), so they're left untouched here.
-    let body = if view.text.contains('\t') {
-        view.text.replace('\t', " ")
-    } else {
-        view.text
-    };
-
-    let mut para = Paragraph::new(body).wrap(Wrap { trim: false });
-    // Have ratatui compute the total display row count (wrapping included), and clamp so it never
-    // scrolls past the end (the same convention as render_windowed/render_decorated).
-    let total_rows = para.line_count(inner.width);
-    let max_scroll = total_rows.saturating_sub(inner.height as usize) as u16;
-    let scroll = app.table_cell_scroll().min(max_scroll);
-    app.set_table_cell_view(scroll, inner.height);
-
-    para = para
-        .block(block)
-        .scroll((scroll, 0))
-        .alignment(Alignment::Left);
-
-    frame.render_widget(Clear, popup); // clear the background before drawing
-    frame.render_widget(para, popup);
+    let footer = crate::ops::footer::tokens(app, crate::keymap::Context::TableCell).join("  ");
+    let (scroll, viewport) = konoma_widgets::table::render_cell_popup(
+        frame.buffer_mut(),
+        area,
+        CellPopup {
+            title,
+            footer,
+            text: view.text,
+            scroll: app.table_cell_scroll(),
+        },
+    );
+    app.set_table_cell_view(scroll, viewport);
 }
 
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).
@@ -304,249 +117,9 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize, addresse
     )
 }
 
-/// Column color: rainbow when enabled, else the terminal default foreground.
-fn column_color(rainbow: bool, col: usize) -> Color {
-    if rainbow {
-        RAINBOW[col % RAINBOW.len()]
-    } else {
-        Color::Reset
-    }
-}
-
-/// The smallest `left >= min_left` such that the columns `left..=cur_col` fit in `width` (or
-/// `cur_col` itself when even that column alone does not). Same answer as advancing `left` one
-/// column at a time until `fit_columns` shows `cur_col`, in time proportional to the columns that
-/// fit rather than to the distance scrolled.
-fn leftmost_visible(
-    t: Grid<'_>,
-    cur_col: usize,
-    min_left: usize,
-    visible_rows: usize,
-    top: usize,
-    width: u16,
-) -> usize {
-    let avail = width as usize;
-    let mut used = col_width(t, cur_col, visible_rows, top);
-    let mut left = cur_col;
-    while left > min_left {
-        let w = col_width(t, left - 1, visible_rows, top);
-        if used + COL_GAP + w > avail {
-            break;
-        }
-        used += COL_GAP + w;
-        left -= 1;
-    }
-    left
-}
-
-/// A column's display width: the widest of its header and the visible cells, clamped.
-fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
-    let mut w = head(&t.header(col)).width();
-    for r in top..(top + visible_rows).min(t.nrows()) {
-        w = w.max(flat_width(&t.cell(r, col)));
-    }
-    w.clamp(MIN_COL_W, MAX_COL_W)
-}
-
-/// Which columns (starting at `left`) fit in `width`, and each column's display width.
-/// Column width = max(header, visible cells), clamped to [MIN_COL_W, MAX_COL_W]. Always yields at
-/// least one column (even if it overflows) so something is always drawn.
-fn fit_columns(
-    t: Grid<'_>,
-    left: usize,
-    visible_rows: usize,
-    top: usize,
-    width: u16,
-) -> Vec<(usize, usize)> {
-    let mut out: Vec<(usize, usize)> = Vec::new();
-    let mut used = 0usize;
-    let avail = width as usize;
-    for col in left..t.ncols() {
-        let w = col_width(t, col, visible_rows, top);
-        let gap = if out.is_empty() { 0 } else { COL_GAP };
-        if !out.is_empty() && used + gap + w > avail {
-            break;
-        }
-        out.push((col, w));
-        used += gap + w;
-    }
-    if out.is_empty() {
-        // Show at least the first column even when the width is extremely narrow.
-        out.push((left, MIN_COL_W.min(avail.max(1))));
-    }
-    out
-}
-
-/// Build a `Line` by rendering each fitted column via `cell` and joining with the column gap.
-fn compose_line(
-    cols: &[(usize, usize)],
-    mut cell: impl FnMut(usize, usize) -> Span<'static>,
-) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(cols.len() * 2);
-    for (i, (col, w)) in cols.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" ".repeat(COL_GAP)));
-        }
-        spans.push(cell(*col, *w));
-    }
-    Line::from(spans)
-}
-
-/// How much of a cell the grid ever looks at, in characters. A column is at most [`MAX_COL_W`]
-/// (40) wide, so only the start of a cell can be on screen; a cell can be megabytes (one is up to
-/// 128 MiB), and every visible cell is measured and cut at every frame, so each of those walks
-/// the head and nothing else. 256 is six times the widest column, which leaves room for the
-/// zero-width characters (combining marks, joiners) that take no column.
-const HEAD_CHARS: usize = 256;
-
-/// The first [`HEAD_CHARS`] characters of `s`: all the grid needs of a cell. Costs the head, not
-/// the length of `s`.
-fn head(s: &str) -> &str {
-    match s.char_indices().nth(HEAD_CHARS) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
-
-/// Display width of the head of a cell after flattening embedded newlines/tabs to spaces (the
-/// width is only ever compared with [`MAX_COL_W`]).
-fn flat_width(s: &str) -> usize {
-    let s = head(s);
-    if s.contains(['\n', '\r', '\t']) {
-        flatten(s).width()
-    } else {
-        s.width()
-    }
-}
-
-/// Replace embedded newlines/tabs with spaces so a multi-line cell stays on one grid row.
-fn flatten(s: &str) -> String {
-    s.replace(['\n', '\r', '\t'], " ")
-}
-
-/// Truncate `s` to exactly `w` display columns (adding `…` when cut) and right-pad with spaces.
-/// CJK-aware (full-width glyphs count as 2). Embedded newlines/tabs are flattened first.
-fn fit_to_width(s: &str, w: usize) -> String {
-    let s = flatten(head(s));
-    let total = s.width();
-    let mut out = String::new();
-    let mut used = 0usize;
-    if total <= w {
-        out.push_str(&s);
-        used = total;
-    } else {
-        let budget = w.saturating_sub(1); // reserve 1 column for '…'
-        for ch in s.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if used + cw > budget {
-                break;
-            }
-            out.push(ch);
-            used += cw;
-        }
-        out.push('…');
-        used += 1;
-    }
-    while used < w {
-        out.push(' ');
-        used += 1;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fit_pads_short_and_truncates_long() {
-        assert_eq!(fit_to_width("ab", 5), "ab   ");
-        assert_eq!(fit_to_width("abcdef", 4), "abc…");
-        assert_eq!(fit_to_width("", 3), "   ");
-    }
-
-    #[test]
-    fn fit_flattens_newlines() {
-        assert_eq!(fit_to_width("a\nb", 4), "a b ");
-    }
-
-    #[test]
-    fn fit_handles_full_width_cjk() {
-        // 2 full-width characters = width 4. Fits exactly into width 4.
-        assert_eq!(fit_to_width("あい", 4).width(), 4);
-        // Truncated to width 3: 1 full-width char (width 2) + … (width 1) = 3.
-        assert_eq!(fit_to_width("あい", 3).width(), 3);
-    }
-
-    /// The old way: step `left` forward until `fit_columns` shows the cursor column.
-    fn leftmost_by_stepping(
-        t: Grid<'_>,
-        cur_col: usize,
-        mut left: usize,
-        rows: usize,
-        top: usize,
-        width: u16,
-    ) -> usize {
-        loop {
-            let fitted = fit_columns(t, left, rows, top, width);
-            let last = fitted.last().map(|(c, _)| *c).unwrap_or(left);
-            if cur_col <= last || left >= cur_col {
-                return left;
-            }
-            left += 1;
-        }
-    }
-
-    #[test]
-    fn leftmost_visible_matches_stepping_left_forward() {
-        // Columns of many different widths (header and cell widths from 1 to 60, so some are
-        // clamped), several rows.
-        let ncols = 90;
-        let headers: Vec<String> = (0..ncols).map(|c| "h".repeat(1 + (c * 7) % 23)).collect();
-        let rows: Vec<Vec<String>> = (0..4)
-            .map(|r| {
-                (0..ncols)
-                    .map(|c| "x".repeat(((c * 13 + r * 5) % 61).max(1)))
-                    .collect()
-            })
-            .collect();
-        let t = crate::preview::table::TableData {
-            headers,
-            rows,
-            ncols,
-            truncated: false,
-        };
-        let g = Grid::Plugin(&t);
-        let mut checked = 0;
-        for width in [1u16, 5, 20, 40, 80, 200, 1000] {
-            for cur in (0..ncols).step_by(3).chain([ncols - 1]) {
-                // The caller has already moved `left` back to the cursor when it was past it.
-                for min_left in [0, 1.min(cur), cur / 2, cur.saturating_sub(1), cur] {
-                    let want = leftmost_by_stepping(g, cur, min_left, 4, 0, width);
-                    let got = leftmost_visible(g, cur, min_left, 4, 0, width);
-                    assert_eq!(got, want, "width {width} cur {cur} min_left {min_left}");
-                    checked += 1;
-                }
-            }
-        }
-        assert!(checked > 500);
-    }
-
-    #[test]
-    fn fit_columns_always_yields_one() {
-        let t = crate::preview::table::TableData {
-            headers: vec!["a".into(), "b".into()],
-            rows: vec![vec!["1".into(), "2".into()]],
-            ncols: 2,
-            truncated: false,
-        };
-        // At least 1 column even when extremely narrow.
-        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 1);
-        assert!(!cols.is_empty());
-        // Both columns when wide enough.
-        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 80);
-        assert_eq!(cols.len(), 2);
-    }
 
     // ---- FIXED CRASH: `render_cell_popup` used to panic on a small terminal ----------------
     //
@@ -734,79 +307,46 @@ mod tests {
         );
     }
 
+    /// A draw into a collapsed area (no inner width/height) lays nothing out and must not reset
+    /// the page size the last real draw recorded.
     #[test]
-    fn a_huge_cell_costs_its_head_not_its_length() {
-        let huge = "あ\n".repeat(2_000_000); // 8 MB
-        let t = std::time::Instant::now();
-        for _ in 0..200 {
-            // 128 wide characters (2 columns) and 128 flattened newlines (1 column).
-            assert_eq!(flat_width(&huge), 128 * 3);
-            assert_eq!(fit_to_width(&huge, 10).width(), 10);
-        }
-        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
-        // The head is what `fit_to_width` shows, so the result is the one it gave for the whole.
-        assert_eq!(fit_to_width(&huge, 10), "あ あ あ …");
-    }
-
-    #[test]
-    fn head_cuts_on_a_character_boundary_and_keeps_a_short_text_whole() {
-        assert_eq!(head("abc"), "abc");
-        assert_eq!(head(""), "");
-        let s = "é".repeat(HEAD_CHARS + 10);
-        assert_eq!(head(&s).chars().count(), HEAD_CHARS);
-        let exact = "x".repeat(HEAD_CHARS);
-        assert_eq!(head(&exact), exact);
-        // Past the head, the width is still a width of at least a column (what is compared).
-        assert!(flat_width(&s) >= MAX_COL_W);
-    }
-}
-
-/// Tests added after a mutation audit (the boundary of `leftmost_visible`).
-#[cfg(test)]
-mod survivor_tests {
-    use super::*;
-
-    /// Six columns, each exactly 5 cells wide. Columns that *exactly* fill the width fit
-    /// (`fit_columns` keeps a column when `used + gap + w == avail`), so `leftmost_visible` must
-    /// reach as far left as `fit_columns` allows: a `>=` instead of `>` leaves one column out
-    /// whenever the width is an exact fit, and the cursor scrolls one column too early.
-    #[test]
-    fn leftmost_visible_counts_columns_that_exactly_fill_the_width() {
-        let ncols = 6;
-        let t = crate::preview::table::TableData {
-            headers: (0..ncols).map(|_| "hhhhh".to_string()).collect(),
-            rows: vec![(0..ncols).map(|_| "xxxxx".to_string()).collect()],
-            ncols,
-            truncated: false,
+    fn collapsed_draw_keeps_the_last_page_size() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let dir = crate::test_support::unique_tmp("konoma_table_collapsed_draw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv: String = std::iter::once("h".to_string())
+            .chain((0..60).map(|i| format!("r{i}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.join("t.csv"), csv).unwrap();
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+        let idx = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("t.csv"))
+            .unwrap();
+        app.tab.selected = idx;
+        app.tree_activate().unwrap();
+        assert!(app.is_table_preview());
+        let draw = |app: &mut App, w: u16, h: u16| {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| {
+                let area = f.area();
+                render(f, app, area);
+            })
+            .unwrap();
         };
-        let g = Grid::Plugin(&t);
-        let cur = ncols - 1;
-        for k in 1..=ncols {
-            let exact = (5 * k + COL_GAP * (k - 1)) as u16;
-            let left = leftmost_visible(g, cur, 0, 1, 0, exact);
-            assert_eq!(left, ncols - k, "{k} columns fill {exact} exactly");
-            // The same answer `fit_columns` gives: from `left` the cursor column is shown...
-            let shown: Vec<usize> = fit_columns(g, left, 1, 0, exact)
-                .iter()
-                .map(|c| c.0)
-                .collect();
-            assert_eq!(shown.last(), Some(&cur), "{k}: {shown:?}");
-            // ...and one column to the left of it would not fit.
-            if left > 0 {
-                let shown: Vec<usize> = fit_columns(g, left - 1, 1, 0, exact)
-                    .iter()
-                    .map(|c| c.0)
-                    .collect();
-                assert_ne!(shown.last(), Some(&cur), "{k}: {shown:?}");
-            }
-            // One cell narrower: one column less.
-            if k > 1 {
-                assert_eq!(
-                    leftmost_visible(g, cur, 0, 1, 0, exact - 1),
-                    ncols - k + 1,
-                    "{k}"
-                );
-            }
-        }
+        // 12 rows tall: inner 10, minus header and separator = page of 8.
+        draw(&mut app, 40, 12);
+        app.table_page(1);
+        assert_eq!(app.table_cursor().0, 8, "setup: the page is 8 rows");
+        draw(&mut app, 2, 12); // inner width 0
+        app.table_page(1);
+        assert_eq!(app.table_cursor().0, 16, "zero width kept the page size");
+        draw(&mut app, 40, 2); // inner height 0
+        app.table_page(1);
+        assert_eq!(app.table_cursor().0, 24, "zero height kept the page size");
     }
 }

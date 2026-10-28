@@ -786,13 +786,14 @@ impl App {
             return;
         };
         let (nr, nc) = (g.nrows(), g.ncols());
-        if nr == 0 || nc == 0 {
-            return;
-        }
-        let r = (self.tab.table_cur_row as i64 + drow as i64).clamp(0, nr as i64 - 1);
-        let c = (self.tab.table_cur_col as i64 + dcol as i64).clamp(0, nc as i64 - 1);
-        self.tab.table_cur_row = r as usize;
-        self.tab.table_cur_col = c as usize;
+        let mut state = konoma_widgets::table::TableViewState {
+            cursor_row: self.tab.table_cur_row,
+            cursor_col: self.tab.table_cur_col,
+            ..Default::default()
+        };
+        state.move_cursor(drow, dcol, nr, nc);
+        self.tab.table_cur_row = state.cursor_row;
+        self.tab.table_cur_col = state.cursor_col;
     }
 
     /// Jump to the first (`bottom=false`) or last (`bottom=true`) data row.

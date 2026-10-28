@@ -1483,10 +1483,10 @@ fn pdf_page_navigation_clamps_and_indicates() {
     assert_eq!(app.tab.page, 1, "先頭でクランプ");
 
     // A page move resets zoom back to fit (1.0).
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.next_page();
     assert_eq!(app.tab.page, 2);
-    assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
+    assert_eq!(app.tab.image_view.zoom, 1.0, "ページ移動で fit に戻る");
 }
 
 /// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization (via
@@ -1573,11 +1573,11 @@ fn gif_emits_kitty_image_data_per_frame() {
         30,
         image::Rgb([0, 255, 0]),
     ));
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (red, std::time::Duration::from_millis(50)),
         (green, std::time::Duration::from_millis(50)),
-    ];
-    app.gif_idx = 0;
+    ]);
+    app.gif.force_frame_index(0);
     assert!(app.is_gif_active(), "2 フレームならアニメ扱い");
     assert!(
         app.is_image_preview(),
@@ -1599,7 +1599,7 @@ fn gif_emits_kitty_image_data_per_frame() {
 
     // Advance to frame 1 and re-prepare + render → different image data appears (an atomic
     // switch, no churn).
-    app.gif_idx = 1;
+    app.gif.force_frame_index(1);
     let t1 = app.prepare_gif(area).expect("frame1 layout");
     let proto1 = app.gif_protocol().expect("frame1 should be encoded");
     let mut buf1 = Buffer::empty(area);
@@ -1615,16 +1615,16 @@ fn gif_emits_kitty_image_data_per_frame() {
 #[test]
 fn zoom_clamps_between_1_and_16() {
     let (mut app, _dir) = app_with_image();
-    assert_eq!(app.tab.image_zoom, 1.0);
+    assert_eq!(app.tab.image_view.zoom, 1.0);
     app.image_zoom_by(0.5); // never goes below 1.0
-    assert_eq!(app.tab.image_zoom, 1.0);
+    assert_eq!(app.tab.image_view.zoom, 1.0);
     for _ in 0..40 {
         app.image_zoom_by(1.25);
     }
-    assert_eq!(app.tab.image_zoom, 16.0);
+    assert_eq!(app.tab.image_view.zoom, 16.0);
     app.image_zoom_reset();
-    assert_eq!(app.tab.image_zoom, 1.0);
-    assert_eq!(app.tab.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_view.zoom, 1.0);
+    assert_eq!(app.tab.image_view.center, (0.5, 0.5));
 }
 
 #[test]
@@ -1638,7 +1638,7 @@ fn fit_is_natural_size_and_centered_at_z1() {
     assert_eq!(r.x, (200 - 40) / 2);
     assert_eq!(r.y, (40 - 15) / 2);
     // Not clipped → panning is disabled.
-    assert_eq!(app.image_vis_frac, (1.0, 1.0));
+    assert_eq!(app.image_viewer.vis_frac(), (1.0, 1.0));
 }
 
 #[test]
@@ -1646,18 +1646,18 @@ fn zoom_grows_then_clips_and_enables_pan() {
     let (mut app, _dir) = app_with_image();
     let inner = inner(200, 40);
     // z=2: 80x30 cells, still within the viewport (200x40) → shown in full, centered, no panning.
-    app.tab.image_zoom = 2.0;
+    app.tab.image_view.zoom = 2.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!((r.width, r.height), (80, 30));
-    assert_eq!(app.image_vis_frac, (1.0, 1.0));
+    assert_eq!(app.image_viewer.vis_frac(), (1.0, 1.0));
     // z=4: 160x60 → height 60>40 clips vertically. Display height is constrained to the
     // viewport, and vertical panning is enabled.
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!(r.height, 40, "高さは viewport に制限");
     assert_eq!(r.width, 160);
-    assert!(app.image_vis_frac.1 < 1.0, "縦が見切れ=パン可");
-    assert_eq!(app.image_vis_frac.0, 1.0, "横はまだ収まる");
+    assert!(app.image_viewer.vis_frac().1 < 1.0, "縦が見切れ=パン可");
+    assert_eq!(app.image_viewer.vis_frac().0, 1.0, "横はまだ収まる");
     // Still centered.
     assert_eq!(r.x, (200 - 160) / 2);
 }
@@ -1669,19 +1669,19 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     // z=1: no clipping → even after panning, prepare resets the center back to 0.5.
     app.image_pan(1.0, 1.0);
     app.prepare_image(inner).unwrap();
-    assert_eq!(app.tab.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_view.center, (0.5, 0.5));
     // Zoom in far enough to clip on both axes → panning moves the center, clamped at the edges.
-    app.tab.image_zoom = 12.0;
+    app.tab.image_view.zoom = 12.0;
     app.prepare_image(inner).unwrap(); // update the visible fraction
     for _ in 0..50 {
         app.image_pan(1.0, 1.0);
         app.prepare_image(inner).unwrap();
     }
-    let (fw, fh) = app.image_vis_frac;
+    let (fw, fh) = app.image_viewer.vis_frac();
     assert!(fw < 1.0 && fh < 1.0, "両軸見切れ");
     // Clamped at the edge = 1 - frac/2.
-    assert!((app.tab.image_center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
-    assert!((app.tab.image_center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_view.center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_view.center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -4590,11 +4590,11 @@ fn status_shows_image_zoom_factor() {
             .map(|c| c.symbol())
             .collect()
     };
-    app.tab.image_zoom = 1.0;
+    app.tab.image_view.zoom = 1.0;
     let s = text(&app);
     assert!(s.contains("IMAGE"), "IMAGE チップ: {s}");
     assert!(s.contains("x1.00"), "フィットで x1.00: {s}");
-    app.tab.image_zoom = 2.5;
+    app.tab.image_view.zoom = 2.5;
     assert!(text(&app).contains("x2.50"), "拡大時に倍率");
 }
 
@@ -7222,11 +7222,13 @@ fn set_gif_frames_and_advance_when_due() {
     ]);
     assert!(app.is_gif_active());
     assert!(!app.advance_gif_if_due(), "最初の tick は計時開始だけ");
-    assert_eq!(app.gif_idx, 0);
+    assert_eq!(app.gif.frame_index(), 0);
     // Pretend the display duration has elapsed and advance to the next frame.
-    app.gif_shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    app.gif.force_shown_at(Some(
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
+    ));
     assert!(app.advance_gif_if_due(), "期限超過で次フレームへ");
-    assert_eq!(app.gif_idx, 1);
+    assert_eq!(app.gif.frame_index(), 1);
 }
 
 /// The run loop asks `animation_timers_due`: a full-screen GIF frame that is due draws again.
@@ -7246,12 +7248,13 @@ fn the_loops_animation_timers_report_a_due_full_screen_gif_frame() {
         !crate::animation_timers_due(&mut app, now),
         "starts the timer"
     );
-    app.gif_shown_at = Some(now - std::time::Duration::from_secs(1));
+    app.gif
+        .force_shown_at(Some(now - std::time::Duration::from_secs(1)));
     assert!(
         crate::animation_timers_due(&mut app, now),
         "the frame is due"
     );
-    assert_eq!(app.gif_idx, 1);
+    assert_eq!(app.gif.frame_index(), 1);
 }
 
 #[test]
@@ -7261,10 +7264,10 @@ fn gif_poll_timeout_none_without_anim_some_when_playing() {
     assert!(app.gif_poll_timeout().is_none(), "アニメでなければ None");
     let frame =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([0; 3])));
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (frame.clone(), Duration::from_millis(50)),
         (frame, Duration::from_millis(50)),
-    ];
+    ]);
     let t = app.gif_poll_timeout().expect("再生中は Some");
     assert!(
         t >= Duration::from_millis(10) && t <= Duration::from_millis(100),
@@ -11042,11 +11045,11 @@ fn ui_preview_renders_image_via_kitty_path() {
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
     };
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (frame([255, 0, 0]), std::time::Duration::from_millis(50)),
         (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
-    ];
-    app.gif_idx = 0;
+    ]);
+    app.gif.force_frame_index(0);
     app.tab.mode = Mode::Preview;
     assert!(app.is_gif_active() && app.is_image_preview());
     let mut term = Terminal::new(TestBackend::new(48, 20)).unwrap();
@@ -13771,7 +13774,10 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
         "ズームで密度が上がる: {before:?} -> {after:?}"
     );
     assert_eq!(app.image_logical.unwrap(), logical, "論理サイズは不変");
-    assert!(app.tab.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
+    assert!(
+        app.tab.image_view.zoom > 1.9,
+        "ユーザー向けズーム値は保たれる"
+    );
 }
 
 #[test]
@@ -15742,7 +15748,10 @@ fn non_kitty_terminal_keeps_ratatui_image_path() {
     );
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_image_ref().is_none(), "KittyImage は作らない");
-    assert!(app.image.is_some(), "従来の ThreadProtocol 経路を使う");
+    assert!(
+        app.image_viewer.protocol().is_some(),
+        "従来の ThreadProtocol 経路を使う"
+    );
 }
 
 /// A tab switch must not leak table search match highlighting into another tab. The highlight is
@@ -15827,7 +15836,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     assert!(krx.try_recv().is_err(), "初回は worker を使わない(同期)");
 
     // Zoom: async from here on. kitty_image stays at the old size, pending=true.
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は build in-flight");
     assert_eq!(
@@ -15847,9 +15856,9 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     // discarded (threads run concurrently = arrival order is non-deterministic, so "arrives
     // first" doesn't necessarily mean "older". Judged by gen, so regardless of order exactly one,
     // the latest, gets applied).
-    app.tab.image_zoom = 6.0;
+    app.tab.image_view.zoom = 6.0;
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 8.0;
+    app.tab.image_view.zoom = 8.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let a = krx.recv().unwrap();
     let b = krx.recv().unwrap();
@@ -15920,12 +15929,12 @@ fn kitty_failed_build_clears_pending() {
 
     // Initial sync -> async build in-flight via zoom (pending=true).
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は in-flight");
 
     // Inject a build failure (None) for the current generation -> apply returns false but pending clears.
-    let gen = app.kitty_gen;
+    let gen = app.image_viewer.kitty_gen();
     assert!(
         !app.apply_kitty(KittyResult { gen, image: None }),
         "失敗は適用しない"
@@ -16064,7 +16073,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
 
     // Open A (initial synchronous), then kick off async build gen=N via zoom.
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let stale = krx.recv().expect("Aのズームの worker 結果"); // the gen=N result
 

@@ -13,7 +13,7 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Frame;
-use ratatui_image::{FilterType, Image, Resize, StatefulImage};
+use ratatui_image::Image;
 
 use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
@@ -25,7 +25,7 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     // The mode chip (PREVIEW/IMAGE) is prepended by `status`. Here we only append the image zoom factor.
     let mut spans = Vec::new();
     if app.is_image_preview() {
-        spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
+        spans.push(Span::from(format!("  x{:.2}", app.tab.image_view.zoom)).bold());
     }
     // PDF also shows the page position (e.g. 2/5), only when the total page count is known. A
     // table's pages (a workbook's sheets) say their position in the table's own frame title
@@ -189,7 +189,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Images take a dedicated path: draw the frame, then draw StatefulImage inside it.
-    // An uninitialized backend / decode failure (app.image=None) falls back to text.
+    // An uninitialized backend / decode failure (no image backend) falls back to text.
     if app.shows_picture_frame_plugin() {
         render_image(frame, app, area);
         return;
@@ -1588,27 +1588,12 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
     // Still images: right before drawing, fix the crop and display rect from (zoom, center, inner).
     // z=1=fit, larger while zoomed in, cropped + pan once it exceeds the viewport (centered).
     let target = app.prepare_image(inner);
-    // kitty terminal: konoma's own compressed-transfer (o=z) path. On a crop change, draw the
-    // already-built KittyImage directly into the frame buffer (one transfer, then placeholder-only
-    // afterward). The transfer volume drops to a fraction.
-    if app.uses_kitty_image() {
-        match (target, app.kitty_image_ref()) {
-            (Some(target), Some(ki)) => ki.render(target, frame.buffer_mut()),
-            _ => fallback(frame),
-        }
-        return;
-    }
-    // Other terminals (sixel/iterm2/halfblocks): ratatui-image's async StatefulImage.
-    match (target, app.image.as_mut()) {
-        (Some(target), Some(state)) => {
-            // Nearest-neighbor (None) aliases when shrinking and produces block noise when
-            // enlarging, looking coarse even from a high-resolution source. Use Lanczos3 for
-            // high-quality resizing (resizing/encoding runs on a separate thread = resize_worker, so
-            // the UI is not blocked).
-            let widget = StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3)));
-            frame.render_stateful_widget(widget, target, state);
-        }
-        _ => fallback(frame),
+    // The viewer draws through konoma's own compressed kitty transfer (one transfer, then
+    // placeholders only) on a kitty terminal, and through ratatui-image's protocol elsewhere
+    // (sixel/iterm2/halfblocks); `prepare_image` picked the path and built it.
+    let drawn = target.is_some_and(|target| app.image_viewer.render(target, frame.buffer_mut()));
+    if !drawn {
+        fallback(frame);
     }
 }
 

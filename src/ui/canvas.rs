@@ -35,15 +35,12 @@
 //! Text input and the redraw timer are the app's (`App::canvas_view` tells what the view asks
 //! for).
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Block;
 use ratatui::Frame;
 use std::sync::Arc;
 
-use konoma_plugin::view::CanvasView;
-
-use crate::app::{plugin_style_of, App};
+use crate::app::App;
 
 /// Draw the canvas of the plugin show into `area` (the preview frame and its content).
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -62,62 +59,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
 
     if let Some(canvas) = app.canvas_view() {
-        paint(frame.buffer_mut(), inner, canvas);
+        konoma_plugin::ratatui_draw::paint_canvas(frame.buffer_mut(), inner, canvas);
     }
     draw_images(frame, app, inner);
 
     // The area is not the size of the request that produced this canvas (a resize, or the first
     // frame that measured it): ask again. After the drawing, so the borrow of the view is over.
     app.refit_canvas();
-}
-
-/// Copy the cells of `canvas` into `buf` inside `inner`, clipped to it.
-///
-/// `CanvasView::check` is the contract and the host refuses a canvas that fails it; this is the
-/// second line: whatever the cells hold, a control character is never written to the buffer (it
-/// would reach the terminal as an escape sequence), it becomes a space. All positions are
-/// computed in `u32`.
-pub(crate) fn paint(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
-    let cols = canvas.cols as usize;
-    if cols == 0 {
-        return;
-    }
-    let show_cols = (canvas.cols).min(inner.width) as u32;
-    let show_rows = (canvas.rows).min(inner.height) as u32;
-    for y in 0..show_rows {
-        for x in 0..show_cols {
-            let Some(cell) = canvas.cells.get(y as usize * cols + x as usize) else {
-                return;
-            };
-            if cell.is_continuation() {
-                continue;
-            }
-            // A wide character whose right half is outside the area is not drawn.
-            let width = konoma_plugin::symbol_width(&cell.symbol).max(1) as u32;
-            if x + width > show_cols && width > 1 {
-                continue;
-            }
-            let (Ok(tx), Ok(ty)) = (
-                u16::try_from(inner.x as u32 + x),
-                u16::try_from(inner.y as u32 + y),
-            ) else {
-                continue;
-            };
-            let Some(target) = buf.cell_mut((tx, ty)) else {
-                continue;
-            };
-            let style = plugin_style_of(cell.style);
-            if cell
-                .symbol
-                .chars()
-                .any(|c| c.is_control() || c == konoma_plugin::view::KITTY_PLACEHOLDER)
-            {
-                target.set_symbol(" ").set_style(style);
-            } else {
-                target.set_symbol(&cell.symbol).set_style(style);
-            }
-        }
-    }
 }
 
 /// The most the pictures of one canvas may cover, as a multiple of the canvas area, counting every
@@ -247,171 +195,6 @@ pub(crate) fn visible_rect(inner: Rect, r: konoma_plugin::view::CellRect) -> Opt
 mod tests {
     use super::*;
     use konoma_plugin::view::CellRect;
-
-    fn canvas_of(cols: u16, symbols: &[&str]) -> CanvasView {
-        let mut c = CanvasView::new(cols, 1);
-        for (i, s) in symbols.iter().enumerate() {
-            c.cells[i].symbol = s.to_string();
-        }
-        c
-    }
-
-    fn painted(canvas: &CanvasView, inner: Rect) -> Buffer {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 4));
-        paint(&mut buf, inner, canvas);
-        buf
-    }
-
-    /// The whole painted buffer (glyphs and styles) for a canvas that mixes plain ASCII, wide and
-    /// half-width kana, a control character, a style on a wide glyph and on its trailing cell.
-    fn mixed_canvas() -> CanvasView {
-        use konoma_plugin::{Color as C, Style as S};
-        let mut c = canvas_of(
-            12,
-            &[
-                "A", "日", "", "ｶﾞ", "", "\u{1b}", "b", "本", "", "c", "d", "e",
-            ],
-        );
-        c.cells[0].style = S::new().fg(C::Red).bold();
-        c.cells[1].style = S::new().fg(C::Rgb(10, 20, 30)).bg(C::Blue);
-        c.cells[2].style = S::new().bg(C::Red); // trailing half: must not be painted
-        c.cells[6].style = S::new().underlined();
-        c.cells[7].style = S::new().fg(C::Green);
-        c
-    }
-
-    #[test]
-    fn paint_snapshot_mixed_content_fully_inside_the_area() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 14, 3));
-        paint(&mut buf, Rect::new(1, 1, 12, 1), &mixed_canvas());
-        let got = crate::test_support::buffer_dump(&buf);
-        assert_eq!(
-            got,
-            r####" 0||
- 1| A日ｶﾞ  b本cde|
- 2||
---- styles ---
-r1 c1..1 fg=Red bg=Reset mod=BOLD |A|
-r1 c2..3 fg=Rgb(10, 20, 30) bg=Blue mod=NONE |日|
-r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
-r1 c8..9 fg=Green bg=Reset mod=NONE |本|
-"####,
-            "paint output changed"
-        );
-    }
-
-    #[test]
-    fn paint_snapshot_mixed_content_cut_by_a_narrow_area() {
-        // 7 columns: the half-width kana pair ends at column 5, the wide "本" would need 2 and
-        // does not fit in the last one.
-        let mut buf = Buffer::empty(Rect::new(0, 0, 9, 3));
-        paint(&mut buf, Rect::new(1, 1, 7, 1), &mixed_canvas());
-        let got = crate::test_support::buffer_dump(&buf);
-        assert_eq!(
-            got,
-            r####" 0||
- 1| A日ｶﾞ  b|
- 2||
---- styles ---
-r1 c1..1 fg=Red bg=Reset mod=BOLD |A|
-r1 c2..3 fg=Rgb(10, 20, 30) bg=Blue mod=NONE |日|
-r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
-"####,
-            "paint output changed"
-        );
-    }
-
-    #[test]
-    fn paint_never_writes_a_control_character_even_if_check_was_bypassed() {
-        // None of these would pass `CanvasView::check`; the host paints them anyway as spaces.
-        let bad = [
-            "\u{1b}[31m",
-            "\u{1b}",
-            "\u{7}",
-            "\n",
-            "\r",
-            "\u{7f}",
-            "\u{9b}",
-            "a\u{1b}",
-            "\u{90}",
-        ];
-        let canvas = canvas_of(bad.len() as u16, &bad);
-        assert!(canvas.check().is_err());
-        let buf = painted(&canvas, Rect::new(1, 1, 10, 2));
-        for cell in &buf.content {
-            assert!(
-                !cell.symbol().chars().any(char::is_control),
-                "{:?} reached the buffer",
-                cell.symbol()
-            );
-        }
-        for i in 0..bad.len() as u16 {
-            assert_eq!(buf[(1 + i, 1)].symbol(), " ", "cell {i}");
-        }
-    }
-
-    #[test]
-    fn paint_replaces_the_kitty_placeholder_with_a_space() {
-        let bad = ["\u{10EEEE}", "\u{10EEEE}\u{0305}\u{0305}"];
-        let canvas = canvas_of(bad.len() as u16, &bad);
-        assert!(canvas.check().is_err());
-        let buf = painted(&canvas, Rect::new(1, 1, 10, 2));
-        for cell in &buf.content {
-            assert!(!cell.symbol().contains('\u{10EEEE}'), "{:?}", cell.symbol());
-        }
-        assert_eq!(buf[(1, 1)].symbol(), " ");
-        assert_eq!(buf[(2, 1)].symbol(), " ");
-    }
-
-    #[test]
-    fn paint_still_draws_ordinary_symbols_and_styles() {
-        let mut canvas = canvas_of(3, &["a", "日", ""]);
-        canvas.cells[0].style = konoma_plugin::Style::new().fg(konoma_plugin::Color::Red);
-        let buf = painted(&canvas, Rect::new(2, 1, 8, 2));
-        assert_eq!(buf[(2, 1)].symbol(), "a");
-        assert_eq!(buf[(2, 1)].fg, ratatui::style::Color::Red);
-        assert_eq!(buf[(3, 1)].symbol(), "日");
-    }
-
-    #[test]
-    fn paint_leaves_the_trailing_cell_of_a_wide_character_alone() {
-        // The right half of a wide character belongs to the left cell: its own style (the plugin
-        // may have set one) is not painted over the terminal's two-column cell.
-        let mut canvas = canvas_of(3, &["日", "", "a"]);
-        canvas.cells[1].style = konoma_plugin::Style::new().bg(konoma_plugin::Color::Red);
-        let buf = painted(&canvas, Rect::new(0, 0, 3, 1));
-        assert_eq!(buf[(0, 0)].symbol(), "日");
-        assert_eq!(buf[(1, 0)].symbol(), " ");
-        assert_eq!(buf[(1, 0)].bg, ratatui::style::Color::Reset);
-        assert_eq!(buf[(2, 0)].symbol(), "a");
-    }
-
-    #[test]
-    fn paint_counts_a_voiced_halfwidth_kana_as_two_columns_like_ratatui() {
-        // "ｶﾞ" is two columns for ratatui (the voiced mark has a column of its own), so at the right
-        // edge of the area it is cut like any wide character instead of being drawn half over.
-        let canvas = canvas_of(3, &["a", "ｶﾞ", ""]);
-        assert_eq!(canvas.check(), Ok(()));
-        let buf = painted(&canvas, Rect::new(0, 0, 2, 1));
-        assert_eq!(buf[(0, 0)].symbol(), "a");
-        assert_eq!(buf[(1, 0)].symbol(), " ");
-        let buf = painted(&canvas, Rect::new(0, 0, 3, 1));
-        assert_eq!(buf[(1, 0)].symbol(), "ｶﾞ");
-    }
-
-    #[test]
-    fn paint_stops_at_the_cells_it_has_for_a_huge_claimed_canvas() {
-        // A canvas that claims 65535 columns but holds 3 cells: positions are summed in u32,
-        // nothing wraps or panics, and painting stops where the cells end.
-        let mut canvas = CanvasView::new(0, 0);
-        canvas.cols = u16::MAX;
-        canvas.rows = 1;
-        canvas.cells = vec![konoma_plugin::view::CanvasCell::new("日", Default::default()); 3];
-        let inner = Rect::new(0, 0, u16::MAX, 1);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
-        paint(&mut buf, inner, &canvas);
-        assert_eq!(buf[(0, 0)].symbol(), "日");
-    }
 
     fn sig(inner: Rect, items: &[(u64, Rect)]) -> u64 {
         let mut s = OverlaySig::new(inner);

@@ -68,17 +68,16 @@ impl App {
     /// overwritten them with the restored values; so that a late asynchronous result does not break the restored zoom/center).
     pub(super) fn set_static_image(&mut self, img: image::DynamicImage) {
         self.image_src = Some(std::sync::Arc::new(img));
-        self.image_crop = None; // let the next render (prepare_image) build the protocol
-                                // The "rebuild" signal for the kitty path. A path that swaps **only the pixels** rather than
-                                // zooming (PDF page navigation / a video re-thumbnail) leaves both the crop and the display
-                                // cell size unchanged, so `kitty_want` doesn't change and the old raster would linger.
-                                // Invalidate want/shown here and stale-out any in-flight build (gen bump) = the swap always
-                                // gets rebuilt.
-                                // (An SVG reraster gets separately rebuilt on crop_rect change; fresh/reload is harmless even
-                                // if this fires twice, via clear_image.)
-        self.kitty_gen = self.kitty_gen.wrapping_add(1);
-        self.kitty_want = None;
-        self.kitty_shown = None;
+        // Let the next render (prepare_image) build the protocol.
+        self.image_viewer.set_crop(None);
+        // The "rebuild" signal for the kitty path. A path that swaps **only the pixels** rather than
+        // zooming (PDF page navigation / a video re-thumbnail) leaves both the crop and the display
+        // cell size unchanged, so `kitty_want` doesn't change and the old raster would linger.
+        // Invalidate want/shown here and stale-out any in-flight build (gen bump) = the swap always
+        // gets rebuilt.
+        // (An SVG reraster gets separately rebuilt on crop_rect change; fresh/reload is harmless even
+        // if this fires twice, via clear_image.)
+        self.image_viewer.invalidate();
     }
 
     /// Common processing to set all GIF frames into the display state (used from both the synchronous and asynchronous paths).
@@ -87,12 +86,8 @@ impl App {
         &mut self,
         frames: Vec<(image::DynamicImage, std::time::Duration)>,
     ) {
-        self.gif_frames = frames;
-        self.gif_idx = 0;
-        self.gif_shown_at = None; // start timing on the first tick
-        self.gif_protocol = None;
-        self.gif_proto_key = None;
-        self.image_crop = None;
+        self.gif.set_frames(frames); // timing starts on the first tick
+        self.image_viewer.set_crop(None);
     }
 
     /// Start loading image-type media according to the preview kind (from enter_preview / tab restore).
@@ -497,108 +492,40 @@ impl App {
     }
 
     /// Drive the GIF animation. If the current frame's display time has elapsed, advance to the next frame index.
-    /// The actual re-encode is done by prepare_gif on the next render (detecting the gif_idx change).
+    /// The actual re-encode is done by prepare_gif on the next render (detecting the frame index change).
     /// Returns true if advanced (the caller re-renders). Always false if not a GIF.
     pub fn advance_gif_if_due(&mut self) -> bool {
-        if self.gif_frames.len() < 2 {
-            return false;
-        }
-        let now = std::time::Instant::now();
-        let Some(shown_at) = self.gif_shown_at else {
-            // First tick: just start timing (the first frame is already shown).
-            self.gif_shown_at = Some(now);
-            return false;
-        };
-        let delay = self.gif_frames[self.gif_idx].1;
-        if now.duration_since(shown_at) < delay {
-            return false;
-        }
-        self.gif_idx = (self.gif_idx + 1) % self.gif_frames.len();
-        self.gif_shown_at = Some(now);
-        true
+        self.gif.advance_if_due(std::time::Instant::now())
     }
 
     /// Whether a GIF animation is active (used for branching in the render path and footer/zoom checks).
     pub fn is_gif_active(&self) -> bool {
-        self.gif_frames.len() >= 2
+        self.gif.is_active()
     }
 
     /// The render protocol of the current GIF frame synchronously encoded to the display size (referenced by the render side).
     pub fn gif_protocol(&self) -> Option<&Protocol> {
-        self.gif_protocol.as_ref()
+        self.gif.protocol()
     }
 
-    /// Call just before rendering (for GIF). Compute the display rectangle target and crop from the current (gif_idx, zoom, center, inner), and
-    /// if the frame/crop has changed, **synchronously encode** the current frame and swap it into gif_protocol.
-    /// Being synchronous, "render an unencoded protocol → empty" does not happen, and the frame switches atomically (no churn).
-    /// The return value is the render-target target. None when there is no backend / size 0.
+    /// Call just before rendering (for GIF): lay out the current frame for (zoom, center, inner) and
+    /// synchronously encode it when the frame or the crop changed (see `GifPlayer::prepare`).
+    /// The return value is the render-target rect. None when there is no backend / size 0.
     pub fn prepare_gif(&mut self, inner: Rect) -> Option<Rect> {
         let picker = self.picker.as_ref()?;
-        let scale = self.cfg.ui.image_render_scale;
-        let src = &self.gif_frames.get(self.gif_idx)?.0;
-        let ImageLayout {
-            target,
-            crop_rect,
-            center,
-            frac,
-        } = image_layout(
-            src,
-            picker.font_size(),
-            self.tab.image_zoom,
-            self.tab.image_center,
+        self.gif.prepare(
+            &mut self.tab.image_view,
+            &mut self.image_viewer,
+            picker,
+            self.cfg.ui.image_render_scale,
             inner,
-            scale,
-            None, // GIF stays at its raw raster size (it isn't vector-derived)
-        )?;
-        let key = (self.gif_idx, crop_rect);
-        // Re-encode only when the frame or the crop (zoom/pan/resize) changes.
-        let built = if self.gif_proto_key != Some(key) {
-            let (x0, y0, cw, ch) = crop_rect;
-            let crop = src.crop_imm(x0, y0, cw, ch);
-            let size = ratatui::layout::Size::new(target.width.max(1), target.height.max(1));
-            // The src/picker borrows are fully consumed by this expression (the result is owned) →
-            // self can be mutated afterward.
-            // Since a GIF is synchronously encoded on the UI thread every frame, use the light and
-            // smooth Triangle (bilinear) filter (nearest-neighbor `None` would make each animated
-            // frame jagged; the highest-quality Lanczos3 is used for still images).
-            Some(picker.new_protocol(crop, size, Resize::Scale(Some(FilterType::Triangle))))
-        } else {
-            None
-        };
-        if let Some(res) = built {
-            match res {
-                Ok(p) => {
-                    self.gif_protocol = Some(p);
-                    self.gif_proto_key = Some(key);
-                }
-                Err(_) => {
-                    // Encode failure: the render side falls back to a message. Retry on the next frame.
-                    self.gif_protocol = None;
-                    self.gif_proto_key = None;
-                }
-            }
-        }
-        self.tab.image_center = center;
-        self.image_vis_frac = frac;
-        self.image_crop = Some(crop_rect);
-        Some(target)
+        )
     }
 
     /// Wait time until the next frame while a GIF is playing (for the poll timeout). None when not playing.
     /// Clamped to [10ms, 100ms] for smoothness (100ms is the same as the normal idle-tick upper bound).
     pub fn gif_poll_timeout(&self) -> Option<std::time::Duration> {
-        use std::time::Duration;
-        if self.gif_frames.len() < 2 {
-            return None;
-        }
-        let remaining = match self.gif_shown_at {
-            None => Duration::ZERO, // not timing yet: run the next tick right away to start timing
-            Some(t) => self.gif_frames[self.gif_idx]
-                .1
-                .checked_sub(t.elapsed())
-                .unwrap_or(Duration::ZERO),
-        };
-        Some(remaining.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+        self.gif.poll_timeout(std::time::Instant::now())
     }
 
     /// Whether the current preview is a (renderable) image. Used to route image-only keys (zoom/pan).
@@ -736,9 +663,9 @@ impl App {
         if self.shows_media_plugin() {
             // Reset to fit so the whole new page is visible (set_static_image doesn't touch
             // zoom/center, so reset it explicitly).
-            self.tab.image_zoom = 1.0;
-            self.tab.image_center = (0.5, 0.5);
-            self.image_crop = None;
+            self.tab.image_view.zoom = 1.0;
+            self.tab.image_view.center = (0.5, 0.5);
+            self.image_viewer.set_crop(None);
             if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
                 // Keep showing the old page's image until the new one arrives (staleness judged by
                 // media_gen; the spinner overlays on top).
@@ -759,7 +686,7 @@ impl App {
             }
             return;
         }
-        self.tab.image_zoom = (self.tab.image_zoom * factor).clamp(1.0, 16.0);
+        self.tab.image_view.zoom_by(factor);
         self.maybe_sharpen_vector();
     }
 
@@ -787,7 +714,7 @@ impl App {
             return;
         };
         let cur_side = src.dimensions().0.max(src.dimensions().1);
-        let want = ((lw.max(lh) as f64) * self.tab.image_zoom).ceil() as u32;
+        let want = ((lw.max(lh) as f64) * self.tab.image_view.zoom).ceil() as u32;
         // Do nothing if the current raster is already sufficient (+12% margin) or already at the cap (4096).
         if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
             return;
@@ -813,8 +740,7 @@ impl App {
             }
             return;
         }
-        self.tab.image_zoom = 1.0;
-        self.tab.image_center = (0.5, 0.5);
+        self.tab.image_view.reset();
     }
 
     /// Current in-place zoom of the focused inline diagram (renderer/footer cue).
@@ -881,11 +807,9 @@ impl App {
         if self.image_src.is_none() && !self.is_gif_active() {
             return;
         }
-        let (fw, fh) = self.image_vis_frac;
         // About 25% of the visible window per call. Moving an axis that isn't clipped (frac>=1) is
         // clamped at render time anyway.
-        self.tab.image_center.0 += dx * 0.25 * fw;
-        self.tab.image_center.1 += dy * 0.25 * fh;
+        self.image_viewer.pan(&mut self.tab.image_view, dx, dy);
     }
 
     /// Call just before rendering. From the current (zoom, center, display area inner), compute the image's display rectangle target
@@ -893,136 +817,50 @@ impl App {
     /// the visible portion; rebuild the protocol if the crop changed. The return value is the render-target target.
     /// Realizes "fit the render area to the image size (fit) → grow when zooming → clip + pan once exceeded".
     pub fn prepare_image(&mut self, inner: Rect) -> Option<Rect> {
-        let src = self.image_src.as_ref()?;
+        let image = self.image_src.as_ref()?;
         let picker = self.picker.as_ref()?;
-        let scale = self.cfg.ui.image_render_scale;
-        let ImageLayout {
-            target,
-            crop_rect,
-            center,
-            frac,
-        } = image_layout(
-            src,
-            picker.font_size(),
-            self.tab.image_zoom,
-            self.tab.image_center,
-            inner,
-            scale,
-            self.image_logical,
-        )?;
-        let crop_changed = self.image_crop != Some(crop_rect);
-        if self.use_kitty {
-            // konoma-native compressed transmit. Request a rebuild only when the wanted geometry —
-            // the crop (zoom/pan) or the display cell size (a terminal resize at fit) — changes;
-            // otherwise the current/in-flight image already targets it, so a static image just
-            // re-emits cheap placeholders every frame. The cell-size part matters because at fit zoom
-            // a resize changes the area without the crop, and ratatui-image re-encodes on area change
-            // internally, so konoma's path must too.
-            let want = (crop_rect, target.width, target.height);
-            if self.kitty_want != Some(want) {
-                self.kitty_want = Some(want);
-                self.request_kitty_build(crop_rect, target, picker.font_size());
-            }
-        } else {
-            // ratatui-image path (sixel/iterm2/halfblocks, or kitty when disabled): rebuild the
-            // ThreadProtocol only on crop change to avoid a per-frame re-encode.
-            let new_tp = if crop_changed {
-                let (x0, y0, cw, ch) = crop_rect;
-                let crop = src.crop_imm(x0, y0, cw, ch);
-                let proto = picker.new_resize_protocol(crop);
-                Some(ThreadProtocol::new(
-                    self.img_tx.as_ref()?.clone(),
-                    Some(proto),
-                ))
-            } else {
-                None
-            };
-            if let Some(tp) = new_tp {
-                self.image = Some(tp);
-            }
-        }
-        self.tab.image_center = center;
-        self.image_vis_frac = frac;
-        self.image_crop = Some(crop_rect);
-        Some(target)
-    }
-
-    /// Build the compressed kitty image for the given crop/target. The **first** build after opening
-    /// a file (or after a failure left `kitty_image` None) runs synchronously so the image appears
-    /// without a blank frame. Subsequent builds (zoom/pan/resize) run on a worker thread so rapid
-    /// input does not hitch — the previous image keeps showing until the new one arrives (`apply_kitty`).
-    /// With no `kitty_tx` (tests), everything runs synchronously.
-    fn request_kitty_build(
-        &mut self,
-        crop_rect: (u32, u32, u32, u32),
-        target: Rect,
-        font: ratatui_image::FontSize,
-    ) {
-        let Some(src) = self.image_src.clone() else {
-            return; // no source yet → render falls back
+        let backend = konoma_widgets::image_view::ImageBackend {
+            picker,
+            use_kitty: self.use_kitty,
+            is_tmux: self.kitty_is_tmux,
+            resize_tx: self.img_tx.as_ref(),
+            kitty_tx: self.kitty_tx.as_ref(),
+            render_scale: self.cfg.ui.image_render_scale,
+            // Nearest-neighbor (None) aliases when shrinking and produces block noise when
+            // enlarging, looking coarse even from a high-resolution source; Lanczos3 resizes
+            // well (the resize runs on the resize worker thread, so the UI is not blocked).
+            filter: ratatui_image::FilterType::Lanczos3,
         };
-        let (cols, rows) = (target.width, target.height);
-        let is_tmux = self.kitty_is_tmux;
-        // Every build bumps the generation so a stale async result is discarded by `apply_kitty`.
-        self.kitty_gen = self.kitty_gen.wrapping_add(1);
-
-        // Synchronous: the very first build (nothing to show yet) or when there is no worker channel.
-        if self.kitty_image.is_none() || self.kitty_tx.is_none() {
-            self.kitty_image = crate::preview::kitty::build_from_source(
-                &src, crop_rect, cols, rows, font, is_tmux,
-            );
-            self.kitty_shown = self.kitty_want; // now showing the wanted geometry
-            return;
-        }
-
-        // Async: keep the previous image visible; the newest spawn's result wins.
-        let tx = self.kitty_tx.clone().unwrap();
-        let gen = self.kitty_gen;
-        std::thread::spawn(move || {
-            // A pathological image must not kill the worker (else nothing is ever sent and the
-            // previous image lingers); catch and report a failed build instead.
-            let image = crate::preview::markdown::catch_silent(move || {
-                crate::preview::kitty::build_from_source(&src, crop_rect, cols, rows, font, is_tmux)
-            })
-            .flatten();
-            let _ = tx.send(KittyResult { gen, image });
-        });
+        let source = konoma_widgets::image_view::ImageSource {
+            image,
+            logical: self.image_logical,
+        };
+        self.image_viewer
+            .prepare(&mut self.tab.image_view, source, &backend, inner)
     }
 
     /// Apply a completed async kitty build. Stale results (superseded by a newer zoom/pan) and failed
     /// builds are dropped, keeping whatever image is currently shown rather than blanking it.
     pub fn apply_kitty(&mut self, result: KittyResult) -> bool {
-        if result.gen != self.kitty_gen {
-            return false; // superseded by a newer geometry
-        }
-        // Either way the newest generation has now settled — mark the wanted geometry as shown so
-        // `kitty_build_pending()` clears. Otherwise a failed build (None) would leave it stuck true,
-        // spinning the run loop at 16 ms forever (until the next geometry change). On failure the
-        // previous image simply stays; on success we swap in the new one.
-        self.kitty_shown = self.kitty_want;
-        match result.image {
-            Some(ki) => {
-                self.kitty_image = Some(ki);
-                true
-            }
-            None => false,
-        }
+        self.image_viewer.apply_kitty(result)
     }
 
     /// Whether an async kitty build is in flight: the wanted geometry differs from what is shown.
     /// Covers pan (same cell size, different crop). The run loop polls faster while this is true so
     /// the result is picked up promptly.
     pub fn kitty_build_pending(&self) -> bool {
-        self.use_kitty && self.kitty_want != self.kitty_shown
+        self.image_viewer.kitty_build_pending()
     }
 
     /// Whether still images are drawn via konoma's own compressed kitty transmit (kitty terminal).
+    #[cfg(test)]
     pub fn uses_kitty_image(&self) -> bool {
         self.use_kitty
     }
 
     /// The prepared compressed kitty image for the current crop, if built.
-    pub fn kitty_image_ref(&self) -> Option<&crate::preview::kitty::KittyImage> {
-        self.kitty_image.as_ref()
+    #[cfg(test)]
+    pub fn kitty_image_ref(&self) -> Option<&konoma_widgets::kitty::KittyImage> {
+        self.image_viewer.kitty_image()
     }
 }

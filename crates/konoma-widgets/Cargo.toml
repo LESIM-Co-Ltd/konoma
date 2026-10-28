@@ -21,6 +21,11 @@ image.workspace = true
 # The kitty transmit is zlib-compressed (`o=z`) and base64 encoded.
 flate2.workspace = true
 base64.workspace = true
+# The startup terminal query (`term_query`) reads the tty with poll(2) and sets its mode.
+libc.workspace = true
+crossterm.workspace = true
+# `ImageViewer` hands resize jobs to the host's worker through ratatui-image's tokio channel.
+tokio.workspace = true
 unicode-width.workspace = true
 # ```mermaid fences that are not drawn as pictures render as Unicode box-drawing text.
 mermaid-text.workspace = true

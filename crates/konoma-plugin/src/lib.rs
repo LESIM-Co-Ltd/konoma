@@ -92,6 +92,8 @@ pub mod manifest;
 pub mod prelude;
 #[cfg(feature = "proc")]
 pub mod proc;
+#[cfg(feature = "ratatui")]
+pub mod ratatui_draw;
 pub mod registry;
 pub mod scope;
 pub mod session;
