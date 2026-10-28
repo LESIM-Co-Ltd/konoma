@@ -631,6 +631,9 @@ struct State {
     /// The last `view` of a paged table failed: the message is on screen, and the page keys
     /// still turn the pages (the host keeps them too: the page number is not rolled back).
     table_failed: bool,
+    /// Whether the last table on screen had spreadsheet addresses (its pages are sheets): the
+    /// footer and the help of a failed page keep saying `sheet`.
+    table_sheets: bool,
 }
 
 /// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
@@ -713,6 +716,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     new.popup = old.popup.take();
                 }
                 new.clamp_cursor();
+                st.table_sheets = new.addressed;
                 let layout = session.layout().clipped();
                 st.pages = match layout.pages {
                     Some(PageLayout::Separate { count, titles }) => {
@@ -734,7 +738,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         if let Some(p) = pictures.as_mut() {
             p.poll();
         }
-        let mode = table_mode(&base, st.pages);
+        let mode = shown_mode(&base, &st);
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
@@ -889,6 +893,20 @@ fn table_mode(base: &Frame, pages: Option<usize>) -> Option<TableMode> {
         }),
         _ => None,
     }
+}
+
+/// What the footer and the help say about the screen: a table's mode, or, after a page that
+/// failed, the mode of a paged table with no cell (the page keys act, as the host's do, and
+/// `Enter` has nothing to open).
+fn shown_mode(base: &Frame, st: &State) -> Option<TableMode> {
+    table_mode(base, st.pages).or_else(|| {
+        st.table_failed.then(|| TableMode {
+            popup: false,
+            paged: st.pages.is_some_and(|n| n > 1),
+            cells: false,
+            sheets: st.table_sheets,
+        })
+    })
 }
 
 /// Move the cell cursor, or scroll the popup while it is open.

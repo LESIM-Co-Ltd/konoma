@@ -975,3 +975,41 @@ fn the_page_keys_still_turn_after_a_sheet_that_fails() {
     );
     assert!(all(&r).contains("sheet unreadable"), "{}", all(&r));
 }
+
+/// A page that fails keeps the page keys, so the footer and the `?` help name them (a hint is
+/// there when its key acts), and say nothing of a cell: the message has none to open.
+#[test]
+fn the_footer_and_help_of_a_sheet_that_fails_name_the_page_keys() {
+    let (_d, p) = file("f.book", "a,b\n===\nFAIL\n===\ng,h\n");
+    let (r, _, _) = run_counted(&p, SIZE, chars("J"));
+    assert!(all(&r).contains("[can not preview:"), "{}", all(&r));
+    let f = footer(&r);
+    assert!(f.contains("J/K:"), "{f}");
+    assert!(
+        f.contains("q:quit") && f.contains("?:help") && !f.contains("view cell"),
+        "{f}"
+    );
+    // The same words as before the failure (sheet or page).
+    let before = footer(&run_counted(&p, SIZE, vec![]).0);
+    let word = |f: &str| {
+        f.split_whitespace()
+            .find(|t| t.starts_with("J/K:"))
+            .map(str::to_string)
+    };
+    assert_eq!(word(&f), word(&before), "{f} / {before}");
+    // The help is the table's, with the page rows and no cell row.
+    let (r, _, _) = run_counted(&p, (80, 40), chars("J?"));
+    let h = all(&r);
+    assert!(h.contains("J / K"), "{h}");
+    assert!(!h.contains("view the full cell text"), "{h}");
+    // On the first page (it reads) the cell is offered as before.
+    assert!(before.contains("view cell"), "{before}");
+}
+
+/// A single-page table has no page keys, failed or not: the hint stays out.
+#[test]
+fn a_book_with_one_sheet_that_reads_has_no_page_hint_after_the_keys() {
+    let (_d, p) = file("s.book", "a,b\n");
+    let (r, _, _) = run_counted(&p, SIZE, chars("J"));
+    assert!(!footer(&r).contains("J/K"), "{}", footer(&r));
+}

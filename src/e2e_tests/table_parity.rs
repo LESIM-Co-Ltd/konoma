@@ -608,3 +608,119 @@ fn a_table_without_columns_does_not_offer_to_view_a_cell() {
     let (rows, _s) = host_rows(&root, "plain.csv", HOST_H, "<CR>");
     assert!(rows.iter().any(|l| l.contains("Cell ·")), "{rows:#?}");
 }
+
+/// A workbook whose second sheet cannot be read (the XML of its rows is cut by a stray end tag).
+fn broken_book(dir: &std::path::Path) {
+    let ok = |k: &str| -> String {
+        (1..=3)
+            .map(|r| {
+                format!(
+                    r#"<row r="{r}">{}</row>"#,
+                    x_str(&format!("A{r}"), &format!("{k}{r}"))
+                )
+            })
+            .collect()
+    };
+    let bad = format!("{}</nope>", ok("bad"));
+    konoma_test_support::build_xlsx(
+        &dir.join("broken.xlsx"),
+        &[
+            ("One", "visible", &ok("a"), ""),
+            ("Two", "visible", &bad, ""),
+            ("Three", "visible", &ok("c"), ""),
+        ],
+    );
+}
+
+/// On a sheet that fails the host keeps `J` / `K` (so the footer and the help list them) and
+/// has no cell to open; the app says the same.
+#[test]
+fn a_sheet_that_fails_has_the_same_footer_and_help_as_the_host() {
+    let dir = sandbox("broken_sheet");
+    broken_book(&dir);
+    let root = canon(&dir);
+    let mut compared = 0;
+    for spec in [
+        "J", "J j", "J l", "J G", "J <CR>", "J J K", "K J", "J K J", "J $",
+    ] {
+        let what = format!("broken.xlsx [{spec}]");
+        let (h, _s) = host_rows(&root, "broken.xlsx", HOST_H, spec);
+        let a = app_rows(&root.join("broken.xlsx"), APP_H, spec);
+        assert!(
+            h.iter().any(|l| l.contains("cannot preview"))
+                && a.iter().any(|l| l.contains("can not preview")),
+            "{what}: both show the failure\nhost:\n{}\napp:\n{}",
+            h.join("\n"),
+            a.join("\n")
+        );
+        let (hh, ah) = (
+            hints(h.last().expect("footer")),
+            hints(a.last().expect("footer")),
+        );
+        // `Enter` has no cell to open: the host flashes a line the app has no place for.
+        if hh == ["no cell to view"] {
+            continue;
+        }
+        assert!(hh.iter().any(|t| t == "J/K:sheet"), "{what}: {hh:?}");
+        assert!(
+            !hh.iter().any(|t| t.contains("view cell")),
+            "{what}: {hh:?}"
+        );
+        for t in hh.iter().filter(|t| !ah.contains(t)) {
+            assert!(
+                HOST_ONLY.contains(&t.as_str()),
+                "{what}: host `{t}`\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        for t in ah.iter().filter(|t| !hh.contains(t)) {
+            assert!(
+                t.starts_with("q:quit"),
+                "{what}: app `{t}`\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        compared += 1;
+    }
+    assert!(compared >= 8, "{compared}");
+    // The help.
+    for spec in ["J ?", "J j ?", "J K J ?"] {
+        let what = format!("broken.xlsx [{spec}]");
+        let (h, _s) = host_rows(&root, "broken.xlsx", 70, spec);
+        let a = app_rows(&root.join("broken.xlsx"), 69, spec);
+        let px = h
+            .iter()
+            .find_map(|r| {
+                r.find("┌ Help")
+                    .map(|b| unicode_width::UnicodeWidthStr::width(&r[..b]))
+            })
+            .expect("the help panel");
+        let py = h.iter().position(|r| r.contains("┌ Help")).unwrap();
+        let hs = table_section(&help_lines(&h[py + 1..], Some(px)));
+        let asec = table_section(&help_lines(&a, None));
+        assert!(
+            asec.iter().any(|r| r.starts_with("J / K")),
+            "{what}: {asec:#?}"
+        );
+        assert!(
+            !asec.iter().any(|r| r.starts_with("Enter")),
+            "{what}: {asec:#?}"
+        );
+        for row in &asec {
+            if row.starts_with("q / Esc") {
+                continue;
+            }
+            assert!(
+                hs.iter().any(|r| same_row(r, row)),
+                "{what}: app row `{row}` not in host\nhost: {hs:#?}"
+            );
+        }
+        for row in &hs {
+            if row.starts_with("q / Esc") || asec.iter().any(|r| same_row(r, row)) {
+                continue;
+            }
+            assert!(
+                HOST_ONLY_ROWS.iter().any(|p| row.starts_with(p)),
+                "{what}: host row `{row}` not in app\nhost: {hs:#?}\napp: {asec:#?}"
+            );
+        }
+    }
+}
