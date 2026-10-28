@@ -503,6 +503,8 @@ struct TurnPlugin {
     before: [u8; 3],
     /// Keys pressed once the screen stands on the page it ends on (`"j j"`).
     then: &'static str,
+    /// Whether the document has pages to turn (two), or none.
+    paged: bool,
 }
 
 impl TurnPlugin {
@@ -517,6 +519,7 @@ impl TurnPlugin {
             kind: "image",
             before: RED,
             then: "",
+            paged: true,
         }
     }
 
@@ -534,6 +537,7 @@ struct TurnSession {
     gif: std::path::PathBuf,
     second: Option<std::path::PathBuf>,
     first_fails: bool,
+    paged: bool,
 }
 
 impl Plugin for TurnPlugin {
@@ -549,6 +553,7 @@ impl Plugin for TurnPlugin {
             gif: self.gif.clone(),
             second: self.second.clone(),
             first_fails: self.first_fails,
+            paged: self.paged,
         }))
     }
 }
@@ -556,7 +561,7 @@ impl Plugin for TurnPlugin {
 impl Session for TurnSession {
     fn layout(&self) -> Layout {
         Layout {
-            pages: Some(PageLayout::Separate {
+            pages: self.paged.then(|| PageLayout::Separate {
                 count: Some(2),
                 titles: Vec::new(),
             }),
@@ -1104,4 +1109,160 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
     .unwrap();
     let guard = screen.lock().unwrap();
     shot_of(guard.buffer()).rows
+}
+
+// ---- the footer and the help of a failed page shown as text ------------------------------------
+
+/// The footer hints of the host's text view that the app does not have: the app names fewer
+/// keys of a text (it has no tree, no search, no editor).
+const TEXT_HOST_ONLY: &[&str] = &[
+    "/:search",
+    "F:FOLLOW",
+    "C-n/C-p:next/prev file",
+    "q:back",
+    "e:edit",
+    "o:open in app",
+    "g/G:ends",
+    "h/l:hscroll",
+    "0/$:line ends",
+    "[/]:tab",
+    ",:view",
+    "C-f/C-b/PgDn/PgUp:page",
+];
+
+/// The rows of the text section of a help: from its heading to the blank row.
+fn text_section(lines: &[String]) -> Vec<String> {
+    let start = lines
+        .iter()
+        .position(|l| l == "Preview: text / Markdown")
+        .unwrap_or_else(|| panic!("the text section in {:#?}", &lines[..lines.len().min(12)]));
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| !l.is_empty() && !l.starts_with('│'))
+        .cloned()
+        .collect()
+}
+
+/// A broken SVG as a document of two pages (or of none: `paged` false) whose page 1 is a picture
+/// before it (`still_before`: a still, else the animation) or fails at once (`first_fails`),
+/// after the presses `keys`: the footer's hints and, with `help`, the rows of the `?` help the
+/// app names are those the host names. Returns the number of hints and rows compared, and
+/// whether the host named the page turn.
+fn failed_text_chrome_agrees(
+    paged: bool,
+    first_fails: bool,
+    still_before: bool,
+    keys: &'static str,
+    help: bool,
+) -> (usize, bool) {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    std::fs::write(dir.join("turn.svg"), long_broken_svg(90)).unwrap();
+    let root = canon(&dir);
+    let spec: &'static str = Box::leak(format!("{keys} ?").into_boxed_str());
+    let mk = || {
+        let gif = if still_before { "green.png" } else { "a0.gif" };
+        let mut p = TurnPlugin::new(root.join(gif), None).of_kind("svg", "turn.svg");
+        p.first_fails = first_fails;
+        p.paged = paged;
+        p.before = if still_before { GREEN } else { RED };
+        p.then = if help { spec } else { keys };
+        p
+    };
+    let what = format!(
+        "paged={paged} first_fails={first_fails} still_before={still_before} [{keys}] help={help}"
+    );
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join("turn.svg"), mk(), Until::Text("junk-line-000"));
+    let mut compared = 0;
+    if !help {
+        let (hh, ah) = (
+            hints(h.rows.last().expect("footer")),
+            hints(a.rows.last().expect("footer")),
+        );
+        // The app's footer ends with where the text is and the title.
+        assert!(ah.len() > 3, "{what}: {ah:?}");
+        let (ah, at) = ah.split_at(ah.len() - 2);
+        assert!(
+            at[0].starts_with("line "),
+            "{what}: the app says where the text is: {at:?}"
+        );
+        for t in ah {
+            assert!(
+                hh.contains(t) || t == "q:quit",
+                "{what}: the app footer has `{t}` the host lacks\nhost: {hh:?}\napp: {ah:?}"
+            );
+            compared += 1;
+        }
+        for t in hh.iter().filter(|t| !ah.contains(t)) {
+            assert!(
+                TEXT_HOST_ONLY.contains(&t.as_str()),
+                "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        return (compared, false);
+    }
+    let (py, px) = h
+        .rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, r)| {
+            r.find("┌ Help")
+                .map(|b| (y, unicode_width::UnicodeWidthStr::width(&r[..b])))
+        })
+        .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
+    let hs = text_section(&help_lines(&h.rows[py + 1..], Some(px)));
+    let asec = text_section(&help_lines(&a.rows, None));
+    for row in &asec {
+        if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
+            continue;
+        }
+        assert!(
+            hs.iter().any(|r| same_row(r, row)),
+            "{what}: the app's help row `{row}` is not in the host's\nhost: {hs:#?}\napp: {asec:#?}"
+        );
+        compared += 1;
+    }
+    // The page turn is named by both or by neither.
+    let turn = |rows: &[String]| rows.iter().any(|r| r.starts_with("J / K"));
+    // (The page keys do not act in the app when the very first page failed, so it names none
+    // there: a difference of behavior, not of the hints.)
+    if !(first_fails && paged) {
+        assert_eq!(
+            turn(&hs),
+            turn(&asec),
+            "{what}\nhost: {hs:#?}\napp: {asec:#?}"
+        );
+    }
+    (compared, turn(&hs) && turn(&asec))
+}
+
+#[test]
+fn the_footer_and_the_help_of_a_failed_page_shown_as_text_agree_with_the_host() {
+    let (mut compared, mut turns, mut plain) = (0, 0, 0);
+    // A page that failed after a still or an animation, and a first page that failed.
+    for (first_fails, still_before) in [(false, true), (false, false), (true, false)] {
+        for keys in ["", "j j j", "G", "G g", "j j j J"] {
+            for help in [false, true] {
+                let (n, turn) =
+                    failed_text_chrome_agrees(true, first_fails, still_before, keys, help);
+                compared += n;
+                turns += usize::from(turn);
+            }
+        }
+    }
+    // A document with no pages: no page turn in the help.
+    for keys in ["", "j j j", "G"] {
+        for help in [false, true] {
+            let (n, turn) = failed_text_chrome_agrees(false, true, false, keys, help);
+            assert!(!turn);
+            compared += n;
+            plain += 1;
+        }
+    }
+    assert!(compared >= 100, "{compared}");
+    assert_eq!(turns, 2 * 5, "the paged help names the page turn");
+    assert_eq!(plain, 6);
 }

@@ -98,7 +98,15 @@ impl AppKeys {
     /// layers the app does not act on is off (its row and token are left out), and the two
     /// leaving keys are named as the app leaves (it has no tree to go back to).
     pub fn facts(&self) -> HelpFacts {
+        self.facts_paged(false)
+    }
+
+    /// [`AppKeys::facts`] for a text whose document has pages to turn (`paged`): the page turn
+    /// is named too, as the host names it over any text of a paged document. That is the text
+    /// of a page that failed to draw.
+    pub fn facts_paged(&self, paged: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
             HelpOp::Act(CoreAction::Navigate(m)) => matches!(
                 m,
                 Motion::Down
@@ -139,7 +147,12 @@ impl AppKeys {
     /// quits), what scrolls (only when the frame on screen scrolls: `scrolls`), what opens the
     /// help. A hint is there only when its key acts.
     pub fn footer_hints(&self, scrolls: bool) -> Vec<CoreToken> {
-        let facts = self.facts();
+        self.footer_hints_paged(scrolls, false)
+    }
+
+    /// [`AppKeys::footer_hints`] over a text of a document with pages (`paged`).
+    pub fn footer_hints_paged(&self, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        let facts = self.facts_paged(paged);
         let look = CoreLookup {
             keys: &self.keys,
             ctx: CoreContext::Text,
@@ -158,7 +171,12 @@ impl AppKeys {
 
     /// [`AppKeys::footer_hints`] as the text the footer shows.
     pub fn footer_tokens(&self, scrolls: bool) -> Vec<String> {
-        self.footer_hints(scrolls)
+        self.footer_tokens_paged(scrolls, false)
+    }
+
+    /// [`AppKeys::footer_hints_paged`] as the text the footer shows.
+    pub fn footer_tokens_paged(&self, scrolls: bool, paged: bool) -> Vec<String> {
+        self.footer_hints_paged(scrolls, paged)
             .into_iter()
             .map(|t| t.text)
             .collect()
@@ -177,16 +195,26 @@ impl AppKeys {
 
     /// The sections of the `?` help.
     pub fn help_sections(&self) -> Vec<CoreSection> {
+        self.help_sections_paged(false)
+    }
+
+    /// [`AppKeys::help_sections`] over a text of a document with pages (`paged`).
+    pub fn help_sections_paged(&self, paged: bool) -> Vec<CoreSection> {
         let look = CoreLookup {
             keys: &self.keys,
             ctx: CoreContext::Text,
         };
-        core_sections(CoreContext::Text, &self.facts(), &look, self.lang)
+        core_sections(
+            CoreContext::Text,
+            &self.facts_paged(paged),
+            &look,
+            self.lang,
+        )
     }
 
     /// The `?` help as lines: a heading and the aligned rows of each section.
-    fn help_lines(&self) -> Vec<Line> {
-        lines_of(&self.help_sections())
+    fn help_lines(&self, paged: bool) -> Vec<Line> {
+        lines_of(&self.help_sections_paged(paged))
     }
 
     /// The title of the `?` help, shown in the footer while it is open.
@@ -987,14 +1015,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let mode = shown_mode(&base, &st);
         let image_mode = image_mode(&base, pictures.as_ref(), &st);
         let paged = image_mode.is_some_and(|m| m.paged);
+        // After a page that failed and shows the file as text, the screen is a text (the host's
+        // too): its footer and help, with the page turn named.
+        let failed_text_screen = image_mode.is_some() && st.image_failed && st.scrolls;
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
             Some(top) => {
                 let (lines, title) = match (mode, image_mode) {
                     (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
-                    (None, Some(_)) => (keys.image_help_lines(paged), keys.image_help_title()),
-                    (None, None) => (keys.help_lines(), keys.help_title()),
+                    (None, Some(_)) if !failed_text_screen => {
+                        (keys.image_help_lines(paged), keys.image_help_title())
+                    }
+                    (None, _) => (keys.help_lines(paged), keys.help_title()),
                 };
                 let rows = usize::from(body_rows);
                 let top = top.min(lines.len().saturating_sub(rows));
@@ -1018,7 +1051,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                         format!(" {}", keys.table_footer_tokens(m).join("  "))
                     }
-                    None if image_mode.is_some() => {
+                    None if image_mode.is_some() && !failed_text_screen => {
                         let m = image_mode.unwrap_or(ImageMode {
                             shape: StillShape::Failed,
                             paged: false,
@@ -1053,7 +1086,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &keys.footer_tokens(st.scrolls),
+                        &keys.footer_tokens_paged(st.scrolls, paged),
                         &cx.title,
                         &base,
                         st.scroll,
@@ -1092,7 +1125,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 let table_keys = table_mode.is_some() || st.table_failed;
                 // A failed page that shows the file as text scrolls like any text; the page keys
                 // stay (as the host's do).
-                let failed_text = st.image_failed && st.scrolls && st.help.is_none();
+                let failed_text = failed_text_screen && st.help.is_none();
                 let image_keys = image_mode.is_some() && !failed_text;
                 // The page keys act over a picture (a failed page too) whatever scrolls.
                 let on_image = image_mode.is_some();
