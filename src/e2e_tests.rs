@@ -4516,7 +4516,7 @@ fn e2e_help_draws_over_outline() {
     s.term
         .resize(ratatui::layout::Rect::new(0, 0, 100, 70))
         .unwrap();
-    s.key('o');
+    s.key('O');
     assert_help_over_overlay(&mut s, |a| a.is_outline(), "outline");
 }
 
