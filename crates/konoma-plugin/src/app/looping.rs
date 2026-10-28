@@ -23,6 +23,7 @@ use super::still::StillShape;
 use super::window;
 use super::AppError;
 use crate::key::{Key, KeyCode, KeyMods};
+use crate::manifest::ViewKind;
 use crate::pages;
 use crate::session::{Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
@@ -42,6 +43,10 @@ pub struct AppCx {
     pub plugin_id: String,
     /// The absolute path of the file (a failure's words end with it, as konoma's do).
     pub path: std::path::PathBuf,
+    /// The display types the plugin declared it shows ([`crate::Manifest::shows`]). A page that
+    /// fails before anything was shown is told apart by this (a picture's or a table's); empty
+    /// says nothing, and the kind of the last view on screen is believed instead.
+    pub shows: Vec<crate::manifest::ViewKind>,
 }
 
 impl Default for AppCx {
@@ -54,6 +59,7 @@ impl Default for AppCx {
             unavailable: crate::manifest::Unavailable::default(),
             plugin_id: String::new(),
             path: std::path::PathBuf::new(),
+            shows: Vec::new(),
         }
     }
 }
@@ -936,8 +942,29 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // A dropped stale answer says nothing and changes nothing (konoma does the same).
                 Err(f) if f.kind == crate::session::FailureKind::Cancelled => Err(None),
                 Err(f) => {
-                    st.table_failed = st.pages.is_some() && !st.last_image;
-                    st.image_failed = st.pages.is_some() && st.last_image;
+                    // What kind of paged page failed: what the plugin declares it shows, else
+                    // what was on screen before (a first page that fails has nothing before it).
+                    let declared = match (
+                        cx.shows.contains(&ViewKind::Image),
+                        cx.shows.contains(&ViewKind::Table),
+                    ) {
+                        (true, false) => Some(true),
+                        (false, true) => Some(false),
+                        _ => None,
+                    };
+                    let picture = declared.unwrap_or(st.last_image);
+                    // The pages the session declares are known before any page was read.
+                    if st.pages.is_none() && declared.is_some() {
+                        st.pages = declared_pages(session, picture);
+                        // Pages that carry names are a workbook's sheets.
+                        st.table_sheets = !picture
+                            && matches!(
+                                session.layout().pages,
+                                Some(PageLayout::Separate { ref titles, .. }) if !titles.is_empty()
+                            );
+                    }
+                    st.table_failed = st.pages.is_some() && !picture;
+                    st.image_failed = st.pages.is_some() && picture;
                     st.scrolls = false;
                     Err(Some(failure_frame(
                         &f,
@@ -1015,9 +1042,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let mode = shown_mode(&base, &st);
         let image_mode = image_mode(&base, pictures.as_ref(), &st);
         let paged = image_mode.is_some_and(|m| m.paged);
-        // After a page that failed and shows the file as text, the screen is a text (the host's
-        // too): its footer and help, with the page turn named.
-        let failed_text_screen = image_mode.is_some() && st.image_failed && st.scrolls;
+        // After a page that failed and shows the file as text, or in the picture's own frame
+        // (the host draws that as a text too), the screen is a text (the host's): its footer and
+        // help, with the page turn named.
+        let failed_text_screen = image_mode.is_some()
+            && st.image_failed
+            && (st.scrolls || matches!(base, Frame::ImageFailed(_)));
         let mut help_frame: Frame;
         let footer;
         let frame: &mut Frame = match st.help {
@@ -1086,7 +1116,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &keys.footer_tokens_paged(st.scrolls, paged),
+                        &keys.footer_tokens_paged(st.scrolls || failed_text_screen, paged),
                         &cx.title,
                         &base,
                         st.scroll,
@@ -1532,6 +1562,24 @@ fn failure_frame(
             why,
             plugin_id: cx.plugin_id.clone(),
         }),
+    }
+}
+
+/// The page count the session declares for a picture's pages or a table's sheets (what a page
+/// that read fine reports, asked of the layout when none did).
+fn declared_pages(session: &dyn Session, picture: bool) -> Option<usize> {
+    let layout = session.layout().clipped();
+    if picture {
+        return pages::count_of(&layout)
+            .flatten()
+            .map(|n| n as usize)
+            .filter(|n| *n > 0);
+    }
+    match layout.pages {
+        Some(PageLayout::Separate { count, titles }) => {
+            count.or((!titles.is_empty()).then_some(titles.len()))
+        }
+        _ => None,
     }
 }
 

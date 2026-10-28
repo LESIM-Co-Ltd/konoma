@@ -75,6 +75,7 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         lang: "en".into(),
         term: TermCaps::new(),
         title: "t".into(),
+        shows: opened.shows.clone(),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -717,4 +718,81 @@ fn a_sheet_that_fails_has_the_same_footer_and_help_as_the_host() {
             );
         }
     }
+}
+
+/// A workbook whose first sheet cannot be read (the rows are cut by a stray end tag).
+fn broken_first_book(dir: &std::path::Path) {
+    let ok = |k: &str| -> String {
+        (1..=3)
+            .map(|r| {
+                format!(
+                    r#"<row r="{r}">{}</row>"#,
+                    x_str(&format!("A{r}"), &format!("{k}{r}"))
+                )
+            })
+            .collect()
+    };
+    let bad = format!("{}</nope>", ok("bad"));
+    konoma_test_support::build_xlsx(
+        &dir.join("broken_first.xlsx"),
+        &[
+            ("One", "visible", &bad, ""),
+            ("Two", "visible", &ok("b"), ""),
+            ("Three", "visible", &ok("c"), ""),
+        ],
+    );
+}
+
+/// When the very first sheet fails, the host keeps `J` / `K` (nothing was shown before, yet the
+/// workbook declares its sheets): the app turns to the next sheet and names the same keys.
+#[test]
+fn a_first_sheet_that_fails_turns_and_names_its_keys_as_the_host_does() {
+    let dir = sandbox("broken_first_sheet");
+    broken_first_book(&dir);
+    let root = canon(&dir);
+    let file = root.join("broken_first.xlsx");
+    let mut compared = 0;
+    for spec in ["", "J", "J j", "J J", "J J K", "K J", "J $"] {
+        let what = format!("broken_first.xlsx [{spec}]");
+        let (h, _s) = host_rows(&root, "broken_first.xlsx", HOST_H, spec);
+        let a = app_rows(&file, APP_H, spec);
+        let (hh, ah) = (
+            hints(h.last().expect("footer")),
+            hints(a.last().expect("footer")),
+        );
+        assert!(hh.iter().any(|t| t == "J/K:sheet"), "{what}: {hh:?}");
+        assert!(ah.iter().any(|t| t == "J/K:sheet"), "{what}: app {ah:?}");
+        if spec.contains('J') && !spec.ends_with("K") {
+            // A sheet that reads: the same frame in both.
+            if h.iter().any(|l| l.starts_with('┌')) {
+                assert_eq!(frame(&h), frame(&a), "{what}");
+            }
+        }
+        for t in hh.iter().filter(|t| !ah.contains(t)) {
+            assert!(
+                HOST_ONLY.contains(&t.as_str()),
+                "{what}: host `{t}`\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        for t in ah.iter().filter(|t| !hh.contains(t)) {
+            assert!(
+                t.starts_with("q:quit"),
+                "{what}: app `{t}`\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        compared += 1;
+    }
+    assert_eq!(compared, 7);
+    // The help names the sheet keys.
+    let (h, _s) = host_rows(&root, "broken_first.xlsx", 70, "?");
+    let a = app_rows(&file, 69, "?");
+    let py = h.iter().position(|r| r.contains("┌ Help")).expect("help");
+    let px = h[py]
+        .find("┌ Help")
+        .map(|b| unicode_width::UnicodeWidthStr::width(&h[py][..b]))
+        .unwrap();
+    let hs = table_section(&help_lines(&h[py + 1..], Some(px)));
+    let asec = table_section(&help_lines(&a, None));
+    assert!(hs.iter().any(|r| r.starts_with("J / K")), "{hs:#?}");
+    assert!(asec.iter().any(|r| r.starts_with("J / K")), "{asec:#?}");
 }

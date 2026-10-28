@@ -187,6 +187,8 @@ pub struct Opened {
     pub path: PathBuf,
     /// What the plugin declared it shows when it shows nothing ([`Manifest::unavailable`]).
     pub unavailable: crate::manifest::Unavailable,
+    /// The display types the plugin declared ([`Manifest::shows`]).
+    pub shows: Vec<crate::manifest::ViewKind>,
 }
 
 /// Check the file, pick the plugin by the registry's rules and open a session. Nothing here
@@ -231,6 +233,9 @@ pub fn open_file_with(
     let unavailable = registry
         .manifest(&id)
         .map_or_else(|| plugin.manifest().unavailable, |m| m.unavailable.clone());
+    let shows = registry
+        .manifest(&id)
+        .map_or_else(|| plugin.manifest().shows, |m| m.shows.clone());
     let settings = settings_of(&id);
     let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
@@ -252,6 +257,7 @@ pub fn open_file_with(
         plugin_id: id,
         path,
         unavailable,
+        shows,
     })
 }
 
@@ -354,6 +360,7 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         unavailable: opened.unavailable.clone(),
         plugin_id: opened.plugin_id.clone(),
         path: opened.path.clone(),
+        shows: opened.shows.clone(),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are

@@ -505,6 +505,8 @@ struct TurnPlugin {
     then: &'static str,
     /// Whether the document has pages to turn (two), or none.
     paged: bool,
+    /// A color the screen must show before the app ends (the page a last `J` turned to).
+    end_on: Option<[u8; 3]>,
 }
 
 impl TurnPlugin {
@@ -520,6 +522,7 @@ impl TurnPlugin {
             before: RED,
             then: "",
             paged: true,
+            end_on: None,
         }
     }
 
@@ -623,6 +626,7 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     use crate::app::media_plugin::STAND_IN;
     let (file, first_fails, before, then) =
         (plugin.file, plugin.first_fails, plugin.before, plugin.then);
+    let end_on = plugin.end_on;
     STAND_IN.with(|s| *s.borrow_mut() = Some(Arc::new(plugin)));
     let mut s = Sim::with_config_sized(root, cfg_en(), W, HOST_H)
         .with_picker()
@@ -665,6 +669,10 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     for (code, mods) in presses(then) {
         // Scrolling a failed page starts no job: there is nothing to wait for.
         s.press(code, mods);
+        if end_on.is_some() {
+            // A page turn starts one.
+            s.drain_media();
+        }
         s.draw();
         settle(&mut s, &mut req_rx);
     }
@@ -674,6 +682,7 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
 
 /// What the app shows after `J`, once it shows what the host ended on (`after`).
 fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Shot {
+    let end_on = plugin.end_on;
     let (unavailable, kind, first_fails, before, then) = (
         plugin.unavailable.clone(),
         plugin.kind,
@@ -691,6 +700,7 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         unavailable,
         plugin_id: kind.into(),
         path: opened.path.clone(),
+        shows: opened.shows.clone(),
     };
     let key = presses("J")
         .into_iter()
@@ -711,10 +721,10 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         // Only the first waits for the page: once it scrolls, that page's text may be gone.
         steps.push_back((if i == 0 { after } else { Until::Nothing }, k));
     }
-    let after = if then.is_empty() {
-        after
-    } else {
-        Until::Nothing
+    let after = match end_on {
+        Some(c) => Until::Color(c),
+        None if then.is_empty() => after,
+        None => Until::Nothing,
     };
     let mut events = TurnSource {
         screen: Arc::clone(&screen),
@@ -935,6 +945,143 @@ fn a_video_plugin_that_fails_a_page_says_the_same_in_the_host_and_the_app() {
     failing_page_agrees("video", "turn.mp4", false, false);
 }
 
+/// The first page of the plugin `id` fails and `J` turns to a second page that draws: the host
+/// and the app end on the same cells (the page keys act over the failed first page, whichever
+/// kind of picture the plugin shows).
+fn first_page_failed_then_turned_agrees(id: &'static str, file: &'static str) {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+        .save(dir.join("turn.png"))
+        .unwrap();
+    std::fs::write(dir.join("turn.svg"), "<svg>junk-body</svg>").unwrap();
+    std::fs::write(dir.join("turn.pdf"), "%PDF junk").unwrap();
+    std::fs::write(
+        dir.join("turn.mp4"),
+        [&[0, 0, 0, 0x18][..], b"ftypmp42\0\0\0\0mp42isom"].concat(),
+    )
+    .unwrap();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    let root = canon(&dir);
+    let mk = || {
+        let mut p =
+            TurnPlugin::new(root.join("a0.gif"), Some(root.join("green.png"))).of_kind(id, file);
+        p.first_fails = true;
+        p.then = "J";
+        p.end_on = Some(GREEN);
+        p
+    };
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join(file), mk(), Until::Nothing);
+    let green = |cells: &[(String, RColor, RColor)]| {
+        cells
+            .iter()
+            .filter(|c| near(c.1, GREEN) || near(c.2, GREEN))
+            .count()
+    };
+    assert!(
+        green(&h.cells) >= 8,
+        "{id}: the host turned to page 2\n{}",
+        h.rows.join("\n")
+    );
+    assert!(
+        green(&a.cells) >= 8,
+        "{id}: the app turned to page 2\n{}",
+        a.rows.join("\n")
+    );
+    assert_eq!(h.cells, a.cells, "{id}: page 2 is drawn alike");
+}
+
+#[test]
+fn j_turns_from_a_failed_first_page_alike_for_image_svg_pdf_and_video() {
+    first_page_failed_then_turned_agrees("image", "turn.png");
+    first_page_failed_then_turned_agrees("svg", "turn.svg");
+    first_page_failed_then_turned_agrees("pdf", "turn.pdf");
+    first_page_failed_then_turned_agrees("video", "turn.mp4");
+}
+
+/// A page of a picture plugin that fails and is shown in the picture's own frame (the host's
+/// `Picture` words), after the keys `keys` and, with `help`, the `?` help: the footer's hints
+/// and the help's picture rows of the app are those of the host, and the page turn is named by
+/// both (the first page failing or not).
+fn failed_picture_chrome_agrees(first_fails: bool, still_before: bool, help: bool) {
+    let dir = fixtures();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+        .save(dir.join("turn.png"))
+        .unwrap();
+    image::RgbaImage::from_pixel(160, 160, image::Rgba([0, 255, 0, 255]))
+        .save(dir.join("green.png"))
+        .unwrap();
+    let root = canon(&dir);
+    let mk = || {
+        let gif = if still_before { "green.png" } else { "a0.gif" };
+        let mut p = TurnPlugin::new(root.join(gif), None);
+        p.first_fails = first_fails;
+        p.before = if still_before { GREEN } else { RED };
+        p.then = if help { "?" } else { "" };
+        p
+    };
+    let what = format!("first_fails={first_fails} still_before={still_before} help={help}");
+    let h = host_turn_shot(&root, mk());
+    let a = app_turn_shot(&root.join("turn.png"), mk(), Until::Failure);
+    if !help {
+        let (hh, ah) = (
+            hints(h.rows.last().expect("footer")),
+            hints(a.rows.last().expect("footer")),
+        );
+        // The app's footer ends with the title.
+        let (ah, _title) = ah.split_at(ah.len() - 1);
+        assert!(ah.len() > 2, "{what}: {ah:?}");
+        for t in ah {
+            assert!(
+                hh.contains(t) || t == "q:quit",
+                "{what}: the app footer has `{t}` the host lacks\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        for t in hh.iter().filter(|t| !ah.contains(t)) {
+            assert!(
+                TEXT_HOST_ONLY.contains(&t.as_str()),
+                "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
+            );
+        }
+        return;
+    }
+    let (py, px) = h
+        .rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, r)| {
+            r.find("┌ Help")
+                .map(|b| (y, unicode_width::UnicodeWidthStr::width(&r[..b])))
+        })
+        .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
+    let hl = help_lines(&h.rows[py + 1..], Some(px));
+    let al = help_lines(&a.rows, None);
+    let has = |l: &[String], p: &str| l.iter().any(|r| r.starts_with(p));
+    assert!(has(&hl, "J / K"), "{what}: host\n{hl:#?}");
+    assert!(has(&al, "J / K"), "{what}: app\n{al:#?}");
+    // The sections the app draws for a picture are the host's rows.
+    for row in al.iter().filter(|r| !r.is_empty()) {
+        if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
+            continue;
+        }
+        assert!(
+            hl.iter().any(|r| same_row(r, row)),
+            "{what}: the app's help row `{row}` is not in the host's\nhost: {hl:#?}\napp: {al:#?}"
+        );
+    }
+}
+
+#[test]
+fn the_footer_and_the_help_of_a_failed_picture_page_agree_with_the_host() {
+    for (first_fails, still_before) in [(false, true), (false, false), (true, false)] {
+        for help in [false, true] {
+            failed_picture_chrome_agrees(first_fails, still_before, help);
+        }
+    }
+}
+
 /// A body of `n` lines, each saying its number, in an SVG file that is not valid.
 fn long_broken_svg(n: usize) -> String {
     let lines: Vec<String> = (0..n).map(|i| format!("junk-line-{i:03}")).collect();
@@ -1090,6 +1237,7 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         unavailable: opened.unavailable.clone(),
         plugin_id: "says-no".into(),
         path: opened.path.clone(),
+        shows: opened.shows.clone(),
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1227,15 +1375,11 @@ fn failed_text_chrome_agrees(
     }
     // The page turn is named by both or by neither.
     let turn = |rows: &[String]| rows.iter().any(|r| r.starts_with("J / K"));
-    // (The page keys do not act in the app when the very first page failed, so it names none
-    // there: a difference of behavior, not of the hints.)
-    if !(first_fails && paged) {
-        assert_eq!(
-            turn(&hs),
-            turn(&asec),
-            "{what}\nhost: {hs:#?}\napp: {asec:#?}"
-        );
-    }
+    assert_eq!(
+        turn(&hs),
+        turn(&asec),
+        "{what}\nhost: {hs:#?}\napp: {asec:#?}"
+    );
     (compared, turn(&hs) && turn(&asec))
 }
 
@@ -1263,6 +1407,6 @@ fn the_footer_and_the_help_of_a_failed_page_shown_as_text_agree_with_the_host() 
         }
     }
     assert!(compared >= 100, "{compared}");
-    assert_eq!(turns, 2 * 5, "the paged help names the page turn");
+    assert_eq!(turns, 3 * 5, "the paged help names the page turn");
     assert_eq!(plain, 6);
 }
