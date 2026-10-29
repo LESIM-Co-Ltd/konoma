@@ -28,7 +28,7 @@ fn app_text(
         TermCaps::new(),
     )
     .expect("opens");
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut term = Terminal::new(Screen::new(w, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
@@ -60,7 +60,92 @@ fn app_text(
     )
     .unwrap();
     assert_eq!(it.count(), 0, "the app ended early: {spec}");
-    term
+    // The screen the updates leave, as the frame the other tests read.
+    let mut shown = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let screen = term.backend().1.clone();
+    shown
+        .draw(|f| *f.buffer_mut() = screen.clone())
+        .expect("draw");
+    shown
+}
+
+/// A backend that applies the updates as a terminal does. `TestBackend` only stores the cells it is
+/// given, so a cell that a wide character covered keeps what it held before: the wide character
+/// is drawn over a mark at the cell after it (ratatui skips that cell), and when a narrow one is
+/// drawn over the wide character's first cell later, ratatui sees a blank where a blank was and
+/// sends nothing, while a real terminal has blanked the second half (tmux does; xterm, kitty
+/// and Ghostty alike) and the stale mark would show in the test only. The host's frames
+/// are free of it (it clears before the last frame), so the app's are made as a terminal shows.
+struct Screen(TestBackend, ratatui::buffer::Buffer);
+
+impl Screen {
+    fn new(w: u16, h: u16) -> Self {
+        Screen(
+            TestBackend::new(w, h),
+            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
+        )
+    }
+}
+
+impl ratatui::backend::Backend for Screen {
+    type Error = std::convert::Infallible;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        let wide =
+            |c: &ratatui::buffer::Cell| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1;
+        let width = self.1.area.width;
+        for (x, y, cell) in content {
+            let buf = &mut self.1;
+            // Drawing over the second half of a wide character blanks its first half.
+            if x > 0 && wide(&buf[(x - 1, y)]) {
+                buf[(x - 1, y)].reset();
+            }
+            // Drawing over the first half of one blanks its second half.
+            if wide(&buf[(x, y)]) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+            buf[(x, y)] = cell.clone();
+            // A wide character covers the cell after it.
+            if wide(cell) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+        }
+        Ok(())
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.0.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        p: P,
+    ) -> Result<(), Self::Error> {
+        self.0.set_cursor_position(p)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.1.reset();
+        self.0.clear()
+    }
+    fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.0.clear_region(c)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.0.size()
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.0.window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush()
+    }
 }
 
 /// What the host shows after the presses, once the grammar is warm (so the coloring is not
@@ -91,9 +176,7 @@ fn host_text(
     s
 }
 
-/// The frame by cell (from the top border to the bottom border, the whole width), with the cell after a wide character left out. The test backend keeps a
-/// stale cell there when a wide character was drawn in an earlier frame (the host repaints before
-/// its last frame, the app does not); a real terminal never shows it, as ratatui skips it.
+/// The frame by cell (from the top border to the bottom border, the whole width).
 fn frame_cells(term: &Terminal<TestBackend>) -> Vec<String> {
     let rows = rows_of(term);
     let top = rows
@@ -107,17 +190,9 @@ fn frame_cells(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
     (top..=bottom)
         .map(|y| {
-            let mut covered = false;
-            let mut line = String::new();
-            for x in 0..buf.area.width {
-                let sym = buf[(x, y as u16)].symbol();
-                // What the skipped cell holds is not looked at, not even its width.
-                let skipped = covered;
-                covered = !skipped && unicode_width::UnicodeWidthStr::width(sym) > 1;
-                if !skipped {
-                    line.push_str(sym);
-                }
-            }
+            let line: String = (0..buf.area.width)
+                .map(|x| buf[(x, y as u16)].symbol())
+                .collect();
             line.trim_end().to_string()
         })
         .collect()
@@ -206,15 +281,6 @@ fn the_text_frame_agrees_with_the_host() {
                         // the caret's first cell: a last wide character is cut by one cell, where the
                         // app (no caret) shows the end of the line.
                         if name.starts_with("cjk") && spec.contains('$') {
-                            continue;
-                        }
-                        // The test backend keeps a stale cell where a wide character was drawn
-                        // in an earlier frame, and not only in the cell after the wide
-                        // character (a tab mark after the text of a row shows too): the host
-                        // repaints before its last frame, the app does not. With wide characters,
-                        // one press is compared. Leaving out the cell after a wide character
-                        // (`frame_cells`) is not enough: the stale ones are elsewhere in the row.
-                        if name == "tabswide.rs" && spec.split(' ').count() > 1 {
                             continue;
                         }
                         let what =
@@ -369,7 +435,7 @@ fn the_help_over_a_text_agrees_with_the_host() {
     assert!(compared > 60, "{compared}");
     assert!(seen.len() >= 6, "{seen:?}");
     // The frame of the panel, in every size.
-    for name in ["code.rs", "long.rs"] {
+    for name in ["code.rs", "long.rs", "cjk.rs"] {
         for (w, h) in [
             (200u16, 70u16),
             (100, 40),
