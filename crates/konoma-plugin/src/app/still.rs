@@ -51,15 +51,9 @@ use crate::canvas_pictures::{
 use crate::view::{ImageData, ImageView};
 use crate::ReadScope;
 
-/// What the protocol was last resized for: the crop of the source and the cells it is drawn in.
-type Geometry = (Option<(u32, u32, u32, u32)>, Option<Rect>);
-
 /// How long the loop waits while the picture is being decoded, a kitty build is out or the first
 /// resize has not come back (the short poll konoma keeps in the same cases).
 const BUSY_POLL: Duration = Duration::from_millis(16);
-/// How long a resize that has not come back keeps the short poll going (a resize that failed
-/// never comes back).
-const RESIZE_WAIT: Duration = Duration::from_secs(2);
 
 /// What a picture is, as far as the keys and the footer care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,10 +135,8 @@ pub struct Still {
     /// The frames and the playback position of a [`State::Gif`]; empty in every other state.
     gif: GifPlayer,
     spinner: usize,
-    /// When a resize was last asked for (the non-kitty path), until its answer is applied.
-    resize_asked: Option<Instant>,
-    /// The geometry at the last draw, to see when a draw asked for a new resize.
-    drawn_geometry: Option<Geometry>,
+    /// A resize came back as a failure: the protocol is gone for good, so none is waited for.
+    resize_failed: bool,
 }
 
 impl Still {
@@ -188,8 +180,7 @@ impl Still {
             viewer: ImageViewer::new(),
             gif: GifPlayer::new(),
             spinner: 0,
-            resize_asked: None,
-            drawn_geometry: None,
+            resize_failed: false,
         }
     }
 
@@ -216,8 +207,7 @@ impl Still {
             self.viewer.clear();
         }
         if !self.held {
-            self.drawn_geometry = None;
-            self.resize_asked = None;
+            self.resize_failed = false;
         }
         self.gen += 1;
         let gen = self.gen;
@@ -247,8 +237,7 @@ impl Still {
         self.gif.clear();
         self.pose.reset();
         self.viewer.clear();
-        self.drawn_geometry = None;
-        self.resize_asked = None;
+        self.resize_failed = false;
     }
 
     fn cancel_job(&mut self) {
@@ -411,8 +400,7 @@ impl Still {
                 // reused (the pose is, as the host's: it is not touched when a picture lands).
                 self.held = false;
                 self.viewer.clear();
-                self.drawn_geometry = None;
-                self.resize_asked = None;
+                self.resize_failed = false;
             }
             // Whatever lands replaces an animation that was held: its frames go with it.
             self.gif.clear();
@@ -468,16 +456,18 @@ impl Still {
                 *img = Arc::new(sharp);
                 self.viewer.set_crop(None);
                 self.viewer.invalidate();
-                self.drawn_geometry = None;
                 changed = true;
                 self.maybe_sharpen();
             }
         }
         while let Some(resp) = self.resize.try_recv() {
             if self.viewer.apply_resize(resp) {
-                self.resize_asked = None;
+                self.resize_failed = false;
                 changed = true;
             }
+        }
+        if self.resize.take_failed() {
+            self.resize_failed = true;
         }
         while let Ok(res) = self.kitty_rx.try_recv() {
             changed |= self.viewer.apply_kitty(res);
@@ -509,9 +499,9 @@ impl Still {
 
     fn busy_wake(&self) -> Option<Duration> {
         let loading = self.loading();
-        let resizing = self
-            .resize_asked
-            .is_some_and(|at| at.elapsed() < RESIZE_WAIT);
+        // By state, not by time: a resize that is out is waited for however long it takes (a
+        // failed one is answered too, and is not waited for).
+        let resizing = !self.resize_failed && self.viewer.resize_pending();
         (loading || self.viewer.kitty_build_pending() || resizing).then_some(BUSY_POLL)
     }
 
@@ -575,13 +565,6 @@ impl Still {
             logical: *logical,
         };
         let target = self.viewer.prepare(&mut self.pose, source, &backend, inner);
-        // The protocol is resized on the worker whenever the crop or the size it is drawn at
-        // changes (a zoom at fit changes only the size), and the loop must wake to take the answer.
-        let geometry = (self.viewer.crop(), target);
-        if !self.use_kitty && Some(geometry) != self.drawn_geometry {
-            self.drawn_geometry = Some(geometry);
-            self.resize_asked = Some(Instant::now());
-        }
         let drawn = target.is_some_and(|t| self.viewer.render(t, buf));
         if !drawn {
             let msg = failure_line(None, lang, &self.plugin_id);
@@ -857,6 +840,38 @@ mod tests {
             c.fg == ratatui::style::Color::Rgb(want[0], want[1], want[2])
                 || c.bg == ratatui::style::Color::Rgb(want[0], want[1], want[2])
         })
+    }
+
+    #[test]
+    fn a_resize_that_is_out_keeps_the_loop_awake_however_long_it_takes() {
+        let dir = unique_tmp("still_resize_held");
+        let f = png_file(&dir, "g.png");
+        let mut s = new_still(false, &f);
+        let (held, go) = konoma_widgets::image_view::ResizeChannel::spawn_held();
+        s.resize = held;
+        let t0 = Instant::now();
+        land(&mut s, &f, false, t0);
+        // The first draw asks for the protocol; the worker holds the answer back.
+        let blank = drawn(&mut s);
+        assert!(
+            !has_rgb(&blank, [0, 255, 0]),
+            "nothing is drawn before the answer"
+        );
+        assert!(s.viewer.resize_pending());
+        // Past the 2 s a timed wait would have given up after, the loop is still told to
+        // come back (a state, not a clock).
+        std::thread::sleep(Duration::from_millis(2_200));
+        assert_eq!(s.wake_in_at(Instant::now()), Some(BUSY_POLL));
+        // The answer lands and the picture is drawn; then nothing is awaited.
+        go.send(()).unwrap();
+        let started = Instant::now();
+        while s.viewer.resize_pending() {
+            s.poll_at(Instant::now());
+            assert!(started.elapsed() < TMO, "the resize never came back");
+            std::thread::sleep(ms(2));
+        }
+        assert!(has_rgb(&drawn(&mut s), [0, 255, 0]));
+        assert_eq!(s.wake_in_at(Instant::now()), None);
     }
 
     #[test]

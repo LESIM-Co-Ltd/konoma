@@ -65,6 +65,8 @@ pub struct ResizeChannel {
     /// Where [`ImageBackend::resize_tx`] points.
     pub tx: UnboundedSender<ResizeRequest>,
     rx: UnboundedReceiver<ResizeResult>,
+    /// A resize came back as a failure since [`ResizeChannel::take_failed`] last said so.
+    failed: bool,
 }
 
 impl ResizeChannel {
@@ -73,7 +75,38 @@ impl ResizeChannel {
         let (tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
         let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
         std::thread::spawn(move || resize_worker(req_rx, resp_tx));
-        ResizeChannel { tx, rx }
+        ResizeChannel {
+            tx,
+            rx,
+            failed: false,
+        }
+    }
+
+    /// A channel whose worker answers a request only when `go` is sent a unit (one per request):
+    /// a test holds a resize out for as long as it likes.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn spawn_held() -> (ResizeChannel, std::sync::mpsc::Sender<()>) {
+        let (tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
+        let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            while let Some(req) = req_rx.blocking_recv() {
+                if go_rx.recv().is_err() {
+                    break;
+                }
+                if resp_tx.send(req.resize_encode()).is_err() {
+                    break;
+                }
+            }
+        });
+        (
+            ResizeChannel {
+                tx,
+                rx,
+                failed: false,
+            },
+            go,
+        )
     }
 
     /// The next finished resize, if one is waiting. A resize that failed is dropped (`None`
@@ -82,10 +115,16 @@ impl ResizeChannel {
         loop {
             match self.rx.try_recv() {
                 Ok(Ok(resp)) => return Some(resp),
-                Ok(Err(_)) => continue,
+                Ok(Err(_)) => self.failed = true,
                 Err(_) => return None,
             }
         }
+    }
+
+    /// Whether a resize failed since this was last asked. A failed resize leaves its protocol
+    /// empty for good (the request took it), so nothing is waited for after it.
+    pub fn take_failed(&mut self) -> bool {
+        std::mem::take(&mut self.failed)
     }
 }
 
@@ -275,6 +314,14 @@ impl ImageViewer {
     /// The generation of the newest kitty build (a [`KittyResult`] with another one is stale).
     pub fn kitty_gen(&self) -> u64 {
         self.kitty_gen
+    }
+
+    /// Whether a resize request is out: the protocol was built and its encoder is away on the
+    /// worker (it comes back with the answer), so nothing can be drawn until then.
+    pub fn resize_pending(&self) -> bool {
+        self.protocol
+            .as_ref()
+            .is_some_and(|p| p.protocol_type().is_none())
     }
 
     /// The ratatui-image protocol, once the first prepare built it.

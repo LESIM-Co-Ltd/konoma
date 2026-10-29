@@ -76,6 +76,8 @@ konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional =
 konoma-test-support = { path = "../konoma-test-support" }
 # The test seams of the discard thread (the landing tests ask what was handed to it).
 konoma-base = { path = "../konoma-base", features = ["test-hooks"] }
+# A test holds a resize out (`ResizeChannel::spawn_held`).
+konoma-widgets = { path = "../konoma-widgets", features = ["test-hooks"] }
 
 # Real-process tests: this binary is also the plugin program (it serves when an environment variable
 # says so). `harness = false` because the body must run as the child too; it speaks the part of
