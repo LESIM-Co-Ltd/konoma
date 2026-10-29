@@ -647,9 +647,18 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     s.enter();
     if first_fails {
         // The failure of the very first page may be handed over on the spot (no message left in
-        // the channel to wait for): take what comes, then draw.
+        // the channel to wait for), so `drain_media` cannot be used. The state says whether
+        // anything is still to come: the preview's job has not landed while it is loading
+        // (a layout sent ahead keeps the mark). Wait for messages only while that holds.
         let rx = s.media_rx.take().expect("with_media");
-        while let Ok(res) = rx.recv_timeout(Duration::from_millis(500)) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while s.app.is_media_loading() {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("the first page's failure lands within 20 s");
+            let res = rx
+                .recv_timeout(left)
+                .expect("the first page's failure lands within 20 s");
             s.app.apply_media(res);
         }
         s.media_rx = Some(rx);
