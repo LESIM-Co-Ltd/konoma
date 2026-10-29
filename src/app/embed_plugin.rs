@@ -36,7 +36,7 @@ pub(super) const REPR_TEXT: &str = konoma_mermaid::REPR_TEXT;
 /// What a worker needs to ask an embed plugin for a picture (owned: it moves to a thread). The
 /// drawing is shared with the standalone app (`konoma_plugin::canvas_pictures::EmbedRender`); this
 /// host draws the SVGs that are not its own in a supervised child process (`SvgChild`).
-pub(super) use konoma_plugin::canvas_pictures::{EmbedPicture, EmbedRender};
+pub(super) use konoma_plugin::canvas_pictures::EmbedRender;
 
 /// Test seam: whether the host believes the `fence:mermaid` plugin of `cfg`, and what drawing a
 /// fence with it gives (the picture, and whether the SVG was kept).
@@ -63,11 +63,19 @@ pub(crate) fn probe_fence_picture(
 #[cfg(test)]
 pub(super) use konoma_plugin::canvas_pictures::EMBED_STAND_IN;
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: how many times [`App::embed_render`] ran on this thread.
+    pub(super) static EMBED_RENDER_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl App {
     /// The plugin that takes the embedded `kind`, with the settings and language it is opened
     /// with. `None` when no enabled plugin takes it (switched off with
     /// `[plugins.<id>] enabled = false`).
     pub(super) fn embed_render(&self, kind: &str) -> Option<EmbedRender> {
+        #[cfg(test)]
+        EMBED_RENDER_CALLS.with(|c| c.set(c.get() + 1));
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
         konoma_plugin::canvas_pictures::embed_render_for(
             &registry,

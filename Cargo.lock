@@ -1980,6 +1980,7 @@ dependencies = [
  "toml",
  "unicode-segmentation",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]

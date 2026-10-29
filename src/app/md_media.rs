@@ -1,17 +1,9 @@
 use super::office_doc::PictureSource;
 use super::*;
 
-/// Cap on how many mermaid-fence/math renders may be in flight (spawned, result not yet applied) at
-/// once — see `App::ensure_mermaid_fence_render` / `App::ensure_math_render`. Unlike a real inline
-/// image, which is only requested for a placement the renderer actually draws (`ensure_md_image`,
-/// called per *visible* placement), a fence/math render is requested for the *whole* document right
-/// in `ensure_md_cache` (its rendered size has to be known just to lay the document out, even for
-/// content that is off-screen). Without a cap, a document with hundreds of distinct expressions calls
-/// `std::thread::spawn` hundreds of times synchronously in a single pass — on the UI thread, before
-/// the first frame can even draw (measured: 600 expressions → 911ms, ~15x the 60ms draw budget) — and
-/// past some count `std::thread::spawn` can itself fail (EAGAIN) and panic, which would take the
-/// whole app down (nothing wraps this loop in `catch_unwind`).
-const MAX_SYNTHETIC_RENDERS_IN_FLIGHT: usize = 16;
+use konoma_plugin::document_pictures::{
+    DecodeJob, DocPictures, Requested, MAX_SYNTHETIC_RENDERS_IN_FLIGHT,
+};
 
 // The tmux detection lives with the cache that reads it (`InlineImageCache::attach_picker`).
 #[cfg(test)]
@@ -89,59 +81,31 @@ impl App {
         self.md_images.cache.get(path).map_or(0, |e| e.request)
     }
 
+    /// The document's picture state as the shared rules see it: the host's cache and download
+    /// sets, the channels results come back on, and the remote-images setting. Build it after
+    /// everything else the call needs from `self` has been read (it borrows three fields).
+    pub(super) fn doc_pictures(&mut self) -> DocPictures<'_> {
+        DocPictures {
+            cache: &mut self.md_images,
+            remote_inflight: &mut self.md_remote_inflight,
+            remote_failed: &mut self.md_remote_failed,
+            results: self.md_img_tx.clone(),
+            fetches: self.md_remote_tx.clone(),
+            remote_images: self.cfg.external.remote_images,
+            fetcher: fetch_remote_image,
+        }
+    }
+
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
-        // For a fence diagram / math expression (synthetic key), the dimensions are decided here
-        // for the first time = the loading row needs to be rebuilt into the real placement, so
-        // invalidate the decoration cache (same convention as remote images' apply_remote_fetch).
-        // **Excludes a sharpening re-raster**: that's just swapping pixel density, and since the
-        // layout (reserved cell count) is pinned by layout_px, decoration is not rebuilt (= the
-        // display size on the page stays fixed — a user requirement).
-        let url_str = res.path.to_string_lossy().to_string();
-        let is_math = crate::preview::markdown::is_math_url(&url_str);
-        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&url_str);
-        let reraster = res.reraster;
-        // For math and mermaid fences, the layout size is the SVG's **intrinsic size (in px user
-        // units, "1 unit = 1px")**, not the raster's pixel dimensions. The raster is scaled by an
-        // unrelated setting (`svg_max_px`), so sizing off of it would drag that setting into the
-        // text-size math; the intrinsic size is the same px domain the renderer laid glyphs out in
-        // (`text_metrics::FONT_SIZE` for mermaid, RaTeX's 40-units/em for math), which
-        // `mermaid_cells`/`math_cells` need to size the diagram/equation against the terminal's own
-        // body text. The cache falls back to the raster dimensions when this is `None` (no
-        // intrinsic size obtainable; regular images work as before: raster px).
-        let intrinsic = if (is_math || is_mermaid)
-            && res.image.is_ok()
-            && self
-                .md_images
-                .cache
-                .get(&res.path)
-                .is_some_and(|e| e.layout_px.is_none() && e.request == res.request)
-        {
-            res.svg
-                .as_deref()
-                .and_then(|d| crate::preview::svg::intrinsic_size_bytes(d))
-        } else {
-            None
-        };
-        let filed = self.md_images.file_decoded(res, intrinsic);
-        // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
-        // ensure_md_image). Missing = a stale result (already evicted from the cache on a file
-        // switch / by `drop_changed_md_images` / already pruned), so it is dropped instead of
-        // reviving it (which would also needlessly rebuild the page of **an unrelated current
-        // document**); a cancelled one forgot the entry.
-        if matches!(filed, Filed::Dropped | Filed::Forgotten) {
-            return false;
-        }
-        // A fence diagram / formula decides its dimensions here for the first time, and a picture
-        // that cannot be shown changes what the page should reserve for it (one line of text
-        // instead of rows of cells): the decoration is rebuilt. Not for a sharpening re-raster.
-        if !reraster && (is_mermaid || is_math || filed == Filed::Failed) {
+        let applied = self.doc_pictures().apply_result(res);
+        if applied.relayout {
             self.md_cache = None;
         }
-        if filed == Filed::Pixels {
+        if applied.pixels {
             self.evict_md_images_over_budget();
         }
-        true
+        applied.redraw
     }
 
     /// Drive the **in-place zoom** of the focused inline mermaid diagram: clamp the pan center,
@@ -318,192 +282,51 @@ impl App {
         self.md_overlay.take_moved()
     }
 
-    /// How many mermaid-fence/math renders currently have a placeholder in `md_image_cache` but no
-    /// result yet (i.e. a background thread is running for them right now). Both kinds share the
-    /// same one-shot-thread-per-request shape and compete for the same `MAX_SYNTHETIC_RENDERS_IN_FLIGHT`
-    /// cap.
+    /// How many mermaid-fence/math renders have a placeholder but no result yet.
+    #[cfg(test)]
     pub(super) fn synthetic_renders_in_flight(&self) -> usize {
-        self.md_images
-            .cache
-            .iter()
-            .filter(|(k, e)| {
-                if e.decoded.is_some() || e.failed || e.evicted {
-                    return false; // done (either way) — no longer occupying a slot
-                }
-                let s = k.to_string_lossy();
-                crate::preview::markdown::is_mermaid_fence_url(&s)
-                    || crate::preview::markdown::is_math_url(&s)
-            })
-            .count()
+        konoma_plugin::document_pictures::synthetic_in_flight(&self.md_images)
     }
 
     /// Ensure a background mermaid render is in flight (or cached) for one ```mermaid fence.
-    /// Keyed by content hash, so an edited fence renders fresh while unchanged fences reuse their
-    /// raster. With no loader tx (tests), renders synchronously so behavior stays observable.
-    /// Returns true when the render completed **synchronously** (no loader tx = tests): the caller
-    /// must rebuild its just-built decoration, which still shows the loading line.
+    /// With no loader tx (tests), renders synchronously so behavior stays observable. Returns
+    /// true when the render completed **synchronously**: the caller must rebuild its just-built
+    /// decoration, which still shows the loading line.
     pub(super) fn ensure_mermaid_fence_render(&mut self, code: String) -> bool {
+        // Cached already (rendered or in flight): nothing to do, and the plugin lookup below
+        // (registry and settings) must not run on the UI thread at every re-layout.
         let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
-        if self.md_images.cache.contains_key(&key) {
+        if self.doc_pictures().is_cached(&key) {
             return false;
         }
         let max_px = self.mermaid_px();
-        // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`); none
-        // (switched off) is the same "cannot be drawn" as a failed render.
+        // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`).
         let embed = self.embed_render(crate::app::embed_plugin::FENCE_MERMAID);
-        let svg_trust = embed
-            .as_ref()
-            .map_or(SvgTrust::Embedded, |e| e.svg_trust("mermaid.svg"));
-        let render = move || -> crate::app::embed_plugin::EmbedPicture {
-            match &embed {
-                Some(e) => e.picture(
-                    crate::app::embed_plugin::FENCE_MERMAID,
-                    &code,
-                    false,
-                    max_px,
-                    "mermaid",
-                    "mermaid.svg",
-                ),
-                None => (Err("mermaid render failed".to_string()), None),
-            }
-        };
-        if let Some(tx) = self.md_img_tx.clone() {
-            // Bounded concurrency (MAX_SYNTHETIC_RENDERS_IN_FLIGHT): at capacity, skip this pass
-            // *without* inserting a placeholder. Nothing is lost — `apply_md_image` invalidates
-            // `md_cache` whenever any synthetic entry's first result lands, so the very next
-            // `ensure_md_cache` rebuild re-scans the document's mermaid_fences and retries whatever
-            // is still absent from `md_image_cache`, now that a slot has freed up (the classifier
-            // that turns an absent key into a "loading" placement doesn't care whether a thread is
-            // actually running for it yet). This self-driving wave always converges without a
-            // dedicated persistent worker thread + channel, which is not an option here: that would
-            // need its sender stored as a new field on `App` (`src/app.rs` is off limits).
-            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
-                return false;
-            }
-            self.md_images.cache.insert(
-                key.clone(),
-                MdImgEntry {
-                    svg_trust: svg_trust.clone(),
-                    ..MdImgEntry::default()
-                },
-            );
-            let request = self.begin_md_request(&key);
-            std::thread::spawn(move || {
-                // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
-                // return a result: otherwise the entry stays stuck at decoded=None && !failed and
-                // busy latches true forever.
-                let (image, svg) = crate::preview::markdown::catch_silent(render)
-                    .unwrap_or_else(|| (Err("mermaid render panicked".to_string()), None));
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image,
-                    svg,
-                    reraster: false,
-                    frames: None,
-                    request,
-                });
-            });
-            false
-        } else {
-            self.md_images.cache.insert(
-                key.clone(),
-                MdImgEntry {
-                    svg_trust: svg_trust.clone(),
-                    ..MdImgEntry::default()
-                },
-            );
-            let request = self.begin_md_request(&key);
-            let (image, svg) = render();
-            self.apply_md_image(MdImageResult {
-                path: key,
-                image,
-                svg,
-                reraster: false,
-                frames: None,
-                request,
-            });
-            true
-        }
+        self.doc_pictures().request_fence(
+            code,
+            embed,
+            crate::app::embed_plugin::FENCE_MERMAID,
+            max_px,
+        ) == Requested::Done
     }
 
     /// Ensure a background render is in flight (or cached) for one math expression, keyed by latex +
-    /// display so an edited equation renders fresh while unchanged ones reuse their raster. Mirrors
-    /// `ensure_mermaid_fence_render` (including the `MAX_SYNTHETIC_RENDERS_IN_FLIGHT` cap and its
-    /// self-driving retry); the SVG is kept so `apply_md_image` can record its intrinsic (em) size for
-    /// layout. Returns true on a synchronous completion (no loader tx = tests).
+    /// display. Returns true on a synchronous completion (no loader tx = tests).
     pub(super) fn ensure_math_render(&mut self, latex: String, display: bool) -> bool {
         let key = PathBuf::from(crate::preview::markdown::math_url(&latex, display));
-        if self.md_images.cache.contains_key(&key) {
+        if self.doc_pictures().is_cached(&key) {
             return false;
         }
         let max_px = self.math_px();
-        // The plugin that takes the `math` kind draws the SVG (`embed_plugin.rs`). Its `color`
-        // setting is the glyph color (RaTeX paints pure black, invisible on a dark terminal; the
-        // default is a light gray, from `[plugins.math] color` or the old `[ui] math_color`).
+        // The plugin that takes the `math` kind draws the SVG; its `color` setting is the glyph color.
         let embed = self.embed_render(crate::app::embed_plugin::MATH);
-        let svg_trust = embed
-            .as_ref()
-            .map_or(SvgTrust::Embedded, |e| e.svg_trust("math.svg"));
-        let render = move || -> crate::app::embed_plugin::EmbedPicture {
-            match &embed {
-                Some(e) => e.picture(
-                    crate::app::embed_plugin::MATH,
-                    &latex,
-                    display,
-                    max_px,
-                    "math",
-                    "math.svg",
-                ),
-                None => (Err("math render failed".to_string()), None),
-            }
-        };
-        if let Some(tx) = self.md_img_tx.clone() {
-            // See the identical guard in ensure_mermaid_fence_render for why skipping here (without
-            // inserting a placeholder) is safe and self-corrects on the next rebuild.
-            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
-                return false;
-            }
-            self.md_images.cache.insert(
-                key.clone(),
-                MdImgEntry {
-                    svg_trust: svg_trust.clone(),
-                    ..MdImgEntry::default()
-                },
-            );
-            let request = self.begin_md_request(&key);
-            std::thread::spawn(move || {
-                let (image, svg) = crate::preview::markdown::catch_silent(render)
-                    .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image,
-                    svg,
-                    reraster: false,
-                    frames: None,
-                    request,
-                });
-            });
-            false
-        } else {
-            self.md_images.cache.insert(
-                key.clone(),
-                MdImgEntry {
-                    svg_trust: svg_trust.clone(),
-                    ..MdImgEntry::default()
-                },
-            );
-            let request = self.begin_md_request(&key);
-            let (image, svg) = render();
-            self.apply_md_image(MdImageResult {
-                path: key,
-                image,
-                svg,
-                reraster: false,
-                frames: None,
-                request,
-            });
-            true
-        }
+        self.doc_pictures().request_math(
+            latex,
+            display,
+            embed,
+            crate::app::embed_plugin::MATH,
+            max_px,
+        ) == Requested::Done
     }
 
     /// Apply a completed background encode into the slot that was reserved for it. Returns redraw.
@@ -537,168 +360,57 @@ impl App {
     /// decoration cache to re-lay the image out inline; on failure remember the URL so it is not
     /// retried and shows a text placeholder instead. Returns whether to redraw.
     pub fn apply_remote_fetch(&mut self, res: RemoteFetch) -> bool {
-        self.md_remote_inflight.remove(&res.url);
-        if !res.ok {
-            self.md_remote_failed.insert(res.url);
-        }
+        self.doc_pictures().apply_fetch(res);
         // Re-decorate so a now-cached image is laid out (or a failed one degrades to text).
         self.md_cache = None;
         true
     }
 
-    /// Ensure a background download is in flight for the remote image `url` (deduplicated). Skips URLs
-    /// that are already cached, already downloading, or known to have failed. The download runs off the
-    /// UI thread (principle #4) via `curl`; on completion it reports through `md_remote_tx`. Returns
-    /// true on a *synchronous* failure (mirrors `ensure_mermaid_fence_render`/`ensure_math_render`'s
-    /// "no loader tx = tests" convention) so the caller (`ensure_md_cache`) can resync its
-    /// already-built `decorated` before storing it — see the `remote_images = false` branch below.
+    /// Ensure a background download is in flight for the remote image `url` (deduplicated).
+    /// Returns true on a *synchronous* failure (remote images off) so the caller
+    /// (`ensure_md_cache`) can resync its already-built `decorated` before storing it.
     pub(super) fn ensure_remote_md_fetch(&mut self, url: &str) -> bool {
-        if !crate::preview::markdown::is_remote_image_url(url) {
-            return false;
-        }
-        if !self.cfg.external.remote_images {
-            // `[external] remote_images = false`: never call out to `curl`. Mark it failed right away
-            // (instead of leaving it unrecorded) so the renderer degrades to the text placeholder
-            // instead of showing `ImageSlot::Loading` forever. Marking it failed alone only affects a
-            // *future* decoration build though — `ensure_md_cache` already built `decorated` (with a
-            // Loading slot, since `md_remote_failed` didn't contain `url` yet) before calling this, and
-            // unconditionally stores that `decorated` into `md_cache` afterwards regardless of what we
-            // do to `self.md_cache` here. Since remote fetches never run, nothing else would ever
-            // invalidate the cache to trigger a later rebuild (unlike a real download completing via
-            // `apply_remote_fetch`), so the Loading placeholder would otherwise stick around forever.
-            // Returning true (only the first time — `insert()` reports whether it was new) tells the
-            // caller to rebuild `decorated` right now, in this same pass, using the now-failed URL.
-            return self.md_remote_failed.insert(url.to_string());
-        }
-        // Already downloaded (cache file exists), already failed, or already downloading → nothing to do.
-        if resolve_md_image_path(url, None).is_some()
-            || self.md_remote_failed.contains(url)
-            || self.md_remote_inflight.contains(url)
-        {
-            return false;
-        }
-        let (Some(tx), Some(dest)) = (self.md_remote_tx.clone(), md_remote_cache_path(url)) else {
-            return false;
-        };
-        // About to spawn a background thread that writes `dest` to disk. In a test build that must
-        // never be the real `~/.cache/konoma/remote-images/` — a test that reaches this point (a
-        // Markdown doc with an unresolved remote image, previewed with the remote loader attached)
-        // used to create real directories there on every `cargo test` run (confirmed by mtime).
-        // Require the caller to have opted a sandboxed root in first (`test_support::
-        // set_test_cache_root`, read by `cache_root()`'s `#[cfg(test)]` body) rather than silently
-        // falling through to the real path — see `refresh_retries_a_previously_failed_remote_image`
-        // / `e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder` for the two
-        // tests that actually reach here.
+        // A test build must never spawn a download that writes under the real cache: the test
+        // has to opt a sandboxed root in first (`test_support::set_test_cache_root`). This is
+        // checked here, on the calling thread (the override is thread-local), under the same
+        // conditions in which the shared rule starts a download.
         #[cfg(test)]
-        assert!(
-            crate::test_support::get_test_cache_root().is_some(),
-            "about to spawn a real background download for {url:?} that would write under the \
-             real ~/.cache/konoma/remote-images — call test_support::set_test_cache_root() before \
-             triggering a remote fetch in a test"
-        );
-        self.md_remote_inflight.insert(url.to_string());
-        let u = url.to_string();
-        std::thread::spawn(move || {
-            // Don't leave the entry stuck in md_remote_inflight even if the download panics
-            // (leaving it in would latch busy): always report a panic as a fetch failure (ok=false).
-            let ok = crate::preview::markdown::catch_silent(|| fetch_remote_image(&u, &dest))
-                .unwrap_or(false);
-            let _ = tx.send(RemoteFetch { url: u, ok });
-        });
-        false
+        if self.cfg.external.remote_images
+            && crate::preview::markdown::is_remote_image_url(url)
+            && resolve_md_image_path(url, None).is_none()
+            && !self.md_remote_failed.contains(url)
+            && !self.md_remote_inflight.contains(url)
+            && self.md_remote_tx.is_some()
+        {
+            assert!(
+                crate::test_support::get_test_cache_root().is_some(),
+                "about to spawn a real background download for {url:?} that would write under \
+                 the real cache directory: call test_support::set_test_cache_root() before \
+                 triggering a remote fetch in a test"
+            );
+        }
+        self.doc_pictures().request_remote(url)
     }
 
     /// Start the background decode of the inline image file at `path` (its cache entry already
-    /// exists). Sniffs the format from content (remote-cache files have no extension) and
-    /// rasterizes SVG. With no loader channel attached (tests) nothing is started. Returns false
-    /// when the thread could not be started (the caller must not leave the entry waiting).
-    ///
-    /// The decode queues in the shared decode gate under the entry's own ticket: what is on screen
-    /// now goes first, and a decode whose entry was dropped meanwhile never runs.
+    /// exists). With no loader channel attached (tests) nothing is started. Returns false when
+    /// the thread could not be started (the caller must not leave the entry waiting).
     pub(super) fn spawn_md_decode(&mut self, path: PathBuf) -> bool {
-        let Some(tx) = self.md_img_tx.clone() else {
-            return true;
-        };
-        let svg_max_px = self.cfg.ui.svg_max_px;
         // A document of a plugin the user added: an SVG picture reads only files in its scope.
         let roots: Option<Vec<PathBuf>> = self
             .md_image_scope()
             .and_then(|(_, s)| s.dirs().map(<[PathBuf]>::to_vec));
         // The file read is the real path the scope judged, not the spelling that was asked for.
         let read_path = self.md_decode_read_path(&path);
-        let ticket = self
-            .md_images
-            .cache
-            .get(&path)
-            .map(|e| e.wish.ticket())
-            .unwrap_or_default();
-        let request = self.begin_md_request(&path);
-        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
-        let stale = ticket.clone();
-        std::thread::Builder::new()
-            .name("konoma-md-decode".into())
-            .spawn(move || {
-                use crate::preview::image::ImageFailure;
-                // An SVG is drawn by a supervised child process that is stopped as soon as the
-                // preview has moved on (the media generation changes on every file/tab change).
-                let moved_on =
-                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
-                // Animated GIF: decode all frames so the inline image cycles the same way the
-                // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
-                // full-screen path bounds memory when a document embeds several GIFs at once.
-                // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
-                // falls through unchanged to the normal still-image decode.
-                // Catch a panic (pathological image/SVG) too and always return a result
-                // (not returning would latch busy).
-                let p = path;
-                let Some(rp) = read_path else {
-                    // Outside the read scope: nothing is opened, the refusal is the answer.
-                    let _ = tx.send(MdImageResult {
-                        path: p,
-                        image: Err(ImageFailure::OutsideReadDirs.code().to_string()),
-                        svg: None,
-                        reraster: false,
-                        frames: None,
-                        request,
-                    });
-                    return;
-                };
-                let (still, frames) = crate::preview::markdown::catch_silent(|| {
-                    crate::preview::image::with_decode_ticket(ticket, || {
-                        if App::looks_like_gif(&rp) {
-                            if let Some(frames) = crate::preview::image::decode_gif_inline(&rp) {
-                                let first = frames[0].0.clone();
-                                return (Ok(first), Some(frames));
-                            }
-                        }
-                        (
-                            md_decode_image_within(&rp, svg_max_px, roots.as_deref(), &moved_on),
-                            None,
-                        )
-                    })
-                })
-                .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // The preview moved on while the picture was being drawn (or its drawing was
-                // stopped): always report it, cancelled included. The entry may be gone (the result
-                // is then ignored) or still in the cache (a ticket also goes stale when another
-                // file or tab starts a media load, which does not clear the cache): only the
-                // receiving side knows, and it forgets the entry (see `apply_md_image`) so the
-                // picture is asked for again. Staying silent would leave the entry "loading" for good.
-                let still = match still {
-                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
-                    other => other,
-                };
-                let image = still.map_err(|f| f.code().to_string());
-                let _ = tx.send(MdImageResult {
-                    path: p,
-                    image,
-                    svg: None,
-                    reraster: false,
-                    frames,
-                    request,
-                });
-            })
-            .is_ok()
+        let job = DecodeJob {
+            svg_max_px: self.cfg.ui.svg_max_px,
+            roots,
+            read_path,
+            svg: Arc::new(media_plugin::SvgChild),
+            // The media generation changes on every file/tab change.
+            generation: (self.media_gen, self.media_gen_shared.clone()),
+        };
+        self.doc_pictures().spawn_decode(path, job)
     }
 
     /// The one place that makes an inline picture ready to be drawn: stamp it as wanted by the

@@ -26,14 +26,16 @@ pub use konoma_widgets::inline_images::{
     MD_ZOOM_SLOTS,
 };
 pub use konoma_widgets::inline_images::{
-    md_encode_worker, EncodeApplied, Filed, InlineImage, InlineImageCache, MdEncodeKey,
-    MdEncodeRequest, MdEncodeResult, MdImgEntry, SvgTrust,
+    md_encode_worker, EncodeApplied, InlineImage, InlineImageCache, MdEncodeKey, MdEncodeRequest,
+    MdEncodeResult, MdImgEntry, SvgTrust,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
 use crate::i18n::tr;
-use crate::preview::markdown::{math_cells, md_image_cells, mermaid_cells, slide_cells};
+#[cfg(test)]
+use crate::preview::markdown::{math_cells, mermaid_cells};
+use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
 
 mod bookmark_actions;
@@ -2352,14 +2354,6 @@ enum FenceSharpen {
 
 /// Result of a background inline-image decode, delivered to the run loop.
 pub type MdImageResult = konoma_widgets::inline_images::DecodedImage;
-
-/// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
-/// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
-/// the decoration cache to re-lay the image out; on failure the URL is remembered so it is not retried.
-pub struct RemoteFetch {
-    url: String,
-    ok: bool,
-}
 
 /// Result of `build_decorated`: the rendered lines plus everything needed to finish setting up the
 /// Markdown cache (inline images, follow-up fetches/renders to kick off, source line count).
@@ -5724,95 +5718,58 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
         .collect()
 }
 
-/// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
-const MD_IMAGE_MAX_ROWS: u16 = 24;
 /// Rows around a slide picture that are not the picture: its heading line and the blank line
 /// between the heading and the picture.
 const SLIDE_CHROME_ROWS: u16 = 2;
 
-/// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
-/// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
-/// remote (`http(s)://`) URLs — those name konoma's own download cache rather than a path in the
-/// tree, which is the caller's business (`resolve_md_image_path`), not this function's. Relative
-/// paths are resolved against the Markdown file's directory.
-///
-/// Split out of `resolve_md_image_path` for the one caller that must recognize a picture which has
-/// just been **deleted**: `App::md_image_source_paths` has to match a filesystem event against the
-/// images the open document draws from, and a deleted file no longer resolves — yet its reserved
-/// box is still on screen, waiting to collapse back to the `🖼 alt` label.
-fn md_image_local_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    let u = url.trim();
-    if u.is_empty() || crate::preview::markdown::is_remote_image_url(u) {
-        return None;
-    }
-    if u.to_ascii_lowercase().starts_with("data:") {
-        return None;
-    }
-    let u = u.strip_prefix("file://").unwrap_or(u);
-    let p = PathBuf::from(u);
-    Some(match base {
-        Some(b) if !p.is_absolute() => b.join(p),
-        _ => p,
-    })
-}
-
+// The document-picture rules every host shares (where an image URL points, the remote download and
+// its cache, the file decoders) live in `konoma_plugin::document_pictures`; konoma re-exports them
+// here under the names its modules and tests have always used.
+pub use konoma_plugin::document_pictures::RemoteFetch;
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_MAX_ROWS;
 #[cfg(test)]
-thread_local! {
-    /// How many times this thread resolved a document picture to a file (each is a stat): lets a
-    /// test hold konoma's own Markdown preview to one resolve per picture per frame.
-    static MD_IMAGE_RESOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_RESOLVES;
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root, fetch_remote_image, md_image_local_path, md_remote_cache_path,
+    resolve_md_image_path,
+};
+#[cfg(test)]
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root_from, fetch_remote_bytes_capped, fetch_remote_image_capped, md_image_dims,
+    prune_remote_cache, MD_IMAGE_MAX_SIDE, MD_REMOTE_MAX_BYTES,
+};
 
-/// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
-/// download-cache path, but only once it has been fetched (so callers treat a cached remote image
-/// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
-/// Markdown file's directory. Returns the path only if the file exists.
-fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    #[cfg(test)]
-    MD_IMAGE_RESOLVES.with(|c| c.set(c.get() + 1));
-    let u = url.trim();
-    if u.is_empty() {
-        return None;
-    }
-    if crate::preview::markdown::is_remote_image_url(u) {
-        let p = md_remote_cache_path(u)?;
-        return p.is_file().then_some(p);
-    }
-    let p = md_image_local_path(u, base)?;
-    p.is_file().then_some(p)
-}
-
-/// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
-/// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
-fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
-    md_image_dims_why(path).ok()
-}
-
-/// [`md_image_dims`] that says why an SVG has no size, when there is something to tell: `Err(Some)`
-/// is a refusal (too large, nested too deeply, ...), `Err(None)` is "not an image we can size".
-/// An SVG's size is read from its root element alone (`svg::intrinsic_size`), so this is cheap
-/// whatever the file holds.
-fn md_image_dims_why(
+/// [`konoma_plugin::document_pictures::md_decode_image_within`] with konoma's own SVG drawing
+/// (the supervised child process).
+#[cfg(test)]
+fn md_decode_image_within(
     path: &Path,
-) -> Result<(u32, u32), Option<crate::preview::svg_guard::SvgFail>> {
-    if let Some(d) = crate::preview::image::dimensions(path) {
-        return Ok(d);
-    }
-    crate::preview::svg::intrinsic_size(path).map_err(refusal_worth_telling)
+    svg_max_px: u32,
+    roots: Option<&[PathBuf]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_image_within(
+        path,
+        svg_max_px,
+        roots,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
 
-/// A failure the user should be told about (everything except "this is not a valid SVG", which for
-/// a file that failed as an image too is just a picture that cannot be shown).
-fn refusal_worth_telling(
-    why: crate::preview::svg_guard::SvgFail,
-) -> Option<crate::preview::svg_guard::SvgFail> {
-    use crate::preview::svg_guard::SvgFail;
-    (why != SvgFail::Invalid).then_some(why)
+/// [`konoma_plugin::document_pictures::md_decode_bytes_why`] with konoma's own SVG drawing.
+fn md_decode_bytes_why(
+    bytes: &[u8],
+    svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_bytes_why(
+        bytes,
+        svg_max_px,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
-
-/// Longest side, in pixels, that an inline Markdown image is kept at after decoding (the value
-/// every host shares: [`konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE`]).
-const MD_IMAGE_MAX_SIDE: u32 = konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
@@ -5834,30 +5791,6 @@ fn md_decode_image_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     md_decode_image_within(path, svg_max_px, None, cancelled)
-}
-
-/// [`md_decode_image_why`] for a picture of a document a plugin the user added returned: an SVG
-/// reads only files inside `roots` (the plugin's read scope; `None` is no limit).
-fn md_decode_image_within(
-    path: &Path,
-    svg_max_px: u32,
-    roots: Option<&[PathBuf]>,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
-        Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize_within(path, roots, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
 }
 
 /// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
@@ -6017,96 +5950,6 @@ fn record_slide_attempts(
     }
 }
 
-/// [`md_decode_image_why`] for a picture held in memory (inside a Word / OpenDocument file):
-/// the same limits and reasons. An embedded SVG is not a file, so it is drawn by the supervised
-/// child process with no directory to read from (`<image href>` inside it paints nothing). Blocks
-/// for as long as that takes: call it from a worker.
-fn md_decode_bytes_why(
-    bytes: &[u8],
-    svg_max_px: u32,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_bytes_capped_why(bytes, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        Err(e) if !crate::preview::svg::can_begin_svg(bytes) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize_embedded(bytes, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
-}
-/// Pure core of `cache_root`. Falls back to the system temp directory (`std::env::temp_dir()` —
-/// always an absolute path, `$TMPDIR` or `/tmp` on Unix) when neither `$XDG_CACHE_HOME` nor `$HOME`
-/// is available, instead of the old `None`.
-///
-/// This is a *cache*, not persistent user data (unlike `bookmarks::default_base`/
-/// `config::dirs_config_path`), so losing it across a reboot is harmless — the next Markdown preview
-/// just re-downloads the image. Returning `None` here used to leave
-/// `app/md_media.rs::ensure_remote_md_fetch`'s `let (Some(tx), Some(dest)) = (.., md_remote_cache_path(url))
-/// else { return false; }` permanently un-taken: the background fetch thread never spawns, no
-/// `RemoteFetch` message ever arrives, and the URL is never recorded in `md_remote_failed` either —
-/// so a Markdown image behind an unresolvable cache root would sit at "loading" forever, never
-/// reaching principle #3's safe-degrade text placeholder. Falling through to a location that is
-/// always available restores that: the fetch is actually attempted and its real success/failure is
-/// reported through the existing `RemoteFetch`/`apply_remote_fetch` machinery.
-fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
-    xdg_or_home.unwrap_or_else(std::env::temp_dir)
-}
-
-/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
-/// when neither is available — see `cache_root_from`'s doc for why).
-#[cfg(not(test))]
-pub(crate) fn cache_root() -> PathBuf {
-    cache_root_from(crate::bookmarks::xdg_base_dir(
-        std::env::var_os("XDG_CACHE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        ".cache",
-    ))
-}
-
-/// Test-build twin of the function above. Prefers `test_support::get_test_cache_root()` when a test
-/// has set one, otherwise falls back to the exact same environment-reading formula production uses.
-///
-/// This is deliberately *not* a hard redirect (unlike `set_clipboard`'s test body, which always
-/// routes to the sink): `cache_root()` and `md_remote_cache_path` are pure path arithmetic and never
-/// touch the filesystem by themselves, so the many tests that call them read-only (a stable cache
-/// key, or `cache_root_tests` below exercising the real-environment fallback formula on purpose)
-/// should keep seeing the real formula. The actual disk write lives in
-/// `ensure_remote_md_fetch`'s spawned download thread, and that function refuses to spawn one
-/// without an override in place — see its `#[cfg(test)]` guard — so this soft fallback can't let a
-/// test silently write under the developer's real `~/.cache/konoma/remote-images`.
-#[cfg(test)]
-pub(crate) fn cache_root() -> PathBuf {
-    crate::test_support::get_test_cache_root().unwrap_or_else(|| {
-        cache_root_from(crate::bookmarks::xdg_base_dir(
-            std::env::var_os("XDG_CACHE_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-            ".cache",
-        ))
-    })
-}
-
-/// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is
-/// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
-/// Kept `Option`-returning (always `Some` now that `cache_root` is total) because
-/// `app/md_media.rs::ensure_remote_md_fetch` pattern-matches `Some(dest)`.
-pub(crate) fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let root = cache_root();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.trim().hash(&mut hasher);
-    Some(
-        root.join("konoma")
-            .join("remote-images")
-            .join(format!("{:016x}", hasher.finish())),
-    )
-}
-
 /// Distinct from the `mod tests;` at the bottom of this file (`src/app/tests.rs`, off-limits to a
 /// concurrent fix in this same session): a small inline test module for `cache_root`/
 /// `md_remote_cache_path`, kept next to the code it tests (same convention `collect_all`'s
@@ -6169,107 +6012,6 @@ mod cache_root_tests {
         );
     }
 }
-
-/// Maximum bytes to download for one remote image (guards against huge / hostile responses).
-const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
-
-/// Download a remote image with `ureq` into `dest` (atomically, via a temp file), validating that the
-/// bytes decode as an image before committing. Returns whether a valid image now exists at `dest`.
-/// Runs on a background thread. `ureq` is pure Rust (rustls + webpki-roots, no OpenSSL/native-tls),
-/// so this adds no external process and no system TLS dependency — replaces a former `curl` spawn.
-fn fetch_remote_image(url: &str, dest: &Path) -> bool {
-    fetch_remote_image_capped(url, dest, MD_REMOTE_MAX_BYTES)
-}
-
-/// Same as `fetch_remote_image`, but with the body-size cap taken as a parameter instead of always
-/// being `MD_REMOTE_MAX_BYTES`. Split out purely so a test can exercise the exact `.limit()`
-/// enforcement this uses in production against a tiny response (a handful of bytes over a small
-/// cap), instead of actually transferring 25MiB over a loopback socket just to prove the number is
-/// wired through — see `app/tests.rs`'s `fetch_remote_bytes_capped_rejects_a_body_over_the_cap`.
-/// Production code only ever calls `fetch_remote_image`, which always passes `MD_REMOTE_MAX_BYTES`,
-/// so this refactor changes no production behavior.
-fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
-    let Some(parent) = dest.parent() else {
-        return false;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-    let tmp = dest.with_extension("part");
-    let Some(bytes) = fetch_remote_bytes_capped(url, max_bytes) else {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    };
-    if std::fs::write(&tmp, &bytes).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
-    if md_image_dims(&tmp).is_none() && !crate::preview::svg::is_svg(&tmp) {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    let ok = std::fs::rename(&tmp, dest).is_ok();
-    if ok {
-        prune_remote_cache(parent, MD_REMOTE_CACHE_MAX);
-    }
-    ok
-}
-
-/// Perform the actual HTTP GET, bounded by a global timeout (principle #4 — don't let a background
-/// thread hang forever even though it's already off the UI thread) and a max body size (mirrors the
-/// old `curl --max-filesize`, taken as a parameter — see `fetch_remote_image_capped`'s doc for why:
-/// production always passes `MD_REMOTE_MAX_BYTES`, a test can inject a small cap instead). Redirects
-/// are followed automatically (up to ureq's default of 10 — GitHub proxies images through camo, so
-/// this matters, same as the old `curl -L`). `gzip` is transparently decoded. Returns None on any
-/// failure: bad URL, connect/TLS error, non-2xx status (ureq treats those as errors by default,
-/// mirroring `curl --fail`), or an oversized body.
-fn fetch_remote_bytes_capped(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
-        .user_agent("konoma image preview")
-        .build()
-        .into();
-    let mut resp = agent.get(url).call().ok()?;
-    resp.body_mut()
-        .with_config()
-        .limit(max_bytes)
-        .read_to_vec()
-        .ok()
-}
-
-/// Keep at most `keep` files in the remote-image cache directory, deleting the oldest (by mtime).
-/// The cache is content-addressed (one file per distinct URL) with no cleanup, so without this it
-/// grows unbounded over a machine's lifetime. Runs only after a **new** download (rare), so the
-/// directory scan is cheap. Best-effort: any IO error just leaves the cache as-is.
-fn prune_remote_cache(dir: &Path, keep: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter_map(|e| {
-            let p = e.path();
-            // Exclude an in-progress temp file (.part).
-            if p.extension().is_some_and(|x| x == "part") {
-                return None;
-            }
-            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
-    if files.len() <= keep {
-        return;
-    }
-    files.sort_by_key(|(t, _)| *t); // oldest first
-    for (_, p) in files.iter().take(files.len() - keep) {
-        let _ = std::fs::remove_file(p);
-    }
-}
-
-/// Max files kept in the remote-image disk cache (`~/.cache/konoma/remote-images`).
-const MD_REMOTE_CACHE_MAX: usize = 256;
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.
 fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {

@@ -227,23 +227,11 @@ impl App {
         // every time the content changes, and the old key's decoded raster/protocol/SVG grow
         // monotonically until the file is switched, unreferenced by anything.
         {
-            let mut live: std::collections::HashSet<PathBuf> = decorated
-                .mermaid_fences
-                .iter()
-                .map(|c| PathBuf::from(crate::preview::markdown::mermaid_fence_url(c)))
-                .collect();
-            live.extend(
-                decorated
-                    .math_exprs
-                    .iter()
-                    .map(|(l, d)| PathBuf::from(crate::preview::markdown::math_url(l, *d))),
+            let live = konoma_plugin::document_pictures::live_synthetic_keys(
+                &decorated.mermaid_fences,
+                &decorated.math_exprs,
             );
-            self.md_images.cache.retain(|k, _| {
-                let s = k.to_string_lossy();
-                !(crate::preview::markdown::is_mermaid_fence_url(&s)
-                    || crate::preview::markdown::is_math_url(&s))
-                    || live.contains(k)
-            });
+            self.doc_pictures().sweep(&live);
         }
         let mut decorated = if resync {
             self.forget_scope_verdicts();
@@ -697,210 +685,99 @@ impl App {
         // (`render_table_cells`), whose column is far narrower than the page: the very same
         // `md_image_cells` fit runs, just against `w` instead of `avail`, so a cell image is
         // sized by the one sizing rule in this file rather than by a second, cell-only one.
-        let slot_of = |url: &str, max_cols: Option<u16>| -> crate::preview::markdown::ImageSlot {
-            use crate::preview::markdown::ImageSlot;
-            let Some(font) = font else {
-                return ImageSlot::Unavailable;
-            };
-            // A picture of the open Word document: its bytes are in memory and its size was read
-            // when the document was converted, so there is no file to resolve or stat.
-            if crate::preview::markdown::is_office_image_url(url) {
-                let lang = self.lang;
-                let pid = self.shown_plugin_id().unwrap_or("").to_string();
-                // Said once, like a file picture: a decode that failed keeps its reason, and a
-                // picture whose header is already over the limits is refused before any decode.
-                if let Some(e) = self
-                    .md_images
-                    .cache
-                    .get(&PathBuf::from(url))
-                    .filter(|e| e.failed)
-                {
-                    return match e.fail.and_then(|f| f.message(lang, &pid)) {
-                        Some(why) => ImageSlot::Failed(why),
-                        None => ImageSlot::Unavailable,
-                    };
-                }
-                return match self.document_picture_dims(url) {
-                    // A slide: the full text width (it is a vector drawing, so it may be enlarged),
-                    // as tall as the viewport leaves room for after its heading.
-                    Some((pw, ph)) if self.document_picture_is_slide(url) => {
-                        let (cols, rows) = slide_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            slide_rows,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    // Only a raster is refused from its header: an SVG's intrinsic size is not a
-                    // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
-                    // same as a file SVG.
-                    Some(d)
-                        if self.document_picture_is_raster(url)
-                            && !crate::preview::image::dimensions_within_limits(d) =>
-                    {
-                        match crate::preview::image::ImageFailure::TooLarge.message(lang, &pid) {
-                            Some(why) => ImageSlot::Failed(why),
-                            None => ImageSlot::Unavailable,
-                        }
-                    }
-                    Some((pw, ph)) => {
-                        let (cols, rows) = md_image_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            MD_IMAGE_MAX_ROWS,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    None => ImageSlot::Unavailable,
-                };
-            }
-            if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
-                let lang = self.lang;
-                let pid = self.shown_plugin_id().unwrap_or("").to_string();
-                // A document a plugin the user added returned: its pictures are read only inside
-                // that plugin's read scope. Nothing of a refused file (not even its header) is
-                // read; the line says why, and the page build flashes it once.
-                if let Some(id) = self.md_image_refused(url, &p) {
-                    self.md_scope_refusals.borrow_mut().push(id.clone());
-                    return match crate::preview::image::ImageFailure::OutsideReadDirs
-                        .message(lang, &id)
-                    {
-                        Some(why) => ImageSlot::Failed(why),
-                        None => ImageSlot::Unavailable,
-                    };
-                }
-                // A picture that already failed to decode says why (the entry keeps the reason).
-                if let Some(e) = self.md_images.cache.get(&p).filter(|e| e.failed) {
-                    return match e.fail.and_then(|f| f.message(lang, &pid)) {
-                        Some(why) => ImageSlot::Failed(why),
-                        None => ImageSlot::Unavailable,
-                    };
-                }
-                // One whose header already says it is over the limits is refused here, before a
-                // decode is queued for it (the decoder would refuse it from the same header).
-                if let Some(d) = crate::preview::image::dimensions(&p) {
-                    if !crate::preview::image::dimensions_within_limits(d) {
-                        return match crate::preview::image::ImageFailure::TooLarge
-                            .message(lang, &pid)
-                        {
-                            Some(why) => ImageSlot::Failed(why),
-                            None => ImageSlot::Unavailable,
-                        };
-                    }
-                }
-                match md_image_dims_why(&p) {
-                    Ok((pw, ph)) => {
-                        let (cols, rows) = md_image_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            MD_IMAGE_MAX_ROWS,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    // An SVG refused from its size or its file (too large, a pipe): say why.
-                    Err(Some(why)) => {
-                        match crate::preview::image::ImageFailure::Svg(why).message(lang, &pid) {
-                            Some(m) => ImageSlot::Failed(m),
-                            None => ImageSlot::Unavailable,
-                        }
-                    }
-                    Err(None) => ImageSlot::Unavailable,
-                }
-            } else if crate::preview::markdown::is_remote_image_url(url)
-                && !self.md_remote_failed.contains(url)
-            {
-                ImageSlot::Loading
-            } else {
-                ImageSlot::Unavailable
-            }
-        };
-        // ```mermaid fence: in image mode, look up the rendered cache (content-hash key).
-        // Not-yet-arrived becomes a loading line; failed/mode-off becomes the text diagram
-        // (principle #3). The probe (empty string) is the representative "should this be
-        // extracted?" check, so it's answered by the mode alone.
+        use crate::preview::markdown::ImageSlot;
+        let lang = self.lang;
+        let plugin_id = self.shown_plugin_id().unwrap_or("").to_string();
         let mermaid_on = self.mermaid_image_mode();
         let fence_target_rows = self.mermaid_fit_rows();
-        let mermaid_slot = |code: &str| -> crate::preview::markdown::MermaidSlot {
-            use crate::preview::markdown::MermaidSlot;
-            if !mermaid_on {
-                return MermaidSlot::Text;
-            }
-            if code.is_empty() {
-                return MermaidSlot::Loading; // probe: extraction is ON
-            }
-            let Some(font) = font else {
-                return MermaidSlot::Text;
-            };
-            let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
-            match self.md_images.cache.get(&key) {
-                Some(e) if e.failed => MermaidSlot::Text,
-                // `layout_px` is set when the first result lands and survives eviction of the
-                // pixels, so a picture whose pixels were dropped keeps its reserved size.
-                Some(e) => match e
-                    .decoded
-                    .as_ref()
-                    .map(|i| image::GenericImageView::dimensions(i.as_ref()))
-                    .or(e.layout_px)
-                {
-                    Some(raster_px) => {
-                        // The layout is fixed at the **first** result's `layout_px` — the
-                        // SVG's intrinsic size (px user units, the domain `mermaid_cells`
-                        // sizes text against), not the raster's own pixel dimensions — so a
-                        // sharp re-raster on zoom (higher density, same layout_px) never
-                        // changes the reserved cell count. Falls back to the raster's
-                        // dimensions only if intrinsic-size extraction ever failed.
-                        let (pw, ph) = e.layout_px.unwrap_or(raster_px);
-                        let (cols, rows) = mermaid_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            avail,
-                            fence_target_rows,
-                        );
-                        MermaidSlot::Image { cols, rows }
-                    }
-                    None => MermaidSlot::Loading,
-                },
-                None => MermaidSlot::Loading,
-            }
-        };
-        // Math ($…$ / $$…$$): in image mode, look up the rendered cache (a latex+display
-        // hash key). Not-yet-arrived becomes loading; failed/unsupported/no font degrades
-        // to raw LaTeX text (principle #3). An inline expression is lifted onto its own
-        // line (a synthetic-key image, the same shape as a mermaid fence).
         let math_on = font.is_some() && self.math_image_mode();
-        let math_slot = |latex: &str, display: bool| -> crate::preview::markdown::MathSlot {
-            use crate::preview::markdown::MathSlot;
-            let Some(font) = font else {
-                return MathSlot::Raw;
-            };
-            let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
-            match self.md_images.cache.get(&key) {
-                Some(e) if e.failed => MathSlot::Raw,
-                Some(e) => match (Some(()), e.layout_px) {
-                    // For math, layout_px holds the SVG's **intrinsic size (in em
-                    // units)**, not raster px. Derive rows from the em height and columns
-                    // from the intrinsic aspect ratio, for a size balanced against the text.
-                    (Some(_), Some((uw, uh))) => {
-                        let (cols, rows) =
-                            math_cells(uw, uh, font.width, font.height, avail, display);
-                        MathSlot::Image { cols, rows }
-                    }
-                    _ => MathSlot::Loading,
-                },
-                None => MathSlot::Loading,
+        // A picture of the open Word document: its bytes are in memory and its size was read
+        // when the document was converted, so there is no file to resolve or stat. Asked before
+        // the shared rules (`PictureLookup::other`); `None` is "not a document picture".
+        let office_slot = |url: &str, max_cols: Option<u16>| -> Option<ImageSlot> {
+            if !crate::preview::markdown::is_office_image_url(url) {
+                return None;
             }
+            let font = font?;
+            let failed = |f: crate::preview::image::ImageFailure| match f.message(lang, &plugin_id)
+            {
+                Some(why) => ImageSlot::Failed(why),
+                None => ImageSlot::Unavailable,
+            };
+            // Said once, like a file picture: a decode that failed keeps its reason, and a
+            // picture whose header is already over the limits is refused before any decode.
+            if let Some(e) = self
+                .md_images
+                .cache
+                .get(&PathBuf::from(url))
+                .filter(|e| e.failed)
+            {
+                return Some(match e.fail.and_then(|f| f.message(lang, &plugin_id)) {
+                    Some(why) => ImageSlot::Failed(why),
+                    None => ImageSlot::Unavailable,
+                });
+            }
+            Some(match self.document_picture_dims(url) {
+                // A slide: the full text width (it is a vector drawing, so it may be enlarged),
+                // as tall as the viewport leaves room for after its heading.
+                Some((pw, ph)) if self.document_picture_is_slide(url) => {
+                    let (cols, rows) = slide_cells(
+                        pw,
+                        ph,
+                        font.width,
+                        font.height,
+                        max_cols.unwrap_or(avail),
+                        slide_rows,
+                    );
+                    ImageSlot::Inline { cols, rows }
+                }
+                // Only a raster is refused from its header: an SVG's intrinsic size is not a
+                // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
+                // same as a file SVG.
+                Some(d)
+                    if self.document_picture_is_raster(url)
+                        && !crate::preview::image::dimensions_within_limits(d) =>
+                {
+                    failed(crate::preview::image::ImageFailure::TooLarge)
+                }
+                Some((pw, ph)) => {
+                    let (cols, rows) = md_image_cells(
+                        pw,
+                        ph,
+                        font.width,
+                        font.height,
+                        max_cols.unwrap_or(avail),
+                        MD_IMAGE_MAX_ROWS,
+                    );
+                    ImageSlot::Inline { cols, rows }
+                }
+                None => ImageSlot::Unavailable,
+            })
         };
+        let refused = |url: &str, p: &Path| self.md_image_refused(url, p);
+        let message = |f: crate::preview::image::ImageFailure, pid: &str| f.message(lang, pid);
+        // Decide how much room each picture takes (`konoma_plugin::document_pictures`, the rules
+        // the standalone app shares): a local file or a cached remote fetch is Inline, an uncached
+        // remote URL is Loading (its fetch is kicked off in `ensure_md_cache`) unless it failed,
+        // and anything else degrades to text (principle #3).
+        let lookup = konoma_plugin::document_pictures::PictureLookup {
+            cache: &self.md_images,
+            remote_failed: &self.md_remote_failed,
+            font: font.map(|f| (f.width, f.height)),
+            avail,
+            base_dir: base_dir.clone(),
+            fence_target_rows,
+            mermaid_on,
+            math_on,
+            plugin_id: &plugin_id,
+            refused: &refused,
+            refusals: &self.md_scope_refusals,
+            message: &message,
+            other: &office_slot,
+        };
+        let slot_of = |url: &str, max_cols: Option<u16>| lookup.image(url, max_cols);
+        let mermaid_slot = |code: &str| lookup.mermaid(code);
+        let math_slot = |latex: &str, display: bool| lookup.math(latex, display);
 
         match source {
             DecoratedSource::File => self.build_decorated_file(

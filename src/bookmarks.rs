@@ -123,7 +123,9 @@ impl Bookmarks {
     }
 }
 
-pub(crate) use konoma_base::xdg::{xdg_base_dir, xdg_config_home};
+#[cfg(test)]
+pub(crate) use konoma_base::xdg::xdg_base_dir;
+pub(crate) use konoma_base::xdg::xdg_config_home;
 
 /// Pure core of `default_base`: given the already-resolved config-scope base (or `None` when neither
 /// `XDG_CONFIG_HOME` nor `HOME` is available), appends `konoma`. Falls back to the system temp

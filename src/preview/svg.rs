@@ -61,19 +61,8 @@ pub fn rasterize(
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RasterError> {
-    rasterize_within(path, None, max_px, cancelled)
-}
-
-/// [`rasterize`] for a file of a plugin the user added: the drawing reads only files inside
-/// `roots` (`None` is no limit, the same as [`rasterize`]).
-pub fn rasterize_within(
-    path: &Path,
-    roots: Option<&[std::path::PathBuf]>,
-    max_px: u32,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<DynamicImage, RasterError> {
     let data = read_limited(path)?;
-    rasterize_untrusted_within(&data, path, roots, max_px, cancelled)
+    rasterize_untrusted(&data, path, max_px, cancelled)
 }
 
 /// Rasterize SVG bytes that konoma did not write (a file, a git blob, a cached download), in a

@@ -496,17 +496,7 @@ impl App {
 
     /// Decide whether it is a GIF by the leading bytes (looks at the magic, not the extension).
     pub(super) fn looks_like_gif(path: &Path) -> bool {
-        use std::io::Read;
-        // The previewed file itself, which may be a FIFO or a device the user selected in the
-        // tree: only a regular file is opened (and never blocking), on the UI thread too.
-        let Ok(mut f) = super::canvas_images::open_regular_picture(path) else {
-            return false;
-        };
-        let mut head = [0u8; 6];
-        if f.read_exact(&mut head).is_err() {
-            return false;
-        }
-        &head[..4] == b"GIF8" // GIF87a / GIF89a
+        konoma_plugin::document_pictures::looks_like_gif(path)
     }
 
     /// Drive the GIF animation. If the current frame's display time has elapsed, advance to the next frame index.

@@ -163,6 +163,34 @@ fn rendering_a_fence_or_formula_with_no_plugin_is_a_failed_entry_not_a_panic() {
 }
 
 #[test]
+fn a_cached_fence_or_formula_does_not_look_the_plugin_up_again() {
+    use super::embed_plugin::EMBED_RENDER_CALLS;
+    let dir = unique_tmp("konoma_embed_cached_no_lookup");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(picker());
+    let calls = || EMBED_RENDER_CALLS.with(|c| c.get());
+    // The first request builds the plugin (once each) and files the entry.
+    let before = calls();
+    app.ensure_mermaid_fence_render("graph LR\n A-->B".into());
+    app.ensure_math_render("x^2".into(), false);
+    assert_eq!(
+        calls() - before,
+        2,
+        "a new picture looks its plugin up once"
+    );
+    // The same pictures again (every re-layout of the page): cached, so no lookup at all.
+    let cached = calls();
+    assert!(!app.ensure_mermaid_fence_render("graph LR\n A-->B".into()));
+    assert!(!app.ensure_math_render("x^2".into(), false));
+    assert_eq!(
+        calls(),
+        cached,
+        "a cached picture must not rebuild the registry and settings"
+    );
+}
+
+#[test]
 fn a_switched_off_mermaid_plugin_means_a_mmd_file_is_plain_text() {
     let mut cfg = Config::default();
     cfg.plugins.insert("mermaid".into(), off());
