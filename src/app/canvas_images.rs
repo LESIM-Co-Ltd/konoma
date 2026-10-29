@@ -66,19 +66,17 @@ pub(crate) fn delete_canvas_kitty_images(out: &mut dyn std::io::Write) {
     delete_kitty_images_in(&LIVE_CANVAS_KITTY, out);
 }
 
-pub(super) use konoma_plugin::canvas_pictures::{
-    decode_canvas, CanvasDecoded, CanvasHeld, CanvasPictureHost, CanvasPictures,
-};
-#[cfg(test)]
-pub(super) use konoma_plugin::canvas_pictures::{decoded_bytes, CanvasPlace, KeptPicture};
-// What the tests in this module's tree name through it.
-pub(super) use konoma_plugin::canvas_pictures::files::open_regular_picture;
 #[cfg(test)]
 pub(super) use konoma_plugin::canvas_pictures::CanvasLimits;
 #[cfg(test)]
 pub(crate) use konoma_plugin::canvas_pictures::{
     content_hash, decode_one, header_pixels, mix_scope, seen_for_tests,
 };
+pub(super) use konoma_plugin::canvas_pictures::{
+    decode_canvas, CanvasDecoded, CanvasHeld, CanvasPictureHost, CanvasPictures,
+};
+#[cfg(test)]
+pub(super) use konoma_plugin::canvas_pictures::{decoded_bytes, CanvasPlace, KeptPicture};
 #[cfg(test)]
 pub(super) use konoma_plugin::view::{CellRect, ImageData};
 #[cfg(test)]

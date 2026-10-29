@@ -14,6 +14,7 @@ pub mod markdown;
 #[cfg(test)]
 pub mod math;
 pub mod media_diff;
+#[cfg(test)]
 pub mod mermaid;
 pub mod office;
 #[cfg(test)]

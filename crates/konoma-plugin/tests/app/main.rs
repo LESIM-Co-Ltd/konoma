@@ -7,6 +7,7 @@ mod looping;
 mod open;
 mod pictures;
 mod plugin;
+mod reopen;
 mod still;
 mod table;
 mod table_plugin;

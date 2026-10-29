@@ -620,7 +620,17 @@ fn take_plugin_option(args: &mut Vec<std::ffi::OsString>) -> Result<Option<Strin
 /// with several plugins `--serve`, `--manifest` and `--version` need `--plugin <id>` to say which
 /// (`--version` alone lists them all). A file is not tied to one: it goes to the plugin the
 /// registry's rules pick, whichever it is.
-pub fn cli_main_many(mut plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
+pub fn cli_main_many(plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
+    cli_main_bundled(plugins, Vec::new())
+}
+
+/// [`cli_main_many`] for a program that also carries `bundled` plugins. They are destinations
+/// only: the standalone app looks them up for a reopened content type and an embedded kind, and
+/// `--serve`, `--manifest`, `--version` and the choice of the plugin for a file never see them.
+pub fn cli_main_bundled(
+    mut plugins: Vec<Box<dyn Plugin>>,
+    bundled: Vec<Box<dyn Plugin>>,
+) -> ExitCode {
     use std::os::unix::ffi::OsStrExt;
     // The arguments of a program are bytes, not text: `args()` would panic on one that is not UTF-8.
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -710,7 +720,7 @@ pub fn cli_main_many(mut plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
             )
         }
         Some(b"--help" | b"-h") => print_out(HELP),
-        Some(other) if !other.starts_with(b"-") => open_as_app(plugins, &args),
+        Some(other) if !other.starts_with(b"-") => open_as_app(plugins, bundled, &args),
         Some(_) => {
             eprintln!("konoma plugin: unknown option {:?}\n\n{HELP}", args[0]);
             ExitCode::from(2)
@@ -725,14 +735,19 @@ pub fn cli_main_many(mut plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
 /// `<program> <file>`: the standalone app (the `app` feature), or a refusal that says it is not
 /// built in.
 #[cfg(feature = "app")]
-fn open_as_app(plugins: Vec<Box<dyn Plugin>>, args: &[std::ffi::OsString]) -> ExitCode {
+fn open_as_app(
+    plugins: Vec<Box<dyn Plugin>>,
+    bundled: Vec<Box<dyn Plugin>>,
+    args: &[std::ffi::OsString],
+) -> ExitCode {
     if args.len() > 1 {
         eprintln!("konoma plugin: give one file to open, not {}", args.len());
         return ExitCode::from(2);
     }
-    let plugins: Vec<std::sync::Arc<dyn Plugin>> =
-        plugins.into_iter().map(std::sync::Arc::from).collect();
-    match crate::app::run(plugins, std::path::Path::new(&args[0])) {
+    let arcs = |list: Vec<Box<dyn Plugin>>| -> Vec<std::sync::Arc<dyn Plugin>> {
+        list.into_iter().map(std::sync::Arc::from).collect()
+    };
+    match crate::app::run_bundled(arcs(plugins), arcs(bundled), std::path::Path::new(&args[0])) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("konoma plugin: {e}");
@@ -742,7 +757,11 @@ fn open_as_app(plugins: Vec<Box<dyn Plugin>>, args: &[std::ffi::OsString]) -> Ex
 }
 
 #[cfg(not(feature = "app"))]
-fn open_as_app(_plugins: Vec<Box<dyn Plugin>>, args: &[std::ffi::OsString]) -> ExitCode {
+fn open_as_app(
+    _plugins: Vec<Box<dyn Plugin>>,
+    _bundled: Vec<Box<dyn Plugin>>,
+    args: &[std::ffi::OsString],
+) -> ExitCode {
     eprintln!(
         "konoma plugin: opening {:?} as a standalone app is not available in this version",
         args[0]

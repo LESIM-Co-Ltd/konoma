@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
-    core_sections, ctrl_c_token, help_title, pad_cells, render_foot, scroll_keys, CoreFoot,
-    CoreLookup, CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
+    core_sections, ctrl_c_token, help_title, render_foot, scroll_keys, CoreFoot, CoreLookup,
+    CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
 };
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
@@ -27,8 +27,10 @@ use crate::canvas_pictures::image_failure_for;
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::ViewKind;
 use crate::pages;
+use crate::ratatui_draw;
 use crate::session::{Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
+use crate::Cancel;
 use crate::{Line, Settings};
 
 /// What the app tells the loop about its surroundings.
@@ -49,6 +51,14 @@ pub struct AppCx {
     /// fails before anything was shown is told apart by this (a picture's or a table's); empty
     /// says nothing, and the kind of the last view on screen is believed instead.
     pub shows: Vec<crate::manifest::ViewKind>,
+    /// Where a [`View::Reopen`] is opened again (who takes the content type it names). `None`:
+    /// no plugin takes any, and a `Reopen` is "no plugin is available to show this document".
+    pub reopen: Option<super::ReopenSource>,
+    /// How the text and the documents look (`[ui] wrap`, `[ui.theme]`, ...).
+    pub display: super::Display,
+    /// The directory the program was opened in: the frame title is the path of the file shown
+    /// from there, the way konoma's is from its root. `None`: the title is the file name.
+    pub open_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AppCx {
@@ -58,10 +68,13 @@ impl Default for AppCx {
             lang: "en".into(),
             term: TermCaps::new(),
             title: String::new(),
+            open_dir: None,
             unavailable: crate::manifest::Unavailable::default(),
             plugin_id: String::new(),
             path: std::path::PathBuf::new(),
             shows: Vec::new(),
+            reopen: None,
+            display: super::Display::default(),
         }
     }
 }
@@ -80,6 +93,8 @@ impl Default for AppCx {
 pub struct AppKeys {
     keys: CoreKeys,
     lang: Lang,
+    /// `[ui] wrap`: while the text wraps, the sideways keys do nothing and are not named.
+    wrap: bool,
 }
 
 impl AppKeys {
@@ -88,7 +103,14 @@ impl AppKeys {
         AppKeys {
             keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
             lang: Lang::En,
+            wrap: true,
         }
+    }
+
+    /// The same keys for text that wraps (`true`, the default) or scrolls sideways (`[ui] wrap`).
+    pub fn with_wrap(mut self, wrap: bool) -> AppKeys {
+        self.wrap = wrap;
+        self
     }
 
     /// The same keys with the help and the footer in `lang`.
@@ -122,20 +144,11 @@ impl AppKeys {
     pub fn facts_scrolling(&self, paged: bool, scrolls: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
             HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
-            HelpOp::Act(CoreAction::Navigate(m)) => {
-                scrolls
-                    && matches!(
-                        m,
-                        Motion::Down
-                            | Motion::Up
-                            | Motion::Top
-                            | Motion::Bottom
-                            | Motion::PageDown
-                            | Motion::PageUp
-                            | Motion::HalfDown
-                            | Motion::HalfUp
-                    )
-            }
+            // The sideways motions only act on text that does not wrap.
+            HelpOp::Act(CoreAction::Navigate(
+                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
+            )) => scrolls && !self.wrap,
+            HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
             }
@@ -179,12 +192,43 @@ impl AppKeys {
         let leave = tok(CoreFoot::Back)
             .or_else(|| tok(CoreFoot::Quit))
             .unwrap_or_else(|| ctrl_c_token(self.lang));
-        let mut out = vec![leave];
+        // The host's order for a text: the scroll, what leaves, the help, then the ends, the
+        // sideways keys (text that does not wrap) and the page keys. `scrolls` is false for a
+        // frame no motion moves: only what leaves and the help.
+        let mut out = Vec::new();
         if scrolls {
             out.extend(tok(CoreFoot::Scroll));
         }
+        out.push(leave);
         out.extend(tok(CoreFoot::Help));
+        if scrolls {
+            for f in [
+                CoreFoot::Ends,
+                CoreFoot::HScroll,
+                CoreFoot::LineEnds,
+                CoreFoot::PageKeys,
+            ] {
+                out.extend(tok(f));
+            }
+        }
         out
+    }
+
+    /// The footer's key hints of a Markdown document: the same as a text (the host's footer of
+    /// a document has no sideways keys: the lines wrap).
+    pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        self.footer_hints_paged(scrolls, false)
+            .into_iter()
+            .filter(|t| {
+                !t.ops.iter().any(|o| {
+                    matches!(
+                        o,
+                        HelpOp::Act(CoreAction::Navigate(Motion::Left | Motion::LineHome))
+                    )
+                })
+            })
+            .map(|t| t.text)
+            .collect()
     }
 
     /// [`AppKeys::footer_hints`] as the text the footer shows.
@@ -206,6 +250,10 @@ impl AppKeys {
     pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
         match self.act(key) {
             None => false,
+            // Sideways, the text moves only when it does not wrap (the open help does not).
+            Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
+                !in_help && scrolls && !self.wrap
+            }
             Some(Act::Move(_)) => in_help || scrolls,
             Some(_) => true,
         }
@@ -236,7 +284,7 @@ impl AppKeys {
     }
 
     /// The `?` help as lines: a heading and the aligned rows of each section.
-    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<Line> {
+    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.help_sections_scrolling(paged, scrolls))
     }
 
@@ -253,6 +301,32 @@ impl AppKeys {
         };
         let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
         help_title(&close, &scroll_keys(&look, &facts), self.lang)
+    }
+
+    /// The footer's key hints while the `?` help is open: scrolling, the ends, closing (the
+    /// host's footer of its help).
+    pub fn help_footer_tokens(&self) -> Vec<String> {
+        let facts = self.facts_scrolling(false, true);
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        let mut out: Vec<String> = [CoreFoot::Scroll, CoreFoot::Ends]
+            .into_iter()
+            .filter_map(|f| render_foot(f, CoreContext::Text, &facts, &look, self.lang))
+            .map(|t| t.text)
+            .collect();
+        let mut close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
+        let esc = KeyPress::key(crossterm::event::KeyCode::Esc);
+        if !close.contains(&esc) {
+            close.push(esc);
+        }
+        out.push(format!(
+            "{}:{}",
+            konoma_host_core::help::write_keys(&close, true),
+            CoreMsg::FtClose.tr(self.lang)
+        ));
+        out
     }
 
     // ---- Tables ----
@@ -443,7 +517,7 @@ impl AppKeys {
     }
 
     /// The `?` help of a table as lines.
-    fn table_help_lines(&self, mode: TableMode) -> Vec<Line> {
+    fn table_help_lines(&self, mode: TableMode) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.table_help_sections(mode))
     }
 
@@ -613,7 +687,7 @@ impl AppKeys {
         )
     }
 
-    fn image_help_lines(&self, paged: bool) -> Vec<Line> {
+    fn image_help_lines(&self, paged: bool) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.image_help_sections(paged))
     }
 
@@ -710,6 +784,8 @@ impl AppKeys {
             match key.code {
                 KeyCode::Down => return Some(Act::Move(Motion::Down)),
                 KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Left => return Some(Act::Move(Motion::Left)),
+                KeyCode::Right => return Some(Act::Move(Motion::Right)),
                 KeyCode::Home => return Some(Act::Move(Motion::Top)),
                 KeyCode::End => return Some(Act::Move(Motion::Bottom)),
                 // `Esc` is fixed (not in the keymap) and the help says `q / Esc` leaves, so it
@@ -729,25 +805,13 @@ impl AppKeys {
     }
 }
 
-/// A help as lines: a heading and the aligned rows of each section.
-fn lines_of(secs: &[CoreSection]) -> Vec<Line> {
-    let w = secs
+/// A help as lines: a heading and the aligned rows of each section (the host's drawing, shared).
+fn lines_of(secs: &[CoreSection]) -> Vec<ratatui::text::Line<'static>> {
+    let parts: Vec<(&str, &[(String, String)])> = secs
         .iter()
-        .flat_map(|s| s.rows.iter())
-        .map(|(k, _)| unicode_width::UnicodeWidthStr::width(k.as_str()))
-        .max()
-        .unwrap_or(0);
-    let mut out = Vec::new();
-    for (i, s) in secs.iter().enumerate() {
-        if i > 0 {
-            out.push(Line::raw(""));
-        }
-        out.push(Line::raw(s.title.clone()));
-        for (k, d) in &s.rows {
-            out.push(Line::raw(format!("  {}  {d}", pad_cells(k, w))));
-        }
-    }
-    out
+        .map(|s| (s.title.as_str(), s.rows.as_slice()))
+        .collect();
+    konoma_widgets::help_panel::help_lines(&parts)
 }
 
 /// What a still picture on screen lets the keys do.
@@ -865,13 +929,54 @@ const MIN_REDRAW: Duration = Duration::from_millis(33);
 /// The longest (24 hours, as the host).
 const MAX_REDRAW: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The one content type the app shows a `Reopen` as (konoma's `markdown`, which the document
+/// widget draws).
+const REOPEN_ACCEPTS: &str = "markdown";
+
+/// The declarations of the plugin a `Reopen` was opened in (its manifest).
+struct ReopenedAs {
+    shows: Vec<ViewKind>,
+    unavailable: crate::manifest::Unavailable,
+    plugin_id: String,
+}
+
+impl State {
+    /// The display types of the plugin showing the file now.
+    fn shows<'a>(&'a self, cx: &'a AppCx) -> &'a [ViewKind] {
+        self.reopened_as.as_ref().map_or(&cx.shows, |r| &r.shows)
+    }
+
+    /// What the plugin showing the file now says when it shows nothing.
+    fn unavailable<'a>(&'a self, cx: &'a AppCx) -> &'a crate::manifest::Unavailable {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.unavailable, |r| &r.unavailable)
+    }
+
+    /// The id of the plugin showing the file now.
+    fn plugin_id<'a>(&'a self, cx: &'a AppCx) -> &'a str {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.plugin_id, |r| &r.plugin_id)
+    }
+}
+
 /// What the loop keeps between two frames.
 #[derive(Default)]
 struct State {
+    /// What the plugin a `Reopen` was opened in is: from then on it, not the plugin that
+    /// converted the file, says what a failed page was (`AppCx::shows` and the like).
+    reopened_as: Option<ReopenedAs>,
     /// The first line shown of a text.
     scroll: usize,
+    /// Cells scrolled off the left edge of a text that does not wrap.
+    hscroll: u16,
+    /// How the text and the documents look.
+    display: super::Display,
     /// The number of lines of a text file, counted once.
     counted: Option<(std::path::PathBuf, usize)>,
+    /// The reader of a text file that measures where the window is, in bytes.
+    win: Option<window::ByteWindow>,
     /// The height of the body at the last draw (the page of `PageUp` / `PageDown`).
     page: usize,
     /// The last number of lines a text had (the bound of `End`).
@@ -900,6 +1005,12 @@ struct State {
     /// The text of the page that failed to draw as the file's text (an SVG that cannot be drawn),
     /// read once: a key scrolls it without asking the session again or reading the file again.
     failed_body: Option<FailedBody>,
+    /// The width of the terminal at the last view (a document is laid out at it).
+    width: u16,
+    /// A half page, when the view sets its own (a document: half the frame, as the host).
+    half: Option<usize>,
+    /// The document laid out last, kept while its text and width are the same.
+    doc: Option<super::document::DocCache>,
 }
 
 /// The lines (the reason, then the file) a failed page shows, and the page they belong to.
@@ -937,7 +1048,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     keys: &AppKeys,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
-    let mut st = State::default();
+    let mut st = State {
+        display: cx.display.clone(),
+        ..State::default()
+    };
+    // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
+    // from then on it is the one asked.
+    let mut swapped: Option<Box<dyn Session>> = None;
+    // A `Reopen` that failed: the converting session is still the one asked, and it would answer
+    // `Reopen` again at every key and resize; the failure is the answer from then on, so the
+    // destination is opened (and fails) once, as konoma's one load does.
+    let mut reopen_failed: Option<crate::session::Failure> = None;
+    macro_rules! sess {
+        () => {
+            match swapped.as_deref_mut() {
+                Some(s) => s,
+                None => &mut *session,
+            }
+        };
+    }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     // The frame of the last view, and when that view is due again (a wake for the pictures
     // draws this frame again).
@@ -948,6 +1077,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
+        st.width = size.width;
+        st.half = None;
         if view_due.is_some_and(|d| Instant::now() >= d) {
             need_view = true;
         }
@@ -958,7 +1089,61 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let shown = match session.view(&req, &vcx) {
+            let mut viewed = match &reopen_failed {
+                Some(f) => Err(f.clone()),
+                None => sess!().view(&req, &vcx),
+            };
+            // "Open this again as Markdown": the plugin that takes the content type is opened
+            // on the text (the rule konoma follows, `crate::reopen`), and its session replaces
+            // this one. Everything of the old document is dropped with it: the scroll, the
+            // laid-out page and the pictures (a result the old document asked for lands on
+            // nothing).
+            if let Ok(View::Reopen(r)) = viewed {
+                let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
+                viewed = match crate::reopen::reopen_document(
+                    target.as_ref(),
+                    REOPEN_ACCEPTS,
+                    r,
+                    &cx.lang,
+                    &Cancel::never(),
+                    cx.term,
+                ) {
+                    Ok(opened) => {
+                        swapped = Some(opened.session);
+                        st = State {
+                            display: cx.display.clone(),
+                            reopened_as: target.as_ref().map(|t| {
+                                let m = t.plugin.manifest();
+                                ReopenedAs {
+                                    shows: m.shows,
+                                    unavailable: m.unavailable,
+                                    plugin_id: m.id,
+                                }
+                            }),
+                            ..State::default()
+                        };
+                        st.page = usize::from(body_rows).max(1);
+                        st.width = size.width;
+                        if let Some(p) = pictures.as_mut() {
+                            p.forget();
+                            p.forget_still();
+                            p.reset_document();
+                        }
+                        Ok(View::Document(opened.document))
+                    }
+                    Err(f) => {
+                        reopen_failed = Some(f.clone());
+                        Err(f)
+                    }
+                };
+            }
+            let frame_name = match &cx.open_dir {
+                Some(dir) if !cx.path.as_os_str().is_empty() => {
+                    konoma_host_core::paths::rel_to_open(dir, &cx.path)
+                }
+                _ => cx.title.clone(),
+            };
+            let shown = match viewed {
                 Ok(v) => {
                     st.table_failed = false;
                     st.image_failed = false;
@@ -972,9 +1157,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     // What kind of paged page failed: what the plugin declares it shows, else
                     // what was on screen before (a first page that fails has nothing before it).
                     let picture = failed_page_is_picture(cx, &st);
-                    note_failed_page(session, cx, &mut st, picture);
+                    note_failed_page(sess!(), cx, &mut st, picture);
                     Err(Some(failure_frame(
-                        image_failure_for(&cx.unavailable, &f),
+                        image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
                         cx,
                         keys.lang(),
@@ -989,7 +1174,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     &mut st,
                     usize::from(body_rows),
                     (&cx.lang, keys.lang()),
-                    &cx.title,
+                    &frame_name,
+                    pictures.as_mut(),
                 ),
                 Err(Some(frame)) => (frame, None),
                 // The frame on screen stays.
@@ -1004,7 +1190,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
                 new.clamp_cursor();
                 st.table_sheets = new.addressed;
-                let layout = session.layout().clipped();
+                let layout = sess!().layout().clipped();
                 st.pages = match layout.pages {
                     Some(PageLayout::Separate { count, titles }) => {
                         count.or((!titles.is_empty()).then_some(titles.len()))
@@ -1014,7 +1200,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
             if matches!(frame, Frame::Image(_)) {
                 // A picture's pages are what the host counts: the count the layout reports.
-                let layout = session.layout().clipped();
+                let layout = sess!().layout().clipped();
                 st.pages = pages::count_of(&layout)
                     .flatten()
                     .map(|n| n as usize)
@@ -1046,13 +1232,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         }
         if let Some(p) = pictures.as_mut() {
             p.poll();
+            // A picture's result changed what the page reserves: lay it out again before drawing.
+            if matches!(base, Frame::Document(_)) && p.take_doc_relayout() {
+                need_view = true;
+                continue;
+            }
         }
         // A picture whose decode failed is a page that failed to draw, as one whose `view`
         // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
         if let (Frame::Image(_), Some(why)) =
             (&base, pictures.as_ref().and_then(Pictures::still_failure))
         {
-            note_failed_page(session, cx, &mut st, true);
+            note_failed_page(sess!(), cx, &mut st, true);
             base = failure_frame(
                 why,
                 "[can not preview]",
@@ -1072,8 +1263,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             || (image_mode.is_some() && st.image_failed && st.scrolls);
         // The picture's own frame holds no text: no motion scrolls it, and none is named.
         let text_scrolls = !matches!(base, Frame::ImageFailed(_));
-        let mut help_frame: Frame;
         let footer;
+        let mut panel: Option<HelpPanel> = None;
+        let width = terminal.size().map(|s| s.width).unwrap_or(0);
         let frame: &mut Frame = match st.help {
             Some(top) => {
                 let (lines, title) = match (mode, image_mode) {
@@ -1083,12 +1275,27 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
                 };
-                let rows = usize::from(body_rows);
-                let top = top.min(lines.len().saturating_sub(rows));
+                // The panel is laid out in the whole screen, as the host's is; the scroll is
+                // settled at draw time (the end of the help is as far as it goes).
+                let screen = terminal
+                    .size()
+                    .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                    .unwrap_or_default();
+                let top = top.min(usize::from(konoma_widgets::help_panel::max_scroll(
+                    lines.len(),
+                    screen,
+                )));
                 st.help = Some(top);
-                help_frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
-                footer = format!(" {}", title.trim());
-                &mut help_frame
+                footer = konoma_widgets::help_panel::fit_tokens(
+                    &keys.help_footer_tokens(),
+                    screen.width,
+                );
+                panel = Some(HelpPanel {
+                    lines,
+                    scroll: top as u16,
+                    title,
+                });
+                &mut base
             }
             None => {
                 footer = match mode {
@@ -1103,7 +1310,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     .join("  ");
                             }
                         }
-                        format!(" {}", keys.table_footer_tokens(m).join("  "))
+                        draw::footer_row(&keys.table_footer_tokens(m), "", "", width)
                     }
                     None if image_mode.is_some() && !failed_text_screen => {
                         let m = image_mode.unwrap_or(ImageMode {
@@ -1133,27 +1340,40 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             .and_then(Pictures::still_busy)
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
-                        format!(
-                            " {busy}{}{zoom}{page}  {}",
-                            keys.image_footer_tokens(m.paged).join("  "),
-                            cx.title
+                        draw::footer_row(
+                            &keys.image_footer_tokens(m.paged),
+                            format!("{zoom}{page}  {busy}").trim_end(),
+                            &cx.title,
+                            width,
                         )
                     }
                     None => draw::footer(
-                        &keys.footer_tokens_paged(
-                            st.scrolls || (failed_text_screen && text_scrolls),
-                            paged,
-                        ),
+                        &if matches!(base, draw::Frame::Document(_)) {
+                            keys.document_footer_tokens(st.scrolls)
+                        } else {
+                            keys.footer_tokens_paged(
+                                st.scrolls || (failed_text_screen && text_scrolls),
+                                paged,
+                            )
+                        },
                         &cx.title,
                         &base,
                         st.scroll,
                         st.scrolls,
+                        width,
                     ),
                 };
                 &mut base
             }
         };
-        draw_frame(terminal, frame, &footer, pictures.as_mut())?;
+        draw_frame(
+            terminal,
+            frame,
+            &footer,
+            st.display.bg(),
+            pictures.as_mut(),
+            panel,
+        )?;
 
         // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
         // came from the pictures' shorter wake leaves the view as it is.
@@ -1161,7 +1381,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Some(w) => Some(w),
             None => view_due.map(|d| d.saturating_duration_since(Instant::now())),
         };
-        let pic_wait = pictures.as_ref().and_then(Pictures::wake_in);
+        // The canvas under the open help is still drawn (the host draws it too) but not animated:
+        // nothing wakes the loop for it.
+        let pic_wait = pictures
+            .as_ref()
+            .and_then(Pictures::wake_in)
+            .filter(|_| st.help.is_none());
         let picture_first = match (view_left, pic_wait) {
             (Some(v), Some(p)) => p < v,
             (None, Some(_)) => true,
@@ -1206,7 +1431,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     .failed_body
                     .as_ref()
                     .is_some_and(|b| b.page == st.at_page)
-                    && matches!(base, Frame::Lines(_));
+                    && matches!(base, Frame::Lines(_) | Frame::Text(_));
                 if table_keys || image_keys || kept_failure {
                     need_view = false;
                 }
@@ -1388,6 +1613,13 @@ fn table_move(t: &mut TableFrame, m: Motion) {
     t.state.step(step, t.grid.nrows(), t.grid.ncols());
 }
 
+/// The `?` help to draw over the screen: its lines, the first line shown and the title.
+struct HelpPanel {
+    lines: Vec<ratatui::text::Line<'static>>,
+    scroll: u16,
+    title: String,
+}
+
 /// Draw `frame` and `footer`, then the pictures over it. A frame on which a picture moved or went
 /// is cleared and drawn again (the cells of its old place would stay on screen otherwise), and the
 /// deletes of the kitty images that went are written after it. The right to write to the terminal
@@ -1396,7 +1628,9 @@ fn draw_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     frame: &mut Frame,
     footer: &str,
+    bg: Option<ratatui::style::Color>,
     mut pictures: Option<&mut Pictures>,
+    panel: Option<HelpPanel>,
 ) -> Result<(), AppError> {
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     let on_canvas = matches!(frame, Frame::Canvas(_));
@@ -1408,10 +1642,15 @@ fn draw_frame<B: Backend>(
     for pass in 0..2 {
         terminal
             .draw(|f| {
-                draw::draw(f, frame, footer);
+                draw::draw(f, frame, footer, bg);
                 let body = draw::body_of(f.area());
                 if let Some(p) = pictures.as_deref_mut() {
                     p.draw(f.buffer_mut(), body, on_canvas);
+                    let doc = match &*frame {
+                        Frame::Document(d) => Some((&*d.laid, d.scroll)),
+                        _ => None,
+                    };
+                    p.draw_document(f.buffer_mut(), super::document::DocFrame::inner(body), doc);
                 }
                 if let Some(lang) = image {
                     let inner = draw::image_inner(body);
@@ -1425,6 +1664,17 @@ fn draw_frame<B: Backend>(
                             f.buffer_mut(),
                         ),
                     }
+                }
+                // The `?` help sits above everything else, as the host draws it.
+                if let Some(h) = &panel {
+                    let area = f.area();
+                    konoma_widgets::help_panel::render_panel(
+                        f.buffer_mut(),
+                        area,
+                        h.lines.clone(),
+                        h.scroll,
+                        h.title.clone(),
+                    );
                 }
             })
             .map_err(|e| terr(&e))?;
@@ -1443,7 +1693,7 @@ fn draw_frame<B: Backend>(
 
 fn scroll_by(m: Motion, st: &mut State) {
     let page = st.page;
-    let half = (page / 2).max(1);
+    let half = st.half.unwrap_or((page / 2).max(1));
     match m {
         Motion::Down => st.scroll = st.scroll.saturating_add(1),
         Motion::Up => st.scroll = st.scroll.saturating_sub(1),
@@ -1453,8 +1703,15 @@ fn scroll_by(m: Motion, st: &mut State) {
         Motion::HalfUp => st.scroll = st.scroll.saturating_sub(half),
         Motion::Top => st.scroll = 0,
         Motion::Bottom => st.scroll = st.total,
-        // The app does not scroll sideways yet.
-        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd => {}
+        // Sideways, the host's steps (4 cells, and the ends settled at draw time). Wrapping,
+        // there is nothing to scroll.
+        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd if st.display.wrap => {
+            st.hscroll = 0
+        }
+        Motion::Left => st.hscroll = st.hscroll.saturating_sub(4),
+        Motion::Right => st.hscroll = st.hscroll.saturating_add(4),
+        Motion::LineHome => st.hscroll = 0,
+        Motion::LineEnd => st.hscroll = u16::MAX,
     }
 }
 
@@ -1465,6 +1722,7 @@ fn frame_of(
     rows: usize,
     (lang_code, lang): (&str, Lang),
     name: &str,
+    pictures: Option<&mut Pictures>,
 ) -> (Frame, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
@@ -1497,22 +1755,45 @@ fn frame_of(
             (Frame::Canvas(c), after)
         }
         View::Text(t) => {
+            // The text sits in the host's frame: the window is the rows inside its border.
+            let rows = rows.saturating_sub(2);
+            st.page = rows.saturating_sub(1).max(1);
+            st.half = Some((rows / 2).max(1));
+            let framed = |st: &mut State, lines: Vec<Line>, extent| {
+                text_frame(st, lines, Some((name, lang, extent)))
+            };
             let frame = match t.source {
                 TextSource::Owned(s) => {
+                    let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
+                    clamp(st, lens.len(), rows);
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
                     let lines: Vec<&str> = s.lines().collect();
-                    clamp(st, lines.len(), rows);
-                    Frame::Lines(
+                    framed(
+                        st,
                         lines
                             .iter()
                             .skip(st.scroll)
                             .take(rows)
                             .map(|l| Line::raw(window::clean_line(l.as_bytes())))
                             .collect(),
+                        extent,
                     )
                 }
                 TextSource::Lines(all) => {
+                    // The host writes the lines joined by a newline and windows that file.
+                    let last = all.len().saturating_sub(1);
+                    let lens: Vec<u64> = all
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            l.spans.iter().map(|s| s.text.len() as u64).sum::<u64>()
+                                + u64::from(i < last)
+                        })
+                        .collect();
                     clamp(st, all.len(), rows);
-                    Frame::Lines(all.into_iter().skip(st.scroll).take(rows).collect())
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
+                    let shown = all.into_iter().skip(st.scroll).take(rows).collect();
+                    framed(st, shown, extent)
                 }
                 TextSource::File(path) => {
                     let total = match &st.counted {
@@ -1534,8 +1815,9 @@ fn frame_of(
                         },
                     };
                     clamp(st, total, rows);
+                    let extent = window::file_extent(&mut st.win, &path, st.scroll, rows);
                     match window::read_window(&path, st.scroll, rows) {
-                        Ok(w) => Frame::Lines(w.into_iter().map(Line::raw).collect()),
+                        Ok(w) => framed(st, w.into_iter().map(Line::raw).collect(), extent),
                         Err(e) => Frame::Lines(vec![Line::raw(format!(
                             "[can not read {}: {e}]",
                             path.display()
@@ -1545,6 +1827,46 @@ fn frame_of(
             };
             st.scrolls = true;
             (frame, None)
+        }
+        View::Document(dv) => {
+            // The frame has a border: the page is laid out inside it.
+            let inner_w = st.width.saturating_sub(2);
+            let inner_h = rows.saturating_sub(2);
+            let mut doc_pics = pictures.map(Pictures::doc_pics);
+            let laid = super::document::DocCache::get(
+                &mut st.doc,
+                &dv,
+                inner_w,
+                u16::try_from(rows).unwrap_or(u16::MAX),
+                lang,
+                doc_pics.as_deref_mut(),
+                &st.display,
+            );
+            // A converted document cut at a budget, or a slide that had to leave something out,
+            // says so in the title; a Markdown file cut at the display limit says so in its
+            // text (see `document::lay_out`).
+            let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
+                && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
+            clamp(st, laid.rows(), inner_h);
+            // The host's vertical scroll is a `u16`: a document taller than that scrolls no further.
+            st.scroll = st.scroll.min(super::document::MAX_DOC_SCROLL);
+            let hscroll = settle_hscroll(st, laid.max_line_cols, inner_w);
+            // The host pages by one row less than the frame and halves the frame itself.
+            st.page = inner_h.saturating_sub(1).max(1);
+            st.half = Some((inner_h / 2).max(1));
+            st.scrolls = true;
+            (
+                Frame::Document(super::document::DocFrame {
+                    name: name.to_string(),
+                    laid,
+                    scroll: st.scroll,
+                    wrap: st.display.wrap,
+                    hscroll,
+                    lang,
+                    truncated: cut,
+                }),
+                None,
+            )
         }
         other => (
             Frame::Lines(vec![Line::raw(format!(
@@ -1560,8 +1882,8 @@ fn frame_of(
 /// on screen before (a first page that fails has nothing before it).
 fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
     let declared = match (
-        cx.shows.contains(&ViewKind::Image),
-        cx.shows.contains(&ViewKind::Table),
+        st.shows(cx).contains(&ViewKind::Image),
+        st.shows(cx).contains(&ViewKind::Table),
     ) {
         (true, false) => Some(true),
         (false, true) => Some(false),
@@ -1576,8 +1898,8 @@ fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
 fn note_failed_page(session: &dyn Session, cx: &AppCx, st: &mut State, picture: bool) {
     let declared = matches!(
         (
-            cx.shows.contains(&ViewKind::Image),
-            cx.shows.contains(&ViewKind::Table),
+            st.shows(cx).contains(&ViewKind::Image),
+            st.shows(cx).contains(&ViewKind::Table),
         ),
         (true, false) | (false, true)
     );
@@ -1613,18 +1935,23 @@ fn failure_frame(
     use crate::canvas_pictures::{raw_file_body, unavailable_text};
     st.failed_body = None;
     let text = unavailable_text(
-        &cx.unavailable,
+        st.unavailable(cx),
         message,
         why,
         (&cx.lang, lang),
-        &cx.plugin_id,
+        st.plugin_id(cx),
         &cx.path,
         &|| raw_file_body(&cx.path, lang),
     );
     match text {
         // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma. It
         // is kept: a key scrolls it, the file is not read again.
-        Some(t) if matches!(cx.unavailable, crate::manifest::Unavailable::RawText { .. }) => {
+        Some(t)
+            if matches!(
+                st.unavailable(cx),
+                crate::manifest::Unavailable::RawText { .. }
+            ) =>
+        {
             st.failed_body = Some(FailedBody {
                 page: st.at_page,
                 // Not cleaned: konoma hands the text to ratatui as it is, which drops the control
@@ -1638,7 +1965,7 @@ fn failure_frame(
             name: cx.title.clone(),
             lang,
             why,
-            plugin_id: cx.plugin_id.clone(),
+            plugin_id: st.plugin_id(cx).to_string(),
         }),
     }
 }
@@ -1649,14 +1976,13 @@ fn failed_window(st: &mut State, rows: usize) -> Frame {
     let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
     clamp(st, lines.len(), rows);
     st.scrolls = true;
-    let frame = Frame::Lines(
-        lines
-            .iter()
-            .skip(st.scroll)
-            .take(rows)
-            .map(Line::raw)
-            .collect(),
-    );
+    let shown = lines
+        .iter()
+        .skip(st.scroll)
+        .take(rows)
+        .map(Line::raw)
+        .collect();
+    let frame = text_frame(st, shown, None);
     st.failed_body = body;
     frame
 }
@@ -1677,6 +2003,60 @@ fn declared_pages(session: &dyn Session, picture: bool) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// The sideways scroll, settled against the widest line (`max_cols`) and the `width` shown: as
+/// the host, none while wrapping, and at most the overhang of the widest line.
+fn settle_hscroll(st: &mut State, max_cols: usize, width: u16) -> u16 {
+    if st.display.wrap {
+        st.hscroll = 0;
+        return 0;
+    }
+    let max_h = u16::try_from(max_cols.saturating_sub(usize::from(width))).unwrap_or(u16::MAX);
+    st.hscroll = st.hscroll.min(max_h);
+    st.hscroll
+}
+
+/// The lines of a file's text as drawn: wrapped, or cut `hscroll` cells from the left. `framed`
+/// is the host's frame around it (the path, the language, where the window is in the file); the
+/// lines are then drawn inside its border, and `None` draws them bare.
+fn text_frame(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, konoma_widgets::scroll::ScrollExtent)>,
+) -> Frame {
+    // The tabs become the host's mark and tab stops (the one function it uses, with the same
+    // `[ui] tab_width`), before the width of the widest line is measured.
+    let lines = konoma_widgets::text::expand_tabs(
+        lines.into_iter().map(ratatui_draw::into_line).collect(),
+        st.display.tab_width,
+    );
+    let max_cols = lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let width = if framed.is_some() {
+        st.width.saturating_sub(2)
+    } else {
+        st.width
+    };
+    let hscroll = settle_hscroll(st, max_cols, width);
+    Frame::Text(super::draw::TextFrame {
+        lines,
+        wrap: st.display.wrap,
+        hscroll,
+        border: framed.map(|(name, lang, extent)| super::draw::TextBorder {
+            name: name.to_string(),
+            lang,
+            extent,
+        }),
+    })
 }
 
 /// Keep the last page full: the scroll is at most `total - rows`.

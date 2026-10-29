@@ -196,7 +196,7 @@ impl App {
     /// Raster target (max edge px) for a math equation. Generous so the once-rendered raster stays
     /// crisp when the encode worker fits it into the (usually small) reserved cell area.
     pub(super) fn math_px(&self) -> u32 {
-        1024
+        konoma_plugin::document_pictures::MATH_PX
     }
 
     /// Validated mermaid `rows` (`[plugins.mermaid] rows`, or the old `[ui] mermaid_rows`): max
@@ -225,10 +225,7 @@ impl App {
     /// tests without a render pass) keeps the cap.
     pub(super) fn mermaid_fit_rows(&self) -> u16 {
         let cap = self.mermaid_rows_cap();
-        if self.tab.preview_viewport == 0 {
-            return cap;
-        }
-        cap.min(self.tab.preview_viewport.saturating_sub(2)).max(4)
+        konoma_plugin::document_pictures::mermaid_fit_rows(cap, self.tab.preview_viewport)
     }
 
     /// The Nth ```mermaid fence body of the Markdown file at `md`, re-extracted fresh so an external
@@ -496,17 +493,7 @@ impl App {
 
     /// Decide whether it is a GIF by the leading bytes (looks at the magic, not the extension).
     pub(super) fn looks_like_gif(path: &Path) -> bool {
-        use std::io::Read;
-        // The previewed file itself, which may be a FIFO or a device the user selected in the
-        // tree: only a regular file is opened (and never blocking), on the UI thread too.
-        let Ok(mut f) = super::canvas_images::open_regular_picture(path) else {
-            return false;
-        };
-        let mut head = [0u8; 6];
-        if f.read_exact(&mut head).is_err() {
-            return false;
-        }
-        &head[..4] == b"GIF8" // GIF87a / GIF89a
+        konoma_plugin::document_pictures::looks_like_gif(path)
     }
 
     /// Drive the GIF animation. If the current frame's display time has elapsed, advance to the next frame index.

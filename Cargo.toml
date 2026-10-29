@@ -187,11 +187,6 @@ mermaid-text.workspace = true
 # 全角を正しく測れるので CJK でも崩れない。
 unicode-width.workspace = true
 
-# Markdown プレビューの `:shortcode:` 絵文字(GitHub の gemoji 相当)を Unicode 絵文字に変換する。
-# 純 Rust・gemoji 準拠のルックアップ表を同梱(外部依存なし=配布容易性 PRD §5 を維持)。
-# Unicode を持たない GitHub 独自ショートコードはそのまま素通しする(原則#3)。
-emojis.workspace = true
-
 # 設定
 serde.workspace = true
 toml.workspace = true
@@ -267,6 +262,8 @@ libc.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
+# The emoji shortcode tests read the lookup table the renderer uses (konoma-widgets owns the dependency).
+emojis.workspace = true
 # Test-only: builds a password-protected container in the Office tests (`e2e_tests`).
 cfb.workspace = true
 # Test-only: writes the zip fixtures of the archive tests (the listing itself is in `konoma-table`).

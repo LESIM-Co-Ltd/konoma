@@ -87,6 +87,10 @@ pub mod app;
 pub mod canvas_pictures;
 #[cfg(feature = "config")]
 pub mod config;
+#[cfg(feature = "pictures")]
+pub mod document_pictures;
+#[cfg(feature = "pictures")]
+pub mod document_render;
 pub mod hints;
 pub mod input;
 pub mod key;
@@ -100,6 +104,7 @@ pub mod proc;
 #[cfg(feature = "ratatui")]
 pub mod ratatui_draw;
 pub mod registry;
+pub mod reopen;
 pub mod scope;
 pub mod session;
 pub mod settings;

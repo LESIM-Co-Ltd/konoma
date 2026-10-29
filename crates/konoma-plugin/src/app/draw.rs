@@ -18,10 +18,35 @@ use crate::style::Line;
 use crate::table_ui::{cell_view, GridSource};
 use crate::view::{CanvasView, Grid};
 
+/// The text of a file: lines that wrap, or scroll sideways.
+pub struct TextFrame {
+    /// The lines as drawn: tabs already expanded (the host's mark and tab stops).
+    pub lines: Vec<RLine<'static>>,
+    /// Wrap at the edge of the body (`[ui] wrap`). Off, the lines are cut at it.
+    pub wrap: bool,
+    /// Cells scrolled off the left edge (0 while wrapping).
+    pub hscroll: u16,
+    /// The bordered frame of the host's windowed text (the path, the position label and the
+    /// scrollbar). `None`: the lines are drawn bare (the file shown as text after a page failed).
+    pub border: Option<TextBorder>,
+}
+
+/// What the frame of a text carries.
+pub struct TextBorder {
+    /// The path as the host titles it (or the file name).
+    pub name: String,
+    pub lang: Lang,
+    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in).
+    pub extent: konoma_widgets::scroll::ScrollExtent,
+}
+
 /// What is drawn in the body.
 pub enum Frame {
     /// Lines from the top of the body.
     Lines(Vec<Line>),
+    /// The lines of a file's text: wrapped at the edge (`ui.wrap`), or cut `hscroll` cells from
+    /// the left.
+    Text(TextFrame),
     /// Cells copied one to one.
     Canvas(CanvasView),
     /// A table with its cursor (and the full-cell popup while it is open).
@@ -34,6 +59,8 @@ pub enum Frame {
     /// The same frame for a picture that could not be asked for (the session's `view` failed):
     /// the reason is drawn inside it ([`crate::app::failure_line`]).
     ImageFailed(FailedImage),
+    /// A Markdown document in a bordered frame.
+    Document(super::document::DocFrame),
 }
 
 /// The picture of a `View::Image` on screen.
@@ -189,7 +216,28 @@ impl TableFrame {
     }
 }
 
-/// The footer: the keys first (a narrow terminal cuts the end), where the text is (only for a
+/// The footer row: the key hints as the host fits them (no leading space, an ellipsis when some
+/// are cut), then what the app alone says. `state` (the zoom, the page, where a bare text is)
+/// has its room kept, so a narrow terminal cuts hints and not it; `title` follows only when it
+/// fits whole after them.
+pub fn footer_row(hints: &[String], state: &str, title: &str, width: u16) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let state = state.trim_end();
+    let keep = u16::try_from(state.width()).unwrap_or(u16::MAX);
+    let mut row = konoma_widgets::help_panel::fit_tokens(hints, width.saturating_sub(keep));
+    row.push_str(state);
+    let title = title.trim_end();
+    if !title.is_empty()
+        && !row.ends_with('…')
+        && row.width() + title.width() + 2 <= usize::from(width)
+    {
+        row.push_str("  ");
+        row.push_str(title);
+    }
+    row
+}
+
+/// The footer of a text or a document: the keys (the host's fit), where the text is (only for a
 /// frame that scrolls: `scrolls`), the title.
 pub fn footer(
     hints: &[String],
@@ -197,12 +245,18 @@ pub fn footer(
     frame: &Frame,
     scroll: usize,
     scrolls: bool,
+    width: u16,
 ) -> String {
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
+        // A framed text says where it is on its frame (the scroll label), as the host does.
+        Frame::Text(t) if scrolls && t.border.is_none() && !t.lines.is_empty() => {
+            format!("  line {}", scroll + 1)
+        }
+        // A document says where it is on its frame (the scroll label), as the host does.
         _ => String::new(),
     };
-    format!(" {}{pos}  {title}", hints.join("  "))
+    footer_row(hints, &pos, title, width)
 }
 
 /// The part of `area` the body is drawn in: all of it but the footer row.
@@ -210,8 +264,18 @@ pub fn body_of(area: Rect) -> Rect {
     Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1))
 }
 
-pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
+/// `bg` is `[ui.theme] bg`: painted under everything first, as the host does (a span without a
+/// background keeps it; `None` leaves the terminal's own).
+pub fn draw(
+    f: &mut ratatui::Frame,
+    frame: &mut Frame,
+    footer: &str,
+    bg: Option<ratatui::style::Color>,
+) {
     let area = f.area();
+    if let Some(bg) = bg {
+        f.buffer_mut().set_style(area, RStyle::default().bg(bg));
+    }
     if area.height == 0 {
         return;
     }
@@ -221,7 +285,29 @@ pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
             let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();
             Paragraph::new(text).render(body, f.buffer_mut());
         }
+        Frame::Text(t) => {
+            let text: Vec<RLine> = t.lines.clone();
+            let mut para = Paragraph::new(text);
+            if let Some(b) = &t.border {
+                para = para.block(
+                    Block::bordered()
+                        .title(super::document::path_title(&b.name))
+                        .title(konoma_widgets::scroll::scroll_title(
+                            b.extent,
+                            super::document::scroll_words(b.lang),
+                        )),
+                );
+            }
+            if t.wrap {
+                para = para.wrap(ratatui::widgets::Wrap { trim: false });
+            }
+            para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
+            if let Some(b) = &t.border {
+                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, b.extent);
+            }
+        }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
+        Frame::Document(d) => d.draw(f.buffer_mut(), body),
         Frame::Image(i) => Block::bordered()
             .title(i.title())
             .render(body, f.buffer_mut()),

@@ -4,6 +4,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use konoma_widgets::scroll::ScrollExtent;
+use konoma_widgets::window::FileWindow;
+
 /// The longest line kept, in bytes. A longer line is cut (a minified file is one huge line).
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 
@@ -46,14 +49,13 @@ pub fn count_lines(path: &Path) -> std::io::Result<usize> {
     Ok(n)
 }
 
-/// A line as it is drawn: lossy UTF-8, a tab as four spaces, other control characters dropped.
+/// A line as it is drawn: lossy UTF-8, other control characters dropped. A tab is kept: the frame
+/// expands it with the host's function (the mark and the tab stops of `[ui] tab_width`).
 pub fn clean_line(bytes: &[u8]) -> String {
     let s = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c == '\t' {
-            out.push_str("    ");
-        } else if !c.is_control() {
+        if c == '\t' || !c.is_control() {
             out.push(c);
         }
     }
@@ -76,10 +78,87 @@ pub fn read_window(path: &Path, start: usize, n: usize) -> std::io::Result<Vec<S
     Ok(out)
 }
 
+/// Where the window `[scroll, scroll + rows)` is in a text of lines `lens` bytes long (the
+/// terminator counted), in the unit the host's reader scrolls in: bytes. The last page starts at
+/// the line `rows` from the end, as `FileWindow::last_page_top` finds it.
+pub fn extent_of_lines(lens: &[u64], scroll: usize, rows: usize) -> ScrollExtent {
+    let start_of = |n: usize| lens.iter().take(n).sum::<u64>();
+    let len: u64 = lens.iter().sum();
+    let max = start_of(lens.len().saturating_sub(rows.max(1)));
+    ScrollExtent::new(start_of(scroll), max, len.saturating_sub(max))
+}
+
+/// A file measured by the reader the host uses, with the byte where the last asked line starts
+/// (a scroll by a line or a page walks on from there).
+pub struct ByteWindow {
+    path: std::path::PathBuf,
+    reader: FileWindow,
+    /// A line, and the byte it starts at.
+    anchor: (usize, u64),
+}
+
+/// Where the window `[scroll, scroll + rows)` is in the file at `path`, as bytes (the extent the
+/// host's reader reports); `slot` keeps the reader between frames. A file that cannot be read has
+/// the extent of an empty one.
+pub fn file_extent(
+    slot: &mut Option<ByteWindow>,
+    path: &Path,
+    scroll: usize,
+    rows: usize,
+) -> ScrollExtent {
+    let len_now = std::fs::metadata(path).map(|m| m.len()).ok();
+    let fresh = slot
+        .as_ref()
+        .is_some_and(|w| w.path == path && Some(w.reader.len()) == len_now);
+    if !fresh {
+        *slot = FileWindow::open(path).ok().map(|reader| ByteWindow {
+            path: path.to_path_buf(),
+            reader,
+            anchor: (0, 0),
+        });
+    }
+    let Some(w) = slot.as_mut() else {
+        return ScrollExtent::default();
+    };
+    let (from_line, from_byte) = if w.anchor.0 <= scroll {
+        w.anchor
+    } else {
+        (0, 0)
+    };
+    let top = w
+        .reader
+        .advance(from_byte, scroll - from_line)
+        .map_or(0, |(b, _)| b);
+    w.anchor = (scroll, top);
+    let max = w.reader.last_page_top(rows.max(1)).unwrap_or(0);
+    ScrollExtent::new(top, max, w.reader.len().saturating_sub(max))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use konoma_test_support::unique_tmp;
+
+    #[test]
+    fn the_line_extent_and_the_file_extent_agree_with_the_hosts_reader() {
+        let body = "a\nbbb\n\ncc\nd\neeeee\nf\n";
+        let lens: Vec<u64> = body.split_inclusive('\n').map(|l| l.len() as u64).collect();
+        let (_d, p) = file("extent", body.as_bytes());
+        let mut slot = None;
+        for rows in 1..=9 {
+            let mut w = FileWindow::open(&p).unwrap();
+            let max = w.last_page_top(rows).unwrap();
+            for scroll in 0..lens.len() {
+                let by_lines = extent_of_lines(&lens, scroll, rows);
+                let by_file = file_extent(&mut slot, &p, scroll, rows);
+                assert_eq!(by_lines.max, max, "rows {rows}");
+                assert_eq!(by_lines.viewport, w.len() - max, "rows {rows}");
+                assert_eq!(by_lines.pos, by_file.pos, "rows {rows} scroll {scroll}");
+                assert_eq!(by_lines.max, by_file.max);
+                assert_eq!(by_lines.viewport, by_file.viewport);
+            }
+        }
+    }
 
     fn file(tag: &str, bytes: &[u8]) -> (konoma_test_support::TmpDir, std::path::PathBuf) {
         let d = unique_tmp(tag);
@@ -131,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_line_is_drawn_clean() {
-        assert_eq!(clean_line(b"a\tb"), "a    b");
+        assert_eq!(clean_line(b"a\tb"), "a\tb");
         assert_eq!(clean_line(b"a\x1b[31mb\x07"), "a[31mb");
         assert_eq!(clean_line(&[b'a', 0xff, b'b']), "a\u{fffd}b");
         assert_eq!(clean_line("日本".as_bytes()), "日本");

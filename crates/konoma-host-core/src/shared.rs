@@ -155,17 +155,35 @@ pub fn visible_math_color(value: &str) -> &str {
     }
 }
 
-/// `[ui.theme]` as a small host reads it.
-#[derive(Debug, Clone, Deserialize)]
+/// `[ui.theme]`: the colors a host paints with. The strings are as written; the widgets crate
+/// (`konoma_widgets::colors`) resolves them to colors, for konoma and the small host alike.
+/// konoma's `ThemeConfig` has the same fields and defaults (pinned by a test there).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SharedTheme {
+    /// Background of the whole app; `"none"` keeps the terminal's.
+    pub bg: String,
+    /// Markdown code background (inline code and blocks); `"none"` removes the band.
+    pub code_bg: String,
+    /// Alignment of a code block's language label: `"right"` or `"left"`.
+    pub code_label_align: String,
+    /// Background of the language label: `"auto"` (a lighter `code_bg`), `"none"` or a color.
+    pub code_label_bg: String,
     /// Theme of the code highlight (shared by the code plugin and Markdown code blocks).
     pub code_theme: String,
 }
 
+/// The default `[ui.theme] code_bg` (`konoma_widgets::colors::DEFAULT_CODE_BG`, pinned equal by
+/// `theme_defaults_are_the_shared_ones` in konoma's config tests).
+pub const DEFAULT_CODE_BG_TEXT: &str = "#2b303b";
+
 impl Default for SharedTheme {
     fn default() -> Self {
         Self {
+            bg: "none".into(),
+            code_bg: DEFAULT_CODE_BG_TEXT.into(),
+            code_label_align: "right".into(),
+            code_label_bg: "auto".into(),
             code_theme: DEFAULT_CODE_THEME.into(),
         }
     }
@@ -182,6 +200,12 @@ pub struct SharedUi {
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
+    /// Wrapping in text previews and documents (konoma's `ui.wrap`): `false` scrolls sideways.
+    pub wrap: bool,
+    /// Icon glyphs in a document (konoma's `ui.icons`).
+    pub icons: bool,
+    /// The tab stop of code blocks in a document (konoma's `ui.tab_width`).
+    pub tab_width: usize,
     pub theme: SharedTheme,
     /// The old plugin settings that lived in `[ui]` (`md_*`, `mermaid_*`, ...), typed. Use
     /// [`SharedUi::moved`], which also carries `svg_max_px` and `code_theme`.
@@ -207,6 +231,9 @@ impl Default for SharedUi {
             lang: "auto".into(),
             keys: "vim".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
+            wrap: true,
+            icons: true,
+            tab_width: 4,
             theme: SharedTheme::default(),
             moved_keys: MovedUi::default(),
         }
@@ -221,6 +248,9 @@ pub struct SharedExternal {
     pub open_links: bool,
     /// `e` on an Office document opens it in a GUI app instead of handing the zip to the editor.
     pub office_apps: bool,
+    /// Fetching `http(s)://` images a document names (`curl`): the only network call. Off marks
+    /// every remote image failed without asking.
+    pub remote_images: bool,
 }
 
 impl Default for SharedExternal {
@@ -228,6 +258,7 @@ impl Default for SharedExternal {
         Self {
             open_links: true,
             office_apps: true,
+            remote_images: true,
         }
     }
 }
@@ -295,6 +326,52 @@ mod tests {
         assert!(c.editor.command.is_empty() && c.editor.ext.is_empty());
         assert!(c.keys.surfaces.is_empty());
         assert_eq!(c.keys.copy_prefix, "c");
+    }
+
+    #[test]
+    fn remote_images_is_read_and_defaults_to_on() {
+        assert!(SharedConfig::parse("").unwrap().external.remote_images);
+        let off = SharedConfig::parse("[external]\nremote_images = false\n").unwrap();
+        assert!(!off.external.remote_images);
+        assert!(off.external.open_links, "the other switches stay default");
+        assert!(SharedConfig::parse("[external]\nremote_images = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_display_settings_default_and_are_read() {
+        let d = SharedConfig::parse("").unwrap().ui;
+        assert!(d.wrap && d.icons);
+        assert_eq!(d.tab_width, 4);
+        assert_eq!(d.theme, SharedTheme::default());
+        let c = SharedConfig::parse(
+            "[ui]\nwrap = false\nicons = false\ntab_width = 8\n[ui.theme]\nbg = \"#102030\"\ncode_bg = \"none\"\ncode_label_align = \"left\"\ncode_label_bg = \"none\"\ncode_theme = \"x\"\n",
+        )
+        .unwrap()
+        .ui;
+        assert!(!c.wrap && !c.icons);
+        assert_eq!(c.tab_width, 8);
+        assert_eq!(
+            (c.theme.bg.as_str(), c.theme.code_bg.as_str()),
+            ("#102030", "none")
+        );
+        assert_eq!(
+            (
+                c.theme.code_label_align.as_str(),
+                c.theme.code_label_bg.as_str()
+            ),
+            ("left", "none")
+        );
+        for bad in [
+            "[ui]\nwrap = \"no\"\n",
+            "[ui]\ntab_width = \"x\"\n",
+            "[ui]\nicons = 1\n",
+            "[ui.theme]\nbg = 5\n",
+            "[ui.theme]\ncode_bg = true\n",
+            "[ui.theme]\ncode_label_align = 1\n",
+            "[ui.theme]\ncode_label_bg = 1\n",
+        ] {
+            assert!(SharedConfig::parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

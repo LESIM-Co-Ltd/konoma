@@ -8,10 +8,10 @@
 
 use std::path::Path;
 
-use ratatui::layout::{Alignment, Margin, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui_image::Image;
 
@@ -75,86 +75,29 @@ pub fn footer_hints(app: &App) -> Vec<String> {
 // don't scroll anyway — zoom (`x1.6`) and PDF paging (`2/3`) already report position for them.
 // ---------------------------------------------------------------------------------------------
 
-/// Position label for a preview title, with vim's `%P` semantics: `All` when nothing is off-screen,
-/// `Top`/`Bot` at the two ends, and a percentage of the **scrollable range** in between (so 0 % and
-/// 100 % are actually reachable, unlike a fraction of the whole document).
-fn scroll_label(lang: crate::i18n::Lang, e: ScrollExtent) -> String {
+fn scroll_words(lang: crate::i18n::Lang) -> konoma_widgets::scroll::ScrollWords {
     use crate::i18n::Msg;
-    if e.max == 0 {
-        tr(lang, Msg::ScrollAll).to_string()
-    } else if e.pos == 0 {
-        tr(lang, Msg::ScrollTop).to_string()
-    } else if e.pos >= e.max {
-        tr(lang, Msg::ScrollBot).to_string()
-    } else {
-        format!("{}%", e.pos * 100 / e.max)
+    konoma_widgets::scroll::ScrollWords {
+        all: tr(lang, Msg::ScrollAll),
+        top: tr(lang, Msg::ScrollTop),
+        bot: tr(lang, Msg::ScrollBot),
     }
 }
 
-/// The ` [Bot] ` marker, as a **right-aligned** title for the block's top border.
-///
-/// A separate title rather than a suffix on the path title, because a path long enough to fill the
-/// border would otherwise push the marker off the end — and the position is exactly what you can't
-/// afford to lose (it's the whole point). ratatui draws right-aligned titles *after* left-aligned
-/// ones, so when the two collide it's the tail of the path that gives way, which is also the part
-/// you can recover from elsewhere (`p` cycles the path style, and `i` shows the full path).
+/// Position label for a preview title (see `konoma_widgets::scroll::scroll_label`).
+#[cfg(test)]
+fn scroll_label(lang: crate::i18n::Lang, e: ScrollExtent) -> String {
+    konoma_widgets::scroll::scroll_label(e, scroll_words(lang))
+}
+
+/// The ` [Bot] ` marker, a right-aligned title for the block's top border.
 fn scroll_title(lang: crate::i18n::Lang, e: ScrollExtent) -> Line<'static> {
-    Line::from(format!(" [{}] ", scroll_label(lang, e))).right_aligned()
+    konoma_widgets::scroll::scroll_title(e, scroll_words(lang))
 }
 
-/// Translate a `ScrollExtent` into ratatui's `ScrollbarState`.
-///
-/// `content_length` is the number of **scroll positions** (`max + 1`), not the content's total
-/// size, and `viewport_content_length` is always set explicitly. That combination is what makes
-/// `max_viewport_position` (ratatui's internal `content_length - 1 + viewport`) come out as the
-/// whole content, which in turn makes the thumb exactly `viewport / whole` of the track and puts
-/// its bottom edge on the track's last row at the last scroll position. Passing the total size as
-/// `content_length` instead — the shape the widget's own doc example uses — leaves the thumb
-/// provably short of the end (with 100 rows in a 20-row viewport it stops 4 rows above the
-/// bottom), because that denominator counts one viewport too many.
-fn scrollbar_state(e: ScrollExtent) -> ScrollbarState {
-    // Scale the triple down (preserving ratios) before it reaches usize arithmetic: the windowed
-    // reader measures in bytes, so `pos` can be gigabytes on a large file, and ratatui multiplies
-    // it by the track length internally. Dividing all three by the same factor keeps
-    // `pos == max` (thumb at the bottom) and `pos == 0` (thumb at the top) exact, since integer
-    // division is monotonic and maps equal values to equal values.
-    const CAP: u64 = 1 << 20;
-    let span = e.max.saturating_add(e.viewport).max(1);
-    let d = span.div_ceil(CAP).max(1);
-    let (pos, max, viewport) = (e.pos / d, e.max / d, e.viewport / d);
-    ScrollbarState::new((max + 1) as usize)
-        .position(pos as usize)
-        .viewport_content_length(viewport.max(1) as usize)
-}
-
-/// Draw the vertical scroll indicator **on top of the block's right border column**, so it consumes
-/// no text column at all: the thumb `█` simply replaces part of the border's `│`.
-///
-/// `area` is the block's *outer* rect (the same one passed to `Block::bordered()`), and the vertical
-/// margin of 1 keeps the thumb off the two corner glyphs. The track symbol is switched off so the
-/// block's own border shows through as the track — a combination ratatui made possible on purpose
-/// ("to make it easier to use with a block using block characters"). The `▲`/`▼` arrow heads are
-/// switched off too: their East Asian Width is Ambiguous, so a CJK fallback font can render them
-/// two cells wide — the exact trap already hit with `☐`/`☑`. `█` shares its width class with the
-/// `▎`/`▌`/`│` glyphs konoma already draws, so it adds no new risk.
+/// The scroll thumb over the block's right border column (`area` is the block's outer rect).
 fn render_scrollbar(frame: &mut Frame, area: Rect, e: ScrollExtent) {
-    // Two border rows plus at least one track row.
-    if area.height < 3 || area.width == 0 {
-        return;
-    }
-    let mut state = scrollbar_state(e);
-    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .track_symbol(None)
-        .begin_symbol(None)
-        .end_symbol(None);
-    frame.render_stateful_widget(
-        bar,
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut state,
-    );
+    konoma_widgets::scroll::render_scrollbar(frame.buffer_mut(), area, e);
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1031,18 +974,7 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         // background — behind the diagram.
         {
             let buf = frame.buffer_mut();
-            for y in target.top()..target.bottom() {
-                for x in target.left()..target.right() {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        let bg = cell.style().bg;
-                        let mut s = ratatui::style::Style::reset();
-                        if let Some(bg) = bg {
-                            s = s.bg(bg);
-                        }
-                        cell.set_style(s);
-                    }
-                }
-            }
+            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
         }
         // For a focused fence diagram, draw the selection border **outside the image** (the caption
         // line is the top edge, the bottom margin row is the bottom edge, and the sides are blank

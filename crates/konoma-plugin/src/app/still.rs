@@ -805,6 +805,17 @@ mod tests {
         }
     }
 
+    /// Take the real worker's answer off the channel and drop it. A test that then injects its own
+    /// answer for the current `gen` is the only one in flight: without this the real decode and
+    /// the injected answer race, and whichever is polled first decides the outcome.
+    fn discard_worker_answer(s: &Still) {
+        let done = s
+            .done_rx
+            .recv_timeout(TMO)
+            .expect("the worker always answers");
+        assert_eq!(done.gen, s.gen, "the answer is for the submitted picture");
+    }
+
     fn gif_file(dir: &TmpDir, name: &str, w: u32, frames: &[([u8; 3], u32)]) -> PathBuf {
         let p = dir.join(name);
         std::fs::write(&p, build_animated_gif(w, w, frames)).unwrap();
@@ -1171,6 +1182,7 @@ mod tests {
             true,
         );
         assert!(s.held);
+        discard_worker_answer(&s);
         let gen = s.gen;
         s.done_tx
             .send(Done {
@@ -1198,6 +1210,7 @@ mod tests {
         assert!(!s.held);
         assert_eq!(s.shape(), StillShape::Loading);
         assert!(s.failure().is_none(), "still loading");
+        discard_worker_answer(&s);
         let gen = s.gen;
         s.done_tx
             .send(Done {

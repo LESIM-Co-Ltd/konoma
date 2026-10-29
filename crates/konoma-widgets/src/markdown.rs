@@ -31,6 +31,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub use konoma_markdown_core::diff;
 pub use konoma_markdown_core::model;
 pub mod render;
+// The post-pass over decorated lines and the picture cell boxes, shared by both hosts.
+mod cells;
+mod post;
+pub use cells::{math_cells, md_image_cells, mermaid_cells, slide_cells};
+pub use post::{
+    autolink_bare_urls, collapse_links, find_bare_links, is_link_span, postprocess_lines,
+    replace_emoji_shortcodes, resolve_inline_math_cols, substitute_emoji,
+};
 
 // Re-exported at this module's own top level (rather than requiring a caller to name the private
 // `diff` submodule directly, which it cannot) so `crate::markdown::{BlockOp, DiffMark,

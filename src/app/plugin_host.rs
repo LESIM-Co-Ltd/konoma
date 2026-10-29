@@ -713,9 +713,10 @@ fn document_of(d: DocumentView, display: Option<DocOptions>) -> super::office_do
     )
 }
 
-/// Open the plugin that takes the content type of `r` on its text and ask it for the document.
-/// Returns its session (the plugin show keeps it: the other representation is its to give) and
-/// the container. A conversion cut short stays cut short in the container.
+/// Open the plugin that takes the content type of `r` on its text and ask it for the document
+/// (the rule both hosts share, `konoma_plugin::reopen`). Returns its session (the plugin show
+/// keeps it: the other representation is its to give) and the container. A conversion cut short
+/// stays cut short in the container.
 fn reopen_document(
     target: Option<&super::markdown_plugin::ContentTarget>,
     r: konoma_plugin::view::Reopen,
@@ -723,35 +724,16 @@ fn reopen_document(
     cancel: &Cancel,
     term: TermCaps,
 ) -> Result<(Box<dyn Session>, Box<super::office_doc::LoadedDocument>), Failure> {
-    let Some(target) = target.filter(|_| r.content_type == konoma_markdown::CONTENT_TYPE) else {
-        return Err(Failure::unsupported(t!(
-            en: "no plugin is available to show this document",
-            ja: "この文書を表示するプラグインを使えません",
-        )));
-    };
-    let truncated = r.truncated;
-    let input = Input::Content {
-        content_type: r.content_type,
-        text: r.text,
-        resources: r.resources,
-        origin: r.origin,
-    };
-    let open_cx = OpenCx::new(&target.settings, lang)
-        .with_cancel(cancel.clone())
-        .with_term(term);
-    let mut session = target.plugin.open(input, &open_cx)?;
-    let view_cx = ViewCx::new(&target.settings, lang)
-        .with_cancel(cancel.clone())
-        .with_term(term);
-    let View::Document(d) = session.view(&ViewReq::default(), &view_cx)? else {
-        return Err(Failure::unsupported(t!(
-            en: "the plugin did not return a document",
-            ja: "プラグインが文書を返しませんでした",
-        )));
-    };
-    let mut doc = document_of(d, None);
-    doc.truncated |= truncated;
-    Ok((session, Box::new(doc)))
+    let opened = konoma_plugin::reopen::reopen_document(
+        target,
+        konoma_markdown::CONTENT_TYPE,
+        r,
+        lang,
+        cancel,
+        term,
+    )?;
+    let doc = document_of(opened.document, None);
+    Ok((opened.session, Box::new(doc)))
 }
 
 impl PluginWork {

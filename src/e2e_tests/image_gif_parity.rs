@@ -12,7 +12,7 @@
 use super::image_parity::{
     app_zoom, host_shot_at, host_zoom, image_section, PngPlugin, Shot, HOST_ONLY, HOST_ONLY_ROWS,
 };
-use super::table_parity::{help_lines, hints, presses, same_row, APP_H, HOST_H, W};
+use super::table_parity::{help_lines, hints, panel_lines, presses, same_row, APP_H, HOST_H, W};
 use super::*;
 use konoma_plugin::app::{
     key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next,
@@ -32,7 +32,7 @@ const BLUE: [u8; 3] = [0, 0, 255];
 const LONG: u32 = 600_000;
 
 /// A `TestBackend` the event source can look at while the loop draws on it.
-struct Shared(Arc<Mutex<TestBackend>>);
+pub(super) struct Shared(pub(super) Arc<Mutex<TestBackend>>);
 
 impl Backend for Shared {
     type Error = std::convert::Infallible;
@@ -452,7 +452,7 @@ fn the_help_rows_of_a_gif_agree_with_the_host() {
                 })
                 .expect("the help panel");
             let hs = image_section(&help_lines(&h.rows[py + 1..], Some(px)));
-            let asec = image_section(&help_lines(&a.rows, None));
+            let asec = image_section(&panel_lines(&a.rows));
             for row in &asec {
                 if row.starts_with("q / Esc") {
                     assert!(hs.iter().any(|r| r.starts_with("q / Esc")), "{what}: {row}");
@@ -731,6 +731,9 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         plugin_id: kind.into(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: None,
+        display: Default::default(),
+        open_dir: None,
     };
     let key = presses("J")
         .into_iter()
@@ -1103,7 +1106,7 @@ fn picture_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool, paged: bool
         })
         .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
     let hl = help_lines(&h.rows[py + 1..], Some(px));
-    let al = help_lines(&a.rows, None);
+    let al = panel_lines(&a.rows);
     let has = |l: &[String], p: &str| l.iter().any(|r| r.starts_with(p));
     // No text is on screen to scroll: no motion row is named by either.
     for (side, l) in [("host", &hl), ("app", &al)] {
@@ -1294,6 +1297,9 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         plugin_id: "says-no".into(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: None,
+        display: Default::default(),
+        open_dir: None,
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1376,6 +1382,9 @@ fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in
         plugin_id: "says-ctl".into(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: None,
+        display: Default::default(),
+        open_dir: None,
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1425,13 +1434,17 @@ const TEXT_HOST_ONLY: &[&str] = &[
     "q:back",
     "e:edit",
     "o:open in app",
-    "g/G:ends",
     "h/l:hscroll",
     "0/$:line ends",
     "[/]:tab",
     ",:view",
-    "C-f/C-b/PgDn/PgUp:page",
 ];
+
+thread_local! {
+    /// The entries of `TEXT_HOST_ONLY` that a compared footer of a failed page's text had.
+    static TEXT_HOST_ONLY_SEEN: std::cell::RefCell<std::collections::BTreeSet<String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
 
 /// The rows of the text section of a help: from its heading to the blank row.
 fn text_section(lines: &[String]) -> Vec<String> {
@@ -1730,6 +1743,9 @@ fn run_watched(
         plugin_id: kind.into(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: None,
+        display: Default::default(),
+        open_dir: None,
     };
     let mut events = Watched {
         screen: Arc::clone(&screen),
@@ -1895,6 +1911,7 @@ fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, boo
                 TEXT_HOST_ONLY.contains(&t.as_str()),
                 "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
             );
+            TEXT_HOST_ONLY_SEEN.with(|s| s.borrow_mut().insert(t.clone()));
         }
         return (compared, false);
     }
@@ -1908,7 +1925,7 @@ fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, boo
         })
         .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
     let hs = text_section(&help_lines(&h.rows[py + 1..], Some(px)));
-    let asec = text_section(&help_lines(&a.rows, None));
+    let asec = text_section(&panel_lines(&a.rows));
     for row in &asec {
         if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
             continue;
@@ -1955,6 +1972,8 @@ fn the_footer_and_the_help_of_a_failed_page_shown_as_text_agree_with_the_host() 
     assert!(compared >= 100, "{compared}");
     assert_eq!(turns, 3 * 5, "the paged help names the page turn");
     assert_eq!(plain, 6);
+    let seen = TEXT_HOST_ONLY_SEEN.with(|s| s.borrow().clone());
+    super::table_parity::assert_all_seen("image_gif TEXT_HOST_ONLY", TEXT_HOST_ONLY, &seen);
 }
 
 // ---- a page the real plugin hands over and the draw fails ---------------------------------------
@@ -1984,6 +2003,9 @@ fn app_real_shot(
         plugin_id: id.into(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: None,
+        display: Default::default(),
+        open_dir: None,
     };
     let keys = presses(spec)
         .into_iter()

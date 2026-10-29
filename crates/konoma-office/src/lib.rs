@@ -118,6 +118,17 @@ pub fn presentation_manifest() -> Manifest {
     )
 }
 
+/// The plugins the `konoma-office` program carries only as destinations: Markdown (a Word document
+/// or a deck is reopened as Markdown) and the mermaid and math that Markdown embeds. They take no
+/// file of their own here and are not served or listed by `--manifest`.
+#[cfg(feature = "app")]
+pub fn bundled() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    let mut all = konoma_markdown::program();
+    all.extend(konoma_mermaid::program());
+    all.extend(konoma_math::program());
+    all
+}
+
 /// The plugins of the `konoma-office` program, in the order it carries them. The program's `main`
 /// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
 pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {

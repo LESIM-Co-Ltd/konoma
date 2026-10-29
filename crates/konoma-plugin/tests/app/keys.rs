@@ -35,8 +35,9 @@ fn code(k: KeyCode) -> AppEvent {
     AppEvent::Key(Key::new(k))
 }
 
-/// Run the app over a 40-line text on a 24x6 screen (a page is 5 rows); returns the first body
-/// row and how many events were left unread.
+/// Run the app over a 40-line text on a 24x8 screen (the text sits in a frame: the window is
+/// 5 rows, a page is 4: the host pages by one row less than the frame); returns the first row
+/// inside the frame and how many events were left unread.
 fn run(k: &AppKeys, events: Vec<AppEvent>) -> (String, usize) {
     let dir = unique_tmp("app_keys");
     std::fs::create_dir_all(dir.as_path()).unwrap();
@@ -44,7 +45,7 @@ fn run(k: &AppKeys, events: Vec<AppEvent>) -> (String, usize) {
     std::fs::write(&p, lines(40)).unwrap();
     let mut opened =
         open_file(vec![Arc::new(TestPlugin::all())], &p, "en", TermCaps::new()).expect("opens");
-    let mut term = Terminal::new(TestBackend::new(24, 6)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
@@ -54,8 +55,9 @@ fn run(k: &AppKeys, events: Vec<AppEvent>) -> (String, usize) {
     let mut it = events.into_iter();
     run_with(&mut term, &mut *opened.session, &mut it, &cx, k).expect("runs");
     let buf = term.backend().buffer();
-    let first: String = (0..buf.area.width)
-        .map(|x| buf[(x, 0)].symbol().to_string())
+    // Row 1, between the left border and the right border (where the scrollbar is).
+    let first: String = (1..buf.area.width - 1)
+        .map(|x| buf[(x, 1)].symbol().to_string())
         .collect::<String>()
         .trim_end()
         .to_string();
@@ -67,8 +69,8 @@ fn the_defaults_move_page_and_jump() {
     let k = AppKeys::defaults();
     assert_eq!(run(&k, vec![key('j')]).0, "line 01");
     assert_eq!(run(&k, vec![key('j'), key('k')]).0, "line 00");
-    assert_eq!(run(&k, vec![code(KeyCode::PageDown)]).0, "line 05");
-    assert_eq!(run(&k, vec![ctrl('f')]).0, "line 05");
+    assert_eq!(run(&k, vec![code(KeyCode::PageDown)]).0, "line 04");
+    assert_eq!(run(&k, vec![ctrl('f')]).0, "line 04");
     assert_eq!(run(&k, vec![ctrl('f'), ctrl('b')]).0, "line 00");
     assert_eq!(run(&k, vec![ctrl('d')]).0, "line 02");
     assert_eq!(run(&k, vec![ctrl('d'), ctrl('u')]).0, "line 00");
@@ -168,7 +170,7 @@ fn ctrl_c_leaves_whatever_the_config_says() {
 #[test]
 fn the_less_style_pages_with_plain_letters() {
     let k = keys("[ui]\nkeys = \"less\"\n");
-    assert_eq!(run(&k, vec![key('f')]).0, "line 05");
+    assert_eq!(run(&k, vec![key('f')]).0, "line 04");
     assert_eq!(run(&k, vec![key('f'), key('b')]).0, "line 00");
     assert_eq!(run(&k, vec![key('d')]).0, "line 02");
     assert_eq!(
@@ -265,8 +267,8 @@ fn no_config_error_prints_nothing() {
 #[test]
 fn under_less_f_pages_forward_and_space_is_only_the_menu() {
     let k = keys("[ui]\nkeys = \"less\"\n");
-    assert_eq!(run(&k, vec![key('f')]).0, "line 05");
-    assert_eq!(run(&k, vec![key('f'), key('f')]).0, "line 10");
+    assert_eq!(run(&k, vec![key('f')]).0, "line 04");
+    assert_eq!(run(&k, vec![key('f'), key('f')]).0, "line 08");
     let (first, left) = run(&k, vec![key(' ')]);
     assert_eq!(
         (first.as_str(), left),

@@ -1832,8 +1832,11 @@ dependencies = [
 name = "konoma-markdown"
 version = "0.1.0"
 dependencies = [
+ "konoma-math",
+ "konoma-mermaid",
  "konoma-plugin",
  "konoma-test-support",
+ "ratatui",
 ]
 
 [[package]]
@@ -1930,9 +1933,13 @@ name = "konoma-office"
 version = "0.1.0"
 dependencies = [
  "konoma-base",
+ "konoma-markdown",
+ "konoma-math",
+ "konoma-mermaid",
  "konoma-office-core",
  "konoma-plugin",
  "konoma-test-support",
+ "ratatui",
 ]
 
 [[package]]
@@ -1980,6 +1987,7 @@ dependencies = [
  "toml",
  "unicode-segmentation",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]
@@ -2026,6 +2034,8 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "image",
+ "ratatui",
+ "unicode-width",
  "zip",
 ]
 
@@ -2048,6 +2058,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
+ "emojis",
  "flate2",
  "image",
  "konoma-base",

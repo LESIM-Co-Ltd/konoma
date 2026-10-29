@@ -268,47 +268,19 @@ pub(crate) fn clear_test_clipboard() {
     CLIPBOARD.with(|c| *c.borrow_mut() = None);
 }
 
-thread_local! {
-    /// Test-only override for `app::cache_root()` (see that function's `#[cfg(test)]` body).
-    ///
-    /// Without this, `cargo test` computed the remote-image download cache root exactly the way
-    /// the shipped binary does — `$XDG_CACHE_HOME`/`$HOME/.cache`, no test-only branch at all — so
-    /// any test that reached `app::ensure_remote_md_fetch`'s background-download path (a Markdown
-    /// document with an unresolved `http(s)://` image, previewed with the remote loader attached)
-    /// created real directories under the developer's actual `~/.cache/konoma/remote-images/` on
-    /// every run — confirmed by inspecting that directory's mtime around such a test. Same shape of
-    /// bug as the clipboard one above, same fix: give production code a seam it reads from instead
-    /// of the environment, and make test builds not compile the environment-reading path in at the
-    /// one place that actually writes to disk.
-    ///
-    /// `cache_root()` itself keeps reading the real environment when no override is set (unlike
-    /// `CLIPBOARD`, which always redirects in test builds) — `cache_root()` and
-    /// `md_remote_cache_path()` are pure path arithmetic and never touch the filesystem on their
-    /// own, so the many tests that call them read-only (to get a stable cache key, or to check the
-    /// real-environment fallback formula itself) stay exercising the real formula. The actual
-    /// filesystem write only happens inside `ensure_remote_md_fetch`'s spawned download thread, and
-    /// that function asserts an override is set before ever spawning one — see its `#[cfg(test)]`
-    /// guard — so a future test that reaches that spawn without opting in fails loudly instead of
-    /// silently writing to the real cache.
-    ///
-    /// Thread-local, not a process-wide static, for the same reason as `CLIPBOARD`: `cargo test`'s
-    /// default runner never runs two tests concurrently on the same thread, but does reuse threads
-    /// across tests, so a test that sets this must not assume a clean slate — only the guard in
-    /// `ensure_remote_md_fetch` cares whether *some* override is set, not which test set it, so a
-    /// stale value from an earlier test on the same thread is harmless (it still points at a
-    /// sandboxed directory, never the real cache root).
-    static CACHE_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-/// Test-only override for `app::cache_root()`. Call with a sandboxed directory (e.g.
-/// `unique_tmp(...)`) before triggering any code path that downloads a remote Markdown image.
+/// Test-only override for the remote-image cache root (`app::cache_root()`). Call with a sandboxed
+/// directory (e.g. `unique_tmp(...)`) before triggering any code path that downloads a remote
+/// document image. The override itself lives with the cache-root rule in
+/// `konoma_plugin::document_pictures` (thread-local there, like the clipboard sink above); without
+/// one the root is computed from the environment, and the download path refuses to start (see
+/// `ensure_remote_md_fetch`), so a test can never write under the real cache.
 pub(crate) fn set_test_cache_root(path: PathBuf) {
-    CACHE_ROOT.with(|c| *c.borrow_mut() = Some(path));
+    konoma_plugin::document_pictures::set_test_cache_root(path);
 }
 
-/// Read side of the `cache_root()` override; `None` means no test on this thread has set one yet.
+/// The override [`set_test_cache_root`] set on this thread, if any.
 pub(crate) fn get_test_cache_root() -> Option<PathBuf> {
-    CACHE_ROOT.with(|c| c.borrow().clone())
+    konoma_plugin::document_pictures::get_test_cache_root()
 }
 
 thread_local! {

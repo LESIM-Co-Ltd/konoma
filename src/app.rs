@@ -26,14 +26,20 @@ pub use konoma_widgets::inline_images::{
     MD_ZOOM_SLOTS,
 };
 pub use konoma_widgets::inline_images::{
-    md_encode_worker, EncodeApplied, Filed, InlineImage, InlineImageCache, MdEncodeKey,
-    MdEncodeRequest, MdEncodeResult, MdImgEntry, SvgTrust,
+    md_encode_worker, EncodeApplied, InlineImage, InlineImageCache, MdEncodeKey, MdEncodeRequest,
+    MdEncodeResult, MdImgEntry, SvgTrust,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
 use crate::i18n::tr;
+#[cfg(test)]
+use crate::preview::markdown::{math_cells, mermaid_cells};
+#[cfg(test)]
+use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
+pub(crate) use konoma_host_core::paths::home_relative;
+use konoma_host_core::paths::{rel_from, rel_to_open};
 
 mod bookmark_actions;
 mod change_jump;
@@ -608,27 +614,7 @@ impl PathStyle {
 ///   - the windowed (less-style) reader counts **bytes**, because that is what *it* scrolls by — it
 ///     deliberately never learns a total line count (see `preview::window`), so rows aren't
 ///     available to it without reading the whole file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ScrollExtent {
-    /// Current offset from the start of the content.
-    pub pos: u64,
-    /// Largest reachable offset. `0` means everything already fits on one screen.
-    pub max: u64,
-    /// How much of the content one screenful covers, in the same unit.
-    pub viewport: u64,
-}
-
-impl ScrollExtent {
-    /// `pos` is clamped into `0..=max` so "at the end" is decided the same way everywhere, even
-    /// when a caller passes a position that a resize has not been reconciled with yet.
-    pub fn new(pos: u64, max: u64, viewport: u64) -> Self {
-        Self {
-            pos: pos.min(max),
-            max,
-            viewport,
-        }
-    }
-}
+pub use konoma_widgets::scroll::ScrollExtent;
 
 /// A single entry shown in the tree.
 #[derive(Debug, Clone)]
@@ -2351,14 +2337,6 @@ enum FenceSharpen {
 
 /// Result of a background inline-image decode, delivered to the run loop.
 pub type MdImageResult = konoma_widgets::inline_images::DecodedImage;
-
-/// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
-/// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
-/// the decoration cache to re-lay the image out; on failure the URL is remembered so it is not retried.
-pub struct RemoteFetch {
-    url: String,
-    ok: bool,
-}
 
 /// Result of `build_decorated`: the rendered lines plus everything needed to finish setting up the
 /// Markdown cache (inline images, follow-up fetches/renders to kick off, source line count).
@@ -5723,95 +5701,59 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
         .collect()
 }
 
-/// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
-const MD_IMAGE_MAX_ROWS: u16 = 24;
-/// Rows around a slide picture that are not the picture: its heading line and the blank line
-/// between the heading and the picture.
-const SLIDE_CHROME_ROWS: u16 = 2;
-
-/// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
-/// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
-/// remote (`http(s)://`) URLs — those name konoma's own download cache rather than a path in the
-/// tree, which is the caller's business (`resolve_md_image_path`), not this function's. Relative
-/// paths are resolved against the Markdown file's directory.
-///
-/// Split out of `resolve_md_image_path` for the one caller that must recognize a picture which has
-/// just been **deleted**: `App::md_image_source_paths` has to match a filesystem event against the
-/// images the open document draws from, and a deleted file no longer resolves — yet its reserved
-/// box is still on screen, waiting to collapse back to the `🖼 alt` label.
-fn md_image_local_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    let u = url.trim();
-    if u.is_empty() || crate::preview::markdown::is_remote_image_url(u) {
-        return None;
-    }
-    if u.to_ascii_lowercase().starts_with("data:") {
-        return None;
-    }
-    let u = u.strip_prefix("file://").unwrap_or(u);
-    let p = PathBuf::from(u);
-    Some(match base {
-        Some(b) if !p.is_absolute() => b.join(p),
-        _ => p,
-    })
-}
-
+use konoma_plugin::document_pictures::SLIDE_CHROME_ROWS;
 #[cfg(test)]
-thread_local! {
-    /// How many times this thread resolved a document picture to a file (each is a stat): lets a
-    /// test hold konoma's own Markdown preview to one resolve per picture per frame.
-    static MD_IMAGE_RESOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+use konoma_plugin::document_pictures::{decode_with_cap, decode_with_smaller_retries};
 
-/// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
-/// download-cache path, but only once it has been fetched (so callers treat a cached remote image
-/// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
-/// Markdown file's directory. Returns the path only if the file exists.
-fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    #[cfg(test)]
-    MD_IMAGE_RESOLVES.with(|c| c.set(c.get() + 1));
-    let u = url.trim();
-    if u.is_empty() {
-        return None;
-    }
-    if crate::preview::markdown::is_remote_image_url(u) {
-        let p = md_remote_cache_path(u)?;
-        return p.is_file().then_some(p);
-    }
-    let p = md_image_local_path(u, base)?;
-    p.is_file().then_some(p)
-}
+// The document-picture rules every host shares (where an image URL points, the remote download and
+// its cache, the file decoders) live in `konoma_plugin::document_pictures`; konoma re-exports them
+// here under the names its modules and tests have always used.
+pub use konoma_plugin::document_pictures::RemoteFetch;
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_MAX_ROWS;
+#[cfg(test)]
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_RESOLVES;
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root, fetch_remote_image, md_image_local_path, md_remote_cache_path,
+    resolve_md_image_path,
+};
+#[cfg(test)]
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root_from, fetch_remote_bytes_capped, fetch_remote_image_capped, md_image_dims,
+    prune_remote_cache, MD_IMAGE_MAX_SIDE, MD_REMOTE_MAX_BYTES,
+};
 
-/// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
-/// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
-fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
-    md_image_dims_why(path).ok()
-}
-
-/// [`md_image_dims`] that says why an SVG has no size, when there is something to tell: `Err(Some)`
-/// is a refusal (too large, nested too deeply, ...), `Err(None)` is "not an image we can size".
-/// An SVG's size is read from its root element alone (`svg::intrinsic_size`), so this is cheap
-/// whatever the file holds.
-fn md_image_dims_why(
+/// [`konoma_plugin::document_pictures::md_decode_image_within`] with konoma's own SVG drawing
+/// (the supervised child process).
+#[cfg(test)]
+fn md_decode_image_within(
     path: &Path,
-) -> Result<(u32, u32), Option<crate::preview::svg_guard::SvgFail>> {
-    if let Some(d) = crate::preview::image::dimensions(path) {
-        return Ok(d);
-    }
-    crate::preview::svg::intrinsic_size(path).map_err(refusal_worth_telling)
+    svg_max_px: u32,
+    roots: Option<&[PathBuf]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_image_within(
+        path,
+        svg_max_px,
+        roots,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
 
-/// A failure the user should be told about (everything except "this is not a valid SVG", which for
-/// a file that failed as an image too is just a picture that cannot be shown).
-fn refusal_worth_telling(
-    why: crate::preview::svg_guard::SvgFail,
-) -> Option<crate::preview::svg_guard::SvgFail> {
-    use crate::preview::svg_guard::SvgFail;
-    (why != SvgFail::Invalid).then_some(why)
+/// [`konoma_plugin::document_pictures::md_decode_bytes_why`] with konoma's own SVG drawing.
+#[cfg(test)]
+fn md_decode_bytes_why(
+    bytes: &[u8],
+    svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_bytes_why(
+        bytes,
+        svg_max_px,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
-
-/// Longest side, in pixels, that an inline Markdown image is kept at after decoding (the value
-/// every host shares: [`konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE`]).
-const MD_IMAGE_MAX_SIDE: u32 = konoma_widgets::inline_images::INLINE_IMAGE_MAX_SIDE;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
@@ -5833,277 +5775,6 @@ fn md_decode_image_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     md_decode_image_within(path, svg_max_px, None, cancelled)
-}
-
-/// [`md_decode_image_why`] for a picture of a document a plugin the user added returned: an SVG
-/// reads only files inside `roots` (the plugin's read scope; `None` is no limit).
-fn md_decode_image_within(
-    path: &Path,
-    svg_max_px: u32,
-    roots: Option<&[PathBuf]>,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
-        Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize_within(path, roots, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
-}
-
-/// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
-/// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
-/// raster size), again at a smaller size, never below `floor_px`. Cost and memory refusals are
-/// the same on every run and fail fast, so they halve the side each time. A time-out is the
-/// expensive kind (it holds the decode gate for the whole time limit) and says as much about the
-/// machine's load as about the slide: the first one is retried once at half the side (a quarter
-/// of the work), and a second goes straight to the floor, so a loaded machine is held for at most
-/// three time limits, not one per halving. Any other failure is final, and so is a request the
-/// user moved on from. A crash is not retried smaller: it is a stack overflow (the same at any
-/// size) or an allocation failure under memory pressure (an immediate retry meets the same
-/// pressure); [`cap_lesson`] makes its cap expire so the slide is tried again later.
-///
-/// Returns the last result, the size it was made at, and the refusals on the way as
-/// `(size, failure)` (the last failure included), which [`record_slide_attempts`] turns into what
-/// the slide remembers.
-fn decode_with_smaller_retries(
-    start_px: u32,
-    floor_px: u32,
-    shrink: bool,
-    cancelled: &dyn Fn() -> bool,
-    mut attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> (
-    Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    u32,
-    Vec<(u32, crate::preview::image::ImageFailure)>,
-) {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    let floor = floor_px.min(start_px);
-    let mut px = start_px;
-    let mut timeouts = 0u32;
-    let mut trail = Vec::new();
-    loop {
-        let res = attempt(px);
-        if let Err(f) = &res {
-            trail.push((px, *f));
-        }
-        let refused = match &res {
-            Err(ImageFailure::Svg(
-                f @ (SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory),
-            )) => Some(*f),
-            _ => None,
-        };
-        let Some(why) = refused.filter(|_| shrink && px > floor && !cancelled()) else {
-            return (res, px, trail);
-        };
-        px = if why == SvgFail::Timeout {
-            timeouts += 1;
-            if timeouts == 1 {
-                (px / 2).max(floor)
-            } else {
-                floor
-            }
-        } else {
-            (px / 2).max(floor)
-        };
-    }
-}
-
-/// Decodes a picture with `attempt`, and when it is a slide (`cap` is Some) draws it again
-/// smaller if the drawing process refuses it, then teaches `cap` what happened (see
-/// [`decode_with_smaller_retries`] and [`record_slide_attempts`]). Anything that is not a slide
-/// is attempted once at `start_px`. `clock` is read when a refusal is recorded (not before the
-/// drawing starts), so an expiring cap counts its lifetime from the refusal.
-fn decode_with_cap(
-    cap: Option<&crate::app::office_doc::SlideRasterCap>,
-    start_px: u32,
-    floor_px: u32,
-    moved_on: &dyn Fn() -> bool,
-    clock: &dyn Fn() -> std::time::Instant,
-    attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    let (res, used, trail) =
-        decode_with_smaller_retries(start_px, floor_px, cap.is_some(), moved_on, attempt);
-    if let Some(cap) = cap {
-        record_slide_attempts(cap, &trail, &res, used, floor_px, moved_on(), clock);
-    }
-    res
-}
-
-/// What one refused attempt of a slide's draw says about the slide's raster size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CapLesson {
-    /// The same at this size on every run: the cap is kept for good.
-    Permanent,
-    /// Says as much about the machine's load as about the slide: the cap expires.
-    Expiring,
-    /// Does not depend on the raster size (drawing smaller would not help). It says nothing
-    /// about what size the slide can be drawn at, so it is not retried smaller and teaches no
-    /// size, but when the draw never worked the same request must not be made again at once (a
-    /// failed sharpening redraw is asked for again by every frame otherwise): the cap is held at
-    /// the floor for a while, like a time-out.
-    SizeIndependent,
-    /// Nobody wants the result (cancelled): nothing is learned.
-    Nothing,
-}
-
-/// Classifies a failure of a slide's draw. An exhaustive match on purpose (no catch-all): a new
-/// failure kind has to be given a decision here.
-fn cap_lesson(failure: crate::preview::image::ImageFailure) -> CapLesson {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    match failure {
-        // Costs that grow with the raster size and are the same on every run.
-        ImageFailure::Svg(SvgFail::TooHeavy | SvgFail::Memory) => CapLesson::Permanent,
-        // Timeout: the clock, i.e. the load. Crashed: the drawing process died by itself, which is
-        // an allocation failure (transient under memory pressure) or a stack overflow (not size
-        // dependent, but then the next try after the lifetime costs one more crash, no more).
-        ImageFailure::Svg(SvgFail::Timeout | SvgFail::Crashed) => CapLesson::Expiring,
-        // Decided by the picture itself, whatever size it is drawn at.
-        ImageFailure::Svg(
-            SvgFail::TooDeep | SvgFail::TooLarge | SvgFail::TooComplex | SvgFail::Invalid,
-        )
-        | ImageFailure::TooLarge
-        | ImageFailure::Corrupt
-        | ImageFailure::UnsupportedFormat
-        | ImageFailure::OutsideReadDirs => CapLesson::SizeIndependent,
-        ImageFailure::Cancelled => CapLesson::Nothing,
-    }
-}
-
-/// Teaches `cap` what the attempts of one slide draw showed. Each refused size lowers the cap to
-/// the size tried next (the one that worked, or the one after it also failed); the last failure
-/// of a draw that never worked caps it at `floor_px` (the raster already shown, or the base
-/// size), so a sharpening redraw does not ask for more again and again. What each failure means
-/// is decided by [`cap_lesson`]; an expiring cap starts its lifetime when it is recorded
-/// (`clock`); so does a failure that does not depend on the size (see [`CapLesson::SizeIndependent`]). A cancelled attempt says nothing about the slide, and neither does the last
-/// attempt of a request the user moved on from (the refusals confirmed before it still count).
-fn record_slide_attempts(
-    cap: &crate::app::office_doc::SlideRasterCap,
-    trail: &[(u32, crate::preview::image::ImageFailure)],
-    result: &Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    used: u32,
-    floor_px: u32,
-    moved_on: bool,
-    clock: &dyn Fn() -> std::time::Instant,
-) {
-    let floor = floor_px.min(trail.first().map_or(used, |t| t.0));
-    // The user moved on during the last attempt: it is not a confirmed refusal.
-    let confirmed = trail.len().saturating_sub(usize::from(moved_on));
-    for (i, (_, failure)) in trail.iter().enumerate().take(confirmed) {
-        let next = match trail.get(i + 1) {
-            Some((px, _)) => *px,
-            None if result.is_ok() => used,
-            None => floor,
-        };
-        match cap_lesson(*failure) {
-            CapLesson::Permanent => cap.lower_permanent(next),
-            CapLesson::Expiring => cap.lower_timed_out(next, clock()),
-            // Only the final failure of a draw that never worked (`next` is then the floor, the
-            // raster already shown): the sizes before it were refusals, not this.
-            CapLesson::SizeIndependent => cap.lower_timed_out(next, clock()),
-            CapLesson::Nothing => {}
-        }
-    }
-}
-
-/// [`md_decode_image_why`] for a picture held in memory (inside a Word / OpenDocument file):
-/// the same limits and reasons. An embedded SVG is not a file, so it is drawn by the supervised
-/// child process with no directory to read from (`<image href>` inside it paints nothing). Blocks
-/// for as long as that takes: call it from a worker.
-fn md_decode_bytes_why(
-    bytes: &[u8],
-    svg_max_px: u32,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_bytes_capped_why(bytes, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        Err(e) if !crate::preview::svg::can_begin_svg(bytes) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize_embedded(bytes, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
-}
-/// Pure core of `cache_root`. Falls back to the system temp directory (`std::env::temp_dir()` —
-/// always an absolute path, `$TMPDIR` or `/tmp` on Unix) when neither `$XDG_CACHE_HOME` nor `$HOME`
-/// is available, instead of the old `None`.
-///
-/// This is a *cache*, not persistent user data (unlike `bookmarks::default_base`/
-/// `config::dirs_config_path`), so losing it across a reboot is harmless — the next Markdown preview
-/// just re-downloads the image. Returning `None` here used to leave
-/// `app/md_media.rs::ensure_remote_md_fetch`'s `let (Some(tx), Some(dest)) = (.., md_remote_cache_path(url))
-/// else { return false; }` permanently un-taken: the background fetch thread never spawns, no
-/// `RemoteFetch` message ever arrives, and the URL is never recorded in `md_remote_failed` either —
-/// so a Markdown image behind an unresolvable cache root would sit at "loading" forever, never
-/// reaching principle #3's safe-degrade text placeholder. Falling through to a location that is
-/// always available restores that: the fetch is actually attempted and its real success/failure is
-/// reported through the existing `RemoteFetch`/`apply_remote_fetch` machinery.
-fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
-    xdg_or_home.unwrap_or_else(std::env::temp_dir)
-}
-
-/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
-/// when neither is available — see `cache_root_from`'s doc for why).
-#[cfg(not(test))]
-pub(crate) fn cache_root() -> PathBuf {
-    cache_root_from(crate::bookmarks::xdg_base_dir(
-        std::env::var_os("XDG_CACHE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        ".cache",
-    ))
-}
-
-/// Test-build twin of the function above. Prefers `test_support::get_test_cache_root()` when a test
-/// has set one, otherwise falls back to the exact same environment-reading formula production uses.
-///
-/// This is deliberately *not* a hard redirect (unlike `set_clipboard`'s test body, which always
-/// routes to the sink): `cache_root()` and `md_remote_cache_path` are pure path arithmetic and never
-/// touch the filesystem by themselves, so the many tests that call them read-only (a stable cache
-/// key, or `cache_root_tests` below exercising the real-environment fallback formula on purpose)
-/// should keep seeing the real formula. The actual disk write lives in
-/// `ensure_remote_md_fetch`'s spawned download thread, and that function refuses to spawn one
-/// without an override in place — see its `#[cfg(test)]` guard — so this soft fallback can't let a
-/// test silently write under the developer's real `~/.cache/konoma/remote-images`.
-#[cfg(test)]
-pub(crate) fn cache_root() -> PathBuf {
-    crate::test_support::get_test_cache_root().unwrap_or_else(|| {
-        cache_root_from(crate::bookmarks::xdg_base_dir(
-            std::env::var_os("XDG_CACHE_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-            ".cache",
-        ))
-    })
-}
-
-/// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is
-/// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
-/// Kept `Option`-returning (always `Some` now that `cache_root` is total) because
-/// `app/md_media.rs::ensure_remote_md_fetch` pattern-matches `Some(dest)`.
-pub(crate) fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let root = cache_root();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.trim().hash(&mut hasher);
-    Some(
-        root.join("konoma")
-            .join("remote-images")
-            .join(format!("{:016x}", hasher.finish())),
-    )
 }
 
 /// Distinct from the `mod tests;` at the bottom of this file (`src/app/tests.rs`, off-limits to a
@@ -6167,240 +5838,6 @@ mod cache_root_tests {
             "cache_root が常に Some を返すので md_remote_cache_path も常に Some のはず"
         );
     }
-}
-
-/// Maximum bytes to download for one remote image (guards against huge / hostile responses).
-const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
-
-/// Download a remote image with `ureq` into `dest` (atomically, via a temp file), validating that the
-/// bytes decode as an image before committing. Returns whether a valid image now exists at `dest`.
-/// Runs on a background thread. `ureq` is pure Rust (rustls + webpki-roots, no OpenSSL/native-tls),
-/// so this adds no external process and no system TLS dependency — replaces a former `curl` spawn.
-fn fetch_remote_image(url: &str, dest: &Path) -> bool {
-    fetch_remote_image_capped(url, dest, MD_REMOTE_MAX_BYTES)
-}
-
-/// Same as `fetch_remote_image`, but with the body-size cap taken as a parameter instead of always
-/// being `MD_REMOTE_MAX_BYTES`. Split out purely so a test can exercise the exact `.limit()`
-/// enforcement this uses in production against a tiny response (a handful of bytes over a small
-/// cap), instead of actually transferring 25MiB over a loopback socket just to prove the number is
-/// wired through — see `app/tests.rs`'s `fetch_remote_bytes_capped_rejects_a_body_over_the_cap`.
-/// Production code only ever calls `fetch_remote_image`, which always passes `MD_REMOTE_MAX_BYTES`,
-/// so this refactor changes no production behavior.
-fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
-    let Some(parent) = dest.parent() else {
-        return false;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-    let tmp = dest.with_extension("part");
-    let Some(bytes) = fetch_remote_bytes_capped(url, max_bytes) else {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    };
-    if std::fs::write(&tmp, &bytes).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
-    if md_image_dims(&tmp).is_none() && !crate::preview::svg::is_svg(&tmp) {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    let ok = std::fs::rename(&tmp, dest).is_ok();
-    if ok {
-        prune_remote_cache(parent, MD_REMOTE_CACHE_MAX);
-    }
-    ok
-}
-
-/// Perform the actual HTTP GET, bounded by a global timeout (principle #4 — don't let a background
-/// thread hang forever even though it's already off the UI thread) and a max body size (mirrors the
-/// old `curl --max-filesize`, taken as a parameter — see `fetch_remote_image_capped`'s doc for why:
-/// production always passes `MD_REMOTE_MAX_BYTES`, a test can inject a small cap instead). Redirects
-/// are followed automatically (up to ureq's default of 10 — GitHub proxies images through camo, so
-/// this matters, same as the old `curl -L`). `gzip` is transparently decoded. Returns None on any
-/// failure: bad URL, connect/TLS error, non-2xx status (ureq treats those as errors by default,
-/// mirroring `curl --fail`), or an oversized body.
-fn fetch_remote_bytes_capped(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
-        .user_agent("konoma image preview")
-        .build()
-        .into();
-    let mut resp = agent.get(url).call().ok()?;
-    resp.body_mut()
-        .with_config()
-        .limit(max_bytes)
-        .read_to_vec()
-        .ok()
-}
-
-/// Keep at most `keep` files in the remote-image cache directory, deleting the oldest (by mtime).
-/// The cache is content-addressed (one file per distinct URL) with no cleanup, so without this it
-/// grows unbounded over a machine's lifetime. Runs only after a **new** download (rare), so the
-/// directory scan is cheap. Best-effort: any IO error just leaves the cache as-is.
-fn prune_remote_cache(dir: &Path, keep: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter_map(|e| {
-            let p = e.path();
-            // Exclude an in-progress temp file (.part).
-            if p.extension().is_some_and(|x| x == "part") {
-                return None;
-            }
-            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
-    if files.len() <= keep {
-        return;
-    }
-    files.sort_by_key(|(t, _)| *t); // oldest first
-    for (_, p) in files.iter().take(files.len() - keep) {
-        let _ = std::fs::remove_file(p);
-    }
-}
-
-/// Max files kept in the remote-image disk cache (`~/.cache/konoma/remote-images`).
-const MD_REMOTE_CACHE_MAX: usize = 256;
-
-/// Compute the display size in terminal cells for an image of `pw`x`ph` pixels, given the terminal
-/// font cell size (`fw`x`fh` px). The image is fit to `avail_cols` (never upscaled beyond its natural
-/// cell size) and then capped to `max_rows`, preserving aspect ratio in both steps.
-fn md_image_cells(
-    pw: u32,
-    ph: u32,
-    fw: u16,
-    fh: u16,
-    avail_cols: u16,
-    max_rows: u16,
-) -> (u16, u16) {
-    let fw = (fw.max(1)) as f64;
-    let fh = (fh.max(1)) as f64;
-    let nat_cols = (pw as f64 / fw).ceil().max(1.0);
-    let nat_rows = (ph as f64 / fh).ceil().max(1.0);
-    let avail = avail_cols.max(1) as f64;
-    let (mut cols, mut rows) = if nat_cols <= avail {
-        (nat_cols, nat_rows)
-    } else {
-        let s = avail / nat_cols;
-        (avail, (nat_rows * s).round().max(1.0))
-    };
-    let maxr = max_rows.max(1) as f64;
-    if rows > maxr {
-        let s = maxr / rows;
-        rows = maxr;
-        cols = (cols * s).round().max(1.0);
-    }
-    (cols as u16, rows as u16)
-}
-
-/// Cell box of a slide picture of `pw`x`ph` pixels: the full width `avail_cols` (a slide is a vector
-/// drawing, so it is enlarged or shrunk to the width), with the aspect ratio kept in the terminal's
-/// cells (`fw`x`fh` px each), and no taller than `max_rows` (the width then shrinks to match).
-fn slide_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
-    let avail = avail_cols.max(1) as f64;
-    let maxr = max_rows.max(1) as f64;
-    // Cell rows for a picture `cols` wide: rows * fh / (cols * fw) = ph / pw.
-    let rows_for = |cols: f64| (cols * fw * ph / (pw * fh)).round().max(1.0);
-    let rows = rows_for(avail);
-    if rows <= maxr {
-        return (avail as u16, rows as u16);
-    }
-    let cols = (maxr * fh * pw / (ph * fw)).round().clamp(1.0, avail);
-    (cols as u16, maxr as u16)
-}
-
-/// Cell box for an inline mermaid diagram, sized so the diagram's **own text matches the
-/// terminal's body text** rather than always filling `target_rows`. `pw`x`ph` is the diagram's
-/// *intrinsic* SVG size in the same px domain the renderer lays out glyphs in
-/// (`text_metrics::FONT_SIZE` px, "1 SVG user unit = 1px" — see `layout_px`'s doc comment for
-/// mermaid fences in `md_media.rs`), **not** the raster's pixel dimensions (those are scaled by
-/// `[ui] svg_max_px` and would drag an unrelated setting into the text-size math).
-///
-/// A terminal cell is ~1.2em tall (same convention `math_cells` uses for RaTeX's em units), so the
-/// scale that makes a `FONT_SIZE`-px glyph in the diagram equal one line of terminal text is
-/// `(fh / 1.2) / FONT_SIZE`; applying it to the diagram's own px size gives its natural cell box.
-///
-/// `target_rows` (`[ui] mermaid_rows`) is an **upper limit**, not a fill target: a diagram whose
-/// natural size is smaller than the cap is shown at that natural size — never enlarged. Only a
-/// diagram taller than the cap (or wider than `avail`) is shrunk, aspect preserved in both steps.
-/// Unlike raster images (`md_image_cells`), a diagram is vector-backed, so a *downscaled* cell box
-/// still re-rasters sharp on zoom — but "vector-backed" is not license to enlarge past natural size
-/// for a reader who never zoomed, which is the bug this sizing exists to avoid.
-fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u16) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
-    let font_size = crate::preview::mermaid::text_metrics::FONT_SIZE as f64;
-    let scale = (fh / 1.2) / font_size;
-    let mut rows = (ph * scale / fh).max(1.0);
-    let mut cols = (pw * scale / fw).max(1.0);
-
-    // Upper limit, never a fill target (see doc comment above).
-    let cap = target_rows.max(1) as f64;
-    if rows > cap {
-        let s = cap / rows;
-        rows = cap;
-        cols *= s;
-    }
-
-    // Never wider than the available column budget either, aspect preserved.
-    let avail = avail.max(1) as f64;
-    if cols > avail {
-        let s = avail / cols;
-        cols = avail;
-        rows *= s;
-    }
-
-    (cols.round().max(1.0) as u16, rows.round().max(1.0) as u16)
-}
-
-/// Cell box for an inline math image, sized proportionally from the SVG's intrinsic **em** units
-/// (RaTeX renders at 40 units/em) so equations sit at roughly text scale: em-height → rows, intrinsic
-/// aspect → cols. Display math gets a touch more height than inline. Clamped to the available width
-/// (aspect preserved) and a sane row cap. Vector-backed, so the once-rendered raster is fit crisply.
-///
-/// Inline math (`display == false`) is always `rows == 1` — placed **in the running text**, like
-/// ordinary Markdown/browser rendering (`render_math_slot`'s own `!display && rows == 1` branch reads
-/// that as "place this expression in the current line, not on a placeholder line of its own"). An
-/// expression too wide for `avail` at one row's height is shrunk to `avail` columns, still at one row
-/// — never lifted onto a taller line of its own (confirmed exhaustively, not merely derived: an
-/// earlier version of this function had a "fall back to the taller lifted-line formula" branch for
-/// this case, and a sweep of 212,520 `(uw, uh, fw, fh, avail)` combinations found it changed the
-/// output in exactly zero of them — the avail clamp below always overrides both `cols` *and* `rows`
-/// regardless, making that branch dead code; removed rather than kept for a distinction it never
-/// actually produced).
-fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let em_h = (uh.max(1) as f64) / 40.0;
-    let ar = (uw.max(1) as f64) / (uh.max(1) as f64);
-    let avail = avail.max(1) as f64;
-    let mut rows = if display {
-        (em_h * 1.5).round().max(1.0)
-    } else {
-        1.0
-    };
-    let mut cols = (rows * fh * ar / fw).round().max(1.0);
-    if cols > avail {
-        cols = avail;
-        rows = (cols * fw / ar / fh).round().max(1.0);
-    }
-    // A cap so an extremely tall expression (e.g. a matrix) doesn't fill the whole screen.
-    let maxr = 24.0;
-    if rows > maxr {
-        let s = maxr / rows;
-        rows = maxr;
-        cols = (cols * s).round().max(1.0);
-    }
-    (cols as u16, rows as u16)
 }
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.
@@ -6489,27 +5926,6 @@ fn at_ref_text(open_dir: &Path, path: &Path) -> String {
     format!("@{rel}")
 }
 
-/// A relative display string based on `open_dir` (the launch directory). For paths underneath, it puts the launch directory name first (e.g. `A/sub/x`),
-/// and for things outside open_dir (siblings/ancestors) it relativizes with `..` (e.g. `../B/aaa.md`, `..`). If it cannot be relativized, `~/...`.
-/// A shared function to guarantee the **same base** for the top-left path display (`format_path`'s Relative) and path copy (`cr`/`yr`).
-fn rel_to_open(open_dir: &Path, path: &Path) -> String {
-    if path.starts_with(open_dir) {
-        // Under open_dir: relativize against its parent so the launch directory name comes first (e.g. A/sub/x).
-        let base = open_dir.parent().unwrap_or(open_dir);
-        match path.strip_prefix(base) {
-            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    } else {
-        // Outside open_dir (siblings/ancestors, etc.): show a path relative to open_dir, including `..` (e.g. ../B/aaa.md).
-        // Without this, a file in sibling B would look like `B/aaa.md` and be mistaken for something underneath.
-        match rel_from(open_dir, path) {
-            Some(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    }
-}
-
 /// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
 ///
 /// Test builds never touch arboard: see `test_support::set_test_clipboard` and the module doc there
@@ -6560,20 +5976,6 @@ fn set_clipboard(text: &str) -> Result<()> {
 fn set_clipboard(text: &str) -> Result<()> {
     crate::test_support::set_test_clipboard(text);
     Ok(())
-}
-
-/// `~/...` if under HOME, otherwise the full path.
-pub(crate) fn home_relative(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if let Ok(rel) = path.strip_prefix(&home) {
-            if rel.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rel.display());
-        }
-    }
-    path.display().to_string()
 }
 
 /// Resolve a dropped (=pasted) string into a list of **existing paths**. Terminals (Ghostty, etc.) pass a drop
@@ -6694,35 +6096,6 @@ fn char_byte(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(s.len())
-}
-
-/// Compute the relative path from `base` to `target`, including `..` (equivalent to pathdiff). It removes the common leading components and
-/// pushes one `..` for each remaining level on the base side. None if the root kinds (absolute/drive) disagree and it cannot be relativized.
-fn rel_from(base: &Path, target: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-    let bc: Vec<Component> = base.components().collect();
-    let tc: Vec<Component> = target.components().collect();
-    let mut i = 0;
-    while i < bc.len() && i < tc.len() && bc[i] == tc[i] {
-        i += 1;
-    }
-    // No common component, and one side starts at the root (absolute/Prefix) = cannot be relativized.
-    if i == 0 {
-        let is_root = |c: Option<&Component>| {
-            matches!(c, Some(Component::Prefix(_)) | Some(Component::RootDir))
-        };
-        if is_root(bc.first()) || is_root(tc.first()) {
-            return None;
-        }
-    }
-    let mut rel = PathBuf::new();
-    for _ in i..bc.len() {
-        rel.push("..");
-    }
-    for c in &tc[i..] {
-        rel.push(c.as_os_str());
-    }
-    Some(rel)
 }
 
 /// Append one directory's worth of entries to out. Recurse into expanded subdirectories.
@@ -7056,7 +6429,7 @@ mod tests;
 // separate file/module from `tests` since it is a standalone corpus-dump harness, not a bag of
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
-mod md_snapshot_tests;
+pub(crate) mod md_snapshot_tests;
 
 #[cfg(test)]
 mod embed_plugin_tests;

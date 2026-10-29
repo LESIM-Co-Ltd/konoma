@@ -23,7 +23,8 @@
 //! representation follows (`reset_view_for_repr_change`).
 
 use konoma_plugin::view::{DocOptions, TextSource, View};
-use konoma_plugin::{Plugin, Settings};
+#[cfg(test)]
+use konoma_plugin::Plugin;
 
 use super::plugin_host::MadeText;
 use super::*;
@@ -39,13 +40,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// The plugin that takes a content type, with the settings it is opened with (owned: it moves to
-/// a worker thread).
-#[derive(Clone)]
-pub(super) struct ContentTarget {
-    pub(super) plugin: Arc<dyn Plugin>,
-    pub(super) settings: Settings,
-}
+pub(super) use konoma_plugin::reopen::ContentTarget;
 
 impl App {
     /// The plugin that takes the content type `content_type` (`Registry::resolve_content`: a user
@@ -217,11 +212,4 @@ impl App {
 
 /// A document's table and image alignment options as the renderer's type. An unrecognized value
 /// is the option's default.
-pub(super) fn block_aligns(o: &DocOptions) -> crate::preview::markdown::BlockAligns {
-    use crate::preview::markdown::{BlockAlign, BlockAligns};
-    let d = BlockAligns::default();
-    BlockAligns {
-        table: BlockAlign::from_config(&o.table_align, d.table),
-        image: BlockAlign::from_config(&o.image_align, d.image),
-    }
-}
+pub(super) use konoma_plugin::document_render::block_aligns;

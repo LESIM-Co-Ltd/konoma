@@ -1853,6 +1853,23 @@ fn run_flaky(
     body: &str,
     steps: impl FnOnce(&Arc<AtomicUsize>) -> Vec<Step>,
 ) -> (Out, Arc<AtomicUsize>) {
+    run_flaky_shown(
+        konoma_plugin::app::Display::default(),
+        kind,
+        unavailable,
+        body,
+        steps,
+    )
+}
+
+/// [`run_flaky`] with the `[ui]` display settings `display`.
+fn run_flaky_shown(
+    display: konoma_plugin::app::Display,
+    kind: FailureKind,
+    unavailable: Unavailable,
+    body: &str,
+    steps: impl FnOnce(&Arc<AtomicUsize>) -> Vec<Step>,
+) -> (Out, Arc<AtomicUsize>) {
     let dir = unique_tmp("app_still_flaky");
     std::fs::create_dir_all(dir.as_path()).unwrap();
     let path = dir.as_path().join("a.pic");
@@ -1880,6 +1897,7 @@ fn run_flaky(
         unavailable,
         plugin_id: "img-test".into(),
         path: opened.path.clone(),
+        display: display.clone(),
         ..cx()
     };
     run_with_pictures(
@@ -1887,7 +1905,7 @@ fn run_flaky(
         &mut *opened.session,
         &mut events,
         &cx,
-        &AppKeys::defaults(),
+        &AppKeys::defaults().with_wrap(display.wrap),
         pictures,
     )
     .expect("runs");
@@ -1966,4 +1984,38 @@ fn a_page_that_fails_with_its_file_as_text_scrolls_and_keeps_the_page_keys() {
         },
     );
     assert!(has_red(out.screen.lock().unwrap().buffer()));
+}
+
+/// The file's text of a page that failed to draw wraps like any text (`[ui] wrap`), or scrolls
+/// sideways when it does not.
+#[test]
+fn a_failed_pages_text_wraps_or_scrolls_sideways_by_ui_wrap() {
+    // One line of 130 cells in a 100-wide terminal: 100 of `a`..., then a tail.
+    let body = format!("{}TAILMARK\n", "a".repeat(130));
+    let raw = || Unavailable::RawText { with_reason: true };
+    // Wrapping (the default): the tail is on the next row.
+    let (out, _) = run_flaky(FailureKind::Corrupt, raw(), &body, |_| {
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(|b| shows(b, "TAILMARK"), None),
+        ]
+    });
+    assert!(shows(out.screen.lock().unwrap().buffer(), "TAILMARK"));
+    // Not wrapping: the tail is off screen until `$`, and `0` brings the start back.
+    let display = konoma_plugin::app::Display {
+        wrap: false,
+        ..Default::default()
+    };
+    let (out, _) = run_flaky_shown(display, FailureKind::Corrupt, raw(), &body, |_| {
+        vec![
+            step(|b| has_red(b) && footer(b).contains("1/3"), Some(key('J'))),
+            step(
+                |b| shows(b, "aaaaaaaa") && !shows(b, "TAILMARK"),
+                Some(key('$')),
+            ),
+            step(|b| shows(b, "TAILMARK"), Some(key('0'))),
+            step(|b| !shows(b, "TAILMARK"), None),
+        ]
+    });
+    assert!(!shows(out.screen.lock().unwrap().buffer(), "TAILMARK"));
 }

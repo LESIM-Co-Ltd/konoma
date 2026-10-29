@@ -4,10 +4,8 @@
 // Shows a bordered popup centered on the screen, clearing what's underneath with Clear. Reflects
 // configured keys (copy, etc.).
 
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::Frame;
 
 use crate::app::App;
@@ -39,38 +37,13 @@ pub fn help_lines(app: &App) -> Vec<Line<'static>> {
     render_sections(&crate::ops::help::sections(app))
 }
 
-/// Turn the sections into a Line sequence. Heading = bold underline, row = "  key (16-wide) description (dim)", with blank lines between.
+/// Turn the sections into a Line sequence (the one look every host's help has).
 fn render_sections(sections: &[HelpSection]) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::new();
-    for sec in sections {
-        if !out.is_empty() {
-            out.push(Line::from(""));
-        }
-        out.push(Line::from(
-            Span::from(sec.title.clone())
-                .add_modifier(Modifier::BOLD)
-                .underlined(),
-        ));
-        for (key, desc) in &sec.rows {
-            // A key column wider than its 16 cells (`Ctrl-f / Ctrl-b  ·  PageDown / PageUp`) still
-            // leaves a gap before the description.
-            // Cells, not characters: a full-width key is two cells wide.
-            let pad = if unicode_width::UnicodeWidthStr::width(key.as_str()) >= 16 {
-                "  "
-            } else {
-                ""
-            };
-            out.push(Line::from(vec![
-                Span::from(format!(
-                    "  {}{pad}",
-                    konoma_host_core::help::pad_cells(key, 16)
-                ))
-                .bold(),
-                Span::from(desc.clone()).dim(),
-            ]));
-        }
-    }
-    out
+    let view: Vec<(&str, &[(String, String)])> = sections
+        .iter()
+        .map(|s| (s.title.as_str(), s.rows.as_slice()))
+        .collect();
+    konoma_widgets::help_panel::help_lines(&view)
 }
 
 /// Build the help section for one leader (`y`/`Space`) from the actual keymap (with config applied).
@@ -102,47 +75,24 @@ pub(crate) fn leader_key_str(kp: KeyPress) -> String {
     crate::ops::keys::help_key(kp)
 }
 
-/// The help popup's frame and the number of body rows inside it. Width caps at 66, height is
-/// content + border; both are fitted to `area`. Shared by `render` and the e2e tests so the
-/// tests know which help lines are actually on screen.
+/// The help popup's frame and the number of body rows inside it (shared with the standalone
+/// app). Used by the e2e tests to know which help lines are actually on screen.
+#[cfg(test)]
 pub fn popup_layout(line_count: usize, area: Rect) -> (Rect, u16) {
-    let w = 66.min(area.width.saturating_sub(2)).max(20);
-    let h = (line_count as u16 + 2)
-        .min(area.height.saturating_sub(2))
-        .max(3);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    (
-        Rect {
-            x,
-            y,
-            width: w,
-            height: h,
-        },
-        h.saturating_sub(2),
-    )
+    konoma_widgets::help_panel::popup_layout(line_count, area)
 }
 
 /// Render the full key list in a centered popup. `area` is the whole screen.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let lines = help_lines(app);
-    let (popup, inner_h) = popup_layout(lines.len(), area);
-
-    // Clamp the body's vertical scroll to the inner height.
-    let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
-    let scroll = app.help_scroll.min(max_scroll);
-
     let title = crate::ops::core_help::help_title(app);
-    let block = Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(ratatui::style::Color::Cyan));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .alignment(Alignment::Left);
-
-    frame.render_widget(Clear, popup); // clear what's underneath before drawing
-    frame.render_widget(para, popup);
+    konoma_widgets::help_panel::render_panel(
+        frame.buffer_mut(),
+        area,
+        lines,
+        app.help_scroll,
+        title,
+    );
 }
 
 #[cfg(test)]

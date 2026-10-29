@@ -15,7 +15,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Rotating palette for rainbow columns. Mid-tone hues that read on both light and dark terminals
@@ -441,7 +441,7 @@ pub fn render_cell_popup(buf: &mut Buffer, area: Rect, popup: CellPopup) -> (u16
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
 
-    Clear.render(rect, buf); // clear the background before drawing
+    crate::overlay::clear_overlay(buf, rect);
     para.render(rect, buf);
     (scroll, inner.height)
 }
@@ -1279,6 +1279,27 @@ mod tests {
             })
             .unwrap();
         (screen(done.buffer), out.0, out.1)
+    }
+
+    /// Over a background of wide characters, as a terminal shows it, the popup keeps its left
+    /// and right borders (the wide characters crossing either edge are blanked).
+    #[test]
+    fn the_popup_looks_the_same_over_wide_characters() {
+        for (w, h) in [(30, 10), (31, 11), (80, 24)] {
+            konoma_test_support::assert_overlay_over_wide_background("cell popup", w, h, |f| {
+                let area = f.area();
+                render_cell_popup(
+                    f.buffer_mut(),
+                    area,
+                    CellPopup {
+                        title: " cell ".into(),
+                        footer: "q close".into(),
+                        text: "hello\nあいう".into(),
+                        scroll: 0,
+                    },
+                );
+            });
+        }
     }
 
     #[test]

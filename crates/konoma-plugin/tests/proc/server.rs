@@ -3,7 +3,6 @@
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use konoma_plugin::proc::frame;
 use konoma_plugin::proc::proto::*;
@@ -568,5 +567,4 @@ fn a_bad_hello_is_an_error() {
     });
     to.write_all(&[0, 0, 0, 2, 0xc1, 0xc1]).unwrap();
     assert!(t.join().unwrap().is_err());
-    let _ = Duration::from_secs(0);
 }

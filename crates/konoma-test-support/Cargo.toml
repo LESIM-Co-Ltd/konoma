@@ -11,6 +11,8 @@ description = "Test-only helpers shared by konoma and its crates (temp-dir guard
 # published crate, optional ones included, to be published too.
 
 [dependencies]
+ratatui.workspace = true
+unicode-width.workspace = true
 zip.workspace = true
 # `build_animated_gif`.
 image.workspace = true

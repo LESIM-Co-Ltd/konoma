@@ -9,6 +9,7 @@
 pub mod colors;
 pub mod gif_player;
 pub mod gitdiff;
+pub mod help_panel;
 pub mod icons;
 pub mod image_view;
 pub mod inline_images;
@@ -16,6 +17,8 @@ pub mod kitty;
 pub mod layout;
 pub mod loading;
 pub mod markdown;
+pub mod overlay;
+pub mod scroll;
 pub mod table;
 pub mod term_query;
 pub mod text;

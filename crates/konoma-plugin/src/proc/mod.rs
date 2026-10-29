@@ -63,7 +63,7 @@ pub mod proto;
 mod server;
 pub mod wire;
 
-pub use server::{cli_main, cli_main_many, serve, serve_io, ServeOptions};
+pub use server::{cli_main, cli_main_bundled, cli_main_many, serve, serve_io, ServeOptions};
 
 /// Emit `main` for a plugin program: `--serve` serves the host on stdin and stdout, `--manifest`
 /// prints the declaration, `--version` and `--help` print what they say. Given a file, the program
@@ -78,6 +78,9 @@ pub use server::{cli_main, cli_main_many, serve, serve_io, ServeOptions};
 /// konoma_plugin::export!(MyPlugin);
 /// konoma_plugin::export!(MyPlugin, MyOtherPlugin);
 /// konoma_plugin::export!(@program my_crate::program());
+/// // With plugins carried only as destinations of a reopened or embedded content (the standalone
+/// // app looks them up; the file, `--serve` and `--manifest` never reach them):
+/// konoma_plugin::export!(@program my_crate::program(), @bundled my_crate::bundled());
 /// ```
 #[macro_export]
 macro_rules! export {
@@ -86,6 +89,11 @@ macro_rules! export {
     (@program $plugins:expr) => {
         fn main() -> ::std::process::ExitCode {
             $crate::proc::cli_main_many($plugins)
+        }
+    };
+    (@program $plugins:expr, @bundled $bundled:expr) => {
+        fn main() -> ::std::process::ExitCode {
+            $crate::proc::cli_main_bundled($plugins, $bundled)
         }
     };
     ($plugin:expr $(,)?) => {

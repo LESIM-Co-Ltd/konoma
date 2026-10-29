@@ -70,3 +70,40 @@ fn a_format_it_shows_is_accepted_and_stops_at_the_terminal_check() {
         assert_eq!(code, Some(1), "{name}: {err}");
     }
 }
+
+fn run_args(home: &Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let out = run_program_without_terminal(Path::new(EXE), &args, home);
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn the_bundled_destinations_are_not_listed_or_served() {
+    let d = unique_tmp("office_bin_bundled_listing");
+    std::fs::create_dir_all(d.as_path()).unwrap();
+    // `--version` lists the program's own plugins only.
+    let (code, out, err) = run_args(d.as_path(), &["--version"]);
+    assert_eq!(code, Some(0), "{err}");
+    let ids: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert_eq!(ids, ["spreadsheet", "document", "presentation"], "{out}");
+    // `--manifest` and `--serve` cannot name a bundled one.
+    for id in ["markdown", "mermaid", "math"] {
+        let (code, out, err) = run_args(d.as_path(), &["--plugin", id, "--manifest"]);
+        assert_eq!(code, Some(2), "{id}: {out}{err}");
+        assert!(out.is_empty(), "{id}: {out}");
+        assert!(err.contains("has no plugin"), "{id}: {err}");
+    }
+    // A bundled destination takes no file of its own: `.md` is not opened.
+    let f = d.as_path().join("x.md");
+    std::fs::write(&f, "# t\n").unwrap();
+    let (code, err) = run(d.as_path(), &f);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("does not show this file"), "{err}");
+}

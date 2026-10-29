@@ -313,10 +313,7 @@ pub(crate) fn mermaid_rows(cfg: &crate::config::Config) -> u16 {
         Some(toml::Value::Integer(n)) => *n,
         _ => i64::from(cfg.ui.mermaid_rows),
     };
-    match u16::try_from(raw) {
-        Ok(0) | Err(_) => konoma_mermaid::DEFAULT_ROWS as u16,
-        Ok(n) => n,
-    }
+    konoma_plugin::document_pictures::mermaid_rows_cap(raw)
 }
 
 /// Whether code and config files are colored: `[plugins.code] syntax_highlight`, or the old

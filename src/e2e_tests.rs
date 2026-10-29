@@ -20929,6 +20929,7 @@ mod menus;
 
 #[cfg(test)]
 mod overlay_lists;
+mod overlay_wide;
 
 #[cfg(test)]
 mod newkeys;
@@ -21052,7 +21053,9 @@ mod help_footer_snapshot;
 #[cfg(test)]
 mod render_snapshot;
 
+mod document_parity;
 mod image_gif_parity;
 mod image_pages_parity;
 mod image_parity;
 mod table_parity;
+mod text_parity;

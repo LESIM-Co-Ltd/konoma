@@ -15,23 +15,18 @@ impl App {
     /// (when its `emoji` option) convert `:shortcode:` emoji. Shared by the cache build (`ensure_md_cache`)
     /// and the test-only decorate path so link/emoji collection cannot drift between them. Emoji runs
     /// last so width-affecting substitutions are reflected in the caller's reflow/`row_prefix`.
+    #[cfg(test)]
     pub(super) fn postprocess_md(
         &self,
         lines: Vec<Line<'static>>,
     ) -> (Vec<Line<'static>>, Vec<String>) {
         let opts = self.doc_options();
-        let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
-        let (lines, targets) = if opts.autolink {
-            autolink_bare_urls(lines, targets)
-        } else {
-            (lines, targets)
-        };
-        let lines = if opts.emoji {
-            substitute_emoji(lines)
-        } else {
-            lines
-        };
-        (lines, targets)
+        crate::preview::markdown::postprocess_lines(
+            lines,
+            self.cfg.ui.icons,
+            opts.autolink,
+            opts.emoji,
+        )
     }
 
     #[cfg(test)]
@@ -553,70 +548,6 @@ impl App {
         }
         Ok(())
     }
-
-    /// Re-resolves every inline math placement's own `col` against `lines` — the **decorated** lines
-    /// `postprocess_md` just produced, not the pre-decoration lines `render_doc` recorded `col` against —
-    /// see `render::render_inline_math`'s own doc comment ("`col` recorded here is *provisional*") for the
-    /// full reasoning and the real, confirmed bug this closes: `collapse_links`/`autolink_bare_urls`/
-    /// `substitute_emoji` can each change a line's own display width to the *left* of an inline math
-    /// reservation (a link's `label (URL)` collapsing to `icon label`, a task checkbox's `"[ ] "`
-    /// collapsing to a Nerd Font glyph, `:shortcode:` becoming one glyph, a bare URL gaining an icon
-    /// prefix), leaving the previously-recorded `col` pointing at the wrong cell.
-    ///
-    /// `p.line` is trusted as-is (not re-derived): `postprocess_md`'s own three passes all preserve line
-    /// **count** and **index** 1:1 — each is a `Vec<Line>` → `Vec<Line>` map, one line in for one line out,
-    /// confirmed directly in each of their own implementations (`collapse_links`/`autolink_bare_urls`
-    /// `for line in lines { ... out.push(...) }`, `substitute_emoji` a plain `.map`) — only the *content*
-    /// of a line can change here, never which logical line a placement's own math sits on.
-    ///
-    /// The reservation span itself carries a unique sentinel style (`inline_math_reservation_style`,
-    /// checked via `is_inline_math_reservation_span` — the same trick `is_task_span`/
-    /// `is_hidden_link_target`/`is_mermaid_header_span` already use for other post-decoration lookups), so
-    /// this only has to scan each referenced line once and sum the display width of everything before the
-    /// sentinel. Placements are grouped by `line` first, preserving each line's own document order,
-    /// because more than one inline math expression can share a single line
-    /// (`two_inline_math_expressions_on_the_same_line_each_get_their_own_placement`) — matching sentinel
-    /// occurrences to placements purely by "first found" would give every placement on a shared line the
-    /// identical, wrong `col`; the *k*-th sentinel found on a line belongs to the *k*-th placement (in
-    /// document order) that names that line, since `render_inline_math` pushes both in the same left-to-
-    /// right walk. A placement whose line has no matching sentinel at its own position (every non-inline-
-    /// math placement: a block image/mermaid diagram/multi-row math lift each reserve a line of their own,
-    /// blank apart from centering padding, and `render_math_slot`'s own lift path never emits this
-    /// sentinel at all) is left untouched — `col` exactly as `render_doc` recorded it, matching every test
-    /// written against it before this function existed.
-    pub(super) fn resolve_inline_math_cols(
-        lines: &[Line<'static>],
-        images: &mut [crate::preview::markdown::ImagePlacement],
-    ) {
-        use std::collections::HashMap;
-        let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (i, p) in images.iter().enumerate() {
-            // Only a one-row expression can be an in-text reservation. A table cell's picture or a
-            // block image can share a physical line with one (two columns of the same table row),
-            // and counting it here would hand it the sentinel that belongs to the expression.
-            if crate::preview::markdown::is_math_url(&p.url) && p.rows == 1 {
-                by_line.entry(p.line).or_default().push(i);
-            }
-        }
-        for (line_idx, idxs) in by_line {
-            let Some(line) = lines.get(line_idx) else {
-                continue;
-            };
-            let mut found_cols: Vec<u16> = Vec::new();
-            let mut col: u16 = 0;
-            for span in &line.spans {
-                if crate::preview::markdown::is_inline_math_reservation_span(span) {
-                    found_cols.push(col);
-                }
-                col = col.saturating_add(u16::try_from(span.width()).unwrap_or(u16::MAX));
-            }
-            for (k, &img_idx) in idxs.iter().enumerate() {
-                if let Some(&c) = found_cols.get(k) {
-                    images[img_idx].col = c;
-                }
-            }
-        }
-    }
 }
 
 /// The three ways a Markdown link target resolves.
@@ -761,7 +692,7 @@ mod opener_tests {
         ])];
         // The tall one comes first in the list, as a block placement recorded earlier would.
         let mut images = vec![place("tall", 2, 40), place("small", 1, 0)];
-        App::resolve_inline_math_cols(&lines, &mut images);
+        crate::preview::markdown::resolve_inline_math_cols(&lines, &mut images);
         assert_eq!(
             images[0].col, 40,
             "the tall placement keeps the column it was recorded at"

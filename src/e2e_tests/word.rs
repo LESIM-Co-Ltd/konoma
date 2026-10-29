@@ -74,7 +74,7 @@ fn same_bytes_after(path: &std::path::Path, f: impl FnOnce()) -> bool {
 }
 
 /// A minimal docx (three parts) whose body is `body` (the content of `<w:body>`).
-fn build_docx(path: &std::path::Path, body: &str) {
+pub(super) fn build_docx(path: &std::path::Path, body: &str) {
     use std::io::Write;
     let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -99,13 +99,13 @@ fn build_docx(path: &std::path::Path, body: &str) {
     put(
         "word/document.xml",
         &format!(
-            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>"#
+            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>{body}</w:body></w:document>"#
         ),
     );
     zw.finish().unwrap();
 }
 
-fn para(text: &str) -> String {
+pub(super) fn para(text: &str) -> String {
     format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
 }
 
@@ -1633,7 +1633,12 @@ fn png_bytes(rgb: [u8; 3]) -> Vec<u8> {
 }
 
 /// A docx with the text `text` and one picture `media/<name>` holding `bytes`.
-fn build_docx_with_picture(path: &std::path::Path, text: &str, name: &str, bytes: &[u8]) {
+pub(super) fn build_docx_with_picture(
+    path: &std::path::Path,
+    text: &str,
+    name: &str,
+    bytes: &[u8],
+) {
     use std::io::Write;
     let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     let f = std::fs::File::create(path).unwrap();

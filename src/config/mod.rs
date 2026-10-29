@@ -2,16 +2,11 @@
 // Works with defaults even when the config is absent/broken (robustness first).
 
 use std::path::Path;
-use std::str::FromStr;
 
 use ratatui::style::Color;
 use serde::Deserialize;
 
 use crate::preview::PreviewKind;
-
-// The default code background and the badge-brightening helper live in `konoma-widgets` (the
-// document renderer's tests use them); this path stays for the host.
-pub use konoma_widgets::colors::{lighten, DEFAULT_CODE_BG};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -543,12 +538,14 @@ pub struct ThemeConfig {
 
 impl Default for ThemeConfig {
     fn default() -> Self {
+        // One definition of the defaults, shared with the small host (`SharedTheme`).
+        let t = konoma_host_core::shared::SharedTheme::default();
         Self {
-            bg: "none".into(), // default is the terminal's default background (not painted)
-            code_bg: "#2b303b".into(), // = DEFAULT_CODE_BG (rgb 43,48,59)
-            code_label_align: "right".into(),
-            code_label_bg: "auto".into(),
-            code_theme: konoma_host_core::shared::DEFAULT_CODE_THEME.into(), // = Zed's One Dark
+            bg: t.bg,
+            code_bg: t.code_bg,
+            code_label_align: t.code_label_align,
+            code_label_bg: t.code_label_bg,
+            code_theme: t.code_theme,
         }
     }
 }
@@ -556,37 +553,7 @@ impl Default for ThemeConfig {
 impl ThemeConfig {
     /// Resolves the app's background color. `"none"`/empty/invalid -> None (keeps the terminal default).
     pub fn bg(&self) -> Option<Color> {
-        parse_color_opt(&self.bg, None)
-    }
-
-    /// Resolves the code background color. `"none"`/empty -> no background (None). Parse failure -> default color.
-    pub fn code_bg(&self) -> Option<Color> {
-        parse_color_opt(&self.code_bg, Some(DEFAULT_CODE_BG))
-    }
-
-    /// Whether to right-align the language label. false only when `"left"` is specified; otherwise the default right alignment.
-    pub fn code_label_right(&self) -> bool {
-        !self.code_label_align.trim().eq_ignore_ascii_case("left")
-    }
-
-    /// Background color of the language label (badge). `"auto"` is a brightened `code_bg`; `"none"` is no background.
-    pub fn code_label_bg(&self) -> Option<Color> {
-        if self.code_label_bg.trim().eq_ignore_ascii_case("auto") {
-            return self.code_bg().map(lighten);
-        }
-        parse_color_opt(&self.code_label_bg, None)
-    }
-}
-
-/// Resolves a color string. `"none"`/empty -> None. Parse success -> that color. Parse failure -> `fallback`.
-fn parse_color_opt(s: &str, fallback: Option<Color>) -> Option<Color> {
-    let s = s.trim();
-    if s.is_empty() || s.eq_ignore_ascii_case("none") {
-        return None;
-    }
-    match Color::from_str(s) {
-        Ok(c) => Some(c),
-        Err(_) => fallback,
+        konoma_widgets::colors::theme_bg(&self.bg)
     }
 }
 
@@ -848,6 +815,9 @@ mod parity_tests;
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
+    use konoma_widgets::colors::{
+        lighten, theme_code_bg, theme_code_label_bg, theme_code_label_right, DEFAULT_CODE_BG,
+    };
     use std::collections::HashMap;
     use std::io::Write;
 
@@ -1064,27 +1034,61 @@ mod tests {
     #[test]
     fn theme_code_bg_parses_hex_none_and_invalid() {
         // The default (empty config) is the default color.
-        assert_eq!(ThemeConfig::default().code_bg(), Some(DEFAULT_CODE_BG));
+        assert_eq!(
+            theme_code_bg(&ThemeConfig::default().code_bg),
+            Some(DEFAULT_CODE_BG)
+        );
         // hex specification.
         let t = ThemeConfig {
             code_bg: "#101820".into(),
             ..Default::default()
         };
-        assert_eq!(t.code_bg(), Some(Color::Rgb(16, 24, 32)));
+        assert_eq!(theme_code_bg(&t.code_bg), Some(Color::Rgb(16, 24, 32)));
         // "none" / whitespace / mixed case → no background.
         for v in ["none", "  NONE  ", ""] {
             let t = ThemeConfig {
                 code_bg: v.into(),
                 ..Default::default()
             };
-            assert_eq!(t.code_bg(), None, "{v:?} は None になるべき");
+            assert_eq!(theme_code_bg(&t.code_bg), None, "{v:?} は None になるべき");
         }
         // An invalid value doesn't crash — it falls back to the default color.
         let t = ThemeConfig {
             code_bg: "definitely-not-a-color".into(),
             ..Default::default()
         };
-        assert_eq!(t.code_bg(), Some(DEFAULT_CODE_BG));
+        assert_eq!(theme_code_bg(&t.code_bg), Some(DEFAULT_CODE_BG));
+    }
+
+    /// The defaults of `[ui.theme]` are the small host's (`SharedTheme`), and the code background
+    /// text is the color `DEFAULT_CODE_BG`.
+    #[test]
+    fn theme_defaults_are_the_shared_ones() {
+        let t = ThemeConfig::default();
+        let s = konoma_host_core::shared::SharedTheme::default();
+        assert_eq!(
+            (
+                &t.bg,
+                &t.code_bg,
+                &t.code_label_align,
+                &t.code_label_bg,
+                &t.code_theme
+            ),
+            (
+                &s.bg,
+                &s.code_bg,
+                &s.code_label_align,
+                &s.code_label_bg,
+                &s.code_theme
+            )
+        );
+        assert_eq!(theme_code_bg(&s.code_bg), Some(DEFAULT_CODE_BG));
+        assert_eq!(
+            konoma_host_core::shared::DEFAULT_CODE_BG_TEXT,
+            "#2b303b",
+            "= rgb(43, 48, 59)"
+        );
+        assert_eq!(DEFAULT_CODE_BG, Color::Rgb(0x2b, 0x30, 0x3b));
     }
 
     #[test]
@@ -1119,38 +1123,44 @@ mod tests {
     fn code_label_align_and_bg_resolve() {
         // Default: right-aligned · auto (= code_bg brightened).
         let d = ThemeConfig::default();
-        assert!(d.code_label_right());
-        assert_eq!(d.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+        assert!(theme_code_label_right(&d.code_label_align));
+        assert_eq!(
+            theme_code_label_bg(&d.code_label_bg, &d.code_bg),
+            Some(lighten(DEFAULT_CODE_BG))
+        );
         // Left-aligned specification.
         let t = ThemeConfig {
             code_label_align: "left".into(),
             ..Default::default()
         };
-        assert!(!t.code_label_right());
+        assert!(!theme_code_label_right(&t.code_label_align));
         // "left" case-insensitively.
         let t = ThemeConfig {
             code_label_align: "LEFT".into(),
             ..Default::default()
         };
-        assert!(!t.code_label_right());
+        assert!(!theme_code_label_right(&t.code_label_align));
         // Badge background: any color / none.
         let t = ThemeConfig {
             code_label_bg: "#ff0000".into(),
             ..Default::default()
         };
-        assert_eq!(t.code_label_bg(), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(
+            theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+            Some(Color::Rgb(255, 0, 0))
+        );
         let t = ThemeConfig {
             code_label_bg: "none".into(),
             ..Default::default()
         };
-        assert_eq!(t.code_label_bg(), None);
+        assert_eq!(theme_code_label_bg(&t.code_label_bg, &t.code_bg), None);
         // code_bg=none + auto → the badge also has no background.
         let t = ThemeConfig {
             code_bg: "none".into(),
             code_label_bg: "auto".into(),
             ..Default::default()
         };
-        assert_eq!(t.code_label_bg(), None);
+        assert_eq!(theme_code_label_bg(&t.code_label_bg, &t.code_bg), None);
     }
 
     #[test]
@@ -1325,7 +1335,7 @@ d = "refresh"
         );
         let text = std::fs::read_to_string(&p).unwrap();
         let cfg: Config = toml::from_str(&text).unwrap();
-        assert_eq!(cfg.ui.theme.code_bg(), None);
+        assert_eq!(theme_code_bg(&cfg.ui.theme.code_bg), None);
         assert_eq!(cfg.ui.theme.bg(), Some(Color::Rgb(0, 0, 16)));
         std::fs::remove_file(&p).ok();
     }
@@ -1637,7 +1647,7 @@ mermaid_rows = 100000
     /// shared field to a non-default value (the examples mostly restate defaults).
     #[test]
     fn shared_config_agrees_with_config_on_the_common_fields() {
-        let rich = "[ui]\nlang = \"jp\"\nkeys = \"less\"\nsvg_max_px = 1600\n[editor]\ncommand = \"nvim\"\n[editor.ext]\nmd = \"code -w\"\n[keys]\ncopy_name = \"m\"\n[keys.tree]\n\"space d\" = \"file_delete\"\n[external]\nopen_links = false\noffice_apps = false\n";
+        let rich = "[ui]\nlang = \"jp\"\nkeys = \"less\"\nsvg_max_px = 1600\nwrap = false\nicons = false\ntab_width = 8\n[ui.theme]\nbg = \"#102030\"\ncode_bg = \"none\"\ncode_label_align = \"left\"\ncode_label_bg = \"#405060\"\ncode_theme = \"base16-ocean.dark\"\n[editor]\ncommand = \"nvim\"\n[editor.ext]\nmd = \"code -w\"\n[keys]\ncopy_name = \"m\"\n[keys.tree]\n\"space d\" = \"file_delete\"\n[external]\nopen_links = false\noffice_apps = false\nremote_images = false\n";
         for (name, text) in [
             ("en", include_str!("../../config.example.toml")),
             ("ja", include_str!("../../config.example.ja.toml")),
@@ -1650,8 +1660,35 @@ mermaid_rows = 100000
             assert_eq!(c.ui.lang, s.ui.lang, "{name}: ui.lang");
             assert_eq!(c.ui.keys, s.ui.keys, "{name}: ui.keys");
             assert_eq!(c.ui.svg_max_px, s.ui.svg_max_px, "{name}: ui.svg_max_px");
+            assert_eq!(
+                (c.ui.wrap, c.ui.icons, c.ui.tab_width),
+                (s.ui.wrap, s.ui.icons, s.ui.tab_width),
+                "{name}: wrap, icons, tab_width"
+            );
+            let t = &c.ui.theme;
+            assert_eq!(
+                (
+                    &t.bg,
+                    &t.code_bg,
+                    &t.code_label_align,
+                    &t.code_label_bg,
+                    &t.code_theme
+                ),
+                (
+                    &s.ui.theme.bg,
+                    &s.ui.theme.code_bg,
+                    &s.ui.theme.code_label_align,
+                    &s.ui.theme.code_label_bg,
+                    &s.ui.theme.code_theme
+                ),
+                "{name}: [ui.theme]"
+            );
             assert_eq!(c.external.open_links, s.external.open_links, "{name}");
             assert_eq!(c.external.office_apps, s.external.office_apps, "{name}");
+            assert_eq!(
+                c.external.remote_images, s.external.remote_images,
+                "{name}: external.remote_images"
+            );
             assert_eq!(c.editor.command, s.editor.command, "{name}: editor.command");
             assert_eq!(c.editor.ext, s.editor.ext, "{name}: editor.ext");
             assert_eq!(c.keys.copy_name, s.keys.copy_name, "{name}");

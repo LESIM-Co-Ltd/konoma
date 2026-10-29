@@ -7,7 +7,9 @@
 //! Everything runs on a `TestBackend` with a halfblocks picker; the host's resize answers are
 //! applied by the test itself, the app is driven only when it is idle, so nothing depends on timing.
 
-use super::table_parity::{help_lines, hints, presses, rows_of, same_row, APP_H, HOST_H, W};
+use super::table_parity::{
+    help_lines, hints, panel_lines, presses, rows_of, same_footer, same_row, APP_H, HOST_H, W,
+};
 use super::*;
 use konoma_plugin::app::{
     key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next,
@@ -310,7 +312,7 @@ pub(super) const HOST_ONLY: &[&str] = &[
 fn the_picture_the_zoom_and_the_footer_agree_with_the_host() {
     let dir = fixtures();
     let root = canon(&dir);
-    let (mut checked, mut moved) = (0, 0);
+    let (mut checked, mut moved, mut compared) = (0, 0, 0);
     let mut seen_host_only = std::collections::BTreeSet::new();
     let mut zooms = std::collections::BTreeSet::new();
     for file in ["pic.png", "wide.png", "tall.png"] {
@@ -357,24 +359,15 @@ fn the_picture_the_zoom_and_the_footer_agree_with_the_host() {
             );
             // The app's tail is `x1.25` and the title; the host has the zoom in its status row.
             let ah: Vec<String> = ah[..ah.len() - 2].to_vec();
-            for t in hh.iter().filter(|t| !ah.contains(t)) {
-                seen_host_only.insert(t.clone());
-                assert!(
-                    HOST_ONLY.contains(&t.as_str()),
-                    "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
-                );
-            }
-            for t in ah.iter().filter(|t| !hh.contains(t)) {
-                assert_eq!(
-                    t, "q:quit",
-                    "{what}: the app footer has `{t}` that the host lacks"
-                );
-            }
+            let (alone, n) = same_footer(&what, &hh, &ah, HOST_ONLY, &|t| t == "q:quit");
+            seen_host_only.extend(alone);
+            compared += n;
             checked += 1;
             moved += usize::from(h.cells != at_fit.cells);
         }
     }
     assert!(checked >= 3 * 30, "{checked}");
+    assert!(compared > 350, "{compared}");
     // The keys moved the picture (a spec that never changed anything would prove nothing), and
     // took it through many zooms.
     assert!(moved >= 50, "{moved}");
@@ -478,7 +471,7 @@ fn the_image_help_rows_agree_with_the_host() {
                 })
                 .expect("the help panel");
             let hs = image_section(&help_lines(&h.rows[py + 1..], Some(px)));
-            let asec = image_section(&help_lines(&a.rows, None));
+            let asec = image_section(&panel_lines(&a.rows));
             for row in &asec {
                 // The app says `quit` where the host says `back to tree`; `?` and `Q` are the
                 // host's own rows in other sections of its help.
