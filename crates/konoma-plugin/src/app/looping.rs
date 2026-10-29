@@ -399,11 +399,6 @@ impl AppKeys {
         sections
     }
 
-    /// The `?` help as lines: a heading and the aligned rows of each section.
-    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<ratatui::text::Line<'static>> {
-        lines_of(&self.help_sections_scrolling(paged, scrolls))
-    }
-
     /// The title of the `?` help, shown in the footer while it is open.
     ///
     /// Named from the actual bindings: the keys that toggle the help (the fixed `Esc` is added),
@@ -634,11 +629,6 @@ impl AppKeys {
         secs
     }
 
-    /// The `?` help of a table as lines.
-    fn table_help_lines(&self, mode: TableMode) -> Vec<ratatui::text::Line<'static>> {
-        lines_of(&self.table_help_sections(mode))
-    }
-
     /// The title of the `?` help over a table (see [`AppKeys::help_title`]).
     pub fn table_help_title(&self, mode: TableMode) -> String {
         let facts = self.table_facts(mode);
@@ -806,10 +796,6 @@ impl AppKeys {
         self.with_copy_section(CoreContext::Image, CoreMenu::Copy, secs)
     }
 
-    fn image_help_lines(&self, paged: bool) -> Vec<ratatui::text::Line<'static>> {
-        lines_of(&self.image_help_sections(paged))
-    }
-
     /// The title of the `?` help over a picture (see [`AppKeys::help_title`]). The help scrolls
     /// on the vertical motions whatever the picture is doing, so they are named from the text's
     /// facts.
@@ -960,6 +946,18 @@ impl AppKeys {
             self.lang,
         );
         self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
+    }
+
+    /// Where the plugin's section goes in the help of the key context `ctx`: right after the
+    /// section of the screen's own operations, first when the screen has none.
+    fn plugin_section_at(&self, ctx: &str, secs: &[CoreSection]) -> usize {
+        let Some(c) = CoreContext::from_name(ctx) else {
+            return 0;
+        };
+        let title = konoma_host_core::help::view_title(c).tr(self.lang);
+        secs.iter()
+            .position(|s| s.title == title)
+            .map_or(0, |i| i + 1)
     }
 
     /// The title of the `?` help over a canvas (see [`AppKeys::help_title`]). The help scrolls
@@ -1571,6 +1569,26 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let text_scrolls = !matches!(base, Frame::ImageFailed(_));
         // A plugin's canvas has its own keys (the host's `CoreContext::Canvas`).
         let canvas_keys = matches!(base, Frame::Canvas(_));
+        // The key context of the plugin's layer for the screen (konoma's `plugin_acts_in(ctx)`):
+        // one answer for the key, the footer and the help. A document the plugin handed over to
+        // another (`Reopen`) is not the declared plugin's any more: no action of it acts.
+        let act_ctx = if mode.is_some() {
+            "table"
+        } else if image_mode.is_some() && !failed_text_screen {
+            "image"
+        } else if canvas_keys {
+            "canvas"
+        } else if matches!(base, Frame::Document(_)) {
+            "document"
+        } else {
+            "text"
+        };
+        let en: Vec<String> = if st.reopened_as.is_none() {
+            enabled_ids(&*sess!(), &cx.acts)
+        } else {
+            Vec::new()
+        };
+        let act_on = |a: &str| en.iter().any(|e| e == a);
         let capturing = typing::is_capturing(
             st.input_left,
             st.help.is_none(),
@@ -1581,24 +1599,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let width = terminal.size().map(|s| s.width).unwrap_or(0);
         let frame: &mut Frame = match st.help {
             Some(top) => {
-                let (lines, title) = match (mode, image_mode) {
-                    (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
+                let (mut secs, title) = match (mode, image_mode) {
+                    (Some(m), _) => (keys.table_help_sections(m), keys.table_help_title(m)),
                     (None, Some(_)) if !failed_text_screen => {
-                        (keys.image_help_lines(paged), keys.image_help_title())
+                        (keys.image_help_sections(paged), keys.image_help_title())
                     }
                     (None, None) if canvas_keys => {
-                        let mut secs = keys.canvas_help_sections();
-                        let en = enabled_ids(&*sess!(), &cx.acts);
-                        let own = cx
-                            .acts
-                            .help_section("canvas", &cx.lang, |a| en.iter().any(|e| e == a));
-                        if let Some(own) = own {
-                            secs.insert(1.min(secs.len()), own);
-                        }
-                        (lines_of(&secs), keys.canvas_help_title())
+                        (keys.canvas_help_sections(), keys.canvas_help_title())
                     }
-                    (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
+                    (None, _) => (
+                        keys.help_sections_scrolling(paged, text_scrolls),
+                        keys.help_title(),
+                    ),
                 };
+                // The plugin's own keys: one section under its name, right after the screen's
+                // own (the host's order).
+                if let Some(own) = cx.acts.help_section(act_ctx, &cx.lang, act_on) {
+                    secs.insert(keys.plugin_section_at(act_ctx, &secs), own);
+                }
+                let lines = lines_of(&secs);
                 // The panel is laid out in the whole screen, as the host's is; the scroll is
                 // settled at draw time (the end of the help is as far as it goes).
                 let screen = terminal
@@ -1634,7 +1653,18 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     .join("  ");
                             }
                         }
-                        draw::footer_row(&keys.table_footer_tokens(m), "", "", width)
+                        // The cell popup has its own keys: the plugin's are not there.
+                        let tokens = if m.popup {
+                            keys.table_footer_tokens(m)
+                        } else {
+                            cx.acts.with_footer(
+                                act_ctx,
+                                &cx.lang,
+                                act_on,
+                                keys.table_footer_tokens(m),
+                            )
+                        };
+                        draw::footer_row(&tokens, "", "", width)
                     }
                     None if image_mode.is_some() && !failed_text_screen => {
                         let m = image_mode.unwrap_or(ImageMode {
@@ -1665,29 +1695,33 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
                         draw::footer_row(
-                            &keys.image_footer_tokens(m.paged),
+                            &cx.acts.with_footer(
+                                act_ctx,
+                                &cx.lang,
+                                act_on,
+                                keys.image_footer_tokens(m.paged),
+                            ),
                             format!("{zoom}{page}  {busy}").trim_end(),
                             &cx.title,
                             width,
                         )
                     }
                     None => draw::footer(
-                        &if canvas_keys {
-                            let en = enabled_ids(&*sess!(), &cx.acts);
-                            cx.acts.with_footer(
-                                "canvas",
-                                &cx.lang,
-                                |a| en.iter().any(|e| e == a),
-                                keys.canvas_footer_tokens(),
-                            )
-                        } else if matches!(base, draw::Frame::Document(_)) {
-                            keys.document_footer_tokens(st.scrolls)
-                        } else {
-                            keys.footer_tokens_paged(
-                                st.scrolls || (failed_text_screen && text_scrolls),
-                                paged,
-                            )
-                        },
+                        &cx.acts.with_footer(
+                            act_ctx,
+                            &cx.lang,
+                            act_on,
+                            if canvas_keys {
+                                keys.canvas_footer_tokens()
+                            } else if matches!(base, draw::Frame::Document(_)) {
+                                keys.document_footer_tokens(st.scrolls)
+                            } else {
+                                keys.footer_tokens_paged(
+                                    st.scrolls || (failed_text_screen && text_scrolls),
+                                    paged,
+                                )
+                            },
+                        ),
                         &cx.title,
                         &base,
                         st.scroll,
@@ -1841,7 +1875,22 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // footer and the help name them (`ImageMode::paged`): with no pictures to draw
                 // them they do nothing, and are not named.
                 let on_image = image_mode.is_some_and(|m| m.paged);
+                // The plugin's layer (konoma asks it before the shared keys; on a canvas the fixed
+                // keys too, elsewhere the fixed keys are the host's): a key it declares for the
+                // screen on view. Not in the help, not in the cell popup.
+                let declared = if st.help.is_none()
+                    && !popup_open
+                    && st.reopened_as.is_none()
+                    && (canvas_keys || !is_fixed_key(&key))
+                {
+                    key_press(&key)
+                        .and_then(|kp| cx.acts.for_key(act_ctx, kp))
+                        .cloned()
+                } else {
+                    None
+                };
                 let act = match (table_keys, image_mode) {
+                    _ if declared.is_some() => None,
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) if failed_text => keys.act(&key).or_else(|| {
                         keys.image_act(&key, false)
@@ -1866,7 +1915,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
                 // The copy menu opens on the key bound to it, where a key acts (not in the help
                 // or the cell popup).
-                if act.is_none() && st.help.is_none() && !popup_open {
+                if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
                     let ctx = if table_keys {
                         CoreContext::Table
                     } else if image_keys {
@@ -1883,36 +1932,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                     }
                 }
-                // A key a plugin declared for the canvas acts where no key of the host's does.
-                if act.is_none() && canvas_keys && st.help.is_none() && st.menu.is_none() {
-                    let found = key_press(&key)
-                        .and_then(|kp| cx.acts.for_key("canvas", kp))
-                        .cloned();
-                    let enabled = found
-                        .as_ref()
-                        .is_some_and(|b| sess!().enabled(&b.act));
-                    match hacts::gate(found.as_ref(), enabled, cx.acts.read_only) {
+                // The declared action runs when the session says it works now; a key of an action
+                // that does not work does nothing (and is not offered).
+                if let Some(b) = declared {
+                    let enabled = sess!().enabled(&b.act);
+                    match hacts::gate(Some(&b), enabled, cx.acts.read_only) {
                         hacts::ActGate::Off => {}
                         hacts::ActGate::ReadOnly => {
                             st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());
                             need_view = false;
                         }
                         hacts::ActGate::On => {
-                            if let Some(b) = found {
-                                st.user_act = true;
-                                let admitted = typing::admit_act(
-                                    &mut st.act_queue,
-                                    st.key_queue.len(),
-                                    &b.act,
-                                );
-                                if let Some(n) = admitted.notice {
-                                    st.flash = Some(notice_text(n, keys.lang()));
-                                }
-                                need_view = true;
-                                if admitted.queued {
-                                    flush_jobs(sess!(), &mut st, cx);
-                                }
+                            st.user_act = true;
+                            let admitted =
+                                typing::admit_act(&mut st.act_queue, st.key_queue.len(), &b.act);
+                            if let Some(n) = admitted.notice {
+                                st.flash = Some(notice_text(n, keys.lang()));
                             }
+                            // A view is asked for again only when the answer says so.
+                            need_view = admitted.queued && flush_jobs(sess!(), &mut st, cx);
                         }
                     }
                 }
@@ -2009,6 +2047,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
         }
     }
+}
+
+/// Whether `key` is one of the host's fixed keys (arrows, `Home`, `End`, `Esc`, `Enter`, `Tab`,
+/// `Shift-Tab`): outside a canvas they never reach the plugin's layer (konoma's
+/// `ops::keys::is_fixed_code`).
+fn is_fixed_key(key: &Key) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Esc
+            | KeyCode::Enter
+            | KeyCode::Tab
+            | KeyCode::BackTab
+    )
 }
 
 /// The declared actions the session says work now (the one answer the key, the footer and the

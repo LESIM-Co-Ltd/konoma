@@ -6,8 +6,8 @@
 //! same screen after each key.
 //!
 //! The plugin here declares no action and no text input, so every key it is handed is a key that
-//! does nothing: the two screens must agree. What a plugin does with a key it declares (an action
-//! on `j`, a text input) is the host's alone for now (the app forwards no key to the session).
+//! does nothing: the two screens must agree. What a plugin does with a key it declares (an action,
+//! a text input) is compared in `plugin_act_parity`.
 
 use super::canvas::{Draw, Painter};
 use super::image_parity::{open_nested, WhenIdle};

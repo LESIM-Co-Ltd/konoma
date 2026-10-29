@@ -320,7 +320,9 @@ impl CoreMsg {
             CoreMsg::SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
             CoreMsg::PluginInputFull => "the plugin is not answering: input refused",
             CoreMsg::PluginPasteCut => "the paste was too long: cut for the plugin",
-            CoreMsg::PluginReadOnly => "this plugin is set to read-only ([plugins.<id>] read_only = true)",
+            CoreMsg::PluginReadOnly => {
+                "this plugin is set to read-only ([plugins.<id>] read_only = true)"
+            }
             CoreMsg::StPluginInput => "INPUT",
             CoreMsg::StPluginInputHint => "the plugin is taking your typing   Esc:leave",
         }
@@ -433,7 +435,9 @@ impl CoreMsg {
             }
             CoreMsg::PluginInputFull => "プラグインが応答しません: 入力を受け付けません",
             CoreMsg::PluginPasteCut => "貼り付けが長すぎるため、プラグインには途中までを渡しました",
-            CoreMsg::PluginReadOnly => "このプラグインは読み取り専用です([plugins.<id>] read_only = true)",
+            CoreMsg::PluginReadOnly => {
+                "このプラグインは読み取り専用です([plugins.<id>] read_only = true)"
+            }
             CoreMsg::StPluginInput => "入力",
             CoreMsg::StPluginInputHint => "プラグインが入力を受けています   Esc:抜ける",
         }

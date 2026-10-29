@@ -172,7 +172,7 @@ impl TerminalGuard {
             Hide,
             crossterm::event::EnableBracketedPaste
         )
-            .map_err(|e| AppError::Terminal(e.to_string()))?;
+        .map_err(|e| AppError::Terminal(e.to_string()))?;
         guard
             .terminal
             .clear()

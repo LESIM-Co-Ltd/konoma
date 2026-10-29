@@ -20,7 +20,6 @@ use konoma_plugin::keys::KeyIssue;
 use konoma_plugin::registry::{NoteKind, Registry};
 use konoma_plugin::{ApiVersion, Tr};
 
-
 /// Make a string live for the whole run, once per distinct value. Ids come from manifests, so the
 /// set is as small as the set of declared plugins and actions.
 fn intern(s: &str) -> &'static str {
@@ -147,9 +146,8 @@ impl PluginKeys {
             } else {
                 tables.remove(id)
             };
-            let (acts, key_notes) = bind_actions(id, manifest, user.as_ref(), |a| {
-                PluginAct::new(id, a)
-            });
+            let (acts, key_notes) =
+                bind_actions(id, manifest, user.as_ref(), |a| PluginAct::new(id, a));
             out.notes.extend(key_notes.into_iter().map(|n| match n {
                 KeyNote::UnknownAction { plugin, action } => {
                     PluginNote::UnknownAction { plugin, action }
@@ -247,10 +245,10 @@ impl PluginKeys {
 mod tests {
     use std::sync::Arc;
 
+    use crate::keymap::KeyPress;
     use crossterm::event::KeyCode;
     use konoma_plugin::keys::{KeyName as PKeyName, KeySpec};
     use konoma_plugin::registry::PluginOrigin;
-    use crate::keymap::KeyPress;
 
     use super::*;
     use crate::plugins::test_plugins::{Hexdump, Variant};
