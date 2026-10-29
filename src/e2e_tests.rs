@@ -20929,6 +20929,7 @@ mod menus;
 
 #[cfg(test)]
 mod overlay_lists;
+mod overlay_wide;
 
 #[cfg(test)]
 mod newkeys;

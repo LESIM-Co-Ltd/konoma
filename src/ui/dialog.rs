@@ -4,7 +4,7 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -116,7 +116,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .block(block)
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup); // clear the background before drawing
+    konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
     frame.render_widget(para, popup);
 }
 
@@ -159,6 +159,6 @@ fn render_preview(
         .block(block)
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup);
+    konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
     frame.render_widget(para, popup);
 }

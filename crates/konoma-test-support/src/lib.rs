@@ -469,3 +469,184 @@ pub fn build_animated_gif(w: u32, h: u32, frames: &[([u8; 3], u32)]) -> Vec<u8> 
     }
     out
 }
+
+/// A backend that applies the updates as a terminal does. `ratatui::backend::TestBackend` only stores the cells it is
+/// given, so a cell that a wide character covered keeps what it held before: the wide character
+/// is drawn over a mark at the cell after it (ratatui skips that cell), and when a narrow one is
+/// drawn over the wide character's first cell later, ratatui sees a blank where a blank was and
+/// sends nothing, while a real terminal has blanked the second half (tmux does; xterm, kitty
+/// and Ghostty alike) and the stale mark would show in the test only. Tests that look at
+/// the edges of an overlay read the screen this leaves (`.1`).
+pub struct TermScreen(
+    pub ratatui::backend::TestBackend,
+    pub ratatui::buffer::Buffer,
+);
+
+impl TermScreen {
+    pub fn new(w: u16, h: u16) -> Self {
+        TermScreen(
+            ratatui::backend::TestBackend::new(w, h),
+            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
+        )
+    }
+}
+
+impl ratatui::backend::Backend for TermScreen {
+    type Error = std::convert::Infallible;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        let wide =
+            |c: &ratatui::buffer::Cell| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1;
+        let width = self.1.area.width;
+        for (x, y, cell) in content {
+            let buf = &mut self.1;
+            // Drawing over the second half of a wide character blanks its first half.
+            if x > 0 && wide(&buf[(x - 1, y)]) {
+                buf[(x - 1, y)].reset();
+            }
+            // Drawing over the first half of one blanks its second half.
+            if wide(&buf[(x, y)]) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+            buf[(x, y)] = cell.clone();
+            // A wide character covers the cell after it.
+            if wide(cell) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+        }
+        Ok(())
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.0.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        p: P,
+    ) -> Result<(), Self::Error> {
+        self.0.set_cursor_position(p)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.1.reset();
+        self.0.clear()
+    }
+    fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.0.clear_region(c)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.0.size()
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.0.window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush()
+    }
+}
+
+/// The rectangle an overlay covers: the bounding box of the cells it draws on an empty screen.
+fn overlay_rect(
+    w: u16,
+    h: u16,
+    overlay: &mut dyn FnMut(&mut ratatui::Frame),
+) -> ratatui::layout::Rect {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    term.draw(|f| overlay(f)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let (mut x0, mut y0, mut x1, mut y1) = (u16::MAX, u16::MAX, 0u16, 0u16);
+    for y in 0..h {
+        for x in 0..w {
+            if buf[(x, y)].symbol() != " " {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    assert!(
+        x0 != u16::MAX,
+        "the overlay draws nothing on an empty screen"
+    );
+    ratatui::layout::Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+}
+
+/// Checks that an overlay looks the same on a background of wide characters as on an empty one,
+/// as a terminal shows it (see [`TermScreen`]). The background is `日` repeated across the whole
+/// screen, once with the characters starting on even columns and once on odd ones, so a wide
+/// character always crosses the overlay's left edge (its second half under the overlay's first
+/// column) in one run and its right edge (its first half in the overlay's last column) in the
+/// other. Each run is drawn as the first frame and after a frame of ASCII (where every cell
+/// changes, so ratatui sends the wide characters and skips the cell after each).
+///
+/// `overlay` draws the overlay over whatever the frame holds. Returns the overlay's rectangle.
+pub fn assert_overlay_over_wide_background(
+    name: &str,
+    w: u16,
+    h: u16,
+    mut overlay: impl FnMut(&mut ratatui::Frame),
+) -> ratatui::layout::Rect {
+    use ratatui::Terminal;
+    let rect = overlay_rect(w, h, &mut overlay);
+    let mut empty = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    empty.draw(|f| overlay(f)).unwrap();
+    let expected = empty.backend().buffer().clone();
+    for parity in 0..2u16 {
+        for after_ascii in [false, true] {
+            let mut term = Terminal::new(TermScreen::new(w, h)).unwrap();
+            if after_ascii {
+                term.draw(|f| {
+                    for y in 0..h {
+                        f.buffer_mut().set_string(
+                            0,
+                            y,
+                            "a".repeat(w as usize),
+                            ratatui::style::Style::default(),
+                        );
+                    }
+                })
+                .unwrap();
+            }
+            term.draw(|f| {
+                for y in 0..h {
+                    let mut x = parity;
+                    while x + 1 < w {
+                        f.buffer_mut()
+                            .set_string(x, y, "日", ratatui::style::Style::default());
+                        x += 2;
+                    }
+                }
+                overlay(f);
+            })
+            .unwrap();
+            let screen = &term.backend().1;
+            let what = format!(
+                "{name}, wide characters from column parity {parity}, after ASCII: {after_ascii}"
+            );
+            for y in rect.top()..rect.bottom() {
+                for x in rect.left()..rect.right() {
+                    assert_eq!(
+                        screen[(x, y)].symbol(),
+                        expected[(x, y)].symbol(),
+                        "{what}: the overlay's cell ({x}, {y}) differs"
+                    );
+                }
+                // A wide character left of the overlay would have its second half under the border.
+                if rect.x > 0 {
+                    let sym = screen[(rect.x - 1, y)].symbol();
+                    assert!(
+                        unicode_width::UnicodeWidthStr::width(sym) <= 1,
+                        "{what}: ({}, {y}) holds {sym:?}",
+                        rect.x - 1
+                    );
+                }
+            }
+        }
+    }
+    rect
+}

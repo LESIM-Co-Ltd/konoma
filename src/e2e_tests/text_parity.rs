@@ -11,6 +11,7 @@ use super::table_parity::{hints, panel_lines, presses, rows_of, same_footer, sam
 use super::*;
 use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, Display};
 use konoma_plugin::TermCaps;
+use konoma_test_support::TermScreen as Screen;
 use std::sync::Arc;
 
 /// What the app shows after the presses.
@@ -67,85 +68,6 @@ fn app_text(
         .draw(|f| *f.buffer_mut() = screen.clone())
         .expect("draw");
     shown
-}
-
-/// A backend that applies the updates as a terminal does. `TestBackend` only stores the cells it is
-/// given, so a cell that a wide character covered keeps what it held before: the wide character
-/// is drawn over a mark at the cell after it (ratatui skips that cell), and when a narrow one is
-/// drawn over the wide character's first cell later, ratatui sees a blank where a blank was and
-/// sends nothing, while a real terminal has blanked the second half (tmux does; xterm, kitty
-/// and Ghostty alike) and the stale mark would show in the test only. The host's frames
-/// are free of it (it clears before the last frame), so the app's are made as a terminal shows.
-struct Screen(TestBackend, ratatui::buffer::Buffer);
-
-impl Screen {
-    fn new(w: u16, h: u16) -> Self {
-        Screen(
-            TestBackend::new(w, h),
-            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
-        )
-    }
-}
-
-impl ratatui::backend::Backend for Screen {
-    type Error = std::convert::Infallible;
-
-    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
-    where
-        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
-    {
-        let wide =
-            |c: &ratatui::buffer::Cell| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1;
-        let width = self.1.area.width;
-        for (x, y, cell) in content {
-            let buf = &mut self.1;
-            // Drawing over the second half of a wide character blanks its first half.
-            if x > 0 && wide(&buf[(x - 1, y)]) {
-                buf[(x - 1, y)].reset();
-            }
-            // Drawing over the first half of one blanks its second half.
-            if wide(&buf[(x, y)]) && x + 1 < width {
-                buf[(x + 1, y)].reset();
-            }
-            buf[(x, y)] = cell.clone();
-            // A wide character covers the cell after it.
-            if wide(cell) && x + 1 < width {
-                buf[(x + 1, y)].reset();
-            }
-        }
-        Ok(())
-    }
-    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
-        self.0.hide_cursor()
-    }
-    fn show_cursor(&mut self) -> Result<(), Self::Error> {
-        self.0.show_cursor()
-    }
-    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
-        self.0.get_cursor_position()
-    }
-    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
-        &mut self,
-        p: P,
-    ) -> Result<(), Self::Error> {
-        self.0.set_cursor_position(p)
-    }
-    fn clear(&mut self) -> Result<(), Self::Error> {
-        self.1.reset();
-        self.0.clear()
-    }
-    fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
-        self.0.clear_region(c)
-    }
-    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
-        self.0.size()
-    }
-    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
-        self.0.window_size()
-    }
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        self.0.flush()
-    }
 }
 
 /// What the host shows after the presses, once the grammar is warm (so the coloring is not

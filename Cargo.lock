@@ -2034,6 +2034,8 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "image",
+ "ratatui",
+ "unicode-width",
  "zip",
 ]
 

@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 /// The widest the help panel gets, in cells.
@@ -95,26 +95,8 @@ pub fn render_panel(
         .block(block)
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
-    blank_wide_before(buf, popup);
-    Clear.render(popup, buf);
+    crate::overlay::clear_overlay(buf, popup);
     para.render(popup, buf);
-}
-
-/// Blank a wide character that stands left of `popup` with its second half under the panel's
-/// first column. The buffer keeps the character whole, so ratatui would skip the panel's border
-/// cell there (it is the wide character's second half) and the terminal would show half of a
-/// character where the border should be.
-fn blank_wide_before(buf: &mut Buffer, popup: Rect) {
-    let area = buf.area;
-    if popup.x == 0 || popup.x > area.right() {
-        return;
-    }
-    for y in popup.top().max(area.top())..popup.bottom().min(area.bottom()) {
-        let cell = &mut buf[(popup.x - 1, y)];
-        if cell.symbol().width() > 1 {
-            cell.reset();
-        }
-    }
 }
 
 /// Join `tokens` with two spaces and keep only as many as fit in `max` cells. When some are cut,
@@ -178,6 +160,23 @@ mod tests {
         // Outside the panel's rows the character stays.
         assert_eq!(buf[(popup.x - 1, 0)].symbol(), "日");
         assert_eq!(buf[(2, popup.y)].symbol(), "本");
+    }
+
+    /// Over a background of wide characters, as a terminal shows it, the panel is whole.
+    #[test]
+    fn the_panel_looks_the_same_over_wide_characters() {
+        for (w, h) in [(100, 40), (99, 40), (30, 10)] {
+            konoma_test_support::assert_overlay_over_wide_background("help panel", w, h, |f| {
+                let area = f.area();
+                render_panel(
+                    f.buffer_mut(),
+                    area,
+                    vec![Line::raw("x"); 10],
+                    0,
+                    "Help".into(),
+                );
+            });
+        }
     }
 
     #[test]
