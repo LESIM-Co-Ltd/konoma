@@ -5,6 +5,7 @@ mod help;
 mod keys;
 mod looping;
 mod open;
+mod options;
 mod pictures;
 mod plugin;
 mod reopen;

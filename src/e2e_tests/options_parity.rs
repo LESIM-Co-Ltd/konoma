@@ -145,6 +145,10 @@ struct Tally {
     rewrapped: usize,
     canvases: usize,
     cycles: usize,
+    /// Files whose title was written three different ways (relative, `~/`, full).
+    three_styles: usize,
+    /// Titles that began with `~/` after one `p`.
+    tilde: usize,
 }
 
 /// Every item, once and round a whole cycle, on every file of every display: the which-key
@@ -153,6 +157,8 @@ struct Tally {
 fn the_options_menu_agrees_with_the_host() {
     let dir = fixtures();
     let root = canon(&dir);
+    // The fixtures are HOME (for this thread only), so the `home` style differs from `full`.
+    let _home = konoma_host_core::paths::TestHome::set(&root);
     let mut t = Tally::default();
     for case in cases() {
         for file in &case.files {
@@ -179,6 +185,23 @@ fn the_options_menu_agrees_with_the_host() {
                 if hr != frame_rows(&base_h) {
                     t.retitled += usize::from(hr[0] != frame_rows(&base_h)[0]);
                     t.rewrapped += usize::from(hr[1..] != frame_rows(&base_h)[1..]);
+                }
+                // The three path styles are three titles: relative, `~/...` and the full path.
+                if case.name != "canvas" && *spec == ", p" {
+                    let full = host_of(&case, &root, file, HOST_H, ", p , p");
+                    let (t0, t1, t2) = (
+                        frame_rows(&base_h)[0].clone(),
+                        hr[0].clone(),
+                        frame_rows(&full)[0].clone(),
+                    );
+                    assert!(t1.contains("~/"), "{what}: home title {t1}");
+                    assert!(
+                        !t0.contains("~/") && !t2.contains("~/"),
+                        "{what}: {t0} {t2}"
+                    );
+                    assert!(t0 != t1 && t1 != t2 && t0 != t2, "{what}: {t0} {t1} {t2}");
+                    t.three_styles += 1;
+                    t.tilde += 1;
                 }
                 // A whole cycle comes round to where it began (three path styles, two wraps).
                 if matches!(*spec, ", p , p , p" | ", w , w") && case.name != "canvas" {
@@ -221,6 +244,8 @@ fn the_options_menu_agrees_with_the_host() {
     assert!(t.idle >= files * (SPECS.len() - 1), "{}", t.idle);
     assert_eq!(t.cycles, 2 * (files - 2));
     assert_eq!(t.canvases, 2 * SPECS.len());
+    assert_eq!(t.three_styles, files - 2);
+    assert_eq!(t.tilde, files - 2);
     // Some of the keys changed the title, and some changed the text.
     assert!(t.retitled >= files * 3, "{}", t.retitled);
     assert!(t.rewrapped >= 6, "{}", t.rewrapped);
@@ -255,4 +280,52 @@ fn the_options_rows_of_the_help_agree_with_the_host() {
         compared += hl.len();
     }
     assert!(compared >= 7, "{compared}");
+}
+
+/// A table cell's popup is open: `,` is not the menu there (the popup has its own keys), in the
+/// host and in the app alike, and closing the popup leaves the table as it was.
+#[test]
+fn the_options_menu_does_not_open_over_the_cell_popup_as_in_the_host() {
+    let dir = fixtures();
+    let root = canon(&dir);
+    let _home = konoma_host_core::paths::TestHome::set(&root);
+    let case = &cases()[2];
+    let mut compared = 0;
+    for file in &case.files {
+        let base = host_of(case, &root, file, HOST_H, "<CR>");
+        let closed = host_of(case, &root, file, HOST_H, "");
+        assert_ne!(
+            frame_rows(&base),
+            frame_rows(&closed),
+            "{file}: the popup is open"
+        );
+        for spec in [
+            "<CR> ,",
+            "<CR> , p",
+            "<CR> , w",
+            "<CR> , p , p",
+            "<CR> , <Esc>",
+            "<CR> , p <Esc>",
+            "<CR> , w <Esc> ,",
+            "<CR> , p <Esc> , p",
+        ] {
+            let what = format!("{file} [{spec}]");
+            let h = host_of(case, &root, file, HOST_H, spec);
+            let mut o = app_open((case.plugins)(), &root.join(file));
+            let a = app_run_with(&mut o, &root, APP_H, spec, false).0;
+            assert_eq!(frame_rows(&h), frame_rows(&a), "{what}: the frame differs");
+            let (ht, at) = (text_of(&footer_cells(&h)), text_of(&footer_cells(&a)));
+            assert_eq!(ht.contains('▸'), at.contains('▸'), "{what}: {ht} | {at}");
+            if spec.starts_with("<CR> , ") && !spec.contains("<Esc>") {
+                // Still the popup: no menu, and the title is the one the popup opened with.
+                assert!(
+                    !ht.contains('▸'),
+                    "{what}: the menu opened over the popup: {ht}"
+                );
+                assert_eq!(frame_rows(&h), frame_rows(&base), "{what}: popup changed");
+            }
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 2 * 8);
 }
