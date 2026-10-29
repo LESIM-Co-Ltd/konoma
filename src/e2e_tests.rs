@@ -21211,5 +21211,6 @@ mod image_pages_parity;
 mod image_parity;
 mod options_parity;
 mod plugin_act_parity;
+mod space_menu_parity;
 mod table_parity;
 mod text_parity;

@@ -20,6 +20,7 @@ use konoma_widgets::table::{popup_page_step, popup_scroll_by, popup_scroll_to, T
 
 use super::draw::{self, FailedImage, Frame, ImageFrame, PopupState, TableFrame};
 use super::pictures::Pictures;
+use super::space;
 use super::still::StillShape;
 use super::window;
 use super::AppError;
@@ -306,10 +307,13 @@ impl AppKeys {
         }
     }
 
-    /// Whether `key` opens a menu of `ctx` that has items (a key that acts on its own).
+    /// Whether `key` opens a menu of `ctx` that has items (a key that acts on its own). The
+    /// `Space` menu always has the way back and the help.
     fn menu_key_acts(&self, ctx: CoreContext, key: &Key) -> bool {
-        self.copy_menu_of(ctx, key)
-            .is_some_and(|m| self.copy_menu_view(ctx, m).is_some())
+        self.opens_actions(ctx, key)
+            || self
+                .copy_menu_of(ctx, key)
+                .is_some_and(|m| self.copy_menu_view(ctx, m).is_some())
     }
 
     /// Whether `key` is an item of an open copy menu (it acts only as the key after `y`; the help
@@ -946,6 +950,81 @@ impl AppKeys {
             self.lang,
         );
         self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
+    }
+
+    /// Whether `key` opens the `Space` menu of `ctx`.
+    fn opens_actions(&self, ctx: CoreContext, key: &Key) -> bool {
+        key_press(key)
+            .is_some_and(|kp| self.keys.resolve(ctx, kp) == CoreResolution::Menu(CoreMenu::Actions))
+    }
+
+    /// The items of the `Space` menu of the screen (see [`super::space`]).
+    fn space_items(
+        &self,
+        ctx: CoreContext,
+        lang: &str,
+        acts: &super::AppActs,
+        act_ctx: &str,
+        enabled: impl Fn(&str) -> bool,
+    ) -> Vec<konoma_host_core::menu::Item<super::space::SpaceOp, String>> {
+        super::space::items(&self.keys, ctx, self.lang, lang, acts, act_ctx, enabled)
+    }
+
+    /// The which-key line of the open `Space` menu.
+    fn space_line(
+        &self,
+        items: &[konoma_host_core::menu::Item<super::space::SpaceOp, String>],
+        width: u16,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        let pairs: Vec<(KeyPress, String)> =
+            items.iter().map(|i| (i.key, i.label.clone())).collect();
+        konoma_widgets::footer_line::which_key_spans(
+            CoreMsg::WkActionsTitle.tr(self.lang),
+            &konoma_host_core::help::which_key_items(&pairs),
+            width,
+        )
+    }
+
+    /// Puts the `Space` menu's section into the help `secs` where the host lists the menus: before
+    /// the sections of the other menus (`,` and `y`), else before what is true everywhere.
+    fn insert_actions_section(
+        &self,
+        ctx: CoreContext,
+        items: &[konoma_host_core::menu::Item<super::space::SpaceOp, String>],
+        secs: &mut Vec<CoreSection>,
+    ) {
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let Some(open) = look
+            .keys_of(HelpOp::Menu(CoreMenu::Actions))
+            .first()
+            .copied()
+        else {
+            return;
+        };
+        let pairs: Vec<(KeyPress, String)> =
+            items.iter().map(|i| (i.key, i.label.clone())).collect();
+        let Some(sec) = konoma_host_core::help::menu_section(
+            CoreMsg::WkActionsTitle.tr(self.lang),
+            &konoma_host_core::help::help_key(open),
+            &pairs,
+        ) else {
+            return;
+        };
+        let menus = [
+            CoreMsg::WkOptionsTitle,
+            CoreMsg::WkCopyPathTitle,
+            CoreMsg::WkTableCopyTitle,
+            CoreMsg::HelpGlobal,
+        ]
+        .map(|m| m.tr(self.lang));
+        let at = secs
+            .iter()
+            .position(|s| menus.contains(&s.title.as_str()))
+            .unwrap_or(secs.len());
+        secs.insert(at, sec);
     }
 
     /// Where the plugin's section goes in the help of the key context `ctx`: right after the
@@ -1622,6 +1701,16 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else {
             "text"
         };
+        // The shared keys' context of the same screen (the `Space` menu's).
+        let core_ctx = if mode.is_some() {
+            CoreContext::Table
+        } else if image_mode.is_some() && !failed_text_screen {
+            CoreContext::Image
+        } else if canvas_keys {
+            CoreContext::Canvas
+        } else {
+            CoreContext::Text
+        };
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
         let en: Vec<String> = enabled_ids(&*sess!(), &acts);
@@ -1654,6 +1743,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
                     secs.insert(keys.plugin_section_at(act_ctx, &secs), own);
                 }
+                let items = keys.space_items(core_ctx, &cx.lang, &acts, act_ctx, act_on);
+                keys.insert_actions_section(core_ctx, &items, &mut secs);
                 let lines = lines_of(&secs);
                 // The panel is laid out in the whole screen, as the host's is; the scroll is
                 // settled at draw time (the end of the help is as far as it goes).
@@ -1775,6 +1866,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     CoreMsg::StPluginInputHint.tr(keys.lang()),
                 ))]
             }
+            (None, Some((c, CoreMenu::Actions))) => keys.space_line(
+                &keys.space_items(c, &cx.lang, &acts, act_ctx, act_on),
+                width,
+            ),
             (None, Some((c, m))) => keys
                 .which_key_line(c, m, width)
                 .unwrap_or_else(|| hint_spans(footer)),
@@ -1849,10 +1944,38 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 st.flash = None;
                 // A key waiting in the copy menu runs its item; any other closes the menu and
                 // does nothing else (`Esc` and `q` included), as the host's.
-                if let Some((ctx, menu)) = st.menu.take() {
-                    need_view = false;
-                    let item =
-                        key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
+                let mut picked: Option<space::SpaceOp> = None;
+                let mut in_menu = false;
+                let mut item: Option<CoreAction> = None;
+                match st.menu.take() {
+                    Some((ctx, CoreMenu::Actions)) => {
+                        // The `Space` menu: a key of an item picks it; the display options run
+                        // as the `,` menu's do, the others as the key of the operation would
+                        // (below); any other key only closes the menu.
+                        in_menu = true;
+                        need_view = false;
+                        let items = keys.space_items(ctx, &cx.lang, &acts, act_ctx, act_on);
+                        match key_press(&key)
+                            .and_then(|kp| items.iter().find(|i| i.key == kp))
+                            .map(|i| i.action)
+                        {
+                            Some(space::SpaceOp::Core(a)) => item = Some(a),
+                            Some(op) => {
+                                picked = Some(op);
+                                in_menu = false;
+                            }
+                            None => {}
+                        }
+                    }
+                    Some((ctx, menu)) => {
+                        in_menu = true;
+                        need_view = false;
+                        item =
+                            key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
+                    }
+                    None => {}
+                }
+                if in_menu {
                     if let Some(action @ (CoreAction::ToggleWrap | CoreAction::CyclePathStyle)) =
                         item
                     {
@@ -1910,15 +2033,22 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // The plugin's layer (konoma asks it before the shared keys; on a canvas the fixed
                 // keys too, elsewhere the fixed keys are the host's): a key it declares for the
                 // screen on view. Not in the help, not in the cell popup.
-                let declared =
-                    if st.help.is_none() && !popup_open && (canvas_keys || !is_fixed_key(&key)) {
-                        key_press(&key)
-                            .and_then(|kp| acts.for_key(act_ctx, kp))
-                            .cloned()
-                    } else {
-                        None
-                    };
+                let declared = if let Some(op) = picked {
+                    space::declared(&acts, act_ctx, op).cloned()
+                } else if st.help.is_none() && !popup_open && (canvas_keys || !is_fixed_key(&key)) {
+                    key_press(&key)
+                        .and_then(|kp| acts.for_key(act_ctx, kp))
+                        .cloned()
+                } else {
+                    None
+                };
                 let act = match (table_keys, image_mode) {
+                    _ if picked.is_some() => match picked {
+                        Some(space::SpaceOp::Back) => Some(Act::Back),
+                        Some(space::SpaceOp::Help) => Some(Act::Help),
+                        Some(space::SpaceOp::Cell) => Some(Act::Cell),
+                        _ => None,
+                    },
                     _ if declared.is_some() => None,
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) if failed_text => keys.act(&key).or_else(|| {
@@ -1944,7 +2074,16 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
                 // The copy menu opens on the key bound to it, where a key acts (not in the help
                 // or the cell popup).
-                if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
+                if picked.is_none()
+                    && act.is_none()
+                    && declared.is_none()
+                    && st.help.is_none()
+                    && !popup_open
+                    && keys.opens_actions(core_ctx, &key)
+                {
+                    st.menu = Some((core_ctx, CoreMenu::Actions));
+                    need_view = false;
+                } else if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
                     let ctx = if table_keys {
                         CoreContext::Table
                     } else if image_keys {

@@ -145,7 +145,7 @@ fn the_footer_and_the_help_in_english() {
         r[4],
         "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
     );
-    let (r, left) = run(&k, (70, 32), vec![key('?')]);
+    let (r, left) = run(&k, (70, 38), vec![key('?')]);
     assert_eq!(left, 0);
     let body = [
         "Preview: text / Markdown",
@@ -156,6 +156,12 @@ fn the_footer_and_the_help_in_english() {
         "",
         "Movement",
         "  j / k / ↑ ↓     scroll",
+        "",
+        "Actions",
+        "  Space a         back",
+        "  Space ?         help",
+        "  Space b         path",
+        "  Space c         wrap",
         "",
         "Sort & display",
         "  , p             path",
@@ -182,7 +188,7 @@ fn the_footer_and_the_help_in_english() {
     // around it, and the footer is the help's.
     assert!(r[0].starts_with("┌ title "), "{}", r[0]);
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
-    assert_eq!(r[31], "j/k:scroll  g/G:ends  ?/Esc:close");
+    assert_eq!(r[37], "j/k:scroll  g/G:ends  ?/Esc:close");
 }
 
 #[test]
@@ -194,7 +200,7 @@ fn the_footer_and_the_help_in_japanese() {
         r[4],
         "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  ,:表示 …"
     );
-    let (r, _) = run(&k, (70, 28), vec![key('?')]);
+    let (r, _) = run(&k, (70, 36), vec![key('?')]);
     let body = [
         "プレビュー: テキスト/Markdown",
         "  g / G           先頭 / 末尾",
@@ -204,6 +210,12 @@ fn the_footer_and_the_help_in_japanese() {
         "",
         "移動 (Movement)",
         "  j / k / ↑ ↓     スクロール",
+        "",
+        "操作",
+        "  Space a         戻る",
+        "  Space ?         ヘルプ",
+        "  Space b         パス",
+        "  Space c         折返し",
         "",
         "並べ替えと表示",
         "  , p             パス",
@@ -312,7 +324,7 @@ fn the_less_scheme_names_its_own_keys() {
         r[2],
         "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  f/b/PgDn/PgUp:page  title"
     );
-    let (r, _) = run(&k, (80, 30), vec![key('?')]);
+    let (r, _) = run(&k, (80, 40), vec![key('?')]);
     let body = [
         "Preview: text / Markdown",
         "  g / G           top / bottom",
@@ -322,6 +334,12 @@ fn the_less_scheme_names_its_own_keys() {
         "",
         "Movement",
         "  j / k / \u{2191} \u{2193}     scroll",
+        "",
+        "Actions",
+        "  Space a         back",
+        "  Space ?         help",
+        "  Space b         path",
+        "  Space c         wrap",
         "",
         "Sort & display",
         "  , p             path",
@@ -478,7 +496,7 @@ fn q_with_the_help_open_quits_the_app_like_the_host() {
 fn a_full_width_key_aligns_the_help_by_cells() {
     // `あ` is two cells wide; the config accepts any one-character key.
     let k = keys("[keys.text]\n\"あ\" = \"toggle_help\"\n", Lang::En);
-    let (r, _) = run(&k, (70, 28), vec![key('?')]);
+    let (r, _) = run(&k, (70, 36), vec![key('?')]);
     let w = |s: &str| unicode_width::UnicodeWidthStr::width(s);
     let (_, inner) = panel(&r);
     // The keys that fit the 16-cell key column (a longer one pushes its description right).
@@ -492,6 +510,8 @@ fn a_full_width_key_aligns_the_help_by_cells() {
     let descs = [
         "toggle this help",
         "top / bottom",
+        "back",
+        "help",
         "half page",
         "scroll",
         "page",

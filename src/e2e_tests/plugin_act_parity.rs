@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     Canvas,
     Text,
     Table,
@@ -38,10 +38,10 @@ enum Kind {
     Document,
 }
 
-const KINDS: [Kind; 4] = [Kind::Canvas, Kind::Text, Kind::Table, Kind::Document];
+pub(super) const KINDS: [Kind; 4] = [Kind::Canvas, Kind::Text, Kind::Table, Kind::Document];
 
 #[derive(Clone)]
-struct Opt {
+pub(super) struct Opt {
     kind: Kind,
     /// The canvas asks for the typing.
     input: bool,
@@ -59,7 +59,7 @@ struct Opt {
 }
 
 impl Opt {
-    fn new(kind: Kind) -> Opt {
+    pub(super) fn new(kind: Kind) -> Opt {
         Opt {
             kind,
             input: false,
@@ -70,7 +70,7 @@ impl Opt {
             reopen: false,
         }
     }
-    fn reopen(mut self) -> Opt {
+    pub(super) fn reopen(mut self) -> Opt {
         self.reopen = true;
         self
     }
@@ -78,11 +78,11 @@ impl Opt {
         self.reload = true;
         self
     }
-    fn lang(mut self, l: &'static str) -> Opt {
+    pub(super) fn lang(mut self, l: &'static str) -> Opt {
         self.lang = l;
         self
     }
-    fn gate(mut self, on: bool) -> Opt {
+    pub(super) fn gate(mut self, on: bool) -> Opt {
         self.gate_on = on;
         self
     }
@@ -90,14 +90,14 @@ impl Opt {
         self.input = true;
         self
     }
-    fn toml(mut self, t: &str) -> Opt {
+    pub(super) fn toml(mut self, t: &str) -> Opt {
         self.toml = t.to_string();
         self
     }
 }
 
 /// What the plugin saw, in order: `act:<id>`, `key:<c>`, `key:<code>`, `paste:<bytes>`.
-type Log = Arc<Mutex<Vec<String>>>;
+pub(super) type Log = Arc<Mutex<Vec<String>>>;
 
 struct Acty {
     id: String,
@@ -370,12 +370,12 @@ fn new_id() -> String {
 }
 
 #[derive(Clone, Debug)]
-enum Step {
+pub(super) enum Step {
     K(&'static str),
     Paste(String),
 }
 
-use Step::{Paste, K};
+pub(super) use Step::{Paste, K};
 
 /// A key press from a token (the shared tokens, and `<Sp>` for the space bar).
 fn kt(t: &str) -> (KeyCode, KeyModifiers) {
@@ -385,13 +385,13 @@ fn kt(t: &str) -> (KeyCode, KeyModifiers) {
     }
 }
 
-struct Run {
-    rows: Vec<String>,
+pub(super) struct Run {
+    pub(super) rows: Vec<String>,
     /// The program left (the host quit or went back to the tree; the app ended).
-    left: bool,
-    log: Vec<String>,
+    pub(super) left: bool,
+    pub(super) log: Vec<String>,
     /// How many sessions the plugin opened.
-    opens: usize,
+    pub(super) opens: usize,
 }
 
 fn config_text(o: &Opt, id: &str) -> String {
@@ -402,7 +402,7 @@ fn config_text(o: &Opt, id: &str) -> String {
     )
 }
 
-fn fixture() -> (crate::test_support::TmpDir, std::path::PathBuf) {
+pub(super) fn fixture() -> (crate::test_support::TmpDir, std::path::PathBuf) {
     let dir = sandbox("plugin-act-parity");
     std::fs::write(dir.join("a.pnt"), b"x").unwrap();
     let root = canon(&dir);
@@ -432,7 +432,11 @@ fn host_sim(root: &std::path::Path, o: &Opt) -> (Sim, Log, Arc<AtomicUsize>) {
     host_sim_sized(root, o, HOST_H)
 }
 
-fn host_sim_sized(root: &std::path::Path, o: &Opt, h: u16) -> (Sim, Log, Arc<AtomicUsize>) {
+pub(super) fn host_sim_sized(
+    root: &std::path::Path,
+    o: &Opt,
+    h: u16,
+) -> (Sim, Log, Arc<AtomicUsize>) {
     let id = new_id();
     let log = Log::default();
     let opens = Arc::new(AtomicUsize::new(0));
@@ -467,7 +471,7 @@ fn host_sim_sized(root: &std::path::Path, o: &Opt, h: u16) -> (Sim, Log, Arc<Ato
     (s, log, opens)
 }
 
-fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
+pub(super) fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     let (mut s, log, opens) = host_sim_sized(root, o, h);
     for st in steps {
         match st {
@@ -494,7 +498,7 @@ fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     }
 }
 
-fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) -> Run {
+pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) -> Run {
     let id = new_id();
     let log = Log::default();
     let opens = Arc::new(AtomicUsize::new(0));
@@ -587,7 +591,7 @@ fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) 
 }
 
 /// The plugin's line (`n=0 l=0 t=[]`) in the rows, as both sides draw it.
-fn counter(rows: &[String]) -> Option<String> {
+pub(super) fn counter(rows: &[String]) -> Option<String> {
     rows.iter().find_map(|r| {
         let b = r.as_bytes();
         (0..r.len().saturating_sub(2)).find_map(|i| {
@@ -618,7 +622,7 @@ fn plugin_tokens(tokens: &[String], expect: &[String]) -> (Vec<String>, Option<u
     (got, at)
 }
 
-fn labels(lang: &str, gate: bool) -> Vec<String> {
+pub(super) fn labels(lang: &str, gate: bool) -> Vec<String> {
     let all = if lang == "ja" {
         ["x:加算", "w:保存", "u:条件付き"]
     } else {

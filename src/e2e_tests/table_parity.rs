@@ -570,7 +570,36 @@ pub(super) fn same_help_rows(
         })
         .map(norm)
         .collect();
-    let app: Vec<String> = al.iter().map(norm).collect();
+    // The `Space` menu's section is the one place the two helps differ by letters, not only by
+    // rows: the host assigns the letters of the items without a key along its whole menu (the
+    // host-only items included), the app along its own. The section is compared by what it names:
+    // each label the app lists is a label of the host's section, and the app has the section
+    // whenever the host does (`space_menu_parity` compares the menus themselves).
+    let space_label = |r: &String| -> Option<String> {
+        let rest = r.strip_prefix("Space ")?;
+        rest.split_once(' ').map(|(_, l)| l.trim().to_string())
+    };
+    let host_space: Vec<String> = hl.iter().filter_map(&space_label).collect();
+    let app_space: Vec<String> = al.iter().filter_map(&space_label).collect();
+    if host_only.contains(&"Space ") {
+        for l in &app_space {
+            assert!(
+                host_space.contains(l),
+                "{what}: the app's Space item `{l}` is not one of the host's: {host_space:?}"
+            );
+        }
+        assert!(
+            host_space.is_empty() || !app_space.is_empty(),
+            "{what}: the app's help lacks the Space section the host has"
+        );
+    }
+    let app: Vec<String> = al
+        .iter()
+        .filter(|r| {
+            !(host_only.contains(&"Space ") && (r.starts_with("Space ") || r.as_str() == "Actions"))
+        })
+        .map(norm)
+        .collect();
     assert_eq!(
         kept, app,
         "{what}: the help rows differ\nhost: {hl:#?}\napp: {al:#?}"

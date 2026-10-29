@@ -22,6 +22,7 @@ mod document;
 mod draw;
 mod looping;
 mod pictures;
+mod space;
 mod still;
 mod term;
 mod window;
