@@ -368,6 +368,198 @@ fn the_markdown_corpus_shows_the_same_page_as_the_host() {
     assert!(checked >= cases.len() * 3, "{checked}");
 }
 
+// ---- the `[ui]` settings of a document: the same TOML loaded by the host and by the app ---------
+
+/// What the app shows after the presses when the config text `toml` was loaded the way the app
+/// loads it (the shared config); the keys follow its `wrap`.
+fn app_term_with(
+    path: &std::path::Path,
+    w: u16,
+    h: u16,
+    spec: &str,
+    toml: &str,
+) -> Terminal<TestBackend> {
+    let shared = ui_shared(toml);
+    let display = konoma_plugin::app::Display::of(&shared);
+    let mut opened = open_file(
+        vec![Arc::new(konoma_markdown::MarkdownPlugin)],
+        path,
+        "en",
+        TermCaps::new(),
+    )
+    .expect("opens");
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        shows: opened.shows.clone(),
+        display: display.clone(),
+        ..AppCx::default()
+    };
+    let ev: Vec<AppEvent> = presses(spec)
+        .into_iter()
+        .map(|(code, mods)| {
+            let ev = KeyEvent::new(code, mods);
+            AppEvent::Key(konoma_plugin::app::key_from_crossterm(&ev).expect("a key"))
+        })
+        .collect();
+    let mut it = ev.into_iter();
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx,
+        &AppKeys::defaults().with_wrap(display.wrap),
+    )
+    .unwrap();
+    assert_eq!(it.count(), 0, "the app ended before the keys ran out");
+    term
+}
+
+/// The host's page with the config text `toml` (the host's `Config` keeps `lang` of the test).
+fn host_term_with(
+    root: &std::path::Path,
+    file: &str,
+    w: u16,
+    h: u16,
+    spec: &str,
+    toml: &str,
+) -> Sim {
+    let mut cfg = ui_host(toml);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config_sized(root, cfg, w, h);
+    s.select(file);
+    s.enter();
+    for (code, mods) in presses(spec) {
+        s.press(code, mods);
+    }
+    s.term.clear().expect("clear");
+    s.draw();
+    s
+}
+
+/// [`inner`] with the colors of each cell: (symbol, foreground, background), by row.
+fn inner_cells(term: &Terminal<TestBackend>) -> Vec<Vec<(String, RColor, RColor)>> {
+    let rows = rows_of(term);
+    let top = rows
+        .iter()
+        .position(|l| l.starts_with('┌'))
+        .expect("a frame");
+    let bottom = rows
+        .iter()
+        .rposition(|l| l.starts_with('└'))
+        .expect("a frame end");
+    let buf = term.backend().buffer();
+    (top + 1..bottom)
+        .map(|y| {
+            let mut covered = false;
+            (1..buf.area.width - 1)
+                .map(|x| {
+                    let c = &buf[(x, y as u16)];
+                    // The cell after a wide glyph is never sent to the terminal (ratatui skips
+                    // it), so what it holds is not a difference. Which of the two paths left it
+                    // reset or painted depends on how the text was written.
+                    let skipped = std::mem::replace(
+                        &mut covered,
+                        unicode_width::UnicodeWidthStr::width(c.symbol()) > 1,
+                    );
+                    if skipped {
+                        return (String::new(), RColor::Reset, RColor::Reset);
+                    }
+                    (c.symbol().to_string(), c.fg, c.bg)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The text as the host's loader reads it: a file with a wrong type is not used at all (the
+/// defaults, and one reported line). The two loaders must agree on that, so each case also pins
+/// that both accept it or both refuse it.
+fn ui_host(toml: &str) -> Config {
+    toml::from_str::<Config>(toml).unwrap_or_default()
+}
+
+/// [`ui_host`] for the small host's loader.
+fn ui_shared(toml: &str) -> konoma_host_core::shared::SharedConfig {
+    let shared = konoma_host_core::shared::SharedConfig::parse(toml);
+    assert_eq!(
+        shared.is_ok(),
+        toml::from_str::<Config>(toml).is_ok(),
+        "the loaders disagree on whether this is a config: {toml:?}"
+    );
+    shared.unwrap_or_default()
+}
+
+/// `[ui]` and `[ui.theme]` texts the two loaders read: set values, a wrong type (both fall back
+/// to the default for the whole table or the key), and the defaults.
+const UI_CONFIGS: &[&str] = &[
+    "",
+    "[ui]\nwrap = false\n",
+    "[ui]\nwrap = false\ntab_width = 2\n",
+    "[ui]\ntab_width = 8\nicons = false\n",
+    "[ui.theme]\ncode_bg = \"#102030\"\ncode_label_align = \"left\"\ncode_label_bg = \"#405060\"\n",
+    "[ui.theme]\ncode_bg = \"none\"\ncode_label_bg = \"none\"\n",
+    "[ui.theme]\ncode_bg = \"nonsense\"\ncode_label_bg = \"auto\"\n",
+    "[ui]\nwrap = false\n[ui.theme]\ncode_bg = \"#102030\"\n",
+    "[ui.theme]\nbg = \"#102030\"\n",
+    "[ui.theme]\nbg = \"nonsense\"\ncode_label_align = \"LEFT\"\n",
+    "[ui]\nwrap = \"no\"\ntab_width = 2\n",
+    "[ui]\ntab_width = \"wide\"\nicons = false\n",
+    "[ui.theme]\ncode_bg = 5\nbg = \"#102030\"\n",
+    "[ui.theme]\ncode_label_bg = true\n",
+];
+
+fn ui_fixtures() -> Vec<(String, String)> {
+    let mut v = fixtures();
+    v.push((
+        "ui.md".into(),
+        format!(
+            "# Title {{#a}}\n\n{}\n\n```rust\nfn main() {{\n\tlet x = 1;\n\t\tlet y = \"{}\";\n}}\n```\n\n- [x] done\n- [ ] todo\n\n:smile: text\n\n| a | b |\n|---|---|\n| {} | y |\n",
+            "wide line of words ".repeat(12),
+            "z".repeat(150),
+            "cell ".repeat(40)
+        ),
+    ));
+    v
+}
+
+#[test]
+fn a_document_with_the_ui_settings_shows_the_same_page_and_colors_as_the_host() {
+    let dir = sandbox("doc-ui");
+    for (name, body) in ui_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    // The sideways keys are not compared: over a text the host moves a caret by column (the page
+    // follows it), the app has no caret and scrolls the page by four cells (its own tests pin
+    // that). What both show before any sideways key, and after a page turn, is the same.
+    let mut checked = 0;
+    for (name, _) in ui_fixtures() {
+        for toml in UI_CONFIGS {
+            for spec in ["", "<C-f>", "G"] {
+                let what = format!("{name} [{spec}] {toml:?}");
+                let h = host_term_with(&root, &name, W, HOST_H, spec, toml);
+                let a = app_term_with(&root.join(&name), W, APP_H, spec, toml);
+                let (hc, ac) = (inner_cells(&h.term), inner_cells(&a));
+                let first_diff = hc.iter().zip(&ac).enumerate().find_map(|(y, (hr, ar))| {
+                    hr.iter()
+                        .zip(ar)
+                        .position(|(x, y2)| x != y2)
+                        .map(|x| (y, x, hr[x].clone(), ar[x].clone()))
+                });
+                assert!(
+                    hc == ac,
+                    "{what}: the page differs at (row, col, host, app) {first_diff:?}\nhost:\n{}\napp:\n{}",
+                    rows_of(&h.term).join("\n"),
+                    rows_of(&a).join("\n")
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 14 * UI_CONFIGS.len() * 3, "{checked}");
+}
+
 // ---- the pictures of a document: local, remote, mermaid, math ------------------------------------
 //
 // Both sides get a picture backend (halfblocks). The host's results are pumped by hand; the app's

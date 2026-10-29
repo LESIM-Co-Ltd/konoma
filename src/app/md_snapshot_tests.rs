@@ -254,13 +254,15 @@ fn render_case_with_width(
 ) -> CaseRender {
     let extract = slots == Slots::Extracted;
     let icons = cfg.ui.icons;
-    let code = crate::preview::markdown::CodeStyle {
-        bg: cfg.ui.theme.code_bg(),
-        label_bg: cfg.ui.theme.code_label_bg(),
-        label_right: cfg.ui.theme.code_label_right(),
-        tab_width: cfg.ui.tab_width,
-        wrap: cfg.ui.wrap,
-    };
+    let code = konoma_widgets::colors::code_style(
+        (
+            &cfg.ui.theme.code_bg,
+            &cfg.ui.theme.code_label_align,
+            &cfg.ui.theme.code_label_bg,
+        ),
+        cfg.ui.tab_width,
+        cfg.ui.wrap,
+    );
     let theme = cfg.ui.theme.code_theme.as_str();
     let tasks = cfg.ui.md_task_state_chars();
 
@@ -1210,13 +1212,15 @@ fn shared_document_rows_match_the_live_apps_cache_across_the_corpus() {
     let root = dir.canonicalize().unwrap();
     let f = root.join("doc.md");
     let cfg = Config::default();
-    let code = crate::preview::markdown::CodeStyle {
-        bg: cfg.ui.theme.code_bg(),
-        label_bg: cfg.ui.theme.code_label_bg(),
-        label_right: cfg.ui.theme.code_label_right(),
-        tab_width: cfg.ui.tab_width,
-        wrap: cfg.ui.wrap,
-    };
+    let code = konoma_widgets::colors::code_style(
+        (
+            &cfg.ui.theme.code_bg,
+            &cfg.ui.theme.code_label_align,
+            &cfg.ui.theme.code_label_bg,
+        ),
+        cfg.ui.tab_width,
+        cfg.ui.wrap,
+    );
     let lang = crate::i18n::resolve_lang(&cfg.ui.lang);
     let caption = crate::i18n::tr(lang, crate::i18n::Msg::MermaidCaption);
     let image = |_: &str, _: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;

@@ -18,10 +18,22 @@ use crate::style::Line;
 use crate::table_ui::{cell_view, GridSource};
 use crate::view::{CanvasView, Grid};
 
+/// The text of a file: lines that wrap, or scroll sideways.
+pub struct TextFrame {
+    pub lines: Vec<Line>,
+    /// Wrap at the edge of the body (`[ui] wrap`). Off, the lines are cut at it.
+    pub wrap: bool,
+    /// Cells scrolled off the left edge (0 while wrapping).
+    pub hscroll: u16,
+}
+
 /// What is drawn in the body.
 pub enum Frame {
     /// Lines from the top of the body.
     Lines(Vec<Line>),
+    /// The lines of a file's text: wrapped at the edge (`ui.wrap`), or cut `hscroll` cells from
+    /// the left.
+    Text(TextFrame),
     /// Cells copied one to one.
     Canvas(CanvasView),
     /// A table with its cursor (and the full-cell popup while it is open).
@@ -202,6 +214,7 @@ pub fn footer(
 ) -> String {
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
+        Frame::Text(t) if scrolls && !t.lines.is_empty() => format!("  line {}", scroll + 1),
         Frame::Document(_) if scrolls => format!("  line {}", scroll + 1),
         _ => String::new(),
     };
@@ -213,8 +226,18 @@ pub fn body_of(area: Rect) -> Rect {
     Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1))
 }
 
-pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
+/// `bg` is `[ui.theme] bg`: painted under everything first, as the host does (a span without a
+/// background keeps it; `None` leaves the terminal's own).
+pub fn draw(
+    f: &mut ratatui::Frame,
+    frame: &mut Frame,
+    footer: &str,
+    bg: Option<ratatui::style::Color>,
+) {
     let area = f.area();
+    if let Some(bg) = bg {
+        f.buffer_mut().set_style(area, RStyle::default().bg(bg));
+    }
     if area.height == 0 {
         return;
     }
@@ -223,6 +246,14 @@ pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
         Frame::Lines(lines) => {
             let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();
             Paragraph::new(text).render(body, f.buffer_mut());
+        }
+        Frame::Text(t) => {
+            let text: Vec<RLine> = t.lines.iter().map(ratatui_draw::line).collect();
+            let mut para = Paragraph::new(text);
+            if t.wrap {
+                para = para.wrap(ratatui::widgets::Wrap { trim: false });
+            }
+            para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
         Frame::Document(d) => d.draw(f.buffer_mut(), body),

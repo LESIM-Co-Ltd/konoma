@@ -14,6 +14,7 @@
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod display;
 mod doc_pictures;
 mod document;
 mod draw;
@@ -32,6 +33,7 @@ use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
+pub use display::Display;
 pub use doc_pictures::DocEnv;
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
@@ -347,6 +349,8 @@ pub struct Prepared {
     pub doc_env: doc_pictures::DocEnv,
     /// Where a `Reopen` is opened again (put it in [`AppCx::reopen`]).
     pub reopen: ReopenSource,
+    /// How the text and the documents look (put it in [`AppCx::display`]).
+    pub display: Display,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -391,6 +395,7 @@ pub fn prepare_bundled(
 ) -> Result<Prepared, PrepareFailure> {
     let svg_max_px = loaded.0.ui.svg_max_px;
     let remote_images = loaded.0.external.remote_images;
+    let display = Display::of(&loaded.0);
     let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
@@ -416,6 +421,7 @@ pub fn prepare_bundled(
             keys,
             lang,
             svg_max_px,
+            display,
             load_error,
         }),
         Err(error) => Err(PrepareFailure { error, load_error }),
@@ -458,6 +464,7 @@ pub fn run_bundled(
         svg_max_px,
         doc_env,
         reopen,
+        display,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -479,6 +486,7 @@ pub fn run_bundled(
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: Some(reopen),
+        display,
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are
@@ -519,7 +527,9 @@ pub fn keys_from_load(
         konoma_host_core::lang::Lang::parse(lang_of(&os_locale()))
     });
     (
-        AppKeys::new(&shared.keys, &shared.ui.keys).with_lang(lang),
+        AppKeys::new(&shared.keys, &shared.ui.keys)
+            .with_lang(lang)
+            .with_wrap(shared.ui.wrap),
         error,
     )
 }

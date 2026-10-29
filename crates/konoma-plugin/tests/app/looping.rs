@@ -460,11 +460,105 @@ fn a_failing_view_is_shown_not_fatal_and_q_still_quits() {
 fn a_long_line_and_a_tab_and_crlf_are_drawn_clean() {
     let body = format!("a\tb\r\n{}\nlast", "w".repeat(100_000));
     let (_d, p) = file("app_long", "a.t", &body);
-    let (term, _) = run_events(TestPlugin::all(), &p, (12, 5), vec![]);
+    // Not wrapping: the long line is cut at the edge and `last` follows it.
+    let (term, _) = run_shown(&p, (12, 5), vec![], no_wrap());
     let r = rows(&term);
     assert_eq!(r[0], "a    b");
     assert_eq!(r[1], "wwwwwwwwwwww");
     assert_eq!(r[2], "last");
+    // Wrapping (the default): the long line goes on over the rows below it.
+    let (term, _) = run_events(TestPlugin::all(), &p, (12, 5), vec![]);
+    let r = rows(&term);
+    assert_eq!(r[0], "a    b");
+    assert_eq!(r[1], "wwwwwwwwwwww");
+    assert_eq!(r[2], "wwwwwwwwwwww");
+    assert_eq!(r[3], "wwwwwwwwwwww");
+}
+
+fn no_wrap() -> konoma_plugin::app::Display {
+    konoma_plugin::app::Display {
+        wrap: false,
+        ..Default::default()
+    }
+}
+
+/// [`run_events`] with the `[ui]` display settings `display` (the keys follow its `wrap`).
+fn run_shown(
+    path: &Path,
+    (w, h): (u16, u16),
+    events: Vec<AppEvent>,
+    display: konoma_plugin::app::Display,
+) -> (Terminal<TestBackend>, usize) {
+    let mut opened = open_file(
+        vec![Arc::new(TestPlugin::all())],
+        path,
+        "en",
+        TermCaps::new(),
+    )
+    .expect("opens");
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut it = events.into_iter();
+    let cx = AppCx {
+        path: opened.path.clone(),
+        unavailable: opened.unavailable.clone(),
+        display: display.clone(),
+        ..cx()
+    };
+    run_with(
+        &mut term,
+        &mut *opened.session,
+        &mut it,
+        &cx,
+        &AppKeys::defaults().with_wrap(display.wrap),
+    )
+    .expect("runs");
+    (term, it.count())
+}
+
+#[test]
+fn a_text_that_does_not_wrap_scrolls_sideways_by_four_and_to_both_ends() {
+    let (_d, p) = file("app_hscroll", "a.t", "abcdefghijklmnopqrstuvwxyz\nshort\n");
+    let at = |ev: Vec<AppEvent>| rows(&run_shown(&p, (10, 4), ev, no_wrap()).0)[0].clone();
+    assert_eq!(at(vec![]), "abcdefghij");
+    assert_eq!(at(vec![key('l')]), "efghijklmn");
+    assert_eq!(at(vec![key('l'), key('l')]), "ijklmnopqr");
+    assert_eq!(at(vec![code(KeyCode::Right)]), "efghijklmn");
+    assert_eq!(at(vec![key('l'), key('h')]), "abcdefghij");
+    assert_eq!(at(vec![key('h')]), "abcdefghij");
+    // The ends: `$` stops at the widest line's overhang (26 - 10), `0` is the start.
+    assert_eq!(at(vec![key('$')]), "qrstuvwxyz");
+    assert_eq!(at(vec![key('$'), key('0')]), "abcdefghij");
+    // Past the end is held at the end.
+    let many = vec![key('l'); 20];
+    assert_eq!(at(many), "qrstuvwxyz");
+}
+
+#[test]
+fn a_text_that_wraps_ignores_the_sideways_keys() {
+    let (_d, p) = file("app_nohscroll", "a.t", "abcdefghijklmnopqrstuvwxyz\n");
+    let (term, _) = run_events(
+        TestPlugin::all(),
+        &p,
+        (10, 5),
+        vec![key('l'), key('$'), code(KeyCode::Right)],
+    );
+    let r = rows(&term);
+    assert_eq!(r[0], "abcdefghij");
+    assert_eq!(r[1], "klmnopqrst");
+    assert_eq!(r[2], "uvwxyz");
+}
+
+#[test]
+fn the_sideways_keys_are_named_only_while_they_act() {
+    let named = |wrap: bool| {
+        let k = AppKeys::defaults().with_wrap(wrap);
+        k.help_sections()
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .any(|(_, d)| d.contains("horizontal"))
+    };
+    assert!(!named(true), "wrapping: nothing to scroll sideways");
+    assert!(named(false));
 }
 
 #[test]
@@ -488,4 +582,29 @@ fn a_text_file_that_cannot_be_read_any_more_is_shown_as_a_line_not_a_crash() {
         "{:?}",
         rows(&term)
     );
+}
+
+#[test]
+fn every_sideways_row_the_help_names_acts_when_the_text_does_not_wrap() {
+    let k = AppKeys::defaults().with_wrap(false);
+    let mut seen = 0;
+    for sec in k.help_sections() {
+        for (keys_text, desc) in &sec.rows {
+            if !desc.contains("horizontal") && !desc.contains("line start") {
+                continue;
+            }
+            for part in keys_text.split(" / ").flat_map(|p| p.split(' ')) {
+                let key = match part {
+                    "\u{2190}" => Key::new(KeyCode::Left),
+                    "\u{2192}" => Key::new(KeyCode::Right),
+                    c if c.chars().count() == 1 => Key::char(c.chars().next().unwrap()),
+                    other => panic!("an unexpected key {other:?} in `{keys_text}`"),
+                };
+                assert!(k.acts_on(&key, false, true), "{key:?} for `{desc}`");
+                seen += 1;
+            }
+        }
+    }
+    // h l <- -> and 0 $.
+    assert_eq!(seen, 6);
 }

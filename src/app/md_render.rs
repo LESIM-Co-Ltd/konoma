@@ -663,13 +663,15 @@ impl App {
         align: &GutterAlign<'_>,
     ) -> DecoratedMarkdown {
         let theme = &self.cfg.ui.theme;
-        let code = crate::preview::markdown::CodeStyle {
-            bg: theme.code_bg(),
-            label_bg: theme.code_label_bg(),
-            label_right: theme.code_label_right(),
-            tab_width: self.cfg.ui.tab_width,
-            wrap: self.cfg.ui.wrap,
-        };
+        let code = konoma_widgets::colors::code_style(
+            (
+                &theme.code_bg,
+                &theme.code_label_align,
+                &theme.code_label_bg,
+            ),
+            self.cfg.ui.tab_width,
+            self.cfg.ui.wrap,
+        );
         // Decide how to render each image URL. A local file or a cached remote fetch resolves to
         // a path → Inline (with its display size in cells). An uncached remote URL is Loading
         // (a fetch is kicked off separately, in `ensure_md_cache`) unless it has already failed.

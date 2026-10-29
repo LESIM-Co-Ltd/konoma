@@ -53,6 +53,8 @@ pub struct AppCx {
     /// Where a [`View::Reopen`] is opened again (who takes the content type it names). `None`:
     /// no plugin takes any, and a `Reopen` is "no plugin is available to show this document".
     pub reopen: Option<super::ReopenSource>,
+    /// How the text and the documents look (`[ui] wrap`, `[ui.theme]`, ...).
+    pub display: super::Display,
 }
 
 impl Default for AppCx {
@@ -67,6 +69,7 @@ impl Default for AppCx {
             path: std::path::PathBuf::new(),
             shows: Vec::new(),
             reopen: None,
+            display: super::Display::default(),
         }
     }
 }
@@ -85,6 +88,8 @@ impl Default for AppCx {
 pub struct AppKeys {
     keys: CoreKeys,
     lang: Lang,
+    /// `[ui] wrap`: while the text wraps, the sideways keys do nothing and are not named.
+    wrap: bool,
 }
 
 impl AppKeys {
@@ -93,7 +98,14 @@ impl AppKeys {
         AppKeys {
             keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
             lang: Lang::En,
+            wrap: true,
         }
+    }
+
+    /// The same keys for text that wraps (`true`, the default) or scrolls sideways (`[ui] wrap`).
+    pub fn with_wrap(mut self, wrap: bool) -> AppKeys {
+        self.wrap = wrap;
+        self
     }
 
     /// The same keys with the help and the footer in `lang`.
@@ -127,20 +139,11 @@ impl AppKeys {
     pub fn facts_scrolling(&self, paged: bool, scrolls: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
             HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
-            HelpOp::Act(CoreAction::Navigate(m)) => {
-                scrolls
-                    && matches!(
-                        m,
-                        Motion::Down
-                            | Motion::Up
-                            | Motion::Top
-                            | Motion::Bottom
-                            | Motion::PageDown
-                            | Motion::PageUp
-                            | Motion::HalfDown
-                            | Motion::HalfUp
-                    )
-            }
+            // The sideways motions only act on text that does not wrap.
+            HelpOp::Act(CoreAction::Navigate(
+                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
+            )) => scrolls && !self.wrap,
+            HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
             }
@@ -230,6 +233,10 @@ impl AppKeys {
     pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
         match self.act(key) {
             None => false,
+            // Sideways, the text moves only when it does not wrap (the open help does not).
+            Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
+                !in_help && scrolls && !self.wrap
+            }
             Some(Act::Move(_)) => in_help || scrolls,
             Some(_) => true,
         }
@@ -734,6 +741,8 @@ impl AppKeys {
             match key.code {
                 KeyCode::Down => return Some(Act::Move(Motion::Down)),
                 KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Left => return Some(Act::Move(Motion::Left)),
+                KeyCode::Right => return Some(Act::Move(Motion::Right)),
                 KeyCode::Home => return Some(Act::Move(Motion::Top)),
                 KeyCode::End => return Some(Act::Move(Motion::Bottom)),
                 // `Esc` is fixed (not in the keymap) and the help says `q / Esc` leaves, so it
@@ -898,6 +907,10 @@ const REOPEN_ACCEPTS: &str = "markdown";
 struct State {
     /// The first line shown of a text.
     scroll: usize,
+    /// Cells scrolled off the left edge of a text that does not wrap.
+    hscroll: u16,
+    /// How the text and the documents look.
+    display: super::Display,
     /// The number of lines of a text file, counted once.
     counted: Option<(std::path::PathBuf, usize)>,
     /// The height of the body at the last draw (the page of `PageUp` / `PageDown`).
@@ -971,7 +984,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     keys: &AppKeys,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
-    let mut st = State::default();
+    let mut st = State {
+        display: cx.display.clone(),
+        ..State::default()
+    };
     // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
     // from then on it is the one asked.
     let mut swapped: Option<Box<dyn Session>> = None;
@@ -1023,7 +1039,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 ) {
                     Ok(opened) => {
                         swapped = Some(opened.session);
-                        st = State::default();
+                        st = State {
+                            display: cx.display.clone(),
+                            ..State::default()
+                        };
                         st.page = usize::from(body_rows).max(1);
                         st.width = size.width;
                         if let Some(p) = pictures.as_mut() {
@@ -1241,7 +1260,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 &mut base
             }
         };
-        draw_frame(terminal, frame, &footer, pictures.as_mut())?;
+        draw_frame(terminal, frame, &footer, st.display.bg(), pictures.as_mut())?;
 
         // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
         // came from the pictures' shorter wake leaves the view as it is.
@@ -1294,7 +1313,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     .failed_body
                     .as_ref()
                     .is_some_and(|b| b.page == st.at_page)
-                    && matches!(base, Frame::Lines(_));
+                    && matches!(base, Frame::Lines(_) | Frame::Text(_));
                 if table_keys || image_keys || kept_failure {
                     need_view = false;
                 }
@@ -1484,6 +1503,7 @@ fn draw_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     frame: &mut Frame,
     footer: &str,
+    bg: Option<ratatui::style::Color>,
     mut pictures: Option<&mut Pictures>,
 ) -> Result<(), AppError> {
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
@@ -1496,7 +1516,7 @@ fn draw_frame<B: Backend>(
     for pass in 0..2 {
         terminal
             .draw(|f| {
-                draw::draw(f, frame, footer);
+                draw::draw(f, frame, footer, bg);
                 let body = draw::body_of(f.area());
                 if let Some(p) = pictures.as_deref_mut() {
                     p.draw(f.buffer_mut(), body, on_canvas);
@@ -1546,8 +1566,15 @@ fn scroll_by(m: Motion, st: &mut State) {
         Motion::HalfUp => st.scroll = st.scroll.saturating_sub(half),
         Motion::Top => st.scroll = 0,
         Motion::Bottom => st.scroll = st.total,
-        // The app does not scroll sideways yet.
-        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd => {}
+        // Sideways, the host's steps (4 cells, and the ends settled at draw time). Wrapping,
+        // there is nothing to scroll.
+        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd if st.display.wrap => {
+            st.hscroll = 0
+        }
+        Motion::Left => st.hscroll = st.hscroll.saturating_sub(4),
+        Motion::Right => st.hscroll = st.hscroll.saturating_add(4),
+        Motion::LineHome => st.hscroll = 0,
+        Motion::LineEnd => st.hscroll = u16::MAX,
     }
 }
 
@@ -1595,7 +1622,8 @@ fn frame_of(
                 TextSource::Owned(s) => {
                     let lines: Vec<&str> = s.lines().collect();
                     clamp(st, lines.len(), rows);
-                    Frame::Lines(
+                    text_frame(
+                        st,
                         lines
                             .iter()
                             .skip(st.scroll)
@@ -1606,7 +1634,8 @@ fn frame_of(
                 }
                 TextSource::Lines(all) => {
                     clamp(st, all.len(), rows);
-                    Frame::Lines(all.into_iter().skip(st.scroll).take(rows).collect())
+                    let shown = all.into_iter().skip(st.scroll).take(rows).collect();
+                    text_frame(st, shown)
                 }
                 TextSource::File(path) => {
                     let total = match &st.counted {
@@ -1629,7 +1658,7 @@ fn frame_of(
                     };
                     clamp(st, total, rows);
                     match window::read_window(&path, st.scroll, rows) {
-                        Ok(w) => Frame::Lines(w.into_iter().map(Line::raw).collect()),
+                        Ok(w) => text_frame(st, w.into_iter().map(Line::raw).collect()),
                         Err(e) => Frame::Lines(vec![Line::raw(format!(
                             "[can not read {}: {e}]",
                             path.display()
@@ -1651,8 +1680,10 @@ fn frame_of(
                 u16::try_from(rows).unwrap_or(u16::MAX),
                 lang,
                 pictures.map(Pictures::doc_pics),
+                &st.display,
             );
             clamp(st, laid.rows(), inner_h);
+            let hscroll = settle_hscroll(st, laid.max_line_cols, inner_w);
             // The host pages by one row less than the frame and halves the frame itself.
             st.page = inner_h.saturating_sub(1).max(1);
             st.half = Some((inner_h / 2).max(1));
@@ -1662,6 +1693,8 @@ fn frame_of(
                     name: name.to_string(),
                     laid,
                     scroll: st.scroll,
+                    wrap: st.display.wrap,
+                    hscroll,
                 }),
                 None,
             )
@@ -1769,14 +1802,13 @@ fn failed_window(st: &mut State, rows: usize) -> Frame {
     let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
     clamp(st, lines.len(), rows);
     st.scrolls = true;
-    let frame = Frame::Lines(
-        lines
-            .iter()
-            .skip(st.scroll)
-            .take(rows)
-            .map(Line::raw)
-            .collect(),
-    );
+    let shown = lines
+        .iter()
+        .skip(st.scroll)
+        .take(rows)
+        .map(Line::raw)
+        .collect();
+    let frame = text_frame(st, shown);
     st.failed_body = body;
     frame
 }
@@ -1797,6 +1829,38 @@ fn declared_pages(session: &dyn Session, picture: bool) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// The sideways scroll, settled against the widest line (`max_cols`) and the `width` shown: as
+/// the host, none while wrapping, and at most the overhang of the widest line.
+fn settle_hscroll(st: &mut State, max_cols: usize, width: u16) -> u16 {
+    if st.display.wrap {
+        st.hscroll = 0;
+        return 0;
+    }
+    let max_h = u16::try_from(max_cols.saturating_sub(usize::from(width))).unwrap_or(u16::MAX);
+    st.hscroll = st.hscroll.min(max_h);
+    st.hscroll
+}
+
+/// The lines of a file's text as drawn: wrapped, or cut `hscroll` cells from the left.
+fn text_frame(st: &mut State, lines: Vec<Line>) -> Frame {
+    let max_cols = lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.text.as_str()))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let hscroll = settle_hscroll(st, max_cols, st.width);
+    Frame::Text(super::draw::TextFrame {
+        lines,
+        wrap: st.display.wrap,
+        hscroll,
+    })
 }
 
 /// Keep the last page full: the scroll is at most `total - rows`.

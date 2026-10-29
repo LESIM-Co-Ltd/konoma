@@ -7,6 +7,10 @@
 
 use super::*;
 use crate::test_support::unique_tmp;
+use konoma_widgets::colors::{
+    lighten, parse_color_opt, theme_code_bg, theme_code_label_bg, theme_code_label_right,
+    DEFAULT_CODE_BG,
+};
 use std::collections::HashMap;
 use std::io::Write as _;
 
@@ -1258,17 +1262,20 @@ fn cfg_theme_code_bg_named_indexed_and_uppercase_hex() {
         code_bg: "blue".into(),
         ..Default::default()
     };
-    assert_eq!(named.code_bg(), Some(Color::Blue));
+    assert_eq!(theme_code_bg(&named.code_bg), Some(Color::Blue));
     let indexed = ThemeConfig {
         code_bg: "8".into(),
         ..Default::default()
     };
-    assert_eq!(indexed.code_bg(), Some(Color::Indexed(8)));
+    assert_eq!(theme_code_bg(&indexed.code_bg), Some(Color::Indexed(8)));
     let upper = ThemeConfig {
         code_bg: "#AABBCC".into(),
         ..Default::default()
     };
-    assert_eq!(upper.code_bg(), Some(Color::Rgb(170, 187, 204)));
+    assert_eq!(
+        theme_code_bg(&upper.code_bg),
+        Some(Color::Rgb(170, 187, 204))
+    );
 }
 
 #[test]
@@ -1277,7 +1284,7 @@ fn cfg_theme_code_bg_whitespace_only_is_none() {
         code_bg: "   ".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_bg(), None);
+    assert_eq!(theme_code_bg(&t.code_bg), None);
 }
 
 #[test]
@@ -1306,8 +1313,14 @@ fn cfg_theme_code_label_bg_auto_derives_from_custom_code_bg() {
         code_label_bg: "auto".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(Color::Rgb(16, 24, 32))));
-    assert_eq!(t.code_label_bg(), Some(Color::Rgb(43, 54, 72)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(Color::Rgb(16, 24, 32)))
+    );
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(Color::Rgb(43, 54, 72))
+    );
 }
 
 #[test]
@@ -1316,12 +1329,18 @@ fn cfg_theme_code_label_bg_auto_is_case_and_whitespace_insensitive() {
         code_label_bg: "  Auto  ".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     let t = ThemeConfig {
         code_label_bg: "AUTO".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
 }
 
 #[test]
@@ -1330,22 +1349,34 @@ fn cfg_theme_code_label_bg_named_index_and_invalid() {
         code_label_bg: "blue".into(),
         ..Default::default()
     };
-    assert_eq!(named.code_label_bg(), Some(Color::Blue));
+    assert_eq!(
+        theme_code_label_bg(&named.code_label_bg, &named.code_bg),
+        Some(Color::Blue)
+    );
     let indexed = ThemeConfig {
         code_label_bg: "5".into(),
         ..Default::default()
     };
-    assert_eq!(indexed.code_label_bg(), Some(Color::Indexed(5)));
+    assert_eq!(
+        theme_code_label_bg(&indexed.code_label_bg, &indexed.code_bg),
+        Some(Color::Indexed(5))
+    );
     let invalid = ThemeConfig {
         code_label_bg: "not-a-color".into(),
         ..Default::default()
     };
-    assert_eq!(invalid.code_label_bg(), None);
+    assert_eq!(
+        theme_code_label_bg(&invalid.code_label_bg, &invalid.code_bg),
+        None
+    );
     let empty = ThemeConfig {
         code_label_bg: "".into(),
         ..Default::default()
     };
-    assert_eq!(empty.code_label_bg(), None);
+    assert_eq!(
+        theme_code_label_bg(&empty.code_label_bg, &empty.code_bg),
+        None
+    );
 }
 
 #[test]
@@ -1354,27 +1385,27 @@ fn cfg_theme_code_label_right_variants() {
         code_label_align: "right".into(),
         ..Default::default()
     };
-    assert!(right.code_label_right());
+    assert!(theme_code_label_right(&right.code_label_align));
     let left_ws = ThemeConfig {
         code_label_align: "  left  ".into(),
         ..Default::default()
     };
-    assert!(!left_ws.code_label_right());
+    assert!(!theme_code_label_right(&left_ws.code_label_align));
     let left_mixed = ThemeConfig {
         code_label_align: "Left".into(),
         ..Default::default()
     };
-    assert!(!left_mixed.code_label_right());
+    assert!(!theme_code_label_right(&left_mixed.code_label_align));
     let other = ThemeConfig {
         code_label_align: "center".into(),
         ..Default::default()
     };
-    assert!(other.code_label_right());
+    assert!(theme_code_label_right(&other.code_label_align));
     let empty = ThemeConfig {
         code_label_align: "".into(),
         ..Default::default()
     };
-    assert!(empty.code_label_right());
+    assert!(theme_code_label_right(&empty.code_label_align));
 }
 
 #[test]
@@ -1390,10 +1421,16 @@ fn cfg_theme_full_roundtrip_via_toml() {
     .unwrap();
     let th = &cfg.ui.theme;
     assert_eq!(th.bg(), Some(Color::Rgb(18, 52, 86)));
-    assert_eq!(th.code_bg(), Some(Color::Rgb(10, 20, 30)));
-    assert!(!th.code_label_right());
-    assert_eq!(th.code_label_bg(), Some(lighten(Color::Rgb(10, 20, 30))));
-    assert_eq!(th.code_label_bg(), Some(Color::Rgb(37, 50, 70)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(Color::Rgb(10, 20, 30)));
+    assert!(!theme_code_label_right(&th.code_label_align));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(Color::Rgb(10, 20, 30)))
+    );
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(Color::Rgb(37, 50, 70))
+    );
     assert_eq!(th.code_theme, "Dracula");
 }
 
@@ -1401,10 +1438,13 @@ fn cfg_theme_full_roundtrip_via_toml() {
 fn cfg_theme_partial_toml_keeps_defaults_via_serde_default() {
     let cfg: Config = toml::from_str("[ui.theme]\ncode_label_align = \"left\"\n").unwrap();
     let th = &cfg.ui.theme;
-    assert!(!th.code_label_right());
+    assert!(!theme_code_label_right(&th.code_label_align));
     assert_eq!(th.bg(), None);
-    assert_eq!(th.code_bg(), Some(DEFAULT_CODE_BG));
-    assert_eq!(th.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(DEFAULT_CODE_BG));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     assert_eq!(th.code_theme, "TwoDark");
 }
 
@@ -1413,9 +1453,12 @@ fn cfg_theme_absent_block_uses_all_defaults() {
     let cfg: Config = toml::from_str("").unwrap();
     let th = &cfg.ui.theme;
     assert_eq!(th.bg(), None);
-    assert_eq!(th.code_bg(), Some(DEFAULT_CODE_BG));
-    assert!(th.code_label_right());
-    assert_eq!(th.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(DEFAULT_CODE_BG));
+    assert!(theme_code_label_right(&th.code_label_align));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     assert_eq!(th.code_theme, "TwoDark");
 }
 

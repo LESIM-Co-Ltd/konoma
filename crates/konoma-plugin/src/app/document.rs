@@ -2,7 +2,7 @@
 //!
 //! The page is laid out by the one shared pipeline the konoma host uses
 //! ([`crate::document_render`]): [`render_document`], then [`postprocess`], then
-//! [`wrap_row_prefix`] when the text wraps (it always does here: there is no `ui.wrap`). It is
+//! [`wrap_row_prefix`] when the text wraps (`ui.wrap`; off, it scrolls sideways). It is
 //! drawn the way the host draws a decorated document: a bordered frame, the logical lines in the
 //! visible range, soft-wrapped by ratatui and scrolled in display rows.
 //!
@@ -16,21 +16,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use konoma_host_core::lang::Lang;
-use konoma_widgets::colors::{lighten, DEFAULT_CODE_BG};
-use konoma_widgets::markdown::{CodeStyle, ImagePlacement, ImageSlot, MathSlot, MermaidSlot};
+use konoma_widgets::markdown::{ImagePlacement, ImageSlot, MathSlot, MermaidSlot};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line as RLine, Text};
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
+use super::display::Display;
 use super::doc_pictures::DocPics;
 use crate::document_render::{
     postprocess, render_document, wrap_row_prefix, PictureSlots, RenderSettings,
 };
 use crate::view::{DocOptions, DocumentView};
-
-/// The code theme the host uses when none is configured.
-const CODE_THEME: &str = konoma_host_core::shared::DEFAULT_CODE_THEME;
 
 /// A document laid out at one width.
 pub struct Laid {
@@ -39,17 +36,26 @@ pub struct Laid {
     pub row_prefix: Vec<usize>,
     /// The pictures the page reserves cells for (`line` is a logical line of `lines`).
     pub images: Vec<ImagePlacement>,
+    /// The widest line in cells (the bound of the sideways scroll).
+    pub max_line_cols: usize,
 }
 
 impl Laid {
-    /// The first display row of logical line `line`.
+    /// The first display row of logical line `line`. Without wrapping (no prefix sums) a line is
+    /// a row.
     pub fn first_row_of(&self, line: usize) -> usize {
+        if self.row_prefix.is_empty() {
+            return line;
+        }
         self.row_prefix.get(line).copied().unwrap_or(0)
     }
 
     /// How many display rows the document takes.
     pub fn rows(&self) -> usize {
-        self.row_prefix.last().copied().unwrap_or(0)
+        match self.row_prefix.last() {
+            Some(n) => *n,
+            None => self.lines.len(),
+        }
     }
 }
 
@@ -69,20 +75,15 @@ pub fn lay_out(
     rows: u16,
     lang: Lang,
     pics: Option<&mut DocPics>,
+    display: &Display,
 ) -> Laid {
-    let code = CodeStyle {
-        bg: Some(DEFAULT_CODE_BG),
-        label_bg: Some(lighten(DEFAULT_CODE_BG)),
-        label_right: true,
-        tab_width: 4,
-        wrap: true,
-    };
+    let code = display.code_style();
     let details_open = HashMap::new();
     let settings = RenderSettings {
         width,
         code,
-        code_theme: CODE_THEME,
-        icons: true,
+        code_theme: &display.theme.code_theme,
+        icons: display.icons,
         mermaid_caption: mermaid_caption(lang),
         details_open: &details_open,
     };
@@ -108,15 +109,17 @@ pub fn lay_out(
         }
     };
     let (lines, _targets) = postprocess(r.lines, &mut r.images, &dv.options, true);
-    let row_prefix = if width > 0 {
+    let row_prefix = if display.wrap && width > 0 {
         wrap_row_prefix(&lines, width)
     } else {
         Vec::new()
     };
+    let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
     Laid {
         lines,
         row_prefix,
         images: std::mem::take(&mut r.images),
+        max_line_cols,
     }
 }
 
@@ -128,6 +131,7 @@ pub struct DocCache {
     width: u16,
     rows: u16,
     lang: Lang,
+    display: Display,
     /// The picture epoch it was laid out at: a result that changes what the page reserves makes
     /// it stale.
     epoch: u64,
@@ -143,6 +147,7 @@ impl DocCache {
         rows: u16,
         lang: Lang,
         pics: Option<&mut DocPics>,
+        display: &Display,
     ) -> Arc<Laid> {
         let epoch = pics.as_deref().map_or(0, |p| p.epoch());
         if let Some(c) = slot.as_ref() {
@@ -150,19 +155,21 @@ impl DocCache {
                 && (c.rows == rows || pics.is_none())
                 && c.epoch == epoch
                 && c.lang == lang
+                && c.display == *display
                 && c.options == dv.options
                 && c.markdown == dv.markdown
             {
                 return Arc::clone(&c.laid);
             }
         }
-        let laid = Arc::new(lay_out(dv, width, rows, lang, pics));
+        let laid = Arc::new(lay_out(dv, width, rows, lang, pics, display));
         *slot = Some(DocCache {
             markdown: dv.markdown.clone(),
             options: dv.options.clone(),
             width,
             rows,
             lang,
+            display: display.clone(),
             epoch,
             laid: Arc::clone(&laid),
         });
@@ -177,6 +184,10 @@ pub struct DocFrame {
     pub laid: Arc<Laid>,
     /// The first display row shown.
     pub scroll: usize,
+    /// The page wraps (`ui.wrap`). Off, it is drawn `hscroll` cells to the left.
+    pub wrap: bool,
+    /// Cells scrolled off the left edge (always 0 while wrapping).
+    pub hscroll: u16,
 }
 
 impl DocFrame {
@@ -214,10 +225,10 @@ impl DocFrame {
         let block = Block::bordered().title(self.title());
         let inner = block.inner(body);
         let (lines, local) = self.slice(inner.height);
-        Paragraph::new(Text::from(lines))
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((local, 0))
-            .render(body, buf);
+        let mut para = Paragraph::new(Text::from(lines)).block(block);
+        if self.wrap {
+            para = para.wrap(Wrap { trim: false });
+        }
+        para.scroll((local, self.hscroll)).render(body, buf);
     }
 }
