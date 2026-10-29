@@ -27,6 +27,7 @@ use crate::canvas_pictures::image_failure_for;
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::ViewKind;
 use crate::pages;
+use crate::ratatui_draw;
 use crate::session::{Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
 use crate::Cancel;
@@ -917,6 +918,8 @@ struct State {
     display: super::Display,
     /// The number of lines of a text file, counted once.
     counted: Option<(std::path::PathBuf, usize)>,
+    /// The reader of a text file that measures where the window is, in bytes.
+    win: Option<window::ByteWindow>,
     /// The height of the body at the last draw (the page of `PageUp` / `PageDown`).
     page: usize,
     /// The last number of lines a text had (the bound of `End`).
@@ -1628,11 +1631,20 @@ fn frame_of(
             (Frame::Canvas(c), after)
         }
         View::Text(t) => {
+            // The text sits in the host's frame: the window is the rows inside its border.
+            let rows = rows.saturating_sub(2);
+            st.page = rows.saturating_sub(1).max(1);
+            st.half = Some((rows / 2).max(1));
+            let framed = |st: &mut State, lines: Vec<Line>, extent| {
+                text_frame(st, lines, Some((name, lang, extent)))
+            };
             let frame = match t.source {
                 TextSource::Owned(s) => {
+                    let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
+                    clamp(st, lens.len(), rows);
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
                     let lines: Vec<&str> = s.lines().collect();
-                    clamp(st, lines.len(), rows);
-                    text_frame(
+                    framed(
                         st,
                         lines
                             .iter()
@@ -1640,12 +1652,24 @@ fn frame_of(
                             .take(rows)
                             .map(|l| Line::raw(window::clean_line(l.as_bytes())))
                             .collect(),
+                        extent,
                     )
                 }
                 TextSource::Lines(all) => {
+                    // The host writes the lines joined by a newline and windows that file.
+                    let last = all.len().saturating_sub(1);
+                    let lens: Vec<u64> = all
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            l.spans.iter().map(|s| s.text.len() as u64).sum::<u64>()
+                                + u64::from(i < last)
+                        })
+                        .collect();
                     clamp(st, all.len(), rows);
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
                     let shown = all.into_iter().skip(st.scroll).take(rows).collect();
-                    text_frame(st, shown)
+                    framed(st, shown, extent)
                 }
                 TextSource::File(path) => {
                     let total = match &st.counted {
@@ -1667,8 +1691,9 @@ fn frame_of(
                         },
                     };
                     clamp(st, total, rows);
+                    let extent = window::file_extent(&mut st.win, &path, st.scroll, rows);
                     match window::read_window(&path, st.scroll, rows) {
-                        Ok(w) => text_frame(st, w.into_iter().map(Line::raw).collect()),
+                        Ok(w) => framed(st, w.into_iter().map(Line::raw).collect(), extent),
                         Err(e) => Frame::Lines(vec![Line::raw(format!(
                             "[can not read {}: {e}]",
                             path.display()
@@ -1826,7 +1851,7 @@ fn failed_window(st: &mut State, rows: usize) -> Frame {
         .take(rows)
         .map(Line::raw)
         .collect();
-    let frame = text_frame(st, shown);
+    let frame = text_frame(st, shown, None);
     st.failed_body = body;
     frame
 }
@@ -1861,23 +1886,45 @@ fn settle_hscroll(st: &mut State, max_cols: usize, width: u16) -> u16 {
     st.hscroll
 }
 
-/// The lines of a file's text as drawn: wrapped, or cut `hscroll` cells from the left.
-fn text_frame(st: &mut State, lines: Vec<Line>) -> Frame {
+/// The lines of a file's text as drawn: wrapped, or cut `hscroll` cells from the left. `framed`
+/// is the host's frame around it (the path, the language, where the window is in the file); the
+/// lines are then drawn inside its border, and `None` draws them bare.
+fn text_frame(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, konoma_widgets::scroll::ScrollExtent)>,
+) -> Frame {
+    // The tabs become the host's mark and tab stops (the one function it uses, with the same
+    // `[ui] tab_width`), before the width of the widest line is measured.
+    let lines = konoma_widgets::text::expand_tabs(
+        lines.into_iter().map(ratatui_draw::into_line).collect(),
+        st.display.tab_width,
+    );
     let max_cols = lines
         .iter()
         .map(|l| {
             l.spans
                 .iter()
-                .map(|s| unicode_width::UnicodeWidthStr::width(s.text.as_str()))
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
                 .sum::<usize>()
         })
         .max()
         .unwrap_or(0);
-    let hscroll = settle_hscroll(st, max_cols, st.width);
+    let width = if framed.is_some() {
+        st.width.saturating_sub(2)
+    } else {
+        st.width
+    };
+    let hscroll = settle_hscroll(st, max_cols, width);
     Frame::Text(super::draw::TextFrame {
         lines,
         wrap: st.display.wrap,
         hscroll,
+        border: framed.map(|(name, lang, extent)| super::draw::TextBorder {
+            name: name.to_string(),
+            lang,
+            extent,
+        }),
     })
 }
 

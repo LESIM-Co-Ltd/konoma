@@ -86,16 +86,13 @@ fn screen(body: &[&str], footer: &str, h: usize) -> Vec<String> {
 #[test]
 fn the_footer_and_the_help_in_english() {
     let k = keys("", Lang::En);
-    let (r, left) = run(&k, (70, 3), vec![]);
+    let (r, left) = run(&k, (70, 5), vec![]);
     assert_eq!(left, 0);
-    assert_eq!(
-        r,
-        [
-            "line 00",
-            "line 01",
-            " q:quit  j/k:scroll  ?:help  line 1  title"
-        ]
-    );
+    // The text sits in the host's frame: the position is the label on it, not "line N".
+    assert!(r[0].starts_with("┌ title "), "{}", r[0]);
+    assert!(r[1].starts_with("│line 00"), "{}", r[1]);
+    assert!(r[2].starts_with("│line 01"), "{}", r[2]);
+    assert_eq!(r[4], " q:quit  j/k:scroll  ?:help  title");
     let (r, left) = run(&k, (70, 20), vec![key('?')]);
     assert_eq!(left, 0);
     let body = [
@@ -121,15 +118,9 @@ fn the_footer_and_the_help_in_english() {
 #[test]
 fn the_footer_and_the_help_in_japanese() {
     let k = keys("", Lang::Jp);
-    let (r, _) = run(&k, (70, 3), vec![]);
-    assert_eq!(
-        r,
-        [
-            "line 00",
-            "line 01",
-            " q:終了  j/k:スクロール  ?:ヘルプ  line 1  title"
-        ]
-    );
+    let (r, _) = run(&k, (70, 5), vec![]);
+    assert!(r[1].starts_with("│line 00"), "{}", r[1]);
+    assert_eq!(r[4], " q:終了  j/k:スクロール  ?:ヘルプ  title");
     let (r, _) = run(&k, (70, 20), vec![key('?')]);
     let body = [
         "プレビュー: テキスト/Markdown",
@@ -165,7 +156,7 @@ fn the_help_closes_with_question_esc_and_q_and_scrolls() {
             left, 1,
             "{close:?}: the last `q` ended the loop, not the close"
         );
-        assert_eq!(r[0], "line 01", "{close:?}");
+        assert!(r[1].starts_with("│line 01"), "{close:?}: {r:?}");
         assert!(r[5].contains("q:quit"), "{close:?}: {r:?}");
     }
     // `j` scrolls the help (the first row moves off), not the text.
@@ -195,14 +186,14 @@ fn unbinding_q_changes_the_footer_and_the_help() {
     // `q` gone: `Q` is what leaves, and the footer says so.
     let k = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
     let (r, _) = run(&k, (70, 3), vec![]);
-    assert_eq!(r[2], " Q:quit  j/k:scroll  ?:help  line 1  title");
+    assert_eq!(r[2], " Q:quit  j/k:scroll  ?:help  title");
     // Both gone: only Ctrl-C quits, and the footer says that rather than `q`.
     let k = keys(
         "[keys.text]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n",
         Lang::En,
     );
     let (r, _) = run(&k, (70, 3), vec![]);
-    assert_eq!(r[2], " C-c:quit  j/k:scroll  ?:help  line 1  title");
+    assert_eq!(r[2], " C-c:quit  j/k:scroll  ?:help  title");
     let (r, _) = run(&k, (70, 20), vec![key('?')]);
     assert!(
         !r.iter().any(|l| l.contains("quit") && !l.contains("Esc")),
@@ -222,7 +213,7 @@ fn unbinding_q_changes_the_footer_and_the_help() {
 fn the_less_scheme_names_its_own_keys() {
     let k = keys("[ui]\nkeys = \"less\"\n", Lang::En);
     let (r, _) = run(&k, (80, 3), vec![]);
-    assert_eq!(r[2], " q:quit  j/k:scroll  ?:help  line 1  title");
+    assert_eq!(r[2], " q:quit  j/k:scroll  ?:help  title");
     let (r, _) = run(&k, (80, 24), vec![key('?')]);
     let body = [
         "Preview: text / Markdown",
@@ -395,9 +386,9 @@ fn a_full_width_key_aligns_the_help_by_cells() {
     assert_eq!(cols.len(), rows.len(), "{rows:?}");
     assert!(cols.windows(2).all(|p| p[0] == p[1]), "{cols:?} {rows:?}");
     // The key is bound, so the footer's hint names it and it scrolls.
-    let (r, _) = run(&k, (70, 3), vec![key('あ')]);
-    assert_eq!(r[0], "line 01");
-    assert!(r[2].contains("あ"), "{r:?}");
+    let (r, _) = run(&k, (70, 5), vec![key('あ')]);
+    assert!(r[1].starts_with("│line 01"), "{r:?}");
+    assert!(r[4].contains("あ"), "{r:?}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -409,10 +400,10 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
     let k = keys("", Lang::En);
     // Text in each form scrolls.
     for name in ["a.t", "a.o", "a.l"] {
-        let (r, _) = run_as(&k, name, (70, 3), vec![]);
-        assert_eq!(r[2], " q:quit  j/k:scroll  ?:help  line 1  title", "{name}");
-        let (r, _) = run_as(&k, name, (70, 3), vec![key('j')]);
-        assert_eq!(r[0], "line 01", "{name}: `j` scrolled");
+        let (r, _) = run_as(&k, name, (70, 5), vec![]);
+        assert_eq!(r[4], " q:quit  j/k:scroll  ?:help  title", "{name}");
+        let (r, _) = run_as(&k, name, (70, 5), vec![key('j')]);
+        assert!(r[1].starts_with("│line 01"), "{name}: `j` scrolled {r:?}");
     }
     // A canvas, a message, a view the app cannot show and a failure do not: no hint, no
     // position, and the key does nothing (the screen is the one before).
@@ -650,10 +641,11 @@ fn acts_in_the_loop(k: &AppKeys, name: &str, help: Option<&Key>, key: &Key) -> b
     quit || after != before
 }
 
-/// Whether the footer on a real screen has the scroll form (a position after the hints).
+/// Whether a real screen has the scroll form: a text in the host's frame says where it is on the
+/// frame (its top border), a bare text says "line N" after the hints in the footer.
 fn footer_scrolls(k: &AppKeys, rows: &[String], title: &str) -> bool {
     let plain = format!(" {}  {title}", k.footer_tokens(false).join("  "));
-    *rows.last().expect("a footer row") != plain
+    rows[0].starts_with('┌') || *rows.last().expect("a footer row") != plain
 }
 
 #[test]

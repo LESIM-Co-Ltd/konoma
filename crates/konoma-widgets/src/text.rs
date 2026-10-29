@@ -8,6 +8,10 @@
 // Caps are in place so huge files don't freeze the app; consider moving this to a separate thread
 // later if it gets heavy.
 
+/// A tab as the mark and the spaces up to the next tab stop of `[ui] tab_width`: the one function
+/// konoma's windowed text, its code blocks and the standalone app all expand tabs with.
+pub use konoma_code_core::expand_tabs;
+
 use std::io::Read;
 use std::path::Path;
 

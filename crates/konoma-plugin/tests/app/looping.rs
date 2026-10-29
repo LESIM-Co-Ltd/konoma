@@ -85,26 +85,51 @@ fn rows(term: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
+/// The rows inside the frame of a text (between the top border with the path and the bottom
+/// border), without the left border and the right one (where the scrollbar is).
+fn inner(term: &Terminal<TestBackend>) -> Vec<String> {
+    let r = rows(term);
+    assert!(r[0].starts_with('┌'), "a frame is drawn: {r:?}");
+    let bottom = r.len() - 2;
+    assert!(r[bottom].starts_with('└'), "the frame ends: {r:?}");
+    let w = term.backend().buffer().area.width as usize;
+    r[1..bottom]
+        .iter()
+        .map(|l| {
+            let cells: Vec<char> = l.chars().collect();
+            let end = if cells.len() >= w { w - 1 } else { cells.len() };
+            cells[1..end.max(1)]
+                .iter()
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
 fn first_body(term: &Terminal<TestBackend>) -> String {
-    rows(term)[0].clone()
+    inner(term)[0].clone()
 }
 
 #[test]
 fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     let (_d, p) = file("app_text", "a.t", &lines20());
-    let (term, _) = run_events(TestPlugin::all(), &p, (60, 6), vec![]);
+    let (term, _) = run_events(TestPlugin::all(), &p, (60, 8), vec![]);
     let r = rows(&term);
-    assert_eq!(r.len(), 6);
-    for (i, row) in r.iter().enumerate().take(5) {
+    assert_eq!(r.len(), 8);
+    // The text sits in the host's frame: the path on the top border, the position on it too.
+    assert!(r[0].starts_with("┌ title "), "{r:?}");
+    assert!(r[0].contains("[Top]"), "{r:?}");
+    for (i, row) in inner(&term).iter().enumerate() {
         assert_eq!(row, &format!("line {i:02}"), "row {i}");
     }
-    assert!(r[5].contains("line 1"), "{r:?}");
-    assert!(r[5].ends_with("title"), "{r:?}");
-    assert!(r[5].contains("q:quit"), "{r:?}");
-    assert!(!r[4].contains("q:quit"));
+    assert!(r[6].starts_with('└'), "{r:?}");
+    assert!(r[7].ends_with("title"), "{r:?}");
+    assert!(r[7].contains("q:quit"), "{r:?}");
+    assert!(!r[6].contains("q:quit"));
     // The footer row is reversed.
     let buf = term.backend().buffer();
-    assert!(buf[(0, 5)]
+    assert!(buf[(0, 7)]
         .modifier
         .contains(ratatui::style::Modifier::REVERSED));
     assert!(!buf[(0, 0)]
@@ -115,7 +140,7 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
 #[test]
 fn j_and_k_and_the_arrows_scroll_by_one_line() {
     let (_d, p) = file("app_scroll", "a.t", &lines20());
-    let at = |ev: Vec<AppEvent>| first_body(&run_events(TestPlugin::all(), &p, (24, 6), ev).0);
+    let at = |ev: Vec<AppEvent>| first_body(&run_events(TestPlugin::all(), &p, (24, 8), ev).0);
     assert_eq!(at(vec![key('j')]), "line 01");
     assert_eq!(at(vec![key('j'), key('j'), key('j')]), "line 03");
     assert_eq!(
@@ -131,10 +156,10 @@ fn j_and_k_and_the_arrows_scroll_by_one_line() {
 #[test]
 fn scrolling_stops_where_the_last_page_is_full() {
     let (_d, p) = file("app_end", "a.t", &lines20());
-    // 5 body rows, 20 lines: the first row of the last page is line 15.
+    // 5 rows inside the frame, 20 lines: the first row of the last page is line 15.
     let many: Vec<AppEvent> = (0..40).map(|_| key('j')).collect();
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), many);
-    let r = rows(&term);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), many);
+    let r = inner(&term);
     assert_eq!(r[0], "line 15");
     assert_eq!(r[4], "line 19");
 }
@@ -142,8 +167,9 @@ fn scrolling_stops_where_the_last_page_is_full() {
 #[test]
 fn page_keys_home_and_end_move_by_pages() {
     let (_d, p) = file("app_page", "a.t", &lines20());
-    let at = |ev: Vec<AppEvent>| first_body(&run_events(TestPlugin::all(), &p, (24, 6), ev).0);
-    assert_eq!(at(vec![code(KeyCode::PageDown)]), "line 05");
+    let at = |ev: Vec<AppEvent>| first_body(&run_events(TestPlugin::all(), &p, (24, 8), ev).0);
+    // The host pages by one row less than the frame (4 of the 5 rows inside it).
+    assert_eq!(at(vec![code(KeyCode::PageDown)]), "line 04");
     assert_eq!(
         at(vec![code(KeyCode::PageDown), code(KeyCode::PageUp)]),
         "line 00"
@@ -156,8 +182,8 @@ fn page_keys_home_and_end_move_by_pages() {
 #[test]
 fn a_short_text_does_not_scroll_at_all() {
     let (_d, p) = file("app_short", "a.t", "one\ntwo\n");
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), vec![key('j'), key('j')]);
-    assert_eq!(rows(&term)[0], "one");
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j'), key('j')]);
+    assert_eq!(first_body(&term), "one");
 }
 
 #[test]
@@ -166,7 +192,7 @@ fn q_ends_the_loop_and_later_keys_are_not_read() {
     let (term, left) = run_events(
         TestPlugin::all(),
         &p,
-        (24, 6),
+        (24, 8),
         vec![key('j'), key('q'), key('j'), key('j')],
     );
     assert_eq!(left, 2, "the keys after q stay unread");
@@ -179,7 +205,7 @@ fn ctrl_c_ends_the_loop_too() {
     let (_, left) = run_events(
         TestPlugin::all(),
         &p,
-        (24, 6),
+        (24, 8),
         vec![AppEvent::Key(Key::ctrl('c')), key('j')],
     );
     assert_eq!(left, 1);
@@ -193,7 +219,7 @@ fn a_modified_q_does_not_end_the_loop_and_does_not_scroll() {
     let (term, left) = run_events(
         TestPlugin::all(),
         &p,
-        (24, 6),
+        (24, 8),
         vec![alt_q, ctrl_j, key('j')],
     );
     assert_eq!(left, 0);
@@ -203,34 +229,34 @@ fn a_modified_q_does_not_end_the_loop_and_does_not_scroll() {
 #[test]
 fn the_loop_ends_when_the_events_end() {
     let (_d, p) = file("app_evend", "a.t", "x\n");
-    let (_, left) = run_events(TestPlugin::all(), &p, (24, 6), vec![]);
+    let (_, left) = run_events(TestPlugin::all(), &p, (24, 8), vec![]);
     assert_eq!(left, 0);
 }
 
 #[test]
 fn an_owned_string_scrolls_the_same_way() {
     let (_d, p) = file("app_owned", "a.o", &lines20());
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), vec![key('j'), key('j')]);
-    let r = rows(&term);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j'), key('j')]);
+    let r = inner(&term);
     assert_eq!(r[0], "line 02");
     assert_eq!(r[4], "line 06");
     let many: Vec<AppEvent> = (0..40).map(|_| key('j')).collect();
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), many);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), many);
     assert_eq!(first_body(&term), "line 15");
 }
 
 #[test]
 fn styled_lines_keep_their_style_and_scroll() {
     let (_d, p) = file("app_lines", "a.l", &lines20());
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), vec![]);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![]);
     let buf = term.backend().buffer();
-    assert_eq!(buf[(0, 0)].fg, RColor::Red);
-    assert_eq!(buf[(0, 1)].fg, RColor::Reset);
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), vec![key('j')]);
+    assert_eq!(buf[(1, 1)].fg, RColor::Red);
+    assert_eq!(buf[(1, 2)].fg, RColor::Reset);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j')]);
     assert_eq!(first_body(&term), "line 01");
-    assert_eq!(term.backend().buffer()[(0, 0)].fg, RColor::Reset);
+    assert_eq!(term.backend().buffer()[(1, 1)].fg, RColor::Reset);
     let many: Vec<AppEvent> = (0..40).map(|_| key('j')).collect();
-    let (term, _) = run_events(TestPlugin::all(), &p, (24, 6), many);
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), many);
     assert_eq!(first_body(&term), "line 15");
 }
 
@@ -460,19 +486,39 @@ fn a_failing_view_is_shown_not_fatal_and_q_still_quits() {
 fn a_long_line_and_a_tab_and_crlf_are_drawn_clean() {
     let body = format!("a\tb\r\n{}\nlast", "w".repeat(100_000));
     let (_d, p) = file("app_long", "a.t", &body);
-    // Not wrapping: the long line is cut at the edge and `last` follows it.
-    let (term, _) = run_shown(&p, (12, 5), vec![], no_wrap());
-    let r = rows(&term);
-    assert_eq!(r[0], "a    b");
+    // Not wrapping: the long line is cut at the edge and `last` follows it. The tab is the
+    // host's mark and the spaces to the next tab stop (`a` + `→  ` = 4 columns).
+    let (term, _) = run_shown(&p, (14, 7), vec![], no_wrap());
+    let r = inner(&term);
+    assert_eq!(r[0], "a→  b");
     assert_eq!(r[1], "wwwwwwwwwwww");
     assert_eq!(r[2], "last");
     // Wrapping (the default): the long line goes on over the rows below it.
-    let (term, _) = run_events(TestPlugin::all(), &p, (12, 5), vec![]);
-    let r = rows(&term);
-    assert_eq!(r[0], "a    b");
+    let (term, _) = run_events(TestPlugin::all(), &p, (14, 7), vec![]);
+    let r = inner(&term);
+    assert_eq!(r[0], "a→  b");
     assert_eq!(r[1], "wwwwwwwwwwww");
     assert_eq!(r[2], "wwwwwwwwwwww");
     assert_eq!(r[3], "wwwwwwwwwwww");
+}
+
+#[test]
+fn a_tab_follows_the_configured_tab_width_in_each_form_of_text() {
+    for name in ["a.t", "a.o", "a.l"] {
+        let (_d, p) = file("app_tabw", name, "a\tb\n\tc\nabcd\te\n");
+        for (tab_width, want) in [
+            (2, ["a→b", "→ c", "abcd→ e"]),
+            (4, ["a→  b", "→   c", "abcd→   e"]),
+            (8, ["a→      b", "→       c", "abcd→   e"]),
+        ] {
+            let display = konoma_plugin::app::Display {
+                tab_width,
+                ..Default::default()
+            };
+            let (term, _) = run_shown(&p, (20, 7), vec![], display);
+            assert_eq!(&inner(&term)[..3], want, "{name} tab_width {tab_width}");
+        }
+    }
 }
 
 fn no_wrap() -> konoma_plugin::app::Display {
@@ -518,7 +564,7 @@ fn run_shown(
 #[test]
 fn a_text_that_does_not_wrap_scrolls_sideways_by_four_and_to_both_ends() {
     let (_d, p) = file("app_hscroll", "a.t", "abcdefghijklmnopqrstuvwxyz\nshort\n");
-    let at = |ev: Vec<AppEvent>| rows(&run_shown(&p, (10, 4), ev, no_wrap()).0)[0].clone();
+    let at = |ev: Vec<AppEvent>| first_body(&run_shown(&p, (12, 6), ev, no_wrap()).0);
     assert_eq!(at(vec![]), "abcdefghij");
     assert_eq!(at(vec![key('l')]), "efghijklmn");
     assert_eq!(at(vec![key('l'), key('l')]), "ijklmnopqr");
@@ -539,13 +585,82 @@ fn a_text_that_wraps_ignores_the_sideways_keys() {
     let (term, _) = run_events(
         TestPlugin::all(),
         &p,
-        (10, 5),
+        (12, 7),
         vec![key('l'), key('$'), code(KeyCode::Right)],
     );
-    let r = rows(&term);
+    let r = inner(&term);
     assert_eq!(r[0], "abcdefghij");
     assert_eq!(r[1], "klmnopqrst");
     assert_eq!(r[2], "uvwxyz");
+}
+
+/// The text of a plugin in each form (a file window, an owned string, styled lines) sits in the
+/// same frame: the file is the form the host's frame is compared with (`text_parity` in konoma),
+/// so the other two must draw the very same rows from the same content: the path, the position
+/// label, the scrollbar thumb, the tabs, the wide characters, wrapped or cut and scrolled.
+#[test]
+fn an_owned_string_and_styled_lines_are_framed_like_the_file_window() {
+    // No newline at the end: styled lines are written to the file joined by a newline, so their
+    // bytes (the unit of the position) are those of this file.
+    let tabbed: String = (0..40)
+        .map(|i| format!("\tfn f{i}() {{\tlet x = {i};\t}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wide: String = (0..30)
+        .map(|i| format!("日本語の行 {i} です。{}", "あ".repeat(i)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let long = format!("{}\nshort\n\n{}\nend", "word ".repeat(60), "x".repeat(300));
+    let plain = (0..20)
+        .map(|i| format!("line {i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Short lines, then long ones: the newlines are half of the bytes in the first part, so a
+    // position that leaves the terminators out is far off.
+    let tiny = (0..300)
+        .map(|i| if i < 150 { "a" } else { "bbbbbbbbbbbbbbbbbbbb" })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let presses: Vec<Vec<AppEvent>> = vec![
+        vec![],
+        vec![key('j'), key('j'), key('j')],
+        vec![code(KeyCode::PageDown)],
+        vec![code(KeyCode::PageDown), code(KeyCode::PageDown)],
+        vec![code(KeyCode::End)],
+        vec![code(KeyCode::End), code(KeyCode::Home)],
+        vec![key('l'), key('l'), key('j')],
+        vec![key('$')],
+        vec![key('G'), key('k')],
+        (0..77).map(|_| key('j')).collect(),
+    ];
+    let (mut compared, mut shifted) = (0, 0);
+    for (n, body) in [plain, tabbed, wide, long, tiny].iter().enumerate() {
+        let (_d, t) = file(&format!("app_form_t{n}"), "a.t", body);
+        let (_d2, o) = file(&format!("app_form_o{n}"), "a.o", body);
+        let (_d3, l) = file(&format!("app_form_l{n}"), "a.l", body);
+        for wrap in [true, false] {
+            for size in [(30u16, 9u16), (60, 14), (12, 6)] {
+                for ev in &presses {
+                    let display = konoma_plugin::app::Display {
+                        wrap,
+                        ..Default::default()
+                    };
+                    let want = rows(&run_shown(&t, size, ev.clone(), display.clone()).0);
+                    for (form, path) in [("owned", &o), ("lines", &l)] {
+                        let got = rows(&run_shown(path, size, ev.clone(), display.clone()).0);
+                        assert_eq!(
+                            got, want,
+                            "{form} differs from the file window: body {n} wrap {wrap} {size:?}"
+                        );
+                        compared += 1;
+                    }
+                    shifted += usize::from(want[0].contains('%'));
+                }
+            }
+        }
+    }
+    assert!(compared >= 400, "{compared}");
+    assert!(shifted > 20, "frames that show a percentage: {shifted}");
 }
 
 #[test]

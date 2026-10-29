@@ -193,6 +193,33 @@ impl DocCache {
     }
 }
 
+/// The frame title: the path between spaces (the host's shape).
+pub(super) fn path_title(name: &str) -> String {
+    if name.is_empty() {
+        " preview ".to_string()
+    } else {
+        format!(" {name} ")
+    }
+}
+
+/// A document's frame title: the path, and the note of a converted document that was cut.
+pub(super) fn doc_title(name: &str, truncated: bool, lang: Lang) -> String {
+    let mut t = path_title(name);
+    if truncated {
+        t.push_str(CoreMsg::DocTruncatedTitle.tr(lang));
+    }
+    t
+}
+
+/// The words of the position label, in the reader's language.
+pub(super) fn scroll_words(lang: Lang) -> ScrollWords {
+    ScrollWords {
+        all: CoreMsg::ScrollAll.tr(lang),
+        top: CoreMsg::ScrollTop.tr(lang),
+        bot: CoreMsg::ScrollBot.tr(lang),
+    }
+}
+
 /// A document on screen.
 pub struct DocFrame {
     /// The path of the file as the host titles it (or the file name).
@@ -213,15 +240,7 @@ impl DocFrame {
     /// The frame title: the path between spaces (the host's shape), and the note of a converted
     /// document that was cut.
     fn title(&self) -> String {
-        let mut t = if self.name.is_empty() {
-            " preview ".to_string()
-        } else {
-            format!(" {} ", self.name)
-        };
-        if self.truncated {
-            t.push_str(CoreMsg::DocTruncatedTitle.tr(self.lang));
-        }
-        t
+        doc_title(&self.name, self.truncated, self.lang)
     }
 
     /// Where the page is: display rows, the end of the range being the last full page.
@@ -255,11 +274,7 @@ impl DocFrame {
     pub fn draw(&self, buf: &mut Buffer, body: Rect) {
         let inner = Self::inner(body);
         let extent = self.extent(inner.height);
-        let words = ScrollWords {
-            all: CoreMsg::ScrollAll.tr(self.lang),
-            top: CoreMsg::ScrollTop.tr(self.lang),
-            bot: CoreMsg::ScrollBot.tr(self.lang),
-        };
+        let words = scroll_words(self.lang);
         let block = Block::bordered()
             .title(self.title())
             .title(scroll_title(extent, words));
@@ -270,5 +285,20 @@ impl DocFrame {
         }
         para.scroll((local, self.hscroll)).render(body, buf);
         render_scrollbar(buf, body, extent);
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn the_frame_title_is_the_path_or_preview_and_says_when_a_document_was_cut() {
+        assert_eq!(path_title("sub/a.md"), " sub/a.md ");
+        assert_eq!(path_title(""), " preview ");
+        assert_eq!(doc_title("a.md", false, Lang::En), " a.md ");
+        let cut = doc_title("a.md", true, Lang::En);
+        assert_eq!(cut, " a.md · truncated (too large to show in full) ");
+        assert!(doc_title("", true, Lang::Jp).starts_with(" preview · 打ち切り"));
     }
 }

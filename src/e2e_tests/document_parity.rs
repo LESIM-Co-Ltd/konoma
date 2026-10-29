@@ -22,7 +22,7 @@ fn app_term(path: &std::path::Path, w: u16, h: u16, spec: &str) -> Terminal<Test
 }
 
 /// [`app_term`] with the plugins the app carries.
-fn app_term_plugins(
+pub(super) fn app_term_plugins(
     plugins: Vec<Arc<dyn konoma_plugin::Plugin>>,
     path: &std::path::Path,
     w: u16,
@@ -66,7 +66,7 @@ fn app_term_plugins(
 }
 
 /// What the host shows after the presses, with the file opened from its tree.
-fn host_term(root: &std::path::Path, file: &str, w: u16, h: u16, spec: &str) -> Sim {
+pub(super) fn host_term(root: &std::path::Path, file: &str, w: u16, h: u16, spec: &str) -> Sim {
     let mut s = Sim::with_config_sized(root, cfg_en(), w, h);
     s.select(file);
     s.enter();

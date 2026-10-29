@@ -20,11 +20,24 @@ use crate::view::{CanvasView, Grid};
 
 /// The text of a file: lines that wrap, or scroll sideways.
 pub struct TextFrame {
-    pub lines: Vec<Line>,
+    /// The lines as drawn: tabs already expanded (the host's mark and tab stops).
+    pub lines: Vec<RLine<'static>>,
     /// Wrap at the edge of the body (`[ui] wrap`). Off, the lines are cut at it.
     pub wrap: bool,
     /// Cells scrolled off the left edge (0 while wrapping).
     pub hscroll: u16,
+    /// The bordered frame of the host's windowed text (the path, the position label and the
+    /// scrollbar). `None`: the lines are drawn bare (the file shown as text after a page failed).
+    pub border: Option<TextBorder>,
+}
+
+/// What the frame of a text carries.
+pub struct TextBorder {
+    /// The path as the host titles it (or the file name).
+    pub name: String,
+    pub lang: Lang,
+    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in).
+    pub extent: konoma_widgets::scroll::ScrollExtent,
 }
 
 /// What is drawn in the body.
@@ -214,7 +227,10 @@ pub fn footer(
 ) -> String {
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
-        Frame::Text(t) if scrolls && !t.lines.is_empty() => format!("  line {}", scroll + 1),
+        // A framed text says where it is on its frame (the scroll label), as the host does.
+        Frame::Text(t) if scrolls && t.border.is_none() && !t.lines.is_empty() => {
+            format!("  line {}", scroll + 1)
+        }
         // A document says where it is on its frame (the scroll label), as the host does.
         _ => String::new(),
     };
@@ -248,12 +264,25 @@ pub fn draw(
             Paragraph::new(text).render(body, f.buffer_mut());
         }
         Frame::Text(t) => {
-            let text: Vec<RLine> = t.lines.iter().map(ratatui_draw::line).collect();
+            let text: Vec<RLine> = t.lines.clone();
             let mut para = Paragraph::new(text);
+            if let Some(b) = &t.border {
+                para = para.block(
+                    Block::bordered()
+                        .title(super::document::path_title(&b.name))
+                        .title(konoma_widgets::scroll::scroll_title(
+                            b.extent,
+                            super::document::scroll_words(b.lang),
+                        )),
+                );
+            }
             if t.wrap {
                 para = para.wrap(ratatui::widgets::Wrap { trim: false });
             }
             para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
+            if let Some(b) = &t.border {
+                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, b.extent);
+            }
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
         Frame::Document(d) => d.draw(f.buffer_mut(), body),
