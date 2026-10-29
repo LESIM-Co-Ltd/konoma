@@ -95,8 +95,26 @@ pub fn render_panel(
         .block(block)
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
+    blank_wide_before(buf, popup);
     Clear.render(popup, buf);
     para.render(popup, buf);
+}
+
+/// Blank a wide character that stands left of `popup` with its second half under the panel's
+/// first column. The buffer keeps the character whole, so ratatui would skip the panel's border
+/// cell there (it is the wide character's second half) and the terminal would show half of a
+/// character where the border should be.
+fn blank_wide_before(buf: &mut Buffer, popup: Rect) {
+    let area = buf.area;
+    if popup.x == 0 || popup.x > area.right() {
+        return;
+    }
+    for y in popup.top().max(area.top())..popup.bottom().min(area.bottom()) {
+        let cell = &mut buf[(popup.x - 1, y)];
+        if cell.symbol().width() > 1 {
+            cell.reset();
+        }
+    }
 }
 
 /// Join `tokens` with two spaces and keep only as many as fit in `max` cells. When some are cut,
@@ -139,6 +157,28 @@ pub fn fit_tokens(tokens: &[String], max: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wide character whose second half is under the panel's first column must not stay in the
+    /// buffer: ratatui would skip the border cell as that half.
+    #[test]
+    fn a_wide_character_across_the_panels_left_edge_is_blanked() {
+        let area = Rect::new(0, 0, 100, 40);
+        let (popup, _) = popup_layout(10, area);
+        let mut buf = Buffer::empty(area);
+        for y in 0..area.height {
+            // Wide characters ending on the panel's first column, and one clear of the panel.
+            buf[(popup.x - 1, y)].set_symbol("日");
+            buf[(2, y)].set_symbol("本");
+        }
+        render_panel(&mut buf, area, vec![Line::raw("x"); 10], 0, "Help".into());
+        for y in popup.top()..popup.bottom() {
+            assert_eq!(buf[(popup.x - 1, y)].symbol(), " ", "row {y}");
+        }
+        assert_eq!(buf[(popup.x, popup.y)].symbol(), "┌");
+        // Outside the panel's rows the character stays.
+        assert_eq!(buf[(popup.x - 1, 0)].symbol(), "日");
+        assert_eq!(buf[(2, popup.y)].symbol(), "本");
+    }
 
     #[test]
     fn the_panel_is_centred_and_capped() {
