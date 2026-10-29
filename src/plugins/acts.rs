@@ -218,18 +218,17 @@ impl PluginKeys {
                 (PluginNote::Refused { plugin, why }, Lang::En) => {
                     format!("{plugin}: not registered, its declarations are not usable: {why}")
                 }
-                (PluginNote::UnknownAction { plugin, action }, Lang::Jp) => {
-                    format!("[keys.{plugin}] 未知の操作 `{action}`(無視)")
+                (PluginNote::UnknownAction { plugin, action }, lang) => KeyNote::UnknownAction {
+                    plugin: plugin.clone(),
+                    action: action.clone(),
                 }
-                (PluginNote::UnknownAction { plugin, action }, Lang::En) => {
-                    format!("[keys.{plugin}] unknown action `{action}` (ignored)")
+                .text(lang),
+                (PluginNote::BadKey { plugin, key, why }, lang) => KeyNote::BadKey {
+                    plugin: plugin.clone(),
+                    key: key.clone(),
+                    why: why.clone(),
                 }
-                (PluginNote::BadKey { plugin, key, why }, Lang::Jp) => {
-                    format!("[keys.{plugin}] キー `{key}` を使えません: {why}")
-                }
-                (PluginNote::BadKey { plugin, key, why }, Lang::En) => {
-                    format!("[keys.{plugin}] key `{key}` not used: {why}")
-                }
+                .text(lang),
             })
             .collect()
     }

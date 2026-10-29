@@ -25,6 +25,9 @@ pub struct AppActs {
     pub plugin_name: Option<Tr>,
     /// `[plugins.<id>] read_only = true`: the writing actions are refused.
     pub read_only: bool,
+    /// What was wrong with the user's `[keys.<id>]` table: told in the footer at start, as
+    /// konoma tells it ([`crate::host::bind::key_notes_line`]).
+    pub notes: Vec<KeyNote>,
 }
 
 /// The key tables of the config that are the host's (a context, `global`, the old `sort`), not a
@@ -50,6 +53,7 @@ impl AppActs {
             bindings,
             plugin_name: Some(manifest.name.clone()),
             read_only,
+            notes: notes.clone(),
         };
         (acts, notes)
     }

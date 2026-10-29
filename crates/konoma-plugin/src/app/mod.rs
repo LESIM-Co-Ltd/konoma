@@ -49,14 +49,34 @@ pub use term::{install_panic_hook_with, key_from_crossterm};
 /// the settings it is opened with. **The one place the app looks a content type up**: it is built
 /// from the registry of the program ([`ReopenSource::from_registry`]).
 #[derive(Clone)]
-pub struct ReopenSource(Arc<ContentLookup>);
+pub struct ReopenSource(Arc<ContentLookup>, Option<Arc<FileOpener>>);
 
 type ContentLookup = dyn Fn(&str) -> Option<ContentTarget>;
+
+/// Opens the file the program shows with its plugin again (what an `Outcome::Reload` asks for),
+/// given the language and the terminal.
+type FileOpener = dyn Fn(&str, TermCaps) -> Result<Box<dyn Session>, Failure>;
 
 impl ReopenSource {
     /// A source from any lookup.
     pub fn new(lookup: impl Fn(&str) -> Option<ContentTarget> + 'static) -> ReopenSource {
-        ReopenSource(Arc::new(lookup))
+        ReopenSource(Arc::new(lookup), None)
+    }
+
+    /// This source, which also reopens the file shown: `plugin` is opened on `input` with
+    /// `settings` (konoma's `reload_plugin` does the same: the file is read again and a new
+    /// session replaces the old one).
+    pub fn with_file(mut self, plugin: Arc<dyn Plugin>, input: Input, settings: Settings) -> Self {
+        self.1 = Some(Arc::new(move |lang, term| {
+            plugin.open(input.clone(), &OpenCx::new(&settings, lang).with_term(term))
+        }));
+        self
+    }
+
+    /// Open the file again with its plugin. `None`: this source does not know the file (the
+    /// reload is then a plain redraw).
+    pub fn reload(&self, lang: &str, term: TermCaps) -> Option<Result<Box<dyn Session>, Failure>> {
+        self.1.as_ref().map(|open| open(lang, term))
     }
 
     /// The plugin `registry` names for a content type ([`Registry::resolve_content`]: the rule
@@ -430,10 +450,23 @@ pub fn prepare_bundled(
                 Box::new(move |id| crate::config::plugin_settings(&tables, &moved, id)),
                 remote_images,
             ),
-            reopen: ReopenSource::from_registry(
-                Arc::clone(&opened.registry),
-                Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
-            ),
+            reopen: {
+                let source = ReopenSource::from_registry(
+                    Arc::clone(&opened.registry),
+                    Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
+                );
+                match opened.registry.plugin(&opened.plugin_id) {
+                    Some(plugin) => source.with_file(
+                        plugin,
+                        Input::File {
+                            path: opened.path.clone(),
+                            hint: opened.hint.clone(),
+                        },
+                        settings_of(&opened.plugin_id),
+                    ),
+                    None => source,
+                }
+            },
             acts: AppActs::from_config(
                 &opened.plugin_id,
                 &opened.manifest,

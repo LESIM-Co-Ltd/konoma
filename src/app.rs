@@ -3052,10 +3052,7 @@ impl App {
         notices.extend(self.cfg.plugin_report(self.lang));
         let plugin_notes = self.plugin_keys.report(self.lang);
         if !plugin_notes.is_empty() {
-            let head = match self.lang {
-                crate::i18n::Lang::Jp => "プラグイン",
-                crate::i18n::Lang::En => "plugins",
-            };
+            let head = konoma_host_core::help_msg::CoreMsg::PluginsHead.tr(self.lang);
             notices.push(format!("{head}: {}", plugin_notes.join(" / ")));
         }
         if !key_guidance.is_empty() {

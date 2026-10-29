@@ -27,6 +27,38 @@ pub enum KeyNote {
     },
 }
 
+impl KeyNote {
+    /// The words of the note (one piece of the startup message), the same in konoma and in the
+    /// standalone app.
+    pub fn text(&self, lang: konoma_host_core::lang::Lang) -> String {
+        use konoma_host_core::help_msg::CoreMsg;
+        match self {
+            KeyNote::UnknownAction { plugin, action } => CoreMsg::PluginKeyUnknownAction
+                .tr(lang)
+                .replace("{plugin}", plugin)
+                .replace("{action}", action),
+            KeyNote::BadKey { plugin, key, why } => CoreMsg::PluginKeyBad
+                .tr(lang)
+                .replace("{plugin}", plugin)
+                .replace("{key}", key)
+                .replace("{why}", why),
+        }
+    }
+}
+
+/// The startup message for the notes: `plugins: <note> / <note>` (`None` with no note).
+pub fn key_notes_line(notes: &[KeyNote], lang: konoma_host_core::lang::Lang) -> Option<String> {
+    if notes.is_empty() {
+        return None;
+    }
+    let texts: Vec<String> = notes.iter().map(|n| n.text(lang)).collect();
+    Some(format!(
+        "{}: {}",
+        konoma_host_core::help_msg::CoreMsg::PluginsHead.tr(lang),
+        texts.join(" / ")
+    ))
+}
+
 /// The key a plugin's `KeySpec` is on the host side.
 pub fn keypress_of(spec: KeySpec) -> KeyPress {
     use crossterm::event::KeyCode;

@@ -1216,6 +1216,9 @@ impl State {
 /// What the loop keeps between two frames.
 #[derive(Default)]
 struct State {
+    /// An action or a key answered `Outcome::Reload`: the file is opened again with its plugin
+    /// before the next view (konoma's `reload_plugin`).
+    reload: bool,
     /// What the plugin a `Reopen` was opened in is: from then on it, not the plugin that
     /// converted the file, says what a failed page was (`AppCx::shows` and the like).
     reopened_as: Option<ReopenedAs>,
@@ -1349,6 +1352,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     let mut own = keys_in.clone();
     let mut st = State {
         display: cx.display.clone(),
+        // The mistakes in the user's `[keys.<id>]` are told at start, as konoma's footer does.
+        flash: crate::host::bind::key_notes_line(&cx.acts.notes, own.lang()),
         ..State::default()
     };
     // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
@@ -1383,6 +1388,26 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             need_view = true;
         }
         let mut view_wait = None;
+        // The file is opened again with its plugin (an `Outcome::Reload`): the new session is the
+        // one asked from here on, and a `Reopen` the file leads to is decided again. The frame
+        // on screen and the scroll stay until the new view lands. A source that does not know the
+        // file (`ReopenSource::with_file`) leaves a plain redraw.
+        while std::mem::take(&mut st.reload) {
+            if let Some(opened) = cx.reopen.as_ref().and_then(|r| r.reload(&cx.lang, cx.term)) {
+                reopen_failed = None;
+                st.reopened_as = None;
+                match opened {
+                    Ok(fresh) => swapped = Some(fresh),
+                    // The reason is what the view shows, as a file that fails to open does.
+                    Err(f) => reopen_failed = Some(f),
+                }
+                need_view = true;
+                // The keys and actions that waited for the new session go to it, in order.
+                if flush_jobs(sess!(), &mut st, cx) {
+                    need_view = true;
+                }
+            }
+        }
         if need_view {
             let mut req = ViewReq::new(size.width, body_rows);
             if st.at_page > 0 {
@@ -2096,16 +2121,23 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
                 }
             }
         }
-        let (mut again, mut flash) = (false, None);
+        let (mut again, mut flash, mut reload) = (false, None, false);
         for r in results {
             match r {
-                Ok(Outcome::Redraw | Outcome::Reload) => again = true,
+                Ok(Outcome::Reload) => {
+                    again = true;
+                    reload = true;
+                }
+                Ok(Outcome::Redraw) => again = true,
                 Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
                 Ok(Outcome::Unhandled) => {}
                 Err(f) => flash = Some(f.message.get(&cx.lang).to_string()),
             }
         }
-        if flash.is_some() {
+        // A reload beats everything (konoma's merge of the keys' answers): the message is dropped.
+        if reload {
+            st.reload = true;
+        } else if flash.is_some() {
             st.flash = flash;
         }
         if is_act {
@@ -2113,6 +2145,10 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
             typing::settle_user_act(&mut st.user_act, false, again);
         }
         redraw |= again;
+        // What is still queued waits for the new session (the loop flushes it after the reload).
+        if reload {
+            break;
+        }
     }
     redraw
 }

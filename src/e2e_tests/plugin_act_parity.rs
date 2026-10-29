@@ -22,7 +22,8 @@ use konoma_plugin::app::{
 };
 use konoma_plugin::key::KeyCode as PK;
 use konoma_plugin::prelude::*;
-use konoma_plugin::view::{CanvasView, Grid, TableView};
+use konoma_plugin::view::{CanvasView, DocOptions, DocumentView, Grid, TableView};
+use konoma_plugin::Origin;
 use konoma_plugin::{Key, Style as PStyle, TermCaps};
 use konoma_test_support::TermScreen;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,9 +34,11 @@ enum Kind {
     Canvas,
     Text,
     Table,
+    /// A document (the host's decorated widget); the line is its Markdown.
+    Document,
 }
 
-const KINDS: [Kind; 3] = [Kind::Canvas, Kind::Text, Kind::Table];
+const KINDS: [Kind; 4] = [Kind::Canvas, Kind::Text, Kind::Table, Kind::Document];
 
 #[derive(Clone)]
 struct Opt {
@@ -47,6 +50,12 @@ struct Opt {
     lang: &'static str,
     /// Config text; `{id}` is the plugin's id.
     toml: String,
+    /// Declares `reload` (on `Z`): it writes `v2` into the file and answers `Outcome::Reload`;
+    /// on a canvas that types, the key `!` does the same.
+    reload: bool,
+    /// The plugin answers its view with a `Reopen` into a second plugin (`ActyTarget`) that takes
+    /// the Markdown and declares an action of its own (`tbump` on `T`).
+    reopen: bool,
 }
 
 impl Opt {
@@ -57,7 +66,17 @@ impl Opt {
             gate_on: true,
             lang: "en",
             toml: String::new(),
+            reload: false,
+            reopen: false,
         }
+    }
+    fn reopen(mut self) -> Opt {
+        self.reopen = true;
+        self
+    }
+    fn reload(mut self) -> Opt {
+        self.reload = true;
+        self
     }
     fn lang(mut self, l: &'static str) -> Opt {
         self.lang = l;
@@ -84,6 +103,8 @@ struct Acty {
     id: String,
     opt: Opt,
     log: Log,
+    /// How many sessions were opened.
+    opens: Arc<AtomicUsize>,
 }
 
 impl Plugin for Acty {
@@ -92,40 +113,61 @@ impl Plugin for Acty {
             Kind::Canvas => ViewKind::Canvas,
             Kind::Text => ViewKind::Text,
             Kind::Table => ViewKind::Table,
+            Kind::Document => ViewKind::Document,
         };
-        Manifest::new(self.id.as_str(), "0.1.0")
+        let m = Manifest::new(self.id.as_str(), "0.1.0")
             .bind(Bind::files(["*.pnt"]))
-            .shows(kind)
-            .action(
-                Act::new("bump")
-                    .key("x")
-                    .label(t!(en: "bump", ja: "加算"))
-                    .help(t!(en: "Add one to the counter", ja: "カウンタを 1 増やす"))
-                    .footer(1),
+            .shows(kind);
+        let m = if self.opt.reload {
+            m.action(
+                Act::new("reload")
+                    .key("Z")
+                    .label(t!(en: "reload", ja: "再読込"))
+                    .help(t!(en: "Rewrite the file and open it again", ja: "ファイルを書き換えて開き直す")),
             )
-            .action(
-                Act::new("save")
-                    .key("w")
-                    .label(t!(en: "save", ja: "保存"))
-                    .help(t!(en: "Write the counter out", ja: "カウンタを書き出す"))
-                    .footer(2)
-                    .writes(),
-            )
-            .action(
-                Act::new("gated")
-                    .key("u")
-                    .label(t!(en: "gated", ja: "条件付き"))
-                    .help(t!(en: "Works only sometimes", ja: "条件付きで動く"))
-                    .footer(3),
-            )
+        } else {
+            m
+        };
+        m.action(
+            Act::new("bump")
+                .key("x")
+                .label(t!(en: "bump", ja: "加算"))
+                .help(t!(en: "Add one to the counter", ja: "カウンタを 1 増やす"))
+                .footer(1),
+        )
+        .action(
+            Act::new("save")
+                .key("w")
+                .label(t!(en: "save", ja: "保存"))
+                .help(t!(en: "Write the counter out", ja: "カウンタを書き出す"))
+                .footer(2)
+                .writes(),
+        )
+        .action(
+            Act::new("gated")
+                .key("u")
+                .label(t!(en: "gated", ja: "条件付き"))
+                .help(t!(en: "Works only sometimes", ja: "条件付きで動く"))
+                .footer(3),
+        )
     }
 
-    fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        let Input::File { path, .. } = input else {
+            return Err(Failure::unsupported(t!(en: "a file only")));
+        };
+        let file = std::fs::read_to_string(&path)
+            .map_err(|_| Failure::unsupported(t!(en: "the file is gone")))?
+            .trim()
+            .to_string();
         Ok(Box::new(ActySession {
             opt: self.opt.clone(),
             log: self.log.clone(),
             n: 0,
             typed: String::new(),
+            path,
+            file,
         }))
     }
 }
@@ -135,6 +177,9 @@ struct ActySession {
     log: Log,
     n: u32,
     typed: String,
+    path: std::path::PathBuf,
+    /// What the file held when the session was opened.
+    file: String,
 }
 
 struct OneCell(String);
@@ -161,13 +206,29 @@ impl ActySession {
             let c: Vec<char> = self.typed.chars().collect();
             c[c.len().saturating_sub(8)..].iter().collect()
         };
-        format!("n={} l={} t=[{tail}]", self.n, self.typed.len())
+        format!(
+            "n={} l={} t=[{tail}] f={}",
+            self.n,
+            self.typed.len(),
+            self.file
+        )
     }
 }
 
 impl Session for ActySession {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         let line = self.line();
+        if self.opt.reopen {
+            return Ok(View::Reopen(konoma_plugin::view::Reopen {
+                content_type: "markdown".into(),
+                text: line,
+                resources: Default::default(),
+                origin: Origin::Converted {
+                    from: self.path.clone(),
+                },
+                truncated: false,
+            }));
+        }
         Ok(match self.opt.kind {
             Kind::Canvas => {
                 let mut c = CanvasView::new(req.cols, req.rows);
@@ -176,6 +237,14 @@ impl Session for ActySession {
                 View::Canvas(c)
             }
             Kind::Text => View::text([line]),
+            Kind::Document => View::Document(DocumentView {
+                markdown: line,
+                origin: Origin::File(self.path.clone()),
+                resources: Default::default(),
+                options: DocOptions::default(),
+                title: None,
+                truncated: false,
+            }),
             Kind::Table => View::Table(TableView {
                 grid: Arc::new(OneCell(line)),
                 title: None,
@@ -191,6 +260,10 @@ impl Session for ActySession {
             "bump" => self.n += 1,
             "save" => self.n += 100,
             "gated" => self.n += 1000,
+            "reload" => {
+                std::fs::write(&self.path, "v2").unwrap();
+                return Ok(Outcome::Reload);
+            }
             _ => return Ok(Outcome::Unhandled),
         }
         Ok(Outcome::Redraw)
@@ -201,6 +274,10 @@ impl Session for ActySession {
         match &key.code {
             PK::Char(c) => {
                 log.push(format!("key:{c}"));
+                if *c == '!' && self.opt.reload {
+                    std::fs::write(&self.path, "v2").unwrap();
+                    return Ok(Outcome::Reload);
+                }
                 self.typed.push(*c);
             }
             PK::Paste(s) => {
@@ -214,6 +291,66 @@ impl Session for ActySession {
 
     fn enabled(&self, action: &str) -> bool {
         action != "gated" || self.opt.gate_on
+    }
+}
+
+/// The plugin a `Reopen` leads to: it takes Markdown, shows it as a document, and declares
+/// `tbump` (on `T`). It also answers the first plugin's `bump`, to tell where an action went.
+struct ActyTarget {
+    id: String,
+    log: Log,
+}
+
+impl Plugin for ActyTarget {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(self.id.as_str(), "0.1.0")
+            .bind(Bind::content("markdown"))
+            .shows(ViewKind::Document)
+            .action(
+                Act::new("tbump")
+                    .key("T")
+                    .label(t!(en: "tbump", ja: "対象加算"))
+                    .help(t!(en: "Add one in the target", ja: "対象で 1 増やす"))
+                    .footer(1),
+            )
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::Content { .. } = input else {
+            return Err(Failure::unsupported(t!(en: "content only")));
+        };
+        Ok(Box::new(TargetSession {
+            log: self.log.clone(),
+            n: 0,
+        }))
+    }
+}
+
+struct TargetSession {
+    log: Log,
+    n: u32,
+}
+
+impl Session for TargetSession {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Document(DocumentView {
+            markdown: format!("n={} l=0 t=[] f=tgt", self.n),
+            origin: Origin::Converted {
+                from: std::path::PathBuf::from("a.pnt"),
+            },
+            resources: Default::default(),
+            options: DocOptions::default(),
+            title: None,
+            truncated: false,
+        }))
+    }
+    fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        self.log.lock().unwrap().push(format!("tact:{action}"));
+        match action {
+            "tbump" => self.n += 10,
+            "bump" => self.n += 1,
+            _ => return Ok(Outcome::Unhandled),
+        }
+        Ok(Outcome::Redraw)
     }
 }
 
@@ -244,6 +381,8 @@ struct Run {
     /// The program left (the host quit or went back to the tree; the app ended).
     left: bool,
     log: Vec<String>,
+    /// How many sessions the plugin opened.
+    opens: usize,
 }
 
 fn config_text(o: &Opt, id: &str) -> String {
@@ -261,22 +400,53 @@ fn fixture() -> (crate::test_support::TmpDir, std::path::PathBuf) {
     (dir, root)
 }
 
+/// The file as the tests that rewrite it start from (`v1`).
+fn reset_file(root: &std::path::Path) {
+    std::fs::write(root.join("a.pnt"), "v1").unwrap();
+}
+
+/// The file's content the plugin showed (`f=<content>`).
+fn file_of(rows: &[String]) -> Option<String> {
+    rows.iter().find_map(|r| {
+        let i = r.find(" f=")?;
+        Some(
+            r[i + 3..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect(),
+        )
+    })
+}
+
 fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     let id = new_id();
     let log = Log::default();
+    let opens = Arc::new(AtomicUsize::new(0));
     let marker = crate::plugins::test_plugins::register(
         &id,
         Arc::new(Acty {
             id: id.clone(),
             opt: o.clone(),
             log: log.clone(),
+            opens: opens.clone(),
         }),
     );
     let mut cfg = toml::from_str::<crate::config::Config>(&config_text(o, &id)).expect("a config");
     // The marker disables the shipped plugins the registry would otherwise offer for the file.
     let mut t = toml::Table::new();
     t.insert("enabled".into(), toml::Value::Boolean(false));
-    cfg.plugins.insert(marker, t);
+    cfg.plugins.insert(marker, t.clone());
+    if o.reopen {
+        let tid = format!("{id}-t");
+        let m2 = crate::plugins::test_plugins::register(
+            &tid,
+            Arc::new(ActyTarget {
+                id: tid.clone(),
+                log: log.clone(),
+            }),
+        );
+        cfg.plugins.insert(m2, t);
+    }
     let mut s = Sim::with_config_sized(root, cfg, W, h);
     open_nested(&mut s, "a.pnt");
     s.draw();
@@ -297,24 +467,39 @@ fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     let rows = rows_of(&s.term);
     let left = s.quit || counter(&rows).is_none();
     let log = log.lock().unwrap().clone();
-    Run { rows, left, log }
+    Run {
+        rows,
+        left,
+        log,
+        opens: opens.load(Ordering::SeqCst),
+    }
 }
 
 fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) -> Run {
     let id = new_id();
     let log = Log::default();
+    let opens = Arc::new(AtomicUsize::new(0));
     let plugin: Arc<dyn Plugin> = Arc::new(Acty {
         id: id.clone(),
         opt: o.clone(),
         log: log.clone(),
+        opens: opens.clone(),
     });
     let (cfg, _) = (
         konoma_host_core::shared::SharedConfig::parse(&config_text(o, &id)).expect("a config"),
         (),
     );
+    let bundled: Vec<Arc<dyn Plugin>> = if o.reopen {
+        vec![Arc::new(ActyTarget {
+            id: format!("{id}-t"),
+            log: log.clone(),
+        })]
+    } else {
+        Vec::new()
+    };
     let prepared = prepare_bundled(
         vec![plugin],
-        Vec::new(),
+        bundled,
         &root.join("a.pnt"),
         TermCaps::new(),
         (cfg, None),
@@ -378,6 +563,7 @@ fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) 
         rows: rows_of(&shown),
         left,
         log,
+        opens: opens.load(Ordering::SeqCst),
     }
 }
 
@@ -453,7 +639,7 @@ fn the_footer_names_the_declared_actions_in_every_view_as_the_host_does() {
             }
         }
     }
-    assert_eq!(compared, 12);
+    assert_eq!(compared, KINDS.len() * 4);
 }
 
 /// The titles of the help sections (a title is the row after a blank one, and the first row).
@@ -552,7 +738,7 @@ fn the_help_lists_the_declared_actions_in_every_view_as_the_host_does() {
             }
         }
     }
-    assert_eq!(compared, 12);
+    assert_eq!(compared, KINDS.len() * 4);
 }
 
 #[test]
@@ -582,7 +768,7 @@ fn a_declared_key_acts_in_every_view_and_the_plugin_sees_the_same() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 12);
+    assert_eq!(compared, KINDS.len() * 4);
 }
 
 #[test]
@@ -615,7 +801,7 @@ fn an_action_the_session_does_not_enable_does_nothing_and_swallows_the_key() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 9);
+    assert_eq!(compared, KINDS.len() * 3);
 }
 
 #[test]
@@ -656,7 +842,7 @@ fn a_writing_action_is_refused_for_a_read_only_plugin_as_in_the_host() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 6);
+    assert_eq!(compared, KINDS.len() * 2);
 }
 
 #[test]
@@ -700,7 +886,7 @@ fn the_users_keys_for_a_plugin_rebind_and_free_its_actions_the_same_way() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 30);
+    assert_eq!(compared, KINDS.len() * 10);
 }
 
 /// The typing hint in the footer while the plugin takes the keys.
@@ -805,7 +991,7 @@ fn a_paste_is_one_key_for_a_plugin_that_types_and_nothing_for_one_that_does_not(
         assert_eq!(counter(&hr.rows), counter(&ar.rows));
         none += 1;
     }
-    assert_eq!(none, 3);
+    assert_eq!(none, KINDS.len());
 }
 
 #[test]
@@ -855,6 +1041,7 @@ fn the_start_path_of_the_program_builds_the_actions_from_the_config() {
             id: id.clone(),
             opt: o.clone(),
             log: Log::default(),
+            opens: Arc::default(),
         });
         let cfg = konoma_host_core::shared::SharedConfig::parse(&config_text(&o, &id)).unwrap();
         let p = prepare_bundled(
@@ -888,4 +1075,227 @@ fn the_start_path_of_the_program_builds_the_actions_from_the_config() {
         Some(KeyCode::Char('b')),
         "the user's key replaced the default"
     );
+}
+
+/// The footer text at the bottom of the screen (the flash, when there is one), with the plugin's
+/// generated id (`actp-<n>`, different in each run) replaced by `ID`.
+fn last_row(r: &Run) -> String {
+    let mut row = r.rows.last().unwrap().trim().to_string();
+    while let Some(i) = row.find("actp-") {
+        let end = row[i + 5..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(row.len(), |e| i + 5 + e);
+        row.replace_range(i..end, "ID");
+    }
+    row
+}
+
+#[test]
+fn a_reload_opens_the_file_again_with_the_plugin_in_the_host_and_the_app() {
+    let (_dir, root) = fixture();
+    let mut compared = 0;
+    for kind in KINDS {
+        // (steps, the counter after, how many sessions were opened, the file shown)
+        for (steps, want_n, want_opens, want_log) in [
+            (vec![K("Z")], "n=0 ", 2, vec!["act:reload"]),
+            (
+                vec![K("x"), K("Z")],
+                "n=0 ",
+                2,
+                vec!["act:bump", "act:reload"],
+            ),
+            (
+                vec![K("Z"), K("x")],
+                "n=1 ",
+                2,
+                vec!["act:reload", "act:bump"],
+            ),
+            (
+                vec![K("x"), K("Z"), K("x"), K("x"), K("Z")],
+                "n=0 ",
+                3,
+                vec![
+                    "act:bump",
+                    "act:reload",
+                    "act:bump",
+                    "act:bump",
+                    "act:reload",
+                ],
+            ),
+        ] {
+            let o = Opt::new(kind).reload();
+            reset_file(&root);
+            let hr = host(&root, &o, HOST_H, &steps);
+            reset_file(&root);
+            let ar = app(&root, &o, APP_H, &steps, true);
+            assert!(!hr.left && !ar.left, "{kind:?} {steps:?}: left");
+            let (hc, ac) = (counter(&hr.rows).unwrap(), counter(&ar.rows).unwrap());
+            assert!(hc.starts_with(want_n), "{kind:?} {steps:?} host: {hc}");
+            assert_eq!(hc, ac, "{kind:?} {steps:?}");
+            // The file was read again: the new session shows what the action wrote.
+            assert_eq!(file_of(&hr.rows).as_deref(), Some("v2"), "{kind:?} host");
+            assert_eq!(file_of(&ar.rows).as_deref(), Some("v2"), "{kind:?} app");
+            assert_eq!(hr.opens, want_opens, "{kind:?} {steps:?} host opens");
+            assert_eq!(ar.opens, want_opens, "{kind:?} {steps:?} app opens");
+            assert_eq!(hr.log, want_log, "{kind:?} {steps:?} host log");
+            assert_eq!(ar.log, want_log, "{kind:?} {steps:?} app log");
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, KINDS.len() * 4);
+}
+
+/// A key the plugin answers with a reload (typed into a canvas): the file is opened again, the
+/// typed text starts over, the keys after it reach the new session.
+#[test]
+fn a_reload_answered_to_a_typed_key_opens_the_file_again_on_both() {
+    let (_dir, root) = fixture();
+    let mut compared = 0;
+    for steps in [
+        vec![K("a"), K("!")],
+        vec![K("a"), K("!"), K("b"), K("c")],
+        vec![K("!"), K("!")],
+    ] {
+        let o = Opt::new(Kind::Canvas).input().reload();
+        reset_file(&root);
+        let hr = host(&root, &o, HOST_H, &steps);
+        reset_file(&root);
+        let ar = app(&root, &o, APP_H, &steps, false);
+        let (hc, ac) = (counter(&hr.rows).unwrap(), counter(&ar.rows).unwrap());
+        assert_eq!(hc, ac, "{steps:?}");
+        assert_eq!(hr.log, ar.log, "{steps:?} logs");
+        assert_eq!(hr.opens, ar.opens, "{steps:?} opens");
+        assert!(ar.opens >= 2, "{steps:?}: no reload happened");
+        assert_eq!(file_of(&hr.rows), file_of(&ar.rows), "{steps:?}");
+        assert_eq!(file_of(&ar.rows).as_deref(), Some("v2"), "{steps:?}");
+        compared += 1;
+    }
+    assert_eq!(compared, 3);
+}
+
+#[test]
+fn the_keys_table_mistakes_are_told_in_the_footer_at_start_on_both() {
+    let (_dir, root) = fixture();
+    let mut compared = 0;
+    let cases = [
+        // (config, what the message names)
+        ("[keys.\"{id}\"]\nq1 = \"nosuch\"\n", vec!["nosuch"]),
+        ("[keys.\"{id}\"]\nab = \"bump\"\n", vec!["`ab`"]),
+        (
+            "[keys.\"{id}\"]\nq1 = \"nosuch\"\nab = \"bump\"\nzz9 = \"gated\"\n",
+            vec!["nosuch", "`ab`", "`zz9`"],
+        ),
+    ];
+    for kind in KINDS {
+        for lang in ["en", "ja"] {
+            for (toml, names) in &cases {
+                let o = Opt::new(kind).lang(lang).toml(toml);
+                let hr = host_with_notes(&root, &o);
+                // No key follows (a key would take the message away).
+                let ar = app(&root, &o, APP_H, &[], false);
+                let (hl, al) = (last_row(&hr), last_row(&ar));
+                for n in names {
+                    assert!(hl.contains(n), "{kind:?} {lang} host lacks {n}: {hl}");
+                    assert!(al.contains(n), "{kind:?} {lang} app lacks {n}: {al}");
+                }
+                let head = if lang == "ja" {
+                    "プラグイン:"
+                } else {
+                    "plugins:"
+                };
+                assert!(hl.contains(head) && al.contains(head), "{hl} / {al}");
+                // The wording itself is pinned (the shared text cannot drift on both sides unseen).
+                let (unk, bad) = if lang == "ja" {
+                    ("未知の操作", "を使えません")
+                } else {
+                    ("unknown action", "not used")
+                };
+                let want = names
+                    .iter()
+                    .map(|n| if n.starts_with('`') { bad } else { unk });
+                for w in want {
+                    assert!(hl.contains(w) && al.contains(w), "{w}: {hl} / {al}");
+                }
+                // The same words in the same place.
+                assert_eq!(hl, al, "{kind:?} {lang}");
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, KINDS.len() * 6);
+    // A config with no mistake says nothing.
+    let o = Opt::new(Kind::Text).toml("[keys.\"{id}\"]\nb = \"bump\"\n");
+    let ar = app(&root, &o, APP_H, &[], false);
+    assert!(!last_row(&ar).contains("plugins:"), "{:?}", ar.rows.last());
+}
+
+/// The host as it starts: the startup message is on the footer (konoma's `main` sets it before
+/// the first key; here it is put after the file is open, which the opening keys would clear).
+fn host_with_notes(root: &std::path::Path, o: &Opt) -> Run {
+    let id = new_id();
+    let log = Log::default();
+    let marker = crate::plugins::test_plugins::register(
+        &id,
+        Arc::new(Acty {
+            id: id.clone(),
+            opt: o.clone(),
+            log: log.clone(),
+            opens: Arc::default(),
+        }),
+    );
+    let mut cfg = toml::from_str::<crate::config::Config>(&config_text(o, &id)).expect("a config");
+    let mut t = toml::Table::new();
+    t.insert("enabled".into(), toml::Value::Boolean(false));
+    cfg.plugins.insert(marker, t);
+    let mut s = Sim::with_config_sized(root, cfg, W, HOST_H);
+    open_nested(&mut s, "a.pnt");
+    s.app.flash = s.app.startup_flash(None, usize::from(W));
+    s.term.clear().expect("clear");
+    s.draw();
+    let rows = rows_of(&s.term);
+    Run {
+        rows,
+        left: false,
+        log: Vec::new(),
+        opens: 0,
+    }
+}
+
+/// After a `Reopen` into another plugin. Shared: both show the destination's view, and the
+/// destination's own declared key (`T`) does nothing on either side. NOT shared (a known
+/// difference, pinned so a change on either side is noticed): the host keeps the original
+/// plugin's declared keys and sends them to the destination session, while the app drops the
+/// declared keys once the view has been reopened as another plugin.
+#[test]
+fn after_a_reopen_the_destination_is_shown_and_the_host_alone_keeps_the_original_keys() {
+    let (_dir, root) = fixture();
+    let mut compared = 0;
+    for lang in ["en", "ja"] {
+        for (steps, host_log) in [
+            (vec![], vec![]),
+            (vec![K("T")], vec![]),
+            (vec![K("x")], vec!["tact:bump"]),
+            (vec![K("x"), K("T"), K("x")], vec!["tact:bump"]),
+            (vec![K("w"), K("u")], vec!["tact:save", "tact:gated"]),
+        ] {
+            let o = Opt::new(Kind::Document).lang(lang).reopen();
+            let hr = host(&root, &o, HOST_H, &steps);
+            let ar = app(&root, &o, APP_H, &steps, true);
+            assert!(!hr.left && !ar.left, "{lang} {steps:?}: left");
+            assert_eq!(
+                file_of(&hr.rows).as_deref(),
+                Some("tgt"),
+                "host shows the target"
+            );
+            assert_eq!(
+                file_of(&ar.rows).as_deref(),
+                Some("tgt"),
+                "app shows the target"
+            );
+            assert_eq!(hr.log, host_log, "{lang} {steps:?} host log");
+            assert!(ar.log.is_empty(), "{lang} {steps:?} app log {:?}", ar.log);
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 10);
 }

@@ -103,6 +103,9 @@ pub enum CoreMsg {
     PluginInputFull,
     PluginPasteCut,
     PluginReadOnly,
+    PluginsHead,
+    PluginKeyUnknownAction,
+    PluginKeyBad,
     StPluginInput,
     StPluginInputHint,
 }
@@ -208,6 +211,9 @@ impl CoreMsg {
         CoreMsg::PluginInputFull,
         CoreMsg::PluginPasteCut,
         CoreMsg::PluginReadOnly,
+        CoreMsg::PluginsHead,
+        CoreMsg::PluginKeyUnknownAction,
+        CoreMsg::PluginKeyBad,
         CoreMsg::StPluginInput,
         CoreMsg::StPluginInputHint,
     ];
@@ -323,6 +329,11 @@ impl CoreMsg {
             CoreMsg::PluginReadOnly => {
                 "this plugin is set to read-only ([plugins.<id>] read_only = true)"
             }
+            CoreMsg::PluginsHead => "plugins",
+            CoreMsg::PluginKeyUnknownAction => {
+                "[keys.{plugin}] unknown action `{action}` (ignored)"
+            }
+            CoreMsg::PluginKeyBad => "[keys.{plugin}] key `{key}` not used: {why}",
             CoreMsg::StPluginInput => "INPUT",
             CoreMsg::StPluginInputHint => "the plugin is taking your typing   Esc:leave",
         }
@@ -438,6 +449,9 @@ impl CoreMsg {
             CoreMsg::PluginReadOnly => {
                 "このプラグインは読み取り専用です([plugins.<id>] read_only = true)"
             }
+            CoreMsg::PluginsHead => "プラグイン",
+            CoreMsg::PluginKeyUnknownAction => "[keys.{plugin}] 未知の操作 `{action}`(無視)",
+            CoreMsg::PluginKeyBad => "[keys.{plugin}] キー `{key}` を使えません: {why}",
             CoreMsg::StPluginInput => "入力",
             CoreMsg::StPluginInputHint => "プラグインが入力を受けています   Esc:抜ける",
         }
