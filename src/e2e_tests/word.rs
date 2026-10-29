@@ -99,7 +99,7 @@ pub(super) fn build_docx(path: &std::path::Path, body: &str) {
     put(
         "word/document.xml",
         &format!(
-            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>"#
+            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>{body}</w:body></w:document>"#
         ),
     );
     zw.finish().unwrap();

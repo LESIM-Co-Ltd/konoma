@@ -1287,3 +1287,258 @@ fn a_reopen_deletes_the_kitty_images_the_old_document_had_placed() {
     )
     .expect("runs");
 }
+
+// ---- an embedded render in flight when the document goes away ----
+
+/// An embed plugin (the bundled kind: its SVG is drawn in this process) that holds every render
+/// until `open` is set, and says when one has begun and when it is done.
+struct HeldEmbed {
+    kind: &'static str,
+    begun: Arc<AtomicBool>,
+    open: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+}
+
+impl Plugin for HeldEmbed {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("held-embed", "0.0.1").bind(Bind::embed(self.kind))
+    }
+    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if !matches!(input, Input::Embed { .. }) {
+            return Err(Failure::unsupported(t!(en: "embed only")));
+        }
+        self.begun.store(true, Ordering::SeqCst);
+        let t = Instant::now();
+        while !self.open.load(Ordering::SeqCst) {
+            assert!(t.elapsed() < DEADLINE, "the render was never released");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.done.store(true, Ordering::SeqCst);
+        struct S;
+        impl Session for S {
+            fn view(&mut self, _r: &ViewReq, _c: &ViewCx) -> Result<View, Failure> {
+                Ok(View::Image(konoma_plugin::view::ImageView::new(
+                    ImageData::Svg {
+                        data: Arc::from(RED_SVG.as_bytes()),
+                        base_dir: None,
+                        trusted: true,
+                    },
+                )))
+            }
+        }
+        Ok(Box::new(S))
+    }
+}
+
+struct Held {
+    begun: Arc<AtomicBool>,
+    open: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    env: konoma_plugin::app::DocEnv,
+}
+
+fn held_env(kind: &'static str) -> Held {
+    let flag = || Arc::new(AtomicBool::new(false));
+    let (begun, open, done) = (flag(), flag(), flag());
+    let mut registry = konoma_plugin::registry::Registry::new();
+    registry
+        .register(
+            Arc::new(HeldEmbed {
+                kind,
+                begun: Arc::clone(&begun),
+                open: Arc::clone(&open),
+                done: Arc::clone(&done),
+            }),
+            konoma_plugin::registry::PluginOrigin::Bundled,
+        )
+        .expect("registers");
+    let env = konoma_plugin::app::DocEnv::from_registry(
+        Arc::new(registry),
+        "en",
+        Box::new(|_| Settings::empty().clone()),
+        false,
+    );
+    Held {
+        begun,
+        open,
+        done,
+        env,
+    }
+}
+
+fn shows(b: &Buffer, needle: &str) -> bool {
+    (0..b.area.height).any(|y| {
+        (0..b.area.width)
+            .map(|x| b[(x, y)].symbol().to_string())
+            .collect::<String>()
+            .contains(needle)
+    })
+}
+
+/// Reopening while the embedded render is in flight: the old document's late result lands on
+/// nothing, so no picture is placed or transmitted afterwards.
+fn reopen_during_embed(kind: &'static str, md: &str) {
+    let _turn = KITTY.lock().unwrap_or_else(|e| e.into_inner());
+    let (_dir, path) = pic_file();
+    let held = held_env(kind);
+    let mut opened = open_file(
+        vec![Arc::new(DocConv { md: md.to_string() })],
+        &path,
+        "en",
+        TermCaps::new(),
+    )
+    .expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(40, 12)));
+    let mut term = Terminal::new(Probe {
+        inner: Arc::clone(&screen),
+        shared: Arc::default(),
+        cell: (0, 0),
+    })
+    .unwrap();
+    let sink = Sink::default();
+    let into = sink.clone();
+    let begun = Arc::clone(&held.begun);
+    let (open, done) = (Arc::clone(&held.open), Arc::clone(&held.done));
+    let mut events = Driver {
+        screen: Arc::clone(&screen),
+        steps: vec![
+            // The render has begun and is held: the document goes away under it.
+            step(
+                move |_| begun.load(Ordering::SeqCst),
+                Some(AppEvent::Resize),
+            ),
+            {
+                let mut s = step(|b| shows(b, "reopened text"), Some(AppEvent::Resize));
+                s.act = Some(Box::new(move || open.store(true, Ordering::SeqCst)));
+                s
+            },
+            // The old render has finished and had its frames to land in.
+            step(move |_| done.load(Ordering::SeqCst), Some(AppEvent::Resize)),
+            step(
+                |b| {
+                    shows(b, "reopened text")
+                        && b.content()
+                            .iter()
+                            .all(|c| !c.symbol().contains(PLACEHOLDER))
+                },
+                None,
+            ),
+        ]
+        .into(),
+        started: Instant::now(),
+        waits: Waits::default(),
+    };
+    let target: Arc<dyn Plugin> = Arc::new(TextTarget);
+    let cx = AppCx {
+        reopen: Some(konoma_plugin::app::ReopenSource::new(move |_| {
+            Some(konoma_plugin::reopen::ContentTarget {
+                plugin: Arc::clone(&target),
+                settings: Settings::empty().clone(),
+            })
+        })),
+        ..cx()
+    };
+    let pictures = Pictures::new(kitty_picker(), "pic-test", &opened.path, 800)
+        .with_out(Box::new(into))
+        .with_documents(held.env);
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        Some(pictures),
+    )
+    .expect("runs");
+    assert!(
+        !sink.text().contains("a=T"),
+        "a picture of the old document was transmitted"
+    );
+}
+
+#[test]
+fn a_reopen_during_a_math_render_leaves_no_picture() {
+    reopen_during_embed("math", "before $x^2$ after\n");
+}
+
+#[test]
+fn a_reopen_during_a_mermaid_render_leaves_no_picture() {
+    reopen_during_embed("fence:mermaid", "```mermaid\ngraph TD; A-->B\n```\n");
+}
+
+/// Quitting while the embedded render is in flight returns at once, and the render that ends
+/// afterwards places nothing.
+fn quit_during_embed(kind: &'static str, md: &str) {
+    let _turn = KITTY.lock().unwrap_or_else(|e| e.into_inner());
+    let (_dir, path) = pic_file();
+    let held = held_env(kind);
+    let mut opened = open_file(
+        vec![Arc::new(DocConv { md: md.to_string() })],
+        &path,
+        "en",
+        TermCaps::new(),
+    )
+    .expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(40, 12)));
+    let mut term = Terminal::new(Probe {
+        inner: Arc::clone(&screen),
+        shared: Arc::default(),
+        cell: (0, 0),
+    })
+    .unwrap();
+    let sink = Sink::default();
+    let into = sink.clone();
+    let begun = Arc::clone(&held.begun);
+    let mut not_quit = step(|_| true, None);
+    not_quit.act = Some(Box::new(|| panic!("q did not end the run")));
+    let mut events = Driver {
+        screen: Arc::clone(&screen),
+        steps: vec![
+            step(move |_| begun.load(Ordering::SeqCst), Some(key('q'))),
+            not_quit,
+        ]
+        .into(),
+        started: Instant::now(),
+        waits: Waits::default(),
+    };
+    let pictures = Pictures::new(kitty_picker(), "pic-test", &opened.path, 800)
+        .with_out(Box::new(into))
+        .with_documents(held.env);
+    let begun_at = Instant::now();
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx(),
+        &AppKeys::defaults(),
+        Some(pictures),
+    )
+    .expect("runs");
+    // The run ended while the render was still held (it only ends when released).
+    assert!(begun_at.elapsed() < DEADLINE);
+    assert!(
+        !held.done.load(Ordering::SeqCst),
+        "the render was not in flight when the run ended"
+    );
+    held.open.store(true, Ordering::SeqCst);
+    let t = Instant::now();
+    while !held.done.load(Ordering::SeqCst) {
+        assert!(t.elapsed() < DEADLINE, "the worker never ended");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !sink.text().contains("a=T"),
+        "a picture was transmitted after the quit"
+    );
+}
+
+#[test]
+fn quitting_during_a_math_render_returns_at_once_and_places_nothing() {
+    quit_during_embed("math", "before $x^2$ after\n");
+}
+
+#[test]
+fn quitting_during_a_mermaid_render_returns_at_once_and_places_nothing() {
+    quit_during_embed("fence:mermaid", "```mermaid\ngraph TD; A-->B\n```\n");
+}
