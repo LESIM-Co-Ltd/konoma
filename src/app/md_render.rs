@@ -694,65 +694,19 @@ impl App {
         // A picture of the open Word document: its bytes are in memory and its size was read
         // when the document was converted, so there is no file to resolve or stat. Asked before
         // the shared rules (`PictureLookup::other`); `None` is "not a document picture".
+        let office_message = |f: crate::preview::image::ImageFailure| f.message(lang, &plugin_id);
+        let no_pictures = std::collections::HashMap::new();
         let office_slot = |url: &str, max_cols: Option<u16>| -> Option<ImageSlot> {
-            if !crate::preview::markdown::is_office_image_url(url) {
-                return None;
-            }
             let font = font?;
-            let failed = |f: crate::preview::image::ImageFailure| match f.message(lang, &plugin_id)
-            {
-                Some(why) => ImageSlot::Failed(why),
-                None => ImageSlot::Unavailable,
-            };
-            // Said once, like a file picture: a decode that failed keeps its reason, and a
-            // picture whose header is already over the limits is refused before any decode.
-            if let Some(e) = self
-                .md_images
-                .cache
-                .get(&PathBuf::from(url))
-                .filter(|e| e.failed)
-            {
-                return Some(match e.fail.and_then(|f| f.message(lang, &plugin_id)) {
-                    Some(why) => ImageSlot::Failed(why),
-                    None => ImageSlot::Unavailable,
-                });
+            konoma_plugin::document_pictures::ResourceSlots {
+                pictures: self.document.as_ref().map_or(&no_pictures, |d| &d.pictures),
+                cache: &self.md_images,
+                font: (font.width, font.height),
+                avail,
+                slide_rows,
+                message: &office_message,
             }
-            Some(match self.document_picture_dims(url) {
-                // A slide: the full text width (it is a vector drawing, so it may be enlarged),
-                // as tall as the viewport leaves room for after its heading.
-                Some((pw, ph)) if self.document_picture_is_slide(url) => {
-                    let (cols, rows) = slide_cells(
-                        pw,
-                        ph,
-                        font.width,
-                        font.height,
-                        max_cols.unwrap_or(avail),
-                        slide_rows,
-                    );
-                    ImageSlot::Inline { cols, rows }
-                }
-                // Only a raster is refused from its header: an SVG's intrinsic size is not a
-                // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
-                // same as a file SVG.
-                Some(d)
-                    if self.document_picture_is_raster(url)
-                        && !crate::preview::image::dimensions_within_limits(d) =>
-                {
-                    failed(crate::preview::image::ImageFailure::TooLarge)
-                }
-                Some((pw, ph)) => {
-                    let (cols, rows) = md_image_cells(
-                        pw,
-                        ph,
-                        font.width,
-                        font.height,
-                        max_cols.unwrap_or(avail),
-                        MD_IMAGE_MAX_ROWS,
-                    );
-                    ImageSlot::Inline { cols, rows }
-                }
-                None => ImageSlot::Unavailable,
-            })
+            .slot(url, max_cols)
         };
         let refused = |url: &str, p: &Path| self.md_image_refused(url, p);
         let message = |f: crate::preview::image::ImageFailure, pid: &str| f.message(lang, pid);

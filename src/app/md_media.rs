@@ -1,8 +1,7 @@
-use super::office_doc::PictureSource;
 use super::*;
 
 use konoma_plugin::document_pictures::{
-    DecodeJob, DocPictures, Requested, MAX_SYNTHETIC_RENDERS_IN_FLIGHT,
+    DecodeJob, DocPictures, Requested, ResourceJob, MAX_SYNTHETIC_RENDERS_IN_FLIGHT,
 };
 
 // The tmux detection lives with the cache that reads it (`InlineImageCache::attach_picker`).
@@ -770,20 +769,7 @@ impl App {
     /// How many pictures of the open document are being decoded for the first time right now
     /// (cached, not yet decoded, not failed, pixels never dropped).
     pub(super) fn office_pictures_in_flight(&self) -> usize {
-        self.md_images
-            .cache
-            .iter()
-            .filter(|(k, e)| {
-                // An entry whose pixels the cache dropped (`evicted`) has no decode running for
-                // it: it waits for a rebuild (limited by `MD_MAX_REBUILDS`). Counting it as
-                // "in flight" filled the cap with idle entries after enough pictures had been
-                // seen, and no new picture was ever started.
-                e.decoded.is_none()
-                    && !e.failed
-                    && !e.evicted
-                    && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
-            })
-            .count()
+        konoma_plugin::document_pictures::office_pictures_in_flight(&self.md_images)
     }
 
     /// The longest edge, in pixels, slide picture `url` should be drawn at to fill a frame of
@@ -877,9 +863,6 @@ impl App {
         let Some(source) = self.document_picture_source(url) else {
             return false;
         };
-        let Some(tx) = self.md_img_tx.clone() else {
-            return true;
-        };
         // A slide is drawn at the pixel size its frame needs (never below `svg_max_px`); any other
         // picture of a document at `svg_max_px`.
         let want_px = self.md_images.cache.get(&key).map_or(0, |e| e.want_px);
@@ -906,117 +889,15 @@ impl App {
         } else {
             self.cfg.ui.svg_max_px
         };
-        let ticket = self
-            .md_images
-            .cache
-            .get(&key)
-            .map(|e| e.wish.ticket())
-            .unwrap_or_default();
-        let request = self.begin_md_request(&key);
-        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
-        let stale = ticket.clone();
-        std::thread::Builder::new()
-            .name("konoma-office-pic".into())
-            .spawn(move || {
-                use crate::preview::image::ImageFailure;
-                // The same contract as the file decode: queued in the shared decode gate under the
-                // entry's ticket, an SVG drawn by the supervised child process (stopped when the
-                // document is left), a panic on a pathological picture is a failed decode, and a
-                // result is always sent (not sending would latch the busy indicator).
-                let moved_on =
-                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
-                let (still, frames) = crate::preview::markdown::catch_silent(|| {
-                    crate::preview::image::with_decode_ticket(ticket, || {
-                        let mut svg_px = svg_max_px;
-                        let mut slide_cap = None;
-                        // A slide has no bytes yet: draw its scene to an SVG here (off the UI
-                        // thread, under the decode gate) and let the supervised drawing process
-                        // rasterize it like any other untrusted SVG of a document.
-                        let bytes: Arc<[u8]> = match source {
-                            PictureSource::Bytes(b) => b,
-                            PictureSource::Lazy {
-                                lazy,
-                                render_truncated,
-                                raster_cap,
-                            } => {
-                                use konoma_plugin::view::ImageData;
-                                let cancel = konoma_plugin::Cancel::from_fn({
-                                    let (latest, stale) = (latest.clone(), stale.clone());
-                                    move || {
-                                        latest.load(std::sync::atomic::Ordering::Relaxed) != gen
-                                            || stale.is_stale()
-                                    }
-                                });
-                                let req = konoma_plugin::ResourceReq { max_px: svg_px };
-                                let drawn = match lazy.render(&req, &cancel) {
-                                    Ok(ImageData::Svg { data, .. } | ImageData::Encoded(data)) => {
-                                        data
-                                    }
-                                    // The preview moved on: nothing to show, nothing to remember.
-                                    Err(f) if f.kind == konoma_plugin::FailureKind::Cancelled => {
-                                        return (Err(ImageFailure::Cancelled), None);
-                                    }
-                                    Ok(_) | Err(_) => return (Err(ImageFailure::Corrupt), None),
-                                };
-                                if lazy.truncated() {
-                                    render_truncated
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                // The raster size is cut to what the drawing process's work
-                                // budget allows for this slide's effects (they are counted at the
-                                // square of the scale): effects stay, the slide is just drawn
-                                // smaller. A size an earlier attempt found too heavy stays out
-                                // (see below), and one that only timed out stays out for a while.
-                                if let Some(px) = lazy.max_raster_px() {
-                                    raster_cap.lower_permanent(px);
-                                }
-                                if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
-                                    svg_px = svg_px.min(cap);
-                                }
-                                slide_cap = Some(raster_cap);
-                                drawn
-                            }
-                        };
-                        if bytes.starts_with(b"GIF8") {
-                            if let Some((frames, _)) =
-                                crate::preview::image::decode_gif_bytes_inline(&bytes)
-                            {
-                                let first = frames[0].0.clone();
-                                return (Ok(first), Some(frames));
-                            }
-                        }
-                        // A slide whose picture the drawing process refuses as too heavy or
-                        // too slow at this size is drawn again smaller before it is given up on;
-                        // the size that worked becomes the slide's raster cap.
-                        let res = super::decode_with_cap(
-                            slide_cap.as_deref(),
-                            svg_px,
-                            retry_floor,
-                            &moved_on,
-                            &std::time::Instant::now,
-                            |px| md_decode_bytes_why(&bytes, px, &moved_on),
-                        );
-                        (res, None)
-                    })
-                })
-                .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // A cancelled decode reports like any other result, first decode and re-raster
-                // alike: the entry may still be in the cache (a stale ticket does not remove it),
-                // and the receiving side (`apply_md_image`) forgets it or ignores a gone one.
-                let still = match still {
-                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
-                    other => other,
-                };
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image: still.map_err(|f| f.code().to_string()),
-                    svg: None,
-                    reraster,
-                    frames,
-                    request,
-                });
-            })
-            .is_ok()
+        let job = ResourceJob {
+            source,
+            svg_max_px,
+            retry_floor,
+            reraster,
+            svg: Arc::new(media_plugin::SvgChild),
+            generation: (self.media_gen, self.media_gen_shared.clone()),
+        };
+        self.doc_pictures().spawn_resource_decode(key, job)
     }
 
     /// The image to draw for the visible portion of inline image `url`, **at this placement's own

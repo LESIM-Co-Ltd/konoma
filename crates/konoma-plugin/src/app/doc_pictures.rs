@@ -15,15 +15,19 @@
 //! - **Mermaid and math** are drawn by the plugin the registry names for the kind
 //!   ([`EmbedRender`]). With none, they stay text (a text diagram, the raw expression), as in
 //!   the host.
+//! - **The pictures a document carries** (`DocumentView::resources`: a Word document's embedded
+//!   images, the `office-img://` ones) are held here and decoded from memory by the shared worker
+//!   ([`DocPictures::begin_resource_decode`]), as the host does. A new document (`reset`) or a
+//!   different set of resources drops the old ones.
 //! - **Remote images** obey `external.remote_images`. Off, a URL is marked failed at once and
 //!   nothing is fetched.
 //! - **Waiting is decided by state**, not by the clock: [`DocPics::loading`] is true while a
 //!   download, a decode, a render or an encode is out, and only then does the loop poll.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +38,7 @@ use konoma_widgets::inline_images::{
     md_encode_worker, DecodedImage, InlineImageCache, MdEncodeResult, OverlayMoved,
     MD_IMAGE_CACHE_BYTES,
 };
-use konoma_widgets::markdown::{is_synthetic_md_url, ImagePlacement};
+use konoma_widgets::markdown::{is_office_image_url, is_synthetic_md_url, ImagePlacement};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
@@ -45,10 +49,12 @@ use crate::canvas_pictures::{
 };
 use crate::document_pictures::{
     fetch_remote_image, live_synthetic_keys, mermaid_fit_rows, mermaid_rows_cap,
-    resolve_md_image_path, DecodeJob, DocPictures, Fetcher, PictureLookup, RemoteFetch, Requested,
-    DEFAULT_MERMAID_ROWS, FENCE_MERMAID, MATH, MATH_PX,
+    office_pictures_in_flight, resolve_md_image_path, DecodeJob, DocPicture, DocPictures, Fetcher,
+    PictureLookup, RemoteFetch, Requested, ResourceJob, ResourceSlots, DEFAULT_MERMAID_ROWS,
+    FENCE_MERMAID, MATH, MATH_PX, MAX_SYNTHETIC_RENDERS_IN_FLIGHT, SLIDE_CHROME_ROWS,
 };
 use crate::document_render::{render_document, RenderSettings, RenderedDocument};
+use crate::input::{Resource, Resources};
 use crate::registry::{PluginOrigin, Registry};
 use crate::view::DocumentView;
 use crate::Settings;
@@ -128,6 +134,24 @@ pub struct DocPics {
     overlay: OverlayMoved,
     /// Whether the last frame drawn was the document (an animation needs no wake otherwise).
     on_document: bool,
+    /// The resources of the document on screen (`DocumentView::resources`) and the pictures read
+    /// from them.
+    resources: Resources,
+    pictures: HashMap<String, DocPicture>,
+    /// Set by a draw of a picture that had to leave something out (shared by all its pictures).
+    render_truncated: Arc<AtomicBool>,
+}
+
+/// Whether `a` and `b` hold the very same resources (the same names over the same shared data).
+fn same_resources(a: &Resources, b: &Resources) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|(k, ra)| match (ra, b.get(k)) {
+            (Resource::Bytes(x), Some(Resource::Bytes(y))) => Arc::ptr_eq(x, y),
+            (Resource::Lazy(x), Some(Resource::Lazy(y))) => {
+                std::ptr::addr_eq(Arc::as_ptr(x), Arc::as_ptr(y))
+            }
+            _ => false,
+        })
 }
 
 impl DocPics {
@@ -170,7 +194,24 @@ impl DocPics {
             relayout: false,
             overlay: OverlayMoved::new(),
             on_document: false,
+            resources: Resources::new(),
+            pictures: HashMap::new(),
+            render_truncated: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Hold the pictures `resources` name (the document on screen's). The very same resources as
+    /// before change nothing; others drop the pictures of the old ones.
+    fn sync_resources(&mut self, resources: &Resources) {
+        if same_resources(&self.resources, resources) {
+            return;
+        }
+        self.render_truncated = Arc::new(AtomicBool::new(false));
+        self.pictures = DocPicture::from_resources(resources, &self.render_truncated);
+        self.resources = resources.clone();
+        self.cache
+            .cache
+            .retain(|k, _| !is_office_image_url(&k.to_string_lossy()));
     }
 
     pub fn set_env(&mut self, env: DocEnv) {
@@ -209,6 +250,7 @@ impl DocPics {
         lang: Lang,
         settings: &RenderSettings<'_>,
     ) -> RenderedDocument {
+        self.sync_resources(&dv.resources);
         let fence = (self.env.embed)(FENCE_MERMAID, &self.svg);
         let math = (self.env.embed)(MATH, &self.svg);
         let image_mode = |e: &Option<EmbedRender>| {
@@ -223,6 +265,16 @@ impl DocPics {
             let rendered = {
                 let refusals = RefCell::new(Vec::new());
                 let message = |f: ImageFailure, pid: &str| image_failure_message(f, lang, pid);
+                let own_message = |f: ImageFailure| message(f, &self.plugin_id);
+                let font = self.font;
+                let resource_slots = ResourceSlots {
+                    pictures: &self.pictures,
+                    cache: &self.cache,
+                    font,
+                    avail: width.saturating_sub(2),
+                    slide_rows: rows.saturating_sub(SLIDE_CHROME_ROWS).max(1),
+                    message: &own_message,
+                };
                 let lookup = PictureLookup {
                     cache: &self.cache,
                     remote_failed: &self.remote_failed,
@@ -236,7 +288,7 @@ impl DocPics {
                     refused: &|_, _| None,
                     refusals: &refusals,
                     message: &message,
-                    other: &|_, _| None,
+                    other: &|url, max_cols| resource_slots.slot(url, max_cols),
                 };
                 lookup.with_slots(true, |slots| {
                     render_document(&dv.markdown, &dv.options, settings, slots)
@@ -334,6 +386,8 @@ impl DocPics {
         (self.fetch_tx, self.fetch_rx) = channel();
         self.remote_inflight.clear();
         self.remote_failed.clear();
+        self.resources = Resources::new();
+        self.pictures.clear();
         let pinned: HashSet<u32> = self
             .cache
             .kitty_ids
@@ -475,6 +529,28 @@ impl DocPics {
         }
     }
 
+    /// Starts the first decode of the document's own picture `url` (filed under `key`). At most
+    /// [`MAX_SYNTHETIC_RENDERS_IN_FLIGHT`] at once, like the host: skipping leaves no entry, so
+    /// the next draw (a landed decode always causes one) asks again. A picture the document does
+    /// not hold is left uncached (nothing to draw).
+    fn begin_office_decode(&mut self, url: &str, key: PathBuf) {
+        let Some(source) = self.pictures.get(url).map(|p| p.source.clone()) else {
+            return;
+        };
+        if office_pictures_in_flight(&self.cache) >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
+            return;
+        }
+        let job = ResourceJob {
+            source,
+            svg_max_px: self.raster_px,
+            retry_floor: self.raster_px,
+            reraster: false,
+            svg: Arc::clone(&self.svg),
+            generation: (0, Arc::clone(&self.generation)),
+        };
+        self.dp().begin_resource_decode(key, job);
+    }
+
     /// Make the picture of `p` ready to be drawn: start its decode the first time it is drawn,
     /// stamp it as wanted by this pass, and ask for the encode of this placement.
     fn ensure_image(&mut self, p: &ImagePlacement, row_off: u16, vis_rows: u16) {
@@ -482,6 +558,11 @@ impl DocPics {
             return;
         };
         if !self.cache.cache.contains_key(&path) {
+            // A picture the document carries: decoded from the bytes it holds, never from a file.
+            if is_office_image_url(&p.url) {
+                self.begin_office_decode(&p.url, path);
+                return;
+            }
             // A synthetic picture is filed by its layout request: never decode `math://` as a file.
             if is_synthetic_md_url(&p.url) {
                 return;
@@ -609,5 +690,73 @@ mod tests {
         assert!(d.cache.kitty_ids.is_empty());
         assert!(d.relayout, "the page is laid out again");
         assert_eq!(d.epoch, epoch + 1, "a cached layout is built again");
+    }
+
+    fn stripes() -> Arc<[u8]> {
+        let mut out = Vec::new();
+        image::RgbaImage::new(8, 8)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        Arc::from(out)
+    }
+
+    fn resources_of(bytes: &Arc<[u8]>) -> Resources {
+        let mut r = Resources::new();
+        r.insert("office-img://h/a.png", Resource::Bytes(bytes.clone()));
+        r
+    }
+
+    #[test]
+    fn the_resources_of_the_document_are_held_and_a_new_document_drops_them() {
+        let mut d = pics(None);
+        let bytes = stripes();
+        let r = resources_of(&bytes);
+        d.sync_resources(&r);
+        assert_eq!(d.pictures.len(), 1);
+        assert!(d.pictures["office-img://h/a.png"].dims.is_some());
+        // The very same resources again: the pictures are not made again.
+        let held = d.render_truncated.clone();
+        d.sync_resources(&r.clone());
+        assert!(Arc::ptr_eq(&held, &d.render_truncated));
+        // The page was laid out again (a decode landed): the entry stays.
+        d.cache
+            .cache
+            .insert(PathBuf::from("office-img://h/a.png"), Default::default());
+        d.sync_resources(&r);
+        assert_eq!(d.cache.cache.len(), 1);
+        // Other resources: the old pictures and their cache entries go, the others stay.
+        d.cache
+            .cache
+            .insert(PathBuf::from("/x/other.png"), Default::default());
+        let other = stripes();
+        d.sync_resources(&resources_of(&other));
+        assert!(!Arc::ptr_eq(&held, &d.render_truncated));
+        assert!(!d
+            .cache
+            .cache
+            .contains_key(&PathBuf::from("office-img://h/a.png")));
+        assert!(d.cache.cache.contains_key(&PathBuf::from("/x/other.png")));
+        // A reopened document: nothing of the old one is held.
+        d.reset();
+        assert!(d.pictures.is_empty());
+        assert!(d.resources.is_empty());
+    }
+
+    #[test]
+    fn a_picture_the_document_does_not_hold_starts_no_decode() {
+        let mut d = pics(None);
+        d.begin_office_decode(
+            "office-img://h/none.png",
+            PathBuf::from("office-img://h/none.png"),
+        );
+        assert!(d.cache.cache.is_empty());
+        let bytes = stripes();
+        d.sync_resources(&resources_of(&bytes));
+        d.begin_office_decode(
+            "office-img://h/a.png",
+            PathBuf::from("office-img://h/a.png"),
+        );
+        assert_eq!(d.cache.cache.len(), 1);
+        assert!(d.loading(), "a decode is out");
     }
 }

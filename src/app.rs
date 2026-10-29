@@ -35,6 +35,7 @@ use crate::config::Config;
 use crate::i18n::tr;
 #[cfg(test)]
 use crate::preview::markdown::{math_cells, mermaid_cells};
+#[cfg(test)]
 use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
 
@@ -5718,9 +5719,9 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
         .collect()
 }
 
-/// Rows around a slide picture that are not the picture: its heading line and the blank line
-/// between the heading and the picture.
-const SLIDE_CHROME_ROWS: u16 = 2;
+use konoma_plugin::document_pictures::SLIDE_CHROME_ROWS;
+#[cfg(test)]
+use konoma_plugin::document_pictures::{decode_with_cap, decode_with_smaller_retries};
 
 // The document-picture rules every host shares (where an image URL points, the remote download and
 // its cache, the file decoders) live in `konoma_plugin::document_pictures`; konoma re-exports them
@@ -5758,6 +5759,7 @@ fn md_decode_image_within(
 }
 
 /// [`konoma_plugin::document_pictures::md_decode_bytes_why`] with konoma's own SVG drawing.
+#[cfg(test)]
 fn md_decode_bytes_why(
     bytes: &[u8],
     svg_max_px: u32,
@@ -5791,163 +5793,6 @@ fn md_decode_image_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     md_decode_image_within(path, svg_max_px, None, cancelled)
-}
-
-/// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
-/// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
-/// raster size), again at a smaller size, never below `floor_px`. Cost and memory refusals are
-/// the same on every run and fail fast, so they halve the side each time. A time-out is the
-/// expensive kind (it holds the decode gate for the whole time limit) and says as much about the
-/// machine's load as about the slide: the first one is retried once at half the side (a quarter
-/// of the work), and a second goes straight to the floor, so a loaded machine is held for at most
-/// three time limits, not one per halving. Any other failure is final, and so is a request the
-/// user moved on from. A crash is not retried smaller: it is a stack overflow (the same at any
-/// size) or an allocation failure under memory pressure (an immediate retry meets the same
-/// pressure); [`cap_lesson`] makes its cap expire so the slide is tried again later.
-///
-/// Returns the last result, the size it was made at, and the refusals on the way as
-/// `(size, failure)` (the last failure included), which [`record_slide_attempts`] turns into what
-/// the slide remembers.
-fn decode_with_smaller_retries(
-    start_px: u32,
-    floor_px: u32,
-    shrink: bool,
-    cancelled: &dyn Fn() -> bool,
-    mut attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> (
-    Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    u32,
-    Vec<(u32, crate::preview::image::ImageFailure)>,
-) {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    let floor = floor_px.min(start_px);
-    let mut px = start_px;
-    let mut timeouts = 0u32;
-    let mut trail = Vec::new();
-    loop {
-        let res = attempt(px);
-        if let Err(f) = &res {
-            trail.push((px, *f));
-        }
-        let refused = match &res {
-            Err(ImageFailure::Svg(
-                f @ (SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory),
-            )) => Some(*f),
-            _ => None,
-        };
-        let Some(why) = refused.filter(|_| shrink && px > floor && !cancelled()) else {
-            return (res, px, trail);
-        };
-        px = if why == SvgFail::Timeout {
-            timeouts += 1;
-            if timeouts == 1 {
-                (px / 2).max(floor)
-            } else {
-                floor
-            }
-        } else {
-            (px / 2).max(floor)
-        };
-    }
-}
-
-/// Decodes a picture with `attempt`, and when it is a slide (`cap` is Some) draws it again
-/// smaller if the drawing process refuses it, then teaches `cap` what happened (see
-/// [`decode_with_smaller_retries`] and [`record_slide_attempts`]). Anything that is not a slide
-/// is attempted once at `start_px`. `clock` is read when a refusal is recorded (not before the
-/// drawing starts), so an expiring cap counts its lifetime from the refusal.
-fn decode_with_cap(
-    cap: Option<&crate::app::office_doc::SlideRasterCap>,
-    start_px: u32,
-    floor_px: u32,
-    moved_on: &dyn Fn() -> bool,
-    clock: &dyn Fn() -> std::time::Instant,
-    attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    let (res, used, trail) =
-        decode_with_smaller_retries(start_px, floor_px, cap.is_some(), moved_on, attempt);
-    if let Some(cap) = cap {
-        record_slide_attempts(cap, &trail, &res, used, floor_px, moved_on(), clock);
-    }
-    res
-}
-
-/// What one refused attempt of a slide's draw says about the slide's raster size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CapLesson {
-    /// The same at this size on every run: the cap is kept for good.
-    Permanent,
-    /// Says as much about the machine's load as about the slide: the cap expires.
-    Expiring,
-    /// Does not depend on the raster size (drawing smaller would not help). It says nothing
-    /// about what size the slide can be drawn at, so it is not retried smaller and teaches no
-    /// size, but when the draw never worked the same request must not be made again at once (a
-    /// failed sharpening redraw is asked for again by every frame otherwise): the cap is held at
-    /// the floor for a while, like a time-out.
-    SizeIndependent,
-    /// Nobody wants the result (cancelled): nothing is learned.
-    Nothing,
-}
-
-/// Classifies a failure of a slide's draw. An exhaustive match on purpose (no catch-all): a new
-/// failure kind has to be given a decision here.
-fn cap_lesson(failure: crate::preview::image::ImageFailure) -> CapLesson {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    match failure {
-        // Costs that grow with the raster size and are the same on every run.
-        ImageFailure::Svg(SvgFail::TooHeavy | SvgFail::Memory) => CapLesson::Permanent,
-        // Timeout: the clock, i.e. the load. Crashed: the drawing process died by itself, which is
-        // an allocation failure (transient under memory pressure) or a stack overflow (not size
-        // dependent, but then the next try after the lifetime costs one more crash, no more).
-        ImageFailure::Svg(SvgFail::Timeout | SvgFail::Crashed) => CapLesson::Expiring,
-        // Decided by the picture itself, whatever size it is drawn at.
-        ImageFailure::Svg(
-            SvgFail::TooDeep | SvgFail::TooLarge | SvgFail::TooComplex | SvgFail::Invalid,
-        )
-        | ImageFailure::TooLarge
-        | ImageFailure::Corrupt
-        | ImageFailure::UnsupportedFormat
-        | ImageFailure::OutsideReadDirs => CapLesson::SizeIndependent,
-        ImageFailure::Cancelled => CapLesson::Nothing,
-    }
-}
-
-/// Teaches `cap` what the attempts of one slide draw showed. Each refused size lowers the cap to
-/// the size tried next (the one that worked, or the one after it also failed); the last failure
-/// of a draw that never worked caps it at `floor_px` (the raster already shown, or the base
-/// size), so a sharpening redraw does not ask for more again and again. What each failure means
-/// is decided by [`cap_lesson`]; an expiring cap starts its lifetime when it is recorded
-/// (`clock`); so does a failure that does not depend on the size (see [`CapLesson::SizeIndependent`]). A cancelled attempt says nothing about the slide, and neither does the last
-/// attempt of a request the user moved on from (the refusals confirmed before it still count).
-fn record_slide_attempts(
-    cap: &crate::app::office_doc::SlideRasterCap,
-    trail: &[(u32, crate::preview::image::ImageFailure)],
-    result: &Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    used: u32,
-    floor_px: u32,
-    moved_on: bool,
-    clock: &dyn Fn() -> std::time::Instant,
-) {
-    let floor = floor_px.min(trail.first().map_or(used, |t| t.0));
-    // The user moved on during the last attempt: it is not a confirmed refusal.
-    let confirmed = trail.len().saturating_sub(usize::from(moved_on));
-    for (i, (_, failure)) in trail.iter().enumerate().take(confirmed) {
-        let next = match trail.get(i + 1) {
-            Some((px, _)) => *px,
-            None if result.is_ok() => used,
-            None => floor,
-        };
-        match cap_lesson(*failure) {
-            CapLesson::Permanent => cap.lower_permanent(next),
-            CapLesson::Expiring => cap.lower_timed_out(next, clock()),
-            // Only the final failure of a draw that never worked (`next` is then the floor, the
-            // raster already shown): the sizes before it were refusals, not this.
-            CapLesson::SizeIndependent => cap.lower_timed_out(next, clock()),
-            CapLesson::Nothing => {}
-        }
-    }
 }
 
 /// Distinct from the `mod tests;` at the bottom of this file (`src/app/tests.rs`, off-limits to a

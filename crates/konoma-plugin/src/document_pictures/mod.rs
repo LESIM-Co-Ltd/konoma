@@ -7,11 +7,13 @@
 pub mod files;
 pub mod remote;
 pub mod requests;
+pub mod resources;
 pub mod slots;
 
 pub use files::*;
 pub use remote::*;
 pub use requests::*;
+pub use resources::*;
 pub use slots::*;
 
 #[cfg(test)]

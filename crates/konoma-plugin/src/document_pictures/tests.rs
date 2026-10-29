@@ -788,3 +788,170 @@ fn begin_decode_with_no_results_channel_files_the_entry_and_starts_nothing() {
     // Nothing to deliver to is not a failed start: the entry is not marked failed.
     assert!(!e.failed);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The pictures a document carries (`office-img://`): slots, the decode worker, the in-flight count
+// ---------------------------------------------------------------------------------------------
+
+fn png_bytes(w: u32, h: u32) -> Arc<[u8]> {
+    let mut out = Vec::new();
+    image::RgbaImage::new(w, h)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    Arc::from(out)
+}
+
+const OFFICE_URL: &str = "office-img://abc/stripes.png";
+
+fn one_resource(bytes: Arc<[u8]>) -> std::collections::HashMap<String, DocPicture> {
+    let mut r = crate::input::Resources::new();
+    r.insert(OFFICE_URL, crate::input::Resource::Bytes(bytes));
+    DocPicture::from_resources(&r, &Arc::new(std::sync::atomic::AtomicBool::new(false)))
+}
+
+fn resource_job(source: PictureSource, gen: &Arc<AtomicU64>) -> ResourceJob {
+    ResourceJob {
+        source,
+        svg_max_px: 256,
+        retry_floor: 256,
+        reraster: false,
+        svg: Arc::new(NoSvg),
+        generation: (0, gen.clone()),
+    }
+}
+
+#[test]
+fn a_resource_picture_is_sized_from_its_header_and_a_missing_one_is_text() {
+    let pictures = one_resource(png_bytes(80, 160));
+    let cache = InlineImageCache::default();
+    let message = |_: ImageFailure| None;
+    let slots = ResourceSlots {
+        pictures: &pictures,
+        cache: &cache,
+        font: (8, 16),
+        avail: 100,
+        slide_rows: 20,
+        message: &message,
+    };
+    assert_eq!(
+        slots.slot(OFFICE_URL, None),
+        Some(ImageSlot::Inline { cols: 10, rows: 10 })
+    );
+    assert_eq!(
+        slots.slot(OFFICE_URL, Some(4)),
+        Some(ImageSlot::Inline { cols: 4, rows: 4 }),
+        "a table cell's own width budget"
+    );
+    assert_eq!(
+        slots.slot("office-img://abc/missing.png", None),
+        Some(ImageSlot::Unavailable),
+        "a picture the document does not hold is text"
+    );
+    assert_eq!(
+        slots.slot("https://x/a.png", None),
+        None,
+        "not a document picture"
+    );
+}
+
+#[test]
+fn a_resource_that_failed_to_decode_says_why_once() {
+    let pictures = one_resource(png_bytes(8, 8));
+    let mut cache = InlineImageCache::default();
+    cache.cache.insert(
+        PathBuf::from(OFFICE_URL),
+        MdImgEntry {
+            failed: true,
+            fail: Some(ImageFailure::Corrupt),
+            ..MdImgEntry::default()
+        },
+    );
+    let message = |f: ImageFailure| Some(format!("failed: {}", f.code()));
+    let slots = ResourceSlots {
+        pictures: &pictures,
+        cache: &cache,
+        font: (8, 16),
+        avail: 100,
+        slide_rows: 20,
+        message: &message,
+    };
+    assert!(matches!(
+        slots.slot(OFFICE_URL, None),
+        Some(ImageSlot::Failed(why)) if why.starts_with("failed:")
+    ));
+}
+
+#[test]
+fn a_resource_picture_is_decoded_from_its_bytes_and_the_result_is_sent() {
+    let (mut st, rx) = State::new().with_results();
+    let pictures = one_resource(png_bytes(12, 6));
+    let gen = Arc::new(AtomicU64::new(0));
+    let key = PathBuf::from(OFFICE_URL);
+    st.cache.frame = 5;
+    let source = pictures[OFFICE_URL].source.clone();
+    st.pictures()
+        .begin_resource_decode(key.clone(), resource_job(source, &gen));
+    assert_eq!(st.cache.cache[&key].last_used, 5);
+    assert!(!st.cache.cache[&key].failed);
+    let res = rx.recv().unwrap();
+    assert_eq!(res.path, key);
+    let img = res.image.as_ref().expect("decoded");
+    assert_eq!((img.width(), img.height()), (12, 6));
+    let applied = st.pictures().apply_result(res);
+    assert!(applied.pixels);
+    assert!(st.cache.cache[&key].decoded.is_some());
+}
+
+#[test]
+fn a_resource_decode_that_is_not_an_image_still_sends_a_failure() {
+    let (mut st, rx) = State::new().with_results();
+    let gen = Arc::new(AtomicU64::new(0));
+    let key = PathBuf::from(OFFICE_URL);
+    let junk = PictureSource::Bytes(Arc::from(&b"not an image"[..]));
+    st.pictures()
+        .begin_resource_decode(key.clone(), resource_job(junk, &gen));
+    let res = rx.recv().expect("a result is always sent");
+    assert!(res.image.is_err());
+    st.pictures().apply_result(res);
+    assert!(st.cache.cache[&key].failed, "the wait ends");
+}
+
+#[test]
+fn a_resource_decode_of_a_document_that_was_left_reports_cancelled() {
+    let (mut st, rx) = State::new().with_results();
+    let gen = Arc::new(AtomicU64::new(0));
+    let key = PathBuf::from(OFFICE_URL);
+    let junk = PictureSource::Bytes(Arc::from(&b"not an image"[..]));
+    // The generation moved on before the worker ran: the failure is a cancel, not "corrupt".
+    gen.store(1, Ordering::SeqCst);
+    st.pictures()
+        .begin_resource_decode(key, resource_job(junk, &gen));
+    let res = rx.recv().unwrap();
+    assert_eq!(res.image.unwrap_err(), ImageFailure::Cancelled.code());
+}
+
+#[test]
+fn only_first_decodes_of_document_pictures_count_as_in_flight() {
+    let mut cache = InlineImageCache::default();
+    let mut put = |url: &str, e: MdImgEntry| {
+        cache.cache.insert(PathBuf::from(url), e);
+    };
+    put("office-img://a/1.png", MdImgEntry::default());
+    put("office-img://a/2.png", MdImgEntry::default());
+    put(
+        "office-img://a/3.png",
+        MdImgEntry {
+            failed: true,
+            ..MdImgEntry::default()
+        },
+    );
+    put(
+        "office-img://a/4.png",
+        MdImgEntry {
+            evicted: true,
+            ..MdImgEntry::default()
+        },
+    );
+    put("/x/file.png", MdImgEntry::default());
+    assert_eq!(office_pictures_in_flight(&cache), 2);
+}

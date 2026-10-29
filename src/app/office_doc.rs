@@ -16,111 +16,13 @@
 //! (`Layout.reprs`: slide pictures / text; `R`).
 
 use super::*;
-use konoma_plugin::input::{Origin, Resource, Resources};
+use konoma_plugin::input::{Origin, Resources};
 use konoma_plugin::view::{DocOptions, Layout, PageLayout};
-use konoma_plugin::LazyResource;
 use std::collections::HashMap;
 
-/// Where the pixels of a picture of the open document come from.
-#[derive(Clone)]
-pub(super) enum PictureSource {
-    /// A file inside the package (png, jpeg, gif, bmp, webp, tiff or svg): its bytes, shared with
-    /// decode threads (and with the plugin's session).
-    Bytes(Arc<[u8]>),
-    /// A picture the plugin makes when asked (a slide of a presentation): no bytes exist yet. The
-    /// decode thread asks it for an SVG and hands that to the untrusted-SVG drawing path.
-    Lazy {
-        lazy: Arc<dyn LazyResource>,
-        /// Set by the decode thread when drawing the picture had to leave something out (a size
-        /// budget of the writer); shared by all the pictures of the document and read by
-        /// `App::document_truncated`, so the title says so like it does for a reader's budget.
-        render_truncated: Arc<std::sync::atomic::AtomicBool>,
-        /// The longest side, in px, this picture can be drawn at inside the drawing process's work
-        /// budget, learned by the decode thread after it drew; the wish for a sharper redraw is
-        /// cut to it, so a heavy slide on a huge terminal is not redrawn again and again for a
-        /// size it cannot have.
-        raster_cap: Arc<SlideRasterCap>,
-    },
-}
-
-/// How long a raster size refused for taking too long stays out of reach. A time-out measures the
-/// machine's load as much as the slide, so it is not a fact about the slide: after this long a
-/// revisit tries the sharp size again (a revisit within it does not wait out another time-out).
-/// Refusals for cost or memory are the same on every run and never expire.
-pub(super) const TIMEOUT_CAP_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// The longest raster side, in px, a slide is known to be drawable at, shared by everything that
-/// draws the slide. Two kinds of knowledge with different lifetimes: what the slide's own cost
-/// allows and what the drawing process refused for cost or memory (the same every time, kept for
-/// good), and what it refused only by the clock (expires, see [`TIMEOUT_CAP_LIFETIME`]).
-#[derive(Debug, Default)]
-pub(super) struct SlideRasterCap {
-    /// Permanent limit; 0 = none known yet.
-    permanent: std::sync::atomic::AtomicU32,
-    /// A limit that came from a time-out, with when it was learned.
-    timed_out: std::sync::Mutex<Option<(u32, std::time::Instant)>>,
-}
-
-impl SlideRasterCap {
-    /// The limit in force at `now`; None = nothing known (draw at the wanted size).
-    pub(super) fn get(&self, now: std::time::Instant) -> Option<u32> {
-        let permanent =
-            Some(self.permanent.load(std::sync::atomic::Ordering::Relaxed)).filter(|c| *c > 0);
-        let timed_out = self
-            .timed_out
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .filter(|(_, at)| now.saturating_duration_since(*at) < TIMEOUT_CAP_LIFETIME)
-            .map(|(px, _)| px);
-        match (permanent, timed_out) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
-    }
-
-    /// Lowers the permanent limit to `px` (never raises it; at least 1).
-    pub(super) fn lower_permanent(&self, px: u32) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let px = px.max(1);
-        let mut current = self.permanent.load(Relaxed);
-        // compare_exchange_weak loop (fetch_update is deprecated on 1.99, try_update needs
-        // newer than the MSRV): stop as soon as the stored limit is already lower.
-        while current == 0 || px < current {
-            match self
-                .permanent
-                .compare_exchange_weak(current, px, Relaxed, Relaxed)
-            {
-                Ok(_) => break,
-                Err(seen) => current = seen,
-            }
-        }
-    }
-
-    /// Lowers the limit to `px` for [`TIMEOUT_CAP_LIFETIME`] from `now`. A limit that is still
-    /// in force and lower stays (its own clock keeps running); an expired one is replaced.
-    pub(super) fn lower_timed_out(&self, px: u32, now: std::time::Instant) {
-        let px = px.max(1);
-        let mut slot = self
-            .timed_out
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let live = slot.filter(|(_, at)| now.saturating_duration_since(*at) < TIMEOUT_CAP_LIFETIME);
-        if live.is_none_or(|(old, _)| px < old) {
-            *slot = Some((px, now));
-        }
-    }
-}
-
-/// One picture of the open document, held in memory only.
-pub struct DocPicture {
-    pub(super) source: PictureSource,
-    /// Pixel size read from the header (raster) or the intrinsic size (SVG, slide), without
-    /// decoding. `None` = not an image konoma can size: it is drawn as its alt text.
-    pub(super) dims: Option<(u32, u32)>,
-    /// `dims` came from a raster header (not an SVG's intrinsic size): only those are refused
-    /// from the header alone; an SVG is guarded by its drawing process instead.
-    pub(super) raster: bool,
-}
+pub(super) use konoma_plugin::document_pictures::{DocPicture, PictureSource};
+#[cfg(test)]
+pub(super) use konoma_plugin::document_pictures::{SlideRasterCap, TIMEOUT_CAP_LIFETIME};
 
 /// A document as a plugin returned it (a Markdown file, a converted Word document or a
 /// presentation): the host's container for the one on screen.
@@ -144,19 +46,6 @@ pub struct LoadedDocument {
     pub(super) options: DocOptions,
     /// Where the text came from: a file (the checkboxes can be written back) or a conversion.
     pub(super) origin: Origin,
-}
-
-/// Pixel size of an in-memory picture without decoding it: raster formats first, then SVG (the same
-/// order as `md_image_dims` for a file).
-fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
-    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()
-        .and_then(|r| r.into_dimensions().ok());
-    match raster {
-        Some(d) => (Some(d), true),
-        None => (crate::preview::svg::intrinsic_size_bytes(bytes), false),
-    }
 }
 
 impl LoadedDocument {
@@ -190,29 +79,7 @@ impl LoadedDocument {
         origin: Origin,
     ) -> Self {
         let render_truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut pictures: HashMap<String, DocPicture> = HashMap::new();
-        for (key, resource) in resources.iter() {
-            let picture = match resource {
-                Resource::Bytes(bytes) => {
-                    let (dims, raster) = picture_dims(bytes);
-                    DocPicture {
-                        source: PictureSource::Bytes(bytes.clone()),
-                        dims,
-                        raster,
-                    }
-                }
-                Resource::Lazy(lazy) => DocPicture {
-                    dims: lazy.natural_size(),
-                    source: PictureSource::Lazy {
-                        lazy: lazy.clone(),
-                        render_truncated: render_truncated.clone(),
-                        raster_cap: Arc::new(SlideRasterCap::default()),
-                    },
-                    raster: false,
-                },
-            };
-            pictures.insert(key.clone(), picture);
-        }
+        let pictures = DocPicture::from_resources(&resources, &render_truncated);
         LoadedDocument {
             markdown,
             truncated,
@@ -568,19 +435,6 @@ impl App {
     #[cfg(test)]
     pub fn evict_md_images_to_for_test(&mut self, budget: u64) {
         self.evict_md_images_to(budget);
-    }
-
-    /// Pixel size of one picture of the open document.
-    pub(super) fn document_picture_dims(&self, url: &str) -> Option<(u32, u32)> {
-        self.document.as_ref()?.pictures.get(url)?.dims
-    }
-
-    /// Whether the size of picture `url` was read from a raster header (an SVG's is not).
-    pub(super) fn document_picture_is_raster(&self, url: &str) -> bool {
-        self.document
-            .as_ref()
-            .and_then(|d| d.pictures.get(url))
-            .is_some_and(|p| p.raster)
     }
 
     /// Where the pixels of one picture of the open document come from (shared, not copied).

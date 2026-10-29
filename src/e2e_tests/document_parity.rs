@@ -1026,11 +1026,9 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
     );
 }
 
-// The standalone app does not draw a document's own pictures (`Reopen::resources`, the
-// `office-img://` ones): `PictureLookup::other` is a no-op there, so the page keeps the alt
-// text. Run with `--run-ignored all` to see the difference; it passes once the app draws them.
+// A document's own pictures (`DocumentView::resources`, the `office-img://` ones) are drawn by the
+// standalone app as the host draws them.
 #[test]
-#[ignore = "the standalone app does not draw a reopened document's embedded pictures yet"]
 fn a_docx_with_a_picture_is_drawn_after_the_reopen_as_in_the_host() {
     let dir = sandbox("reopen-docx-picture");
     super::word::build_docx_with_picture(
