@@ -7,6 +7,7 @@
 #![allow(rustdoc::invalid_codeblock_attributes)]
 
 pub mod colors;
+pub mod footer_line;
 pub mod gif_player;
 pub mod gitdiff;
 pub mod help_panel;
