@@ -261,7 +261,8 @@ fn a_framed_text_is_titled_by_its_relative_path_and_the_footer_has_no_line_numbe
     assert!(rows.iter().any(|r| r.contains('%')), "{rows:?}");
 }
 
-/// What only the host's footer has for a text, spelled out in full.
+/// What only the host's footer has for a text, spelled out in full. The focus, the outline and
+/// the raw source belong to a decorated document, so a text never shows them.
 const HOST_ONLY: &[&str] = &[
     ",:view",
     "[/]:tab",
@@ -273,11 +274,6 @@ const HOST_ONLY: &[&str] = &[
     "v/V:select",
     "Y:@ref",
     "F:FOLLOW",
-    "y:copy",
-    "Tab:focus",
-    "Tab:next tab",
-    "O:outline",
-    "R:raw source",
 ];
 
 /// The footer of a text is the host's footer without the host's own words: the same words in
@@ -323,6 +319,7 @@ fn the_text_footer_agrees_with_the_host() {
     assert!(compared > 200, "{compared}");
     assert!(cut > 20, "{cut}");
     assert!(seen.len() >= 6, "{seen:?}");
+    super::table_parity::assert_all_seen("text HOST_ONLY", HOST_ONLY, &seen);
 }
 
 /// The help over a text: the rows are the host's without the host's own (the search, the
@@ -356,6 +353,7 @@ fn the_help_over_a_text_agrees_with_the_host() {
     }
     assert!(compared > 60, "{compared}");
     assert!(seen.len() >= 6, "{seen:?}");
+    super::table_parity::assert_all_seen("text TEXT_HELP_HOST_ONLY", TEXT_HELP_HOST_ONLY, &seen);
     // The frame of the panel, in every size.
     for name in ["code.rs", "long.rs", "cjk.rs"] {
         for (w, h) in [
@@ -369,9 +367,15 @@ fn the_help_over_a_text_agrees_with_the_host() {
             let what = format!("{name} {w}x{h}");
             let host = host_text(&root, name, true, 4, (w, h + 1), "?");
             let app = app_text(&root.join(name), true, 4, (w, h), "?");
-            let ((_, hx), hb) = super::table_parity::panel_box(&rows_of(&host.term));
-            let ((_, ax), ab) = super::table_parity::panel_box(&rows_of(&app));
+            let ((hy, hx), hb) = super::table_parity::panel_box(&rows_of(&host.term));
+            let ((ay, ax), ab) = super::table_parity::panel_box(&rows_of(&app));
             assert_eq!(hx, ax, "{what}: the panel's column");
+            super::table_parity::assert_placed_like_the_host(
+                &what,
+                (hy, hb.len()),
+                (ay, ab.len()),
+                usize::from(h),
+            );
             assert_eq!(hb[0], ab[0], "{what}: the border and its title");
             assert_eq!(hb.last(), ab.last(), "{what}: the bottom border");
         }
@@ -404,9 +408,4 @@ const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "Ctrl-n / Ctrl-p",
     "m / '",
     "r ",
-    "Tab ",
-    "Enter ",
-    "O ",
-    "R ",
-    "j / k / ↑ ↓ caret",
 ];

@@ -148,6 +148,17 @@ pub(super) fn hints(footer: &str) -> Vec<String> {
 /// ` …`), the shorter list must be the start of the longer one, because the host spends width on
 /// its own tokens and so cuts earlier. Returns the tokens the host has alone (so that the caller
 /// can check each listed one occurs) and how many tokens were compared.
+/// Every entry of an exclusion list must have been met at least once, or the list hides nothing
+/// it claims to (a dead entry would let a real difference through unseen).
+pub(super) fn assert_all_seen(
+    list: &str,
+    entries: &[&str],
+    seen: &std::collections::BTreeSet<String>,
+) {
+    let missing: Vec<&&str> = entries.iter().filter(|e| !seen.contains(**e)).collect();
+    assert!(missing.is_empty(), "{list}: never occurs: {missing:?}");
+}
+
 pub(super) fn same_footer(
     what: &str,
     hh: &[String],
@@ -567,6 +578,37 @@ pub(super) fn same_help_rows(
     (kept.len(), used)
 }
 
+/// The row of a help panel is the one that centres it in the whole screen it is drawn over, the
+/// same rule in both (`help_panel::popup_layout`). The host's screen is one row taller than the
+/// app's (`app_h`), and its panel holds more rows (the host's own keys), so the two rows differ by
+/// exactly what the two heights say; a panel is at most two rows shorter than its screen.
+/// `host` and `app` are the panel's (row, height).
+pub(super) fn assert_placed_like_the_host(
+    what: &str,
+    host: (usize, usize),
+    app: (usize, usize),
+    app_h: usize,
+) {
+    let host_h = app_h + 1;
+    assert_eq!(
+        host.0,
+        (host_h - host.1) / 2,
+        "{what}: the host's panel is centred in its screen"
+    );
+    assert_eq!(
+        app.0,
+        (app_h - app.1) / 2,
+        "{what}: the app's panel is centred in its screen"
+    );
+    assert!(host.1 <= host_h - 2, "{what}: the host's panel fits");
+    assert!(app.1 <= app_h - 2, "{what}: the app's panel fits");
+    // The app lists a subset of the host's rows: a panel capped by the screen in the app is
+    // capped in the host too.
+    if app.1 == app_h - 2 {
+        assert_eq!(host.1, host_h - 2, "{what}: both panels are capped");
+    }
+}
+
 /// The row and the display column of the help panel's top-left corner.
 pub(super) fn panel_at(rows: &[String]) -> Option<(usize, usize)> {
     rows.iter().enumerate().find_map(|(y, r)| {
@@ -633,6 +675,7 @@ fn the_table_help_rows_agree_with_the_host() {
     let (dir, _files) = fixtures();
     let root = canon(&dir);
     let mut compared = 0;
+    let mut seen_rows = std::collections::BTreeSet::new();
     for file in [
         "plain.csv",
         "cjk.csv",
@@ -684,10 +727,12 @@ fn the_table_help_rows_agree_with_the_host() {
                 if row.starts_with("q / Esc") || asec.iter().any(|r| same_row(r, row)) {
                     continue;
                 }
+                let known = HOST_ONLY_ROWS.iter().find(|p| row.starts_with(**p));
                 assert!(
-                    HOST_ONLY_ROWS.iter().any(|p| row.starts_with(p)),
+                    known.is_some(),
                     "{what}: the host's help row `{row}` is not in the app's\nhost: {hs:#?}\napp: {asec:#?}"
                 );
+                seen_rows.insert((*known.unwrap()).to_string());
             }
             // The order of the shared rows is the host's.
             let shared: Vec<&String> = hs
@@ -713,6 +758,7 @@ fn the_table_help_rows_agree_with_the_host() {
         }
     }
     assert!(compared > 800, "{compared}");
+    assert_all_seen("table HOST_ONLY_ROWS", HOST_ONLY_ROWS, &seen_rows);
 }
 
 /// A table without columns has no cell to view: the footer and the help leave `view cell` out and

@@ -332,4 +332,8 @@ fn the_image_help_names_the_page_keys_as_the_host_does() {
     }
     assert!(compared >= 25, "{compared}");
     assert_eq!(page_rows, HELP_SPECS.len(), "{page_rows}");
+    let seen: std::collections::BTreeSet<String> =
+        host_only.iter().map(|p| (*p).to_string()).collect();
+    super::table_parity::assert_all_seen("image_pages HOST_ONLY_ROWS", HOST_ONLY_ROWS, &seen);
+    super::table_parity::assert_all_seen("image_pages O pages row", &["O pages"], &seen);
 }

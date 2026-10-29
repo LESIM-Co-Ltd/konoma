@@ -1313,10 +1313,12 @@ impl Plugin for HeldEmbed {
             assert!(t.elapsed() < DEADLINE, "the render was never released");
             std::thread::sleep(Duration::from_millis(2));
         }
-        self.done.store(true, Ordering::SeqCst);
-        struct S;
+        struct S(Arc<AtomicBool>);
         impl Session for S {
             fn view(&mut self, _r: &ViewReq, _c: &ViewCx) -> Result<View, Failure> {
+                // The last step the plugin takes for this render: after it only the host's
+                // worker is left, and the worker has no way to the screen but its channel.
+                self.0.store(true, Ordering::SeqCst);
                 Ok(View::Image(konoma_plugin::view::ImageView::new(
                     ImageData::Svg {
                         data: Arc::from(RED_SVG.as_bytes()),
@@ -1326,7 +1328,7 @@ impl Plugin for HeldEmbed {
                 )))
             }
         }
-        Ok(Box::new(S))
+        Ok(Box::new(S(Arc::clone(&self.done))))
     }
 }
 
@@ -1526,7 +1528,8 @@ fn quit_during_embed(kind: &'static str, md: &str) {
         assert!(t.elapsed() < DEADLINE, "the worker never ended");
         std::thread::sleep(Duration::from_millis(2));
     }
-    std::thread::sleep(Duration::from_millis(50));
+    // The render has ended and its writer, owned by the `Pictures` the run consumed, is gone: the
+    // screen has seen no picture, at any time.
     assert!(
         !sink.text().contains("a=T"),
         "a picture was transmitted after the quit"

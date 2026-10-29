@@ -5,8 +5,8 @@
 //! hints and the same help rows for the keys both have.
 
 use super::table_parity::{
-    hints, panel_at, panel_box, panel_lines, presses, rows_of, same_footer, same_help_rows, APP_H,
-    HOST_H, W,
+    assert_placed_like_the_host, hints, panel_at, panel_box, panel_lines, presses, rows_of,
+    same_footer, same_help_rows, APP_H, HOST_H, W,
 };
 use super::*;
 use konoma_plugin::app::{open_file, prepare_bundled, run_with, AppCx, AppEvent, AppKeys};
@@ -33,7 +33,7 @@ pub(super) fn app_term_plugins(
     spec: &str,
 ) -> Terminal<TestBackend> {
     let mut opened = open_file(plugins, path, "en", TermCaps::new()).expect("opens");
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut term = Terminal::new(konoma_test_support::TermScreen::new(w, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
@@ -65,7 +65,14 @@ pub(super) fn app_term_plugins(
         0,
         "the app ended before the keys ran out: {spec}"
     );
-    term
+    // The screen the updates leave (a terminal blanks the other half of a wide character that is
+    // drawn over; the test backend keeps a stale cell), as the frame the other tests read.
+    let screen = term.backend().1.clone();
+    let mut shown = Terminal::new(TestBackend::new(w, h)).unwrap();
+    shown
+        .draw(|f| *f.buffer_mut() = screen.clone())
+        .expect("draw");
+    shown
 }
 
 /// What the host shows after the presses, with the file opened from its tree.
@@ -112,7 +119,9 @@ fn inner(term: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
-/// The hints only the host has, spelled out in full.
+/// The hints only the host has, spelled out in full. Each one must occur in the compared
+/// footers (`assert_all_seen`). `y:copy` and `e:open` are not here: the host offers them only
+/// while a code block or a diagram has the focus, and the app has no focus to compare.
 const HOST_ONLY: &[&str] = &[
     ",:view",
     "[/]:tab",
@@ -122,11 +131,9 @@ const HOST_ONLY: &[&str] = &[
     "F:FOLLOW",
     "O:outline",
     "e:edit",
-    "e:open",
     "o:open in app",
     "q:back",
     "R:raw source",
-    "y:copy",
 ];
 
 /// The help rows only the host has for a Markdown file, by their start (the keys and sections of
@@ -274,6 +281,7 @@ fn the_page_scroll_and_footer_agree_with_the_host() {
     assert!(scrolled > 5, "{scrolled}");
     assert!(compared > 800, "{compared}");
     assert!(seen_host_only.len() >= 8, "{seen_host_only:?}");
+    super::table_parity::assert_all_seen("document HOST_ONLY", HOST_ONLY, &seen_host_only);
 }
 
 /// The rows only the host's help lists for a Markdown file (search, links, bookmarks, the tabs...)
@@ -311,10 +319,9 @@ fn the_document_help_rows_agree_with_the_host() {
                 .into_iter()
                 .filter(|l| !l.is_empty())
                 .collect();
-            // The panel scrolls (`? j`): the same keys scroll both, so compare what both show.
-            if spec.starts_with("? ") {
-                continue;
-            }
+            // The terminal is tall enough to show the whole help, so a key pressed inside the
+            // panel (`? j`) has nothing to scroll: the rows are those of `?`. The scrolling in a
+            // short terminal is in `the_help_panel_over_a_document_is_placed_as_the_hosts_panel`.
             // Both panels carry the same title on their border.
             let edge = |r: &str| -> String {
                 let from = r.find('┌').unwrap_or(0);
@@ -335,6 +342,7 @@ fn the_document_help_rows_agree_with_the_host() {
     }
     assert!(compared > 13 * 4 * 6, "{compared}");
     assert!(seen.len() >= 12, "{seen:?}");
+    super::table_parity::assert_all_seen("document HELP_HOST_ONLY", HELP_HOST_ONLY, &seen);
 }
 
 /// Narrow and short terminals: the wrapping, the clamp of the scroll and the page size follow
@@ -358,12 +366,6 @@ fn a_narrow_or_short_terminal_shows_what_the_host_shows() {
                 "G <C-b>",
                 "<C-f> <C-f> <C-d>",
             ] {
-                // The test backend keeps a stale cell where a wide character was drawn in an
-                // earlier frame (the host's too, before its repaint above): with a wide
-                // character, only one scroll step is compared, which the repaint cleans.
-                if name == "cjk.md" && spec.split(' ').count() > 1 && spec != "<C-f>" {
-                    continue;
-                }
                 let what = format!("{name} {w}x{h} [{spec}]");
                 let hs = host_term(&root, &name, w, h + 1, spec);
                 let a = app_term(&root.join(&name), w, h, spec);
@@ -378,7 +380,7 @@ fn a_narrow_or_short_terminal_shows_what_the_host_shows() {
             }
         }
     }
-    assert!(checked >= 13 * 5 * 7 - 5 * 4, "{checked}");
+    assert_eq!(checked, 13 * 5 * 7);
 }
 
 /// Every Markdown the snapshot corpus holds, on its first page and one page down: the host and
@@ -1998,9 +2000,9 @@ fn the_help_panel_over_a_document_is_placed_as_the_hosts_panel() {
                 panel_box(&rows_of(&host_term(&root, &name, w, h + 1, "?").term)).0,
                 panel_box(&rows_of(&app_term(&root.join(&name), w, h, "?"))).0,
             );
-            let _ = (hy, ay);
             assert_eq!(hx, ax, "{what}: the panel's column");
             let (hb, ab) = top("?");
+            assert_placed_like_the_host(&what, (hy, hb.len()), (ay, ab.len()), usize::from(h));
             assert_eq!(hb[0], ab[0], "{what}: the border and its title");
             assert_eq!(
                 hb.last().unwrap(),
@@ -2008,15 +2010,40 @@ fn the_help_panel_over_a_document_is_placed_as_the_hosts_panel() {
                 "{what}: the bottom border"
             );
             assert_eq!(hb[1].chars().count(), ab[1].chars().count(), "{what}");
-            // Pressed inside the panel, `j` and `G` scroll a panel that has more than it shows.
-            let (_, scrolled) = top("? G");
-            if ab.len() == usize::from(h - 2) {
-                assert_ne!(scrolled[1], ab[1], "{what}: the panel did not scroll");
-                moved += 1;
+            // Pressed inside the panel, `j` and `G` scroll a panel that has more than it shows:
+            // the same keys scroll both, so each shows the window of its own full help that
+            // the key says (one row down; the end).
+            let (hfull, afull) = {
+                let hs = host_term(&root, &name, w, 130, "?");
+                let a = app_term(&root.join(&name), w, 129, "?");
+                (panel_box(&rows_of(&hs.term)).1, panel_box(&rows_of(&a)).1)
+            };
+            let inner = |v: &[String]| v[1..v.len() - 1].to_vec();
+            let window = |full: &[String], from_end: bool, n: usize, off: usize| -> Vec<String> {
+                let f = inner(full);
+                let start = if from_end { f.len() - n } else { off };
+                f[start..start + n].to_vec()
+            };
+            for (spec, from_end, off) in [("? j", false, 1), ("? G", true, 0)] {
+                let (hb2, ab2) = top(spec);
+                if ab.len() == usize::from(h - 2) {
+                    let (n, hn) = (ab2.len() - 2, hb2.len() - 2);
+                    assert_eq!(
+                        inner(&ab2),
+                        window(&afull, from_end, n, off),
+                        "{what} [{spec}]: the app's window"
+                    );
+                    assert_eq!(
+                        inner(&hb2),
+                        window(&hfull, from_end, hn, off),
+                        "{what} [{spec}]: the host's window"
+                    );
+                    moved += 1;
+                }
             }
             compared += 1;
         }
     }
     assert!(compared >= 13 * 6 - 6, "{compared}");
-    assert!(moved >= 13, "{moved}");
+    assert!(moved >= 13 * 2, "{moved}");
 }

@@ -1434,13 +1434,17 @@ const TEXT_HOST_ONLY: &[&str] = &[
     "q:back",
     "e:edit",
     "o:open in app",
-    "g/G:ends",
     "h/l:hscroll",
     "0/$:line ends",
     "[/]:tab",
     ",:view",
-    "C-f/C-b/PgDn/PgUp:page",
 ];
+
+thread_local! {
+    /// The entries of `TEXT_HOST_ONLY` that a compared footer of a failed page's text had.
+    static TEXT_HOST_ONLY_SEEN: std::cell::RefCell<std::collections::BTreeSet<String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
 
 /// The rows of the text section of a help: from its heading to the blank row.
 fn text_section(lines: &[String]) -> Vec<String> {
@@ -1907,6 +1911,7 @@ fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, boo
                 TEXT_HOST_ONLY.contains(&t.as_str()),
                 "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
             );
+            TEXT_HOST_ONLY_SEEN.with(|s| s.borrow_mut().insert(t.clone()));
         }
         return (compared, false);
     }
@@ -1967,6 +1972,8 @@ fn the_footer_and_the_help_of_a_failed_page_shown_as_text_agree_with_the_host() 
     assert!(compared >= 100, "{compared}");
     assert_eq!(turns, 3 * 5, "the paged help names the page turn");
     assert_eq!(plain, 6);
+    let seen = TEXT_HOST_ONLY_SEEN.with(|s| s.borrow().clone());
+    super::table_parity::assert_all_seen("image_gif TEXT_HOST_ONLY", TEXT_HOST_ONLY, &seen);
 }
 
 // ---- a page the real plugin hands over and the draw fails ---------------------------------------

@@ -19,10 +19,11 @@ pub fn clear_overlay(buf: &mut Buffer, area: Rect) {
 }
 
 /// Reset the cell left of `area` in each of its rows when it holds a wide character (whose
-/// second half is the first column of `area`).
+/// second half is the first column of `area`). A buffer need not start at column 0: no cell is
+/// left of an overlay that starts at the buffer's own left edge.
 fn blank_wide_before(buf: &mut Buffer, area: Rect) {
     let screen = buf.area;
-    if area.x == 0 || area.x > screen.right() {
+    if area.x <= screen.left() || area.x > screen.right() {
         return;
     }
     for y in area.top().max(screen.top())..area.bottom().min(screen.bottom()) {
@@ -59,5 +60,20 @@ mod tests {
         check("right edge", 40, 10, |f| {
             bordered(f, Rect::new(30, 5, 10, 5))
         });
+    }
+
+    /// A buffer whose origin is not column 0 (a sub-area drawn into): an overlay on its left edge
+    /// has no cell to its left, and one inside blanks the wide character it cuts.
+    #[test]
+    fn a_buffer_that_does_not_start_at_column_zero_is_handled() {
+        let area = Rect::new(5, 2, 20, 4);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(9, 3, "あ", ratatui::style::Style::default());
+        // On the left edge of the buffer: nothing is left of it (this used to index column 4).
+        clear_overlay(&mut buf, Rect::new(5, 2, 3, 3));
+        assert_eq!(buf[(9, 3)].symbol(), "あ", "outside the overlay: untouched");
+        // Its second half is the overlay's first column: the first half is blanked.
+        clear_overlay(&mut buf, Rect::new(10, 2, 8, 3));
+        assert_eq!(buf[(9, 3)].symbol(), " ");
     }
 }
