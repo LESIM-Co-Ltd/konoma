@@ -66,3 +66,34 @@ fn a_format_it_shows_is_accepted_and_stops_at_the_terminal_check() {
     assert!(err.contains("must be a terminal"), "{err}");
     assert_eq!(code, Some(1), "{err}");
 }
+
+#[test]
+fn the_bundled_destinations_are_not_listed_or_served() {
+    let d = unique_tmp("markdown_bin_bundled_listing");
+    std::fs::create_dir_all(d.as_path()).unwrap();
+    let args = |a: &[&str]| {
+        let a: Vec<&OsStr> = a.iter().map(OsStr::new).collect();
+        run_program_without_terminal(Path::new(EXE), &a, d.as_path())
+    };
+    // `--manifest` prints the program's own plugin only (the program has one, so no `--plugin`).
+    let out = args(&["--manifest"]);
+    assert_eq!(out.status.code(), Some(0));
+    let json = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(json.contains("\"markdown\""), "{json}");
+    assert!(
+        !json.contains("mermaid") && !json.contains("\"math\""),
+        "{json}"
+    );
+    // The others cannot be named.
+    for id in ["mermaid", "math"] {
+        let out = args(&["--plugin", id, "--manifest"]);
+        assert_eq!(out.status.code(), Some(2), "{id}");
+        assert!(out.stdout.is_empty(), "{id}");
+    }
+    // A bundled destination takes no file of its own: `.mmd` is not opened.
+    let f = d.as_path().join("x.mmd");
+    std::fs::write(&f, "graph TD\n A-->B\n").unwrap();
+    let (code, err) = run(d.as_path(), &f);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("does not show this file"), "{err}");
+}

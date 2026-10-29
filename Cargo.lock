@@ -1832,8 +1832,11 @@ dependencies = [
 name = "konoma-markdown"
 version = "0.1.0"
 dependencies = [
+ "konoma-math",
+ "konoma-mermaid",
  "konoma-plugin",
  "konoma-test-support",
+ "ratatui",
 ]
 
 [[package]]
@@ -1930,9 +1933,13 @@ name = "konoma-office"
 version = "0.1.0"
 dependencies = [
  "konoma-base",
+ "konoma-markdown",
+ "konoma-math",
+ "konoma-mermaid",
  "konoma-office-core",
  "konoma-plugin",
  "konoma-test-support",
+ "ratatui",
 ]
 
 [[package]]

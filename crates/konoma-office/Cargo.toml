@@ -11,21 +11,37 @@ description = "konoma's Office plugins: spreadsheets as tables, Word documents a
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 konoma-office-core = { path = "../konoma-office-core", version = "0.1.0" }
+# The destinations the program carries (`bundled()`); only the `app` feature builds them, so konoma
+# (which depends on this crate with `default-features = false`) gains no dependency.
+konoma-markdown = { path = "../konoma-markdown", version = "0.1.0", default-features = false, optional = true }
+konoma-mermaid = { path = "../konoma-mermaid", version = "0.1.0", default-features = false, optional = true }
+konoma-math = { path = "../konoma-math", version = "0.1.0", default-features = false, optional = true }
 
 [features]
 default = ["app"]
 # The standalone app: `konoma-office <file>` shows the file in a terminal of its own (konoma-plugin's
 # small host). On by default so `cargo install konoma-office` gives the program; konoma itself
 # depends on this crate with `default-features = false`, so it never builds the app.
-app = ["konoma-plugin/app"]
+app = [
+    "konoma-plugin/app",
+    "dep:konoma-markdown",
+    "dep:konoma-mermaid",
+    "dep:konoma-math",
+]
 
 [dev-dependencies]
+ratatui.workspace = true
 konoma-office-core = { path = "../konoma-office-core", version = "0.1.0", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }
 
 [[bin]]
 name = "konoma-office"
 path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "bundled"
+path = "tests/bundled.rs"
 required-features = ["app"]
 
 [[test]]

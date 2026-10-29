@@ -6,7 +6,7 @@
 
 use super::table_parity::{help_lines, hints, presses, rows_of, same_row, APP_H, HOST_H, W};
 use super::*;
-use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys};
+use konoma_plugin::app::{open_file, prepare_bundled, run_with, AppCx, AppEvent, AppKeys};
 use konoma_plugin::TermCaps;
 use std::sync::Arc;
 
@@ -906,11 +906,23 @@ fn app_reopen_term(
     h: u16,
     spec: &str,
 ) -> Terminal<TestBackend> {
+    app_reopen_term_bundled(file, plugins, Vec::new(), w, h, spec)
+}
+
+/// [`app_reopen_term`] for a program that also carries `bundled` destination plugins.
+fn app_reopen_term_bundled(
+    file: &std::path::Path,
+    plugins: Vec<Arc<dyn Plugin>>,
+    bundled: Vec<Arc<dyn Plugin>>,
+    w: u16,
+    h: u16,
+    spec: &str,
+) -> Terminal<TestBackend> {
     let loaded = (
         konoma_host_core::shared::SharedConfig::parse("[ui]\nlang = \"en\"\n").expect("config"),
         None,
     );
-    let Ok(mut prepared) = prepare(plugins, file, TermCaps::new(), loaded) else {
+    let Ok(mut prepared) = prepare_bundled(plugins, bundled, file, TermCaps::new(), loaded) else {
         panic!("the app did not open {}", file.display());
     };
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -986,6 +998,72 @@ fn office_docs_with_markdown() -> Vec<Arc<dyn Plugin>> {
     let mut all = office_docs();
     all.push(Arc::new(konoma_markdown::MarkdownPlugin));
     all
+}
+
+/// The plugins of a program and the ones it carries beside them.
+type OfficeProgram = (Vec<Arc<dyn Plugin>>, Vec<Arc<dyn Plugin>>);
+
+/// The `konoma-office` program as it is built: the office plugins, with Markdown, mermaid and math
+/// carried beside them as destinations (what `konoma_office::bundled()` holds).
+fn office_program() -> OfficeProgram {
+    let own: Vec<Arc<dyn Plugin>> = konoma_office::program()
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+    let bundled: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(konoma_markdown::MarkdownPlugin),
+        Arc::new(konoma_mermaid::MermaidPlugin),
+        Arc::new(konoma_math::MathPlugin),
+    ];
+    (own, bundled)
+}
+
+#[test]
+fn a_docx_in_the_office_program_with_its_bundled_plugins_shows_the_same_page_as_the_host() {
+    let dir = sandbox("reopen-docx-bundled");
+    build_docx(&dir.join("d.docx"), &docx_body());
+    let root = canon(&dir);
+    let mut checked = 0;
+    for (spec, w, h) in [("", 100u16, 30u16), ("<C-f>", 100, 30), ("G", 60, 20)] {
+        let hs = host_term(&root, "d.docx", w, h + 1, spec);
+        let (own, bundled) = office_program();
+        let a = app_reopen_term_bundled(&root.join("d.docx"), own, bundled, w, h, spec);
+        let host_rows = inner(&hs.term);
+        assert!(
+            host_rows.iter().any(|r| r.contains("paragraph")),
+            "the host shows the document\n{}",
+            rows_of(&hs.term).join("\n")
+        );
+        assert_eq!(
+            host_rows,
+            inner(&a),
+            "{w}x{h} [{spec}]: the page differs\nhost:\n{}\napp:\n{}",
+            rows_of(&hs.term).join("\n"),
+            rows_of(&a).join("\n")
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
+
+#[test]
+fn a_bundled_plugin_never_takes_a_file_in_the_app() {
+    let dir = sandbox("bundled-no-file");
+    std::fs::write(dir.join("n.md"), "# t\n").unwrap();
+    let root = canon(&dir);
+    let (own, bundled) = office_program();
+    let loaded = (
+        konoma_host_core::shared::SharedConfig::parse("[ui]\nlang = \"en\"\n").expect("config"),
+        None,
+    );
+    match prepare_bundled(own, bundled, &root.join("n.md"), TermCaps::new(), loaded) {
+        Err(f) => assert!(
+            matches!(f.error, konoma_plugin::app::AppError::NotHandled { .. }),
+            "{}",
+            f.error
+        ),
+        Ok(p) => panic!("opened by `{}`", p.opened.plugin_id),
+    }
 }
 
 #[test]

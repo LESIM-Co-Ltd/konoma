@@ -90,7 +90,12 @@ impl DocEnv {
                     kind,
                     lang,
                     &*settings_of,
-                    &|id| registry.origin(id) == Some(PluginOrigin::Standard),
+                    &|id| {
+                        matches!(
+                            registry.origin(id),
+                            Some(PluginOrigin::Standard | PluginOrigin::Bundled)
+                        )
+                    },
                     Arc::clone(svg),
                 )
             }),

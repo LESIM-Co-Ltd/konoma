@@ -400,3 +400,67 @@ fn a_refusal_is_preceded_by_the_config_line_and_a_good_config_adds_none() {
     .report(&mut w);
     assert!(w.is_empty());
 }
+
+// A bundled plugin gets its `[plugins.<id>]` table by the same rule as the program's own plugins.
+
+/// A plugin that opens any `.own` file and shows a message.
+struct Own;
+
+struct OwnSession;
+
+impl Session for OwnSession {
+    fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Message(konoma_plugin::view::MessageView {
+            lines: Vec::new(),
+        }))
+    }
+}
+
+impl Plugin for Own {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("own", "0.0.1")
+            .bind(Bind::files(["*.own"]))
+            .shows(ViewKind::Text)
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(OwnSession))
+    }
+}
+
+/// A destination that takes the content type `markdown` and keeps nothing.
+struct Destination;
+
+impl Plugin for Destination {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("markdown", "0.0.1").bind(Bind::content("markdown"))
+    }
+
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(OwnSession))
+    }
+}
+
+#[test]
+fn a_bundled_plugin_is_reopened_with_its_plugins_table() {
+    let d = unique_tmp("app_bundled_settings");
+    std::fs::create_dir_all(d.as_path()).unwrap();
+    let p = d.as_path().join("a.own");
+    std::fs::write(&p, "x").unwrap();
+    let loaded = (SharedConfig::parse(WIRING_CONFIG).expect("config"), None);
+    let Ok(prepared) = konoma_plugin::app::prepare_bundled(
+        vec![Arc::new(Own)],
+        vec![Arc::new(Destination)],
+        &p,
+        TermCaps::new(),
+        loaded,
+    ) else {
+        panic!("the app did not open the file");
+    };
+    assert_eq!(prepared.opened.plugin_id, "own");
+    let target = prepared.reopen.target("markdown").expect("a destination");
+    assert_eq!(target.settings.get("emoji"), Some(&Value::Bool(false)));
+    assert_eq!(target.settings.str("details", ""), "open");
+    assert!(target.settings.get("enabled").is_none());
+    assert!(prepared.reopen.target("nothing").is_none());
+}

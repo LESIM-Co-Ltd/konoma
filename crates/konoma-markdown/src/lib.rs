@@ -29,6 +29,16 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+/// The plugins the `konoma-markdown` program carries only as destinations: the mermaid and math a
+/// Markdown document embeds. They take no file of their own here and are not served or listed by
+/// `--manifest`.
+#[cfg(feature = "app")]
+pub fn bundled() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    let mut all = konoma_mermaid::program();
+    all.extend(konoma_math::program());
+    all
+}
+
 /// The plugins of the `konoma-markdown` program, in the order it carries them. The program's `main`
 /// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
 pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {

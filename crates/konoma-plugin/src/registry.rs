@@ -23,6 +23,12 @@ pub enum PluginOrigin {
     Standard,
     /// Added by the user.
     User,
+    /// Carried inside a standalone program as the destination of another plugin's output (a
+    /// document reopened as Markdown, an embedded diagram). It is looked up by content type and
+    /// embedded kind ([`Registry::resolve_content`], [`Registry::resolve_embed`]) but never takes
+    /// a file: [`Registry::resolve_file`] skips it, so the program shows only its own plugins'
+    /// files.
+    Bundled,
 }
 
 /// The longest id, action id, setting name, screen name or work group a manifest may declare.
@@ -515,7 +521,9 @@ impl Registry {
         };
         // 1. The user's rules, first match; a rule aimed at a missing or disabled plugin is skipped.
         for rule in rules {
-            if !self.is_enabled(&rule.plugin) {
+            if !self.is_enabled(&rule.plugin)
+                || self.origin(&rule.plugin) == Some(PluginOrigin::Bundled)
+            {
                 continue;
             }
             if let Some(m) = compile(&rule.target) {
@@ -563,7 +571,12 @@ impl Registry {
     }
 
     fn resolve_by(&self, hit: impl Fn(&Matcher) -> bool) -> Option<String> {
-        for origin in [PluginOrigin::User, PluginOrigin::Standard] {
+        // A bundled plugin comes last: the program's own plugins answer first.
+        for origin in [
+            PluginOrigin::User,
+            PluginOrigin::Standard,
+            PluginOrigin::Bundled,
+        ] {
             for e in self
                 .entries
                 .iter()

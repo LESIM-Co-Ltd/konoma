@@ -567,3 +567,44 @@ fn the_version_is_cut_and_stripped_when_registered() {
     );
     assert!(kept.starts_with("1.0[31m9"));
 }
+
+#[test]
+fn a_bundled_plugin_answers_content_and_embed_but_never_takes_a_file() {
+    let mut r = Registry::new();
+    r.register(
+        stub(Manifest::new("own", "1").bind(Bind::files(["*.docx"]))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    r.register(
+        stub(
+            Manifest::new("md", "1")
+                .bind(Bind::files(["*.md"]))
+                .bind(Bind::content("markdown")),
+        ),
+        PluginOrigin::Bundled,
+    )
+    .unwrap();
+    r.register(
+        stub(Manifest::new("mmd", "1").bind(Bind::embed("fence:mermaid"))),
+        PluginOrigin::Bundled,
+    )
+    .unwrap();
+    // Destinations: found by content type and embedded kind.
+    assert_eq!(r.resolve_content("markdown").as_deref(), Some("md"));
+    assert_eq!(r.resolve_embed("fence:mermaid").as_deref(), Some("mmd"));
+    // Files: the bundled plugin's glob is not a binding, and a user rule cannot aim at it.
+    assert_eq!(resolve(&r, &[], "/x/a.docx", None, true), plugin("own"));
+    assert_eq!(resolve(&r, &[], "/x/a.md", None, true), Resolution::Text);
+    assert_eq!(
+        resolve(&r, &[rule("*.md", "md")], "/x/a.md", None, true),
+        Resolution::Text
+    );
+    // A standard plugin answers a content type before a bundled one.
+    r.register(
+        stub(Manifest::new("own-md", "1").bind(Bind::content("markdown"))),
+        PluginOrigin::Standard,
+    )
+    .unwrap();
+    assert_eq!(r.resolve_content("markdown").as_deref(), Some("own-md"));
+}
