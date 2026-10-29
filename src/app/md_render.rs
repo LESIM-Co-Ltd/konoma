@@ -72,7 +72,7 @@ pub(super) fn decorated_file_text(content: &crate::preview::text::TextContent) -
 }
 
 /// The notice appended to a Markdown file cut at the display cap (its own paragraph).
-pub(super) const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
+pub(super) use konoma_plugin::document_render::TRUNCATED_NOTE;
 
 impl App {
     /// Build (or reuse) the decorated cache for a Markdown/Mermaid/code preview, **or** the diff's

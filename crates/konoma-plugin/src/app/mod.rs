@@ -487,6 +487,7 @@ pub fn run_bundled(
         shows: opened.shows.clone(),
         reopen: Some(reopen),
         display,
+        open_dir: std::env::current_dir().ok(),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are

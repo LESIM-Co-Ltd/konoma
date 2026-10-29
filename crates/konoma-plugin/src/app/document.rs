@@ -15,8 +15,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::lang::Lang;
 use konoma_widgets::markdown::{ImagePlacement, ImageSlot, MathSlot, MermaidSlot};
+use konoma_widgets::scroll::{render_scrollbar, scroll_title, ScrollExtent, ScrollWords};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line as RLine, Text};
@@ -25,8 +27,9 @@ use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use super::display::Display;
 use super::doc_pictures::DocPics;
 use crate::document_render::{
-    postprocess, render_document, wrap_row_prefix, PictureSlots, RenderSettings,
+    postprocess, render_document, wrap_row_prefix, PictureSlots, RenderSettings, TRUNCATED_NOTE,
 };
+use crate::input::Origin;
 use crate::view::{DocOptions, DocumentView};
 
 /// A document laid out at one width.
@@ -87,14 +90,24 @@ pub fn lay_out(
         mermaid_caption: mermaid_caption(lang),
         details_open: &details_open,
     };
+    // A Markdown file cut at the display limit says so at its end (a converted document says so
+    // in the frame title instead).
+    let cut_note = dv.truncated && !matches!(dv.origin, Origin::Converted { .. });
+    let cut_md;
+    let md: &str = if cut_note {
+        cut_md = format!("{}{TRUNCATED_NOTE}", dv.markdown);
+        &cut_md
+    } else {
+        &dv.markdown
+    };
     let mut r = match pics {
-        Some(p) => p.render(dv, width, rows, lang, &settings),
+        Some(p) => p.render(dv, md, width, rows, lang, &settings),
         None => {
             let image = |_: &str, _: Option<u16>| ImageSlot::Unavailable;
             let mermaid = |_: &str| MermaidSlot::Text;
             let math = |_: &str, _: bool| MathSlot::Raw;
             render_document(
-                &dv.markdown,
+                md,
                 &dv.options,
                 &settings,
                 &PictureSlots {
@@ -128,6 +141,7 @@ pub fn lay_out(
 pub struct DocCache {
     markdown: String,
     options: DocOptions,
+    truncated: bool,
     width: u16,
     rows: u16,
     lang: Lang,
@@ -157,6 +171,7 @@ impl DocCache {
                 && c.lang == lang
                 && c.display == *display
                 && c.options == dv.options
+                && c.truncated == dv.truncated
                 && c.markdown == dv.markdown
             {
                 return Arc::clone(&c.laid);
@@ -166,6 +181,7 @@ impl DocCache {
         *slot = Some(DocCache {
             markdown: dv.markdown.clone(),
             options: dv.options.clone(),
+            truncated: dv.truncated,
             width,
             rows,
             lang,
@@ -179,7 +195,7 @@ impl DocCache {
 
 /// A document on screen.
 pub struct DocFrame {
-    /// The file name, in the frame title.
+    /// The path of the file as the host titles it (or the file name).
     pub name: String,
     pub laid: Arc<Laid>,
     /// The first display row shown.
@@ -188,16 +204,31 @@ pub struct DocFrame {
     pub wrap: bool,
     /// Cells scrolled off the left edge (always 0 while wrapping).
     pub hscroll: u16,
+    pub lang: Lang,
+    /// A converted document cut at a budget (or a slide that left something out): the title says so.
+    pub truncated: bool,
 }
 
 impl DocFrame {
-    /// The frame title: the file name between spaces (the host's shape), or none.
+    /// The frame title: the path between spaces (the host's shape), and the note of a converted
+    /// document that was cut.
     fn title(&self) -> String {
-        if self.name.is_empty() {
-            " document ".to_string()
+        let mut t = if self.name.is_empty() {
+            " preview ".to_string()
         } else {
             format!(" {} ", self.name)
+        };
+        if self.truncated {
+            t.push_str(CoreMsg::DocTruncatedTitle.tr(self.lang));
         }
+        t
+    }
+
+    /// Where the page is: display rows, the end of the range being the last full page.
+    fn extent(&self, height: u16) -> ScrollExtent {
+        let h = u64::from(height);
+        let max = (self.laid.rows() as u64).saturating_sub(h);
+        ScrollExtent::new(self.scroll as u64, max, h)
     }
 
     /// The logical lines spanning the display rows `[scroll, scroll + height)` and the rows of
@@ -222,13 +253,22 @@ impl DocFrame {
     }
 
     pub fn draw(&self, buf: &mut Buffer, body: Rect) {
-        let block = Block::bordered().title(self.title());
-        let inner = block.inner(body);
+        let inner = Self::inner(body);
+        let extent = self.extent(inner.height);
+        let words = ScrollWords {
+            all: CoreMsg::ScrollAll.tr(self.lang),
+            top: CoreMsg::ScrollTop.tr(self.lang),
+            bot: CoreMsg::ScrollBot.tr(self.lang),
+        };
+        let block = Block::bordered()
+            .title(self.title())
+            .title(scroll_title(extent, words));
         let (lines, local) = self.slice(inner.height);
         let mut para = Paragraph::new(Text::from(lines)).block(block);
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
         }
         para.scroll((local, self.hscroll)).render(body, buf);
+        render_scrollbar(buf, body, extent);
     }
 }

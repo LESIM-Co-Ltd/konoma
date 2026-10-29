@@ -8,6 +8,7 @@ pub mod help_msg;
 pub mod keymap;
 pub mod keys;
 pub mod lang;
+pub mod paths;
 pub mod shared;
 pub mod sniff;
 pub mod term;

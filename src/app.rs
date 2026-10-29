@@ -38,6 +38,8 @@ use crate::preview::markdown::{math_cells, mermaid_cells};
 #[cfg(test)]
 use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
+pub(crate) use konoma_host_core::paths::home_relative;
+use konoma_host_core::paths::{rel_from, rel_to_open};
 
 mod bookmark_actions;
 mod change_jump;
@@ -612,27 +614,7 @@ impl PathStyle {
 ///   - the windowed (less-style) reader counts **bytes**, because that is what *it* scrolls by — it
 ///     deliberately never learns a total line count (see `preview::window`), so rows aren't
 ///     available to it without reading the whole file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ScrollExtent {
-    /// Current offset from the start of the content.
-    pub pos: u64,
-    /// Largest reachable offset. `0` means everything already fits on one screen.
-    pub max: u64,
-    /// How much of the content one screenful covers, in the same unit.
-    pub viewport: u64,
-}
-
-impl ScrollExtent {
-    /// `pos` is clamped into `0..=max` so "at the end" is decided the same way everywhere, even
-    /// when a caller passes a position that a resize has not been reconciled with yet.
-    pub fn new(pos: u64, max: u64, viewport: u64) -> Self {
-        Self {
-            pos: pos.min(max),
-            max,
-            viewport,
-        }
-    }
-}
+pub use konoma_widgets::scroll::ScrollExtent;
 
 /// A single entry shown in the tree.
 #[derive(Debug, Clone)]
@@ -5944,27 +5926,6 @@ fn at_ref_text(open_dir: &Path, path: &Path) -> String {
     format!("@{rel}")
 }
 
-/// A relative display string based on `open_dir` (the launch directory). For paths underneath, it puts the launch directory name first (e.g. `A/sub/x`),
-/// and for things outside open_dir (siblings/ancestors) it relativizes with `..` (e.g. `../B/aaa.md`, `..`). If it cannot be relativized, `~/...`.
-/// A shared function to guarantee the **same base** for the top-left path display (`format_path`'s Relative) and path copy (`cr`/`yr`).
-fn rel_to_open(open_dir: &Path, path: &Path) -> String {
-    if path.starts_with(open_dir) {
-        // Under open_dir: relativize against its parent so the launch directory name comes first (e.g. A/sub/x).
-        let base = open_dir.parent().unwrap_or(open_dir);
-        match path.strip_prefix(base) {
-            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    } else {
-        // Outside open_dir (siblings/ancestors, etc.): show a path relative to open_dir, including `..` (e.g. ../B/aaa.md).
-        // Without this, a file in sibling B would look like `B/aaa.md` and be mistaken for something underneath.
-        match rel_from(open_dir, path) {
-            Some(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    }
-}
-
 /// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
 ///
 /// Test builds never touch arboard: see `test_support::set_test_clipboard` and the module doc there
@@ -6015,20 +5976,6 @@ fn set_clipboard(text: &str) -> Result<()> {
 fn set_clipboard(text: &str) -> Result<()> {
     crate::test_support::set_test_clipboard(text);
     Ok(())
-}
-
-/// `~/...` if under HOME, otherwise the full path.
-pub(crate) fn home_relative(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if let Ok(rel) = path.strip_prefix(&home) {
-            if rel.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rel.display());
-        }
-    }
-    path.display().to_string()
 }
 
 /// Resolve a dropped (=pasted) string into a list of **existing paths**. Terminals (Ghostty, etc.) pass a drop
@@ -6149,35 +6096,6 @@ fn char_byte(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(s.len())
-}
-
-/// Compute the relative path from `base` to `target`, including `..` (equivalent to pathdiff). It removes the common leading components and
-/// pushes one `..` for each remaining level on the base side. None if the root kinds (absolute/drive) disagree and it cannot be relativized.
-fn rel_from(base: &Path, target: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-    let bc: Vec<Component> = base.components().collect();
-    let tc: Vec<Component> = target.components().collect();
-    let mut i = 0;
-    while i < bc.len() && i < tc.len() && bc[i] == tc[i] {
-        i += 1;
-    }
-    // No common component, and one side starts at the root (absolute/Prefix) = cannot be relativized.
-    if i == 0 {
-        let is_root = |c: Option<&Component>| {
-            matches!(c, Some(Component::Prefix(_)) | Some(Component::RootDir))
-        };
-        if is_root(bc.first()) || is_root(tc.first()) {
-            return None;
-        }
-    }
-    let mut rel = PathBuf::new();
-    for _ in i..bc.len() {
-        rel.push("..");
-    }
-    for c in &tc[i..] {
-        rel.push(c.as_os_str());
-    }
-    Some(rel)
 }
 
 /// Append one directory's worth of entries to out. Recurse into expanded subdirectories.

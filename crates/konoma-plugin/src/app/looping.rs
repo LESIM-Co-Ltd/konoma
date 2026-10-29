@@ -55,6 +55,9 @@ pub struct AppCx {
     pub reopen: Option<super::ReopenSource>,
     /// How the text and the documents look (`[ui] wrap`, `[ui.theme]`, ...).
     pub display: super::Display,
+    /// The directory the program was opened in: the frame title is the path of the file shown
+    /// from there, the way konoma's is from its root. `None`: the title is the file name.
+    pub open_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AppCx {
@@ -64,6 +67,7 @@ impl Default for AppCx {
             lang: "en".into(),
             term: TermCaps::new(),
             title: String::new(),
+            open_dir: None,
             unavailable: crate::manifest::Unavailable::default(),
             plugin_id: String::new(),
             path: std::path::PathBuf::new(),
@@ -1055,6 +1059,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     Err(f) => Err(f),
                 };
             }
+            let frame_name = match &cx.open_dir {
+                Some(dir) if !cx.path.as_os_str().is_empty() => {
+                    konoma_host_core::paths::rel_to_open(dir, &cx.path)
+                }
+                _ => cx.title.clone(),
+            };
             let shown = match viewed {
                 Ok(v) => {
                     st.table_failed = false;
@@ -1086,7 +1096,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     &mut st,
                     usize::from(body_rows),
                     (&cx.lang, keys.lang()),
-                    &cx.title,
+                    &frame_name,
                     pictures.as_mut(),
                 ),
                 Err(Some(frame)) => (frame, None),
@@ -1673,15 +1683,21 @@ fn frame_of(
             // The frame has a border: the page is laid out inside it.
             let inner_w = st.width.saturating_sub(2);
             let inner_h = rows.saturating_sub(2);
+            let mut doc_pics = pictures.map(Pictures::doc_pics);
             let laid = super::document::DocCache::get(
                 &mut st.doc,
                 &dv,
                 inner_w,
                 u16::try_from(rows).unwrap_or(u16::MAX),
                 lang,
-                pictures.map(Pictures::doc_pics),
+                doc_pics.as_deref_mut(),
                 &st.display,
             );
+            // A converted document cut at a budget, or a slide that had to leave something out,
+            // says so in the title; a Markdown file cut at the display limit says so in its
+            // text (see `document::lay_out`).
+            let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
+                && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
             clamp(st, laid.rows(), inner_h);
             let hscroll = settle_hscroll(st, laid.max_line_cols, inner_w);
             // The host pages by one row less than the frame and halves the frame itself.
@@ -1695,6 +1711,8 @@ fn frame_of(
                     scroll: st.scroll,
                     wrap: st.display.wrap,
                     hscroll,
+                    lang,
+                    truncated: cut,
                 }),
                 None,
             )

@@ -13,6 +13,10 @@ use ratatui::text::Line;
 
 use crate::view::DocOptions;
 
+/// The notice appended to a Markdown file cut at the display limit (its own paragraph; the host
+/// writes it in this one language whatever the reader's).
+pub const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
+
 /// The default open state of a `<details>` block from `md_details` and the tag's own `open`
 /// attribute: `"open"`/`"closed"` force it, anything else honors the attribute the way GitHub does.
 pub fn details_default_open(md_details: &str, open_attr: bool) -> bool {

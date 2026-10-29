@@ -16,6 +16,7 @@ pub mod kitty;
 pub mod layout;
 pub mod loading;
 pub mod markdown;
+pub mod scroll;
 pub mod table;
 pub mod term_query;
 pub mod text;

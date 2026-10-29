@@ -12,19 +12,33 @@ use std::sync::Arc;
 
 /// What the app shows after the presses: the whole screen.
 fn app_term(path: &std::path::Path, w: u16, h: u16, spec: &str) -> Terminal<TestBackend> {
-    let mut opened = open_file(
+    app_term_plugins(
         vec![Arc::new(konoma_markdown::MarkdownPlugin)],
         path,
-        "en",
-        TermCaps::new(),
+        w,
+        h,
+        spec,
     )
-    .expect("opens");
+}
+
+/// [`app_term`] with the plugins the app carries.
+fn app_term_plugins(
+    plugins: Vec<Arc<dyn konoma_plugin::Plugin>>,
+    path: &std::path::Path,
+    w: u16,
+    h: u16,
+    spec: &str,
+) -> Terminal<TestBackend> {
+    let mut opened = open_file(plugins, path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
         term: TermCaps::new(),
         title: String::new(),
         shows: opened.shows.clone(),
+        // The file is opened from its directory, as the host opens it from its root.
+        path: opened.path.clone(),
+        open_dir: opened.path.parent().map(|p| p.to_path_buf()),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1835,4 +1849,91 @@ fn a_reopened_docx_keeps_its_formulas_as_text_with_no_picker_or_in_text_mode() {
     );
     same("docx text mode", &ha, &aa);
     assert_eq!(picture_cells(&aa), 0);
+}
+
+/// The rows from the frame's top border to its bottom border, whole (the title, the scroll label,
+/// the scrollbar thumb on the right border column).
+fn frame_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+    let rows = rows_of(term);
+    let top = rows
+        .iter()
+        .position(|l| l.starts_with('┌'))
+        .expect("a frame");
+    let bottom = rows
+        .iter()
+        .rposition(|l| l.starts_with('└'))
+        .expect("a frame end");
+    rows[top..=bottom].to_vec()
+}
+
+/// The frame of a document: its title (the path the way the host titles it), the scroll label on
+/// the top border, the scrollbar on the right border column and the rows between, whole.
+#[test]
+fn the_document_frame_title_label_and_scrollbar_agree_with_the_host() {
+    let dir = sandbox("doc-frame");
+    for (name, body) in fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let (mut checked, mut thumbs, mut labels) = (0, 0, std::collections::BTreeSet::new());
+    for (name, _) in fixtures() {
+        for spec in SPECS {
+            for (w, h) in [(80u16, 14u16), (120, 30)] {
+                let what = format!("{name} {w}x{h} [{spec}]");
+                let hs = host_term(&root, &name, w, h, spec);
+                let a = app_term(&root.join(&name), w, h - 1, spec);
+                let (hf, af) = (frame_rows(&hs.term), frame_rows(&a));
+                assert_eq!(
+                    hf,
+                    af,
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&hs.term).join("\n"),
+                    rows_of(&a).join("\n")
+                );
+                checked += hf.len();
+                thumbs += hf.iter().filter(|r| r.ends_with('█')).count();
+                let top = &hf[0];
+                if let (Some(l), Some(r)) = (top.rfind('['), top.rfind(']')) {
+                    labels.insert(top[l..=r].to_string());
+                }
+            }
+        }
+    }
+    assert!(checked >= 13 * SPECS.len() * 2 * 10, "{checked} rows");
+    assert!(thumbs > 100, "{thumbs} thumb cells");
+    for l in ["[All]", "[Top]", "[Bot]"] {
+        assert!(labels.contains(l), "{l} never seen: {labels:?}");
+    }
+    assert!(labels.iter().any(|l| l.ends_with("%]")), "{labels:?}");
+}
+
+/// A Markdown file cut at the display limit: the notice is at the end of the text and the frame
+/// around it is the host's.
+#[test]
+fn a_markdown_file_cut_at_the_display_limit_shows_the_hosts_notice_and_frame() {
+    let dir = sandbox("doc-cut");
+    let big: String = (0..6000).map(|i| format!("para {i}\n\n")).collect();
+    std::fs::write(dir.join("big.md"), &big).unwrap();
+    let root = canon(&dir);
+    let mut with_note = 0;
+    for spec in ["", "G", "G k", "<C-f>", "G <C-b>"] {
+        for (w, h) in [(80u16, 14u16), (50, 9)] {
+            let hs = host_term(&root, "big.md", w, h, spec);
+            let a = app_term(&root.join("big.md"), w, h - 1, spec);
+            assert_eq!(
+                frame_rows(&hs.term),
+                frame_rows(&a),
+                "big.md {w}x{h} [{spec}]"
+            );
+            with_note += usize::from(
+                frame_rows(&a)
+                    .iter()
+                    .any(|r| r.contains("省略: 表示上限に達しました")),
+            );
+        }
+    }
+    assert!(
+        with_note >= 2,
+        "the notice was never on screen: {with_note}"
+    );
 }

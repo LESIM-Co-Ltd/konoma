@@ -215,7 +215,7 @@ pub fn footer(
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
         Frame::Text(t) if scrolls && !t.lines.is_empty() => format!("  line {}", scroll + 1),
-        Frame::Document(_) if scrolls => format!("  line {}", scroll + 1),
+        // A document says where it is on its frame (the scroll label), as the host does.
         _ => String::new(),
     };
     format!(" {}{pos}  {title}", hints.join("  "))

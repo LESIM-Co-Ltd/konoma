@@ -223,6 +223,12 @@ impl DocPics {
         self.env = env;
     }
 
+    /// Whether drawing a picture had to leave something out.
+    pub fn render_truncated(&self) -> bool {
+        self.render_truncated
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The count a cached layout is compared with.
     pub fn epoch(&self) -> u64 {
         self.epoch
@@ -250,6 +256,7 @@ impl DocPics {
     pub fn render(
         &mut self,
         dv: &DocumentView,
+        markdown: &str,
         width: u16,
         rows: u16,
         lang: Lang,
@@ -296,7 +303,7 @@ impl DocPics {
                     other: &|url, max_cols| resource_slots.slot(url, max_cols),
                 };
                 lookup.with_slots(true, |slots| {
-                    render_document(&dv.markdown, &dv.options, settings, slots)
+                    render_document(markdown, &dv.options, settings, slots)
                 })
             };
             pass += 1;
