@@ -28,6 +28,7 @@ use crate::keymap::{Action, Context, KeyPress, LeaderId};
 
 use super::{action_enabled, decl, footer, help, keys};
 use crate::plugins::PluginAct;
+use konoma_host_core::menu::{self as menu_core, add_candidate, plain_key};
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,10 +206,6 @@ fn mnemonic(a: Action) -> Option<char> {
     })
 }
 
-/// The letters tried for an operation that has neither a free key of its own nor a mnemonic.
-/// `q` is not among them: inside a menu it closes it.
-const FREE_LETTERS: &str = "abcdefghijklmnoprstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
 /// Every operation `ctx` can run, in the order the menu lists them: the keyed ones by their key
 /// (with that key when it is a plain character), then the fixed keys' operations, then the ones
 /// without a key. Movement and the closing of overlays are not operations to offer.
@@ -232,22 +229,11 @@ fn candidates(
         {
             return;
         }
-        match out.iter_mut().find(|(o, _)| *o == a) {
-            // The first plain key of an operation is the one the menu uses.
-            Some((_, k)) => {
-                if k.is_none() {
-                    *k = key;
-                }
-            }
-            None => out.push((a, key)),
-        }
-    };
-    let plain = |k: KeyPress| -> Option<KeyPress> {
-        (!k.ctrl && matches!(k.code, crossterm::event::KeyCode::Char(c) if c != 'q' && c != ' '))
-            .then_some(k)
+        // The first plain key of an operation is the one the menu uses.
+        add_candidate(&mut out, a, key);
     };
     for (k, a) in app.keymaps.bound_actions(ctx) {
-        add(a, plain(k));
+        add(a, plain_key(k));
     }
     // What the context has by default but no key reaches now (moved away by `[keys]`, or lost
     // to a conflict).
@@ -265,45 +251,27 @@ fn candidates(
     // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
     // its key (a collision, a rebinding) is still reachable.
     for b in app.plugin_acts_in(ctx) {
-        add(Action::Plugin(b.act), b.key.and_then(plain));
+        add(Action::Plugin(b.act), b.key.and_then(plain_key));
     }
     out
 }
 
-/// The key each candidate gets. Keys the operations already have come first (so a habit carries
-/// over), then a mnemonic letter, then the first free letter.
+/// The shared assignment, with this host's mnemonics (the menu tests call it directly).
+#[cfg(test)]
 fn assign(cands: &[(Action, Option<KeyPress>)]) -> Vec<Option<KeyPress>> {
-    let mut taken: Vec<KeyPress> = Vec::new();
-    let mut chosen: Vec<Option<KeyPress>> = vec![None; cands.len()];
-    for (i, (_, k)) in cands.iter().enumerate() {
-        if let Some(k) = k {
-            if !taken.contains(k) {
-                taken.push(*k);
-                chosen[i] = Some(*k);
-            }
-        }
-    }
-    for (i, (a, _)) in cands.iter().enumerate() {
-        if chosen[i].is_some() {
-            continue;
-        }
-        let pick = mnemonic(*a)
-            .map(KeyPress::ch)
-            .filter(|k| !taken.contains(k))
-            .or_else(|| {
-                FREE_LETTERS
-                    .chars()
-                    .map(KeyPress::ch)
-                    .find(|k| !taken.contains(k))
-            });
-        if let Some(k) = pick {
-            taken.push(k);
-            chosen[i] = Some(k);
-        }
-    }
-    // More operations than letters cannot happen with today's contexts; an operation left
-    // without a letter is simply not in the menu (it keeps its own key).
-    chosen
+    menu_core::assign(cands, mnemonic)
+}
+
+/// The shared rank, over the footer plan's pairs (the menu tests call it directly).
+#[cfg(test)]
+fn rank(
+    a: Action,
+    prio: &[(Action, Option<Msg>)],
+    own: &[Action],
+    everywhere: &[Action],
+) -> (usize, u8, usize) {
+    let prio: Vec<Action> = prio.iter().map(|(p, _)| *p).collect();
+    menu_core::rank(a, &prio, own, everywhere)
 }
 
 /// The label of a plugin's operation in the language of the interface.
@@ -312,57 +280,33 @@ fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
         .map(|b| b.label.get(app.plugin_lang()).to_string())
 }
 
-/// Where an operation sorts in the menu: its place in the footer plan, then the operations the
-/// help lists for the screen itself (in the help's order), then the ones neither names (an
-/// overlay's own keys, a rebinding's leftovers; they keep the order of `candidates`), then the
-/// rows every screen lists (tabs, help, quit).
-fn rank(
-    a: Action,
-    prio: &[(Action, Option<Msg>)],
-    own: &[Action],
-    everywhere: &[Action],
-) -> (usize, u8, usize) {
-    let p = prio.iter().position(|(p, _)| *p == a).unwrap_or(usize::MAX);
-    if let Some(i) = own.iter().position(|d| *d == a) {
-        (p, 0, i)
-    } else if let Some(i) = everywhere.iter().position(|d| *d == a) {
-        (p, 2, i)
-    } else {
-        (p, 1, 0)
-    }
-}
-
 /// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that
 /// act now.
 fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
     let prio = footer::priority(app, ctx);
-    let mut cands = candidates(app, ctx, &prio);
-    // Menu order first: the free letters then run along the menu (a, b, c ...) for the items that
-    // have no key of their own. Neither the order nor the letters look at the gate, so a letter
-    // does not move because another operation happens not to act right now.
+    let cands = candidates(app, ctx, &prio);
     let (own, everywhere) = help::declared_groups(app, ctx);
-    cands.sort_by_key(|(a, _)| rank(*a, &prio, &own, &everywhere));
-
-    let letters = assign(&cands);
-    let items: Vec<MenuItem> = cands
-        .iter()
-        .zip(letters)
-        .filter(|((a, _), _)| !gated || action_enabled(app, ctx, *a))
-        .filter_map(|((a, _), key)| {
-            let key = key?;
-            let label = match a {
-                Action::Plugin(p) => plugin_label(app, ctx, *p)?,
-                _ if decl::repr_label(app, *a).is_some() => decl::repr_label(app, *a)?,
-                _ => tr(app.lang, label_of(app, ctx, *a, &prio)?).to_string(),
-            };
-            Some(MenuItem {
-                key,
-                action: *a,
-                label,
-            })
-        })
-        .collect();
-    items
+    let prio_actions: Vec<Action> = prio.iter().map(|(a, _)| *a).collect();
+    menu_core::build_items(
+        cands,
+        &prio_actions,
+        &own,
+        &everywhere,
+        mnemonic,
+        |a| !gated || action_enabled(app, ctx, a),
+        |a| match a {
+            Action::Plugin(p) => plugin_label(app, ctx, p),
+            _ if decl::repr_label(app, a).is_some() => decl::repr_label(app, a),
+            _ => label_of(app, ctx, a, &prio).map(|m| tr(app.lang, m).to_string()),
+        },
+    )
+    .into_iter()
+    .map(|i| MenuItem {
+        key: i.key,
+        action: i.action,
+        label: i.label,
+    })
+    .collect()
 }
 
 /// Every item the `Space` menu of `ctx` can hold, whether or not it acts right now, in menu order.
