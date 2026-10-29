@@ -18,6 +18,7 @@ use std::fmt;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::help_msg::CoreMsg;
 use crate::keys::{KeysConfig, KeysFileConfig};
 
 // =============================================================================
@@ -335,6 +336,12 @@ pub enum CoreAction {
     CopyPath(CopyKind),
     TableCopy(TableCopyKind),
     SortSet(SortKey),
+    /// `y c`: copy the source of the focused code block (a no-op where none is focused).
+    CopyCodeBlock,
+    /// Cycle how the path is shown (relative / `~` / absolute).
+    CyclePathStyle,
+    /// Toggle line wrapping of the text and document views.
+    ToggleWrap,
 }
 
 impl CoreAction {
@@ -359,6 +366,9 @@ impl CoreAction {
             CoreAction::ToggleOutline,
             CoreAction::RequestEdit,
             CoreAction::OpenExternal,
+            CoreAction::CopyCodeBlock,
+            CoreAction::CyclePathStyle,
+            CoreAction::ToggleWrap,
         ]);
         v.extend((0..9).map(CoreAction::TabGoto));
         for k in [
@@ -423,6 +433,9 @@ impl CoreAction {
             CoreAction::SortSet(SortKey::Size) => "sort_size",
             CoreAction::SortSet(SortKey::Modified) => "sort_modified",
             CoreAction::SortSet(SortKey::Ext) => "sort_ext",
+            CoreAction::CopyCodeBlock => "copy_code_block",
+            CoreAction::CyclePathStyle => "cycle_path_style",
+            CoreAction::ToggleWrap => "toggle_wrap",
         };
         s.to_string()
     }
@@ -468,6 +481,9 @@ impl CoreAction {
             "sort_size" => CoreAction::SortSet(SortKey::Size),
             "sort_modified" => CoreAction::SortSet(SortKey::Modified),
             "sort_ext" => CoreAction::SortSet(SortKey::Ext),
+            "copy_code_block" => CoreAction::CopyCodeBlock,
+            "cycle_path_style" => CoreAction::CyclePathStyle,
+            "toggle_wrap" => CoreAction::ToggleWrap,
             _ => return None,
         })
     }
@@ -749,6 +765,262 @@ pub fn own_table(ctx: CoreContext) -> CoreTable {
 }
 
 // =============================================================================
+// The menus `y` and `,` open: their default items and the overrides of `[keys]`.
+// =============================================================================
+
+/// One item of a menu: the key pressed after the menu key, what it runs, and its label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuItem<A, L> {
+    pub key: KeyPress,
+    pub action: A,
+    pub label: L,
+}
+
+/// A menu (the which-key popup of `y` or `,`). Generic over the action and the label so a host
+/// keeps its own types in it while the editing rules stay here, written once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Menu<A, L> {
+    pub title: L,
+    pub items: Vec<MenuItem<A, L>>,
+}
+
+impl<A: Copy, L: Copy> Menu<A, L> {
+    /// What the item for `kp` runs.
+    pub fn find(&self, kp: KeyPress) -> Option<A> {
+        self.items
+            .iter()
+            .find(|it| it.key == kp)
+            .map(|it| it.action)
+    }
+
+    /// Add an item, or replace the one for the same key.
+    pub fn set(&mut self, kp: KeyPress, action: A, label: L) {
+        self.items.retain(|it| it.key != kp);
+        self.items.push(MenuItem {
+            key: kp,
+            action,
+            label,
+        });
+    }
+
+    /// Remove the item for `kp` (nothing happens when there is none).
+    pub fn remove(&mut self, kp: KeyPress) {
+        self.items.retain(|it| it.key != kp);
+    }
+
+    /// The same menu in another host's action and label types.
+    pub fn map<B, M>(&self, fa: &impl Fn(A) -> B, fl: &impl Fn(L) -> M) -> Menu<B, M> {
+        Menu {
+            title: fl(self.title),
+            items: self
+                .items
+                .iter()
+                .map(|it| MenuItem {
+                    key: it.key,
+                    action: fa(it.action),
+                    label: fl(it.label),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Which menus a `[keys]` entry like `"y x" = "copy_full"` changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuScope {
+    /// `[keys.global]`: the shared menu and every context's own copy of it.
+    Global,
+    /// `[keys.<context>]`: only that context's own copy.
+    Context(CoreContext),
+}
+
+/// [`MenuSet::edit`] found no menu to change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoMenu;
+
+/// The menus of the preview contexts: the ones every context shares (`y`'s two menus) and the
+/// ones a context has of its own (the `,` menus, and a copy of a shared menu once a context
+/// changes it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuSet<A, L> {
+    pub shared: HashMap<CoreMenu, Menu<A, L>>,
+    pub per_context: HashMap<(CoreContext, CoreMenu), Menu<A, L>>,
+}
+
+impl<A: Copy, L: Copy> MenuSet<A, L> {
+    /// The menu `menu` is in `ctx`: the context's own copy when it has one, else the shared one.
+    pub fn get(&self, ctx: CoreContext, menu: CoreMenu) -> Option<&Menu<A, L>> {
+        self.per_context
+            .get(&(ctx, menu))
+            .or_else(|| self.shared.get(&menu))
+    }
+
+    /// Put `entry` (an action and its label) on `key` in the menu `menu` opens, or remove the
+    /// key (`None`). `Global` changes the shared menu and every context's copy of it; a context
+    /// changes only its own copy, made from the shared menu on the first change. `Err` when
+    /// there is no menu to change.
+    pub fn edit(
+        &mut self,
+        scope: MenuScope,
+        menu: CoreMenu,
+        key: KeyPress,
+        entry: Option<(A, L)>,
+    ) -> Result<(), NoMenu> {
+        let apply = |m: &mut Menu<A, L>| match entry {
+            Some((a, l)) => m.set(key, a, l),
+            None => m.remove(key),
+        };
+        match scope {
+            MenuScope::Global => {
+                if let Some(m) = self.shared.get_mut(&menu) {
+                    apply(m);
+                }
+                for ((_, id), m) in self.per_context.iter_mut() {
+                    if *id == menu {
+                        apply(m);
+                    }
+                }
+                Ok(())
+            }
+            MenuScope::Context(c) => {
+                let base = self
+                    .per_context
+                    .get(&(c, menu))
+                    .or_else(|| self.shared.get(&menu))
+                    .cloned()
+                    .ok_or(NoMenu)?;
+                apply(self.per_context.entry((c, menu)).or_insert(base));
+                Ok(())
+            }
+        }
+    }
+
+    /// The same menus in another host's action and label types.
+    pub fn map<B: Copy, M: Copy>(
+        &self,
+        fa: &impl Fn(A) -> B,
+        fl: &impl Fn(L) -> M,
+    ) -> MenuSet<B, M> {
+        MenuSet {
+            shared: self
+                .shared
+                .iter()
+                .map(|(k, m)| (*k, m.map(fa, fl)))
+                .collect(),
+            per_context: self
+                .per_context
+                .iter()
+                .map(|(k, m)| (*k, m.map(fa, fl)))
+                .collect(),
+        }
+    }
+}
+
+/// The label of a menu item that runs `a` (`CoreMsg::Empty` for an action no menu labels).
+pub fn menu_label(a: CoreAction) -> CoreMsg {
+    match a {
+        CoreAction::CopyPath(CopyKind::Name) => CoreMsg::WkName,
+        CoreAction::CopyPath(CopyKind::Relative) => CoreMsg::WkRelative,
+        CoreAction::CopyPath(CopyKind::Full) => CoreMsg::WkFull,
+        CoreAction::CopyPath(CopyKind::Parent) => CoreMsg::WkParent,
+        CoreAction::CopyPath(CopyKind::AtRef) => CoreMsg::WkAtRef,
+        CoreAction::CopyCodeBlock => CoreMsg::WkCodeBlock,
+        CoreAction::TableCopy(TableCopyKind::Cell) => CoreMsg::WkCell,
+        CoreAction::TableCopy(TableCopyKind::Row) => CoreMsg::WkRow,
+        CoreAction::TableCopy(TableCopyKind::Column) => CoreMsg::WkColumn,
+        CoreAction::SortSet(SortKey::Name) => CoreMsg::FtSortName,
+        CoreAction::SortSet(SortKey::Size) => CoreMsg::FtSortSize,
+        CoreAction::SortSet(SortKey::Modified) => CoreMsg::FtSortMod,
+        CoreAction::SortSet(SortKey::Ext) => CoreMsg::FtSortExt,
+        CoreAction::CyclePathStyle => CoreMsg::HintPath,
+        CoreAction::ToggleWrap => CoreMsg::HintWrap,
+        _ => CoreMsg::Empty,
+    }
+}
+
+/// The menu a prefix key opens in a `[keys]` chord such as `"y x"`: `y` the copy menu, `,` the
+/// options menu. (`Space` opens a menu a host builds when it opens, which a chord cannot edit.)
+pub fn chord_prefix_menu(pre: KeyPress) -> Option<CoreMenu> {
+    if pre == KeyPress::ch('y') {
+        Some(CoreMenu::Copy)
+    } else if pre == KeyPress::ch(',') {
+        Some(CoreMenu::Options)
+    } else {
+        None
+    }
+}
+
+fn menu_of(title: CoreMsg, items: &[(char, CoreAction)]) -> Menu<CoreAction, CoreMsg> {
+    Menu {
+        title,
+        items: items
+            .iter()
+            .map(|&(c, a)| MenuItem {
+                key: KeyPress::ch(c),
+                action: a,
+                label: menu_label(a),
+            })
+            .collect(),
+    }
+}
+
+/// The `y` menu: path copy. `c` (the code block) is shown only while a code block is focused.
+pub fn copy_menu_default() -> Menu<CoreAction, CoreMsg> {
+    menu_of(
+        CoreMsg::WkCopyPathTitle,
+        &[
+            ('n', CoreAction::CopyPath(CopyKind::Name)),
+            ('r', CoreAction::CopyPath(CopyKind::Relative)),
+            ('f', CoreAction::CopyPath(CopyKind::Full)),
+            ('p', CoreAction::CopyPath(CopyKind::Parent)),
+            ('@', CoreAction::CopyPath(CopyKind::AtRef)),
+            ('c', CoreAction::CopyCodeBlock),
+        ],
+    )
+}
+
+/// The `y` menu of a table: cell / row / column copy (`f` keeps the full-path copy reachable).
+pub fn table_copy_menu_default() -> Menu<CoreAction, CoreMsg> {
+    menu_of(
+        CoreMsg::WkTableCopyTitle,
+        &[
+            ('c', CoreAction::TableCopy(TableCopyKind::Cell)),
+            ('r', CoreAction::TableCopy(TableCopyKind::Row)),
+            ('C', CoreAction::TableCopy(TableCopyKind::Column)),
+            ('f', CoreAction::CopyPath(CopyKind::Full)),
+        ],
+    )
+}
+
+/// The `,` menu of a context: what it lets you show. A text or document view also wraps lines.
+pub fn options_menu_default(ctx: CoreContext) -> Menu<CoreAction, CoreMsg> {
+    let path = ('p', CoreAction::CyclePathStyle);
+    let wrap = ('w', CoreAction::ToggleWrap);
+    match ctx {
+        CoreContext::Text | CoreContext::Document => {
+            menu_of(CoreMsg::WkOptionsTitle, &[path, wrap])
+        }
+        CoreContext::Image | CoreContext::Table | CoreContext::Canvas => {
+            menu_of(CoreMsg::WkOptionsTitle, &[path])
+        }
+    }
+}
+
+/// The default menus of the contexts this module defines.
+pub fn default_menus() -> MenuSet<CoreAction, CoreMsg> {
+    MenuSet {
+        shared: HashMap::from([
+            (CoreMenu::Copy, copy_menu_default()),
+            (CoreMenu::TableCopy, table_copy_menu_default()),
+        ]),
+        per_context: CoreContext::ALL
+            .into_iter()
+            .map(|c| ((c, CoreMenu::Options), options_menu_default(c)))
+            .collect(),
+    }
+}
+
+// =============================================================================
 // CoreKeys: the layered tables, the overrides and the lookup.
 // =============================================================================
 
@@ -763,6 +1035,8 @@ pub struct CoreKeys {
     pub types: HashMap<CoreViewType, CoreTable>,
     pub basic: CoreTable,
     pub global: CoreTable,
+    /// The menus `y` and `,` open, with the `"y x" = "..."` overrides applied.
+    pub menus: MenuSet<CoreAction, CoreMsg>,
 }
 
 /// What a `[keys.<name>]` table writes to.
@@ -792,7 +1066,14 @@ impl CoreKeys {
                 .collect(),
             basic: basic_table(),
             global: global_table(),
+            menus: default_menus(),
         }
+    }
+
+    /// The menu `menu` is in `ctx`, with the overrides applied (`None` for `Space`'s menu, which
+    /// a host builds when it opens).
+    pub fn menu(&self, ctx: CoreContext, menu: CoreMenu) -> Option<&Menu<CoreAction, CoreMsg>> {
+        self.menus.get(ctx, menu)
     }
 
     /// Defaults, then the `[keys]` overrides of `cfg` (the old `copy_*` aliases included, as
@@ -838,16 +1119,14 @@ impl CoreKeys {
         keys
     }
 
-    /// Apply one (key string -> action string) to every target. Anything this module cannot
-    /// honour is ignored: a chord (a menu entry), an invalid or fixed key, `tab_goto`, a name
-    /// that is no core action.
+    /// Apply one (key string -> action string) to every target. A chord (`"y x"`) is an entry of
+    /// a menu. Anything this module cannot honour is ignored: an invalid or fixed key, a chord
+    /// whose prefix opens no menu, `tab_goto`, a name that is no core action.
     fn apply_one(&mut self, targets: &[Target], key: &str, action: &str) {
-        let mut tokens = key.split_whitespace();
-        let (Some(tok), None) = (tokens.next(), tokens.next()) else {
-            return;
-        };
-        let Ok(kp) = KeyPress::parse(tok) else {
-            return;
+        let tokens: Vec<&str> = key.split_whitespace().collect();
+        let keys: Vec<KeyPress> = match tokens.iter().map(|t| KeyPress::parse(t)).collect() {
+            Ok(k) => k,
+            Err(_) => return,
         };
         let action = if action == "noop" || action == "disabled" {
             None
@@ -857,11 +1136,52 @@ impl CoreKeys {
                 None => return,
             }
         };
-        if is_fixed_key(kp) {
-            return;
+        match keys[..] {
+            [kp] => {
+                if is_fixed_key(kp) {
+                    return;
+                }
+                for &t in targets {
+                    self.set_key(t, kp, action);
+                }
+            }
+            [pre, suf] => {
+                if pre != KeyPress::ch(' ') && chord_prefix_menu(pre).is_none() {
+                    return;
+                }
+                for &t in targets {
+                    self.set_menu_entry(t, pre, suf, action);
+                }
+            }
+            _ => {}
         }
-        for &t in targets {
-            self.set_key(t, kp, action);
+    }
+
+    /// Put `suf` (or remove it, `None`) in the menu that `pre` opens, for `target`. A context
+    /// changes the menu its own `pre` opens (`y` is a different menu in a table); a prefix that
+    /// opens no menu there, or `Space`'s menu, is left alone.
+    fn set_menu_entry(
+        &mut self,
+        target: Target,
+        pre: KeyPress,
+        suf: KeyPress,
+        action: Option<CoreAction>,
+    ) {
+        let entry = action.map(|a| (a, menu_label(a)));
+        match target {
+            Target::Global => {
+                if let Some(m) = chord_prefix_menu(pre) {
+                    let _ = self.menus.edit(MenuScope::Global, m, suf, entry);
+                }
+            }
+            Target::Context(c) => {
+                if let Some(CoreBinding::Menu(m)) = self.local(c, pre) {
+                    if *m != CoreMenu::Actions {
+                        let m = *m;
+                        let _ = self.menus.edit(MenuScope::Context(c), m, suf, entry);
+                    }
+                }
+            }
         }
     }
 
@@ -1252,5 +1572,348 @@ mod tests {
     fn the_sort_key_parses_with_a_fallback() {
         assert_eq!(SortKey::parse(" MTime "), SortKey::Modified);
         assert_eq!(SortKey::parse("nonsense"), SortKey::Name);
+    }
+
+    // --- The menus `y` and `,` open. ---
+
+    fn items(k: &CoreKeys, c: CoreContext, m: CoreMenu) -> Vec<(char, CoreAction)> {
+        k.menu(c, m)
+            .unwrap_or_else(|| panic!("{c:?} has no {m:?} menu"))
+            .items
+            .iter()
+            .map(|it| match it.key.code {
+                KeyCode::Char(ch) => (ch, it.action),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_default_copy_menu_has_the_path_copies_and_the_code_block() {
+        let k = CoreKeys::defaults(KeyScheme::Vim);
+        for c in [
+            CoreContext::Text,
+            CoreContext::Document,
+            CoreContext::Image,
+            CoreContext::Canvas,
+        ] {
+            assert_eq!(
+                items(&k, c, CoreMenu::Copy),
+                vec![
+                    ('n', CoreAction::CopyPath(CopyKind::Name)),
+                    ('r', CoreAction::CopyPath(CopyKind::Relative)),
+                    ('f', CoreAction::CopyPath(CopyKind::Full)),
+                    ('p', CoreAction::CopyPath(CopyKind::Parent)),
+                    ('@', CoreAction::CopyPath(CopyKind::AtRef)),
+                    ('c', CoreAction::CopyCodeBlock),
+                ],
+                "{c:?}"
+            );
+        }
+        let m = k.menu(CoreContext::Text, CoreMenu::Copy).unwrap();
+        assert_eq!(m.title, CoreMsg::WkCopyPathTitle);
+        let labels: Vec<CoreMsg> = m.items.iter().map(|it| it.label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                CoreMsg::WkName,
+                CoreMsg::WkRelative,
+                CoreMsg::WkFull,
+                CoreMsg::WkParent,
+                CoreMsg::WkAtRef,
+                CoreMsg::WkCodeBlock
+            ]
+        );
+    }
+
+    #[test]
+    fn the_default_table_menu_copies_a_cell_a_row_a_column_or_the_path() {
+        let k = CoreKeys::defaults(KeyScheme::Vim);
+        assert_eq!(
+            items(&k, CoreContext::Table, CoreMenu::TableCopy),
+            vec![
+                ('c', CoreAction::TableCopy(TableCopyKind::Cell)),
+                ('r', CoreAction::TableCopy(TableCopyKind::Row)),
+                ('C', CoreAction::TableCopy(TableCopyKind::Column)),
+                ('f', CoreAction::CopyPath(CopyKind::Full)),
+            ]
+        );
+        let m = k.menu(CoreContext::Table, CoreMenu::TableCopy).unwrap();
+        assert_eq!(m.title, CoreMsg::WkTableCopyTitle);
+        assert_eq!(m.items[0].label, CoreMsg::WkCell);
+        assert_eq!(m.items[2].label, CoreMsg::WkColumn);
+    }
+
+    #[test]
+    fn the_default_options_menus_hold_the_path_style_and_the_wrap_of_text() {
+        let k = CoreKeys::defaults(KeyScheme::Vim);
+        for c in CoreContext::ALL {
+            let want: Vec<(char, CoreAction)> = match c {
+                CoreContext::Text | CoreContext::Document => vec![
+                    ('p', CoreAction::CyclePathStyle),
+                    ('w', CoreAction::ToggleWrap),
+                ],
+                _ => vec![('p', CoreAction::CyclePathStyle)],
+            };
+            assert_eq!(items(&k, c, CoreMenu::Options), want, "{c:?}");
+            let m = k.menu(c, CoreMenu::Options).unwrap();
+            assert_eq!(m.title, CoreMsg::WkOptionsTitle);
+            assert_eq!(m.items[0].label, CoreMsg::HintPath);
+        }
+    }
+
+    #[test]
+    fn a_menu_the_context_does_not_open_is_not_there() {
+        let k = CoreKeys::defaults(KeyScheme::Vim);
+        // `Space`'s menu is built by the host when it opens.
+        assert!(k.menu(CoreContext::Text, CoreMenu::Actions).is_none());
+    }
+
+    #[test]
+    fn a_chord_in_a_context_adds_replaces_and_removes_an_item_of_its_own_menu_only() {
+        let c = cfg(&[(
+            "text",
+            &[
+                ("y x", "copy_full"),
+                ("y n", "copy_parent"),
+                ("y p", "noop"),
+                (", s", "sort_size"),
+            ],
+        )]);
+        let k = CoreKeys::from_config(KeyScheme::Vim, &c);
+        let copy = items(&k, CoreContext::Text, CoreMenu::Copy);
+        assert!(
+            copy.contains(&('x', CoreAction::CopyPath(CopyKind::Full))),
+            "{copy:?}"
+        );
+        assert!(
+            copy.contains(&('n', CoreAction::CopyPath(CopyKind::Parent))),
+            "{copy:?}"
+        );
+        assert!(!copy.iter().any(|(ch, _)| *ch == 'p'), "{copy:?}");
+        assert_eq!(
+            copy.len(),
+            6,
+            "one added, one replaced, one removed: {copy:?}"
+        );
+        // The label follows the action.
+        let m = k.menu(CoreContext::Text, CoreMenu::Copy).unwrap();
+        let x = m
+            .items
+            .iter()
+            .find(|it| it.key == KeyPress::ch('x'))
+            .unwrap();
+        assert_eq!(x.label, CoreMsg::WkFull);
+        let opts = items(&k, CoreContext::Text, CoreMenu::Options);
+        assert!(
+            opts.contains(&('s', CoreAction::SortSet(SortKey::Size))),
+            "{opts:?}"
+        );
+        // Other contexts keep the defaults.
+        let d = CoreKeys::defaults(KeyScheme::Vim);
+        for other in [
+            CoreContext::Document,
+            CoreContext::Image,
+            CoreContext::Canvas,
+        ] {
+            assert_eq!(
+                items(&k, other, CoreMenu::Copy),
+                items(&d, other, CoreMenu::Copy),
+                "{other:?}"
+            );
+            assert_eq!(
+                items(&k, other, CoreMenu::Options),
+                items(&d, other, CoreMenu::Options),
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_and_cjk_keys_in_a_chord_do_not_panic_and_are_handled_like_any_other_key() {
+        let c = cfg(&[
+            (
+                "text",
+                &[
+                    ("y あ", "copy_full"),
+                    ("あ", "copy_full"),
+                    ("ｙ x", "copy_full"),
+                    (", 漢", "toggle_wrap"),
+                ],
+            ),
+            ("global", &[("y い", "copy_name")]),
+        ]);
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let k = CoreKeys::from_config(scheme, &c);
+            let copy = items(&k, CoreContext::Text, CoreMenu::Copy);
+            assert!(copy.contains(&('あ', CoreAction::CopyPath(CopyKind::Full))));
+            // The single `あ` is an ordinary key, not a menu item.
+            assert_eq!(copy.iter().filter(|(ch, _)| *ch == 'あ').count(), 1);
+            assert!(copy.contains(&('い', CoreAction::CopyPath(CopyKind::Name))));
+            // A full-width prefix is not the `y` key: it opens no menu and is ignored.
+            assert!(!copy.iter().any(|(ch, _)| *ch == 'x'));
+            let opts = items(&k, CoreContext::Text, CoreMenu::Options);
+            assert!(opts.contains(&('漢', CoreAction::ToggleWrap)));
+        }
+    }
+
+    #[test]
+    fn a_chord_in_global_changes_the_shared_menu_and_every_copy_of_it() {
+        let c = cfg(&[
+            ("global", &[("y x", "copy_full"), (", z", "toggle_wrap")]),
+            // The context's own copy is made after the global entry and keeps it.
+            ("image", &[("y q", "copy_name")]),
+        ]);
+        let k = CoreKeys::from_config(KeyScheme::Vim, &c);
+        for ctx in [
+            CoreContext::Text,
+            CoreContext::Document,
+            CoreContext::Image,
+            CoreContext::Canvas,
+        ] {
+            let copy = items(&k, ctx, CoreMenu::Copy);
+            assert!(
+                copy.contains(&('x', CoreAction::CopyPath(CopyKind::Full))),
+                "{ctx:?}"
+            );
+        }
+        for ctx in CoreContext::ALL {
+            let opts = items(&k, ctx, CoreMenu::Options);
+            assert!(opts.contains(&('z', CoreAction::ToggleWrap)), "{ctx:?}");
+        }
+        let image = items(&k, CoreContext::Image, CoreMenu::Copy);
+        assert!(image.contains(&('q', CoreAction::CopyPath(CopyKind::Name))));
+        assert!(!items(&k, CoreContext::Text, CoreMenu::Copy)
+            .iter()
+            .any(|(ch, _)| *ch == 'q'));
+        // `y` in a table opens another menu, which a global `y x` does not touch.
+        assert_eq!(
+            items(&k, CoreContext::Table, CoreMenu::TableCopy),
+            items(
+                &CoreKeys::defaults(KeyScheme::Vim),
+                CoreContext::Table,
+                CoreMenu::TableCopy
+            )
+        );
+    }
+
+    #[test]
+    fn the_y_of_a_table_is_the_table_menu_for_a_chord() {
+        let c = cfg(&[("table", &[("y x", "copy_name"), ("y c", "noop")])]);
+        let k = CoreKeys::from_config(KeyScheme::Vim, &c);
+        let t = items(&k, CoreContext::Table, CoreMenu::TableCopy);
+        assert!(
+            t.contains(&('x', CoreAction::CopyPath(CopyKind::Name))),
+            "{t:?}"
+        );
+        assert!(!t.iter().any(|(ch, _)| *ch == 'c'), "{t:?}");
+    }
+
+    #[test]
+    fn a_chord_whose_prefix_opens_no_menu_there_is_ignored() {
+        let d = CoreKeys::defaults(KeyScheme::Vim);
+        for (table, key) in [
+            ("text", "z x"),     // `z` opens nothing
+            ("text", "space x"), // the Space menu lists its operations itself
+            ("canvas", "space x"),
+            ("text", "y x y"), // three keys
+            ("text", "y"),     // a key, not a chord: `y` stays the menu key
+        ] {
+            let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[(table, &[(key, "copy_full")])]));
+            for c in CoreContext::ALL {
+                for m in [CoreMenu::Copy, CoreMenu::TableCopy, CoreMenu::Options] {
+                    assert_eq!(k.menu(c, m), d.menu(c, m), "{table} {key} {c:?} {m:?}");
+                }
+            }
+        }
+        // A context that took `y` for an action has no `y` menu to change (`y` sorts before
+        // `y x`, so the action is bound first); the default is restored afterwards.
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[("text", &[("y", "copy_full"), ("y x", "copy_name")])]),
+        );
+        assert_eq!(
+            k.menu(CoreContext::Text, CoreMenu::Copy),
+            d.menu(CoreContext::Text, CoreMenu::Copy)
+        );
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('y')),
+            CoreResolution::Menu(CoreMenu::Copy)
+        );
+    }
+
+    #[test]
+    fn the_old_preview_text_name_edits_the_text_and_the_document_menus() {
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[("preview_text", &[("y x", "copy_full")])]),
+        );
+        for c in [CoreContext::Text, CoreContext::Document] {
+            let copy = items(&k, c, CoreMenu::Copy);
+            assert!(
+                copy.contains(&('x', CoreAction::CopyPath(CopyKind::Full))),
+                "{c:?}"
+            );
+        }
+        assert!(!items(&k, CoreContext::Image, CoreMenu::Copy)
+            .iter()
+            .any(|(ch, _)| *ch == 'x'));
+    }
+
+    #[test]
+    fn a_host_only_action_name_in_a_chord_leaves_the_menu_as_it_was() {
+        let d = CoreKeys::defaults(KeyScheme::Vim);
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[("text", &[("y x", "refresh"), ("y f", "no_such_action")])]),
+        );
+        assert_eq!(
+            k.menu(CoreContext::Text, CoreMenu::Copy),
+            d.menu(CoreContext::Text, CoreMenu::Copy)
+        );
+    }
+
+    #[test]
+    fn the_menu_actions_have_names_and_labels() {
+        for a in [
+            CoreAction::CopyCodeBlock,
+            CoreAction::CyclePathStyle,
+            CoreAction::ToggleWrap,
+        ] {
+            assert_eq!(CoreAction::from_name(&a.name()), Some(a));
+            assert_ne!(menu_label(a), CoreMsg::Empty, "{a:?}");
+        }
+        assert_eq!(menu_label(CoreAction::Quit), CoreMsg::Empty);
+    }
+
+    #[test]
+    fn menu_edits_work_on_the_set_directly() {
+        let mut s = default_menus();
+        let kp = KeyPress::ch('x');
+        assert!(s
+            .edit(
+                MenuScope::Context(CoreContext::Text),
+                CoreMenu::Copy,
+                kp,
+                Some((CoreAction::Quit, CoreMsg::Empty))
+            )
+            .is_ok());
+        assert_eq!(
+            s.get(CoreContext::Text, CoreMenu::Copy).unwrap().find(kp),
+            Some(CoreAction::Quit)
+        );
+        assert_eq!(
+            s.get(CoreContext::Image, CoreMenu::Copy).unwrap().find(kp),
+            None
+        );
+        // No menu to change: the table menu has no copy in the text context's options.
+        assert!(s
+            .edit(
+                MenuScope::Context(CoreContext::Text),
+                CoreMenu::Actions,
+                kp,
+                None
+            )
+            .is_err());
     }
 }
