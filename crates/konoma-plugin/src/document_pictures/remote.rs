@@ -70,6 +70,12 @@ pub fn set_test_fetcher(f: Fetcher) {
     TEST_FETCHER.with(|c| c.set(Some(f)));
 }
 
+/// Forget the override of [`set_test_fetcher`] on this thread.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn clear_test_fetcher() {
+    TEST_FETCHER.with(|c| c.set(None));
+}
+
 /// The override [`set_test_fetcher`] set on this thread, if any.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn get_test_fetcher() -> Option<Fetcher> {

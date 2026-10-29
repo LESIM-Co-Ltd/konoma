@@ -1510,6 +1510,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_cell_with_no_background_stays_without_one_and_loses_its_underline_color() {
+        use ratatui::style::{Color, Modifier, Style};
+        let area = ratatui::layout::Rect::new(0, 0, 3, 2);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        // No background (the cell's own is `Reset`), a foreground, an underline in a color.
+        let styled = Style::default()
+            .fg(Color::Green)
+            .underline_color(Color::Magenta)
+            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+        for y in 0..2 {
+            for x in 0..3 {
+                buf[(x, y)].set_style(styled);
+            }
+        }
+        assert_eq!(buf[(1, 0)].bg, Color::Reset, "the premise: no background");
+        // A target hanging over the buffer's edge is clipped, not a panic.
+        reset_cells_under_picture(&mut buf, ratatui::layout::Rect::new(1, 0, 5, 1));
+        for x in 1..3 {
+            let c = &buf[(x, 0)];
+            assert_eq!(c.bg, Color::Reset, "no background is not invented ({x})");
+            assert_eq!(c.fg, Color::Reset, "foreground reset ({x})");
+            assert_eq!(
+                c.underline_color,
+                Color::Reset,
+                "underline color reset ({x})"
+            );
+            assert!(c.modifier.is_empty(), "attributes reset ({x})");
+        }
+        for (x, y) in [(0, 0), (0, 1), (1, 1), (2, 1)] {
+            let c = &buf[(x, y)];
+            assert_eq!(c.fg, Color::Green, "outside is untouched ({x},{y})");
+            assert_eq!(c.underline_color, Color::Magenta);
+            assert!(c.modifier.contains(Modifier::BOLD));
+        }
+    }
+
+    #[test]
+    fn a_cell_keeps_an_indexed_or_rgb_background_too() {
+        use ratatui::style::{Color, Style};
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 2, 1));
+        buf[(0, 0)].set_style(Style::default().bg(Color::Indexed(17)).fg(Color::Red));
+        buf[(1, 0)].set_style(Style::default().bg(Color::Rgb(1, 2, 3)).fg(Color::Red));
+        reset_cells_under_picture(&mut buf, ratatui::layout::Rect::new(0, 0, 2, 1));
+        assert_eq!(buf[(0, 0)].bg, Color::Indexed(17));
+        assert_eq!(buf[(1, 0)].bg, Color::Rgb(1, 2, 3));
+        assert_eq!(buf[(0, 0)].fg, Color::Reset);
+        assert_eq!(buf[(1, 0)].fg, Color::Reset);
+    }
+
     fn full(cols: u16) -> MdEncodeKey {
         MdEncodeKey::Full { cols, rows: 4 }
     }

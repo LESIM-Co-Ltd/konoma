@@ -493,6 +493,11 @@ fn host_pictures_held(
     let mut s = Sim::with_config_sized(root, cfg, w, h).with_media();
     s.select(file);
     s.enter();
+    // A converted document (Word) is made on a worker: its page is there before the pictures
+    // are asked for.
+    if s.app.is_document_loading() {
+        s.drain_media();
+    }
     s.draw();
     let before = cells_of(s.term.backend().buffer());
     if let Some(g) = fetch_gate {
@@ -824,6 +829,8 @@ fn a_remote_picture_is_fetched_and_drawn_as_in_the_host() {
         "{}",
         ab.rows.join("\n")
     );
+    konoma_plugin::document_pictures::clear_test_fetcher();
+    assert!(konoma_plugin::document_pictures::get_test_fetcher().is_none());
     same("remote: before the download", &hb, &ab);
     same("remote: settled", &ha, &aa);
     assert_eq!(picture_cells(&ab), 0);
@@ -1017,4 +1024,42 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
         "{}",
         rows_of(&with).join("\n")
     );
+}
+
+// The standalone app does not draw a document's own pictures (`Reopen::resources`, the
+// `office-img://` ones): `PictureLookup::other` is a no-op there, so the page keeps the alt
+// text. Run with `--run-ignored all` to see the difference; it passes once the app draws them.
+#[test]
+#[ignore = "the standalone app does not draw a reopened document's embedded pictures yet"]
+fn a_docx_with_a_picture_is_drawn_after_the_reopen_as_in_the_host() {
+    let dir = sandbox("reopen-docx-picture");
+    super::word::build_docx_with_picture(
+        &dir.join("d.docx"),
+        "Notes with a picture",
+        "stripes.png",
+        &stripes_png(),
+    );
+    let root = canon(&dir);
+    let (w, h) = (100u16, 40u16);
+    let (hb, ha) = host_pictures(&root, "d.docx", cfg_en(), w, h + 1);
+    let gate = Arc::new(Gate::new());
+    let (ab, aa, _) = app_pictures(
+        &root.join("d.docx"),
+        "",
+        office_docs(),
+        &gate,
+        (fetch_on, &FETCH_GATE_ON),
+        ha.clone(),
+        w,
+        h,
+    );
+    assert!(
+        ha.rows.iter().any(|r| r.contains("Notes with a picture")),
+        "{}",
+        ha.rows.join("\n")
+    );
+    same("docx picture: before the picture", &hb, &ab);
+    same("docx picture: settled", &ha, &aa);
+    assert_eq!(picture_cells(&ab), 0, "nothing is drawn yet");
+    assert!(picture_cells(&aa) > 50, "{}", picture_cells(&aa));
 }

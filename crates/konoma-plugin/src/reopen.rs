@@ -71,3 +71,119 @@ pub fn reopen_document(
     document.truncated |= truncated;
     Ok(Reopened { session, document })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::Origin;
+    use crate::view::DocOptions;
+    use crate::{Manifest, Settings};
+
+    /// Takes markdown content; its document is `truncated` as given.
+    struct Target {
+        document_truncated: bool,
+    }
+
+    struct TargetSession {
+        text: String,
+        truncated: bool,
+    }
+
+    impl Plugin for Target {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("target", "0.0.1")
+        }
+        fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            let Input::Content { text, .. } = input else {
+                return Err(Failure::unsupported(t!(en: "content only")));
+            };
+            Ok(Box::new(TargetSession {
+                text,
+                truncated: self.document_truncated,
+            }))
+        }
+    }
+
+    impl Session for TargetSession {
+        fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+            Ok(View::Document(DocumentView {
+                markdown: self.text.clone(),
+                origin: Origin::File(std::path::PathBuf::from("x.md")),
+                resources: Default::default(),
+                options: DocOptions::default(),
+                title: None,
+                truncated: self.truncated,
+            }))
+        }
+    }
+
+    fn reopen(content_type: &str, truncated: bool) -> Reopen {
+        Reopen {
+            content_type: content_type.into(),
+            text: "text\n".into(),
+            resources: Default::default(),
+            origin: Origin::Converted {
+                from: std::path::PathBuf::from("a.conv"),
+            },
+            truncated,
+        }
+    }
+
+    fn run(
+        document_truncated: bool,
+        content_type: &str,
+        truncated: bool,
+    ) -> Result<Reopened, Failure> {
+        let target = ContentTarget {
+            plugin: Arc::new(Target { document_truncated }),
+            settings: Settings::empty().clone(),
+        };
+        reopen_document(
+            Some(&target),
+            "markdown",
+            reopen(content_type, truncated),
+            "en",
+            &Cancel::never(),
+            TermCaps::new(),
+        )
+    }
+
+    #[test]
+    fn a_conversion_cut_short_stays_cut_short() {
+        let r = run(false, "markdown", true).expect("opens");
+        assert!(r.document.truncated, "the Reopen's own flag is kept");
+        assert_eq!(r.document.markdown, "text\n");
+    }
+
+    #[test]
+    fn a_whole_conversion_is_not_marked_cut() {
+        let r = run(false, "markdown", false).expect("opens");
+        assert!(!r.document.truncated);
+    }
+
+    #[test]
+    fn a_document_the_target_itself_cut_stays_cut_whatever_the_reopen_says() {
+        assert!(
+            run(true, "markdown", false)
+                .ok()
+                .unwrap()
+                .document
+                .truncated
+        );
+        assert!(run(true, "markdown", true).unwrap().document.truncated);
+    }
+
+    #[test]
+    fn another_content_type_or_no_target_is_no_plugin_available() {
+        assert!(run(false, "html", false).is_err());
+        let none = reopen_document(
+            None,
+            "markdown",
+            reopen("markdown", false),
+            "en",
+            &Cancel::never(),
+            TermCaps::new(),
+        );
+        assert!(none.is_err());
+    }
+}

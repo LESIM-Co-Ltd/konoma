@@ -1133,3 +1133,157 @@ fn a_gif_is_not_woken_for_while_the_help_covers_the_canvas() {
         "{after:?}"
     );
 }
+
+// ---- a document that is reopened as another ----
+
+/// Shows a document with one local picture the first time, then answers a `Reopen` as a
+/// document of text only.
+struct DocConv {
+    md: String,
+}
+
+impl Plugin for DocConv {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("doc-conv", "0.0.1")
+            .bind(Bind::files(["*.pic"]))
+            .shows(ViewKind::Document)
+    }
+    fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(DocConvSession {
+            md: self.md.clone(),
+            asked: 0,
+        }))
+    }
+}
+
+struct DocConvSession {
+    md: String,
+    asked: usize,
+}
+
+fn text_doc(markdown: String) -> konoma_plugin::view::DocumentView {
+    konoma_plugin::view::DocumentView {
+        markdown,
+        origin: konoma_plugin::input::Origin::File(PathBuf::from("x.md")),
+        resources: Default::default(),
+        options: Default::default(),
+        title: None,
+        truncated: false,
+    }
+}
+
+impl Session for DocConvSession {
+    fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        self.asked += 1;
+        if self.asked == 1 {
+            return Ok(View::Document(text_doc(self.md.clone())));
+        }
+        Ok(View::Reopen(konoma_plugin::view::Reopen {
+            content_type: "markdown".into(),
+            text: "reopened text\n".into(),
+            resources: Default::default(),
+            origin: konoma_plugin::input::Origin::Converted {
+                from: PathBuf::from("a.pic"),
+            },
+            truncated: false,
+        }))
+    }
+}
+
+struct TextTarget;
+
+impl Plugin for TextTarget {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("text-target", "0.0.1")
+            .bind(Bind::content("markdown"))
+            .shows(ViewKind::Document)
+    }
+    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::Content { text, .. } = input else {
+            return Err(Failure::unsupported(t!(en: "content only")));
+        };
+        struct S(String);
+        impl Session for S {
+            fn view(&mut self, _r: &ViewReq, _c: &ViewCx) -> Result<View, Failure> {
+                Ok(View::Document(text_doc(self.0.clone())))
+            }
+        }
+        Ok(Box::new(S(text)))
+    }
+}
+
+#[test]
+fn a_reopen_deletes_the_kitty_images_the_old_document_had_placed() {
+    let _turn = KITTY.lock().unwrap_or_else(|e| e.into_inner());
+    let (dir, path) = pic_file();
+    let mut img = image::RgbaImage::new(64, 64);
+    for p in img.pixels_mut() {
+        *p = image::Rgba([0, 255, 0, 255]);
+    }
+    let png = dir.as_path().join("g.png");
+    img.save(&png).unwrap();
+    let plugin = DocConv {
+        md: format!("![g]({})\n\ntext\n", png.display()),
+    };
+    let mut opened =
+        open_file(vec![Arc::new(plugin)], &path, "en", TermCaps::new()).expect("opens");
+    let screen = Arc::new(Mutex::new(TestBackend::new(40, 12)));
+    let mut term = Terminal::new(Probe {
+        inner: Arc::clone(&screen),
+        shared: Arc::default(),
+        cell: (0, 0),
+    })
+    .unwrap();
+    let sink = Sink::default();
+    let into = sink.clone();
+    let seen = sink.clone();
+    let any_placeholder = |b: &Buffer| b.content().iter().any(|c| c.symbol().contains(PLACEHOLDER));
+    let mut events = Driver {
+        screen: Arc::clone(&screen),
+        steps: vec![
+            step(any_placeholder, Some(AppEvent::Resize)),
+            // The delete must come from the frames after the reopen, while the app runs (the
+            // exit also deletes what is placed, and would hide a missing one).
+            step(
+                move |b| {
+                    seen.text().contains("a=d")
+                        && b.content()
+                            .iter()
+                            .all(|c| !c.symbol().contains(PLACEHOLDER))
+                        && (0..b.area.height).any(|y| {
+                            (0..b.area.width)
+                                .map(|x| b[(x, y)].symbol().to_string())
+                                .collect::<String>()
+                                .contains("reopened text")
+                        })
+                },
+                None,
+            ),
+        ]
+        .into(),
+        started: Instant::now(),
+        waits: Waits::default(),
+    };
+    let target: Arc<dyn Plugin> = Arc::new(TextTarget);
+    let cx = AppCx {
+        reopen: Some(konoma_plugin::app::ReopenSource::new(move |_| {
+            Some(konoma_plugin::reopen::ContentTarget {
+                plugin: Arc::clone(&target),
+                settings: Settings::empty().clone(),
+            })
+        })),
+        ..cx()
+    };
+    let pictures = Pictures::new(kitty_picker(), "pic-test", &opened.path, 800)
+        .with_out(Box::new(into))
+        .with_documents(konoma_plugin::app::DocEnv::default());
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut events,
+        &cx,
+        &AppKeys::defaults(),
+        Some(pictures),
+    )
+    .expect("runs");
+}

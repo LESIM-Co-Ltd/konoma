@@ -570,6 +570,11 @@ mod tests {
         d.cache
             .cache
             .insert(PathBuf::from("/x/p.png"), Default::default());
+        d.cache.kitty_ids.insert(
+            PathBuf::from("/x/p.png"),
+            [vec![11, 12], Vec::new(), vec![13]],
+        );
+        d.cache.kitty_deletes = vec![7];
         let (epoch, _) = (d.epoch, d.relayout = false);
 
         d.reset();
@@ -596,6 +601,12 @@ mod tests {
         assert!(d.remote_inflight.is_empty());
         assert!(d.remote_failed.is_empty());
         assert!(d.cache.cache.is_empty());
+        // The kitty images the old pictures pinned are deleted from the terminal (the ones
+        // already due stay due) and their ids are not kept for the new document.
+        let mut due = d.cache.kitty_deletes.clone();
+        due.sort_unstable();
+        assert_eq!(due, vec![7, 11, 12, 13]);
+        assert!(d.cache.kitty_ids.is_empty());
         assert!(d.relayout, "the page is laid out again");
         assert_eq!(d.epoch, epoch + 1, "a cached layout is built again");
     }
