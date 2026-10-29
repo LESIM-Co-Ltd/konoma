@@ -236,10 +236,40 @@ pub(crate) struct ShowFlow {
     /// taken out of reach, and the `Open` in flight brings the new one. What the user presses
     /// meanwhile (`R`, a declared action) waits for it instead of being ignored.
     pub reopening: bool,
+    /// The plugin a `Reopen` handed the file to (its manifest id), while its session is the
+    /// one the show holds. `None`: the session is the show's own plugin's. **Whose declared
+    /// actions are offered and run is the session's plugin's** ([`PluginShow::acting`]): the
+    /// keys, the footer, the help, the `Space` menu, `[keys.<id>]` and `read_only` all follow it.
+    pub reopened_as: Option<String>,
     /// Declared actions pressed while a job held the session of a canvas, in the order pressed;
     /// each runs, one job at a time, when the session returns. Never dropped, never reordered --
     /// and never reordered against the queued keys either ([`QueuedAct::after_keys`]).
     pub acts: Vec<QueuedAct>,
+}
+
+impl PluginShow {
+    /// The id of the plugin whose session the show holds: the destination after a `Reopen`, else
+    /// the show's own. The declared actions are looked up by this id, never by [`PluginShow::id`]
+    /// (which names the plugin the file was given to and the jobs and answers of the show).
+    pub(crate) fn acting(&self) -> &str {
+        self.flow.reopened_as.as_deref().unwrap_or(&self.id)
+    }
+
+    /// A new session arrives that belongs to `owner` (the plugin a `Reopen` handed the file to;
+    /// `None`: the show's own plugin). What waited for it goes to it only if its plugin declared
+    /// the action: the press was made for the keys of the plugin that was on screen, and a
+    /// session is never sent an action it does not know.
+    pub(crate) fn take_session_of(
+        &mut self,
+        owner: Option<String>,
+        keys: &crate::plugins::PluginKeys,
+    ) {
+        self.flow.reopened_as = owner;
+        let declared = keys.acts_of(self.acting());
+        self.flow
+            .acts
+            .retain(|q| declared.iter().any(|b| b.act.act() == q.action));
+    }
 }
 
 /// A declared action waiting for the session, with its place among the queued keys (shared).
@@ -574,6 +604,8 @@ pub struct PluginResult {
     pub(super) enabled: Vec<(String, bool)>,
     /// The text of a text view, written to a temp file on the worker (`write_made_text`).
     pub(super) made_text: Option<std::io::Result<MadeText>>,
+    /// The plugin a `Reopen` in this job handed the file to (the session returned is its).
+    pub(super) reopened_as: Option<String>,
     /// The keys of a canvas asked for a redraw **and** said something (`outcome` is then the
     /// message): the message is the outcome, the redraw is carried here, so that a result that is
     /// stale and drops its view still has the view drawn again.
@@ -625,6 +657,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            reopened_as: None,
             redraw: false,
         }
     }
@@ -656,6 +689,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            reopened_as: None,
             redraw: false,
         }
     }
@@ -769,7 +803,7 @@ impl PluginWork {
             canvas_known,
             read_scope,
         } = self;
-        let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
+        let enabled_of = |session: &dyn Session, act_ids: &[String]| -> Vec<(String, bool)> {
             act_ids
                 .iter()
                 .map(|id| (id.clone(), session.enabled(id)))
@@ -790,6 +824,10 @@ impl PluginWork {
             let mut picture = Picture::None;
             let mut document = None;
             let mut made_text = None;
+            // After a `Reopen` the session is the destination's: what works is asked of it for the
+            // actions it declared, not the ones of the plugin the file was given to.
+            let mut reopened_as = None;
+            let mut session_acts: Option<Vec<String>> = None;
             let viewed = session
                 .view(&req, &cx)
                 .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, &req, v));
@@ -816,6 +854,11 @@ impl PluginWork {
                     let target = document_job.as_ref().and_then(|j| j.reopen.as_ref());
                     match reopen_document(target, r, &lang, &cancel, term) {
                         Ok((opened, doc)) => {
+                            let m = target.map(|t| t.plugin.manifest());
+                            session_acts = m
+                                .as_ref()
+                                .map(|m| m.actions.iter().map(|a| a.id.clone()).collect());
+                            reopened_as = m.map(|m| m.id);
                             session = opened;
                             document = Some(doc);
                             (None, None)
@@ -868,7 +911,10 @@ impl PluginWork {
             };
             // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
             let layout = session.layout();
-            let enabled = enabled_of(session.as_ref());
+            let enabled = enabled_of(
+                session.as_ref(),
+                session_acts.as_deref().unwrap_or(&act_ids),
+            );
             PluginResult {
                 gen,
                 id: id.clone(),
@@ -884,6 +930,7 @@ impl PluginWork {
                 group: None,
                 enabled,
                 made_text,
+                reopened_as,
                 redraw: false,
             }
         };
@@ -922,7 +969,7 @@ impl PluginWork {
                 };
                 // Asked **after** the action: it may have changed what works (`w` toggles, a
                 // reload makes a key valid).
-                let enabled = enabled_of(session.as_ref());
+                let enabled = enabled_of(session.as_ref(), &act_ids);
                 PluginResult {
                     gen,
                     id,
@@ -938,6 +985,7 @@ impl PluginWork {
                     group: None,
                     enabled,
                     made_text: None,
+                    reopened_as: None,
                     redraw: false,
                 }
             }
@@ -977,7 +1025,7 @@ impl PluginWork {
                 } else {
                     flash.map_or(Outcome::Unhandled, Outcome::Flash)
                 };
-                let enabled = enabled_of(session.as_ref());
+                let enabled = enabled_of(session.as_ref(), &act_ids);
                 PluginResult {
                     gen,
                     id,
@@ -993,6 +1041,7 @@ impl PluginWork {
                     group: None,
                     enabled,
                     made_text: None,
+                    reopened_as: None,
                     redraw: false,
                 }
             }
@@ -1358,6 +1407,25 @@ impl App {
         self.plugin_colors = colors;
     }
 
+    /// Test-only: hand the show a new session of `owner` (the plugin a `Reopen` handed the file
+    /// to) while `waiting` actions wait for it; returns the ones that were kept, and the id of the
+    /// plugin whose actions the show then offers.
+    #[cfg(test)]
+    pub(crate) fn hand_session_over_for_test(
+        &mut self,
+        waiting: &[&str],
+        owner: Option<String>,
+    ) -> (String, Vec<String>, String) {
+        let show = self.plugin.as_mut().expect("a plugin show");
+        show.flow.acts = waiting.iter().copied().map(QueuedAct::now).collect();
+        show.take_session_of(owner, &self.plugin_keys);
+        (
+            show.id.clone(),
+            show.flow.acts.iter().map(|q| q.action.clone()).collect(),
+            show.acting().to_string(),
+        )
+    }
+
     /// The size of one terminal cell in pixels, for the plugins that draw pictures; `None` when
     /// the terminal draws no pixels (no image backend, or half blocks).
     fn plugin_cell_px(&self) -> Option<(u16, u16)> {
@@ -1468,7 +1536,19 @@ impl App {
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
         let manifest = registry.manifest(&id);
         let group = manifest.and_then(|m| m.work_group.clone());
-        let act_ids = manifest
+        // What works is asked of the session for the actions of **its** plugin: after a `Reopen`
+        // that is the destination's, for every job but an `Open` (which brings a session of the
+        // plugin the file was given to, and may reopen it again).
+        let acting = match (&job, self.plugin.as_ref()) {
+            (PluginJob::Open { .. }, _) => None,
+            (_, Some(p)) if p.id == id => Some(p.acting().to_string()),
+            _ => None,
+        };
+        let act_manifest = match &acting {
+            Some(a) => registry.manifest(a),
+            None => manifest,
+        };
+        let act_ids = act_manifest
             .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
             .unwrap_or_default();
         // Standard plugins read freely (no scope IO). A user plugin's scope is memoised on the
@@ -2227,7 +2307,12 @@ impl App {
         // freed off the UI thread.
         let session_back = res.session.is_some();
         // The `Open` of a read again has answered (a session, or a failure): nothing waits for it.
-        show.flow.reopening = false;
+        let was_reopening = std::mem::replace(&mut show.flow.reopening, false);
+        // Whose session this is: the destination of a `Reopen` the job made, else (when the job
+        // was an `Open`) the plugin's own again. An action's or a key's result keeps what was.
+        if res.reopened_as.is_some() || was_reopening {
+            show.take_session_of(res.reopened_as.clone(), &self.plugin_keys);
+        }
         if let Some(old) = std::mem::replace(&mut show.session, res.session) {
             super::table_actions::discard_in_background(old);
         }

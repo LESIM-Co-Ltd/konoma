@@ -33,7 +33,7 @@ use std::sync::Arc;
 use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
-use crate::{Input, Settings};
+use crate::{Input, Manifest, Settings};
 
 pub use acts::AppActs;
 pub use display::Display;
@@ -49,9 +49,16 @@ pub use term::{install_panic_hook_with, key_from_crossterm};
 /// the settings it is opened with. **The one place the app looks a content type up**: it is built
 /// from the registry of the program ([`ReopenSource::from_registry`]).
 #[derive(Clone)]
-pub struct ReopenSource(Arc<ContentLookup>, Option<Arc<FileOpener>>);
+pub struct ReopenSource(
+    Arc<ContentLookup>,
+    Option<Arc<FileOpener>>,
+    Option<Arc<ActsLookup>>,
+);
 
 type ContentLookup = dyn Fn(&str) -> Option<ContentTarget>;
+
+/// The declared actions of a destination plugin, given its manifest.
+type ActsLookup = dyn Fn(&Manifest) -> AppActs;
 
 /// Opens the file the program shows with its plugin again (what an `Outcome::Reload` asks for),
 /// given the language and the terminal.
@@ -60,7 +67,7 @@ type FileOpener = dyn Fn(&str, TermCaps) -> Result<Box<dyn Session>, Failure>;
 impl ReopenSource {
     /// A source from any lookup.
     pub fn new(lookup: impl Fn(&str) -> Option<ContentTarget> + 'static) -> ReopenSource {
-        ReopenSource(Arc::new(lookup), None)
+        ReopenSource(Arc::new(lookup), None, None)
     }
 
     /// This source, which also reopens the file shown: `plugin` is opened on `input` with
@@ -71,6 +78,19 @@ impl ReopenSource {
             plugin.open(input.clone(), &OpenCx::new(&settings, lang).with_term(term))
         }));
         self
+    }
+
+    /// This source, which also says the declared actions (with the user's keys) of a destination
+    /// plugin: after a `Reopen` they are the ones the keys, the footer and the help use.
+    pub fn with_acts(mut self, acts_of: impl Fn(&Manifest) -> AppActs + 'static) -> Self {
+        self.2 = Some(Arc::new(acts_of));
+        self
+    }
+
+    /// The declared actions of the destination plugin `manifest`; none when the source was not
+    /// given [`ReopenSource::with_acts`].
+    pub fn acts_for(&self, manifest: &Manifest) -> AppActs {
+        self.2.as_ref().map(|f| f(manifest)).unwrap_or_default()
     }
 
     /// Open the file again with its plugin. `None`: this source does not know the file (the
@@ -455,6 +475,10 @@ pub fn prepare_bundled(
                     Arc::clone(&opened.registry),
                     Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
                 );
+                // The destination of a `Reopen` brings its own declared actions and `[keys.<id>]`.
+                let (acts_keys, acts_tables) = (user_keys.clone(), plugin_tables.clone());
+                let source = source
+                    .with_acts(move |m| AppActs::from_config(&m.id, m, &acts_keys, &acts_tables).0);
                 match opened.registry.plugin(&opened.plugin_id) {
                     Some(plugin) => source.with_file(
                         plugin,

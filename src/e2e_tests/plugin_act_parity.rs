@@ -54,7 +54,7 @@ struct Opt {
     /// on a canvas that types, the key `!` does the same.
     reload: bool,
     /// The plugin answers its view with a `Reopen` into a second plugin (`ActyTarget`) that takes
-    /// the Markdown and declares an action of its own (`tbump` on `T`).
+    /// the Markdown and declares an action of its own (`tbump` on `B`).
     reopen: bool,
 }
 
@@ -295,7 +295,7 @@ impl Session for ActySession {
 }
 
 /// The plugin a `Reopen` leads to: it takes Markdown, shows it as a document, and declares
-/// `tbump` (on `T`). It also answers the first plugin's `bump`, to tell where an action went.
+/// `tbump` (on `B`). It also answers the first plugin's `bump`, to tell where an action went.
 struct ActyTarget {
     id: String,
     log: Log,
@@ -308,10 +308,18 @@ impl Plugin for ActyTarget {
             .shows(ViewKind::Document)
             .action(
                 Act::new("tbump")
-                    .key("T")
+                    .key("B")
                     .label(t!(en: "tbump", ja: "対象加算"))
                     .help(t!(en: "Add one in the target", ja: "対象で 1 増やす"))
                     .footer(1),
+            )
+            .action(
+                Act::new("tsave")
+                    .key("Z")
+                    .label(t!(en: "tsave", ja: "対象保存"))
+                    .help(t!(en: "Write in the target", ja: "対象に書き出す"))
+                    .footer(2)
+                    .writes(),
             )
     }
     fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -347,6 +355,7 @@ impl Session for TargetSession {
         self.log.lock().unwrap().push(format!("tact:{action}"));
         match action {
             "tbump" => self.n += 10,
+            "tsave" => self.n += 100,
             "bump" => self.n += 1,
             _ => return Ok(Outcome::Unhandled),
         }
@@ -418,7 +427,12 @@ fn file_of(rows: &[String]) -> Option<String> {
     })
 }
 
-fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
+/// The host with the file open, before any step.
+fn host_sim(root: &std::path::Path, o: &Opt) -> (Sim, Log, Arc<AtomicUsize>) {
+    host_sim_sized(root, o, HOST_H)
+}
+
+fn host_sim_sized(root: &std::path::Path, o: &Opt, h: u16) -> (Sim, Log, Arc<AtomicUsize>) {
     let id = new_id();
     let log = Log::default();
     let opens = Arc::new(AtomicUsize::new(0));
@@ -450,6 +464,11 @@ fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     let mut s = Sim::with_config_sized(root, cfg, W, h);
     open_nested(&mut s, "a.pnt");
     s.draw();
+    (s, log, opens)
+}
+
+fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
+    let (mut s, log, opens) = host_sim_sized(root, o, h);
     for st in steps {
         match st {
             K(k) => {
@@ -1261,41 +1280,183 @@ fn host_with_notes(root: &std::path::Path, o: &Opt) -> Run {
     }
 }
 
-/// After a `Reopen` into another plugin. Shared: both show the destination's view, and the
-/// destination's own declared key (`T`) does nothing on either side. NOT shared (a known
-/// difference, pinned so a change on either side is noticed): the host keeps the original
-/// plugin's declared keys and sends them to the destination session, while the app drops the
-/// declared keys once the view has been reopened as another plugin.
+/// After a `Reopen` into another plugin the session is the destination's, so its declared
+/// actions are the ones offered and run, on both sides: `B` (`tbump`) acts and reaches the
+/// destination, the footer and the help name the destination's action and not the original's, and
+/// the original plugin's keys (`x`, `w`, `u`) do nothing -- the destination is never sent an action
+/// it did not declare.
 #[test]
-fn after_a_reopen_the_destination_is_shown_and_the_host_alone_keeps_the_original_keys() {
+fn after_a_reopen_the_destinations_declared_actions_act_and_the_original_keys_do_not() {
     let (_dir, root) = fixture();
     let mut compared = 0;
     for lang in ["en", "ja"] {
-        for (steps, host_log) in [
-            (vec![], vec![]),
-            (vec![K("T")], vec![]),
-            (vec![K("x")], vec!["tact:bump"]),
-            (vec![K("x"), K("T"), K("x")], vec!["tact:bump"]),
-            (vec![K("w"), K("u")], vec!["tact:save", "tact:gated"]),
+        let (tag, help_text, original_help) = if lang == "ja" {
+            ("B:対象加算", "対象で 1 増やす", "カウンタを 1")
+        } else {
+            ("B:tbump", "Add one in the target", "Add one to the counter")
+        };
+        for (steps, want_log, want_n) in [
+            (vec![], vec![], "n=0"),
+            (vec![K("B")], vec!["tact:tbump"], "n=10"),
+            (vec![K("B"), K("B")], vec!["tact:tbump"; 2], "n=20"),
+            (vec![K("x")], vec![], "n=0"),
+            (vec![K("x"), K("B"), K("x")], vec!["tact:tbump"], "n=10"),
+            (vec![K("w"), K("u")], vec![], "n=0"),
         ] {
             let o = Opt::new(Kind::Document).lang(lang).reopen();
             let hr = host(&root, &o, HOST_H, &steps);
             let ar = app(&root, &o, APP_H, &steps, true);
             assert!(!hr.left && !ar.left, "{lang} {steps:?}: left");
-            assert_eq!(
-                file_of(&hr.rows).as_deref(),
-                Some("tgt"),
-                "host shows the target"
-            );
-            assert_eq!(
-                file_of(&ar.rows).as_deref(),
-                Some("tgt"),
-                "app shows the target"
-            );
-            assert_eq!(hr.log, host_log, "{lang} {steps:?} host log");
-            assert!(ar.log.is_empty(), "{lang} {steps:?} app log {:?}", ar.log);
+            for (side, r) in [("host", &hr), ("app", &ar)] {
+                assert_eq!(file_of(&r.rows).as_deref(), Some("tgt"), "{side} target");
+                assert_eq!(r.log, want_log, "{lang} {steps:?} {side} log");
+                assert_eq!(
+                    counter(&r.rows).as_deref(),
+                    Some(format!("{want_n} l=0 t=[]").as_str()),
+                    "{lang} {steps:?} {side}"
+                );
+                // The footer names the destination's action only.
+                let foot = footer_of(&r.rows);
+                assert!(
+                    foot.iter().any(|t| t == tag),
+                    "{side} {lang} footer: {foot:?}"
+                );
+                for gone in labels(lang, true) {
+                    assert!(
+                        !foot.contains(&gone),
+                        "{side} {lang} footer has {gone}: {foot:?}"
+                    );
+                }
+            }
             compared += 1;
         }
+        // The help: the destination's key and text, not the original's.
+        let hr = host(
+            &root,
+            &Opt::new(Kind::Document).lang(lang).reopen(),
+            130,
+            &[K("?")],
+        );
+        let ar = app(
+            &root,
+            &Opt::new(Kind::Document).lang(lang).reopen(),
+            129,
+            &[K("?")],
+            true,
+        );
+        for (side, r) in [("host", &hr), ("app", &ar)] {
+            let lines = panel_lines(&r.rows);
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("B ") && l.contains(help_text)),
+                "{side} {lang}: {lines:#?}"
+            );
+            assert!(
+                !lines.iter().any(|l| l.contains(original_help)),
+                "{side} {lang}: {lines:#?}"
+            );
+        }
+        compared += 1;
     }
-    assert_eq!(compared, 10);
+    assert_eq!(compared, 14);
+}
+
+/// The tests below look at the host alone: what the session of a `Reopen` brings with it besides
+/// the keys, the footer and the help both sides share.
+fn host_after_reopen(root: &std::path::Path, toml: &str, steps: &[Step]) -> Run {
+    let o = Opt::new(Kind::Document).reopen().toml(toml);
+    host(root, &o, HOST_H, steps)
+}
+
+#[test]
+fn after_a_reopen_the_space_menu_lists_the_destinations_actions_only() {
+    let (_dir, root) = fixture();
+    let mut compared = 0;
+    for (lang, mine, theirs) in [
+        ("en", ["tbump", "tsave"], ["gated", "save"]),
+        ("ja", ["対象加算", "対象保存"], ["条件付き", "保存"]),
+    ] {
+        let o = Opt::new(Kind::Document).lang(lang).reopen();
+        let r = host(&root, &o, 40, &[K("<Sp>")]);
+        let text = r.rows.join("\n");
+        for m in mine {
+            assert!(text.contains(m), "{lang}: the menu has {m}\n{text}");
+        }
+        for t in theirs {
+            // `save` is inside `tsave`: look for the menu row of the original (`w` + label).
+            let row = |r: &&String| r.contains(t) && !r.contains("対象") && !r.contains("tsave");
+            assert!(
+                !r.rows.iter().any(|x| row(&x)),
+                "{lang}: the menu has {t}\n{text}"
+            );
+        }
+        compared += 1;
+    }
+    assert_eq!(compared, 2);
+}
+
+#[test]
+fn after_a_reopen_the_users_keys_of_the_destination_apply_and_the_originals_do_not() {
+    let (_dir, root) = fixture();
+    // `[keys.<destination>]` rebinds its action; the original's table does not reach it.
+    let r = host_after_reopen(
+        &root,
+        "[keys.\"{id}-t\"]\nu = \"tbump\"\n[keys.\"{id}\"]\nb = \"bump\"\n",
+        &[K("u"), K("b"), K("B")],
+    );
+    assert_eq!(r.log, ["tact:tbump"], "{:?}", r.rows);
+    assert_eq!(counter(&r.rows).as_deref(), Some("n=10 l=0 t=[]"));
+    let foot = footer_of(&r.rows);
+    assert!(
+        foot.iter().any(|t| t == "u:tbump"),
+        "the footer names the user's key: {foot:?}"
+    );
+}
+
+#[test]
+fn after_a_reopen_read_only_is_the_destinations_setting() {
+    let (_dir, root) = fixture();
+    // The destination is read only: its writing action is refused, the other acts.
+    let r = host_after_reopen(
+        &root,
+        "[plugins.\"{id}-t\"]\nread_only = true\n",
+        &[K("Z"), K("B")],
+    );
+    assert_eq!(r.log, ["tact:tbump"], "{:?}", r.rows);
+    // Only the original is read only: the destination's writing action acts.
+    let r = host_after_reopen(
+        &root,
+        "[plugins.\"{id}\"]\nread_only = true\n",
+        &[K("Z"), K("B")],
+    );
+    assert_eq!(r.log, ["tact:tsave", "tact:tbump"], "{:?}", r.rows);
+}
+
+/// What waited for the new session of a file read again goes to it only if the plugin whose
+/// session it is declared the action: an action pressed for the keys of the plugin that was on
+/// screen is never sent to a session that does not know it.
+#[test]
+fn queued_actions_go_only_to_a_session_that_declared_them() {
+    let (_dir, root) = fixture();
+    let o = Opt::new(Kind::Document).reopen();
+    let waiting = ["bump", "tbump", "save", "nope", "tsave"];
+    let mut compared = 0;
+    for (reopened, want) in [
+        (true, vec!["tbump", "tsave"]),
+        (false, vec!["bump", "save"]),
+    ] {
+        let mut s = host_sim(&root, &o).0;
+        let own = {
+            // The id the Sim registered is the show's own plugin.
+            let (id, _, _) = s.app.hand_session_over_for_test(&[], None);
+            id
+        };
+        let owner = reopened.then(|| format!("{own}-t"));
+        let (_, kept, acting) = s.app.hand_session_over_for_test(&waiting, owner.clone());
+        assert_eq!(kept, want, "reopened={reopened}");
+        assert_eq!(acting, owner.unwrap_or(own), "reopened={reopened}");
+        compared += 1;
+    }
+    assert_eq!(compared, 2);
 }

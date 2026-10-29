@@ -1190,6 +1190,9 @@ struct ReopenedAs {
     shows: Vec<ViewKind>,
     unavailable: crate::manifest::Unavailable,
     plugin_id: String,
+    /// The actions the destination declared, with the user's `[keys.<id>]` of it: from a
+    /// `Reopen` on, the keys, the footer and the help are its, as the session is.
+    acts: super::AppActs,
 }
 
 impl State {
@@ -1203,6 +1206,12 @@ impl State {
         self.reopened_as
             .as_ref()
             .map_or(&cx.unavailable, |r| &r.unavailable)
+    }
+
+    /// The declared actions of the plugin showing the file now (the destination's after a
+    /// `Reopen`: the session that answers an action is the destination's).
+    fn acts<'a>(&'a self, cx: &'a AppCx) -> &'a super::AppActs {
+        self.reopened_as.as_ref().map_or(&cx.acts, |r| &r.acts)
     }
 
     /// The id of the plugin showing the file now.
@@ -1440,6 +1449,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             reopened_as: target.as_ref().map(|t| {
                                 let m = t.plugin.manifest();
                                 ReopenedAs {
+                                    acts: cx
+                                        .reopen
+                                        .as_ref()
+                                        .map(|r| r.acts_for(&m))
+                                        .unwrap_or_default(),
                                     shows: m.shows,
                                     unavailable: m.unavailable,
                                     plugin_id: m.id,
@@ -1595,8 +1609,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // A plugin's canvas has its own keys (the host's `CoreContext::Canvas`).
         let canvas_keys = matches!(base, Frame::Canvas(_));
         // The key context of the plugin's layer for the screen (konoma's `plugin_acts_in(ctx)`):
-        // one answer for the key, the footer and the help. A document the plugin handed over to
-        // another (`Reopen`) is not the declared plugin's any more: no action of it acts.
+        // one answer for the key, the footer and the help. After a `Reopen` the plugin is the
+        // destination, and its actions are the ones that act.
         let act_ctx = if mode.is_some() {
             "table"
         } else if image_mode.is_some() && !failed_text_screen {
@@ -1608,11 +1622,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else {
             "text"
         };
-        let en: Vec<String> = if st.reopened_as.is_none() {
-            enabled_ids(&*sess!(), &cx.acts)
-        } else {
-            Vec::new()
-        };
+        // The actions of the plugin whose session this is (the destination's after a `Reopen`).
+        let acts = st.acts(cx).clone();
+        let en: Vec<String> = enabled_ids(&*sess!(), &acts);
         let act_on = |a: &str| en.iter().any(|e| e == a);
         let capturing = typing::is_capturing(
             st.input_left,
@@ -1639,7 +1651,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 };
                 // The plugin's own keys: one section under its name, right after the screen's
                 // own (the host's order).
-                if let Some(own) = cx.acts.help_section(act_ctx, &cx.lang, act_on) {
+                if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
                     secs.insert(keys.plugin_section_at(act_ctx, &secs), own);
                 }
                 let lines = lines_of(&secs);
@@ -1682,12 +1694,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         let tokens = if m.popup {
                             keys.table_footer_tokens(m)
                         } else {
-                            cx.acts.with_footer(
-                                act_ctx,
-                                &cx.lang,
-                                act_on,
-                                keys.table_footer_tokens(m),
-                            )
+                            acts.with_footer(act_ctx, &cx.lang, act_on, keys.table_footer_tokens(m))
                         };
                         draw::footer_row(&tokens, "", "", width)
                     }
@@ -1720,7 +1727,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
                         draw::footer_row(
-                            &cx.acts.with_footer(
+                            &acts.with_footer(
                                 act_ctx,
                                 &cx.lang,
                                 act_on,
@@ -1732,7 +1739,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &cx.acts.with_footer(
+                        &acts.with_footer(
                             act_ctx,
                             &cx.lang,
                             act_on,
@@ -1903,17 +1910,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // The plugin's layer (konoma asks it before the shared keys; on a canvas the fixed
                 // keys too, elsewhere the fixed keys are the host's): a key it declares for the
                 // screen on view. Not in the help, not in the cell popup.
-                let declared = if st.help.is_none()
-                    && !popup_open
-                    && st.reopened_as.is_none()
-                    && (canvas_keys || !is_fixed_key(&key))
-                {
-                    key_press(&key)
-                        .and_then(|kp| cx.acts.for_key(act_ctx, kp))
-                        .cloned()
-                } else {
-                    None
-                };
+                let declared =
+                    if st.help.is_none() && !popup_open && (canvas_keys || !is_fixed_key(&key)) {
+                        key_press(&key)
+                            .and_then(|kp| acts.for_key(act_ctx, kp))
+                            .cloned()
+                    } else {
+                        None
+                    };
                 let act = match (table_keys, image_mode) {
                     _ if declared.is_some() => None,
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
@@ -1961,7 +1965,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // that does not work does nothing (and is not offered).
                 if let Some(b) = declared {
                     let enabled = sess!().enabled(&b.act);
-                    match hacts::gate(Some(&b), enabled, cx.acts.read_only) {
+                    match hacts::gate(Some(&b), enabled, acts.read_only) {
                         hacts::ActGate::Off => {}
                         hacts::ActGate::ReadOnly => {
                             st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());

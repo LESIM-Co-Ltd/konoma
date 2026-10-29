@@ -16,7 +16,8 @@ use crate::plugins::{ActBinding, PluginAct};
 use konoma_plugin::host::acts;
 
 impl App {
-    /// The id of the plugin whose file is on screen, if its show is the current one.
+    /// The id of the plugin whose session the show holds (the destination after a `Reopen`), if the
+    /// show is the current one: its declared actions are the ones offered and run.
     fn acting_plugin(&self) -> Option<&str> {
         let Some(PreviewKind::Plugin { id, path, .. }) = &self.tab.preview_kind else {
             return None;
@@ -24,7 +25,7 @@ impl App {
         self.plugin
             .as_ref()
             .filter(|p| p.id == *id && p.path == *path)
-            .map(|p| p.id.as_str())
+            .map(|p| p.acting())
     }
 
     /// The declared actions of the plugin on screen that belong to `ctx`, in declaration order.
@@ -57,7 +58,7 @@ impl App {
         let canvas = self.is_canvas_preview();
         let facts = match self.plugin.as_ref() {
             Some(s) => acts::ShowFacts {
-                same_plugin: s.id == p.plugin(),
+                same_plugin: s.acting() == p.plugin(),
                 ready: matches!(s.phase, plugin_host::PluginPhase::Ready),
                 session_present: s.session.is_some(),
                 canvas,
