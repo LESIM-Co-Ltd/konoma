@@ -186,24 +186,14 @@ fn canonical_existing(p: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Read the system clipboard as text. Err on environments where arboard is unavailable.
+/// Read the system clipboard as text. Err where the clipboard is unavailable.
 ///
-/// Test builds never touch arboard: see `test_support::get_test_clipboard`. A test that wants
-/// `paste_jump()` (rather than the clipboard-independent `paste_jump_from`) to succeed must first
-/// call `test_support::set_test_clipboard`; one that wants the "no clipboard" flash must first call
-/// `test_support::clear_test_clipboard` (the sink can otherwise hold a previous test's value — see
-/// that module's doc comment on thread reuse). The arboard-calling body is entirely absent from a
-/// `#[cfg(test)]` build.
-#[cfg(not(test))]
+/// Test builds read the in-memory sink (`konoma_host_core::clipboard`, reached through
+/// `test_support`): a test that wants `paste_jump()` to succeed must first call
+/// `test_support::set_test_clipboard`; one that wants the "no clipboard" flash must first call
+/// `test_support::clear_test_clipboard` (the sink can hold a previous test's value).
 fn read_clipboard() -> anyhow::Result<String> {
-    let mut cb = arboard::Clipboard::new()?;
-    Ok(cb.get_text()?)
-}
-
-#[cfg(test)]
-fn read_clipboard() -> anyhow::Result<String> {
-    crate::test_support::get_test_clipboard()
-        .ok_or_else(|| anyhow::anyhow!("test clipboard is empty"))
+    konoma_host_core::clipboard::get_text()
 }
 
 impl App {

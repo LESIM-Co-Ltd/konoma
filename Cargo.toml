@@ -90,6 +90,12 @@ emojis = "0.9"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 sys-locale = "0.3"
+# クリップボード(konoma-host-core の `clipboard` が使う)。`wayland-data-control` を明示有効化=既定は X11 バックエンド(x11rb)のみで、
+# XWayland の無い Wayland セッション(sway/Hyprland で xwayland 無効・cage 等)では arboard の
+# Clipboard::new() 自体が失敗し `y` の全コピーが黙って不発になる(app.rs::set_clipboard の
+# Linux 分岐コメントは X11/Wayland 両対応と書いていたが実装は X11 のみだった)。
+# 新規依存 wl-clipboard-rs は `target.'cfg(all(unix, not(any(macos,android,emscripten))))'`
+# 配下=非 macOS Unix のみでビルドされ macOS には一切コンパイルされない(cargo tree で確認済)。
 arboard = { version = "3", features = ["wayland-data-control"] }
 globset = "0.4"
 infer = "0.22"
@@ -194,14 +200,6 @@ toml.workspace = true
 # read by the Office fixtures' tests.
 serde_json.workspace = true
 
-# クリップボード。`wayland-data-control` を明示有効化=既定は X11 バックエンド(x11rb)のみで、
-# XWayland の無い Wayland セッション(sway/Hyprland で xwayland 無効・cage 等)では arboard の
-# Clipboard::new() 自体が失敗し `y` の全コピーが黙って不発になる(app.rs::set_clipboard の
-# Linux 分岐コメントは X11/Wayland 両対応と書いていたが実装は X11 のみだった)。
-# 新規依存 wl-clipboard-rs は `target.'cfg(all(unix, not(any(macos,android,emscripten))))'`
-# 配下=非 macOS Unix のみでビルドされ macOS には一切コンパイルされない(cargo tree で確認済)。
-arboard.workspace = true
-
 # glob / mime 判定
 globset.workspace = true
 infer.workspace = true
@@ -232,7 +230,7 @@ nucleo-matcher.workspace = true
 
 # Crates of this workspace (stage 1 of the plugin architecture: code moves out of `src/` unchanged).
 konoma-base = { path = "crates/konoma-base", version = "0.1.0" }
-konoma-host-core = { path = "crates/konoma-host-core", version = "0.1.0" }
+konoma-host-core = { path = "crates/konoma-host-core", version = "0.1.0", features = ["clipboard"] }
 konoma-svg = { path = "crates/konoma-svg", version = "0.1.0" }
 konoma-mermaid-core = { path = "crates/konoma-mermaid-core", version = "0.1.0" }
 konoma-math-core = { path = "crates/konoma-math-core", version = "0.1.0" }
@@ -274,6 +272,7 @@ konoma-test-support = { path = "crates/konoma-test-support" }
 # active when the root package's own tests call into them. `resolver = "2"`: dev-dependency
 # features never reach a normal build.
 konoma-base = { path = "crates/konoma-base", features = ["test-hooks"] }
+konoma-host-core = { path = "crates/konoma-host-core", features = ["test-hooks"] }
 konoma-svg = { path = "crates/konoma-svg", features = ["test-hooks"] }
 konoma-office-core = { path = "crates/konoma-office-core", features = ["test-hooks"] }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", features = ["test-hooks"] }
