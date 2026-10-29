@@ -709,6 +709,31 @@ const FRAMES: [(&str, bool); 8] = [
     ("a.fail", false),
 ];
 
+/// The frames that are a plugin's canvas: the loop takes the host's `Canvas` keys there.
+const CANVAS_FRAMES: [&str; 2] = ["a.c", "a.big"];
+
+/// `acts_on` of the keys that belong to `frame`: the canvas's own over a canvas.
+fn frame_acts_on(k: &AppKeys, frame: &str, key: &Key, in_help: bool, scrolls: bool) -> bool {
+    if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_acts_on(key, in_help)
+    } else {
+        k.acts_on(key, in_help, scrolls)
+    }
+}
+
+/// The footer hints of `frame`: the canvas's own over a canvas.
+fn frame_footer_hints(
+    k: &AppKeys,
+    frame: &str,
+    scrolls: bool,
+) -> Vec<konoma_host_core::help::CoreToken> {
+    if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_footer_hints()
+    } else {
+        k.footer_hints(scrolls)
+    }
+}
+
 const REAL_SIZE: (u16, u16) = (100, 6);
 
 /// What a real run left: the rows of the last frame and whether the loop ended (`quit`: a
@@ -730,12 +755,12 @@ fn observe(
 }
 
 /// The key that opens the help, as the footer names it (`None` when none does).
-fn help_opener(k: &AppKeys) -> Option<Key> {
-    let hint = k.footer_hints(false).pop()?;
+fn help_opener(k: &AppKeys, frame: &str) -> Option<Key> {
+    let hint = frame_footer_hints(k, frame, false).pop()?;
     let key = token_keys(&hint.text).into_iter().next()?;
     // It must really be the help: it opens it on a real frame.
-    let (closed, _) = observe(k, "a.t", &[], None);
-    let (open, quit) = observe(k, "a.t", &[], Some(&key));
+    let (closed, _) = observe(k, frame, &[], None);
+    let (open, quit) = observe(k, frame, &[], Some(&key));
     (!quit && open != closed).then_some(key)
 }
 
@@ -758,8 +783,13 @@ fn acts_in_the_loop(k: &AppKeys, name: &str, help: Option<&Key>, key: &Key) -> b
 
 /// Whether a real screen has the scroll form: a text in the host's frame says where it is on the
 /// frame (its top border), a bare text says "line N" after the hints in the footer.
-fn footer_scrolls(k: &AppKeys, rows: &[String], title: &str) -> bool {
-    let plain = format!("{}  {title}", k.footer_tokens(false).join("  "));
+fn footer_scrolls(k: &AppKeys, frame: &str, rows: &[String], title: &str) -> bool {
+    let plain_tokens = if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_footer_tokens()
+    } else {
+        k.footer_tokens(false)
+    };
+    let plain = format!("{}  {title}", plain_tokens.join("  "));
     rows[0].starts_with('┌') || *rows.last().expect("a footer row") != plain
 }
 
@@ -792,13 +822,16 @@ fn what_acts_on_a_frame_is_what_the_loop_does() {
     let (mut checked, mut true_cases, mut false_cases, mut help_cases) = (0, 0, 0, 0);
     for (name, cfg) in property_configs() {
         let k = keys(cfg, Lang::En);
-        let opener = help_opener(&k);
         // The keys to try: the extras and every key the footer and the help name.
         let mut cands = extra.clone();
         for t in k.footer_hints(true) {
             cands.extend(token_keys(&t.text));
         }
-        for sec in k.help_sections() {
+        for sec in k
+            .help_sections()
+            .into_iter()
+            .chain(k.canvas_help_sections())
+        {
             for (keys_text, _) in &sec.rows {
                 cands.extend(row_keys(keys_text));
             }
@@ -806,13 +839,14 @@ fn what_acts_on_a_frame_is_what_the_loop_does() {
         let mut seen = std::collections::BTreeSet::new();
         cands.retain(|c| seen.insert(format!("{c:?}")));
         for (frame, scrolls) in FRAMES {
+            let opener = help_opener(&k, frame);
             for key in &cands {
                 let mut states: Vec<(bool, Option<&Key>)> = vec![(false, None)];
                 if let Some(o) = &opener {
                     states.push((true, Some(o)));
                 }
                 for (in_help, opener) in states {
-                    let oracle = k.acts_on(key, in_help, scrolls);
+                    let oracle = frame_acts_on(&k, frame, key, in_help, scrolls);
                     let real = acts_in_the_loop(&k, frame, opener, key);
                     assert_eq!(
                         oracle, real,
@@ -854,9 +888,9 @@ fn what_the_footer_names_on_a_real_frame_acts_in_the_loop() {
             let k = keys(cfg, lang);
             for (frame, expect_scrolls) in FRAMES {
                 let (rows, _) = run_as(&k, frame, REAL_SIZE, vec![]);
-                let scrolls = footer_scrolls(&k, &rows, "title");
+                let scrolls = footer_scrolls(&k, frame, &rows, "title");
                 assert_eq!(scrolls, expect_scrolls, "{name} {lang:?} {frame}: {rows:?}");
-                for t in k.footer_hints(scrolls) {
+                for t in frame_footer_hints(&k, frame, scrolls) {
                     for key in token_keys(&t.text) {
                         assert!(
                             acts_in_the_loop(&k, frame, None, &key),

@@ -870,6 +870,146 @@ impl AppKeys {
         }
     }
 
+    // ---- Canvases ----
+
+    /// What the help and the footer say about a plugin's canvas: the host's list for
+    /// `CoreContext::Canvas`, less what the app does not do. The canvas holds no text, so no
+    /// motion scrolls it; the page turn, the outline, the editor, the opener and the menus of
+    /// the view are not done by the app, so they are off.
+    fn canvas_facts(&self) -> HelpFacts {
+        let acted = |op: &HelpOp| {
+            matches!(
+                op,
+                HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp)
+                    | HelpOp::Cancel
+            )
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Canvas) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        off.push(HelpOp::Menu(CoreMenu::Options));
+        HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        }
+    }
+
+    fn canvas_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Canvas,
+        }
+    }
+
+    /// The footer's key hints of a canvas: what leaves, what opens the help.
+    pub fn canvas_footer_hints(&self) -> Vec<CoreToken> {
+        let facts = self.canvas_facts();
+        let look = self.canvas_lookup();
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Canvas, &facts, &look, self.lang);
+        let mut out: Vec<CoreToken> = Vec::new();
+        out.push(
+            tok(CoreFoot::Back)
+                .or_else(|| tok(CoreFoot::Quit))
+                .unwrap_or_else(|| ctrl_c_token(self.lang)),
+        );
+        out.extend(tok(CoreFoot::Help));
+        out
+    }
+
+    /// [`AppKeys::canvas_footer_hints`] as the text the footer shows.
+    pub fn canvas_footer_tokens(&self) -> Vec<String> {
+        self.canvas_footer_hints()
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// The sections of the `?` help of a canvas.
+    pub fn canvas_help_sections(&self) -> Vec<CoreSection> {
+        let secs = core_sections(
+            CoreContext::Canvas,
+            &self.canvas_facts(),
+            &self.canvas_lookup(),
+            self.lang,
+        );
+        self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
+    }
+
+    fn canvas_help_lines(&self) -> Vec<ratatui::text::Line<'static>> {
+        lines_of(&self.canvas_help_sections())
+    }
+
+    /// The title of the `?` help over a canvas (see [`AppKeys::help_title`]). The help scrolls
+    /// on the vertical motions, named from the text's facts.
+    pub fn canvas_help_title(&self) -> String {
+        let look = self.canvas_lookup();
+        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
+        help_title(
+            &close,
+            &scroll_keys(&self.text_lookup(), &self.facts()),
+            self.lang,
+        )
+    }
+
+    fn text_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        }
+    }
+
+    /// What the app does for `key` over a canvas (`None` = nothing). Over the canvas only the
+    /// keys that leave or open the help act (the host hands the others to the plugin); in the
+    /// `?` help (`in_help`) the vertical motions are the help's, as over any text.
+    fn canvas_act(&self, key: &Key, in_help: bool) -> Option<Act> {
+        if in_help {
+            return self.act(key);
+        }
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        if key.mods.is_empty() && matches!(key.code, KeyCode::Esc) {
+            return Some(Act::Back);
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(CoreContext::Canvas, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            _ => None,
+        }
+    }
+
+    /// Whether `key` does something over a canvas (in the `?` help when `in_help`). What the
+    /// hints and the help rows name must pass this.
+    pub fn canvas_acts_on(&self, key: &Key, in_help: bool) -> bool {
+        match self.canvas_act(key, in_help) {
+            None => !in_help && self.copy_key_acts(CoreContext::Canvas, CoreMenu::Copy, key),
+            Some(Act::Move(m)) if in_help => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            Some(Act::Move(_)) => false,
+            Some(_) => true,
+        }
+    }
+
     /// The built-in keys (no overrides, vim paging).
     pub fn defaults() -> AppKeys {
         AppKeys::new(&KeysConfig::default(), "vim")
@@ -1368,6 +1508,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             || (image_mode.is_some() && st.image_failed && st.scrolls);
         // The picture's own frame holds no text: no motion scrolls it, and none is named.
         let text_scrolls = !matches!(base, Frame::ImageFailed(_));
+        // A plugin's canvas has its own keys (the host's `CoreContext::Canvas`).
+        let canvas_keys = matches!(base, Frame::Canvas(_));
         let footer;
         let mut panel: Option<HelpPanel> = None;
         let width = terminal.size().map(|s| s.width).unwrap_or(0);
@@ -1377,6 +1519,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(m), _) => (keys.table_help_lines(m), keys.table_help_title(m)),
                     (None, Some(_)) if !failed_text_screen => {
                         (keys.image_help_lines(paged), keys.image_help_title())
+                    }
+                    (None, None) if canvas_keys => {
+                        (keys.canvas_help_lines(), keys.canvas_help_title())
                     }
                     (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
                 };
@@ -1453,7 +1598,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &if matches!(base, draw::Frame::Document(_)) {
+                        &if canvas_keys {
+                            keys.canvas_footer_tokens()
+                        } else if matches!(base, draw::Frame::Document(_)) {
                             keys.document_footer_tokens(st.scrolls)
                         } else {
                             keys.footer_tokens_paged(
@@ -1559,6 +1706,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             .filter(|a| matches!(a, Act::Page(_)))
                     }),
                     (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
+                    (false, None) if canvas_keys => keys.canvas_act(&key, st.help.is_some()),
                     (false, None) => keys.act(&key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
@@ -1581,6 +1729,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         CoreContext::Table
                     } else if image_keys {
                         CoreContext::Image
+                    } else if canvas_keys {
+                        CoreContext::Canvas
                     } else {
                         CoreContext::Text
                     };
