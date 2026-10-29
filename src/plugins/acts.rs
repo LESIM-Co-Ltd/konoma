@@ -15,12 +15,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
-use crossterm::event::KeyCode;
-use konoma_plugin::keys::{self, KeyIssue, KeyName as PKeyName, KeySpec};
+use konoma_plugin::host::bind::{bind_actions, KeyNote};
+use konoma_plugin::keys::KeyIssue;
 use konoma_plugin::registry::{NoteKind, Registry};
 use konoma_plugin::{ApiVersion, Tr};
 
-use crate::keymap::KeyPress;
 
 /// Make a string live for the whole run, once per distinct value. Ids come from manifests, so the
 /// set is as small as the set of declared plugins and actions.
@@ -105,31 +104,8 @@ struct PluginEntry {
     acts: Vec<ActBinding>,
 }
 
-/// The key a plugin's `KeySpec` is on the host side.
-pub fn keypress_of(spec: KeySpec) -> KeyPress {
-    let code = match spec.code {
-        PKeyName::Char(c) => KeyCode::Char(c),
-        PKeyName::Enter => KeyCode::Enter,
-        PKeyName::Tab => KeyCode::Tab,
-        PKeyName::BackTab => KeyCode::BackTab,
-        PKeyName::Esc => KeyCode::Esc,
-        PKeyName::Backspace => KeyCode::Backspace,
-        PKeyName::Delete => KeyCode::Delete,
-        PKeyName::Up => KeyCode::Up,
-        PKeyName::Down => KeyCode::Down,
-        PKeyName::Left => KeyCode::Left,
-        PKeyName::Right => KeyCode::Right,
-        PKeyName::Home => KeyCode::Home,
-        PKeyName::End => KeyCode::End,
-        PKeyName::PageUp => KeyCode::PageUp,
-        PKeyName::PageDown => KeyCode::PageDown,
-        PKeyName::F(n) => KeyCode::F(n),
-    };
-    KeyPress {
-        code,
-        ctrl: spec.ctrl,
-    }
-}
+#[cfg(test)]
+pub use konoma_plugin::host::bind::keypress_of;
 
 impl PluginKeys {
     /// Read the actions of every registered plugin. `tables` is the config's raw `[keys.*]`
@@ -171,35 +147,18 @@ impl PluginKeys {
             } else {
                 tables.remove(id)
             };
-            let mut keys: Vec<(String, Option<String>)> = manifest
-                .actions
-                .iter()
-                .map(|a| (a.id.clone(), a.key.clone()))
-                .collect();
-            if let Some(user) = user {
-                out.apply_user_table(id, &mut keys, &user, manifest);
-            }
+            let (acts, key_notes) = bind_actions(id, manifest, user.as_ref(), |a| {
+                PluginAct::new(id, a)
+            });
+            out.notes.extend(key_notes.into_iter().map(|n| match n {
+                KeyNote::UnknownAction { plugin, action } => {
+                    PluginNote::UnknownAction { plugin, action }
+                }
+                KeyNote::BadKey { plugin, key, why } => PluginNote::BadKey { plugin, key, why },
+            }));
             if manifest.actions.is_empty() {
                 continue;
             }
-            let acts = manifest
-                .actions
-                .iter()
-                .map(|a| ActBinding {
-                    act: PluginAct::new(id, &a.id),
-                    key: keys
-                        .iter()
-                        .find(|(i, _)| *i == a.id)
-                        .and_then(|(_, k)| k.as_deref())
-                        .and_then(|k| keys::parse_key(k).ok())
-                        .map(keypress_of),
-                    context: a.screen.clone(),
-                    label: a.label.clone(),
-                    help: a.help.clone(),
-                    footer: a.footer,
-                    writes: a.writes,
-                })
-                .collect();
             out.by_plugin.insert(
                 id.to_string(),
                 PluginEntry {
@@ -209,91 +168,6 @@ impl PluginKeys {
             );
         }
         out
-    }
-
-    /// `[keys.<id>]`: `<key> = "<action id>"` gives the action that key (instead of its default),
-    /// `<key> = "noop"` takes the key from whichever action has it. A key that cannot be kept is
-    /// dropped with a note.
-    fn apply_user_table(
-        &mut self,
-        id: &str,
-        keys: &mut [(String, Option<String>)],
-        user: &HashMap<String, String>,
-        manifest: &konoma_plugin::Manifest,
-    ) {
-        let mut entries: Vec<(&String, &String)> = user.iter().collect();
-        entries.sort();
-        // Action → the key the user chose for it.
-        let mut chosen: Vec<(String, String)> = Vec::new();
-        for (key, action) in entries {
-            if action == "noop" || action == "disabled" {
-                // Taking a key away: whichever action has it by default loses it.
-                if let Ok(spec) = keys::parse_key(key) {
-                    for (_, k) in keys.iter_mut() {
-                        if k.as_deref().and_then(|k| keys::parse_key(k).ok()) == Some(spec) {
-                            *k = None;
-                        }
-                    }
-                } else {
-                    self.notes.push(PluginNote::BadKey {
-                        plugin: id.to_string(),
-                        key: key.clone(),
-                        why: "not a key".to_string(),
-                    });
-                }
-                continue;
-            }
-            if !manifest.actions.iter().any(|a| a.id == *action) {
-                self.notes.push(PluginNote::UnknownAction {
-                    plugin: id.to_string(),
-                    action: action.clone(),
-                });
-                continue;
-            }
-            if let Err(e) = keys::parse_key(key) {
-                self.notes.push(PluginNote::BadKey {
-                    plugin: id.to_string(),
-                    key: key.clone(),
-                    why: e.to_string(),
-                });
-                continue;
-            }
-            if chosen.iter().any(|(a, _)| a == action) {
-                self.notes.push(PluginNote::BadKey {
-                    plugin: id.to_string(),
-                    key: key.clone(),
-                    why: format!("`{action}` already has a key here; one key per action"),
-                });
-                continue;
-            }
-            chosen.push((action.clone(), key.clone()));
-        }
-        for (action, key) in &chosen {
-            if let Some((_, slot)) = keys.iter_mut().find(|(a, _)| a == action) {
-                *slot = Some(key.clone());
-            }
-        }
-        // Check the keys as they will be, with the rules the registry uses for a manifest. A
-        // key that fails is dropped (the action stays in the `Space` menu).
-        if !chosen.is_empty() {
-            let mut probe = manifest.clone();
-            for act in &mut probe.actions {
-                act.key = keys
-                    .iter()
-                    .find(|(i, _)| *i == act.id)
-                    .and_then(|(_, k)| k.clone());
-            }
-            for issue in keys::validate(&probe) {
-                if let Some((_, slot)) = keys.iter_mut().find(|(a, _)| *a == issue.act) {
-                    let bad = slot.take();
-                    self.notes.push(PluginNote::BadKey {
-                        plugin: id.to_string(),
-                        key: bad.unwrap_or_default(),
-                        why: issue.to_string(),
-                    });
-                }
-            }
-        }
     }
 
     /// The actions of plugin `id`, in declaration order.
@@ -373,7 +247,10 @@ impl PluginKeys {
 mod tests {
     use std::sync::Arc;
 
+    use crossterm::event::KeyCode;
+    use konoma_plugin::keys::{KeyName as PKeyName, KeySpec};
     use konoma_plugin::registry::PluginOrigin;
+    use crate::keymap::KeyPress;
 
     use super::*;
     use crate::plugins::test_plugins::{Hexdump, Variant};

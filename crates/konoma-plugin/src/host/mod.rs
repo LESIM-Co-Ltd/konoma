@@ -13,4 +13,5 @@
 //!   that wait for a session a job holds.
 
 pub mod acts;
+pub mod bind;
 pub mod typing;

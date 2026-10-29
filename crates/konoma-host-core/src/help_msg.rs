@@ -100,6 +100,11 @@ pub enum CoreMsg {
     SvgMemory,
     SvgCrashed,
     SvgInvalid,
+    PluginInputFull,
+    PluginPasteCut,
+    PluginReadOnly,
+    StPluginInput,
+    StPluginInputHint,
 }
 impl CoreMsg {
     /// Every message, for the tests that walk the whole set.
@@ -200,6 +205,11 @@ impl CoreMsg {
         CoreMsg::SvgMemory,
         CoreMsg::SvgCrashed,
         CoreMsg::SvgInvalid,
+        CoreMsg::PluginInputFull,
+        CoreMsg::PluginPasteCut,
+        CoreMsg::PluginReadOnly,
+        CoreMsg::StPluginInput,
+        CoreMsg::StPluginInputHint,
     ];
     pub fn en(self) -> &'static str {
         match self {
@@ -308,6 +318,11 @@ impl CoreMsg {
             CoreMsg::SvgMemory => "[svg] not drawn: drawing it needed too much memory",
             CoreMsg::SvgCrashed => "[svg] not drawn: the renderer stopped while drawing it",
             CoreMsg::SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
+            CoreMsg::PluginInputFull => "the plugin is not answering: input refused",
+            CoreMsg::PluginPasteCut => "the paste was too long: cut for the plugin",
+            CoreMsg::PluginReadOnly => "this plugin is set to read-only ([plugins.<id>] read_only = true)",
+            CoreMsg::StPluginInput => "INPUT",
+            CoreMsg::StPluginInputHint => "the plugin is taking your typing   Esc:leave",
         }
     }
     pub fn ja(self) -> &'static str {
@@ -416,6 +431,11 @@ impl CoreMsg {
             CoreMsg::SvgInvalid => {
                 "[svg] 描画しません: ファイルが壊れているか、SVG として正しくありません"
             }
+            CoreMsg::PluginInputFull => "プラグインが応答しません: 入力を受け付けません",
+            CoreMsg::PluginPasteCut => "貼り付けが長すぎるため、プラグインには途中までを渡しました",
+            CoreMsg::PluginReadOnly => "このプラグインは読み取り専用です([plugins.<id>] read_only = true)",
+            CoreMsg::StPluginInput => "入力",
+            CoreMsg::StPluginInputHint => "プラグインが入力を受けています   Esc:抜ける",
         }
     }
     pub fn tr(self, lang: Lang) -> &'static str {

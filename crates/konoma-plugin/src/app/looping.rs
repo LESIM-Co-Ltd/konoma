@@ -24,11 +24,13 @@ use super::still::StillShape;
 use super::window;
 use super::AppError;
 use crate::canvas_pictures::image_failure_for;
+use crate::host::acts as hacts;
+use crate::host::typing::{self, NextJob, Notice, QueuedAct};
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::ViewKind;
 use crate::pages;
 use crate::ratatui_draw;
-use crate::session::{Session, TermCaps, ViewCx};
+use crate::session::{ActCx, Outcome, Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
 use crate::Cancel;
 use crate::{Line, Settings};
@@ -62,6 +64,9 @@ pub struct AppCx {
     /// The directory the program was opened in: the frame title is the path of the file shown
     /// from there, the way konoma's is from its root. `None`: the title is the file name.
     pub open_dir: Option<std::path::PathBuf>,
+    /// The actions the plugin declared ([`crate::Manifest::actions`]), with the user's keys: the
+    /// footer and the help name them, and their keys run them.
+    pub acts: super::AppActs,
 }
 
 impl Default for AppCx {
@@ -79,6 +84,7 @@ impl Default for AppCx {
             shows: Vec::new(),
             reopen: None,
             display: super::Display::default(),
+            acts: super::AppActs::default(),
         }
     }
 }
@@ -956,10 +962,6 @@ impl AppKeys {
         self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
     }
 
-    fn canvas_help_lines(&self) -> Vec<ratatui::text::Line<'static>> {
-        lines_of(&self.canvas_help_sections())
-    }
-
     /// The title of the `?` help over a canvas (see [`AppKeys::help_title`]). The help scrolls
     /// on the vertical motions, named from the text's facts.
     pub fn canvas_help_title(&self) -> String {
@@ -1148,6 +1150,9 @@ pub enum AppEvent {
     Key(Key),
     /// The terminal was resized: draw again at the new size.
     Resize,
+    /// Text pasted as one piece (bracketed paste). Only a canvas that takes the typing gets it
+    /// (as one `KeyCode::Paste`); anywhere else it does nothing, as in konoma.
+    Paste(String),
 }
 
 /// What an [`EventSource`] answers.
@@ -1176,11 +1181,7 @@ impl<I: Iterator<Item = AppEvent>> EventSource for I {
     }
 }
 
-/// The shortest wait the loop asks for between two draws of an animation (33 ms, the same floor
-/// the host applies to `redraw_after`).
-const MIN_REDRAW: Duration = Duration::from_millis(33);
-/// The longest (24 hours, as the host).
-const MAX_REDRAW: Duration = Duration::from_secs(24 * 60 * 60);
+use crate::host::typing::{MAX_REDRAW_AFTER as MAX_REDRAW, MIN_REDRAW_AFTER as MIN_REDRAW};
 
 /// The one content type the app shows a `Reopen` as (konoma's `markdown`, which the document
 /// widget draws).
@@ -1268,6 +1269,17 @@ struct State {
     menu: Option<(CoreContext, CoreMenu)>,
     /// What the last key did, shown in the footer until the next key.
     flash: Option<String>,
+    /// `Esc` left the plugin's text input: the typing is not taken again until the user does
+    /// something the plugin answers with a canvas that asks for it (`typing::retake`).
+    input_left: bool,
+    /// A declared action the user pressed is out: the answer to it (and the view it asks for) is
+    /// the user's (`typing::settle_user_act`).
+    user_act: bool,
+    /// The keys and the actions waiting for the session. The loop calls the session itself, so
+    /// they are sent at once; they go through the same line as konoma's so the order and the
+    /// bounds are the same rules.
+    key_queue: Vec<Key>,
+    act_queue: Vec<QueuedAct>,
 }
 
 /// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
@@ -1466,6 +1478,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 // The frame on screen stays.
                 Err(None) => (std::mem::replace(&mut base, Frame::Lines(Vec::new())), None),
             };
+            // The typing: a canvas that asks for it after something the user did takes it back
+            // after `Esc`; the show going (no canvas on screen) forgets the keys and the latch.
+            if let Frame::Canvas(c) = &frame {
+                typing::retake(&mut st.input_left, c.text_input, st.user_act);
+                st.user_act = false;
+            } else {
+                typing::forget(&mut st.key_queue, &mut st.input_left, &mut st.user_act);
+                st.act_queue.clear();
+            }
             if let Frame::Table(new) = &mut frame {
                 // A table read again (a resize, a page turn) keeps the cursor and the popup; a
                 // page turn has reset them before asking.
@@ -1550,6 +1571,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let text_scrolls = !matches!(base, Frame::ImageFailed(_));
         // A plugin's canvas has its own keys (the host's `CoreContext::Canvas`).
         let canvas_keys = matches!(base, Frame::Canvas(_));
+        let capturing = typing::is_capturing(
+            st.input_left,
+            st.help.is_none(),
+            matches!(&base, Frame::Canvas(c) if c.text_input),
+        );
         let footer;
         let mut panel: Option<HelpPanel> = None;
         let width = terminal.size().map(|s| s.width).unwrap_or(0);
@@ -1561,7 +1587,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         (keys.image_help_lines(paged), keys.image_help_title())
                     }
                     (None, None) if canvas_keys => {
-                        (keys.canvas_help_lines(), keys.canvas_help_title())
+                        let mut secs = keys.canvas_help_sections();
+                        let en = enabled_ids(&*sess!(), &cx.acts);
+                        let own = cx
+                            .acts
+                            .help_section("canvas", &cx.lang, |a| en.iter().any(|e| e == a));
+                        if let Some(own) = own {
+                            secs.insert(1.min(secs.len()), own);
+                        }
+                        (lines_of(&secs), keys.canvas_help_title())
                     }
                     (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
                 };
@@ -1639,7 +1673,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     None => draw::footer(
                         &if canvas_keys {
-                            keys.canvas_footer_tokens()
+                            let en = enabled_ids(&*sess!(), &cx.acts);
+                            cx.acts.with_footer(
+                                "canvas",
+                                &cx.lang,
+                                |a| en.iter().any(|e| e == a),
+                                keys.canvas_footer_tokens(),
+                            )
                         } else if matches!(base, draw::Frame::Document(_)) {
                             keys.document_footer_tokens(st.scrolls)
                         } else {
@@ -1663,6 +1703,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // the host's footer, spans and all.
         let footer = match (&st.flash, st.menu) {
             (Some(note), _) => konoma_widgets::footer_line::flash_spans(note),
+            // The plugin takes the typing: the footer says how to leave (konoma's mode hint).
+            (None, _) if capturing => {
+                vec![ratatui::style::Stylize::bold(ratatui::text::Span::from(
+                    CoreMsg::StPluginInputHint.tr(keys.lang()),
+                ))]
+            }
             (None, Some((c, m))) => keys
                 .which_key_line(c, m, width)
                 .unwrap_or_else(|| hint_spans(footer)),
@@ -1701,6 +1747,37 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Next::End => return Ok(()),
             Next::Timeout => need_view = !picture_first,
             Next::Event(AppEvent::Resize) => need_view = true,
+            Next::Event(AppEvent::Paste(text)) => {
+                // Only a canvas that takes the typing gets a paste; elsewhere it does nothing.
+                need_view = false;
+                if capturing {
+                    st.flash = None;
+                    let admitted = typing::admit_paste(&mut st.key_queue, text);
+                    if let Some(n) = admitted.notice {
+                        st.flash = Some(notice_text(n, keys.lang()));
+                    }
+                    if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
+                        need_view = true;
+                    }
+                }
+            }
+            Next::Event(AppEvent::Key(key)) if capturing => {
+                // Every key is the plugin's; `Esc` leaves (and is told to the plugin).
+                st.flash = None;
+                st.menu = None;
+                let admitted = typing::admit_key(&mut st.key_queue, &mut st.input_left, key);
+                if let Some(n) = admitted.notice {
+                    st.flash = Some(notice_text(n, keys.lang()));
+                }
+                need_view = false;
+                if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
+                    need_view = true;
+                }
+                // The footer changes when the typing is left.
+                if st.input_left {
+                    need_view = true;
+                }
+            }
             Next::Event(AppEvent::Key(key)) => {
                 // The previous notice goes with the next key.
                 st.flash = None;
@@ -1806,6 +1883,39 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                     }
                 }
+                // A key a plugin declared for the canvas acts where no key of the host's does.
+                if act.is_none() && canvas_keys && st.help.is_none() && st.menu.is_none() {
+                    let found = key_press(&key)
+                        .and_then(|kp| cx.acts.for_key("canvas", kp))
+                        .cloned();
+                    let enabled = found
+                        .as_ref()
+                        .is_some_and(|b| sess!().enabled(&b.act));
+                    match hacts::gate(found.as_ref(), enabled, cx.acts.read_only) {
+                        hacts::ActGate::Off => {}
+                        hacts::ActGate::ReadOnly => {
+                            st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());
+                            need_view = false;
+                        }
+                        hacts::ActGate::On => {
+                            if let Some(b) = found {
+                                st.user_act = true;
+                                let admitted = typing::admit_act(
+                                    &mut st.act_queue,
+                                    st.key_queue.len(),
+                                    &b.act,
+                                );
+                                if let Some(n) = admitted.notice {
+                                    st.flash = Some(notice_text(n, keys.lang()));
+                                }
+                                need_view = true;
+                                if admitted.queued {
+                                    flush_jobs(sess!(), &mut st, cx);
+                                }
+                            }
+                        }
+                    }
+                }
                 match (act, st.help) {
                     // `Q` and Ctrl-C end the app even from the help (the host's `Q` does); `q`
                     // and `Esc` close it.
@@ -1899,6 +2009,65 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
         }
     }
+}
+
+/// The declared actions the session says work now (the one answer the key, the footer and the
+/// help all use, as konoma's `Session::enabled` cache).
+fn enabled_ids(session: &dyn Session, acts: &super::AppActs) -> Vec<String> {
+    acts.bindings
+        .iter()
+        .filter(|b| session.enabled(&b.act))
+        .map(|b| b.act.clone())
+        .collect()
+}
+
+/// Hand what waits to the session, in the order it was pressed (the same line as konoma's
+/// `flush_plugin_keys`), and merge the answers the way konoma does: a reload beats a redraw, the
+/// last message wins, a failure is a message. Returns whether the view is to be asked again.
+/// `by_user` says the job began with a declared action the user pressed.
+fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
+    let mut redraw = false;
+    while let Some(job) = typing::next_job(&mut st.key_queue, &mut st.act_queue) {
+        let acx = ActCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
+        let mut results = Vec::new();
+        let is_act = matches!(job, NextJob::Act(_));
+        match job {
+            NextJob::Act(action) => results.push(session.act(&action, &acx)),
+            NextJob::Keys(keys) => {
+                for k in &keys {
+                    results.push(session.key(k, &acx));
+                }
+            }
+        }
+        let (mut again, mut flash) = (false, None);
+        for r in results {
+            match r {
+                Ok(Outcome::Redraw | Outcome::Reload) => again = true,
+                Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
+                Ok(Outcome::Unhandled) => {}
+                Err(f) => flash = Some(f.message.get(&cx.lang).to_string()),
+            }
+        }
+        if flash.is_some() {
+            st.flash = flash;
+        }
+        if is_act {
+            // An answer that asks for no redraw is not followed by a view: the mark ends here.
+            typing::settle_user_act(&mut st.user_act, false, again);
+        }
+        redraw |= again;
+    }
+    redraw
+}
+
+/// The words of a notice of the shared input queue.
+fn notice_text(n: Notice, lang: Lang) -> String {
+    match n {
+        Notice::InputFull => CoreMsg::PluginInputFull,
+        Notice::PasteCut => CoreMsg::PluginPasteCut,
+    }
+    .tr(lang)
+    .to_string()
 }
 
 /// The mode of the table on screen (`None` = the frame is not a table).

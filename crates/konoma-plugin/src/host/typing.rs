@@ -34,6 +34,14 @@ pub const MAX_QUEUED_PASTE_BYTES: usize = 4 << 20;
 /// with a notice (never reordered, never dropped silently).
 pub const MAX_QUEUED_ACTS: usize = 256;
 
+/// The shortest time between two timer redraws (`CanvasView::redraw_after`). A plugin may ask for
+/// less (even zero); a host draws at most about 30 frames per second.
+pub const MIN_REDRAW_AFTER: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// The longest a plugin can ask to wait between two redraws; a longer (or overflowing) one is
+/// this. Keeps `Instant + Duration` from overflowing on a value a plugin chose.
+pub const MAX_REDRAW_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// What the host should tell the user, in its own words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Notice {

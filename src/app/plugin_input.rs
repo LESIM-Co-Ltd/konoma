@@ -40,13 +40,8 @@ use konoma_plugin::host::typing::{self, Admitted, NextJob, Notice};
 use super::*;
 use crate::i18n::{tr, Msg};
 
-/// The shortest time between two timer redraws. A plugin may ask for less (even zero); the host
-/// draws at most about 30 frames per second.
-pub const MIN_REDRAW_AFTER: Duration = Duration::from_millis(33);
-
-/// The longest time a plugin can ask to wait between two redraws; a longer (or overflowing) one is
-/// this. Keeps `Instant + Duration` from overflowing on a value a plugin chose.
-pub const MAX_REDRAW_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+// The redraw timer's bounds are the shared ones (`konoma_plugin::host::typing`).
+pub use typing::{MAX_REDRAW_AFTER, MIN_REDRAW_AFTER};
 
 // The bounds of the queue are the shared ones (`konoma_plugin::host::typing`).
 #[cfg(test)]

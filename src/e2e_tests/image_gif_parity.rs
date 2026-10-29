@@ -735,6 +735,7 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         hint: None,
         display: Default::default(),
         open_dir: None,
+        acts: Default::default(),
     };
     let key = presses("J")
         .into_iter()
@@ -1302,6 +1303,7 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         hint: None,
         display: Default::default(),
         open_dir: None,
+        acts: Default::default(),
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1388,6 +1390,7 @@ fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in
         hint: None,
         display: Default::default(),
         open_dir: None,
+        acts: Default::default(),
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1749,6 +1752,7 @@ fn run_watched(
         hint: None,
         display: Default::default(),
         open_dir: None,
+        acts: Default::default(),
     };
     let mut events = Watched {
         screen: Arc::clone(&screen),
@@ -2010,6 +2014,7 @@ fn app_real_shot(
         hint: None,
         display: Default::default(),
         open_dir: None,
+        acts: Default::default(),
     };
     let keys = presses(spec)
         .into_iter()

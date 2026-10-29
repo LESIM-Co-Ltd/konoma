@@ -105,6 +105,7 @@ impl EventSource for CrosstermEvents {
                         .extend(self.late.feed(k).iter().filter_map(key_from_crossterm));
                 }
                 Ok(Event::Resize(..)) => return Next::Event(AppEvent::Resize),
+                Ok(Event::Paste(text)) => return Next::Event(AppEvent::Paste(text)),
                 Ok(_) => {}
                 Err(_) => return Next::End,
             }
@@ -138,7 +139,12 @@ fn restore_terminal() {
         super::pictures::delete_placed_pictures(&mut std::io::stdout());
     }
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(std::io::stdout(), terminal::LeaveAlternateScreen, Show);
+    let _ = execute!(
+        std::io::stdout(),
+        crossterm::event::DisableBracketedPaste,
+        terminal::LeaveAlternateScreen,
+        Show
+    );
 }
 
 /// The terminal in raw mode on the alternate screen; restored on `leave` and on `Drop`.
@@ -160,7 +166,12 @@ impl TerminalGuard {
             })?,
             active: true,
         };
-        execute!(std::io::stdout(), terminal::EnterAlternateScreen, Hide)
+        execute!(
+            std::io::stdout(),
+            terminal::EnterAlternateScreen,
+            Hide,
+            crossterm::event::EnableBracketedPaste
+        )
             .map_err(|e| AppError::Terminal(e.to_string()))?;
         guard
             .terminal

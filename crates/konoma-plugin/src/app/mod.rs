@@ -14,6 +14,7 @@
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod acts;
 mod copy;
 mod display;
 mod doc_pictures;
@@ -34,6 +35,7 @@ use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
+pub use acts::AppActs;
 pub use display::Display;
 pub use doc_pictures::DocEnv;
 pub use looping::{
@@ -253,6 +255,8 @@ pub struct Opened {
     pub unavailable: crate::manifest::Unavailable,
     /// The display types the plugin declared ([`Manifest::shows`]).
     pub shows: Vec<crate::manifest::ViewKind>,
+    /// The manifest of the plugin (its declared actions).
+    pub manifest: crate::manifest::Manifest,
     /// The plugins of the program (who draws the mermaid and math a document embeds).
     pub registry: Arc<Registry>,
 }
@@ -316,6 +320,10 @@ pub fn open_file_bundled(
     let shows = registry
         .manifest(&id)
         .map_or_else(|| plugin.manifest().shows, |m| m.shows.clone());
+    let manifest = registry
+        .manifest(&id)
+        .cloned()
+        .unwrap_or_else(|| plugin.manifest());
     let settings = settings_of(&id);
     let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
@@ -339,6 +347,7 @@ pub fn open_file_bundled(
         hint,
         unavailable,
         shows,
+        manifest,
         registry: Arc::new(registry),
     })
 }
@@ -356,6 +365,8 @@ pub struct Prepared {
     pub reopen: ReopenSource,
     /// How the text and the documents look (put it in [`AppCx::display`]).
     pub display: Display,
+    /// The actions the plugin declared, with the user's keys (put it in [`AppCx::acts`]).
+    pub acts: AppActs,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -402,6 +413,7 @@ pub fn prepare_bundled(
     let remote_images = loaded.0.external.remote_images;
     let display = Display::of(&loaded.0);
     let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
+    let user_keys = loaded.0.keys.clone();
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
@@ -422,6 +434,13 @@ pub fn prepare_bundled(
                 Arc::clone(&opened.registry),
                 Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
             ),
+            acts: AppActs::from_config(
+                &opened.plugin_id,
+                &opened.manifest,
+                &user_keys,
+                &plugin_tables,
+            )
+            .0,
             opened,
             keys,
             lang,
@@ -470,6 +489,7 @@ pub fn run_bundled(
         doc_env,
         reopen,
         display,
+        acts,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -494,6 +514,7 @@ pub fn run_bundled(
         reopen: Some(reopen),
         display,
         open_dir: std::env::current_dir().ok(),
+        acts,
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are
