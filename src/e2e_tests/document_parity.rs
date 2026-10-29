@@ -367,3 +367,471 @@ fn the_markdown_corpus_shows_the_same_page_as_the_host() {
     }
     assert!(checked >= cases.len() * 3, "{checked}");
 }
+
+// ---- the pictures of a document: local, remote, mermaid, math ------------------------------------
+//
+// Both sides get a picture backend (halfblocks). The host's results are pumped by hand; the app's
+// workers are held back by gates until the first screen is taken, so "before" is the screen with
+// every picture still waiting, and "after" is the screen once the app has converged. Nothing
+// waits on a clock: the app's event source returns when the screen reaches the host's settled
+// screen, and a deadline turns a screen that never gets there into a failure with both screens.
+
+use super::image_gif_parity::Shared;
+use konoma_plugin::app::{prepare, run_with_pictures, DocEnv, EventSource, Next, Pictures};
+use konoma_plugin::{Failure, Input, Manifest, OpenCx, Plugin, Session};
+use ratatui::buffer::Buffer;
+use ratatui::style::Color as RColor;
+use ratatui_image::picker::Picker;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// A latch: `wait` returns once `open` was called.
+struct Gate(Mutex<bool>, Condvar);
+
+impl Gate {
+    const fn new() -> Gate {
+        Gate(Mutex::new(false), Condvar::new())
+    }
+    fn open(&self) {
+        *self.0.lock().unwrap() = true;
+        self.1.notify_all();
+    }
+    fn wait(&self) {
+        let (g, t) = self
+            .1
+            .wait_timeout_while(self.0.lock().unwrap(), Duration::from_secs(30), |o| !*o)
+            .unwrap();
+        assert!(!t.timed_out() || *g, "a gate was never opened");
+    }
+}
+
+/// A plugin that holds the embedded renders of the plugin it wraps until the gate opens.
+struct Gated(Arc<dyn Plugin>, Arc<Gate>);
+
+impl Plugin for Gated {
+    fn manifest(&self) -> Manifest {
+        self.0.manifest()
+    }
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if matches!(input, Input::Embed { .. }) {
+            self.1.wait();
+        }
+        self.0.open(input, cx)
+    }
+}
+
+/// A screen: its rows (for the failure message) and the cells inside the frame; two screens are
+/// equal when their cells are.
+#[derive(Clone)]
+struct Cells {
+    rows: Vec<String>,
+    cells: Vec<(String, RColor, RColor)>,
+}
+
+impl PartialEq for Cells {
+    fn eq(&self, o: &Cells) -> bool {
+        self.cells == o.cells
+    }
+}
+
+/// The cells between the frame's borders (symbol and both colors), all rows between the frame's
+/// top and bottom line.
+fn cells_of(buf: &Buffer) -> Cells {
+    let rows: Vec<String> = (0..buf.area.height)
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = 0;
+            while x < buf.area.width {
+                let sym = buf[(x, y)].symbol();
+                line.push_str(sym);
+                x += (unicode_width::UnicodeWidthStr::width(sym) as u16).max(1);
+            }
+            line.trim_end().to_string()
+        })
+        .collect();
+    let (t, b) = (
+        rows.iter()
+            .position(|l| l.starts_with('┌'))
+            .expect("a frame"),
+        rows.iter()
+            .rposition(|l| l.starts_with('└'))
+            .expect("a frame end"),
+    );
+    let mut cells = Vec::new();
+    for y in t + 1..b {
+        for x in 1..buf.area.width - 1 {
+            let c = &buf[(x, y as u16)];
+            cells.push((c.symbol().to_string(), c.fg, c.bg));
+        }
+    }
+    Cells { rows, cells }
+}
+
+/// The host showing `file`, with its picture workers pumped by hand: the screen before any result
+/// was applied, and the screen once nothing is owed any more.
+fn host_pictures(
+    root: &std::path::Path,
+    file: &str,
+    cfg: Config,
+    w: u16,
+    h: u16,
+) -> (Cells, Cells) {
+    let mut s = Sim::with_config_sized(root, cfg, w, h).with_media();
+    s.select(file);
+    s.enter();
+    s.draw();
+    let before = cells_of(s.term.backend().buffer());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        s.draw();
+        let mut any = false;
+        while let Ok(r) = s.md_img_rx.as_ref().expect("media").try_recv() {
+            s.app.apply_md_image(r);
+            any = true;
+        }
+        while let Ok(r) = s.md_remote_rx.as_ref().expect("media").try_recv() {
+            s.app.apply_remote_fetch(r);
+            any = true;
+        }
+        while let Ok(r) = s.md_enc_rx.as_ref().expect("media").try_recv() {
+            s.app.apply_md_encode(r);
+            any = true;
+        }
+        if any {
+            continue;
+        }
+        if !(s.app.md_images_loading() || s.app.md_encode_in_flight()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{file}: the host never settled");
+        std::thread::yield_now();
+    }
+    s.draw();
+    (before, cells_of(s.term.backend().buffer()))
+}
+
+/// Takes the first screen, opens the gates, then waits for the screen to be `want`.
+struct SettleOn {
+    screen: Arc<Mutex<TestBackend>>,
+    gates: Vec<Arc<Gate>>,
+    fetch_gate: Option<&'static Gate>,
+    want: Cells,
+    before: Option<Cells>,
+    after: Option<Cells>,
+    started: Instant,
+}
+
+impl EventSource for SettleOn {
+    fn next(&mut self, wait: Option<Duration>) -> Next {
+        let now = cells_of(self.screen.lock().unwrap().buffer());
+        if self.before.is_none() {
+            self.before = Some(now);
+            for g in &self.gates {
+                g.open();
+            }
+            if let Some(g) = self.fetch_gate {
+                g.open();
+            }
+            return Next::Timeout;
+        }
+        if now == self.want {
+            self.after = Some(now);
+            return Next::End;
+        }
+        assert!(
+            self.started.elapsed() < Duration::from_secs(30),
+            "the app never reached the host's settled screen\napp:\n{}",
+            now.rows.join("\n")
+        );
+        std::thread::sleep(wait.unwrap_or_default().min(Duration::from_millis(2)));
+        Next::Timeout
+    }
+}
+
+/// What the app shows for `file` read through `config_text`, with the pictures held back until
+/// the first screen is taken. `plugins` are the extras beside the Markdown plugin.
+#[allow(clippy::too_many_arguments)]
+fn app_pictures(
+    file: &std::path::Path,
+    config_text: &str,
+    plugins: Vec<Arc<dyn Plugin>>,
+    gate: &Arc<Gate>,
+    fetcher: (konoma_plugin::document_pictures::Fetcher, &'static Gate),
+    want: Cells,
+    w: u16,
+    h: u16,
+) -> (Cells, Cells, DocEnv) {
+    let mut all: Vec<Arc<dyn Plugin>> = vec![Arc::new(konoma_markdown::MarkdownPlugin)];
+    all.extend(
+        plugins
+            .into_iter()
+            .map(|p| Arc::new(Gated(p, Arc::clone(gate))) as Arc<dyn Plugin>),
+    );
+    let loaded = (
+        konoma_host_core::shared::SharedConfig::parse(&format!(
+            "[ui]\nlang = \"en\"\n{config_text}"
+        ))
+        .expect("config"),
+        None,
+    );
+    let mut prepared = match prepare(all, file, TermCaps::new(), loaded) {
+        Ok(p) => p,
+        Err(_) => panic!("the app did not open {}", file.display()),
+    };
+    prepared.doc_env.fetcher = fetcher.0;
+    let screen = Arc::new(Mutex::new(TestBackend::new(w, h)));
+    let mut term = Terminal::new(Shared(Arc::clone(&screen))).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: String::new(),
+        shows: prepared.opened.shows.clone(),
+        ..AppCx::default()
+    };
+    let mut events = SettleOn {
+        screen: Arc::clone(&screen),
+        gates: vec![Arc::clone(gate)],
+        fetch_gate: Some(fetcher.1),
+        want,
+        before: None,
+        after: None,
+        started: Instant::now(),
+    };
+    let remote_images = prepared.doc_env.remote_images;
+    let pics = Pictures::new(
+        Picker::halfblocks(),
+        &prepared.opened.plugin_id,
+        &prepared.opened.path,
+        800,
+    )
+    .with_documents(prepared.doc_env);
+    run_with_pictures(
+        &mut term,
+        &mut *prepared.opened.session,
+        &mut events,
+        &cx,
+        &prepared.keys,
+        Some(pics),
+    )
+    .unwrap();
+    let env = DocEnv {
+        remote_images,
+        ..DocEnv::default()
+    };
+    (
+        events.before.expect("a first screen"),
+        events.after.expect("a settled screen"),
+        env,
+    )
+}
+
+fn stripes_png() -> Vec<u8> {
+    let img = image::RgbImage::from_fn(240, 120, |x, y| {
+        image::Rgb(match (x / 30 + y / 30) % 3 {
+            0 => [255, 0, 0],
+            1 => [0, 200, 0],
+            _ => [0, 0, 255],
+        })
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+macro_rules! test_fetcher {
+    ($name:ident, $count:ident, $gate:ident) => {
+        static $count: AtomicUsize = AtomicUsize::new(0);
+        static $gate: Gate = Gate::new();
+        fn $name(_url: &str, dest: &std::path::Path) -> bool {
+            $count.fetch_add(1, Ordering::SeqCst);
+            $gate.wait();
+            if let Some(dir) = dest.parent() {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(dest, stripes_png()).is_ok()
+        }
+    };
+}
+test_fetcher!(fetch_on, FETCHES_ON, FETCH_GATE_ON);
+test_fetcher!(fetch_off, FETCHES_OFF, FETCH_GATE_OFF);
+
+/// How many cells of `cells` show a picture (a halfblock glyph with a color).
+#[track_caller]
+fn same(what: &str, host: &Cells, app: &Cells) {
+    assert!(
+        host == app,
+        "{what}: the screens differ\nhost:\n{}\napp:\n{}",
+        host.rows.join("\n"),
+        app.rows.join("\n")
+    );
+}
+
+fn picture_cells(cells: &Cells) -> usize {
+    cells
+        .cells
+        .iter()
+        .filter(|c| c.0 == "▀" || c.0 == "▄")
+        .count()
+}
+
+const LOCAL_DOC: &str = "# Local\n\n![the stripes](stripes.png)\n\nafter the picture\n";
+const MERMAID_DOC: &str =
+    "# Diagram\n\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n\nafter\n";
+const MATH_DOC: &str = "# Math\n\ninline $x^2 + y^2$ here\n\n$$\\int_0^1 x\\,dx$$\n\nafter\n";
+
+fn mermaid_and_math() -> Vec<Arc<dyn Plugin>> {
+    vec![
+        Arc::new(konoma_mermaid::MermaidPlugin),
+        Arc::new(konoma_math::MathPlugin),
+    ]
+}
+
+/// One document in both: the screens before and after the pictures arrive. Returns the app's
+/// (before, after) cells.
+fn compare_pictures(
+    label: &str,
+    doc: &str,
+    cfg: Config,
+    config_text: &str,
+    plugins: Vec<Arc<dyn Plugin>>,
+) -> (Cells, Cells) {
+    let dir = sandbox("doc-pictures");
+    std::fs::write(dir.join("stripes.png"), stripes_png()).unwrap();
+    std::fs::write(dir.join("d.md"), doc).unwrap();
+    let root = canon(&dir);
+    let (w, h) = (100u16, 48u16);
+    let (hb, ha) = host_pictures(&root, "d.md", cfg, w, h + 1);
+    let gate = Arc::new(Gate::new());
+    let (ab, aa, _) = app_pictures(
+        &root.join("d.md"),
+        config_text,
+        plugins,
+        &gate,
+        (fetch_on, &FETCH_GATE_ON),
+        ha.clone(),
+        w,
+        h,
+    );
+    same(&format!("{label}: before the pictures"), &hb, &ab);
+    same(&format!("{label}: settled"), &ha, &aa);
+    (ab, aa)
+}
+
+#[test]
+fn a_local_picture_is_drawn_as_in_the_host() {
+    let (before, after) = compare_pictures("local", LOCAL_DOC, cfg_en(), "", Vec::new());
+    assert_eq!(picture_cells(&before), 0, "nothing is drawn yet");
+    assert!(picture_cells(&after) > 50, "{}", picture_cells(&after));
+}
+
+#[test]
+fn mermaid_and_math_are_drawn_by_their_plugins_as_in_the_host() {
+    for (label, doc) in [("mermaid", MERMAID_DOC), ("math", MATH_DOC)] {
+        let (before, after) = compare_pictures(label, doc, cfg_en(), "", mermaid_and_math());
+        assert_eq!(picture_cells(&before), 0, "{label}: nothing is drawn yet");
+        assert!(
+            picture_cells(&after) > 30,
+            "{label}: {}",
+            picture_cells(&after)
+        );
+    }
+}
+
+#[test]
+fn with_no_mermaid_or_math_plugin_the_document_keeps_its_text() {
+    let mut cfg = cfg_en();
+    for id in ["mermaid", "math"] {
+        let mut t = toml::Table::new();
+        t.insert("enabled".into(), toml::Value::Boolean(false));
+        cfg.plugins.insert(id.into(), t);
+    }
+    for (label, doc) in [("mermaid", MERMAID_DOC), ("math", MATH_DOC)] {
+        let (_, after) = compare_pictures(label, doc, cfg.clone(), "", Vec::new());
+        assert_eq!(picture_cells(&after), 0, "{label}: the text stays text");
+    }
+}
+
+#[test]
+fn a_remote_picture_is_fetched_and_drawn_as_in_the_host() {
+    let cache = unique_tmp("konoma_doc_pictures_remote_cache");
+    crate::test_support::set_test_cache_root(cache.to_path_buf());
+    // The host reads the picture from the cache (no download); the app has its own address, so it
+    // downloads through the test fetcher (held until the first screen is taken).
+    let host_url = "https://pictures.invalid/host.png";
+    let app_url = "https://pictures.invalid/app.png";
+    let cached = konoma_plugin::document_pictures::md_remote_cache_path(host_url).unwrap();
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, stripes_png()).unwrap();
+    let doc = |u: &str| format!("# Remote\n\n![far away]({u})\n\nafter\n");
+    let dir = sandbox("doc-pictures-remote");
+    std::fs::write(dir.join("h.md"), doc(host_url)).unwrap();
+    std::fs::write(dir.join("a.md"), doc(app_url)).unwrap();
+    let root = canon(&dir);
+    let (w, h) = (100u16, 40u16);
+    let (hb, ha) = host_pictures(&root, "h.md", cfg_en(), w, h + 1);
+    FETCHES_ON.store(0, Ordering::SeqCst);
+    let (ab, aa, _) = app_pictures(
+        &root.join("a.md"),
+        "",
+        Vec::new(),
+        &Arc::new(Gate::new()),
+        (fetch_on, &FETCH_GATE_ON),
+        ha.clone(),
+        w,
+        h,
+    );
+    assert_eq!(FETCHES_ON.load(Ordering::SeqCst), 1, "one download");
+    // The host already holds the file (reading the cache is how it stays off the network), so it
+    // reserves the picture's cells at once; the app is still waiting for its download. Both are
+    // text, not a picture.
+    let _ = &hb;
+    assert!(
+        ab.rows.iter().any(|r| r.contains("loading")),
+        "{}",
+        ab.rows.join("\n")
+    );
+    same("remote: settled", &ha, &aa);
+    assert_eq!(picture_cells(&ab), 0);
+    assert!(picture_cells(&aa) > 50);
+}
+
+#[test]
+fn with_remote_images_off_nothing_is_fetched_and_the_text_stays_as_in_the_host() {
+    let cache = unique_tmp("konoma_doc_pictures_remote_off");
+    crate::test_support::set_test_cache_root(cache.to_path_buf());
+    let url = "https://pictures.invalid/off.png";
+    let dir = sandbox("doc-pictures-remote-off");
+    std::fs::write(
+        dir.join("d.md"),
+        format!("# Off\n\n![far away]({url})\n\nafter\n"),
+    )
+    .unwrap();
+    let root = canon(&dir);
+    let mut cfg = cfg_en();
+    cfg.external.remote_images = false;
+    let (w, h) = (100u16, 30u16);
+    let (hb, ha) = host_pictures(&root, "d.md", cfg, w, h + 1);
+    FETCHES_OFF.store(0, Ordering::SeqCst);
+    // The gate is never opened for the fetcher: a fetch would hang and fail the test.
+    let (ab, aa, env) = app_pictures(
+        &root.join("d.md"),
+        "[external]\nremote_images = false\n",
+        Vec::new(),
+        &Arc::new(Gate::new()),
+        (fetch_off, &FETCH_GATE_OFF),
+        ha.clone(),
+        w,
+        h,
+    );
+    assert!(
+        !env.remote_images,
+        "the config reached the app's environment"
+    );
+    assert_eq!(FETCHES_OFF.load(Ordering::SeqCst), 0, "nothing is fetched");
+    same("off: before", &hb, &ab);
+    same("off: settled", &ha, &aa);
+    assert_eq!(picture_cells(&aa), 0);
+}

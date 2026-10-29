@@ -42,6 +42,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
+use super::doc_pictures::{DocEnv, DocPics};
+use super::document::Laid;
 use super::still::{Still, StillShape};
 use crate::canvas_pictures::{
     decode_canvas, draw_images, CanvasPictureHost, CanvasPictures, CanvasPolicy, SvgDraw,
@@ -155,6 +157,9 @@ pub struct Pictures {
     picker: Picker,
     /// The still picture of a `View::Image`, made when the first one is shown.
     still: Option<Still>,
+    /// The pictures of a document (made on first use, with `doc_env`).
+    doc: Option<DocPics>,
+    doc_env: Option<DocEnv>,
 }
 
 impl Pictures {
@@ -191,6 +196,8 @@ impl Pictures {
             on_canvas: false,
             picker: kept,
             still: None,
+            doc: None,
+            doc_env: None,
         }
     }
 
@@ -201,6 +208,47 @@ impl Pictures {
     }
 
     /// The same writing the kitty deletes to `out` (a test seam).
+    /// What the document's pictures need besides the terminal (who draws mermaid and math,
+    /// whether remote images are fetched, the download itself).
+    pub fn with_documents(mut self, env: DocEnv) -> Pictures {
+        match self.doc.as_mut() {
+            Some(d) => d.set_env(env),
+            None => self.doc_env = Some(env),
+        }
+        self
+    }
+
+    /// The pictures of the document on screen (made the first time a document asks).
+    pub fn doc_pics(&mut self) -> &mut DocPics {
+        if self.doc.is_none() {
+            let mut d = DocPics::new(
+                &self.picker,
+                &self.plugin_id,
+                &self.path,
+                self.raster_px,
+                Arc::clone(&self.svg),
+            );
+            if let Some(env) = self.doc_env.take() {
+                d.set_env(env);
+            }
+            self.doc = Some(d);
+        }
+        self.doc.as_mut().expect("just made")
+    }
+
+    /// Whether the page must be laid out again (a picture's result changed what it reserves).
+    pub fn take_doc_relayout(&mut self) -> bool {
+        self.doc.as_mut().is_some_and(DocPics::take_relayout)
+    }
+
+    /// Draw the pictures of a document over the cells in `inner` (`None`: the frame is not a
+    /// document).
+    pub fn draw_document(&mut self, buf: &mut Buffer, inner: Rect, doc: Option<(&Laid, usize)>) {
+        if let Some(d) = self.doc.as_mut() {
+            d.draw(buf, inner, doc);
+        }
+    }
+
     pub fn with_out(mut self, out: Box<dyn Write>) -> Pictures {
         self.out = out;
         self
@@ -362,6 +410,9 @@ impl Pictures {
             s.poll_at(now);
         }
         self.cache.advance_gifs_if_due();
+        if let Some(d) = self.doc.as_mut() {
+            d.poll_at(now);
+        }
         if let Some(at) = self.again_at {
             if Instant::now() >= at && self.job.is_none() {
                 self.again_at = None;
@@ -401,6 +452,9 @@ impl Pictures {
                 want(g);
             }
         }
+        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in(BUSY_POLL)) {
+            want(w);
+        }
         wake
     }
 
@@ -421,13 +475,17 @@ impl Pictures {
     /// Whether the pictures moved or went since the last time this was asked (the frame then has
     /// to be cleared and drawn again, or the old placement stays on screen).
     pub fn take_moved(&mut self) -> bool {
-        self.overlay.take_moved()
+        let doc = self.doc.as_mut().is_some_and(DocPics::take_moved);
+        self.overlay.take_moved() || doc
     }
 
     /// Write the deletes of the kitty images of the pictures that went, and flush. Nothing is
     /// written when there are none.
     pub fn flush_deletes(&mut self) {
-        let deletes = self.cache.take_kitty_deletes();
+        let mut deletes = self.cache.take_kitty_deletes();
+        if let Some(d) = self.doc.as_mut() {
+            deletes.extend(d.take_kitty_deletes());
+        }
         if deletes.is_empty() {
             return;
         }

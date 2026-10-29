@@ -25,6 +25,33 @@ use crate::document_render::PictureSlots;
 /// it never dominates the viewport.
 pub const MD_IMAGE_MAX_ROWS: u16 = 24;
 
+/// The embedded kind a mermaid fence is drawn under (the registry names the plugin for it).
+pub const FENCE_MERMAID: &str = "fence:mermaid";
+/// The embedded kind a formula is drawn under.
+pub const MATH: &str = "math";
+/// The longest side a formula is rasterized at (the encode worker fits it into its cells).
+pub const MATH_PX: u32 = 1024;
+/// The default height cap of an inline diagram, in rows.
+pub const DEFAULT_MERMAID_ROWS: u16 = 24;
+
+/// The validated `[plugins.mermaid] rows`: `0`, a negative number or one past `u16` is the
+/// default.
+pub fn mermaid_rows_cap(raw: i64) -> u16 {
+    match u16::try_from(raw) {
+        Ok(0) | Err(_) => DEFAULT_MERMAID_ROWS,
+        Ok(n) => n,
+    }
+}
+
+/// The rows a mermaid fence may take in a viewport of `viewport` rows: the cap, shrunk so the
+/// fence block fits (viewport 0: not known yet, the cap).
+pub fn mermaid_fit_rows(cap: u16, viewport: u16) -> u16 {
+    if viewport == 0 {
+        return cap;
+    }
+    cap.min(viewport.saturating_sub(2)).max(4)
+}
+
 /// What a host knows that decides the size of a document's pictures.
 pub struct PictureLookup<'a> {
     pub cache: &'a InlineImageCache,

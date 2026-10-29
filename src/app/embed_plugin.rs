@@ -27,8 +27,7 @@ use konoma_plugin::{Input, OpenCx, View, ViewCx, ViewReq};
 use super::*;
 
 /// The embedded kinds the host asks plugins for.
-pub(super) const FENCE_MERMAID: &str = "fence:mermaid";
-pub(super) const MATH: &str = "math";
+pub(super) use konoma_plugin::document_pictures::{FENCE_MERMAID, MATH};
 
 /// The representation name of the text diagram (the mermaid plugin's `Layout` names it).
 pub(super) const REPR_TEXT: &str = konoma_mermaid::REPR_TEXT;

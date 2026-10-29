@@ -721,3 +721,24 @@ fn a_cached_picture_is_reported_so_a_host_can_skip_building_the_plugin() {
         .request_fence(code.into(), None, "fence:mermaid", 512);
     assert!(st.pictures().is_cached(&key));
 }
+
+#[test]
+fn the_mermaid_rows_cap_takes_a_valid_setting_and_defaults_otherwise() {
+    assert_eq!(mermaid_rows_cap(9), 9);
+    assert_eq!(mermaid_rows_cap(i64::from(u16::MAX)), u16::MAX);
+    for bad in [0, -1, i64::from(u16::MAX) + 1, i64::MIN] {
+        assert_eq!(mermaid_rows_cap(bad), DEFAULT_MERMAID_ROWS, "{bad}");
+    }
+}
+
+#[test]
+fn a_fence_shrinks_to_leave_the_viewport_its_chrome_but_never_below_four_rows() {
+    // A viewport not known yet keeps the cap; a known one leaves two rows.
+    assert_eq!(mermaid_fit_rows(24, 0), 24);
+    assert_eq!(mermaid_fit_rows(24, 40), 24);
+    assert_eq!(mermaid_fit_rows(24, 20), 18);
+    assert_eq!(mermaid_fit_rows(9, 40), 9);
+    assert_eq!(mermaid_fit_rows(24, 6), 4);
+    assert_eq!(mermaid_fit_rows(24, 1), 4);
+    assert_eq!(mermaid_fit_rows(2, 40), 4);
+}

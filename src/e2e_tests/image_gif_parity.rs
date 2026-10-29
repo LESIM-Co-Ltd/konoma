@@ -32,7 +32,7 @@ const BLUE: [u8; 3] = [0, 0, 255];
 const LONG: u32 = 600_000;
 
 /// A `TestBackend` the event source can look at while the loop draws on it.
-struct Shared(Arc<Mutex<TestBackend>>);
+pub(super) struct Shared(pub(super) Arc<Mutex<TestBackend>>);
 
 impl Backend for Shared {
     type Error = std::convert::Infallible;

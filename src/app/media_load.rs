@@ -196,7 +196,7 @@ impl App {
     /// Raster target (max edge px) for a math equation. Generous so the once-rendered raster stays
     /// crisp when the encode worker fits it into the (usually small) reserved cell area.
     pub(super) fn math_px(&self) -> u32 {
-        1024
+        konoma_plugin::document_pictures::MATH_PX
     }
 
     /// Validated mermaid `rows` (`[plugins.mermaid] rows`, or the old `[ui] mermaid_rows`): max
@@ -225,10 +225,7 @@ impl App {
     /// tests without a render pass) keeps the cap.
     pub(super) fn mermaid_fit_rows(&self) -> u16 {
         let cap = self.mermaid_rows_cap();
-        if self.tab.preview_viewport == 0 {
-            return cap;
-        }
-        cap.min(self.tab.preview_viewport.saturating_sub(2)).max(4)
+        konoma_plugin::document_pictures::mermaid_fit_rows(cap, self.tab.preview_viewport)
     }
 
     /// The Nth ```mermaid fence body of the Markdown file at `md`, re-extracted fresh so an external

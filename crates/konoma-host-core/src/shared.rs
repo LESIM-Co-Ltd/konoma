@@ -221,6 +221,9 @@ pub struct SharedExternal {
     pub open_links: bool,
     /// `e` on an Office document opens it in a GUI app instead of handing the zip to the editor.
     pub office_apps: bool,
+    /// Fetching `http(s)://` images a document names (`curl`): the only network call. Off marks
+    /// every remote image failed without asking.
+    pub remote_images: bool,
 }
 
 impl Default for SharedExternal {
@@ -228,6 +231,7 @@ impl Default for SharedExternal {
         Self {
             open_links: true,
             office_apps: true,
+            remote_images: true,
         }
     }
 }
@@ -295,6 +299,15 @@ mod tests {
         assert!(c.editor.command.is_empty() && c.editor.ext.is_empty());
         assert!(c.keys.surfaces.is_empty());
         assert_eq!(c.keys.copy_prefix, "c");
+    }
+
+    #[test]
+    fn remote_images_is_read_and_defaults_to_on() {
+        assert!(SharedConfig::parse("").unwrap().external.remote_images);
+        let off = SharedConfig::parse("[external]\nremote_images = false\n").unwrap();
+        assert!(!off.external.remote_images);
+        assert!(off.external.open_links, "the other switches stay default");
+        assert!(SharedConfig::parse("[external]\nremote_images = 1\n").is_err());
     }
 
     #[test]

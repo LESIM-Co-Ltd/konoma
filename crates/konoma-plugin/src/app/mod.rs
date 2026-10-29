@@ -14,6 +14,7 @@
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod doc_pictures;
 mod document;
 mod draw;
 mod looping;
@@ -30,6 +31,7 @@ use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
+pub use doc_pictures::DocEnv;
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
@@ -192,6 +194,8 @@ pub struct Opened {
     pub unavailable: crate::manifest::Unavailable,
     /// The display types the plugin declared ([`Manifest::shows`]).
     pub shows: Vec<crate::manifest::ViewKind>,
+    /// The plugins of the program (who draws the mermaid and math a document embeds).
+    pub registry: Arc<Registry>,
 }
 
 /// Check the file, pick the plugin by the registry's rules and open a session. Nothing here
@@ -261,6 +265,7 @@ pub fn open_file_with(
         path,
         unavailable,
         shows,
+        registry: Arc::new(registry),
     })
 }
 
@@ -271,6 +276,8 @@ pub struct Prepared {
     /// The language of the session: `"ja"` or `"en"`.
     pub lang: &'static str,
     pub svg_max_px: u32,
+    /// What a document's pictures need (who draws mermaid and math, `external.remote_images`).
+    pub doc_env: doc_pictures::DocEnv,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -302,15 +309,23 @@ pub fn prepare(
     loaded: (konoma_host_core::shared::SharedConfig, Option<String>),
 ) -> Result<Prepared, PrepareFailure> {
     let svg_max_px = loaded.0.ui.svg_max_px;
+    let remote_images = loaded.0.external.remote_images;
     let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
         konoma_host_core::lang::Lang::En => "en",
     };
+    let (tables, moved) = (plugin_tables.clone(), moved_ui.clone());
     let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &moved_ui, id);
     match open_file_with(plugins, path, lang, term, &settings_of) {
         Ok(opened) => Ok(Prepared {
+            doc_env: doc_pictures::DocEnv::from_registry(
+                Arc::clone(&opened.registry),
+                lang,
+                Box::new(move |id| crate::config::plugin_settings(&tables, &moved, id)),
+                remote_images,
+            ),
             opened,
             keys,
             lang,
@@ -344,6 +359,7 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         keys,
         lang,
         svg_max_px,
+        doc_env,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -379,7 +395,9 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         .map(|w| (w.columns, w.rows, w.width, w.height));
     let pictures = picker
         .map(|p| konoma_widgets::term_query::fix_picker_font_size(p, window_size))
-        .map(|p| Pictures::new(p, &opened.plugin_id, &opened.path, svg_max_px));
+        .map(|p| {
+            Pictures::new(p, &opened.plugin_id, &opened.path, svg_max_px).with_documents(doc_env)
+        });
     let result = run_with_pictures(
         guard.terminal(),
         &mut *opened.session,

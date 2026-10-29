@@ -1017,6 +1017,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     usize::from(body_rows),
                     (&cx.lang, keys.lang()),
                     &cx.title,
+                    pictures.as_mut(),
                 ),
                 Err(Some(frame)) => (frame, None),
                 // The frame on screen stays.
@@ -1073,6 +1074,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         }
         if let Some(p) = pictures.as_mut() {
             p.poll();
+            // A picture's result changed what the page reserves: lay it out again before drawing.
+            if matches!(base, Frame::Document(_)) && p.take_doc_relayout() {
+                need_view = true;
+                continue;
+            }
         }
         // A picture whose decode failed is a page that failed to draw, as one whose `view`
         // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
@@ -1443,6 +1449,11 @@ fn draw_frame<B: Backend>(
                 let body = draw::body_of(f.area());
                 if let Some(p) = pictures.as_deref_mut() {
                     p.draw(f.buffer_mut(), body, on_canvas);
+                    let doc = match &*frame {
+                        Frame::Document(d) => Some((&*d.laid, d.scroll)),
+                        _ => None,
+                    };
+                    p.draw_document(f.buffer_mut(), super::document::DocFrame::inner(body), doc);
                 }
                 if let Some(lang) = image {
                     let inner = draw::image_inner(body);
@@ -1496,6 +1507,7 @@ fn frame_of(
     rows: usize,
     (lang_code, lang): (&str, Lang),
     name: &str,
+    pictures: Option<&mut Pictures>,
 ) -> (Frame, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
@@ -1581,7 +1593,14 @@ fn frame_of(
             // The frame has a border: the page is laid out inside it.
             let inner_w = st.width.saturating_sub(2);
             let inner_h = rows.saturating_sub(2);
-            let laid = super::document::DocCache::get(&mut st.doc, &dv, inner_w, lang);
+            let laid = super::document::DocCache::get(
+                &mut st.doc,
+                &dv,
+                inner_w,
+                u16::try_from(rows).unwrap_or(u16::MAX),
+                lang,
+                pictures.map(Pictures::doc_pics),
+            );
             clamp(st, laid.rows(), inner_h);
             // The host pages by one row less than the frame and halves the frame itself.
             st.page = inner_h.saturating_sub(1).max(1);
