@@ -220,6 +220,11 @@ pub(super) fn scroll_words(lang: Lang) -> ScrollWords {
     }
 }
 
+/// The furthest a document scrolls, in display rows: the host keeps the vertical scroll in a
+/// `u16` (`preview_scroll`), and the row offset into the first line shown must fit the one a
+/// `Paragraph` takes, so a line wrapped into 65536 rows or more never wraps around.
+pub const MAX_DOC_SCROLL: usize = u16::MAX as usize;
+
 /// A document on screen.
 pub struct DocFrame {
     /// The path of the file as the host titles it (or the file name).
@@ -259,7 +264,11 @@ impl DocFrame {
         let (lo, hi, local) = if pre.len() == lines.len() + 1 {
             let lo = pre.partition_point(|&p| p <= s).saturating_sub(1);
             let hi = pre.partition_point(|&p| p < s + h).min(lines.len());
-            (lo, hi.max(lo), (s - pre[lo]) as u16)
+            (
+                lo,
+                hi.max(lo),
+                u16::try_from(s - pre[lo]).unwrap_or(u16::MAX),
+            )
         } else {
             (s.min(lines.len()), (s + h).min(lines.len()), 0)
         };
@@ -300,5 +309,38 @@ mod title_tests {
         let cut = doc_title("a.md", true, Lang::En);
         assert_eq!(cut, " a.md · truncated (too large to show in full) ");
         assert!(doc_title("", true, Lang::Jp).starts_with(" preview · 打ち切り"));
+    }
+}
+
+#[cfg(test)]
+mod slice_tests {
+    use super::*;
+
+    fn frame(rows_of_the_one_line: usize, scroll: usize) -> DocFrame {
+        DocFrame {
+            name: String::new(),
+            laid: Arc::new(Laid {
+                lines: vec![RLine::from("x")],
+                row_prefix: vec![0, rows_of_the_one_line],
+                images: Vec::new(),
+                max_line_cols: 1,
+            }),
+            scroll,
+            wrap: true,
+            hscroll: 0,
+            lang: Lang::En,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn the_offset_into_a_line_wrapped_past_65535_rows_never_wraps_around() {
+        // The host's furthest scroll: the offset is exactly the scroll.
+        let (lines, local) = frame(100_000, MAX_DOC_SCROLL).slice(10);
+        assert_eq!((lines.len(), local), (1, u16::MAX));
+        // Past it (never reached: the loop caps the scroll), the offset saturates; `as u16`
+        // gave 4464 here, a different part of the line.
+        let (_, local) = frame(100_000, 70_000).slice(10);
+        assert_eq!(local, u16::MAX);
     }
 }

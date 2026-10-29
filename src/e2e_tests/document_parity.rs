@@ -1249,6 +1249,8 @@ fn app_reopen_term_bundled(
         term: TermCaps::new(),
         title: String::new(),
         shows: prepared.opened.shows.clone(),
+        unavailable: prepared.opened.unavailable.clone(),
+        plugin_id: prepared.opened.plugin_id.clone(),
         reopen: Some(prepared.reopen.clone()),
         ..AppCx::default()
     };
@@ -1310,6 +1312,62 @@ fn a_docx_reopened_as_markdown_shows_the_same_page_as_the_host() {
         checked += 1;
     }
     assert_eq!(checked, 3);
+}
+
+/// The footer and the help of a Word document opened again as Markdown are the host's for the
+/// same document (the keys that act on it, and the rows of its help).
+#[test]
+fn a_docx_reopened_as_markdown_has_the_hosts_footer_and_help() {
+    let dir = sandbox("reopen-docx-footer");
+    build_docx(&dir.join("d.docx"), &docx_body());
+    let root = canon(&dir);
+    let (mut footers, mut helps) = (0, 0);
+    // A Word file is opened, not edited, by the host (`e:open`); the app has no `e`.
+    let host_only: Vec<&str> = HOST_ONLY.iter().copied().chain(["e:open"]).collect();
+    for spec in ["", "G", "<C-f>"] {
+        let what = format!("d.docx [{spec}]");
+        let hs = host_term(&root, "d.docx", 220, 31, spec);
+        let a = app_reopen_term(
+            &root.join("d.docx"),
+            office_docs_with_markdown(),
+            100,
+            30,
+            spec,
+        );
+        let (hh, ah) = (
+            hints(rows_of(&hs.term).last().expect("footer")),
+            hints(rows_of(&a).last().expect("footer")),
+        );
+        let (_, n) = same_footer(&what, &hh, &ah, &host_only, &|t| {
+            t.starts_with("q:quit") || t.starts_with("line ")
+        });
+        assert!(n > 3, "{what}: {n} hints compared\n{hh:?}\n{ah:?}");
+        footers += 1;
+    }
+    for spec in ["?", "G ?"] {
+        let what = format!("d.docx [{spec}]");
+        let hs = host_term(&root, "d.docx", 100, 130, spec);
+        let a = app_reopen_term(
+            &root.join("d.docx"),
+            office_docs_with_markdown(),
+            99,
+            130,
+            spec,
+        );
+        let (hr, ar) = (rows_of(&hs.term), rows_of(&a));
+        let hl: Vec<String> = panel_lines(&hr)
+            .into_iter()
+            .filter(|l| !l.is_empty())
+            .collect();
+        let al: Vec<String> = panel_lines(&ar)
+            .into_iter()
+            .filter(|l| !l.is_empty())
+            .collect();
+        let (n, _) = same_help_rows(&what, &hl, &al, HELP_HOST_ONLY);
+        assert!(n >= 8, "{what}: {n} help rows compared");
+        helps += 1;
+    }
+    assert_eq!((footers, helps), (3, 2));
 }
 
 fn office_docs_with_markdown() -> Vec<Arc<dyn Plugin>> {
@@ -2046,4 +2104,54 @@ fn the_help_panel_over_a_document_is_placed_as_the_hosts_panel() {
     }
     assert!(compared >= 13 * 6 - 6, "{compared}");
     assert!(moved >= 13 * 2, "{moved}");
+}
+
+/// A Markdown file that does not wrap (`ui.wrap = false`): the footer is the host's. The host
+/// scrolls such a page sideways with `h`/`l`/`0`/`$` (`sideways_keys_move_the_host_page`) and
+/// its decorated-document footer has no hint for them; the app follows it word for word.
+#[test]
+fn an_unwrapped_document_has_the_hosts_footer() {
+    let dir = sandbox("doc-nowrap-footer");
+    for (name, body) in ui_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let toml = "[ui]\nwrap = false\n";
+    let mut compared = 0;
+    for (name, _) in ui_fixtures() {
+        for spec in ["", "G", "<C-f>", "l l"] {
+            let what = format!("{name} [{spec}] nowrap");
+            let h = host_term_with(&root, &name, 220, HOST_H, spec, toml);
+            let a = app_term_with(&root.join(&name), 220, APP_H, spec, toml);
+            let (hh, ah) = (
+                hints(rows_of(&h.term).last().expect("footer")),
+                hints(rows_of(&a).last().expect("footer")),
+            );
+            let (_, n) = same_footer(&what, &hh, &ah, HOST_ONLY, &|t| {
+                t.starts_with("q:quit") || t.starts_with("line ")
+            });
+            compared += n;
+        }
+    }
+    assert!(compared > 100, "{compared}");
+}
+
+/// What the host does with the sideways keys over an unwrapped Markdown page (the fact the
+/// footer test above is read against): the page moves.
+#[test]
+fn sideways_keys_move_the_host_page_of_an_unwrapped_document() {
+    let dir = sandbox("doc-nowrap-keys");
+    for (name, body) in ui_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let toml = "[ui]\nwrap = false\n";
+    let still = inner(&host_term_with(&root, "ui.md", 80, HOST_H, "", toml).term);
+    for spec in ["l", "$"] {
+        let moved = inner(&host_term_with(&root, "ui.md", 80, HOST_H, spec, toml).term);
+        assert_ne!(moved, still, "[{spec}] moves the page");
+    }
+    // And back: `l h` is where it was.
+    let back = inner(&host_term_with(&root, "ui.md", 80, HOST_H, "l h", toml).term);
+    assert_eq!(back, still);
 }

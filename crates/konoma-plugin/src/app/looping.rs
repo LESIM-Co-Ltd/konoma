@@ -933,9 +933,40 @@ const MAX_REDRAW: Duration = Duration::from_secs(24 * 60 * 60);
 /// widget draws).
 const REOPEN_ACCEPTS: &str = "markdown";
 
+/// The declarations of the plugin a `Reopen` was opened in (its manifest).
+struct ReopenedAs {
+    shows: Vec<ViewKind>,
+    unavailable: crate::manifest::Unavailable,
+    plugin_id: String,
+}
+
+impl State {
+    /// The display types of the plugin showing the file now.
+    fn shows<'a>(&'a self, cx: &'a AppCx) -> &'a [ViewKind] {
+        self.reopened_as.as_ref().map_or(&cx.shows, |r| &r.shows)
+    }
+
+    /// What the plugin showing the file now says when it shows nothing.
+    fn unavailable<'a>(&'a self, cx: &'a AppCx) -> &'a crate::manifest::Unavailable {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.unavailable, |r| &r.unavailable)
+    }
+
+    /// The id of the plugin showing the file now.
+    fn plugin_id<'a>(&'a self, cx: &'a AppCx) -> &'a str {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.plugin_id, |r| &r.plugin_id)
+    }
+}
+
 /// What the loop keeps between two frames.
 #[derive(Default)]
 struct State {
+    /// What the plugin a `Reopen` was opened in is: from then on it, not the plugin that
+    /// converted the file, says what a failed page was (`AppCx::shows` and the like).
+    reopened_as: Option<ReopenedAs>,
     /// The first line shown of a text.
     scroll: usize,
     /// Cells scrolled off the left edge of a text that does not wrap.
@@ -1024,6 +1055,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
     // from then on it is the one asked.
     let mut swapped: Option<Box<dyn Session>> = None;
+    // A `Reopen` that failed: the converting session is still the one asked, and it would answer
+    // `Reopen` again at every key and resize; the failure is the answer from then on, so the
+    // destination is opened (and fails) once, as konoma's one load does.
+    let mut reopen_failed: Option<crate::session::Failure> = None;
     macro_rules! sess {
         () => {
             match swapped.as_deref_mut() {
@@ -1054,7 +1089,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let mut viewed = sess!().view(&req, &vcx);
+            let mut viewed = match &reopen_failed {
+                Some(f) => Err(f.clone()),
+                None => sess!().view(&req, &vcx),
+            };
             // "Open this again as Markdown": the plugin that takes the content type is opened
             // on the text (the rule konoma follows, `crate::reopen`), and its session replaces
             // this one. Everything of the old document is dropped with it: the scroll, the
@@ -1074,6 +1112,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         swapped = Some(opened.session);
                         st = State {
                             display: cx.display.clone(),
+                            reopened_as: target.as_ref().map(|t| {
+                                let m = t.plugin.manifest();
+                                ReopenedAs {
+                                    shows: m.shows,
+                                    unavailable: m.unavailable,
+                                    plugin_id: m.id,
+                                }
+                            }),
                             ..State::default()
                         };
                         st.page = usize::from(body_rows).max(1);
@@ -1085,7 +1131,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                         Ok(View::Document(opened.document))
                     }
-                    Err(f) => Err(f),
+                    Err(f) => {
+                        reopen_failed = Some(f.clone());
+                        Err(f)
+                    }
                 };
             }
             let frame_name = match &cx.open_dir {
@@ -1110,7 +1159,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     let picture = failed_page_is_picture(cx, &st);
                     note_failed_page(sess!(), cx, &mut st, picture);
                     Err(Some(failure_frame(
-                        image_failure_for(&cx.unavailable, &f),
+                        image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
                         cx,
                         keys.lang(),
@@ -1799,6 +1848,8 @@ fn frame_of(
             let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
                 && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
             clamp(st, laid.rows(), inner_h);
+            // The host's vertical scroll is a `u16`: a document taller than that scrolls no further.
+            st.scroll = st.scroll.min(super::document::MAX_DOC_SCROLL);
             let hscroll = settle_hscroll(st, laid.max_line_cols, inner_w);
             // The host pages by one row less than the frame and halves the frame itself.
             st.page = inner_h.saturating_sub(1).max(1);
@@ -1831,8 +1882,8 @@ fn frame_of(
 /// on screen before (a first page that fails has nothing before it).
 fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
     let declared = match (
-        cx.shows.contains(&ViewKind::Image),
-        cx.shows.contains(&ViewKind::Table),
+        st.shows(cx).contains(&ViewKind::Image),
+        st.shows(cx).contains(&ViewKind::Table),
     ) {
         (true, false) => Some(true),
         (false, true) => Some(false),
@@ -1847,8 +1898,8 @@ fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
 fn note_failed_page(session: &dyn Session, cx: &AppCx, st: &mut State, picture: bool) {
     let declared = matches!(
         (
-            cx.shows.contains(&ViewKind::Image),
-            cx.shows.contains(&ViewKind::Table),
+            st.shows(cx).contains(&ViewKind::Image),
+            st.shows(cx).contains(&ViewKind::Table),
         ),
         (true, false) | (false, true)
     );
@@ -1884,18 +1935,23 @@ fn failure_frame(
     use crate::canvas_pictures::{raw_file_body, unavailable_text};
     st.failed_body = None;
     let text = unavailable_text(
-        &cx.unavailable,
+        st.unavailable(cx),
         message,
         why,
         (&cx.lang, lang),
-        &cx.plugin_id,
+        st.plugin_id(cx),
         &cx.path,
         &|| raw_file_body(&cx.path, lang),
     );
     match text {
         // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma. It
         // is kept: a key scrolls it, the file is not read again.
-        Some(t) if matches!(cx.unavailable, crate::manifest::Unavailable::RawText { .. }) => {
+        Some(t)
+            if matches!(
+                st.unavailable(cx),
+                crate::manifest::Unavailable::RawText { .. }
+            ) =>
+        {
             st.failed_body = Some(FailedBody {
                 page: st.at_page,
                 // Not cleaned: konoma hands the text to ratatui as it is, which drops the control
@@ -1909,7 +1965,7 @@ fn failure_frame(
             name: cx.title.clone(),
             lang,
             why,
-            plugin_id: cx.plugin_id.clone(),
+            plugin_id: st.plugin_id(cx).to_string(),
         }),
     }
 }

@@ -1,10 +1,12 @@
 //! A `Reopen` in the app loop: the destination is looked up by content type, its session
 //! replaces the converting one, and nothing of the old document stays on the new screen.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, ReopenSource};
 use konoma_plugin::input::Origin;
+use konoma_plugin::manifest::Unavailable;
 use konoma_plugin::prelude::*;
 use konoma_plugin::reopen::ContentTarget;
 use konoma_plugin::view::{DocOptions, DocumentView, Reopen};
@@ -71,29 +73,50 @@ impl Session for ConvSession {
     }
 }
 
-/// Takes `markdown` content and shows it as it is.
-struct Target;
+/// Takes `markdown` content and shows it as it is. `fail_open`: opening it fails (and `opens`
+/// counts the tries); `fail_later`: every view after the first fails.
+#[derive(Default)]
+struct Target {
+    opens: Arc<AtomicUsize>,
+    fail_open: bool,
+    fail_later: bool,
+}
 
 impl Plugin for Target {
     fn manifest(&self) -> Manifest {
         Manifest::new("target", "0.0.1")
             .bind(Bind::content("markdown"))
             .shows(ViewKind::Document)
+            .unavailable(Unavailable::Notice(t!(en: "the target's notice")))
     }
     fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        if self.fail_open {
+            return Err(Failure::unsupported(t!(en: "the target cannot open this")));
+        }
         let Input::Content { text, .. } = input else {
             return Err(Failure::unsupported(t!(en: "content only")));
         };
-        Ok(Box::new(TargetSession { text }))
+        Ok(Box::new(TargetSession {
+            text,
+            asked: 0,
+            fail_later: self.fail_later,
+        }))
     }
 }
 
 struct TargetSession {
     text: String,
+    asked: usize,
+    fail_later: bool,
 }
 
 impl Session for TargetSession {
     fn view(&mut self, _req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+        self.asked += 1;
+        if self.fail_later && self.asked > 1 {
+            return Err(Failure::unsupported(t!(en: "the page failed")));
+        }
         Ok(View::Document(doc(self.text.clone())))
     }
 }
@@ -121,6 +144,8 @@ fn run(
         term: TermCaps::new(),
         title: String::new(),
         shows: opened.shows.clone(),
+        unavailable: opened.unavailable.clone(),
+        plugin_id: opened.plugin_id.clone(),
         reopen: source,
         ..AppCx::default()
     };
@@ -146,10 +171,14 @@ fn run(
 }
 
 fn to_target(asked: Arc<Mutex<Vec<String>>>) -> ReopenSource {
+    to_plugin(asked, Target::default)
+}
+
+fn to_plugin(asked: Arc<Mutex<Vec<String>>>, make: impl Fn() -> Target + 'static) -> ReopenSource {
     ReopenSource::new(move |ct| {
         asked.lock().unwrap().push(ct.to_string());
         Some(ContentTarget {
-            plugin: Arc::new(Target),
+            plugin: Arc::new(make()),
             settings: Settings::empty().clone(),
         })
     })
@@ -207,4 +236,51 @@ fn a_reopen_as_a_content_type_the_app_cannot_show_says_no_plugin_is_available() 
         vec![AppEvent::Resize],
     );
     assert_eq!(rows[0], "no plugin is available to show this document");
+}
+
+#[test]
+fn a_reopen_that_failed_is_not_tried_again_at_every_key_and_resize() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let counted = opens.clone();
+    let rows = run(
+        "markdown",
+        Some(to_plugin(asked.clone(), move || Target {
+            opens: counted.clone(),
+            fail_open: true,
+            ..Target::default()
+        })),
+        vec![
+            AppEvent::Resize,
+            key('j'),
+            AppEvent::Resize,
+            key('k'),
+            AppEvent::Resize,
+            AppEvent::Resize,
+        ],
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "{rows:?}");
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    // The failure stays on screen.
+    assert_eq!(rows[0], "the target cannot open this", "{rows:?}");
+}
+
+#[test]
+fn a_page_that_fails_after_a_reopen_is_worded_by_the_plugin_that_shows_it() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    // The destination shows the document, then its next page fails: its own `unavailable`
+    // sentence is the one on screen, not the converter's (the failure's own message).
+    let rows = run(
+        "markdown",
+        Some(to_plugin(asked, || Target {
+            fail_later: true,
+            ..Target::default()
+        })),
+        vec![AppEvent::Resize, AppEvent::Resize],
+    );
+    assert!(rows[0].contains("the target's notice"), "{rows:?}");
+    assert!(
+        rows.iter().all(|r| !r.contains("the page failed")),
+        "{rows:?}"
+    );
 }

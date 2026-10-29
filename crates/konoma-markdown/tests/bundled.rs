@@ -59,3 +59,13 @@ fn a_file_only_a_bundled_plugin_takes_is_not_opened() {
         }
     }
 }
+
+/// The app's inline-diagram height cap is spelled once on each side (the plugin crate cannot
+/// depend on the mermaid plugin); the two must stay the same number.
+#[test]
+fn the_default_mermaid_rows_cap_is_the_mermaid_plugins_own_default() {
+    assert_eq!(
+        i64::from(konoma_plugin::document_pictures::DEFAULT_MERMAID_ROWS),
+        konoma_mermaid::DEFAULT_ROWS
+    );
+}
