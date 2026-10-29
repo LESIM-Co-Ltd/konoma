@@ -10,5 +10,22 @@ description = "konoma's Markdown plugin: Markdown files and converted documents 
 [dependencies]
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 
+[features]
+default = ["app"]
+# The standalone app: `konoma-markdown <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-markdown` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
+
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+
+[[bin]]
+name = "konoma-markdown"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

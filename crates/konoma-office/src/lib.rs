@@ -117,3 +117,13 @@ pub fn presentation_manifest() -> Manifest {
         "com.microsoft.Powerpoint",
     )
 }
+
+/// The plugins of the `konoma-office` program, in the order it carries them. The program's `main`
+/// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
+pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    vec![
+        Box::new(SpreadsheetPlugin),
+        Box::new(DocumentPlugin),
+        Box::new(PresentationPlugin),
+    ]
+}

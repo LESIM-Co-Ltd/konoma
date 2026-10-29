@@ -58,12 +58,28 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // --- A plugin's own action: the session's word, the same one the footer and the help read ---
         A::Plugin(p) => gate_plugin(app, ctx, p),
 
+        // --- Opening a cell needs a cell: an empty file has no columns, so `Enter` flashes and the
+        // hint and the help row are left out. Closing the popup always acts. ---
+        A::ToggleTableCell if ctx == Context::Table => {
+            if app.grid().is_some_and(|g| g.ncols() > 0) {
+                Gate::On
+            } else {
+                Gate::Off(Some(Msg::TableCellEmpty))
+            }
+        }
+
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
             _ => app.can_turn_pages(),
         }),
+
+        // --- The picture's own frame (the picture failed or is not there yet) has no text: the
+        // motions scroll nothing, so the footer and the help leave them out ---
+        A::Navigate(_) if ctx == Context::Text && app.shows_picture_frame_plugin() => {
+            Gate::Off(None)
+        }
 
         // --- The decorated document: what the focused item lets a key do ---
         A::LinkOpen => when(matches!(

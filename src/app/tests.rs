@@ -12345,6 +12345,36 @@ fn table_page_and_half_page_move_by_viewport() {
     assert_eq!(app.table_cursor().0, 0, "先頭でクランプ");
 }
 
+/// A page of 0 is no move at all (`dir * page` rows): neither `table_page` nor `table_half_page`
+/// turns it into a PageDown / HalfDown.
+#[test]
+fn table_page_zero_does_not_move() {
+    let dir = unique_tmp("konoma_table_page_zero_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("tall.csv");
+    let mut body = String::from("c0,c1\n");
+    for i in 0..20 {
+        body.push_str(&format!("r{i}a,r{i}b\n"));
+    }
+    std::fs::write(&csv, body).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    app.table_viewport_rows = 6;
+    app.table_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_page(0) stays");
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_half_page(0) stays");
+    app.table_page(1);
+    let at = app.table_cursor();
+    assert_ne!(at.0, 0);
+    app.table_page(0);
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), at, "0 does not move from a later row");
+}
+
 #[test]
 fn table_cursor_survives_tab_roundtrip() {
     // The cell cursor is kept and the table is re-parsed across tab save/restore.
@@ -15222,6 +15252,52 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     assert!(
         after.0 > before.0 || after.1 > before.1,
         "解除後は最新ズームへ収束: {before:?} -> {after:?}"
+    );
+}
+
+/// The host asks the shared sharp-zoom decision (`konoma_plugin::canvas_pictures::sharp_zoom_target`)
+/// the standalone app asks too: the size the raster is drawn again at is exactly that function's
+/// answer for (raster, logical, zoom), at fit, inside the margin, over it and at the cap.
+#[test]
+fn vector_reraster_size_is_the_shared_sharp_zoom_target() {
+    use image::GenericImageView;
+    let dir = unique_tmp("konoma_vector_shared_target");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("a.svg"),
+        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'>\
+         <rect width='200' height='100' fill='#c33'/></svg>",
+    )
+    .unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("a.svg"));
+    let logical = app.image_logical.expect("logical size");
+    for _ in 0..8 {
+        let raster = app.image_src.as_ref().unwrap().dimensions();
+        let next_zoom = (app.tab.image_view.zoom * 1.25).clamp(1.0, 16.0);
+        let want = konoma_plugin::canvas_pictures::sharp_zoom_target(raster, logical, next_zoom);
+        app.image_zoom_by(1.25);
+        let after = app.image_src.as_ref().unwrap().dimensions();
+        match want {
+            // Drawn again at (about) the size asked for (the drawer caps at 4096 and may round the
+            // scale up by 1px).
+            Some(w) => assert!(
+                after.0.max(after.1).abs_diff(w.min(4096)) <= 1,
+                "{raster:?} -> {after:?}, asked {w}"
+            ),
+            None => assert_eq!(after, raster, "nothing asked, nothing drawn"),
+        }
+        assert_eq!(
+            app.image_logical,
+            Some(logical),
+            "the layout size never moves"
+        );
+    }
+    assert!(
+        app.image_src.as_ref().unwrap().dimensions().0 > logical.0,
+        "it was drawn again at least once"
     );
 }
 

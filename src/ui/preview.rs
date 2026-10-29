@@ -18,7 +18,7 @@ use ratatui_image::Image;
 use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
 use crate::preview::image::ImageFailureMessage;
-use crate::preview::{text, PreviewKind};
+use crate::preview::PreviewKind;
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
 pub fn context(app: &App) -> Vec<Span<'static>> {
@@ -39,7 +39,13 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
                 .replace("{total}", &total.to_string());
             spans.push(Span::from(format!("  {t}")).bold());
         } else {
-            spans.push(Span::from(format!("  {cur}/{total}")).bold());
+            spans.push(
+                Span::from(format!(
+                    "  {}",
+                    konoma_plugin::pages::indicator_text(cur, total)
+                ))
+                .bold(),
+            );
         }
     }
     spans
@@ -344,19 +350,19 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
             (app.plugin_message_body().unwrap_or_default(), false)
         }
         Some(PreviewKind::Plugin { path, .. }) => (
-            format!(
-                "{}\n{}",
-                app.plugin_failure().map_or_else(
+            konoma_plugin::canvas_pictures::plain_failure_text(
+                &app.plugin_failure().map_or_else(
                     || "[can not preview]".to_string(),
-                    |f| f
-                        .message
-                        .get(match app.lang {
-                            crate::i18n::Lang::Jp => "ja",
-                            crate::i18n::Lang::En => "en",
-                        })
-                        .to_string()
+                    |f| {
+                        f.message
+                            .get(match app.lang {
+                                crate::i18n::Lang::Jp => "ja",
+                                crate::i18n::Lang::En => "en",
+                            })
+                            .to_string()
+                    },
                 ),
-                path.display()
+                path,
             ),
             false,
         ),
@@ -1511,15 +1517,7 @@ fn caret_display_col(lines: &[ratatui::text::Line<'static>]) -> Option<(usize, u
 /// Used both while waiting on code highlighting (indicator) and while loading SVG/GIF on a separate thread.
 /// The spinner **keeps spinning** because the run loop advances it via `tick_spinner` while waiting (braille ⠋⠙⠹…).
 fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str) {
-    let y = inner.y + inner.height / 2;
-    let line_area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    let text = format!("{spinner}  {msg}");
-    frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), line_area);
+    konoma_widgets::loading::render_spinner_line(frame.buffer_mut(), inner, spinner, msg);
 }
 
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
@@ -1605,43 +1603,30 @@ pub(crate) fn unavailable_body(app: &App, id: &str, path: &Path) -> (String, boo
         crate::i18n::Lang::Jp => "ja",
         crate::i18n::Lang::En => "en",
     };
-    match crate::plugins::unavailable_of(id) {
-        Unavailable::RawText { with_reason } => {
-            let body = load_body(path, app.lang);
-            // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
-            match app
-                .image_failure()
-                .and_then(|f| f.message(app.lang, id))
-                .filter(|_| with_reason)
-            {
-                Some(why) => (format!("{why}\n\n{body}"), true),
-                None => (body, true),
-            }
-        }
-        Unavailable::Notice(words) => (
-            format!("{}\n{}", words.get(lang_code), path.display()),
-            false,
-        ),
-        Unavailable::Picture => (format!("[image] {}", path.display()), false),
-        // (Not reached: the caller handles the default.)
-        Unavailable::Message => (format!("[can not preview]\n{}", path.display()), false),
+    let unavailable = crate::plugins::unavailable_of(id);
+    // The words are shared with the standalone app (`unavailable_text`).
+    let text = konoma_plugin::canvas_pictures::unavailable_text(
+        &unavailable,
+        "[can not preview]",
+        app.image_failure(),
+        (lang_code, app.lang),
+        id,
+        path,
+        &|| load_body(path, app.lang),
+    );
+    match (&unavailable, text) {
+        (Unavailable::RawText { .. }, Some(body)) => (body, true),
+        (_, Some(body)) => (body, false),
+        // The frame of a picture that is missing (not reached: the picture frame draws it).
+        (_, None) => (format!("[image] {}", path.display()), false),
     }
 }
 
 /// Load the text body with a size cap and turn it into a display string.
 /// A load failure does not crash; it falls back to a safe-side message.
 fn load_body(path: &Path, lang: crate::i18n::Lang) -> String {
-    match text::load(path) {
-        Ok(content) => {
-            let mut s = content.lines.join("\n");
-            if content.truncated {
-                s.push_str(tr(lang, crate::i18n::Msg::PreviewTruncated));
-            }
-            s
-        }
-        // The `[can not preview: …]` marker is a fixed English string by spec (cf. CanNotPreview's <ext>).
-        Err(e) => format!("[can not preview: load failed] {e}"),
-    }
+    // Shared with the standalone app (a failed SVG shows the same body there).
+    konoma_plugin::canvas_pictures::raw_file_body(path, lang)
 }
 
 /// Scroll position indicator: the `Top`/`Bot`/`All`/`NN%` title label and the thumb drawn on the

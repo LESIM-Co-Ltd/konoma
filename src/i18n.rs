@@ -1194,7 +1194,7 @@ fn en(msg: Msg) -> &'static str {
         LineStartEnd => CoreMsg::LineStartEnd.en(),
         ListingStale => "listing may be out of date (refresh failed): ",
         StListingStale => "STALE",
-        Loading => "loading…",
+        Loading => CoreMsg::Loading.en(),
         Local => "local",
         GitLogGraph => "log / graph",
         DlgMove => "m = move",
@@ -1312,9 +1312,9 @@ fn en(msg: Msg) -> &'static str {
         TableMoveHelp => CoreMsg::TableMoveHelp.en(),
         TableColsHelp => CoreMsg::TableColsHelp.en(),
         StTableCell => "CELL",
-        TableCellTitle => "Cell",
-        HintViewCell => "view cell",
-        TableCellViewHelp => "view the full cell text (wraps; scroll with j/k)",
+        TableCellTitle => CoreMsg::TableCellTitle.en(),
+        HintViewCell => CoreMsg::HintViewCell.en(),
+        TableCellViewHelp => CoreMsg::TableCellViewHelp.en(),
         TableCellEmpty => "no cell to view",
         PreviewSelectHelp => "v: select a character range   V: select whole lines (copy with y)",
         HintSelect => "select",
@@ -1501,24 +1501,20 @@ fn en(msg: Msg) -> &'static str {
         WkAuthor => "author",
         WkDate => "date",
         NoCommitToCopy => "no commit to copy",
-        ImageUnsupported => {
-            "[image] cannot display image in this terminal, or failed to load"
-        }
-        ImageReasonTooLarge => {
-            "too large to display (limits: 32,768 px per side, 150 megapixels, 512 MiB decoded)"
-        }
-        ImageReasonCorrupt => "the file is damaged or could not be read",
-        ImageReasonUnsupportedFormat => "unsupported image format",
-        ImageReasonOutsideReadDirs => "outside what plugin <id> may read: add its folder to read_dirs in [plugins.<id>]",
-        PreviewTruncated => "\n\n— (truncated: display limit reached) —",
-        SvgTooDeep => "[svg] not drawn: its elements are nested too deeply",
-        SvgTooLarge => "[svg] not drawn: the file is too large",
-        SvgTooComplex => "[svg] not drawn: it contains too many elements",
-        SvgTooHeavy => "[svg] not drawn: it asks for more drawing work than is allowed",
-        SvgTimeout => "[svg] not drawn: drawing it took too long",
-        SvgMemory => "[svg] not drawn: drawing it needed too much memory",
-        SvgCrashed => "[svg] not drawn: the renderer stopped while drawing it",
-        SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
+        ImageUnsupported => CoreMsg::ImageUnsupported.en(),
+        ImageReasonTooLarge => CoreMsg::ImageReasonTooLarge.en(),
+        ImageReasonCorrupt => CoreMsg::ImageReasonCorrupt.en(),
+        ImageReasonUnsupportedFormat => CoreMsg::ImageReasonUnsupportedFormat.en(),
+        ImageReasonOutsideReadDirs => CoreMsg::ImageReasonOutsideReadDirs.en(),
+        PreviewTruncated => CoreMsg::PreviewTruncated.en(),
+        SvgTooDeep => CoreMsg::SvgTooDeep.en(),
+        SvgTooLarge => CoreMsg::SvgTooLarge.en(),
+        SvgTooComplex => CoreMsg::SvgTooComplex.en(),
+        SvgTooHeavy => CoreMsg::SvgTooHeavy.en(),
+        SvgTimeout => CoreMsg::SvgTimeout.en(),
+        SvgMemory => CoreMsg::SvgMemory.en(),
+        SvgCrashed => CoreMsg::SvgCrashed.en(),
+        SvgInvalid => CoreMsg::SvgInvalid.en(),
         VideoThumbUnavailable => {
             "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)"
         }
@@ -1537,8 +1533,8 @@ fn en(msg: Msg) -> &'static str {
         DeckTextHelp => "show the slides as text",
         DeckSlidesHelp => "show the slides as pictures",
         SlideChip => "slide {cur}/{total}",
-        SheetCappedWord => "capped",
-        SheetEmptyWord => "empty",
+        SheetCappedWord => CoreMsg::SheetCappedWord.en(),
+        SheetEmptyWord => CoreMsg::SheetEmptyWord.en(),
         DocErrUnsupportedOpen => "Press `e` to open it in an Office app",
         PluginCanvasInvalid => "the plugin drew a malformed canvas",
         PluginInputFull => "the plugin is not answering: input refused",
@@ -1594,10 +1590,10 @@ fn en(msg: Msg) -> &'static str {
         FtThisDir => "this-dir",
         FtAll => "all",
         FtCancel => "cancel",
-        FtClose => "close",
+        FtClose => CoreMsg::FtClose.en(),
         FtExtend => "extend",
         FtOps => "ops",
-        FtTopBottom => "top/bottom",
+        FtTopBottom => CoreMsg::FtTopBottom.en(),
         FtNav => "nav",
         FtDiscard => "discard",
         FtDiffLayout => "unified/split/auto",
@@ -1846,7 +1842,7 @@ fn jp(msg: Msg) -> &'static str {
         LineStartEnd => CoreMsg::LineStartEnd.ja(),
         ListingStale => "一覧が古いままの可能性 (更新に失敗): ",
         StListingStale => "古い一覧",
-        Loading => "読み込み中…",
+        Loading => CoreMsg::Loading.ja(),
         Local => "ローカル",
         GitLogGraph => "ログ / グラフ",
         DlgMove => "m = 移動",
@@ -1964,9 +1960,9 @@ fn jp(msg: Msg) -> &'static str {
         TableMoveHelp => CoreMsg::TableMoveHelp.ja(),
         TableColsHelp => CoreMsg::TableColsHelp.ja(),
         StTableCell => "セル",
-        TableCellTitle => "セル",
-        HintViewCell => "セル表示",
-        TableCellViewHelp => "セルの全文を表示(折返し・j/k でスクロール)",
+        TableCellTitle => CoreMsg::TableCellTitle.ja(),
+        HintViewCell => CoreMsg::HintViewCell.ja(),
+        TableCellViewHelp => CoreMsg::TableCellViewHelp.ja(),
         TableCellEmpty => "表示できるセルがありません",
         PreviewSelectHelp => "v: 文字範囲を選択   V: 行を選択(y でコピー)",
         HintSelect => "選択",
@@ -2148,22 +2144,20 @@ fn jp(msg: Msg) -> &'static str {
         WkAuthor => "著者",
         WkDate => "日付",
         NoCommitToCopy => "コピーするコミットがありません",
-        ImageUnsupported => "[image] この端末では画像を表示できません、または読み込みに失敗しました",
-        ImageReasonTooLarge => {
-            "大きすぎて表示できません(上限: 1 辺 32,768px、1.5 億画素、展開後 512 MiB)"
-        }
-        ImageReasonCorrupt => "ファイルが壊れているか、読み込めません",
-        ImageReasonUnsupportedFormat => "対応していない画像形式です",
-        ImageReasonOutsideReadDirs => "プラグイン <id> が読める範囲の外です: [plugins.<id>] の read_dirs にフォルダを追加",
-        PreviewTruncated => "\n\n— (省略: 表示上限に達しました) —",
-        SvgTooDeep => "[svg] 描画しません: 要素の入れ子が深すぎます",
-        SvgTooLarge => "[svg] 描画しません: ファイルが大きすぎます",
-        SvgTooComplex => "[svg] 描画しません: 要素が多すぎます",
-        SvgTooHeavy => "[svg] 描画しません: 描画に必要な処理が上限を超えています",
-        SvgTimeout => "[svg] 描画しません: 描画に時間がかかりすぎました",
-        SvgMemory => "[svg] 描画しません: 描画にメモリを使いすぎました",
-        SvgCrashed => "[svg] 描画しません: 描画の途中で描画処理が止まりました",
-        SvgInvalid => "[svg] 描画しません: ファイルが壊れているか、SVG として正しくありません",
+        ImageUnsupported => CoreMsg::ImageUnsupported.ja(),
+        ImageReasonTooLarge => CoreMsg::ImageReasonTooLarge.ja(),
+        ImageReasonCorrupt => CoreMsg::ImageReasonCorrupt.ja(),
+        ImageReasonUnsupportedFormat => CoreMsg::ImageReasonUnsupportedFormat.ja(),
+        ImageReasonOutsideReadDirs => CoreMsg::ImageReasonOutsideReadDirs.ja(),
+        PreviewTruncated => CoreMsg::PreviewTruncated.ja(),
+        SvgTooDeep => CoreMsg::SvgTooDeep.ja(),
+        SvgTooLarge => CoreMsg::SvgTooLarge.ja(),
+        SvgTooComplex => CoreMsg::SvgTooComplex.ja(),
+        SvgTooHeavy => CoreMsg::SvgTooHeavy.ja(),
+        SvgTimeout => CoreMsg::SvgTimeout.ja(),
+        SvgMemory => CoreMsg::SvgMemory.ja(),
+        SvgCrashed => CoreMsg::SvgCrashed.ja(),
+        SvgInvalid => CoreMsg::SvgInvalid.ja(),
         VideoThumbUnavailable => {
             "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)"
         }
@@ -2182,8 +2176,8 @@ fn jp(msg: Msg) -> &'static str {
         DeckTextHelp => "スライドを文字で表示",
         DeckSlidesHelp => "スライドを絵で表示",
         SlideChip => "スライド {cur}/{total}",
-        SheetCappedWord => "打ち切り",
-        SheetEmptyWord => "空",
+        SheetCappedWord => CoreMsg::SheetCappedWord.ja(),
+        SheetEmptyWord => CoreMsg::SheetEmptyWord.ja(),
         DocErrUnsupportedOpen => "Office アプリで開くには `e` を押してください",
         PluginCanvasInvalid => "プラグインの描いた表示の形式が正しくありません",
         PluginInputFull => "プラグインが応答しません: 入力を受け付けません",
@@ -2236,10 +2230,10 @@ fn jp(msg: Msg) -> &'static str {
         FtThisDir => "同階層",
         FtAll => "全部",
         FtCancel => "取消",
-        FtClose => "閉じる",
+        FtClose => CoreMsg::FtClose.ja(),
         FtExtend => "範囲",
         FtOps => "操作",
-        FtTopBottom => "先頭/末尾",
+        FtTopBottom => CoreMsg::FtTopBottom.ja(),
         FtNav => "移動",
         FtDiscard => "破棄",
         FtDiffLayout => "縦/横/Auto",
@@ -2318,6 +2312,28 @@ impl Msg {
             Msg::HintFit => Some(CoreMsg::HintFit),
             Msg::HintPan => Some(CoreMsg::HintPan),
             Msg::HintCell => Some(CoreMsg::HintCell),
+            Msg::HintViewCell => Some(CoreMsg::HintViewCell),
+            Msg::TableCellViewHelp => Some(CoreMsg::TableCellViewHelp),
+            Msg::TableCellTitle => Some(CoreMsg::TableCellTitle),
+            Msg::SheetEmptyWord => Some(CoreMsg::SheetEmptyWord),
+            Msg::SheetCappedWord => Some(CoreMsg::SheetCappedWord),
+            Msg::FtClose => Some(CoreMsg::FtClose),
+            Msg::FtTopBottom => Some(CoreMsg::FtTopBottom),
+            Msg::Loading => Some(CoreMsg::Loading),
+            Msg::ImageUnsupported => Some(CoreMsg::ImageUnsupported),
+            Msg::ImageReasonTooLarge => Some(CoreMsg::ImageReasonTooLarge),
+            Msg::ImageReasonCorrupt => Some(CoreMsg::ImageReasonCorrupt),
+            Msg::ImageReasonUnsupportedFormat => Some(CoreMsg::ImageReasonUnsupportedFormat),
+            Msg::ImageReasonOutsideReadDirs => Some(CoreMsg::ImageReasonOutsideReadDirs),
+            Msg::PreviewTruncated => Some(CoreMsg::PreviewTruncated),
+            Msg::SvgTooDeep => Some(CoreMsg::SvgTooDeep),
+            Msg::SvgTooLarge => Some(CoreMsg::SvgTooLarge),
+            Msg::SvgTooComplex => Some(CoreMsg::SvgTooComplex),
+            Msg::SvgTooHeavy => Some(CoreMsg::SvgTooHeavy),
+            Msg::SvgTimeout => Some(CoreMsg::SvgTimeout),
+            Msg::SvgMemory => Some(CoreMsg::SvgMemory),
+            Msg::SvgCrashed => Some(CoreMsg::SvgCrashed),
+            Msg::SvgInvalid => Some(CoreMsg::SvgInvalid),
             Msg::HintSheet => Some(CoreMsg::HintSheet),
             Msg::HintSlide => Some(CoreMsg::HintSlide),
             Msg::HintEdit => Some(CoreMsg::HintEdit),
@@ -2370,6 +2386,28 @@ impl Msg {
             CoreMsg::HintFit => Msg::HintFit,
             CoreMsg::HintPan => Msg::HintPan,
             CoreMsg::HintCell => Msg::HintCell,
+            CoreMsg::HintViewCell => Msg::HintViewCell,
+            CoreMsg::TableCellViewHelp => Msg::TableCellViewHelp,
+            CoreMsg::TableCellTitle => Msg::TableCellTitle,
+            CoreMsg::SheetEmptyWord => Msg::SheetEmptyWord,
+            CoreMsg::SheetCappedWord => Msg::SheetCappedWord,
+            CoreMsg::FtClose => Msg::FtClose,
+            CoreMsg::FtTopBottom => Msg::FtTopBottom,
+            CoreMsg::Loading => Msg::Loading,
+            CoreMsg::ImageUnsupported => Msg::ImageUnsupported,
+            CoreMsg::ImageReasonTooLarge => Msg::ImageReasonTooLarge,
+            CoreMsg::ImageReasonCorrupt => Msg::ImageReasonCorrupt,
+            CoreMsg::ImageReasonUnsupportedFormat => Msg::ImageReasonUnsupportedFormat,
+            CoreMsg::ImageReasonOutsideReadDirs => Msg::ImageReasonOutsideReadDirs,
+            CoreMsg::PreviewTruncated => Msg::PreviewTruncated,
+            CoreMsg::SvgTooDeep => Msg::SvgTooDeep,
+            CoreMsg::SvgTooLarge => Msg::SvgTooLarge,
+            CoreMsg::SvgTooComplex => Msg::SvgTooComplex,
+            CoreMsg::SvgTooHeavy => Msg::SvgTooHeavy,
+            CoreMsg::SvgTimeout => Msg::SvgTimeout,
+            CoreMsg::SvgMemory => Msg::SvgMemory,
+            CoreMsg::SvgCrashed => Msg::SvgCrashed,
+            CoreMsg::SvgInvalid => Msg::SvgInvalid,
             CoreMsg::HintSheet => Msg::HintSheet,
             CoreMsg::HintSlide => Msg::HintSlide,
             CoreMsg::HintEdit => Msg::HintEdit,
@@ -3260,5 +3298,41 @@ mod tests {
             ALL_MSGS.len(),
             "ALL_MSGS に重複 variant がある"
         );
+    }
+
+    /// Every shared message maps to a host `Msg` and back to itself, says the same words in both
+    /// languages through either name, and every host `Msg` that maps to one is in the shared set.
+    #[test]
+    fn core_msgs_round_trip_with_the_host_catalog_and_say_the_same_words() {
+        use konoma_host_core::help_msg::CoreMsg;
+        assert!(CoreMsg::ALL.len() >= 60, "{}", CoreMsg::ALL.len());
+        for &c in CoreMsg::ALL {
+            let m = Msg::from_core(c);
+            // `QuitApp` is the app's own name for the host's `HintQuit` (the same word).
+            let back = if c == CoreMsg::QuitApp {
+                CoreMsg::HintQuit
+            } else {
+                c
+            };
+            assert_eq!(m.core(), Some(back), "{c:?}");
+            assert_eq!(tr(Lang::En, m), c.en(), "{c:?} en");
+            assert_eq!(tr(Lang::Jp, m), c.ja(), "{c:?} ja");
+        }
+        let mapped: Vec<Msg> = ALL_MSGS
+            .iter()
+            .copied()
+            .filter(|m| m.core().is_some())
+            .collect();
+        assert_eq!(
+            mapped.len() + 1,
+            CoreMsg::ALL.len(),
+            "a Msg maps to a shared message that is not in CoreMsg::ALL, or two Msg share one \
+             (only QuitApp shares HintQuit)"
+        );
+        for m in mapped {
+            let c = m.core().unwrap();
+            assert!(CoreMsg::ALL.contains(&c), "{m:?}");
+            assert_eq!(Msg::from_core(c), m, "{m:?}");
+        }
     }
 }

@@ -50,6 +50,8 @@ enum Reply {
     Fail(FailureKind),
     /// A picture file the host is asked to read.
     File(PathBuf),
+    /// Another reply for each page (from 1; the last one repeats).
+    Pages(Vec<Reply>),
 }
 
 struct Stand {
@@ -120,7 +122,11 @@ impl Session for StandSession {
         *self.seen.view_thread.lock().unwrap() = Some(std::thread::current().id());
         self.seen.pages.lock().unwrap().push(req.page);
         std::thread::sleep(self.view_delay);
-        match &self.reply {
+        let mut reply = &self.reply;
+        if let Reply::Pages(each) = reply {
+            reply = &each[req.page.unwrap_or(0).min(each.len() - 1)];
+        }
+        match reply {
             Reply::Picture => Ok(View::Image(ImageView::new(ImageData::Rgba {
                 width: 4,
                 height: 3,
@@ -143,6 +149,7 @@ impl Session for StandSession {
             })),
             Reply::File(p) => Ok(View::Image(ImageView::new(ImageData::File(p.clone())))),
             Reply::Fail(kind) => Err(Failure::new(*kind, t!(en: "nope", ja: "だめ"))),
+            Reply::Pages(_) => unreachable!("pages do not nest"),
         }
     }
 }
@@ -1524,4 +1531,388 @@ mod read_scope {
         let got = within_ten_seconds(move || view(&s, &shown, &fifo));
         assert!(failed(&got) && !refused(&got));
     }
+}
+
+// ---- the mapping from the shared decoding (`decode_picture_view`) to the media payload --------
+
+mod payload_mapping {
+    use super::super::payload_of;
+    use super::*;
+    use crate::preview::image::ImageFailure;
+    use konoma_plugin::canvas_pictures::PictureView;
+
+    fn img(w: u32) -> image::DynamicImage {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, 1))
+    }
+
+    #[test]
+    fn a_still_is_a_static_payload() {
+        match payload_of(PictureView::Still(img(7))) {
+            MediaPayload::Static(i) => assert_eq!(i.width(), 7),
+            _ => panic!("a still is Static"),
+        }
+    }
+
+    #[test]
+    fn a_vector_keeps_its_svg_and_its_trust() {
+        let svg = Arc::new(b"<svg/>".to_vec());
+        let trust = SvgTrust::File(PathBuf::from("/x/a.svg"));
+        match payload_of(PictureView::Vector {
+            img: img(3),
+            svg: svg.clone(),
+            trust: trust.clone(),
+        }) {
+            MediaPayload::Vector {
+                img: i,
+                svg: s,
+                trust: t,
+            } => {
+                assert_eq!(i.width(), 3);
+                assert!(Arc::ptr_eq(&s, &svg));
+                assert_eq!(t, trust);
+            }
+            _ => panic!("a vector is Vector"),
+        }
+    }
+
+    #[test]
+    fn frames_are_a_gif_payload_in_order_with_their_delays() {
+        let frames = vec![
+            (img(1), Duration::from_millis(30)),
+            (img(2), Duration::from_millis(70)),
+        ];
+        match payload_of(PictureView::Gif(frames)) {
+            MediaPayload::Gif(f) => {
+                let got: Vec<(u32, Duration)> = f.iter().map(|(i, d)| (i.width(), *d)).collect();
+                assert_eq!(
+                    got,
+                    vec![
+                        (1, Duration::from_millis(30)),
+                        (2, Duration::from_millis(70))
+                    ]
+                );
+            }
+            _ => panic!("frames are Gif"),
+        }
+    }
+
+    #[test]
+    fn every_failure_reason_is_carried_unchanged() {
+        use crate::preview::svg_guard::SvgFail;
+        let all = [
+            ImageFailure::TooLarge,
+            ImageFailure::Corrupt,
+            ImageFailure::UnsupportedFormat,
+            ImageFailure::Cancelled,
+            ImageFailure::Svg(SvgFail::TooLarge),
+            ImageFailure::Svg(SvgFail::Invalid),
+            ImageFailure::OutsideReadDirs,
+        ];
+        // Distinct reasons stay distinct (a stable code each), none is turned into another.
+        let codes: std::collections::HashSet<_> = all.iter().map(|f| f.code()).collect();
+        assert_eq!(codes.len(), all.len());
+        for why in all {
+            match payload_of(PictureView::Failed(why)) {
+                MediaPayload::ImageFailed(got) => assert_eq!(got, why),
+                _ => panic!("a failure is ImageFailed"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_decoding_through_the_host_maps_each_kind() {
+        let shown = Path::new("/x/a.svg");
+        let scope = konoma_plugin::ReadScope::unrestricted();
+        let rgba = ImageView::new(ImageData::Rgba {
+            width: 2,
+            height: 1,
+            pixels: Arc::new(vec![0; 8]),
+        });
+        assert!(matches!(
+            decode_image_view(rgba, shown, 100, None, false, &scope),
+            Some(MediaPayload::Static(_))
+        ));
+        let lazy_kind = ImageView::new(ImageData::Frames(vec![]));
+        assert!(matches!(
+            decode_image_view(lazy_kind, shown, 100, None, false, &scope),
+            Some(MediaPayload::ImageFailed(ImageFailure::UnsupportedFormat))
+        ));
+        let bad = ImageView::new(ImageData::Rgba {
+            width: 9,
+            height: 9,
+            pixels: Arc::new(vec![0; 4]),
+        });
+        assert!(decode_image_view(bad, shown, 100, None, false, &scope).is_none());
+    }
+}
+
+// ---- turning from an animation to another kind of page -----------------------------------------
+
+/// A document of pages: page 1 is a two-frame animation, then `next`. Returns the app (on page 1,
+/// its animation playing) and the worker's receiver.
+fn gif_page_then(
+    name: &str,
+    next: Reply,
+) -> (
+    App,
+    std::sync::mpsc::Receiver<MediaResult>,
+    crate::test_support::TmpDir,
+) {
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let gif = dir.join("anim.gif");
+    std::fs::write(
+        &gif,
+        konoma_test_support::build_animated_gif(8, 8, &[([255, 0, 0], 600_000), ([0, 0, 255], 20)]),
+    )
+    .unwrap();
+    let still = dir.join("still.png");
+    png(&still, 8, 8);
+    let p = dir.join("doc.png");
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::image(p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let next = match next {
+        Reply::File(p) if p.as_os_str().is_empty() => Reply::File(still),
+        other => other,
+    };
+    let (plugin, _seen) = stand(Reply::Pages(vec![Reply::File(gif), next]), Some(2));
+    STAND_IN.with(|s| *s.borrow_mut() = Some(plugin));
+    app.start_media_plugin("image", &p);
+    while app.is_media_loading() || !app.is_gif_active() {
+        let r = recv_any(&rx);
+        app.apply_media(r);
+    }
+    assert!(app.is_gif_active(), "page 1 is an animation");
+    (app, rx, dir)
+}
+
+fn settle_turn(app: &mut App, rx: &std::sync::mpsc::Receiver<MediaResult>) {
+    while app.is_media_loading() {
+        let r = recv_any(rx);
+        app.apply_media(r);
+    }
+}
+
+#[test]
+fn turning_from_an_animation_to_a_still_page_shows_the_still_and_stops_the_animation() {
+    let (mut app, rx, _dir) = gif_page_then("konoma_gif_to_still", Reply::File(PathBuf::new()));
+    app.next_page();
+    assert!(
+        app.is_gif_active(),
+        "the animation stays on screen while the next page is drawn"
+    );
+    settle_turn(&mut app, &rx);
+    assert!(app.image_src.is_some(), "the still page landed");
+    assert!(
+        !app.is_gif_active(),
+        "the animation of the page before is gone once a still lands"
+    );
+    assert!(app.gif_protocol().is_none());
+}
+
+#[test]
+fn turning_from_an_animation_to_a_failing_page_says_why_and_stops_the_animation() {
+    let (mut app, rx, _dir) =
+        gif_page_then("konoma_gif_to_fail", Reply::Fail(FailureKind::Corrupt));
+    app.next_page();
+    assert!(app.is_gif_active(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some(), "the failure is recorded");
+    assert!(
+        !app.is_gif_active(),
+        "a page that fails does not leave the animation of the page before"
+    );
+}
+
+#[test]
+fn a_dropped_stale_answer_does_not_stop_the_animation() {
+    let (mut app, _rx, _dir) = gif_page_then("konoma_gif_cancelled", Reply::File(PathBuf::new()));
+    app.apply_payload(MediaPayload::ImageFailed(
+        crate::preview::image::ImageFailure::Cancelled,
+    ));
+    assert!(app.is_gif_active(), "a cancelled load says nothing");
+}
+
+// ---- a failure that lands lets go of the picture of the page before ------------------------------
+
+/// The screen text of the preview, drawn as the host does.
+fn preview_text(app: &mut App) -> String {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
+    term.draw(|f| crate::ui::preview::render(f, app, f.area()))
+        .unwrap();
+    let buf = term.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A document of two pages for the plugin `id` (a file named `name`): page 1 is a picture that has
+/// landed, page 2 is `second`. Returns the app on page 1.
+fn picture_then(
+    tag: &str,
+    id: &str,
+    name: &str,
+    first: Reply,
+    second: Reply,
+) -> (
+    App,
+    std::sync::mpsc::Receiver<MediaResult>,
+    crate::test_support::TmpDir,
+) {
+    let dir = unique_tmp(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, b"x").unwrap();
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    app.tab.preview_kind = Some(PreviewKind::plugin(id, p.clone()));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    let (plugin, _seen) = stand(Reply::Pages(vec![first, second]), Some(2));
+    STAND_IN.with(|s| *s.borrow_mut() = Some(plugin));
+    app.start_media_plugin(id, &p);
+    while app.is_media_loading() {
+        let r = recv_any(&rx);
+        app.apply_media(r);
+    }
+    assert!(app.image_src.is_some(), "page 1 is on screen");
+    (app, rx, dir)
+}
+
+/// A non-picture plugin (a PDF): its page that fails to draw does not leave the page before on
+/// screen; the host's own words for the plugin come instead.
+#[test]
+fn a_pdf_page_that_fails_lets_go_of_the_page_before_and_says_the_pdf_words() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_pdf_fail_release",
+        konoma_media::PDF_ID,
+        "doc.pdf",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Corrupt),
+    );
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.plugin_failure().is_some(), "the failure landed");
+    assert!(app.image_src.is_none(), "the old page is let go");
+    assert!(!app.is_image_preview());
+    let text = preview_text(&mut app);
+    assert!(text.contains("[pdf] cannot render"), "{text}");
+    assert!(text.contains("doc.pdf"), "{text}");
+}
+
+/// A picture plugin: the page that fails after a still page shows the reason, not the still.
+#[test]
+fn an_image_page_that_fails_after_a_still_page_shows_the_reason_and_not_the_still() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_img_fail_release",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Corrupt),
+    );
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some());
+    assert!(app.image_src.is_none(), "the old picture is let go");
+    let text = preview_text(&mut app);
+    assert!(text.contains("[image]"), "{text}");
+}
+
+/// A stale answer that was dropped (`Cancelled`) says nothing: the picture stays.
+#[test]
+fn a_cancelled_page_answer_keeps_the_picture_of_the_page_before() {
+    let (mut app, rx, _dir) = picture_then(
+        "konoma_img_cancel_keep",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        Reply::Picture,
+        Reply::Fail(FailureKind::Cancelled),
+    );
+    app.next_page();
+    settle_turn(&mut app, &rx);
+    assert!(
+        app.image_src.is_some(),
+        "a dropped answer lets go of nothing"
+    );
+    assert!(app.image_failure().is_none());
+}
+
+// ---- a page whose view is fine but whose picture cannot be decoded ---------------------------------
+
+/// A file of the given name that is not a picture, in a directory of its own.
+fn junk_file(tag: &str, name: &str, body: &[u8]) -> (PathBuf, crate::test_support::TmpDir) {
+    let dir = unique_tmp(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    (p, dir)
+}
+
+/// The same release for the failure the host finds while decoding (the plugin's view was fine):
+/// the page before goes, and the reason is drawn.
+fn still_then_undecodable(tag: &str, id: &str, name: &str, junk: &str, body: &[u8]) {
+    let (bad, _jd) = junk_file(&format!("{tag}_junk"), junk, body);
+    let (mut app, rx, _dir) = picture_then(tag, id, name, Reply::Picture, Reply::File(bad));
+    app.next_page();
+    assert!(app.image_src.is_some(), "held while the next page is drawn");
+    settle_turn(&mut app, &rx);
+    assert!(app.image_failure().is_some(), "{id}: the decode failed");
+    assert!(app.image_src.is_none(), "{id}: the old still is let go");
+    assert!(app.vector_svg.is_none(), "{id}: no vector source is kept");
+    assert!(!app.is_gif_active());
+    let text = preview_text(&mut app);
+    // The reason is drawn: in the picture frame, or above the file's text for a vector.
+    assert!(
+        text.contains("[image]")
+            || text.contains("[svg]")
+            || text.contains("unsupported image format"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_image_page_that_cannot_be_decoded_after_a_still_page_shows_the_reason() {
+    still_then_undecodable(
+        "konoma_png_undecodable",
+        konoma_media::IMAGE_ID,
+        "doc.png",
+        "junk.png",
+        b"this is not a png",
+    );
+}
+
+#[test]
+fn an_svg_page_that_cannot_be_decoded_after_a_still_page_shows_the_reason() {
+    still_then_undecodable(
+        "konoma_svg_undecodable",
+        konoma_media::SVG_ID,
+        "doc.svg",
+        "junk.svg",
+        b"<svg>not closed",
+    );
+}
+
+#[test]
+fn a_gif_page_that_cannot_be_decoded_after_an_animation_shows_the_reason() {
+    let (bad, _jd) = junk_file("konoma_gif_undecodable_junk", "junk.gif", b"GIF89a-broken");
+    let (mut app, rx, _dir) = gif_page_then("konoma_gif_undecodable", Reply::File(bad));
+    app.next_page();
+    settle_turn(&mut app, &rx);
+    assert!(!app.is_gif_active(), "the animation is let go");
+    assert!(app.image_src.is_none());
+    assert!(app.image_failure().is_some());
+    assert!(preview_text(&mut app).contains("[image]"));
 }

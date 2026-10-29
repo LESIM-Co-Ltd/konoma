@@ -72,7 +72,7 @@ pub(super) use konoma_plugin::canvas_pictures::{
 #[cfg(test)]
 pub(super) use konoma_plugin::canvas_pictures::{decoded_bytes, CanvasPlace, KeptPicture};
 // What the tests in this module's tree name through it.
-pub(super) use konoma_plugin::canvas_pictures::files::{open_picture_file, open_regular_picture};
+pub(super) use konoma_plugin::canvas_pictures::files::open_regular_picture;
 #[cfg(test)]
 pub(super) use konoma_plugin::canvas_pictures::CanvasLimits;
 #[cfg(test)]

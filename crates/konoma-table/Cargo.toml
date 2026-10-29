@@ -27,7 +27,22 @@ flate2.workspace = true
 konoma-test-support = { path = "../konoma-test-support" }
 
 [features]
+default = ["app"]
+# The standalone app: `konoma-table <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-table` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
 # Keeps the `cfg(test)` seams (the parse counter) active when another package's tests call into
 # this crate (a `cfg(test)` is only true while this crate's own tests build). Enabled by the root
 # package's `[dev-dependencies]` only.
 test-hooks = []
+
+[[bin]]
+name = "konoma-table"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

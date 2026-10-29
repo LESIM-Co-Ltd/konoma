@@ -13,5 +13,27 @@ konoma-media-core = { path = "../konoma-media-core", version = "0.1.0" }
 konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
 image.workspace = true
 
+[features]
+default = ["app"]
+# The standalone app: `konoma-media <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-media` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
+
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+
+[[bin]]
+name = "konoma-media"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]
+
+[[test]]
+name = "open"
+path = "tests/open.rs"
+required-features = ["app"]

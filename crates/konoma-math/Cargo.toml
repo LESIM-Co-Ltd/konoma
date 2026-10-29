@@ -11,3 +11,23 @@ description = "konoma's math plugin: LaTeX formulas in Markdown drawn as picture
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 konoma-math-core = { path = "../konoma-math-core", version = "0.1.0" }
 svgtypes.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+
+[features]
+default = ["app"]
+# The standalone app: `konoma-math <file>` shows the file in a terminal of its own (konoma-plugin's
+# small host). On by default so `cargo install konoma-math` gives the program; konoma itself
+# depends on this crate with `default-features = false`, so it never builds the app.
+app = ["konoma-plugin/app"]
+
+[[bin]]
+name = "konoma-math"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]

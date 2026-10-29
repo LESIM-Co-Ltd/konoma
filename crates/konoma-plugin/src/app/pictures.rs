@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
+use konoma_svg::image::ImageFailure;
 use konoma_svg::svg::RasterError;
 use konoma_widgets::inline_images::{
     md_encode_worker, InlineImageCache, MdEncodeResult, OverlayMoved, LIVE_CANVAS_KITTY,
@@ -41,10 +42,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
+use super::still::{Still, StillShape};
 use crate::canvas_pictures::{
     decode_canvas, draw_images, CanvasPictureHost, CanvasPictures, CanvasPolicy, SvgDraw,
 };
-use crate::view::{CanvasImage, CanvasView, ImageData};
+use crate::view::{CanvasImage, CanvasView, ImageData, ImageView};
 use crate::ReadScope;
 
 /// How long the loop waits while a decode or an encode is out (so its result is drawn as soon as
@@ -149,6 +151,10 @@ pub struct Pictures {
     /// pictures is on screen otherwise, so an animation then needs no wake (konoma polls GIFs
     /// only in the preview).
     on_canvas: bool,
+    /// What the encoder was given, kept for the still picture of a `View::Image`.
+    picker: Picker,
+    /// The still picture of a `View::Image`, made when the first one is shown.
+    still: Option<Still>,
 }
 
 impl Pictures {
@@ -161,6 +167,7 @@ impl Pictures {
         let mut cache = InlineImageCache::default();
         cache.attach_picker(&picker);
         cache.enc_tx = Some(enc_tx);
+        let kept = picker.clone();
         std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
         let (done_tx, done_rx) = channel();
         Pictures {
@@ -182,6 +189,8 @@ impl Pictures {
             unlanded: HashMap::new(),
             again_at: None,
             on_canvas: false,
+            picker: kept,
+            still: None,
         }
     }
 
@@ -203,6 +212,105 @@ impl Pictures {
         self.start_for(canvas.cols, canvas.rows, &canvas.images, false);
     }
 
+    /// The session returned the picture `iv` (a `View::Image`): decode it unless it is the one
+    /// already held.
+    ///
+    /// `page_turn` keeps the picture on screen until `iv` lands (the loop asked the session for
+    /// another page).
+    pub fn submit_image(&mut self, iv: &ImageView, page_turn: bool) {
+        if self.still.is_none() {
+            self.still = Some(Still::new(
+                &self.picker,
+                self.cache.use_kitty,
+                self.cache.kitty_is_tmux,
+                &self.plugin_id,
+                &self.path,
+                self.raster_px,
+                Arc::clone(&self.svg),
+            ));
+        }
+        if let Some(s) = self.still.as_mut() {
+            s.submit(iv, page_turn);
+        }
+    }
+
+    /// The session's view is not a picture (any more): drop the still and cancel its decode.
+    pub fn forget_still(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.forget();
+        }
+    }
+
+    /// Why the still picture could not be drawn: see [`Still::failure`].
+    pub fn still_failure(&self) -> Option<Option<ImageFailure>> {
+        self.still.as_ref().and_then(Still::failure)
+    }
+
+    /// What the still picture is (`None`: no picture is held).
+    pub fn still_shape(&self) -> Option<StillShape> {
+        self.still.as_ref().filter(|s| s.holds()).map(Still::shape)
+    }
+
+    /// The spinner's glyph while the still picture is being decoded (a page turn waiting for its
+    /// picture), else `None`.
+    pub fn still_busy(&self) -> Option<&'static str> {
+        self.still
+            .as_ref()
+            .filter(|s| s.loading())
+            .map(Still::spinner_now)
+    }
+
+    /// The zoom of the still picture (1.0 when there is none).
+    pub fn still_zoom(&self) -> f64 {
+        self.still.as_ref().map_or(1.0, Still::zoom)
+    }
+
+    /// The centre of the visible window of the still picture.
+    pub fn still_center(&self) -> (f64, f64) {
+        self.still.as_ref().map_or((0.5, 0.5), Still::center)
+    }
+
+    /// Zoom the still picture one step in (`1`) or out (`-1`).
+    pub fn still_zoom_steps(&mut self, dir: i32) {
+        if let Some(s) = self.still.as_mut() {
+            s.zoom_steps(dir);
+        }
+    }
+
+    /// A page key was pressed over the still picture: it goes back to fit at once.
+    pub fn still_turn_page(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.turn_page();
+        }
+    }
+
+    /// Back to fit.
+    pub fn still_zoom_reset(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.zoom_reset();
+        }
+    }
+
+    /// Pan the still picture one step.
+    pub fn still_pan(&mut self, dx: f64, dy: f64) {
+        if let Some(s) = self.still.as_mut() {
+            s.pan(dx, dy);
+        }
+    }
+
+    /// Draw the still picture (or its loading line, or why it failed) into `inner`, the inside
+    /// of the frame's border.
+    pub fn draw_still(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        lang: konoma_host_core::lang::Lang,
+    ) {
+        if let Some(s) = self.still.as_mut() {
+            s.draw(buf, inner, lang);
+        }
+    }
+
     /// The session's view is not a canvas (any more): drop every picture, and queue the delete of
     /// every kitty image they pinned.
     pub fn forget(&mut self) {
@@ -220,6 +328,11 @@ impl Pictures {
     /// [`CanvasPictureHost::landed`]), the GIF frames that are due, and the follow-up job for
     /// pictures that waited.
     pub fn poll(&mut self) {
+        self.poll_at(Instant::now());
+    }
+
+    /// What [`poll`](Self::poll) does at the time `now` (the animation's clock).
+    pub fn poll_at(&mut self, now: Instant) {
         while let Ok(res) = self.enc_rx.try_recv() {
             self.cache.apply_encode(res);
         }
@@ -245,6 +358,9 @@ impl Pictures {
             // Even a job that panicked is not asked for again with the same canvas.
             self.last = Some(job.images);
         }
+        if let Some(s) = self.still.as_mut() {
+            s.poll_at(now);
+        }
         self.cache.advance_gifs_if_due();
         if let Some(at) = self.again_at {
             if Instant::now() >= at && self.job.is_none() {
@@ -262,6 +378,11 @@ impl Pictures {
     /// once it landed), and until the next GIF frame (only while the canvas is the frame shown).
     /// `None` when nothing is going on.
     pub fn wake_in(&self) -> Option<Duration> {
+        self.wake_in_at(Instant::now())
+    }
+
+    /// What [`wake_in`](Self::wake_in) says at the time `now`.
+    pub fn wake_in_at(&self, now: Instant) -> Option<Duration> {
         let mut wake: Option<Duration> = None;
         let mut want = |d: Duration| wake = Some(wake.map_or(d, |w| w.min(d)));
         if self.job.is_some() || self.cache.encodes_in_flight() {
@@ -269,8 +390,11 @@ impl Pictures {
         }
         if self.job.is_none() {
             if let Some(at) = self.again_at {
-                want(at.saturating_duration_since(Instant::now()));
+                want(at.saturating_duration_since(now));
             }
+        }
+        if let Some(w) = self.still.as_ref().and_then(|s| s.wake_in_at(now)) {
+            want(w);
         }
         if self.on_canvas {
             if let Some(g) = self.cache.gif_poll_timeout() {

@@ -21,9 +21,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::StatefulWidget;
 use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::kitty::{self, KittyImage};
 use crate::layout::{image_layout, ImageLayout, PxRect};
@@ -32,8 +33,100 @@ use crate::layout::{image_layout, ImageLayout, PxRect};
 pub const ZOOM_MIN: f64 = 1.0;
 /// The largest zoom.
 pub const ZOOM_MAX: f64 = 16.0;
+/// The factor one zoom key press multiplies the zoom by (zoom out divides by it).
+pub const ZOOM_FACTOR: f64 = 1.25;
 /// One pan step, as a fraction of the visible window.
 pub const PAN_STEP: f64 = 0.25;
+
+/// What the resize worker answers with: the encoded protocol, or why it could not be made.
+pub type ResizeResult = Result<ResizeResponse, ratatui_image::errors::Errors>;
+
+/// The body of the resize worker thread that serves [`ImageBackend::resize_tx`]: one request is
+/// one resize + encode, answered on `tx` (the app applies it with [`ImageViewer::apply_resize`]).
+/// Returns when the requests stop coming or the answering side is gone. Both hosts (konoma and the
+/// standalone app) run this on a thread of their own.
+pub fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else {
+        return;
+    };
+    rt.block_on(async move {
+        while let Some(req) = rx.recv().await {
+            if tx.send(req.resize_encode()).is_err() {
+                break; // the answering side has terminated
+            }
+        }
+    });
+}
+
+/// A resize worker thread with both ends of its channels: a host that does not want to name the
+/// channel types itself (the standalone app) owns one of these. The thread ends when this is
+/// dropped (the request side closes).
+pub struct ResizeChannel {
+    /// Where [`ImageBackend::resize_tx`] points.
+    pub tx: UnboundedSender<ResizeRequest>,
+    rx: UnboundedReceiver<ResizeResult>,
+    /// A resize came back as a failure since [`ResizeChannel::take_failed`] last said so.
+    failed: bool,
+}
+
+impl ResizeChannel {
+    /// Start the worker thread ([`resize_worker`]).
+    pub fn spawn() -> ResizeChannel {
+        let (tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
+        let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        std::thread::spawn(move || resize_worker(req_rx, resp_tx));
+        ResizeChannel {
+            tx,
+            rx,
+            failed: false,
+        }
+    }
+
+    /// A channel whose worker answers a request only when `go` is sent a unit (one per request):
+    /// a test holds a resize out for as long as it likes.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn spawn_held() -> (ResizeChannel, std::sync::mpsc::Sender<()>) {
+        let (tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
+        let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            while let Some(req) = req_rx.blocking_recv() {
+                if go_rx.recv().is_err() {
+                    break;
+                }
+                if resp_tx.send(req.resize_encode()).is_err() {
+                    break;
+                }
+            }
+        });
+        (
+            ResizeChannel {
+                tx,
+                rx,
+                failed: false,
+            },
+            go,
+        )
+    }
+
+    /// The next finished resize, if one is waiting. A resize that failed is dropped (`None`
+    /// then, as when nothing is waiting): the picture stays as it was.
+    pub fn try_recv(&mut self) -> Option<ResizeResponse> {
+        loop {
+            match self.rx.try_recv() {
+                Ok(Ok(resp)) => return Some(resp),
+                Ok(Err(_)) => self.failed = true,
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Whether a resize failed since this was last asked. A failed resize leaves its protocol
+    /// empty for good (the request took it), so nothing is waited for after it.
+    pub fn take_failed(&mut self) -> bool {
+        std::mem::take(&mut self.failed)
+    }
+}
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
 pub type KittyGeom = (PxRect, u16, u16);
@@ -117,7 +210,18 @@ pub struct KittyResult {
 /// The drawing state of the image on screen.
 pub struct ImageViewer {
     /// The ratatui-image protocol of the current crop (sixel / iTerm2 / halfblocks path).
+    ///
+    /// One [`ThreadProtocol`] serves the viewer for its whole life: it numbers its resize
+    /// requests, and the answer of the worker is applied only when its number is the newest. A
+    /// fresh `ThreadProtocol` per crop or per picture would restart that count at zero, so an
+    /// answer meant for the picture before could carry the number of a request of the picture
+    /// after and be drawn over it. Replacing the protocol *inside* the one `ThreadProtocol`
+    /// moves the number on, so no number is ever issued twice.
     protocol: Option<ThreadProtocol>,
+    /// The `ThreadProtocol` of a cleared picture, emptied but kept for its request count.
+    spare: Option<ThreadProtocol>,
+    /// The resize channel `protocol` / `spare` send on (a new channel starts a new count).
+    thread_tx: Option<UnboundedSender<ResizeRequest>>,
     /// The compressed kitty image for the current crop (kitty path).
     kitty_image: Option<KittyImage>,
     /// Latest-wins generation for async kitty builds: only the newest spawn's result is applied.
@@ -144,6 +248,8 @@ impl Default for ImageViewer {
     fn default() -> Self {
         Self {
             protocol: None,
+            spare: None,
+            thread_tx: None,
             kitty_image: None,
             kitty_gen: 0,
             kitty_want: None,
@@ -164,7 +270,11 @@ impl ImageViewer {
     /// Forget everything about the current image: the protocols, the pending kitty builds (the
     /// generation moves on so a build still in flight is discarded) and the crop.
     pub fn clear(&mut self) {
-        self.protocol = None;
+        // The protocol goes, its request count stays: an answer still in flight for it is stale.
+        if let Some(mut p) = self.protocol.take() {
+            p.empty_protocol();
+            self.spare = Some(p);
+        }
         self.kitty_image = None;
         self.invalidate();
         self.crop = None;
@@ -206,6 +316,14 @@ impl ImageViewer {
         self.kitty_gen
     }
 
+    /// Whether a resize request is out: the protocol was built and its encoder is away on the
+    /// worker (it comes back with the answer), so nothing can be drawn until then.
+    pub fn resize_pending(&self) -> bool {
+        self.protocol
+            .as_ref()
+            .is_some_and(|p| p.protocol_type().is_none())
+    }
+
     /// The ratatui-image protocol, once the first prepare built it.
     pub fn protocol(&self) -> Option<&ThreadProtocol> {
         self.protocol.as_ref()
@@ -227,7 +345,9 @@ impl ImageViewer {
         self.use_kitty && self.kitty_want != self.kitty_shown
     }
 
-    /// Apply a resize result from the worker. Returns true if it was applied.
+    /// Apply a resize result from the worker. Returns true if it was applied: an answer is applied
+    /// only to the protocol it was asked for (the newest request), so one for a crop or a picture
+    /// that has been replaced since is dropped.
     pub fn apply_resize(&mut self, resp: ResizeResponse) -> bool {
         match self.protocol.as_mut() {
             Some(p) => p.update_resized_protocol(resp),
@@ -299,22 +419,38 @@ impl ImageViewer {
             // sixel / iTerm2 / halfblocks: rebuild the protocol on a crop change, or when there is
             // none yet (the previous prepare took the kitty path, which leaves the crop recorded
             // but builds no protocol), to avoid a re-encode every frame.
-            let new_tp = if crop_changed || self.protocol.is_none() {
+            if crop_changed || self.protocol.is_none() {
                 let (x0, y0, cw, ch) = crop_rect;
                 let crop = src.crop_imm(x0, y0, cw, ch);
                 let proto = backend.picker.new_resize_protocol(crop);
-                Some(ThreadProtocol::new(backend.resize_tx?.clone(), Some(proto)))
-            } else {
-                None
-            };
-            if let Some(tp) = new_tp {
-                self.protocol = Some(tp);
+                self.install_protocol(backend.resize_tx?, proto);
             }
         }
         state.center = center;
         self.vis_frac = frac;
         self.crop = Some(crop_rect);
         Some(target)
+    }
+
+    /// Put `proto` in place of the protocol on show, inside the one `ThreadProtocol` this viewer
+    /// keeps (see [`ImageViewer::protocol`]'s field): its request count moves on, so an answer to
+    /// a request made for the protocol replaced is dropped by number.
+    fn install_protocol(&mut self, tx: &UnboundedSender<ResizeRequest>, proto: StatefulProtocol) {
+        let same = self.thread_tx.as_ref().is_some_and(|t| t.same_channel(tx));
+        let mut tp = if same {
+            self.protocol.take().or_else(|| self.spare.take())
+        } else {
+            None
+        };
+        match tp.as_mut() {
+            Some(p) => p.replace_protocol(proto),
+            None => {
+                tp = Some(ThreadProtocol::new(tx.clone(), Some(proto)));
+                self.thread_tx = Some(tx.clone());
+                self.spare = None;
+            }
+        }
+        self.protocol = tp;
     }
 
     /// Build the compressed kitty image for the given crop and target. The **first** build (or
@@ -954,6 +1090,111 @@ mod tests {
         v.clear();
         assert!(v.protocol().is_none());
         assert!(!v.apply_resize(resp));
+    }
+
+    /// Draws once so the protocol asks the worker, and returns that request.
+    fn draw_and_take_request(
+        v: &mut ImageViewer,
+        st: &mut ImageViewState,
+        img: &Arc<DynamicImage>,
+        rig: &Rig,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ResizeRequest>,
+    ) -> ResizeRequest {
+        let t = v
+            .prepare(st, src(img), &rig.backend(), area(20, 10))
+            .unwrap();
+        let mut buf = Buffer::empty(area(20, 10));
+        v.render(t, &mut buf);
+        rx.try_recv().expect("the draw asked the worker")
+    }
+
+    #[test]
+    fn a_stale_answer_is_dropped_after_the_crop_changed() {
+        let img = solid(800, 800, [1, 1, 1]);
+        let (rig, mut rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        st.zoom_by(2.0);
+        let old = draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx);
+        v.pan(&mut st, 1.0, 0.0);
+        let fresh = draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx);
+        assert!(
+            !v.apply_resize(old.resize_encode().unwrap()),
+            "the answer for the old crop must not land on the new one"
+        );
+        assert!(v.apply_resize(fresh.resize_encode().unwrap()));
+    }
+
+    #[test]
+    fn a_stale_answer_is_dropped_after_clear_and_a_new_picture() {
+        let img = solid(40, 40, [1, 1, 1]);
+        let other = solid(40, 40, [200, 0, 0]);
+        let (rig, mut rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let old = draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx);
+        v.clear();
+        let fresh = draw_and_take_request(&mut v, &mut st, &other, &rig, &mut rx);
+        assert!(!v.apply_resize(old.resize_encode().unwrap()));
+        assert!(v.apply_resize(fresh.resize_encode().unwrap()));
+    }
+
+    #[test]
+    fn a_stale_answer_is_dropped_however_many_pictures_came_and_went() {
+        let (rig, mut rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let mut stale = Vec::new();
+        for shade in 0..6u8 {
+            let img = solid(40, 40, [shade, 9, 9]);
+            stale.push(draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx));
+            v.clear();
+        }
+        let img = solid(40, 40, [250, 9, 9]);
+        let fresh = draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx);
+        for old in stale {
+            assert!(!v.apply_resize(old.resize_encode().unwrap()));
+        }
+        assert!(v.apply_resize(fresh.resize_encode().unwrap()));
+    }
+
+    #[test]
+    fn a_fresh_answer_is_applied() {
+        let img = solid(40, 40, [1, 1, 1]);
+        let (rig, mut rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let req = draw_and_take_request(&mut v, &mut st, &img, &rig, &mut rx);
+        assert!(v.apply_resize(req.resize_encode().unwrap()));
+    }
+
+    #[test]
+    fn the_resize_worker_answers_each_request_and_ends_with_its_sender() {
+        let img = solid(40, 40, [9, 9, 9]);
+        let (rig, rx) = Rig::halfblocks();
+        let mut v = ImageViewer::new();
+        let mut st = ImageViewState::default();
+        let t = v
+            .prepare(&mut st, src(&img), &rig.backend(), area(20, 10))
+            .unwrap();
+        let mut buf = Buffer::empty(area(20, 10));
+        v.render(t, &mut buf);
+        let (tx, mut answers) = unbounded_channel::<ResizeResult>();
+        // Both the request side and the answering side are closed when the worker returns, so
+        // the thread must end on its own once the rig's sender is dropped.
+        drop(rig);
+        let worker = std::thread::spawn(move || resize_worker(rx, tx));
+        // The viewer still holds a sender inside its protocol: drop it so the worker can end.
+        let resp = loop {
+            match answers.try_recv() {
+                Ok(r) => break r,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        };
+        assert!(v.apply_resize(resp.expect("an encoded protocol")));
+        // The viewer keeps its protocol (and so a sender) across `clear`, so drop it whole.
+        drop(v);
+        worker.join().unwrap();
     }
 
     // --- the kitty path -------------------------------------------------------------------

@@ -43,6 +43,134 @@ pub fn format_load_error(e: &toml::de::Error) -> String {
     }
 }
 
+/// The `[ui]` settings that moved into `[plugins.<id>]` (`konoma_plugin::config::MOVED_UI_SETTINGS`),
+/// typed. This is the one definition of their names, types and defaults: konoma's `UiConfig`
+/// starts from [`MovedUi::default`] and the small host reads this struct from `[ui]`, so a config
+/// file means the same in both, and a value of the wrong type is an error in both (the whole file
+/// is then not read; see [`SharedConfig::load`]).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MovedUi {
+    /// Whether code is syntax-highlighted (`[plugins.code] syntax_highlight`).
+    pub syntax_highlight: bool,
+    /// CSV columns in rainbow colors (`[plugins.csv] rainbow`).
+    pub csv_rainbow: bool,
+    /// Markdown checkbox states (`[plugins.markdown] task_states`).
+    pub md_task_states: Vec<String>,
+    pub md_autolink: bool,
+    pub md_alerts: bool,
+    pub md_emoji: bool,
+    pub md_frontmatter: bool,
+    pub md_footnotes: bool,
+    pub md_inline_html: bool,
+    pub md_details: String,
+    pub md_table_align: String,
+    pub md_image_align: String,
+    pub mermaid: String,
+    pub mermaid_theme: String,
+    pub mermaid_curve: String,
+    pub mermaid_routing: String,
+    pub mermaid_rows: u16,
+    pub math: String,
+    /// As written; [`MovedUi::math_color`] is the one that is used.
+    pub math_color: String,
+    /// `[ui] svg_max_px` (`[plugins.svg] max_px`). Not read from the flattened `[ui]` here: the
+    /// owner of the `[ui]` table has the key itself and sets this in `moved()`.
+    #[serde(skip, default = "default_svg_max_px")]
+    pub svg_max_px: u32,
+    /// `[ui.theme] code_theme` (handed to the code plugin as `code_theme`). Set by the owner of
+    /// the `[ui.theme]` table, like `svg_max_px`.
+    #[serde(skip, default = "default_code_theme")]
+    pub code_theme: String,
+}
+
+/// The longest side an SVG is drawn at, by default (pinned equal to
+/// `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX` by a test there).
+pub const DEFAULT_SVG_MAX_PX: u32 = 800;
+/// The code highlight theme, by default.
+pub const DEFAULT_CODE_THEME: &str = "TwoDark";
+
+fn default_svg_max_px() -> u32 {
+    DEFAULT_SVG_MAX_PX
+}
+
+fn default_code_theme() -> String {
+    DEFAULT_CODE_THEME.to_string()
+}
+
+/// The color formulas are painted in when none is set (or the one set would not show).
+pub const DEFAULT_MATH_COLOR: &str = "#d0d0d0";
+
+impl Default for MovedUi {
+    fn default() -> Self {
+        Self {
+            syntax_highlight: true,
+            csv_rainbow: true,
+            md_task_states: vec![" ".into(), "x".into()],
+            md_autolink: true,
+            md_alerts: true,
+            md_emoji: true,
+            md_frontmatter: true,
+            md_footnotes: true,
+            md_inline_html: true,
+            md_details: "auto".into(),
+            md_table_align: "left".into(),
+            md_image_align: "center".into(),
+            mermaid: "image".into(),
+            mermaid_theme: "dark".into(),
+            mermaid_curve: "basis".into(),
+            mermaid_routing: "splines".into(),
+            mermaid_rows: 24,
+            math: "image".into(),
+            math_color: DEFAULT_MATH_COLOR.into(),
+            svg_max_px: DEFAULT_SVG_MAX_PX,
+            code_theme: DEFAULT_CODE_THEME.into(),
+        }
+    }
+}
+
+impl MovedUi {
+    /// The formula color to use: the one set when it shows on a dark terminal, otherwise the
+    /// default (see [`visible_math_color`]).
+    pub fn math_color(&self) -> &str {
+        visible_math_color(&self.math_color)
+    }
+}
+
+/// `value` when usvg parses it as a color that is not fully transparent, otherwise
+/// [`DEFAULT_MATH_COLOR`]. RaTeX paints equations pure black, which is invisible on a dark
+/// terminal, and an unparsable color is painted black by usvg: a typo must not blank equations.
+/// A `#hex`, `rgb(...)` or a CSS color name passes; `none`, `currentColor` and a transparent color
+/// do not. The original string is returned because usvg re-parses it identically.
+pub fn visible_math_color(value: &str) -> &str {
+    use std::str::FromStr;
+    let c = value.trim();
+    let visible = svgtypes::Color::from_str(c)
+        .map(|col| col.alpha != 0)
+        .unwrap_or(false);
+    if visible {
+        c
+    } else {
+        DEFAULT_MATH_COLOR
+    }
+}
+
+/// `[ui.theme]` as a small host reads it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SharedTheme {
+    /// Theme of the code highlight (shared by the code plugin and Markdown code blocks).
+    pub code_theme: String,
+}
+
+impl Default for SharedTheme {
+    fn default() -> Self {
+        Self {
+            code_theme: DEFAULT_CODE_THEME.into(),
+        }
+    }
+}
+
 /// The `[ui]` settings a small host honours.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -54,6 +182,23 @@ pub struct SharedUi {
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
+    pub theme: SharedTheme,
+    /// The old plugin settings that lived in `[ui]` (`md_*`, `mermaid_*`, ...), typed. Use
+    /// [`SharedUi::moved`], which also carries `svg_max_px` and `code_theme`.
+    #[serde(flatten)]
+    moved_keys: MovedUi,
+}
+
+impl SharedUi {
+    /// Everything a plugin's settings are completed from, the same as konoma's
+    /// `UiConfig::moved`.
+    pub fn moved(&self) -> MovedUi {
+        MovedUi {
+            svg_max_px: self.svg_max_px,
+            code_theme: self.theme.code_theme.clone(),
+            ..self.moved_keys.clone()
+        }
+    }
 }
 
 impl Default for SharedUi {
@@ -61,7 +206,9 @@ impl Default for SharedUi {
         Self {
             lang: "auto".into(),
             keys: "vim".into(),
-            svg_max_px: 800,
+            svg_max_px: DEFAULT_SVG_MAX_PX,
+            theme: SharedTheme::default(),
+            moved_keys: MovedUi::default(),
         }
     }
 }
@@ -94,6 +241,9 @@ pub struct SharedConfig {
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub external: SharedExternal,
+    /// The `[plugins.<id>]` tables as written (the host reads `enabled`; the rest is the plugin's
+    /// own settings, converted by `konoma_plugin::config`).
+    pub plugins: std::collections::BTreeMap<String, toml::Table>,
 }
 
 impl SharedConfig {
@@ -159,6 +309,22 @@ mod tests {
     }
 
     #[test]
+    fn plugin_tables_are_kept_as_written_and_the_old_ui_keys_are_typed() {
+        let c = SharedConfig::parse(
+            "[ui]\nlang = \"jp\"\nmd_alerts = false\nwrap = true\n[plugins.markdown]\nemoji = false\n[plugins.csv]\nrainbow = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.ui.lang, "jp", "known keys are still read");
+        assert!(
+            !c.ui.moved().md_alerts,
+            "an old plugin setting is read, typed"
+        );
+        assert_eq!(c.plugins.len(), 2);
+        assert_eq!(c.plugins["markdown"]["emoji"], toml::Value::Boolean(false));
+        assert!(SharedConfig::parse("[plugins]\nmarkdown = 3\n").is_err());
+    }
+
+    #[test]
     fn broken_toml_reports_and_load_falls_back_to_defaults() {
         assert!(SharedConfig::parse("[ui\nlang = ").is_err());
         let dir = unique_tmp("host_core_broken");
@@ -206,6 +372,46 @@ mod tests {
         );
         let k = c.keys.to_keymap_config();
         assert_eq!(k.surfaces["global"]["y m"], "copy_name");
+    }
+
+    #[test]
+    fn an_old_plugin_key_of_the_wrong_type_is_an_error_not_an_unknown_key() {
+        for text in [
+            "[ui]\nmd_alerts = \"yes\"\n",
+            "[ui]\nmermaid_rows = 100000\n",
+            "[ui]\nmd_task_states = [\" \", 3]\n",
+            "[ui]\nsvg_max_px = -1\n",
+            "[ui.theme]\ncode_theme = 3\n",
+        ] {
+            let e = SharedConfig::parse(text).expect_err(text);
+            assert!(!e.contains('\n'), "{e:?}");
+        }
+        let dir = unique_tmp("host_core_moved_type");
+        std::fs::create_dir_all(dir.as_path()).unwrap();
+        let p = dir.as_path().join("config.toml");
+        std::fs::write(&p, "[ui]\nlang = \"jp\"\ncsv_rainbow = 1\n").unwrap();
+        let (c, err) = SharedConfig::load(&p);
+        assert_eq!(c.ui.lang, "auto", "the defaults, not half a file");
+        assert!(err.unwrap().starts_with("config error (using defaults): "));
+    }
+
+    #[test]
+    fn moved_keys_carry_the_owners_own_values_and_the_defaults() {
+        let c = SharedConfig::parse(
+            "[ui]\nsvg_max_px = 1600\nmermaid_rows = 9\n[ui.theme]\ncode_theme = \"Nord\"\n",
+        )
+        .unwrap();
+        let m = c.ui.moved();
+        assert_eq!(
+            (m.svg_max_px, m.mermaid_rows, m.code_theme.as_str()),
+            (1600, 9, "Nord")
+        );
+        let d = SharedConfig::parse("").unwrap().ui.moved();
+        assert_eq!(d.svg_max_px, DEFAULT_SVG_MAX_PX);
+        assert_eq!(d.code_theme, DEFAULT_CODE_THEME);
+        assert_eq!(d.math_color(), DEFAULT_MATH_COLOR);
+        assert_eq!(visible_math_color("wihte"), DEFAULT_MATH_COLOR);
+        assert_eq!(visible_math_color(" #123456 "), "#123456");
     }
 
     #[test]

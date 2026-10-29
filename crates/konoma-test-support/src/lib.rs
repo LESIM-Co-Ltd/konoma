@@ -321,18 +321,37 @@ pub fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
 /// no operators) — the PDF-syntax-level blank a page needs to look like, as opposed to a
 /// corrupted/truncated file.
 pub fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -> Vec<u8> {
-    let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-    content_obj.extend_from_slice(content);
-    content_obj.extend_from_slice(b"\nendstream");
-    let objs: [Vec<u8>; 4] = [
+    build_pdf(&[(w_pt, h_pt, content)])
+}
+
+/// A minimal valid PDF with one page per `(width, height, content stream)` entry, in order.
+pub fn build_pdf(pages: &[(u32, u32, &[u8])]) -> Vec<u8> {
+    // Objects: 1 catalog, 2 pages, then a (page, contents) pair per page.
+    let kids: Vec<String> = (0..pages.len())
+        .map(|i| format!("{} 0 R", 3 + 2 * i))
+        .collect();
+    let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            pages.len()
         )
         .into_bytes(),
-        content_obj,
     ];
+    for (i, (w_pt, h_pt, content)) in pages.iter().enumerate() {
+        objs.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents {} 0 R /Resources << >> >>",
+                4 + 2 * i
+            )
+            .into_bytes(),
+        );
+        let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        content_obj.extend_from_slice(content);
+        content_obj.extend_from_slice(b"\nendstream");
+        objs.push(content_obj);
+    }
     let mut out = Vec::new();
     out.extend_from_slice(b"%PDF-1.4\n");
     let mut offsets = vec![0usize];
@@ -407,4 +426,46 @@ pub fn build_xlsx_with_styles(
         );
     }
     zw.finish().unwrap();
+}
+
+/// Run a plugin program (`konoma-office <file>` and the like) without a terminal: standard input
+/// is closed and standard output and error are pipes, so the program can only refuse or stop at
+/// "must be a terminal", and never takes over a screen. `home` becomes `HOME` and
+/// `XDG_CONFIG_HOME` (`<home>/xdg`) so the user's own `config.toml` is never read.
+pub fn run_program_without_terminal(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+) -> std::process::Output {
+    std::process::Command::new(exe)
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env_remove("LC_ALL")
+        .env_remove("LC_MESSAGES")
+        .env("LANG", "C")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the program starts")
+}
+
+/// An animated GIF (looping) of solid-color frames: each `(rgb, delay_ms)` is one frame of
+/// `w` x `h` pixels shown for its delay. Delays are rounded to 10 ms by the format.
+pub fn build_animated_gif(w: u32, h: u32, frames: &[([u8; 3], u32)]) -> Vec<u8> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).expect("repeat is written");
+        for (c, ms) in frames {
+            let img = RgbaImage::from_pixel(w, h, Rgba([c[0], c[1], c[2], 255]));
+            let delay = Delay::from_numer_denom_ms(*ms, 1);
+            enc.encode_frame(Frame::from_parts(img, 0, 0, delay))
+                .expect("a frame is written");
+        }
+    }
+    out
 }

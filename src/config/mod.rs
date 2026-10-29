@@ -456,24 +456,43 @@ impl UiConfig {
     /// real CSS color name (`black`, `white`, …) passes; a typo (`wihte`), `none`, `currentColor`, or a
     /// fully-transparent color falls back to the light-gray default. Returning the *original* string is
     /// safe because usvg re-parses it identically.
+    #[cfg(test)]
     pub fn math_color(&self) -> &str {
         visible_math_color(&self.math_color)
+    }
+
+    /// The settings that moved to `[plugins.<id>]`, as the function that completes a plugin's
+    /// settings reads them (`konoma_plugin::config::plugin_settings`).
+    pub fn moved(&self) -> konoma_host_core::shared::MovedUi {
+        konoma_host_core::shared::MovedUi {
+            syntax_highlight: self.syntax_highlight,
+            csv_rainbow: self.csv_rainbow,
+            md_task_states: self.md_task_states.clone(),
+            md_autolink: self.md_autolink,
+            md_alerts: self.md_alerts,
+            md_emoji: self.md_emoji,
+            md_frontmatter: self.md_frontmatter,
+            md_footnotes: self.md_footnotes,
+            md_inline_html: self.md_inline_html,
+            md_details: self.md_details.clone(),
+            md_table_align: self.md_table_align.clone(),
+            md_image_align: self.md_image_align.clone(),
+            mermaid: self.mermaid.clone(),
+            mermaid_theme: self.mermaid_theme.clone(),
+            mermaid_curve: self.mermaid_curve.clone(),
+            mermaid_routing: self.mermaid_routing.clone(),
+            mermaid_rows: self.mermaid_rows,
+            math: self.math.clone(),
+            math_color: self.math_color.clone(),
+            svg_max_px: self.svg_max_px,
+            code_theme: self.theme.code_theme.clone(),
+        }
     }
 }
 
 /// [`UiConfig::math_color`]'s test, for any value (`[plugins.math] color` is held to it too).
-pub(crate) fn visible_math_color(value: &str) -> &str {
-    use std::str::FromStr;
-    let c = value.trim();
-    let visible = svgtypes::Color::from_str(c)
-        .map(|col| col.alpha != 0)
-        .unwrap_or(false);
-    if visible {
-        c
-    } else {
-        "#d0d0d0"
-    }
-}
+#[cfg(test)]
+pub(crate) use konoma_host_core::shared::visible_math_color;
 
 // The rule lives with `expand_tabs`, its only consumer; the config tests pin it from here.
 #[cfg(test)]
@@ -529,7 +548,7 @@ impl Default for ThemeConfig {
             code_bg: "#2b303b".into(), // = DEFAULT_CODE_BG (rgb 43,48,59)
             code_label_align: "right".into(),
             code_label_bg: "auto".into(),
-            code_theme: "TwoDark".into(), // = Zed's One Dark
+            code_theme: konoma_host_core::shared::DEFAULT_CODE_THEME.into(), // = Zed's One Dark
         }
     }
 }
@@ -595,6 +614,9 @@ pub struct Rule {
 
 impl Default for UiConfig {
     fn default() -> Self {
+        // The values of the settings that moved to `[plugins.<id>]` have one definition, shared
+        // with the small host, so the two cannot drift apart.
+        let m = konoma_host_core::shared::MovedUi::default();
         Self {
             show_hidden: false,
             filter_mode: "fuzzy".into(),
@@ -604,7 +626,7 @@ impl Default for UiConfig {
             line_numbers: false,
             git_gutter: true,
             tab_width: 4,
-            syntax_highlight: true,
+            syntax_highlight: m.syntax_highlight,
             preview_loading: "indicator".into(),
             path_style: "relative".into(),
             keys: "vim".into(),
@@ -612,7 +634,7 @@ impl Default for UiConfig {
             statusbar: "split".into(),
             theme: ThemeConfig::default(),
             image_render_scale: 1.0,
-            svg_max_px: konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX,
+            svg_max_px: m.svg_max_px,
             sort: SortConfig::default(),
             details: Vec::new(),
             graph_max_branches: 12,
@@ -621,27 +643,27 @@ impl Default for UiConfig {
             confirm_quit: true,
             confirm_bookmark_overwrite: true,
             confirm_jj_sync: true,
-            csv_rainbow: true,
+            csv_rainbow: m.csv_rainbow,
             follow_view: "diff".into(),
             diff_view: "rendered".into(),
-            md_task_states: vec![" ".into(), "x".into()],
-            md_autolink: true,
-            md_alerts: true,
-            md_emoji: true,
-            md_frontmatter: true,
-            md_footnotes: true,
-            md_inline_html: true,
-            md_details: "auto".into(),
-            md_table_align: "left".into(),
-            md_image_align: "center".into(),
+            md_task_states: m.md_task_states,
+            md_autolink: m.md_autolink,
+            md_alerts: m.md_alerts,
+            md_emoji: m.md_emoji,
+            md_frontmatter: m.md_frontmatter,
+            md_footnotes: m.md_footnotes,
+            md_inline_html: m.md_inline_html,
+            md_details: m.md_details,
+            md_table_align: m.md_table_align,
+            md_image_align: m.md_image_align,
             busy_indicator: true,
-            mermaid: "image".into(),
-            math: "image".into(),
-            math_color: "#d0d0d0".into(),
-            mermaid_theme: "dark".into(),
-            mermaid_curve: "basis".into(),
-            mermaid_routing: "splines".into(),
-            mermaid_rows: 24,
+            mermaid: m.mermaid,
+            math: m.math,
+            math_color: m.math_color,
+            mermaid_theme: m.mermaid_theme,
+            mermaid_curve: m.mermaid_curve,
+            mermaid_routing: m.mermaid_routing,
+            mermaid_rows: m.mermaid_rows,
             restore_tabs: true,
             restore_single_tab: true,
             tree_cursor: "origin".into(),

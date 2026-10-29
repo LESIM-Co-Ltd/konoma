@@ -2,7 +2,7 @@
 //!
 //! Only plugins the user added are limited; the standard ones read as they always did. The scope
 //! is the tab root plus the folder of the previewed file, widened by `read_dirs`. The previewed
-//! file itself is never refused (see `canvas_images::open_picture_file`).
+//! file itself is never refused (see `konoma_plugin::canvas_pictures::files::open_picture_file`).
 
 use konoma_plugin::ReadScope;
 use std::path::{Path, PathBuf};

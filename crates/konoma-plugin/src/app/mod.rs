@@ -2,9 +2,12 @@
 //!
 //! This is a small host. It picks the plugin with the registry's rules (the same
 //! [`Registry::resolve_file`] the konoma host uses), opens a session, and draws the view with
-//! ratatui. Only the display types that need no shared widget code are drawn here:
-//! [`View::Message`](crate::View), [`View::Text`](crate::View) (a file read in windows, a string or
-//! styled lines) and [`View::Canvas`](crate::View). Any other view says it cannot be shown yet.
+//! ratatui. It draws [`View::Message`](crate::View), [`View::Text`](crate::View) (a file read in
+//! windows, a string or styled lines), [`View::Canvas`](crate::View) and
+//! [`View::Table`](crate::View) (the grid drawn with the shared `konoma-widgets` table, the cell
+//! cursor, the sheets as pages, the full-cell popup) and [`View::Image`](crate::View) (a still
+//! picture decoded off the loop and drawn through the `Pictures`, with zoom and pan; with no
+//! `Pictures` the line that names the terminal). Any other view says it cannot be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
@@ -12,11 +15,11 @@
 mod draw;
 mod looping;
 mod pictures;
+mod still;
 mod term;
 mod window;
 
 use std::fmt;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,8 +27,11 @@ use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
-pub use looping::{run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next};
+pub use looping::{
+    run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
+};
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
+pub use still::{failure_line, StillShape};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
@@ -124,16 +130,52 @@ pub fn colors_of(colorterm: &str, term: &str) -> ColorDepth {
     }
 }
 
-/// Whether the start of a file reads as text: no NUL byte in its first 8 KiB.
-fn reads_as_text(path: &Path) -> bool {
-    let mut buf = Vec::new();
-    match std::fs::File::open(path) {
-        Ok(f) => {
-            let _ = f.take(8192).read_to_end(&mut buf);
-            !buf.contains(&0)
-        }
-        Err(_) => false,
+/// A registry holding `plugins` as the standard ones of the program.
+fn register_all(plugins: Vec<Arc<dyn Plugin>>) -> Result<Registry, AppError> {
+    let mut registry = Registry::new();
+    for p in plugins {
+        registry
+            .register(p, PluginOrigin::Standard)
+            .map_err(|e| AppError::Plugin(e.to_string()))?;
     }
+    Ok(registry)
+}
+
+/// The plugin `registry` picks for the file at `path`, and the hint of the binding. The facts are
+/// read the way konoma reads them: the MIME type from the content
+/// ([`konoma_host_core::sniff`]) and the text judgment of `konoma-widgets`.
+fn pick_in(registry: &Registry, path: &Path) -> Result<(String, Option<String>), AppError> {
+    let sniff = || konoma_host_core::sniff::mime_of_path(path);
+    let is_text = || konoma_widgets::text::is_probably_text(path);
+    let facts = FileFacts {
+        path,
+        sniff_mime: &sniff,
+        is_text: &is_text,
+    };
+    match registry.resolve_file(&[], &facts) {
+        Resolution::Plugin { id, hint } => Ok((id, hint)),
+        Resolution::Text => Err(AppError::NotHandled {
+            path: path.to_path_buf(),
+            why: "no plugin of this program takes it; it reads as text".to_string(),
+        }),
+        Resolution::CanNotPreview { ext } => Err(AppError::NotHandled {
+            path: path.to_path_buf(),
+            why: if ext.is_empty() {
+                "no plugin of this program takes it".to_string()
+            } else {
+                format!("no plugin of this program takes `.{}`", clean(&ext))
+            },
+        }),
+    }
+}
+
+/// The id of the plugin among `plugins` that shows the file at `path`, or the refusal
+/// [`open_file`] gives. Nothing is opened.
+pub fn pick_plugin(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<String, AppError> {
+    let path =
+        std::path::absolute(path).map_err(|e| AppError::Unreadable(path.to_path_buf(), e))?;
+    let registry = register_all(plugins)?;
+    pick_in(&registry, &path).map(|(id, _)| id)
 }
 
 /// What opening a file settled on: the session, and the name for the title line.
@@ -143,6 +185,10 @@ pub struct Opened {
     pub plugin_id: String,
     /// The absolute path of the file (where a picture's relative references resolve from).
     pub path: PathBuf,
+    /// What the plugin declared it shows when it shows nothing ([`Manifest::unavailable`]).
+    pub unavailable: crate::manifest::Unavailable,
+    /// The display types the plugin declared ([`Manifest::shows`]).
+    pub shows: Vec<crate::manifest::ViewKind>,
 }
 
 /// Check the file, pick the plugin by the registry's rules and open a session. Nothing here
@@ -152,6 +198,18 @@ pub fn open_file(
     path: &Path,
     lang: &str,
     term: TermCaps,
+) -> Result<Opened, AppError> {
+    open_file_with(plugins, path, lang, term, &|_| Settings::new())
+}
+
+/// [`open_file`] with the settings of the chosen plugin: `settings_of(id)` is asked once, for the
+/// plugin the registry picked, and is what its `OpenCx::settings` holds.
+pub fn open_file_with(
+    plugins: Vec<Arc<dyn Plugin>>,
+    path: &Path,
+    lang: &str,
+    term: TermCaps,
+    settings_of: &dyn Fn(&str) -> Settings,
 ) -> Result<Opened, AppError> {
     let path =
         std::path::absolute(path).map_err(|e| AppError::Unreadable(path.to_path_buf(), e))?;
@@ -167,42 +225,19 @@ pub fn open_file(
         return Err(AppError::Unreadable(path, e));
     }
 
-    let mut registry = Registry::new();
-    for p in plugins {
-        registry
-            .register(p, PluginOrigin::Standard)
-            .map_err(|e| AppError::Plugin(e.to_string()))?;
-    }
-    let sniff = || None;
-    let is_text = || reads_as_text(&path);
-    let facts = FileFacts {
-        path: &path,
-        sniff_mime: &sniff,
-        is_text: &is_text,
-    };
-    let (id, hint) = match registry.resolve_file(&[], &facts) {
-        Resolution::Plugin { id, hint } => (id, hint),
-        Resolution::Text => {
-            return Err(AppError::NotHandled {
-                path,
-                why: "no plugin of this program takes it; it reads as text".to_string(),
-            })
-        }
-        Resolution::CanNotPreview { ext } => {
-            return Err(AppError::NotHandled {
-                path,
-                why: if ext.is_empty() {
-                    "no plugin of this program takes it".to_string()
-                } else {
-                    format!("no plugin of this program takes `.{}`", clean(&ext))
-                },
-            })
-        }
-    };
+    let registry = register_all(plugins)?;
+    let (id, hint) = pick_in(&registry, &path)?;
     let plugin = registry
         .plugin(&id)
         .ok_or_else(|| AppError::Plugin(format!("plugin `{id}` is not registered")))?;
-    let cx = OpenCx::new(Settings::empty(), lang).with_term(term);
+    let unavailable = registry
+        .manifest(&id)
+        .map_or_else(|| plugin.manifest().unavailable, |m| m.unavailable.clone());
+    let shows = registry
+        .manifest(&id)
+        .map_or_else(|| plugin.manifest().shows, |m| m.shows.clone());
+    let settings = settings_of(&id);
+    let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
         .open(
             Input::File {
@@ -221,7 +256,66 @@ pub fn open_file(
         title,
         plugin_id: id,
         path,
+        unavailable,
+        shows,
     })
+}
+
+/// Everything `run` settles before the terminal is taken.
+pub struct Prepared {
+    pub opened: Opened,
+    pub keys: AppKeys,
+    /// The language of the session: `"ja"` or `"en"`.
+    pub lang: &'static str,
+    pub svg_max_px: u32,
+    /// The config load error, still to be reported ([`write_load_error`]).
+    pub load_error: Option<String>,
+}
+
+/// A refusal before the terminal is taken, with the config load error that is still unreported.
+pub struct PrepareFailure {
+    pub error: AppError,
+    pub load_error: Option<String>,
+}
+
+impl PrepareFailure {
+    /// Write the config load error (one line, before the refusal itself, which the caller prints)
+    /// and hand the refusal on.
+    pub fn report(self, w: &mut dyn std::io::Write) -> AppError {
+        // A failure to write to a closed standard error changes nothing about the run.
+        let _ = write_load_error(w, self.load_error.as_deref());
+        self.error
+    }
+}
+
+/// The part of `run` before the terminal: from a loaded config, the language, the keys, and the
+/// file opened with the settings of the plugin that takes it (`[plugins.<id>]` and the old `[ui]`
+/// names, [`crate::config::plugin_settings`]). The file is checked and opened here, so a refusal
+/// is a message on the ordinary screen.
+pub fn prepare(
+    plugins: Vec<Arc<dyn Plugin>>,
+    path: &Path,
+    term: TermCaps,
+    loaded: (konoma_host_core::shared::SharedConfig, Option<String>),
+) -> Result<Prepared, PrepareFailure> {
+    let svg_max_px = loaded.0.ui.svg_max_px;
+    let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
+    let (keys, load_error) = keys_from_load(loaded);
+    let lang = match keys.lang() {
+        konoma_host_core::lang::Lang::Jp => "ja",
+        konoma_host_core::lang::Lang::En => "en",
+    };
+    let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &moved_ui, id);
+    match open_file_with(plugins, path, lang, term, &settings_of) {
+        Ok(opened) => Ok(Prepared {
+            opened,
+            keys,
+            lang,
+            svg_max_px,
+            load_error,
+        }),
+        Err(error) => Err(PrepareFailure { error, load_error }),
+    }
 }
 
 /// `<program> <file>`: open the file in the terminal. Returns when the user quits.
@@ -234,24 +328,39 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
     let term = TermCaps::new().colors(colors);
     // The config comes first: `ui.lang` says the language of the session too. A missing or broken
     // config file gives the defaults; a broken one is reported on standard error once the
-    // terminal is back (the screen is the alternate one meanwhile).
-    let loaded = konoma_host_core::shared::SharedConfig::load_default();
-    let svg_max_px = loaded.0.ui.svg_max_px;
-    let (keys, load_error) = keys_from_load(loaded);
-    let lang = match keys.lang() {
-        konoma_host_core::lang::Lang::Jp => "ja",
-        konoma_host_core::lang::Lang::En => "en",
+    // terminal is back (the screen is the alternate one meanwhile), or at once when the run ends
+    // before the terminal is taken.
+    let prepared = prepare(
+        plugins,
+        path,
+        term,
+        konoma_host_core::shared::SharedConfig::load_default(),
+    );
+    let Prepared {
+        mut opened,
+        keys,
+        lang,
+        svg_max_px,
+        load_error,
+    } = match prepared {
+        Ok(p) => p,
+        Err(f) => return Err(f.report(&mut std::io::stderr())),
     };
-    // The file is checked and opened before the terminal is taken, so a refusal is a message on
-    // the ordinary screen.
-    let mut opened = open_file(plugins, path, lang, term)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err(AppError::NoTerminal);
+        return Err(PrepareFailure {
+            error: AppError::NoTerminal,
+            load_error,
+        }
+        .report(&mut std::io::stderr()));
     }
     let cx = AppCx {
         lang: lang.to_string(),
         term,
         title: opened.title.clone(),
+        unavailable: opened.unavailable.clone(),
+        plugin_id: opened.plugin_id.clone(),
+        path: opened.path.clone(),
+        shows: opened.shows.clone(),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are

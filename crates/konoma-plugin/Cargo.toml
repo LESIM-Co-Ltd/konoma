@@ -8,16 +8,23 @@ repository.workspace = true
 description = "Plugin API of konoma: the entry traits, display types, declarations, and the rules that settle which plugin shows a file"
 
 [features]
+# Reading `[plugins.<id>]` from config.toml into `Settings` (`config`): the one reading konoma and the
+# standalone app share.
+config = ["dep:toml", "dep:konoma-host-core"]
 # The child-process transport: wire types, framing, the SDK `serve` side and the host `ProcPlugin`
 # client. Off by default so a plugin linked in-process pays for none of it.
 proc = ["dep:serde", "dep:rmp-serde", "dep:libc", "dep:serde_json"]
 # The display types drawn with ratatui (`ratatui_draw`): style/line conversion and the canvas
 # painter. The hosts (konoma and the standalone app) turn it on; a plugin does not need it.
 ratatui = ["dep:ratatui"]
+# What a host reads of a plugin's table through konoma's own table widget (`table_ui`): this is the
+# `konoma-widgets` dependency alone, so it does not depend on the pictures. Both hosts turn it on
+# (through `pictures`, which uses the same crate).
+widgets = ["dep:konoma-widgets"]
 # The canvas pictures (`canvas_pictures`): hashing, decoding within the work limits, the read
 # scope, and the overlay arithmetic that both hosts (konoma and the standalone app) share, so a
 # picture a plugin places looks the same in either. Off by default: a plugin does not need it.
-pictures = ["ratatui", "dep:konoma-base", "dep:konoma-widgets", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
+pictures = ["ratatui", "widgets", "dep:konoma-base", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image"]
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
 # while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
 test-hooks = ["konoma-base?/test-hooks"]
@@ -26,7 +33,7 @@ test-hooks = ["konoma-base?/test-hooks"]
 # pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "pictures", "dep:crossterm", "dep:konoma-host-core"]
+app = ["proc", "ratatui", "pictures", "config", "dep:crossterm", "dep:konoma-host-core"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -44,6 +51,9 @@ rmp-serde = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 # The human-readable `--manifest` output and the host's manifest cache.
 serde_json = { workspace = true, optional = true }
+
+# `config` feature.
+toml = { workspace = true, optional = true }
 
 # Freeing a large value off the UI thread (`pictures` feature).
 konoma-base = { path = "../konoma-base", version = "0.1.0", optional = true }
@@ -66,6 +76,8 @@ konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional =
 konoma-test-support = { path = "../konoma-test-support" }
 # The test seams of the discard thread (the landing tests ask what was handed to it).
 konoma-base = { path = "../konoma-base", features = ["test-hooks"] }
+# A test holds a resize out (`ResizeChannel::spawn_held`).
+konoma-widgets = { path = "../konoma-widgets", features = ["test-hooks"] }
 
 # Real-process tests: this binary is also the plugin program (it serves when an environment variable
 # says so). `harness = false` because the body must run as the child too; it speaks the part of

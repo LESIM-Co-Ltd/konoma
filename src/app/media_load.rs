@@ -55,10 +55,25 @@ impl App {
         }
     }
 
+    /// Let go of the picture on screen (a still, an animation, the viewer's drawn state) without
+    /// touching the page or the plugin's show. A page whose answer is a failure lands here, so
+    /// the picture of the page before never stays under the failure's words.
+    pub(super) fn release_picture(&mut self) {
+        self.image_viewer.clear();
+        self.image_src = None;
+        self.vector_svg = None;
+        self.vector_trust = None;
+        self.image_logical = None;
+        self.gif.clear();
+    }
+
     /// Record why the full-screen image could not be loaded (a request dropped as stale is not a
     /// failure and says nothing).
     fn set_image_failure(&mut self, why: crate::preview::image::ImageFailure) {
         if why != crate::preview::image::ImageFailure::Cancelled {
+            // A page that fails to draw replaces the picture of the page before it (a still, a
+            // vector's source, an animation), whichever path the failure came by.
+            self.release_picture();
             self.image_failure = Some(why);
         }
     }
@@ -67,6 +82,9 @@ impl App {
     /// zoom/center are left untouched (enter_preview has the preceding clear_image set defaults, and tab restore has already
     /// overwritten them with the restored values; so that a late asynchronous result does not break the restored zoom/center).
     pub(super) fn set_static_image(&mut self, img: image::DynamicImage) {
+        // A still landing replaces whatever animation was playing (`render_image` looks at the
+        // animation first, so a stale one would hide the new picture).
+        self.gif.clear();
         self.image_src = Some(std::sync::Arc::new(img));
         // Let the next render (prepare_image) build the protocol.
         self.image_viewer.set_crop(None);
@@ -498,6 +516,12 @@ impl App {
         self.gif.advance_if_due(std::time::Instant::now())
     }
 
+    /// Test seam: put the full-screen GIF on frame `idx` without waiting for its time.
+    #[cfg(test)]
+    pub(crate) fn force_gif_frame_for_test(&mut self, idx: usize) {
+        self.gif.force_frame_index(idx);
+    }
+
     /// Whether a GIF animation is active (used for branching in the render path and footer/zoom checks).
     pub fn is_gif_active(&self) -> bool {
         self.gif.is_active()
@@ -600,8 +624,7 @@ impl App {
         if let Some((cur, total)) = self.anchored_position() {
             return Some((cur as u32, total as u32));
         }
-        let total = self.tab.page_count?;
-        Some((self.tab.page.min(total), total))
+        konoma_plugin::pages::indicator(self.tab.page, self.tab.page_count)
     }
 
     /// Whether the page keys turn pages of the preview: a known multi-page one. The page count is
@@ -610,7 +633,7 @@ impl App {
     /// left (macOS `qlmanage`/`sips`) is first-page-only, so navigating past page 1 depends on
     /// `hayro` alone, never on an installed tool.
     pub fn can_turn_pages(&self) -> bool {
-        matches!(self.tab.page_count, Some(n) if n > 1) || self.anchored_can_turn()
+        konoma_plugin::pages::can_turn(self.tab.page_count) || self.anchored_can_turn()
     }
 
     /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
@@ -636,12 +659,12 @@ impl App {
 
     /// Go to the next page (clamped to the last page). The plugin draws that page on demand (one at a time).
     pub fn next_page(&mut self) {
-        self.goto_page(self.tab.page.saturating_add(1));
+        self.goto_page(konoma_plugin::pages::target(self.tab.page, 1));
     }
 
     /// Go to the previous page (clamped to page 1).
     pub fn prev_page(&mut self) {
-        self.goto_page(self.tab.page.saturating_sub(1));
+        self.goto_page(konoma_plugin::pages::target(self.tab.page, -1));
     }
 
     /// Jump to a 1-based page (clamped to [1, total]). No-op if the preview has no pages to turn or
@@ -652,13 +675,10 @@ impl App {
         if !self.can_turn_pages() {
             return;
         }
-        let Some(total) = self.tab.page_count else {
+        let Some(page) = konoma_plugin::pages::goto(self.tab.page, self.tab.page_count, page)
+        else {
             return;
         };
-        let page = page.clamp(1, total);
-        if page == self.tab.page {
-            return;
-        }
         self.tab.page = page;
         if self.shows_media_plugin() {
             // Reset to fit so the whole new page is visible (set_static_image doesn't touch
@@ -713,12 +733,15 @@ impl App {
         ) else {
             return;
         };
-        let cur_side = src.dimensions().0.max(src.dimensions().1);
-        let want = ((lw.max(lh) as f64) * self.tab.image_view.zoom).ceil() as u32;
-        // Do nothing if the current raster is already sufficient (+12% margin) or already at the cap (4096).
-        if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
+        // Whether to draw again, and at what size, is decided by the shared function (the
+        // standalone app asks the same one).
+        let Some(want) = konoma_plugin::canvas_pictures::sharp_zoom_target(
+            src.dimensions(),
+            (lw, lh),
+            self.tab.image_view.zoom,
+        ) else {
             return;
-        }
+        };
         // Don't spawn for the synchronous fallback (no media_tx = tests) — there's no room for
         // duplication there, so don't set the flag either.
         if self.media_tx.is_some() {

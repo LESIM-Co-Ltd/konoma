@@ -2,8 +2,7 @@
 // so `crate::preview::image::...` paths are unchanged. What stays here is the translated message of
 // an `ImageFailure` (the catalog, `i18n`, is the host's).
 
-use crate::i18n::{tr, Lang, Msg};
-use crate::preview::svg_guard::SvgFailMsg;
+use crate::i18n::Lang;
 
 pub use konoma_svg::image::*;
 
@@ -19,17 +18,6 @@ pub trait ImageFailureMessage {
 
 impl ImageFailureMessage for ImageFailure {
     fn message(self, lang: Lang, plugin_id: &str) -> Option<String> {
-        let text = tr(
-            lang,
-            match self {
-                Self::TooLarge => Msg::ImageReasonTooLarge,
-                Self::Corrupt => Msg::ImageReasonCorrupt,
-                Self::UnsupportedFormat => Msg::ImageReasonUnsupportedFormat,
-                Self::OutsideReadDirs => Msg::ImageReasonOutsideReadDirs,
-                Self::Cancelled => return None,
-                Self::Svg(f) => f.msg(),
-            },
-        );
-        Some(text.replace("<id>", plugin_id))
+        konoma_plugin::canvas_pictures::image_failure_message(self, lang, plugin_id)
     }
 }

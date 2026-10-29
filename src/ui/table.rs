@@ -53,14 +53,11 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(view): Option<TableCellView> = app.table_cell_view() else {
         return; // The caller (ui::render) has already confirmed is_table_cell_open. Defensive no-op.
     };
-    let title = format!(
-        " {} · {}  r{}/{} c{}/{} ",
+    let title = konoma_widgets::table::cell_popup_title(
         tr(app.lang, crate::i18n::Msg::TableCellTitle),
-        view.header,
-        view.row,
-        view.nrows.max(1),
-        view.col,
-        view.ncols
+        &view.header,
+        (view.row, view.col),
+        (view.nrows, view.ncols),
     );
     let footer = crate::ops::footer::tokens(app, crate::keymap::Context::TableCell).join("  ");
     let (scroll, viewport) = konoma_widgets::table::render_cell_popup(
@@ -80,40 +77,23 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 /// A spreadsheet shows the sheet name and position, the hidden-sheet count (the note its plugin
 /// gives) and the cursor's cell address instead of the row/column counters.
 fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize, addressed: bool) -> String {
-    let (nrows, ncols) = (t.nrows(), t.ncols());
     let path = app
         .tab
         .preview_path
         .clone()
         .map(|p| app.format_path(&p))
         .unwrap_or_else(|| "table".to_string());
-    let cap = if t.truncated() {
-        format!("  ({})", tr(app.lang, crate::i18n::Msg::SheetCappedWord))
-    } else {
-        String::new()
-    };
-    if addressed {
-        // e.g. " book.xlsx  Sales (1/3) +1 hidden  B3  5×6  (capped) "
-        let note = app.table_title_note().unwrap_or_default();
-        let addr = if nrows > 0 && ncols > 0 {
-            format!(
-                "  {}",
-                crate::preview::table::cell_address(cur_row, cur_col)
-            )
-        } else {
-            String::new()
-        };
-        return format!(" {path}  {note}{addr}  {nrows}×{ncols}{cap} ");
-    }
-    // e.g. " data.csv  r3/100 c2/5  100×5  (capped) "
-    format!(
-        " {path}  r{}/{} c{}/{}  {}×{}{cap} ",
-        cur_row + 1,
-        nrows.max(1),
-        cur_col + 1,
-        ncols,
-        nrows,
-        ncols,
+    let capped = t
+        .truncated()
+        .then(|| tr(app.lang, crate::i18n::Msg::SheetCappedWord));
+    // A sheet names the cursor by its address after the plugin's note (the sheet's name and position).
+    let sheet = addressed.then(|| app.table_title_note().unwrap_or_default());
+    konoma_widgets::table::table_title(
+        &path,
+        (t.nrows(), t.ncols()),
+        (cur_row, cur_col),
+        sheet,
+        capped,
     )
 }
 

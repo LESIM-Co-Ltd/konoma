@@ -14,6 +14,7 @@ pub mod image_view;
 pub mod inline_images;
 pub mod kitty;
 pub mod layout;
+pub mod loading;
 pub mod markdown;
 pub mod table;
 pub mod term_query;

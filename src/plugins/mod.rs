@@ -15,8 +15,12 @@ pub(crate) mod external;
 pub(crate) mod external_testkit;
 mod listing;
 mod profile;
+#[cfg(test)]
+mod program_parity_tests;
 pub(crate) mod read_scope;
 mod resolve;
+#[cfg(test)]
+mod settings_parity_tests;
 #[cfg(test)]
 mod survivor_tests;
 #[cfg(test)]
@@ -76,14 +80,6 @@ impl Plugin for Declared {
             ja: "このプラグインは宣言のみで、まだプラグイン API では開かれません",
         )))
     }
-}
-
-fn s(v: &str) -> konoma_plugin::Value {
-    konoma_plugin::Value::Str(v.to_string())
-}
-
-fn b(v: bool) -> konoma_plugin::Value {
-    konoma_plugin::Value::Bool(v)
 }
 
 fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
@@ -252,81 +248,19 @@ pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
         .collect()
 }
 
-/// The plugin's own settings from its table (`enabled` is not one of them).
-pub(crate) fn settings_of(table: &toml::Table) -> Settings {
-    let mut out = Settings::new();
-    for (k, v) in table {
-        if !is_host_key(table, k) {
-            out.set(k.clone(), value_of(v));
-        }
-    }
-    out
-}
+/// The plugin's own settings from its table (`enabled` is not one of them): the reading the
+/// standalone app shares (`konoma_plugin::config`).
+pub(crate) use konoma_plugin::config::settings_of;
 
 fn value_of(v: &toml::Value) -> konoma_plugin::Value {
-    use konoma_plugin::Value;
-    match v {
-        toml::Value::Boolean(x) => Value::Bool(*x),
-        toml::Value::Integer(x) => Value::Int(*x),
-        toml::Value::Float(x) => Value::Float(*x),
-        toml::Value::String(x) => Value::Str(x.clone()),
-        toml::Value::Datetime(x) => Value::Str(x.to_string()),
-        toml::Value::Array(xs) => Value::List(xs.iter().map(value_of).collect()),
-        toml::Value::Table(t) => Value::Table(
-            t.iter()
-                .map(|(k, v)| (k.clone(), value_of(v)))
-                .collect::<BTreeMap<_, _>>(),
-        ),
-    }
+    konoma_plugin::config::value_of(v)
 }
 
-/// The `[ui]` settings that moved to `[plugins.<id>]` (S2-12 of the design): the old `[ui]` key, the
-/// plugin that owns it now, and its new name. [`effective_settings`] still reads the old keys; this
-/// list is what the startup message names, so a user learns where to write them. A key that was
-/// only renamed inside its plugin's table does not appear: the display settings (`wrap`,
-/// `line_numbers`, `git_gutter`, `tab_width`, `image_render_scale`) stay in `[ui]`.
-pub(crate) const MOVED_UI_SETTINGS: &[(&str, &str, &str)] = &[
-    (
-        "md_task_states",
-        konoma_markdown::MARKDOWN_ID,
-        "task_states",
-    ),
-    ("md_autolink", konoma_markdown::MARKDOWN_ID, "autolink"),
-    ("md_alerts", konoma_markdown::MARKDOWN_ID, "alerts"),
-    ("md_emoji", konoma_markdown::MARKDOWN_ID, "emoji"),
-    (
-        "md_frontmatter",
-        konoma_markdown::MARKDOWN_ID,
-        "frontmatter",
-    ),
-    ("md_footnotes", konoma_markdown::MARKDOWN_ID, "footnotes"),
-    (
-        "md_inline_html",
-        konoma_markdown::MARKDOWN_ID,
-        "inline_html",
-    ),
-    ("md_details", konoma_markdown::MARKDOWN_ID, "details"),
-    (
-        "md_table_align",
-        konoma_markdown::MARKDOWN_ID,
-        "table_align",
-    ),
-    (
-        "md_image_align",
-        konoma_markdown::MARKDOWN_ID,
-        "image_align",
-    ),
-    ("mermaid", konoma_mermaid::MERMAID_ID, "mode"),
-    ("mermaid_theme", konoma_mermaid::MERMAID_ID, "theme"),
-    ("mermaid_curve", konoma_mermaid::MERMAID_ID, "curve"),
-    ("mermaid_routing", konoma_mermaid::MERMAID_ID, "routing"),
-    ("mermaid_rows", konoma_mermaid::MERMAID_ID, "rows"),
-    ("math", konoma_math::MATH_ID, "mode"),
-    ("math_color", konoma_math::MATH_ID, "color"),
-    ("csv_rainbow", konoma_table::CSV_ID, "rainbow"),
-    ("syntax_highlight", konoma_code::CODE_ID, "syntax_highlight"),
-    ("svg_max_px", konoma_media::SVG_ID, "max_px"),
-];
+/// The `[ui]` settings that moved to `[plugins.<id>]` (S2-12 of the design): the one list both
+/// hosts read (`konoma_plugin::config::MOVED_UI_SETTINGS`). [`effective_settings`] still reads the
+/// old keys; this list is what the startup message names, so a user learns where to write them.
+pub(crate) const MOVED_UI_SETTINGS: &[(&str, &str, &str)] =
+    konoma_plugin::config::MOVED_UI_SETTINGS;
 
 /// The old `[ui]` names a config still uses, as `(what is written, what to write instead)`. `ui`
 /// is the config's raw `[ui]` table. A name is not reported once the new one is also set (the new
@@ -341,72 +275,11 @@ pub(crate) fn moved_settings(ui: &toml::Table, plugins: &PluginTables) -> Vec<(S
         .collect()
 }
 
-/// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, with the old `[ui]`
-/// items it replaces filled in under their new names (S2-12). The new name wins when both are set.
-/// Each plugin that is wired to the display adds its old names here.
+/// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, completed from the old
+/// `[ui]` items it replaces (S2-12). Decided by `konoma_plugin::config::plugin_settings`, the one
+/// function the standalone app calls too; this is only konoma's config handed to it.
 pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Settings {
-    let mut settings = cfg.plugin_settings(id);
-    let mut fill_missing = |key: &str, value: konoma_plugin::Value| {
-        if settings.get(key).is_none() {
-            settings.set(key, value);
-        }
-    };
-    if id == konoma_markdown::MARKDOWN_ID {
-        let ui = &cfg.ui;
-        fill_missing(
-            "task_states",
-            konoma_plugin::Value::List(ui.md_task_states.iter().map(|x| s(x)).collect()),
-        );
-        fill_missing("autolink", b(ui.md_autolink));
-        fill_missing("alerts", b(ui.md_alerts));
-        fill_missing("emoji", b(ui.md_emoji));
-        fill_missing("frontmatter", b(ui.md_frontmatter));
-        fill_missing("footnotes", b(ui.md_footnotes));
-        fill_missing("inline_html", b(ui.md_inline_html));
-        fill_missing("details", s(&ui.md_details));
-        fill_missing("table_align", s(&ui.md_table_align));
-        fill_missing("image_align", s(&ui.md_image_align));
-    }
-    if id == konoma_table::CSV_ID {
-        fill_missing("rainbow", b(cfg.ui.csv_rainbow));
-    }
-    if id == konoma_office::SPREADSHEET_ID {
-        // A sheet's columns follow `[plugins.csv] rainbow` (and the old `[ui] csv_rainbow`) until
-        // the sheet is given a value of its own.
-        let csv = effective_settings(cfg, konoma_table::CSV_ID);
-        fill_missing("rainbow", b(csv.bool("rainbow", true)));
-    }
-    if id == konoma_code::CODE_ID {
-        fill_missing("syntax_highlight", b(cfg.ui.syntax_highlight));
-        // The theme is shared with the Markdown code blocks, so it stays `[ui.theme] code_theme`;
-        // the host hands it to the plugin as a value, not as a `[plugins.code]` setting.
-        fill_missing("code_theme", s(&cfg.ui.theme.code_theme));
-    }
-    if id == konoma_media::SVG_ID {
-        fill_missing(
-            "max_px",
-            konoma_plugin::Value::Int(i64::from(cfg.ui.svg_max_px)),
-        );
-    }
-    if id == konoma_mermaid::MERMAID_ID {
-        fill_missing("mode", s(&cfg.ui.mermaid));
-        fill_missing("theme", s(&cfg.ui.mermaid_theme));
-        fill_missing("curve", s(&cfg.ui.mermaid_curve));
-        fill_missing("routing", s(&cfg.ui.mermaid_routing));
-        fill_missing(
-            "rows",
-            konoma_plugin::Value::Int(i64::from(cfg.ui.mermaid_rows)),
-        );
-    }
-    if id == konoma_math::MATH_ID {
-        fill_missing("mode", s(&cfg.ui.math));
-        fill_missing("color", s(cfg.ui.math_color()));
-        // A color from `[plugins.math]` is held to the same test as the old `[ui] math_color`: one
-        // the rasterizer would paint black (invisible on a dark terminal) falls back to the default.
-        let color = crate::config::visible_math_color(settings.str("color", ""));
-        settings.set("color", s(color));
-    }
-    settings
+    konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id)
 }
 
 /// `[plugins.<id>] <key>` when it is a string, otherwise the old `[ui]` value `old`. The same rule
@@ -527,21 +400,10 @@ pub(crate) fn value_type_mismatch(
     (!fits).then(|| ValueType::of(default))
 }
 
-/// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
-/// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`), both booleans, and
-/// `read_dirs` (a list of folders, see [`read_scope`]).
-pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only", "read_dirs"];
-
-/// The keys that are the host's own only in the table of a program of its own (one with a
-/// `command`): the program to run and its arguments (`external::spec_of_table`). In the table of a
-/// plugin that runs in this process they are the plugin's own settings, if it declares them.
-pub(crate) const EXTERNAL_PLUGIN_KEYS: &[&str] = &["command", "args"];
-
-/// Whether `key` of `table` is read by the host rather than being a setting of the plugin.
-pub(crate) fn is_host_key(table: &toml::Table, key: &str) -> bool {
-    HOST_PLUGIN_KEYS.contains(&key)
-        || (table.contains_key("command") && EXTERNAL_PLUGIN_KEYS.contains(&key))
-}
+pub(crate) use konoma_plugin::config::HOST_PLUGIN_KEYS;
+// Only the tests ask the host's-own-key rule directly now; the reading itself is shared.
+#[cfg(test)]
+pub(crate) use konoma_plugin::config::is_host_key;
 
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.

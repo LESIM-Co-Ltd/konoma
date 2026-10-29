@@ -16762,6 +16762,60 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
     );
 }
 
+/// An answer for a crop that is no longer on screen must not land on the picture now shown: the
+/// host shares `ImageViewer`, whose protocol used to restart its answer ids at every new picture,
+/// so a late answer carried the id the new protocol was waiting for. Uses a hand-fed request
+/// channel (no worker) so the order of the answers is the test's, not a thread's.
+#[test]
+fn e2e_a_late_resize_answer_for_an_old_crop_or_picture_is_dropped() {
+    let dir = sandbox("image_stale_resize_answer");
+    let mut png = image::RgbaImage::from_pixel(800, 800, image::Rgba([200, 30, 30, 255]));
+    png.put_pixel(3, 3, image::Rgba([0, 0, 0, 255]));
+    png.save(dir.join("a.png")).unwrap();
+    png.save(dir.join("b.png")).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
+    s.app
+        .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), req_tx);
+
+    s.select("a.png");
+    s.enter();
+    s.drain_media();
+    s.draw();
+    let first = req_rx.try_recv().expect("the first draw asked the worker");
+    // Zoom: a new crop, a new protocol, a new request.
+    s.keys("++");
+    s.draw();
+    let zoomed = req_rx.try_recv().expect("the zoomed draw asked the worker");
+    assert!(
+        !s.app.apply_image_resize(first.resize_encode()),
+        "the answer for the fit crop must not land on the zoomed one"
+    );
+
+    // Another picture: back to the tree, open the next file.
+    s.esc();
+    s.select("b.png");
+    s.enter();
+    s.drain_media();
+    s.draw();
+    // Requests of the previous picture may still be queued; the last one is the new picture's.
+    let mut queued = Vec::new();
+    while let Ok(r) = req_rx.try_recv() {
+        queued.push(r);
+    }
+    let other = queued.pop().expect("the next picture asked the worker");
+    for old in queued {
+        assert!(!s.app.apply_image_resize(old.resize_encode()));
+    }
+    assert!(
+        !s.app.apply_image_resize(zoomed.resize_encode()),
+        "an answer for the previous picture must not land on the next one"
+    );
+    assert!(s.app.apply_image_resize(other.resize_encode()));
+}
+
 /// The RGBA pixels the `pdf` plugin draws for page `index` (counted from 0) of `path`.
 fn pdf_page_rgba(path: &std::path::Path, index: usize) -> (u32, u32, Vec<u8>) {
     use konoma_plugin::view::{ImageData, View, ViewReq};
@@ -20997,3 +21051,8 @@ mod help_footer_snapshot;
 
 #[cfg(test)]
 mod render_snapshot;
+
+mod image_gif_parity;
+mod image_pages_parity;
+mod image_parity;
+mod table_parity;

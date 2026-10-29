@@ -29,6 +29,12 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+/// The plugins of the `konoma-markdown` program, in the order it carries them. The program's `main`
+/// (`export!(@program ...)`) and the tests that compare it with konoma both read this one list.
+pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    vec![Box::new(MarkdownPlugin)]
+}
+
 #[cfg(test)]
 use std::sync::Arc;
 
