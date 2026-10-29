@@ -568,6 +568,92 @@ pub struct CoreSection {
     pub rows: Vec<(String, String)>,
 }
 
+/// One line of a menu behind a leader key (`y`): the key, what it runs, what it is called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuEntry {
+    pub key: KeyPress,
+    pub action: CoreAction,
+    pub label: String,
+}
+
+/// A menu as the which-key line and the help list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuView {
+    pub title: String,
+    pub items: Vec<MenuEntry>,
+}
+
+/// The menu `menu` of `ctx` in `lang`. The code-block copy is offered only while
+/// `code_block` (a code block is focused), as it is in every host.
+pub fn menu_view(
+    keys: &crate::keymap::CoreKeys,
+    ctx: CoreContext,
+    menu: CoreMenu,
+    lang: Lang,
+    code_block: bool,
+) -> Option<MenuView> {
+    let m = keys.menu(ctx, menu)?;
+    let items = m
+        .items
+        .iter()
+        .filter(|it| code_block || !matches!(it.action, CoreAction::CopyCodeBlock))
+        .map(|it| MenuEntry {
+            key: it.key,
+            action: it.action,
+            label: match it.label {
+                CoreMsg::Empty => crate::keymap::menu_label(it.action).tr(lang),
+                l => l.tr(lang),
+            }
+            .to_string(),
+        })
+        .collect();
+    Some(MenuView {
+        title: m.title.tr(lang).to_string(),
+        items,
+    })
+}
+
+impl MenuView {
+    /// What the item for `kp` runs.
+    pub fn find(&self, kp: KeyPress) -> Option<CoreAction> {
+        self.items.iter().find(|i| i.key == kp).map(|i| i.action)
+    }
+
+    /// The `(key, label)` pairs of the which-key line.
+    pub fn pairs(&self) -> Vec<(KeyPress, String)> {
+        self.items
+            .iter()
+            .map(|i| (i.key, i.label.clone()))
+            .collect()
+    }
+}
+
+/// The `(key, label)` texts of a which-key line.
+pub fn which_key_items(items: &[(KeyPress, String)]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .map(|(k, l)| (help_key(*k), l.clone()))
+        .collect()
+}
+
+/// The help section of a menu: one `<prefix> <key>` row per item (`y n`). `None` for no item.
+pub fn menu_section(
+    title: &str,
+    prefix: &str,
+    items: &[(KeyPress, String)],
+) -> Option<CoreSection> {
+    if items.is_empty() {
+        return None;
+    }
+    Some(CoreSection {
+        title: title.to_string(),
+        rows: items
+            .iter()
+            .map(|(k, l)| (format!("{prefix} {}", help_key(*k)), l.clone()))
+            .collect(),
+    })
+}
+
 /// The sections of the help for layers 1 to 3 of `ctx`: the context's own operations, movement,
 /// the launch verbs, and what is true everywhere (help, quit). A section with no row is left out.
 pub fn core_sections(
@@ -639,6 +725,8 @@ pub enum CoreFoot {
     Edit,
     /// `o:open in app`.
     Open,
+    /// `y:copy` (the copy menu of a table).
+    TableCopy,
     /// `,:view` (the options menu).
     Options,
     /// `Q:quit`.
@@ -680,6 +768,7 @@ impl CoreFoot {
             CoreFoot::Help => FootKind::Op(CoreAction::ToggleHelp),
             CoreFoot::Edit => FootKind::Op(CoreAction::RequestEdit),
             CoreFoot::Open => FootKind::Op(CoreAction::OpenExternal),
+            CoreFoot::TableCopy => FootKind::Leader(CoreMenu::TableCopy, CoreMsg::HintCopy),
             CoreFoot::Options => FootKind::Leader(CoreMenu::Options, CoreMsg::HintOptions),
             CoreFoot::Quit => FootKind::Op(CoreAction::Quit),
         }

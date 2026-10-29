@@ -401,16 +401,12 @@ fn whichkey_spans_fit(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lead = app.pending_leader?;
     let ctx = app.key_context()?;
     let menu = crate::ops::menu::menu(app, ctx, lead, crate::ops::menu::View::Open)?;
-    let items: Vec<(String, String)> = menu
+    let pairs: Vec<(crate::keymap::KeyPress, String)> = menu
         .items
         .iter()
-        .map(|it| {
-            (
-                crate::ui::help::leader_key_str(it.key),
-                it.label.to_string(),
-            )
-        })
+        .map(|it| (it.key, it.label.to_string()))
         .collect();
+    let items = konoma_host_core::help::which_key_items(&pairs);
     Some(konoma_widgets::footer_line::which_key_spans(
         &menu.title,
         &items,

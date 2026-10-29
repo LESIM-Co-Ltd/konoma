@@ -14,6 +14,7 @@
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod copy;
 mod display;
 mod doc_pictures;
 mod document;

@@ -451,7 +451,6 @@ const HOST_ONLY: &[&str] = &[
     "o:open in app",
     "O:pages",
     "q:back",
-    "y:copy",
 ];
 
 /// The text of a help panel, one string per row, the runs of spaces made one.

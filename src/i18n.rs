@@ -1106,7 +1106,7 @@ fn en(msg: Msg) -> &'static str {
         GitCommitDetail => "commit detail (diff)",
         CopiedPrefix => CoreMsg::CopiedPrefix.en(),
         WatchFailedPrefix => "auto-refresh disabled (failed to watch): ",
-        CopyHint => "copy",
+        CopyHint => CoreMsg::HintCopy.en(),
         CopyFailed => CoreMsg::CopyFailed.en(),
         CopiedCodeBlock => "copied code block",
         HintCopyCode => "copy code",
@@ -1754,7 +1754,7 @@ fn jp(msg: Msg) -> &'static str {
         GitCommitDetail => "コミット詳細 (差分)",
         CopiedPrefix => CoreMsg::CopiedPrefix.ja(),
         WatchFailedPrefix => "自動更新が無効です(監視に失敗): ",
-        CopyHint => "コピー",
+        CopyHint => CoreMsg::HintCopy.ja(),
         CopyFailed => CoreMsg::CopyFailed.ja(),
         CopiedCodeBlock => "コードブロックをコピー",
         HintCopyCode => "コード",
@@ -2370,6 +2370,7 @@ impl Msg {
             Msg::HelpTitle => Some(CoreMsg::HelpTitle),
             Msg::HelpTitleNoScroll => Some(CoreMsg::HelpTitleNoScroll),
             Msg::HintOptions => Some(CoreMsg::HintOptions),
+            Msg::CopyHint => Some(CoreMsg::HintCopy),
             _ => None,
         }
     }
@@ -2472,6 +2473,7 @@ impl Msg {
             CoreMsg::HelpTitle => Msg::HelpTitle,
             CoreMsg::HelpTitleNoScroll => Msg::HelpTitleNoScroll,
             CoreMsg::HintOptions => Msg::HintOptions,
+            CoreMsg::HintCopy => Msg::CopyHint,
             CoreMsg::QuitApp => Msg::HintQuit,
         }
     }

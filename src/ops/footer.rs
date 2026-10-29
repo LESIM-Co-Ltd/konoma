@@ -224,7 +224,7 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Core(CoreFoot::Outline),
         Foot::Op(Action::CycleRepresentation),
         Foot::Op(Action::SearchStart),
-        Foot::Leader(LeaderId::TableCopy, Msg::CopyHint),
+        Foot::Core(CoreFoot::TableCopy),
         Foot::Core(CoreFoot::Ends),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
         Foot::Core(CoreFoot::Back),

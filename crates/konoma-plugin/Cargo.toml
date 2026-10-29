@@ -33,7 +33,7 @@ test-hooks = ["konoma-base?/test-hooks"]
 # pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "pictures", "config", "dep:crossterm", "dep:konoma-host-core"]
+app = ["proc", "ratatui", "pictures", "config", "dep:crossterm", "dep:konoma-host-core", "konoma-host-core/clipboard"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -80,6 +80,8 @@ konoma-test-support = { path = "../konoma-test-support" }
 konoma-base = { path = "../konoma-base", features = ["test-hooks"] }
 # A test holds a resize out (`ResizeChannel::spawn_held`).
 konoma-widgets = { path = "../konoma-widgets", features = ["test-hooks"] }
+# The clipboard sink a copy writes to in a test (`get_test_clipboard`), never the real one.
+konoma-host-core = { path = "../konoma-host-core", features = ["test-hooks"] }
 
 # Real-process tests: this binary is also the plugin program (it serves when an environment variable
 # says so). `harness = false` because the body must run as the child too; it speaks the part of

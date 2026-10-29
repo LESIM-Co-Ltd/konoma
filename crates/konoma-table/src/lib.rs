@@ -72,25 +72,7 @@ pub fn archive_manifest() -> Manifest {
     )
 }
 
-/// The field separator of a CSV/TSV input: the note from the binding wins (`"tsv"` is the tab, any
-/// other note is the comma), otherwise the extension decides.
-pub fn delimiter(hint: Option<&str>, path: &Path) -> u8 {
-    match hint {
-        Some("tsv") => b'\t',
-        Some(_) => b',',
-        None => {
-            let tsv = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
-            if tsv {
-                b'\t'
-            } else {
-                b','
-            }
-        }
-    }
-}
+pub use konoma_plugin::table_sep::delimiter;
 
 /// The path of a file input, or why the input is not one.
 fn file_of(input: &Input) -> Result<(&Path, Option<&str>), Failure> {

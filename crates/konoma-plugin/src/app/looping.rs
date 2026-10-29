@@ -3,12 +3,12 @@
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
-    core_sections, ctrl_c_token, help_title, render_foot, scroll_keys, CoreFoot, CoreLookup,
-    CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
+    core_sections, ctrl_c_token, help_title, menu_view, render_foot, scroll_keys, CoreFoot,
+    CoreLookup, CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup, MenuView,
 };
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
-    scheme_from_str, CoreAction, CoreContext, CoreKeys, CoreResolution, KeyPress, Motion,
+    scheme_from_str, CoreAction, CoreContext, CoreKeys, CoreMenu, CoreResolution, KeyPress, Motion,
 };
 use konoma_host_core::keys::KeysConfig;
 use konoma_host_core::lang::Lang;
@@ -249,7 +249,7 @@ impl AppKeys {
     /// nothing there). What the hints and the help rows name must pass this.
     pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
         match self.act(key) {
-            None => false,
+            None => !in_help && self.copy_key_acts(CoreContext::Text, CoreMenu::Copy, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
                 !in_help && scrolls && !self.wrap
@@ -275,12 +275,94 @@ impl AppKeys {
             keys: &self.keys,
             ctx: CoreContext::Text,
         };
-        core_sections(
+        let secs = core_sections(
             CoreContext::Text,
             &self.facts_scrolling(paged, scrolls),
             &look,
             self.lang,
-        )
+        );
+        self.with_copy_section(CoreContext::Text, CoreMenu::Copy, secs)
+    }
+
+    /// The menu `key` opens in `ctx` when it is the copy menu (`y`): `None` for any other key.
+    fn copy_menu_of(&self, ctx: CoreContext, key: &Key) -> Option<CoreMenu> {
+        match self.keys.resolve(ctx, key_press(key)?) {
+            CoreResolution::Menu(m @ (CoreMenu::Copy | CoreMenu::TableCopy)) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Whether `key` opens the copy menu `menu` (a key that acts on its own).
+    fn copy_key_acts(&self, ctx: CoreContext, menu: CoreMenu, key: &Key) -> bool {
+        self.copy_menu_of(ctx, key) == Some(menu)
+    }
+
+    /// Whether `key` is an item of an open copy menu (it acts only as the key after `y`; the help
+    /// names it in a row such as `y n`).
+    pub fn acts_in_copy_menu(&self, key: &Key) -> bool {
+        let Some(kp) = key_press(key) else {
+            return false;
+        };
+        [
+            (CoreContext::Text, CoreMenu::Copy),
+            (CoreContext::Image, CoreMenu::Copy),
+            (CoreContext::Table, CoreMenu::TableCopy),
+        ]
+        .into_iter()
+        .any(|(c, m)| {
+            self.copy_menu_of(c, key) == Some(m)
+                || self
+                    .copy_menu_view(c, m)
+                    .is_some_and(|v| v.find(kp).is_some())
+        })
+    }
+
+    /// The copy menu as the which-key line and the help list it (no code block is focused here,
+    /// so `c` is not offered).
+    fn copy_menu_view(&self, ctx: CoreContext, menu: CoreMenu) -> Option<MenuView> {
+        menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
+    }
+
+    /// The which-key line of an open menu, as text.
+    fn which_key_line(&self, ctx: CoreContext, menu: CoreMenu, width: u16) -> Option<String> {
+        let view = self.copy_menu_view(ctx, menu)?;
+        let items = konoma_host_core::help::which_key_items(&view.pairs());
+        let spans = konoma_widgets::footer_line::which_key_spans(&view.title, &items, width);
+        Some(spans.iter().map(|s| s.content.as_ref()).collect())
+    }
+
+    /// `sections` with the menu's section (`y n  name`) between the launch verbs and what is
+    /// true everywhere, where the host lists it.
+    fn with_copy_section(
+        &self,
+        ctx: CoreContext,
+        menu: CoreMenu,
+        mut sections: Vec<CoreSection>,
+    ) -> Vec<CoreSection> {
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let Some(open) = look.keys_of(HelpOp::Menu(menu)).first().copied() else {
+            return sections;
+        };
+        let Some(view) = self.copy_menu_view(ctx, menu) else {
+            return sections;
+        };
+        let Some(sec) = konoma_host_core::help::menu_section(
+            &view.title,
+            &konoma_host_core::help::help_key(open),
+            &view.pairs(),
+        ) else {
+            return sections;
+        };
+        let global = CoreMsg::HelpGlobal.tr(self.lang);
+        let at = sections
+            .iter()
+            .position(|s| s.title == global)
+            .unwrap_or(sections.len());
+        sections.insert(at, sec);
+        sections
     }
 
     /// The `?` help as lines: a heading and the aligned rows of each section.
@@ -399,6 +481,7 @@ impl AppKeys {
             out.push(self.enter_token());
         }
         out.extend(tok(CoreFoot::PageTurn));
+        out.extend(tok(CoreFoot::TableCopy));
         out.extend(tok(CoreFoot::Ends));
         out.push(
             tok(CoreFoot::Back)
@@ -490,12 +573,13 @@ impl AppKeys {
             ..mode
         };
         let look = self.table_lookup();
-        let mut secs = core_sections(
+        let secs = core_sections(
             CoreContext::Table,
             &self.table_facts(mode),
             &look,
             self.lang,
         );
+        let mut secs = self.with_copy_section(CoreContext::Table, CoreMenu::TableCopy, secs);
         if mode.cells {
             let row = (
                 konoma_host_core::help::help_key(KeyPress::key(crossterm::event::KeyCode::Enter)),
@@ -580,7 +664,11 @@ impl AppKeys {
     /// and the help rows name must pass this.
     pub fn table_acts_on(&self, key: &Key, in_help: bool, mode: TableMode) -> bool {
         match self.table_act(key, mode.popup && !in_help) {
-            None => false,
+            None => {
+                !in_help
+                    && !mode.popup
+                    && self.copy_key_acts(CoreContext::Table, CoreMenu::TableCopy, key)
+            }
             // The help scrolls on the vertical motions; the others do nothing while it is open.
             Some(Act::Move(m)) => {
                 !in_help
@@ -679,12 +767,13 @@ impl AppKeys {
 
     /// The sections of the `?` help of a still picture.
     pub fn image_help_sections(&self, paged: bool) -> Vec<CoreSection> {
-        core_sections(
+        let secs = core_sections(
             CoreContext::Image,
             &self.image_facts(paged),
             &self.image_lookup(),
             self.lang,
-        )
+        );
+        self.with_copy_section(CoreContext::Image, CoreMenu::Copy, secs)
     }
 
     fn image_help_lines(&self, paged: bool) -> Vec<ratatui::text::Line<'static>> {
@@ -747,7 +836,7 @@ impl AppKeys {
     pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
         let ready = mode.shape == StillShape::Ready;
         match self.image_act(key, in_help) {
-            None => false,
+            None => !in_help && self.copy_key_acts(CoreContext::Image, CoreMenu::Copy, key),
             Some(Act::Zoom(_)) => !in_help && ready,
             Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
             // As the host's gate: any picture with several pages, whatever it is doing.
@@ -1011,6 +1100,10 @@ struct State {
     half: Option<usize>,
     /// The document laid out last, kept while its text and width are the same.
     doc: Option<super::document::DocCache>,
+    /// The menu waiting for its key (`y` was pressed), and the keys it was opened in.
+    menu: Option<(CoreContext, CoreMenu)>,
+    /// What the last key did, shown in the footer until the next key.
+    flash: Option<String>,
 }
 
 /// The lines (the reason, then the file) a failed page shows, and the page they belong to.
@@ -1366,6 +1459,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 &mut base
             }
         };
+        // What the last key did, or the menu waiting for its key, takes the footer over.
+        let footer = match (&st.flash, st.menu) {
+            (Some(note), _) => note.clone(),
+            (None, Some((c, m))) => keys.which_key_line(c, m, width).unwrap_or(footer),
+            (None, None) => footer,
+        };
         draw_frame(
             terminal,
             frame,
@@ -1400,6 +1499,29 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Next::Timeout => need_view = !picture_first,
             Next::Event(AppEvent::Resize) => need_view = true,
             Next::Event(AppEvent::Key(key)) => {
+                // The previous notice goes with the next key.
+                st.flash = None;
+                // A key waiting in the copy menu runs its item; any other closes the menu and
+                // does nothing else (`Esc` and `q` included), as the host's.
+                if let Some((ctx, menu)) = st.menu.take() {
+                    need_view = false;
+                    let item =
+                        key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
+                    if let Some(action) = item {
+                        let table = match &base {
+                            Frame::Table(t) => Some(&**t),
+                            _ => None,
+                        };
+                        st.flash = super::copy::run(
+                            action,
+                            keys.lang,
+                            &cx.path,
+                            cx.open_dir.as_deref(),
+                            table,
+                        );
+                    }
+                    continue;
+                }
                 let table_mode = table_mode(&base, st.pages);
                 let popup_open = table_mode.is_some_and(|m| m.popup);
                 // After a failed page the message is on screen, but the table keys stay (the page
@@ -1434,6 +1556,23 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     && matches!(base, Frame::Lines(_) | Frame::Text(_));
                 if table_keys || image_keys || kept_failure {
                     need_view = false;
+                }
+                // The copy menu opens on the key bound to it, where a key acts (not in the help
+                // or the cell popup).
+                if act.is_none() && st.help.is_none() && !popup_open {
+                    let ctx = if table_keys {
+                        CoreContext::Table
+                    } else if image_keys {
+                        CoreContext::Image
+                    } else {
+                        CoreContext::Text
+                    };
+                    if let Some(menu) = keys.copy_menu_of(ctx, &key) {
+                        if keys.copy_menu_view(ctx, menu).is_some() {
+                            st.menu = Some((ctx, menu));
+                            need_view = false;
+                        }
+                    }
                 }
                 match (act, st.help) {
                     // `Q` and Ctrl-C end the app even from the help (the host's `Q` does); `q`

@@ -655,7 +655,8 @@ fn every_key_the_table_footer_and_help_name_acts() {
                             };
                             assert!(
                                 k.table_acts_on(&key, true, under)
-                                    || k.table_acts_on(&key, false, under),
+                                    || k.table_acts_on(&key, false, under)
+                                    || k.acts_in_copy_menu(&key),
                                 "{name} {lang:?} {mode:?}: the help names {key:?} for `{desc}` but it does nothing"
                             );
                             rows += 1;

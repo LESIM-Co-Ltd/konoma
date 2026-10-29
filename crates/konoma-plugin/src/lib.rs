@@ -110,6 +110,7 @@ pub mod session;
 pub mod settings;
 pub mod style;
 #[cfg(feature = "widgets")]
+pub mod table_sep;
 pub mod table_ui;
 pub mod testing;
 pub mod text;
