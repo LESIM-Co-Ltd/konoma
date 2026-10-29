@@ -16,3 +16,4 @@ pub mod paths;
 pub mod shared;
 pub mod sniff;
 pub mod term;
+pub mod view_options;

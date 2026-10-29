@@ -135,7 +135,7 @@ fn panel(rows: &[String]) -> (String, Vec<String>) {
 #[test]
 fn the_footer_and_the_help_in_english() {
     let k = keys("", Lang::En);
-    let (r, left) = run(&k, (70, 5), vec![]);
+    let (r, left) = run(&k, (80, 5), vec![]);
     assert_eq!(left, 0);
     // The text sits in the host's frame: the position is the label on it, not "line N".
     assert!(r[0].starts_with("┌ title "), "{}", r[0]);
@@ -143,9 +143,9 @@ fn the_footer_and_the_help_in_english() {
     assert!(r[2].starts_with("│line 01"), "{}", r[2]);
     assert_eq!(
         r[4],
-        "j/k:scroll  q:quit  ?:help  g/G:ends  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
     );
-    let (r, left) = run(&k, (70, 28), vec![key('?')]);
+    let (r, left) = run(&k, (70, 32), vec![key('?')]);
     assert_eq!(left, 0);
     let body = [
         "Preview: text / Markdown",
@@ -156,6 +156,10 @@ fn the_footer_and_the_help_in_english() {
         "",
         "Movement",
         "  j / k / ↑ ↓     scroll",
+        "",
+        "Sort & display",
+        "  , p             path",
+        "  , w             wrap",
         "",
         "Copy path",
         "  y n             name",
@@ -178,7 +182,7 @@ fn the_footer_and_the_help_in_english() {
     // around it, and the footer is the help's.
     assert!(r[0].starts_with("┌ title "), "{}", r[0]);
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
-    assert_eq!(r[27], "j/k:scroll  g/G:ends  ?/Esc:close");
+    assert_eq!(r[31], "j/k:scroll  g/G:ends  ?/Esc:close");
 }
 
 #[test]
@@ -186,7 +190,7 @@ fn the_footer_and_the_help_in_japanese() {
     let k = keys("", Lang::Jp);
     let (r, _) = run(&k, (70, 5), vec![]);
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
-    assert_eq!(r[4], "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾 …");
+    assert_eq!(r[4], "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  ,:表示 …");
     let (r, _) = run(&k, (70, 28), vec![key('?')]);
     let body = [
         "プレビュー: テキスト/Markdown",
@@ -197,6 +201,10 @@ fn the_footer_and_the_help_in_japanese() {
         "",
         "移動 (Movement)",
         "  j / k / ↑ ↓     スクロール",
+        "",
+        "並べ替えと表示",
+        "  , p             パス",
+        "  , w             折返し",
         "",
         "パスをコピー",
         "  y n             名前",
@@ -262,20 +270,20 @@ fn the_help_closes_with_question_esc_and_q_and_scrolls() {
 fn unbinding_q_changes_the_footer_and_the_help() {
     // `q` gone: `Q` is what leaves, and the footer says so.
     let k = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
-    let (r, _) = run(&k, (70, 3), vec![]);
+    let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  Q:quit  ?:help  g/G:ends  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  Q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
     );
     // Both gone: only Ctrl-C quits, and the footer says that rather than `q`.
     let k = keys(
         "[keys.text]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n",
         Lang::En,
     );
-    let (r, _) = run(&k, (70, 3), vec![]);
+    let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  C-c:quit  ?:help  g/G:ends  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  C-c:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
     );
     let (r, _) = run(&k, (70, 28), vec![key('?')]);
     assert!(
@@ -299,7 +307,7 @@ fn the_less_scheme_names_its_own_keys() {
     let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  q:quit  ?:help  g/G:ends  f/b/PgDn/PgUp:page  title"
+        "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  f/b/PgDn/PgUp:page  title"
     );
     let (r, _) = run(&k, (80, 30), vec![key('?')]);
     let body = [
@@ -311,6 +319,10 @@ fn the_less_scheme_names_its_own_keys() {
         "",
         "Movement",
         "  j / k / \u{2191} \u{2193}     scroll",
+        "",
+        "Sort & display",
+        "  , p             path",
+        "  , w             wrap",
         "",
         "Copy path",
         "  y n             name",
@@ -481,6 +493,8 @@ fn a_full_width_key_aligns_the_help_by_cells() {
         "scroll",
         "page",
         "quit",
+        "path",
+        "wrap",
         "name",
         "relative",
         "full",
@@ -513,9 +527,9 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
     let k = keys("", Lang::En);
     // Text in each form scrolls.
     for name in ["a.t", "a.o", "a.l"] {
-        let (r, _) = run_as(&k, name, (70, 5), vec![]);
+        let (r, _) = run_as(&k, name, (80, 5), vec![]);
         assert_eq!(
-            r[4], "j/k:scroll  q:quit  ?:help  g/G:ends  C-f/C-b/PgDn/PgUp:page  title",
+            r[4], "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title",
             "{name}"
         );
         let (r, _) = run_as(&k, name, (70, 5), vec![key('j')]);
@@ -525,10 +539,13 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
     // position, and the key does nothing (the screen is the one before).
     for name in ["a.c", "a.big", "a.m", "a.list", "a.fail"] {
         let (before, _) = run_as(&k, name, (70, 5), vec![]);
-        assert_eq!(
-            before[4], "q:quit  ?:help  title",
-            "{name}: no scroll hint, no line"
-        );
+        // A canvas has the `,` menu (the path style); the others have no key but the help.
+        let hints = if CANVAS_FRAMES.contains(&name) {
+            "q:quit  ?:help  ,:view  title"
+        } else {
+            "q:quit  ?:help  title"
+        };
+        assert_eq!(before[4], hints, "{name}: no scroll hint, no line");
         for press in ["j", "G", "k", "g"] {
             let ev = vec![key(press.chars().next().unwrap())];
             let (after, left) = run_as(&k, name, (70, 5), ev);
@@ -756,7 +773,19 @@ fn observe(
 
 /// The key that opens the help, as the footer names it (`None` when none does).
 fn help_opener(k: &AppKeys, frame: &str) -> Option<Key> {
-    let hint = frame_footer_hints(k, frame, false).pop()?;
+    let hint = frame_footer_hints(k, frame, false)
+        .into_iter()
+        .rev()
+        .find(|t| {
+            t.ops.iter().any(|o| {
+                matches!(
+                    o,
+                    konoma_host_core::help::HelpOp::Act(
+                        konoma_host_core::keymap::CoreAction::ToggleHelp
+                    )
+                )
+            })
+        })?;
     let key = token_keys(&hint.text).into_iter().next()?;
     // It must really be the help: it opens it on a real frame.
     let (closed, _) = observe(k, frame, &[], None);

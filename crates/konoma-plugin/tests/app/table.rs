@@ -798,7 +798,9 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
         let k = keys_of(cfg, Lang::En);
         let opener = k
             .table_footer_hints(TableMode::default())
-            .pop()
+            .into_iter()
+            .rev()
+            .find(|t| is_help_hint(t))
             .and_then(|t| token_keys(&t.text).into_iter().next());
         // (file, mode, set-up): the cursor is moved off the edges first so a motion that acts
         // changes the screen whichever way it goes.
@@ -1021,4 +1023,14 @@ fn a_book_with_one_sheet_that_reads_has_no_page_hint_after_the_keys() {
     let (_d, p) = file("s.book", "a,b\n");
     let (r, _, _) = run_counted(&p, SIZE, chars("J"));
     assert!(!footer(&r).contains("J/K"), "{}", footer(&r));
+}
+
+/// Whether a footer hint is the one that opens the help (the last hint is the `,` menu's now).
+fn is_help_hint(t: &konoma_host_core::help::CoreToken) -> bool {
+    t.ops.iter().any(|o| {
+        matches!(
+            o,
+            konoma_host_core::help::HelpOp::Act(konoma_host_core::keymap::CoreAction::ToggleHelp)
+        )
+    })
 }

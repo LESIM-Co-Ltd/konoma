@@ -442,7 +442,6 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
 /// The hints only the host has (search, copy, the files, the tabs, `q` going back), spelled out
 /// in full: a word the host adds that is not listed here fails the comparison.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",

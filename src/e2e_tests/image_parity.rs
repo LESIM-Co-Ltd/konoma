@@ -322,7 +322,6 @@ const SPECS: &[&str] = &[
 /// What only the host's footer says (the files, the editor, the tabs, the pages, `q` going
 /// back), spelled out in full: a word the host adds that is not listed here fails the comparison.
 pub(super) const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "C-n/C-p:next/prev file",
     "e:edit",

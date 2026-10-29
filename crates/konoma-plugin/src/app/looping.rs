@@ -167,7 +167,6 @@ impl AppKeys {
                 }
             }
         }
-        off.push(HelpOp::Menu(konoma_host_core::keymap::CoreMenu::Options));
         HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
@@ -205,13 +204,15 @@ impl AppKeys {
         }
         out.push(leave);
         out.extend(tok(CoreFoot::Help));
-        if scrolls {
-            for f in [
-                CoreFoot::Ends,
-                CoreFoot::HScroll,
-                CoreFoot::LineEnds,
-                CoreFoot::PageKeys,
-            ] {
+        // The host names the `,` menu on any text screen, one that scrolls or not.
+        for f in [
+            CoreFoot::Ends,
+            CoreFoot::HScroll,
+            CoreFoot::LineEnds,
+            CoreFoot::Options,
+            CoreFoot::PageKeys,
+        ] {
+            if scrolls || f == CoreFoot::Options {
                 out.extend(tok(f));
             }
         }
@@ -253,7 +254,7 @@ impl AppKeys {
     /// nothing there). What the hints and the help rows name must pass this.
     pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
         match self.act(key) {
-            None => !in_help && self.copy_key_acts(CoreContext::Text, CoreMenu::Copy, key),
+            None => !in_help && self.menu_key_acts(CoreContext::Text, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
                 !in_help && scrolls && !self.wrap
@@ -288,17 +289,21 @@ impl AppKeys {
         self.with_copy_section(CoreContext::Text, CoreMenu::Copy, secs)
     }
 
-    /// The menu `key` opens in `ctx` when it is the copy menu (`y`): `None` for any other key.
+    /// The menu `key` opens in `ctx` when it is the copy menu (`y`) or the options menu (`,`):
+    /// `None` for any other key.
     fn copy_menu_of(&self, ctx: CoreContext, key: &Key) -> Option<CoreMenu> {
         match self.keys.resolve(ctx, key_press(key)?) {
-            CoreResolution::Menu(m @ (CoreMenu::Copy | CoreMenu::TableCopy)) => Some(m),
+            CoreResolution::Menu(
+                m @ (CoreMenu::Copy | CoreMenu::TableCopy | CoreMenu::Options),
+            ) => Some(m),
             _ => None,
         }
     }
 
-    /// Whether `key` opens the copy menu `menu` (a key that acts on its own).
-    fn copy_key_acts(&self, ctx: CoreContext, menu: CoreMenu, key: &Key) -> bool {
-        self.copy_menu_of(ctx, key) == Some(menu)
+    /// Whether `key` opens a menu of `ctx` that has items (a key that acts on its own).
+    fn menu_key_acts(&self, ctx: CoreContext, key: &Key) -> bool {
+        self.copy_menu_of(ctx, key)
+            .is_some_and(|m| self.copy_menu_view(ctx, m).is_some())
     }
 
     /// Whether `key` is an item of an open copy menu (it acts only as the key after `y`; the help
@@ -311,6 +316,10 @@ impl AppKeys {
             (CoreContext::Text, CoreMenu::Copy),
             (CoreContext::Image, CoreMenu::Copy),
             (CoreContext::Table, CoreMenu::TableCopy),
+            (CoreContext::Text, CoreMenu::Options),
+            (CoreContext::Image, CoreMenu::Options),
+            (CoreContext::Table, CoreMenu::Options),
+            (CoreContext::Canvas, CoreMenu::Options),
         ]
         .into_iter()
         .any(|(c, m)| {
@@ -343,8 +352,9 @@ impl AppKeys {
         ))
     }
 
-    /// `sections` with the menu's section (`y n  name`) between the launch verbs and what is
-    /// true everywhere, where the host lists it.
+    /// `sections` with the sections of the menus the screen opens (`, p  ...` and the copy
+    /// menu's `y n  name`) between the launch verbs and what is true everywhere, in the order of
+    /// their opening keys, where the host lists them.
     fn with_copy_section(
         &self,
         ctx: CoreContext,
@@ -355,25 +365,31 @@ impl AppKeys {
             keys: &self.keys,
             ctx,
         };
-        let Some(open) = look.keys_of(HelpOp::Menu(menu)).first().copied() else {
-            return sections;
-        };
-        let Some(view) = self.copy_menu_view(ctx, menu) else {
-            return sections;
-        };
-        let Some(sec) = konoma_host_core::help::menu_section(
-            &view.title,
-            &konoma_host_core::help::help_key(open),
-            &view.pairs(),
-        ) else {
-            return sections;
-        };
+        let mut found: Vec<(KeyPress, CoreSection)> = Vec::new();
+        for m in [CoreMenu::Options, menu] {
+            let Some(open) = look.keys_of(HelpOp::Menu(m)).first().copied() else {
+                continue;
+            };
+            let Some(view) = self.copy_menu_view(ctx, m) else {
+                continue;
+            };
+            if let Some(sec) = konoma_host_core::help::menu_section(
+                &view.title,
+                &konoma_host_core::help::help_key(open),
+                &view.pairs(),
+            ) {
+                found.push((open, sec));
+            }
+        }
+        found.sort_by_key(|(k, _)| konoma_host_core::help::display_order(*k));
         let global = CoreMsg::HelpGlobal.tr(self.lang);
         let at = sections
             .iter()
             .position(|s| s.title == global)
             .unwrap_or(sections.len());
-        sections.insert(at, sec);
+        for (i, (_, sec)) in found.into_iter().enumerate() {
+            sections.insert(at + i, sec);
+        }
         sections
     }
 
@@ -444,7 +460,6 @@ impl AppKeys {
                 }
             }
         }
-        off.push(HelpOp::Menu(konoma_host_core::keymap::CoreMenu::Options));
         HelpFacts {
             off,
             label: {
@@ -501,6 +516,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(tok(CoreFoot::Options));
         out
     }
 
@@ -679,7 +695,7 @@ impl AppKeys {
             None => {
                 !in_help
                     && !mode.popup
-                    && self.copy_key_acts(CoreContext::Table, CoreMenu::TableCopy, key)
+                    && self.menu_key_acts(CoreContext::Table, key)
             }
             // The help scrolls on the vertical motions; the others do nothing while it is open.
             Some(Act::Move(m)) => {
@@ -731,7 +747,6 @@ impl AppKeys {
                 }
             }
         }
-        off.push(HelpOp::Menu(konoma_host_core::keymap::CoreMenu::Options));
         HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
@@ -766,6 +781,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(tok(CoreFoot::Options));
         out
     }
 
@@ -848,7 +864,7 @@ impl AppKeys {
     pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
         let ready = mode.shape == StillShape::Ready;
         match self.image_act(key, in_help) {
-            None => !in_help && self.copy_key_acts(CoreContext::Image, CoreMenu::Copy, key),
+            None => !in_help && self.menu_key_acts(CoreContext::Image, key),
             Some(Act::Zoom(_)) => !in_help && ready,
             Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
             // As the host's gate: any picture with several pages, whatever it is doing.
@@ -892,7 +908,6 @@ impl AppKeys {
                 }
             }
         }
-        off.push(HelpOp::Menu(CoreMenu::Options));
         HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
@@ -922,6 +937,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(tok(CoreFoot::Options));
         out
     }
 
@@ -993,7 +1009,7 @@ impl AppKeys {
     /// hints and the help rows name must pass this.
     pub fn canvas_acts_on(&self, key: &Key, in_help: bool) -> bool {
         match self.canvas_act(key, in_help) {
-            None => !in_help && self.copy_key_acts(CoreContext::Canvas, CoreMenu::Copy, key),
+            None => !in_help && self.menu_key_acts(CoreContext::Canvas, key),
             Some(Act::Move(m)) if in_help => matches!(
                 m,
                 Motion::Down
@@ -1258,6 +1274,32 @@ struct State {
     flash: Option<String>,
 }
 
+/// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
+/// when it launched no path.
+fn frame_name_of(cx: &AppCx, style: konoma_host_core::view_options::PathStyle) -> String {
+    use konoma_host_core::view_options::PathStyle;
+    if cx.path.as_os_str().is_empty() || (cx.open_dir.is_none() && style == PathStyle::Relative) {
+        return cx.title.clone();
+    }
+    style.format(cx.open_dir.as_deref().unwrap_or(std::path::Path::new("")), &cx.path)
+}
+
+/// Writes `name` into the title of the frame on screen (a frame without a path in its title keeps
+/// none).
+fn retitle(frame: &mut Frame, name: &str) {
+    match frame {
+        Frame::Text(t) => {
+            if let Some(b) = t.border.as_mut() {
+                b.name = name.to_string();
+            }
+        }
+        Frame::Table(t) => t.name = name.to_string(),
+        Frame::Image(i) => i.name = name.to_string(),
+        Frame::Document(d) => d.name = name.to_string(),
+        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) => {}
+    }
+}
+
 /// The lines (the reason, then the file) a failed page shows, and the page they belong to.
 struct FailedBody {
     page: usize,
@@ -1290,9 +1332,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     session: &mut dyn Session,
     events: &mut E,
     cx: &AppCx,
-    keys: &AppKeys,
+    keys_in: &AppKeys,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
+    // The keys follow the options the `,` menu changes (whether the text wraps decides which
+    // sideways keys act), so the loop keeps its own copy.
+    let mut own = keys_in.clone();
     let mut st = State {
         display: cx.display.clone(),
         ..State::default()
@@ -1319,6 +1364,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     let mut view_due: Option<Instant> = None;
     let mut need_view = true;
     loop {
+        let keys = &own;
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
@@ -1356,7 +1402,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     Ok(opened) => {
                         swapped = Some(opened.session);
                         st = State {
-                            display: cx.display.clone(),
+                            display: st.display.clone(),
                             reopened_as: target.as_ref().map(|t| {
                                 let m = t.plugin.manifest();
                                 ReopenedAs {
@@ -1382,12 +1428,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                 };
             }
-            let frame_name = match &cx.open_dir {
-                Some(dir) if !cx.path.as_os_str().is_empty() => {
-                    konoma_host_core::paths::rel_to_open(dir, &cx.path)
-                }
-                _ => cx.title.clone(),
-            };
+            let frame_name = frame_name_of(cx, st.display.path_style);
             let shown = match viewed {
                 Ok(v) => {
                     st.table_failed = false;
@@ -1670,7 +1711,32 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     need_view = false;
                     let item =
                         key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
-                    if let Some(action) = item {
+                    if let Some(action @ (CoreAction::ToggleWrap | CoreAction::CyclePathStyle)) =
+                        item
+                    {
+                        // The options menu: the core both hosts share says what to redo.
+                        let mut o = konoma_host_core::view_options::ViewOptions {
+                            wrap: st.display.wrap,
+                            path_style: st.display.path_style,
+                        };
+                        let effect = o.apply(action);
+                        st.display.wrap = o.wrap;
+                        st.display.path_style = o.path_style;
+                        if effect.hscroll_home {
+                            st.hscroll = 0;
+                        }
+                        if effect.relayout {
+                            // The laid-out document and the kept text of a failed page are
+                            // for the old wrap; the view is asked for again.
+                            st.doc = None;
+                            st.failed_body = None;
+                            own.wrap = o.wrap;
+                            need_view = true;
+                        }
+                        if effect.retitle {
+                            retitle(&mut base, &frame_name_of(cx, o.path_style));
+                        }
+                    } else if let Some(action) = item {
                         let table = match &base {
                             Frame::Table(t) => Some(&**t),
                             _ => None,

@@ -123,7 +123,6 @@ fn inner(term: &Terminal<TestBackend>) -> Vec<String> {
 /// footers (`assert_all_seen`). `y:copy` and `e:open` are not here: the host offers them only
 /// while a code block or a diagram has the focus, and the app has no focus to compare.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
@@ -148,9 +147,7 @@ pub(super) const HELP_HOST_ONLY: &[&str] = &[
     "T ",
     "P ",
     "F ",
-    "Sort & display",
     "Space ",
-    ", ",
     "e ",
     "o ",
     "h / l",

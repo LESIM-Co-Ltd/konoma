@@ -173,14 +173,13 @@ fn the_footer_of_a_canvas_agrees_with_the_host() {
         })
         .collect();
     let ah = hints(ar.last().unwrap());
-    // What only the host has: the file jump, the editor, the opener, the tabs, the options.
-    const HOST_ONLY: [&str; 5] = [
+    // What only the host has: the file jump, the editor, the opener, the tabs.
+    const HOST_ONLY: [&str; 4] = [
         "C-n/C-p:next/prev file",
         "e:edit",
         "o:open in app",
         "[/]:tab",
-        ",:view",
-    ];
+        ];
     let (alone, compared) = same_footer("canvas footer", &hh, &ah, &HOST_ONLY, &|_| false);
     let seen: std::collections::BTreeSet<String> = alone.into_iter().collect();
     assert_all_seen("HOST_ONLY", &HOST_ONLY, &seen);
@@ -206,12 +205,10 @@ fn the_help_of_a_canvas_agrees_with_the_host() {
     }
     // The rows only the host has, by their start: the launch keys, the menus, the tabs, the
     // file jump, the `@path` copy, the paste and the follow mode.
-    const HOST_ONLY: [&str; 18] = [
+    const HOST_ONLY: [&str; 16] = [
         "Launch",
         "Actions",
-        "Sort & display",
         "Space ",
-        ", ",
         "Tabs",
         "t ",
         "[ / ]",

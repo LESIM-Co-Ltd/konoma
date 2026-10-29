@@ -264,7 +264,6 @@ fn a_framed_text_is_titled_by_its_relative_path_and_the_footer_has_no_line_numbe
 /// What only the host's footer has for a text, spelled out in full. The focus, the outline and
 /// the raw source belong to a decorated document, so a text never shows them.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
@@ -386,9 +385,7 @@ fn the_help_over_a_text_agrees_with_the_host() {
 const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "Launch",
     "Actions",
-    "Sort & display",
     "Space ",
-    ", ",
     "e ",
     "o ",
     "Tabs",

@@ -1440,7 +1440,6 @@ const TEXT_HOST_ONLY: &[&str] = &[
     "h/l:hscroll",
     "0/$:line ends",
     "[/]:tab",
-    ",:view",
 ];
 
 thread_local! {

@@ -40,7 +40,6 @@ use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
 use konoma_host_core::copy::at_ref_text;
 pub(crate) use konoma_host_core::paths::home_relative;
-use konoma_host_core::paths::rel_to_open;
 
 mod bookmark_actions;
 mod change_jump;
@@ -577,33 +576,8 @@ impl StatusbarLayout {
     }
 }
 
-/// Path display style. Used for the title (tree/preview). Cycle with the `p` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathStyle {
-    /// Relative to the launch directory name (e.g. konoma/src/main.rs). Default.
-    Relative,
-    /// Relative to HOME (e.g. ~/work/konoma).
-    Home,
-    /// Full path (e.g. /Users/me/work/konoma).
-    Full,
-}
-
-impl PathStyle {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "home" => Self::Home,
-            "full" => Self::Full,
-            _ => Self::Relative,
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            Self::Relative => Self::Home,
-            Self::Home => Self::Full,
-            Self::Full => Self::Relative,
-        }
-    }
-}
+/// Path display style (`,` then `p`); shared with the standalone app.
+pub use konoma_host_core::view_options::PathStyle;
 
 /// How far a preview is scrolled, expressed in that view's **own scroll unit**.
 ///
@@ -5327,18 +5301,31 @@ impl App {
     }
 
     pub fn cycle_path_style(&mut self) {
-        self.path_style = self.path_style.next();
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::CyclePathStyle);
+    }
+
+    /// Applies a `,` item through the core both hosts share, and does what it asks to redo.
+    fn apply_view_option(&mut self, action: konoma_host_core::keymap::CoreAction) {
+        let mut o = konoma_host_core::view_options::ViewOptions {
+            wrap: self.cfg.ui.wrap,
+            path_style: self.path_style,
+        };
+        let effect = o.apply(action);
+        self.cfg.ui.wrap = o.wrap;
+        self.path_style = o.path_style;
+        if effect.relayout {
+            self.md_cache = None;
+        }
+        if effect.hscroll_home {
+            self.tab.preview_hscroll = 0;
+        }
     }
 
     /// Toggle line wrapping of the text and document preview for this session (`,` then `w`;
     /// `[ui] wrap` is the value it starts with). The decorated document caches its line breaks,
     /// so the cache is dropped; a horizontal offset means nothing once the lines wrap.
     pub fn toggle_wrap(&mut self) {
-        self.cfg.ui.wrap = !self.cfg.ui.wrap;
-        self.md_cache = None;
-        if self.cfg.ui.wrap {
-            self.tab.preview_hscroll = 0;
-        }
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::ToggleWrap);
     }
 
     /// Toggle the `?` help. When opening, reset scroll to the top.
@@ -5380,11 +5367,7 @@ impl App {
 
     /// Format a path into a display string using the current path_style (shared by the tree/preview title).
     pub fn format_path(&self, path: &Path) -> String {
-        match self.path_style {
-            PathStyle::Full => path.display().to_string(),
-            PathStyle::Home => home_relative(path),
-            PathStyle::Relative => rel_to_open(&self.tab.open_dir, path),
-        }
+        self.path_style.format(&self.tab.open_dir, path)
     }
 }
 
