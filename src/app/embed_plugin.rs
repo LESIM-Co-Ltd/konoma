@@ -21,8 +21,8 @@
 //! What the plugin owns is only "source in, SVG out". How big a formula is in the text, and where
 //! an inline one sits on its line, is the document's layout.
 
-use konoma_plugin::view::{ImageData, ImageView, TextSource};
-use konoma_plugin::{Input, OpenCx, Plugin, Settings, View, ViewCx, ViewReq};
+use konoma_plugin::view::TextSource;
+use konoma_plugin::{Input, OpenCx, View, ViewCx, ViewReq};
 
 use super::*;
 
@@ -33,89 +33,10 @@ pub(super) const MATH: &str = "math";
 /// The representation name of the text diagram (the mermaid plugin's `Layout` names it).
 pub(super) const REPR_TEXT: &str = konoma_mermaid::REPR_TEXT;
 
-/// What a worker needs to ask an embed plugin for a picture (owned: it moves to a thread).
-#[derive(Clone)]
-pub(super) struct EmbedRender {
-    plugin: Arc<dyn Plugin>,
-    settings: Settings,
-    lang: String,
-    /// Whether the host believes this plugin's `trusted` claim: it is a standard plugin that draws
-    /// its own SVG (`Profile::own_svg`). Decided by where the plugin comes from, never by
-    /// what it says.
-    trusted_origin: bool,
-}
-
-/// The raster and the SVG it was made from, or the reason there is none.
-pub(super) type EmbedPicture = (Result<image::DynamicImage, String>, Option<Arc<Vec<u8>>>);
-
-impl EmbedRender {
-    /// Open the plugin on `source` and rasterize the SVG its view holds at `max_px` (the longest
-    /// side). `label` names the thing for the failure text; `base` is the file name the rasterizer
-    /// resolves relative references from (the SVGs konoma draws have none).
-    ///
-    /// An SVG from a plugin whose origin the host trusts is drawn in this process, and only when
-    /// the plugin vouches for it (`trusted`): the host keeps the SVG and rasterizes it again later
-    /// (sharp zoom, rebuilding an evicted raster) in this process too. An SVG from any other
-    /// plugin is drawn by the supervised child process, with no file to read, and is drawn the
-    /// same way every time it is made again (see [`EmbedRender::trusts_svg`]).
-    pub(super) fn picture(
-        &self,
-        kind: &str,
-        source: &str,
-        display: bool,
-        max_px: u32,
-        label: &str,
-        base: &str,
-    ) -> EmbedPicture {
-        let failed = || (Err(format!("{label} render failed")), None);
-        let input = Input::Embed {
-            kind: kind.to_string(),
-            source: source.to_string(),
-            display,
-        };
-        let open_cx = OpenCx::new(&self.settings, &self.lang);
-        let Ok(mut session) = self.plugin.open(input, &open_cx) else {
-            return failed();
-        };
-        let view_cx = ViewCx::new(&self.settings, &self.lang);
-        let Ok(View::Image(ImageView {
-            data: ImageData::Svg { data, trusted, .. },
-            ..
-        })) = session.view(&ViewReq::default(), &view_cx)
-        else {
-            return failed();
-        };
-        // The retained copy is what the md entry keeps for the layout and for later rasters.
-        let svg = Arc::new(data.to_vec());
-        // A plugin we trust that does not vouch for its own SVG is a bug in it: refuse, so an
-        // entry is never half trusted.
-        if self.trusted_origin && !trusted {
-            return failed();
-        }
-        // The same function draws it again later (`SvgTrust::draw`).
-        let img = self
-            .svg_trust(base)
-            .draw(&svg, max_px, &|| false)
-            .ok_or_else(|| "rasterize failed".to_string());
-        (img, Some(svg))
-    }
-
-    /// Whether the SVG this plugin makes is drawn in this process (and drawn again so): a trusted
-    /// origin. Otherwise it is drawn in the child process every time.
-    pub(super) fn trusts_svg(&self) -> bool {
-        self.trusted_origin
-    }
-
-    /// How the SVG this plugin makes is drawn, every time: konoma's own in this process (`base`
-    /// names it), anything else by the child process that reads no file.
-    pub(super) fn svg_trust(&self, base: &str) -> crate::app::SvgTrust {
-        if self.trusted_origin {
-            crate::app::SvgTrust::Trusted(PathBuf::from(base))
-        } else {
-            crate::app::SvgTrust::Embedded
-        }
-    }
-}
+/// What a worker needs to ask an embed plugin for a picture (owned: it moves to a thread). The
+/// drawing is shared with the standalone app (`konoma_plugin::canvas_pictures::EmbedRender`); this
+/// host draws the SVGs that are not its own in a supervised child process (`SvgChild`).
+pub(super) use konoma_plugin::canvas_pictures::{EmbedPicture, EmbedRender};
 
 /// Test seam: whether the host believes the `fence:mermaid` plugin of `cfg`, and what drawing a
 /// fence with it gives (the picture, and whether the SVG was kept).
@@ -140,12 +61,7 @@ pub(crate) fn probe_fence_picture(
 }
 
 #[cfg(test)]
-thread_local! {
-    /// Test-only: a plugin that stands in for whatever the registry would name for an embedded
-    /// kind, on this thread (the tests with no worker channel run the render on the test thread).
-    pub(super) static EMBED_STAND_IN: std::cell::RefCell<Option<Arc<dyn Plugin>>> =
-        const { std::cell::RefCell::new(None) };
-}
+pub(super) use konoma_plugin::canvas_pictures::EMBED_STAND_IN;
 
 impl App {
     /// The plugin that takes the embedded `kind`, with the settings and language it is opened
@@ -153,18 +69,14 @@ impl App {
     /// `[plugins.<id>] enabled = false`).
     pub(super) fn embed_render(&self, kind: &str) -> Option<EmbedRender> {
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
-        let id = registry.resolve_embed(kind)?;
-        let plugin = registry.plugin(&id)?;
-        #[cfg(test)]
-        let plugin = EMBED_STAND_IN
-            .with(|s| s.borrow().clone())
-            .unwrap_or(plugin);
-        Some(EmbedRender {
-            plugin,
-            settings: crate::plugins::effective_settings(&self.cfg, &id),
-            lang: self.plugin_lang().to_string(),
-            trusted_origin: crate::plugins::profile_of(&id).own_svg,
-        })
+        konoma_plugin::canvas_pictures::embed_render_for(
+            &registry,
+            kind,
+            self.plugin_lang(),
+            &|id| crate::plugins::effective_settings(&self.cfg, id),
+            &|id| crate::plugins::profile_of(id).own_svg,
+            Arc::new(super::media_plugin::SvgChild),
+        )
     }
 
     /// Whether an enabled plugin takes the embedded `kind` (cheap: no settings are built).
@@ -194,13 +106,13 @@ impl App {
             source: src.to_string(),
             display: false,
         };
-        let open_cx = OpenCx::new(&embed.settings, &embed.lang);
-        let mut session = match embed.plugin.open(input, &open_cx) {
+        let open_cx = OpenCx::new(embed.settings(), embed.lang());
+        let mut session = match embed.plugin().open(input, &open_cx) {
             Ok(s) => s,
             Err(f) => return unavailable_lines(src, Some(&f)),
         };
         let req = ViewReq::new(width, self.tab.preview_viewport.max(1)).repr(REPR_TEXT);
-        let view_cx = ViewCx::new(&embed.settings, &embed.lang);
+        let view_cx = ViewCx::new(embed.settings(), embed.lang());
         match session.view(&req, &view_cx) {
             Ok(View::Text(t)) => match t.source {
                 TextSource::Lines(lines) => lines
