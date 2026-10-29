@@ -435,3 +435,98 @@ fn the_copy_rows_of_the_help_agree_with_the_host() {
     }
     assert!(compared >= 4, "{compared}");
 }
+
+/// A plugin's canvas (`View::Canvas`): the host keys it by `Context::Canvas`, the app by the
+/// shared `CoreContext::Canvas`. The which-key line, the clipboard, the notice and the copy rows
+/// of the help are the same on both.
+fn canvas_files() -> [&'static str; 3] {
+    ["a.pnt", "全角の名前.pnt", "alpha/beta/deep.pnt"]
+}
+
+fn canvas_host(root: &std::path::Path, file: &str, h: u16, spec: &str) -> (Buffer, Option<String>) {
+    use super::canvas::{Draw, Painter};
+    clear_test_clipboard();
+    let marker = crate::plugins::test_plugins::register(
+        "copy-parity-canvas",
+        Arc::new(Painter::new("copy-parity-canvas", Draw::Follow)),
+    );
+    let mut s = Sim::with_config_sized(
+        root,
+        {
+            let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+            cfg.ui.lang = "en".into();
+            cfg
+        },
+        W,
+        h,
+    );
+    open_nested(&mut s, file);
+    s.draw();
+    for (code, mods) in presses(spec) {
+        s.press(code, mods);
+        assert!(!s.quit, "the host ended early: {spec}");
+    }
+    s.term.clear().expect("clear");
+    s.draw();
+    (s.term.backend().buffer().clone(), get_test_clipboard())
+}
+
+fn canvas_plugins() -> Vec<Arc<dyn Plugin>> {
+    use super::canvas::{Draw, Painter};
+    vec![Arc::new(Painter::new("copy-parity-canvas", Draw::Follow))]
+}
+
+#[test]
+fn the_copy_menu_of_a_canvas_agrees_with_the_host() {
+    let dir = fixtures();
+    for f in canvas_files() {
+        std::fs::write(dir.join(f), b"x").unwrap();
+    }
+    let root = canon(&dir);
+    let mut t = Tally::default();
+    for file in canvas_files() {
+        for spec in PATH_SPECS {
+            let what = format!("canvas {file} [{spec}]");
+            let h = canvas_host(&root, file, HOST_H, spec);
+            let mut o = app_open(canvas_plugins(), &root.join(file));
+            let a = app_run(&mut o, &root, APP_H, spec);
+            if matches!(*spec, "y n j" | "y x" | "y <Esc>") {
+                same_idle(&what, h, a, &mut t);
+            } else {
+                same_copy(&what, h, a, &mut t);
+            }
+        }
+    }
+    assert!(t.which_keys >= 3, "{}", t.which_keys);
+    assert!(t.clipboards >= 15, "{}", t.clipboards);
+    assert!(t.notices >= 15, "{}", t.notices);
+    assert!(t.bold >= 3, "{}", t.bold);
+    assert!(t.dim_items >= 3, "{}", t.dim_items);
+    assert!(t.idle >= 6, "{}", t.idle);
+}
+
+#[test]
+fn the_copy_rows_of_a_canvas_help_agree_with_the_host() {
+    let dir = fixtures();
+    std::fs::write(dir.join("a.pnt"), b"x").unwrap();
+    let root = canon(&dir);
+    let h = canvas_host(&root, "a.pnt", 130, "?").0;
+    let mut o = app_open(canvas_plugins(), &root.join("a.pnt"));
+    let a = app_run(&mut o, &root, 129, "?").0;
+    let copy_rows = |buf: &Buffer| -> Vec<String> {
+        let mut shown = Terminal::new(TestBackend::new(buf.area.width, buf.area.height)).unwrap();
+        shown.draw(|f| *f.buffer_mut() = buf.clone()).expect("draw");
+        panel_lines(&rows_of(&shown))
+            .into_iter()
+            .filter(|l| l.starts_with("y "))
+            .collect()
+    };
+    let (hl, al) = (copy_rows(&h), copy_rows(&a));
+    assert!(!hl.is_empty(), "the host lists the copy rows of a canvas");
+    // The help is the canvas context's (the host's `Context::Canvas`), not a text's.
+    let mut shown = Terminal::new(TestBackend::new(h.area.width, h.area.height)).unwrap();
+    shown.draw(|f| *f.buffer_mut() = h.clone()).expect("draw");
+    let all = panel_lines(&rows_of(&shown)).join("\n");
+    assert!(all.contains("Preview: plugin view"), "host help: {all}");
+    assert_eq!(hl, al, "the copy rows of the help differ");
+}
