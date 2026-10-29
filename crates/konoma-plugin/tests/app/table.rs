@@ -800,7 +800,7 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
             .table_footer_hints(TableMode::default())
             .into_iter()
             .rev()
-            .find(|t| is_help_hint(t))
+            .find(is_help_hint)
             .and_then(|t| token_keys(&t.text).into_iter().next());
         // (file, mode, set-up): the cursor is moved off the edges first so a motion that acts
         // changes the screen whichever way it goes.

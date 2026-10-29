@@ -21209,5 +21209,6 @@ mod document_parity;
 mod image_gif_parity;
 mod image_pages_parity;
 mod image_parity;
+mod options_parity;
 mod table_parity;
 mod text_parity;

@@ -21,10 +21,10 @@ use ratatui::style::{Color as RColor, Modifier as RMod};
 use std::sync::Arc;
 
 /// One cell of a row: the symbol, both colors, the modifiers.
-type Cell = (String, RColor, RColor, RMod);
+pub(super) type Cell = (String, RColor, RColor, RMod);
 
 /// The last row of a screen, as cells, without the blank cells at the end.
-fn footer_cells(buf: &Buffer) -> Vec<Cell> {
+pub(super) fn footer_cells(buf: &Buffer) -> Vec<Cell> {
     let y = buf.area.height - 1;
     let mut v: Vec<Cell> = (0..buf.area.width)
         .map(|x| {
@@ -41,12 +41,12 @@ fn footer_cells(buf: &Buffer) -> Vec<Cell> {
     v
 }
 
-fn text_of(cells: &[Cell]) -> String {
+pub(super) fn text_of(cells: &[Cell]) -> String {
     cells.iter().map(|c| c.0.as_str()).collect::<String>()
 }
 
 /// What the app was opened with.
-struct AppOpen {
+pub(super) struct AppOpen {
     session: Box<dyn konoma_plugin::Session>,
     shows: Vec<konoma_plugin::manifest::ViewKind>,
     unavailable: konoma_plugin::manifest::Unavailable,
@@ -54,7 +54,7 @@ struct AppOpen {
     hint: Option<String>,
 }
 
-fn app_open(plugins: Vec<Arc<dyn Plugin>>, path: &std::path::Path) -> AppOpen {
+pub(super) fn app_open(plugins: Vec<Arc<dyn Plugin>>, path: &std::path::Path) -> AppOpen {
     let o = konoma_plugin::app::open_file(plugins, path, "en", TermCaps::new()).expect("opens");
     AppOpen {
         session: o.session,
@@ -89,11 +89,23 @@ fn app_open_hinted(plugin: Arc<dyn Plugin>, path: &std::path::Path, hint: &str) 
 }
 
 /// The app's screen and clipboard after the presses; the program started in `root`.
-fn app_run(
+pub(super) fn app_run(
     o: &mut AppOpen,
     root: &std::path::Path,
     h: u16,
     spec: &str,
+) -> (Buffer, Option<String>) {
+    app_run_with(o, root, h, spec, false)
+}
+
+/// [`app_run`] with a halfblocks picture backend when `pictures` (a picture is then drawn, not
+/// reported as one the terminal cannot show).
+pub(super) fn app_run_with(
+    o: &mut AppOpen,
+    root: &std::path::Path,
+    h: u16,
+    spec: &str,
+    pictures: bool,
 ) -> (Buffer, Option<String>) {
     clear_test_clipboard();
     let mut term = Terminal::new(TermScreen::new(W, h)).unwrap();
@@ -116,13 +128,21 @@ fn app_run(
         })
         .collect();
     let mut events = WhenIdle { keys, turns: 0 };
+    let pics = pictures.then(|| {
+        konoma_plugin::app::Pictures::new(
+            ratatui_image::picker::Picker::halfblocks(),
+            "options-parity",
+            &o.path,
+            800,
+        )
+    });
     run_with_pictures(
         &mut term,
         &mut *o.session,
         &mut events,
         &cx,
         &AppKeys::defaults(),
-        None,
+        pics,
     )
     .unwrap();
     assert!(events.keys.is_empty(), "the app ended early: {spec}");
@@ -130,7 +150,7 @@ fn app_run(
 }
 
 /// The host after opening `file` from its tree and the presses, on a cleared screen.
-fn host_run(
+pub(super) fn host_run(
     root: &std::path::Path,
     cfg: Config,
     file: &str,
@@ -224,7 +244,7 @@ fn same_idle(what: &str, h: (Buffer, Option<String>), a: (Buffer, Option<String>
     t.idle += 1;
 }
 
-fn png(path: &std::path::Path) {
+pub(super) fn png(path: &std::path::Path) {
     image::RgbImage::from_pixel(8, 8, image::Rgb([200, 30, 30]))
         .save(path)
         .unwrap();
@@ -443,7 +463,12 @@ fn canvas_files() -> [&'static str; 3] {
     ["a.pnt", "全角の名前.pnt", "alpha/beta/deep.pnt"]
 }
 
-fn canvas_host(root: &std::path::Path, file: &str, h: u16, spec: &str) -> (Buffer, Option<String>) {
+pub(super) fn canvas_host(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+) -> (Buffer, Option<String>) {
     use super::canvas::{Draw, Painter};
     clear_test_clipboard();
     let marker = crate::plugins::test_plugins::register(
@@ -471,7 +496,7 @@ fn canvas_host(root: &std::path::Path, file: &str, h: u16, spec: &str) -> (Buffe
     (s.term.backend().buffer().clone(), get_test_clipboard())
 }
 
-fn canvas_plugins() -> Vec<Arc<dyn Plugin>> {
+pub(super) fn canvas_plugins() -> Vec<Arc<dyn Plugin>> {
     use super::canvas::{Draw, Painter};
     vec![Arc::new(Painter::new("copy-parity-canvas", Draw::Follow))]
 }

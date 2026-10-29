@@ -190,7 +190,10 @@ fn the_footer_and_the_help_in_japanese() {
     let k = keys("", Lang::Jp);
     let (r, _) = run(&k, (70, 5), vec![]);
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
-    assert_eq!(r[4], "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  ,:表示 …");
+    assert_eq!(
+        r[4],
+        "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  ,:表示 …"
+    );
     let (r, _) = run(&k, (70, 28), vec![key('?')]);
     let body = [
         "プレビュー: テキスト/Markdown",
@@ -539,12 +542,10 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
     // position, and the key does nothing (the screen is the one before).
     for name in ["a.c", "a.big", "a.m", "a.list", "a.fail"] {
         let (before, _) = run_as(&k, name, (70, 5), vec![]);
-        // A canvas has the `,` menu (the path style); the others have no key but the help.
-        let hints = if CANVAS_FRAMES.contains(&name) {
-            "q:quit  ?:help  ,:view  title"
-        } else {
-            "q:quit  ?:help  title"
-        };
+        // The host names the `,` menu on every screen of a file (a message and a failure
+        // included: `,` `w` is the wrap that a later text of the page takes), so every frame
+        // names it and none names a scroll.
+        let hints = "q:quit  ?:help  ,:view  title";
         assert_eq!(before[4], hints, "{name}: no scroll hint, no line");
         for press in ["j", "G", "k", "g"] {
             let ev = vec![key(press.chars().next().unwrap())];

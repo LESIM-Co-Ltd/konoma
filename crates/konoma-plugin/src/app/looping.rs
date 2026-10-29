@@ -692,11 +692,7 @@ impl AppKeys {
     /// and the help rows name must pass this.
     pub fn table_acts_on(&self, key: &Key, in_help: bool, mode: TableMode) -> bool {
         match self.table_act(key, mode.popup && !in_help) {
-            None => {
-                !in_help
-                    && !mode.popup
-                    && self.menu_key_acts(CoreContext::Table, key)
-            }
+            None => !in_help && !mode.popup && self.menu_key_acts(CoreContext::Table, key),
             // The help scrolls on the vertical motions; the others do nothing while it is open.
             Some(Act::Move(m)) => {
                 !in_help
@@ -1281,7 +1277,10 @@ fn frame_name_of(cx: &AppCx, style: konoma_host_core::view_options::PathStyle) -
     if cx.path.as_os_str().is_empty() || (cx.open_dir.is_none() && style == PathStyle::Relative) {
         return cx.title.clone();
     }
-    style.format(cx.open_dir.as_deref().unwrap_or(std::path::Path::new("")), &cx.path)
+    style.format(
+        cx.open_dir.as_deref().unwrap_or(std::path::Path::new("")),
+        &cx.path,
+    )
 }
 
 /// Writes `name` into the title of the frame on screen (a frame without a path in its title keeps

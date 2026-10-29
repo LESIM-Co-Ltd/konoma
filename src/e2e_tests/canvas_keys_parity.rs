@@ -179,7 +179,7 @@ fn the_footer_of_a_canvas_agrees_with_the_host() {
         "e:edit",
         "o:open in app",
         "[/]:tab",
-        ];
+    ];
     let (alone, compared) = same_footer("canvas footer", &hh, &ah, &HOST_ONLY, &|_| false);
     let seen: std::collections::BTreeSet<String> = alone.into_iter().collect();
     assert_all_seen("HOST_ONLY", &HOST_ONLY, &seen);
