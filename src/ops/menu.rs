@@ -250,8 +250,8 @@ fn candidates(
     }
     // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
     // its key (a collision, a rebinding) is still reachable.
-    for b in app.plugin_acts_in(ctx) {
-        add(Action::Plugin(b.act), b.key.and_then(plain_key));
+    for (act, key) in konoma_plugin::host::acts::menu_candidates(&app.plugin_acts_in(ctx)) {
+        add(Action::Plugin(act), key);
     }
     out
 }
@@ -276,8 +276,8 @@ fn rank(
 
 /// The label of a plugin's operation in the language of the interface.
 fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
-    app.plugin_binding_in(ctx, p)
-        .map(|b| b.label.get(app.plugin_lang()).to_string())
+    konoma_plugin::host::acts::menu_label(&app.plugin_acts_in(ctx), &p, app.plugin_lang())
+        .map(str::to_string)
 }
 
 /// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that

@@ -13,15 +13,7 @@
 use super::*;
 use crate::keymap::{Action, Context, KeyPress};
 use crate::plugins::{ActBinding, PluginAct};
-
-/// Whether a plugin's keys can live in `ctx`: the contexts that show a plugin's view (the plugin's
-/// layer sits on top of the display type's).
-fn is_view_context(ctx: Context) -> bool {
-    matches!(
-        ctx,
-        Context::Text | Context::Document | Context::Table | Context::Image | Context::Canvas
-    )
-}
+use konoma_plugin::host::acts;
 
 impl App {
     /// The id of the plugin whose file is on screen, if its show is the current one.
@@ -38,28 +30,17 @@ impl App {
     /// The declared actions of the plugin on screen that belong to `ctx`, in declaration order.
     /// Empty off the plugin views.
     pub fn plugin_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
-        if !is_view_context(ctx) {
-            return Vec::new();
-        }
         let Some(id) = self.acting_plugin() else {
             return Vec::new();
         };
-        let name = ctx.name();
-        self.plugin_keys
-            .acts_of(id)
-            .iter()
-            .filter(|b| b.context.as_deref().is_none_or(|c| c == name))
-            .collect()
+        acts::acts_in(self.plugin_keys.acts_of(id), &ctx.name())
     }
 
     /// The operation a key runs in the plugin's layer. Layers 0 to 3 are the host's and a plugin
     /// cannot take their keys, so this is asked after the fixed keys and before the keymap
     /// without any chance of shadowing either.
     pub fn plugin_action_for_key(&self, ctx: Context, kp: KeyPress) -> Option<Action> {
-        self.plugin_acts_in(ctx)
-            .into_iter()
-            .find(|b| b.key == Some(kp))
-            .map(|b| Action::Plugin(b.act))
+        acts::act_for_key(&self.plugin_acts_in(ctx), kp).map(|b| Action::Plugin(b.act))
     }
 
     /// The declared action `p`, if it exists and belongs to `ctx`.
@@ -74,16 +55,18 @@ impl App {
     /// ticks); for any other display it is false, because the press would be ignored -- except while the file is read again (`ShowFlow::reopening`): then the press waits for the new session, so the hint stays.
     pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
         let canvas = self.is_canvas_preview();
-        self.plugin
-            .as_ref()
-            .filter(|s| {
-                s.id == p.plugin()
-                    && matches!(s.phase, plugin_host::PluginPhase::Ready)
-                    && (s.session.is_some() || canvas || s.flow.reopening)
-            })
-            .and_then(|s| s.enabled.get(p.act()))
-            .copied()
-            .unwrap_or(false)
+        let facts = match self.plugin.as_ref() {
+            Some(s) => acts::ShowFacts {
+                same_plugin: s.id == p.plugin(),
+                ready: matches!(s.phase, plugin_host::PluginPhase::Ready),
+                session_present: s.session.is_some(),
+                canvas,
+                reopening: s.flow.reopening,
+                says: s.enabled.get(p.act()).copied(),
+            },
+            None => acts::ShowFacts::default(),
+        };
+        acts::act_enabled(&facts)
     }
 
     /// Whether `[plugins.<id>] read_only = true` forbids the plugin's writing actions.

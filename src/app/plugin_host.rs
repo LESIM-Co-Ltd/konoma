@@ -144,7 +144,8 @@ impl Drop for LongFirstFrame {
 
 /// How many declared-action presses wait for the session of a canvas at most; past it the press
 /// is refused with a message (never reordered, never dropped silently).
-pub(crate) const MAX_QUEUED_ACTS: usize = 256;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::typing::MAX_QUEUED_ACTS;
 
 /// How much `App::plugin_session_returned` does in one call: this many rounds, or this long.
 /// The rest waits for the next turn of the run loop.
@@ -241,26 +242,8 @@ pub(crate) struct ShowFlow {
     pub acts: Vec<QueuedAct>,
 }
 
-/// A declared action waiting for the session, with its place among the queued keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QueuedAct {
-    /// The action id.
-    pub action: String,
-    /// How many queued keys were pressed before this action and are still waiting: they go first
-    /// (the keys and the actions are one line, in the order pressed).
-    pub after_keys: usize,
-}
-
-impl QueuedAct {
-    /// An action with no key queued ahead of it.
-    #[cfg(test)]
-    pub(crate) fn now(action: &str) -> QueuedAct {
-        QueuedAct {
-            action: action.to_string(),
-            after_keys: 0,
-        }
-    }
-}
+/// A declared action waiting for the session, with its place among the queued keys (shared).
+pub(crate) use konoma_plugin::host::typing::QueuedAct;
 
 /// The view itself, or the failure that says the plugin returned a display type it did not declare
 /// in `Manifest::shows` (so the host has no screen of that type for it): the message names the
@@ -1986,17 +1969,12 @@ impl App {
         }
     }
 
-    /// Run the oldest queued action (the session is free and no queued key goes before it:
-    /// `flush_plugin_keys` decides). One at a time: each answer may change what works, and the
-    /// next press then goes in its turn.
-    pub(super) fn send_first_queued_act(&mut self) {
+    /// Run a queued action (the oldest: `typing::next_job` decided, the session is free). One
+    /// at a time: each answer may change what works, and the next press then goes in its turn.
+    pub(super) fn send_queued_act(&mut self, action: String) {
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
-        if show.flow.acts.is_empty() {
-            return;
-        }
-        let action = show.flow.acts.remove(0).action;
         let Some(session) = show.session.take() else {
             return;
         };
@@ -2012,9 +1990,11 @@ impl App {
     /// doing" goes with it -- a later answer to something else (a file reloaded) must not be taken
     /// for the answer to the action and take the typing back.
     pub(super) fn discard_stale_answer(&mut self, gen: u64) {
-        if self.plugin_user_act && gen >= self.plugin_user_act_gen {
-            self.plugin_user_act = false;
-        }
+        konoma_plugin::host::typing::discard_stale(
+            &mut self.plugin_user_act,
+            self.plugin_user_act_gen,
+            gen,
+        );
     }
 
     /// Whether the show has its session at hand and nothing keeps a job from being sent now: the
@@ -2140,24 +2120,14 @@ impl App {
                     || !self.plugin_session_is_free()))
         {
             let queued_keys = self.plugin_key_queue.len();
-            let full = self
-                .plugin
-                .as_ref()
-                .is_some_and(|p| p.flow.acts.len() >= MAX_QUEUED_ACTS);
-            if full {
-                self.flash =
-                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::PluginInputFull).to_string());
+            let Some(show) = self.plugin.as_mut() else {
                 return false;
-            }
-            if let Some(show) = self.plugin.as_mut() {
-                show.flow.acts.push(QueuedAct {
-                    action: action.to_string(),
-                    after_keys: queued_keys,
-                });
-            }
+            };
+            let admitted =
+                konoma_plugin::host::typing::admit_act(&mut show.flow.acts, queued_keys, action);
             // The session may be at hand (the presses before this one were waiting for a group).
-            self.flush_plugin_keys();
-            return true;
+            self.after_admit(admitted);
+            return admitted.queued;
         }
         let Some(show) = self.plugin.as_mut() else {
             return false;
@@ -2420,13 +2390,11 @@ impl App {
     /// carries a view takes the mark; one that does not (the action's own result) keeps it only
     /// when it asked for a redraw or a reload, whose answer follows.
     pub(super) fn settle_user_act(&mut self, carried_view: bool, outcome: Option<Outcome>) -> bool {
-        if carried_view {
-            return std::mem::take(&mut self.plugin_user_act);
-        }
-        if !matches!(outcome, Some(Outcome::Redraw | Outcome::Reload)) {
-            self.plugin_user_act = false;
-        }
-        false
+        konoma_plugin::host::typing::settle_user_act(
+            &mut self.plugin_user_act,
+            carried_view,
+            matches!(outcome, Some(Outcome::Redraw | Outcome::Reload)),
+        )
     }
 
     /// The id of the plugin whose view is on screen, if any.

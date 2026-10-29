@@ -28,12 +28,16 @@ pictures = ["ratatui", "widgets", "dep:konoma-base", "dep:konoma-svg", "dep:imag
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
 # while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
 test-hooks = ["konoma-base?/test-hooks"]
+# What a host decides about a plugin's declared actions and the typing it takes for a canvas
+# (`host`): the one rule konoma and the standalone app share. Needs the shared key type
+# (`config`) and the terminal's key event (crossterm).
+host = ["config", "dep:crossterm"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
 # host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
 # pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "pictures", "config", "dep:crossterm", "dep:konoma-host-core", "konoma-host-core/clipboard"]
+app = ["proc", "ratatui", "pictures", "config", "host", "dep:crossterm", "dep:konoma-host-core", "konoma-host-core/clipboard"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).

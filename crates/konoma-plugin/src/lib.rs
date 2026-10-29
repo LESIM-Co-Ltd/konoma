@@ -92,6 +92,8 @@ pub mod document_pictures;
 #[cfg(feature = "pictures")]
 pub mod document_render;
 pub mod hints;
+#[cfg(feature = "host")]
+pub mod host;
 pub mod input;
 pub mod key;
 pub mod keys;

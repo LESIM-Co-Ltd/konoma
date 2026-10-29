@@ -96,14 +96,9 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
     // order of the priority the plugin declared (a stable sort: declaration order within one
     // priority). Only actions that asked for a footer entry are planned here; the others are in
     // the `?` help and the `Space` menu.
-    let mut acts: Vec<_> = app
-        .plugin_acts_in(ctx)
-        .into_iter()
-        .filter_map(|b| b.footer.map(|p| (p, b.act)))
-        .collect();
-    acts.sort_by_key(|(p, _)| *p);
+    let acts = konoma_plugin::host::acts::footer_order(&app.plugin_acts_in(ctx));
     let at = 1.min(v.len());
-    v.splice(at..at, acts.into_iter().map(|(_, a)| Foot::Plugin(a)));
+    v.splice(at..at, acts.into_iter().map(|b| Foot::Plugin(b.act)));
     v
 }
 
@@ -759,16 +754,15 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
             }
             Foot::Plugin(p) => {
                 let action = Action::Plugin(*p);
-                if !action_enabled(app, ctx, action) {
-                    continue;
-                }
                 match app.plugin_binding_in(ctx, *p) {
-                    Some(b) => b.key.map(|key| Token {
-                        text: format!(
-                            "{}:{}",
-                            write_keys(&[key], ctx),
-                            b.label.get(app.plugin_lang())
-                        ),
+                    Some(b) => konoma_plugin::host::acts::footer_token(
+                        b,
+                        action_enabled(app, ctx, action),
+                        app.plugin_lang(),
+                        |key| write_keys(&[key], ctx),
+                    )
+                    .map(|(text, key)| Token {
+                        text,
                         keys: vec![key],
                         actions: vec![action],
                     }),

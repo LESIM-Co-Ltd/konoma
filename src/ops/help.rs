@@ -783,29 +783,19 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
 /// The section of the open plugin's keys (`None` when there is none to list).
 fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
     let lang = app.plugin_lang();
-    let mut sec: Option<HelpSection> = None;
-    let mut plugin: Option<&str> = None;
-    for b in app.plugin_acts_in(ctx) {
-        let Some(key) = b.key else {
-            continue;
-        };
-        if !action_enabled(app, ctx, Action::Plugin(b.act)) {
-            continue;
-        }
-        plugin = Some(b.act.plugin());
-        let desc = match b.help.get(lang) {
-            "" => b.label.get(lang),
-            h => h,
-        };
-        sec.get_or_insert_with(|| HelpSection::new(String::new()))
-            .rows
-            .push((help_key(key), desc.to_string()));
+    let rows = konoma_plugin::host::acts::help_rows(&app.plugin_acts_in(ctx), lang, |b| {
+        action_enabled(app, ctx, Action::Plugin(b.act))
+    });
+    let plugin = rows.first().map(|(_, _, b)| b.act.plugin())?;
+    let mut sec = HelpSection::new(
+        app.plugin_keys
+            .name_of(plugin)
+            .map(|n| n.get(lang).to_string())
+            .unwrap_or_default(),
+    );
+    for (key, desc, _) in rows {
+        sec.rows.push((help_key(key), desc.to_string()));
     }
-    let mut sec = sec?;
-    sec.title = plugin
-        .and_then(|id| app.plugin_keys.name_of(id))
-        .map(|n| n.get(lang).to_string())
-        .unwrap_or_default();
     Some(sec)
 }
 

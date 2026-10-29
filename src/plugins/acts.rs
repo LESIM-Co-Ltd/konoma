@@ -64,20 +64,8 @@ impl PluginAct {
     }
 }
 
-/// An action as the host binds it.
-#[derive(Debug, Clone)]
-pub struct ActBinding {
-    pub act: PluginAct,
-    /// The key it runs on in the plugin's layer; `None` = reachable from the `Space` menu only.
-    pub key: Option<KeyPress>,
-    /// The key context it lives in (`text`, `table`, ...); `None` = the plugin's main view.
-    pub context: Option<String>,
-    pub label: Tr,
-    pub help: Tr,
-    /// The footer priority (smaller first); `None` keeps it out of the footer.
-    pub footer: Option<u8>,
-    pub writes: bool,
-}
+/// An action as the host binds it (the shared binding, with konoma's `Copy` handle).
+pub type ActBinding = konoma_plugin::host::acts::ActBinding<PluginAct>;
 
 /// Something worth telling the user at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
