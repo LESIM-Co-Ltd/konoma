@@ -34,6 +34,8 @@ pub enum Frame {
     /// The same frame for a picture that could not be asked for (the session's `view` failed):
     /// the reason is drawn inside it ([`crate::app::failure_line`]).
     ImageFailed(FailedImage),
+    /// A Markdown document in a bordered frame.
+    Document(super::document::DocFrame),
 }
 
 /// The picture of a `View::Image` on screen.
@@ -200,6 +202,7 @@ pub fn footer(
 ) -> String {
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
+        Frame::Document(_) if scrolls => format!("  line {}", scroll + 1),
         _ => String::new(),
     };
     format!(" {}{pos}  {title}", hints.join("  "))
@@ -222,6 +225,7 @@ pub fn draw(f: &mut ratatui::Frame, frame: &mut Frame, footer: &str) {
             Paragraph::new(text).render(body, f.buffer_mut());
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
+        Frame::Document(d) => d.draw(f.buffer_mut(), body),
         Frame::Image(i) => Block::bordered()
             .title(i.title())
             .render(body, f.buffer_mut()),

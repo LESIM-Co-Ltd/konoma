@@ -187,6 +187,25 @@ impl AppKeys {
         out
     }
 
+    /// The footer's key hints of a Markdown document: those of a text, then the ends and the
+    /// page keys the host names there (the text of a plain file leaves them out).
+    pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        let facts = self.facts_paged(false);
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        let mut out = self.footer_tokens(scrolls);
+        if scrolls {
+            for f in [CoreFoot::Ends, CoreFoot::PageKeys] {
+                out.extend(
+                    render_foot(f, CoreContext::Text, &facts, &look, self.lang).map(|t| t.text),
+                );
+            }
+        }
+        out
+    }
+
     /// [`AppKeys::footer_hints`] as the text the footer shows.
     pub fn footer_tokens(&self, scrolls: bool) -> Vec<String> {
         self.footer_tokens_paged(scrolls, false)
@@ -900,6 +919,12 @@ struct State {
     /// The text of the page that failed to draw as the file's text (an SVG that cannot be drawn),
     /// read once: a key scrolls it without asking the session again or reading the file again.
     failed_body: Option<FailedBody>,
+    /// The width of the terminal at the last view (a document is laid out at it).
+    width: u16,
+    /// A half page, when the view sets its own (a document: half the frame, as the host).
+    half: Option<usize>,
+    /// The document laid out last, kept while its text and width are the same.
+    doc: Option<super::document::DocCache>,
 }
 
 /// The lines (the reason, then the file) a failed page shows, and the page they belong to.
@@ -948,6 +973,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
+        st.width = size.width;
+        st.half = None;
         if view_due.is_some_and(|d| Instant::now() >= d) {
             need_view = true;
         }
@@ -1140,10 +1167,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         )
                     }
                     None => draw::footer(
-                        &keys.footer_tokens_paged(
-                            st.scrolls || (failed_text_screen && text_scrolls),
-                            paged,
-                        ),
+                        &if matches!(base, draw::Frame::Document(_)) {
+                            keys.document_footer_tokens(st.scrolls)
+                        } else {
+                            keys.footer_tokens_paged(
+                                st.scrolls || (failed_text_screen && text_scrolls),
+                                paged,
+                            )
+                        },
                         &cx.title,
                         &base,
                         st.scroll,
@@ -1443,7 +1474,7 @@ fn draw_frame<B: Backend>(
 
 fn scroll_by(m: Motion, st: &mut State) {
     let page = st.page;
-    let half = (page / 2).max(1);
+    let half = st.half.unwrap_or((page / 2).max(1));
     match m {
         Motion::Down => st.scroll = st.scroll.saturating_add(1),
         Motion::Up => st.scroll = st.scroll.saturating_sub(1),
@@ -1545,6 +1576,25 @@ fn frame_of(
             };
             st.scrolls = true;
             (frame, None)
+        }
+        View::Document(dv) => {
+            // The frame has a border: the page is laid out inside it.
+            let inner_w = st.width.saturating_sub(2);
+            let inner_h = rows.saturating_sub(2);
+            let laid = super::document::DocCache::get(&mut st.doc, &dv, inner_w, lang);
+            clamp(st, laid.rows(), inner_h);
+            // The host pages by one row less than the frame and halves the frame itself.
+            st.page = inner_h.saturating_sub(1).max(1);
+            st.half = Some((inner_h / 2).max(1));
+            st.scrolls = true;
+            (
+                Frame::Document(super::document::DocFrame {
+                    name: name.to_string(),
+                    laid,
+                    scroll: st.scroll,
+                }),
+                None,
+            )
         }
         other => (
             Frame::Lines(vec![Line::raw(format!(

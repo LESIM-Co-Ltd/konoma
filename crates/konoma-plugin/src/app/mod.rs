@@ -7,11 +7,14 @@
 //! [`View::Table`](crate::View) (the grid drawn with the shared `konoma-widgets` table, the cell
 //! cursor, the sheets as pages, the full-cell popup) and [`View::Image`](crate::View) (a still
 //! picture decoded off the loop and drawn through the `Pictures`, with zoom and pan; with no
-//! `Pictures` the line that names the terminal). Any other view says it cannot be shown yet.
+//! `Pictures` the line that names the terminal) and [`View::Document`](crate::View) (Markdown, laid
+//! out by the shared `document_render` and drawn in a bordered frame; every picture of it is shown
+//! as text). Any other view says it cannot be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod document;
 mod draw;
 mod looping;
 mod pictures;

@@ -120,7 +120,7 @@ fn sample_src(name: &str) -> Option<String> {
 /// `pub(super)`: `md_model_snapshot_tests` (a sibling module) drives its own dump off the exact
 /// same corpus/order — see that module's doc comment for why sharing this one function, rather
 /// than re-gathering the same corpora a second time, matters.
-pub(super) fn all_cases() -> Vec<(String, String)> {
+pub(crate) fn all_cases() -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = Vec::new();
     for (name, src) in crate::preview::markdown::task_corpus::cases() {
         v.push((format!("task_corpus: {name}"), src.to_string()));

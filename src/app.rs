@@ -6666,7 +6666,7 @@ mod tests;
 // separate file/module from `tests` since it is a standalone corpus-dump harness, not a bag of
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
-mod md_snapshot_tests;
+pub(crate) mod md_snapshot_tests;
 
 #[cfg(test)]
 mod embed_plugin_tests;
