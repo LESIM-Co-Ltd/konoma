@@ -201,17 +201,17 @@ impl DocPics {
     }
 
     /// Hold the pictures `resources` name (the document on screen's). The very same resources as
-    /// before change nothing; others drop the pictures of the old ones.
+    /// before change nothing; others mean another document (or the same one read again), so
+    /// everything of the old one goes through `reset` (decodes cancelled, kitty images deleted,
+    /// every cached picture dropped).
     fn sync_resources(&mut self, resources: &Resources) {
         if same_resources(&self.resources, resources) {
             return;
         }
+        self.reset();
         self.render_truncated = Arc::new(AtomicBool::new(false));
         self.pictures = DocPicture::from_resources(resources, &self.render_truncated);
         self.resources = resources.clone();
-        self.cache
-            .cache
-            .retain(|k, _| !is_office_image_url(&k.to_string_lossy()));
     }
 
     pub fn set_env(&mut self, env: DocEnv) {
@@ -724,10 +724,16 @@ mod tests {
             .insert(PathBuf::from("office-img://h/a.png"), Default::default());
         d.sync_resources(&r);
         assert_eq!(d.cache.cache.len(), 1);
-        // Other resources: the old pictures and their cache entries go, the others stay.
+        // Other resources: the whole old document goes through `reset` (every cache entry, the
+        // kitty images it pinned, the decodes in flight).
         d.cache
             .cache
             .insert(PathBuf::from("/x/other.png"), Default::default());
+        d.cache.kitty_ids.insert(
+            PathBuf::from("office-img://h/a.png"),
+            [vec![21, 22], Vec::new(), Vec::new()],
+        );
+        let old_gen = Arc::clone(&d.generation);
         let other = stripes();
         d.sync_resources(&resources_of(&other));
         assert!(!Arc::ptr_eq(&held, &d.render_truncated));
@@ -735,7 +741,14 @@ mod tests {
             .cache
             .cache
             .contains_key(&PathBuf::from("office-img://h/a.png")));
-        assert!(d.cache.cache.contains_key(&PathBuf::from("/x/other.png")));
+        assert!(!d.cache.cache.contains_key(&PathBuf::from("/x/other.png")));
+        assert_eq!(old_gen.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!Arc::ptr_eq(&old_gen, &d.generation));
+        assert!(d.cache.kitty_ids.is_empty());
+        let mut due = d.cache.kitty_deletes.clone();
+        due.sort_unstable();
+        assert_eq!(due, vec![21, 22]);
+        assert_eq!(d.pictures.len(), 1, "the new resources are held");
         // A reopened document: nothing of the old one is held.
         d.reset();
         assert!(d.pictures.is_empty());
