@@ -34,7 +34,7 @@ use konoma_widgets::inline_images::{
     md_encode_worker, DecodedImage, InlineImageCache, MdEncodeResult, OverlayMoved,
     MD_IMAGE_CACHE_BYTES,
 };
-use konoma_widgets::markdown::{is_mermaid_fence_url, is_synthetic_md_url, ImagePlacement};
+use konoma_widgets::markdown::{is_synthetic_md_url, ImagePlacement};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
@@ -46,7 +46,7 @@ use crate::canvas_pictures::{
 use crate::document_pictures::{
     fetch_remote_image, live_synthetic_keys, mermaid_fit_rows, mermaid_rows_cap,
     resolve_md_image_path, DecodeJob, DocPictures, Fetcher, PictureLookup, RemoteFetch, Requested,
-    DEFAULT_MERMAID_ROWS, FENCE_MERMAID, MATH, MATH_PX, MD_IMAGE_MAX_ROWS,
+    DEFAULT_MERMAID_ROWS, FENCE_MERMAID, MATH, MATH_PX,
 };
 use crate::document_render::{render_document, RenderSettings, RenderedDocument};
 use crate::registry::{PluginOrigin, Registry};
@@ -434,18 +434,7 @@ impl DocPics {
             };
             // A kitty placeholder assumes a clean SGR state: reset the attributes and the
             // foreground of the cells under the picture, keeping the background.
-            for y in target.top()..target.bottom() {
-                for x in target.left()..target.right() {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        let bg = cell.style().bg;
-                        let mut s = ratatui::style::Style::reset();
-                        if let Some(bg) = bg {
-                            s = s.bg(bg);
-                        }
-                        cell.set_style(s);
-                    }
-                }
-            }
+            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
             img.render(target, buf);
             sig.add(n as u64, target);
             drawn += 1;
@@ -474,10 +463,6 @@ impl DocPics {
             if is_synthetic_md_url(&p.url) {
                 return;
             }
-            let frame = self.cache.frame;
-            let entry = self.cache.cache.entry(path.clone()).or_default();
-            entry.last_used = frame;
-            entry.wish.set_priority(frame);
             let job = DecodeJob {
                 svg_max_px: self.raster_px,
                 roots: None,
@@ -485,27 +470,13 @@ impl DocPics {
                 svg: Arc::clone(&self.svg),
                 generation: (0, Arc::clone(&self.generation)),
             };
-            if !self.dp().spawn_decode(path.clone(), job) {
-                // The thread could not start: end the wait instead of latching "loading".
-                if let Some(e) = self.cache.cache.get_mut(&path) {
-                    e.failed = true;
-                }
-            }
+            self.dp().begin_decode(path, job);
             return;
         }
         self.cache.stamp_drawn(&path);
         self.cache
             .ensure_encode(&path, p.cols, p.rows, row_off, vis_rows, None);
     }
-
-    /// Whether `url` is a mermaid fence picture (the host focuses these; the app does not).
-    #[allow(dead_code)]
-    fn is_fence(url: &str) -> bool {
-        is_mermaid_fence_url(url)
-    }
-
-    /// The most rows a picture reserves (re-exported for the tests).
-    pub const MAX_ROWS: u16 = MD_IMAGE_MAX_ROWS;
 }
 
 #[cfg(test)]
@@ -525,6 +496,11 @@ mod tests {
     }
 
     fn pics(rows: Option<i64>) -> DocPics {
+        pics_with(rows.map(|r| Settings::new().with("rows", Value::Int(r))))
+    }
+
+    /// A mermaid plugin is there, with `settings` (`None`: no plugin).
+    fn pics_with(settings: Option<Settings>) -> DocPics {
         let mut d = DocPics::new(
             &Picker::halfblocks(),
             "t",
@@ -534,15 +510,12 @@ mod tests {
         );
         d.set_env(DocEnv {
             embed: Box::new(move |kind, svg| {
-                (kind == FENCE_MERMAID && rows.is_some()).then(|| {
-                    EmbedRender::new(
-                        Arc::new(Nothing),
-                        Settings::new().with("rows", Value::Int(rows.unwrap())),
-                        "en",
-                        false,
-                        Arc::clone(svg),
-                    )
-                })
+                (kind == FENCE_MERMAID)
+                    .then_some(settings.clone())
+                    .flatten()
+                    .map(|settings| {
+                        EmbedRender::new(Arc::new(Nothing), settings, "en", false, Arc::clone(svg))
+                    })
             }),
             ..DocEnv::default()
         });
@@ -558,5 +531,8 @@ mod tests {
         assert_eq!(pics(Some(-3)).fence_rows(40), 24);
         assert_eq!(pics(None).fence_rows(40), 24, "no plugin: the default");
         assert_eq!(pics(Some(9)).fence_rows(5), 4, "never under four rows");
+        // A plugin that sets no `rows` at all is the default too (not a cap of 0 or a guess).
+        assert_eq!(pics_with(Some(Settings::new())).fence_rows(40), 24);
+        assert_eq!(pics_with(Some(Settings::new())).fence_rows(10), 8);
     }
 }

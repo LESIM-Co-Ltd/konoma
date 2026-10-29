@@ -477,11 +477,27 @@ fn host_pictures(
     w: u16,
     h: u16,
 ) -> (Cells, Cells) {
+    host_pictures_held(root, file, cfg, w, h, None)
+}
+
+/// [`host_pictures`] with the host's downloads held by `fetch_gate` until the first screen is
+/// taken (the same footing the app is given).
+fn host_pictures_held(
+    root: &std::path::Path,
+    file: &str,
+    cfg: Config,
+    w: u16,
+    h: u16,
+    fetch_gate: Option<&'static Gate>,
+) -> (Cells, Cells) {
     let mut s = Sim::with_config_sized(root, cfg, w, h).with_media();
     s.select(file);
     s.enter();
     s.draw();
     let before = cells_of(s.term.backend().buffer());
+    if let Some(g) = fetch_gate {
+        g.open();
+    }
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         s.draw();
@@ -539,6 +555,15 @@ impl EventSource for SettleOn {
             self.after = Some(now);
             return Next::End;
         }
+        // The loop must wake itself while anything is owed or a page is stale: a wait of `None`
+        // is a loop asleep until a key comes, which no one will press. (A source that answers
+        // every wait with a timeout would hide a loop that forgot to lay the page out again.)
+        assert!(
+            wait.is_some(),
+            "the loop went to sleep before the page was settled\napp:\n{}\nwant:\n{}",
+            now.rows.join("\n"),
+            self.want.rows.join("\n")
+        );
         assert!(
             self.started.elapsed() < Duration::from_secs(30),
             "the app never reached the host's settled screen\napp:\n{}",
@@ -657,6 +682,7 @@ macro_rules! test_fetcher {
 }
 test_fetcher!(fetch_on, FETCHES_ON, FETCH_GATE_ON);
 test_fetcher!(fetch_off, FETCHES_OFF, FETCH_GATE_OFF);
+test_fetcher!(fetch_host, HOST_FETCHES, HOST_FETCH_GATE);
 
 /// How many cells of `cells` show a picture (a halfblock glyph with a color).
 #[track_caller]
@@ -758,23 +784,31 @@ fn with_no_mermaid_or_math_plugin_the_document_keeps_its_text() {
 fn a_remote_picture_is_fetched_and_drawn_as_in_the_host() {
     let cache = unique_tmp("konoma_doc_pictures_remote_cache");
     crate::test_support::set_test_cache_root(cache.to_path_buf());
-    // The host reads the picture from the cache (no download); the app has its own address, so it
-    // downloads through the test fetcher (held until the first screen is taken).
-    let host_url = "https://pictures.invalid/host.png";
-    let app_url = "https://pictures.invalid/app.png";
-    let cached = konoma_plugin::document_pictures::md_remote_cache_path(host_url).unwrap();
-    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
-    std::fs::write(&cached, stripes_png()).unwrap();
-    let doc = |u: &str| format!("# Remote\n\n![far away]({u})\n\nafter\n");
+    // Both sides start with an empty cache and a download held until the first screen is taken,
+    // so "before" is the same waiting page in both.
+    let url = "https://pictures.invalid/same.png";
     let dir = sandbox("doc-pictures-remote");
-    std::fs::write(dir.join("h.md"), doc(host_url)).unwrap();
-    std::fs::write(dir.join("a.md"), doc(app_url)).unwrap();
+    std::fs::write(
+        dir.join("d.md"),
+        format!("# Remote\n\n![far away]({url})\n\nafter\n"),
+    )
+    .unwrap();
     let root = canon(&dir);
     let (w, h) = (100u16, 40u16);
-    let (hb, ha) = host_pictures(&root, "h.md", cfg_en(), w, h + 1);
+    HOST_FETCHES.store(0, Ordering::SeqCst);
+    konoma_plugin::document_pictures::set_test_fetcher(fetch_host);
+    let (hb, ha) = host_pictures_held(&root, "d.md", cfg_en(), w, h + 1, Some(&HOST_FETCH_GATE));
+    assert_eq!(
+        HOST_FETCHES.load(Ordering::SeqCst),
+        1,
+        "the host downloads once"
+    );
+    // The host's download is in the cache now; the app starts from an empty one as well.
+    let cached = konoma_plugin::document_pictures::md_remote_cache_path(url).unwrap();
+    std::fs::remove_file(&cached).expect("the host cached the picture");
     FETCHES_ON.store(0, Ordering::SeqCst);
     let (ab, aa, _) = app_pictures(
-        &root.join("a.md"),
+        &root.join("d.md"),
         "",
         Vec::new(),
         &Arc::new(Gate::new()),
@@ -784,15 +818,12 @@ fn a_remote_picture_is_fetched_and_drawn_as_in_the_host() {
         h,
     );
     assert_eq!(FETCHES_ON.load(Ordering::SeqCst), 1, "one download");
-    // The host already holds the file (reading the cache is how it stays off the network), so it
-    // reserves the picture's cells at once; the app is still waiting for its download. Both are
-    // text, not a picture.
-    let _ = &hb;
     assert!(
         ab.rows.iter().any(|r| r.contains("loading")),
         "{}",
         ab.rows.join("\n")
     );
+    same("remote: before the download", &hb, &ab);
     same("remote: settled", &ha, &aa);
     assert_eq!(picture_cells(&ab), 0);
     assert!(picture_cells(&aa) > 50);

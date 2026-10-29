@@ -85,6 +85,11 @@ impl App {
     /// sets, the channels results come back on, and the remote-images setting. Build it after
     /// everything else the call needs from `self` has been read (it borrows three fields).
     pub(super) fn doc_pictures(&mut self) -> DocPictures<'_> {
+        #[cfg(test)]
+        let fetcher =
+            konoma_plugin::document_pictures::get_test_fetcher().unwrap_or(fetch_remote_image);
+        #[cfg(not(test))]
+        let fetcher = fetch_remote_image;
         DocPictures {
             cache: &mut self.md_images,
             remote_inflight: &mut self.md_remote_inflight,
@@ -92,7 +97,7 @@ impl App {
             results: self.md_img_tx.clone(),
             fetches: self.md_remote_tx.clone(),
             remote_images: self.cfg.external.remote_images,
-            fetcher: fetch_remote_image,
+            fetcher,
         }
     }
 
@@ -396,21 +401,26 @@ impl App {
     /// exists). With no loader channel attached (tests) nothing is started. Returns false when
     /// the thread could not be started (the caller must not leave the entry waiting).
     pub(super) fn spawn_md_decode(&mut self, path: PathBuf) -> bool {
+        let job = self.md_decode_job(&path);
+        self.doc_pictures().spawn_decode(path, job)
+    }
+
+    /// What a decode of the picture file `path` needs from the host.
+    fn md_decode_job(&self, path: &Path) -> DecodeJob {
         // A document of a plugin the user added: an SVG picture reads only files in its scope.
         let roots: Option<Vec<PathBuf>> = self
             .md_image_scope()
             .and_then(|(_, s)| s.dirs().map(<[PathBuf]>::to_vec));
         // The file read is the real path the scope judged, not the spelling that was asked for.
-        let read_path = self.md_decode_read_path(&path);
-        let job = DecodeJob {
+        let read_path = self.md_decode_read_path(path);
+        DecodeJob {
             svg_max_px: self.cfg.ui.svg_max_px,
             roots,
             read_path,
             svg: Arc::new(media_plugin::SvgChild),
             // The media generation changes on every file/tab change.
             generation: (self.media_gen, self.media_gen_shared.clone()),
-        };
-        self.doc_pictures().spawn_decode(path, job)
+        }
     }
 
     /// The one place that makes an inline picture ready to be drawn: stamp it as wanted by the
@@ -743,15 +753,8 @@ impl App {
             if crate::preview::markdown::is_synthetic_md_url(url) {
                 return;
             }
-            let entry = self.md_images.cache.entry(path.clone()).or_default();
-            entry.last_used = self.md_images.frame;
-            entry.wish.set_priority(self.md_images.frame);
-            if !self.spawn_md_decode(path.clone()) {
-                // The thread could not start: end the wait (`failed`) instead of latching "loading".
-                if let Some(e) = self.md_images.cache.get_mut(&path) {
-                    e.failed = true;
-                }
-            }
+            let job = self.md_decode_job(&path);
+            self.doc_pictures().begin_decode(path, job);
             return;
         }
         // Stamp the picture as drawn this pass and get its pixels back if the cache dropped them —

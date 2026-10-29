@@ -1031,18 +1031,7 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         // background — behind the diagram.
         {
             let buf = frame.buffer_mut();
-            for y in target.top()..target.bottom() {
-                for x in target.left()..target.right() {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        let bg = cell.style().bg;
-                        let mut s = ratatui::style::Style::reset();
-                        if let Some(bg) = bg {
-                            s = s.bg(bg);
-                        }
-                        cell.set_style(s);
-                    }
-                }
-            }
+            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
         }
         // For a focused fence diagram, draw the selection border **outside the image** (the caption
         // line is the top edge, the bottom margin row is the bottom edge, and the sides are blank

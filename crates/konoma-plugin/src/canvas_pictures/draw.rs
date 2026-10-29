@@ -94,18 +94,7 @@ pub fn draw_images(
         // A kitty placeholder assumes a clean SGR state: reset the attributes and the foreground
         // of the cells under the picture, keeping the background (a transparent picture is
         // composited over it).
-        for y in target.top()..target.bottom() {
-            for x in target.left()..target.right() {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    let bg = cell.style().bg;
-                    let mut s = ratatui::style::Style::reset();
-                    if let Some(bg) = bg {
-                        s = s.bg(bg);
-                    }
-                    cell.set_style(s);
-                }
-            }
-        }
+        konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
         img.render(target, buf);
         // The signature follows what is where, never the content: a picture whose pixels change
         // under the same id must not look like a picture that moved (that clears the screen).

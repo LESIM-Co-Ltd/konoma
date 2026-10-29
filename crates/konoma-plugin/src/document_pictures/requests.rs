@@ -351,6 +351,21 @@ impl DocPictures<'_> {
         }
     }
 
+    /// The first decode of a picture that has no cache entry: file the entry, stamp it as wanted
+    /// by the pass being drawn (eviction order and decode priority) and start the decode. A
+    /// thread that could not start ends the wait (`failed`) instead of latching "loading".
+    pub fn begin_decode(&mut self, path: PathBuf, job: DecodeJob) {
+        let frame = self.cache.frame;
+        let entry = self.cache.cache.entry(path.clone()).or_default();
+        entry.last_used = frame;
+        entry.wish.set_priority(frame);
+        if !self.spawn_decode(path.clone(), job) {
+            if let Some(e) = self.cache.cache.get_mut(&path) {
+                e.failed = true;
+            }
+        }
+    }
+
     /// Start the decode of the picture file `path` (its cache entry exists already). The format
     /// is sniffed from the content (a cached download has no extension), an SVG is rasterized,
     /// and an animated GIF keeps all its frames. With no results channel nothing is started.

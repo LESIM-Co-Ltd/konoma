@@ -59,6 +59,23 @@ pub fn get_test_cache_root() -> Option<PathBuf> {
     TEST_CACHE_ROOT.with(|c| c.borrow().clone())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static TEST_FETCHER: std::cell::Cell<Option<Fetcher>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test seam: the download a host started from this thread uses instead of the network.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn set_test_fetcher(f: Fetcher) {
+    TEST_FETCHER.with(|c| c.set(Some(f)));
+}
+
+/// The override [`set_test_fetcher`] set on this thread, if any.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn get_test_fetcher() -> Option<Fetcher> {
+    TEST_FETCHER.with(|c| c.get())
+}
+
 fn env_cache_root() -> PathBuf {
     cache_root_from(konoma_base::xdg::xdg_base_dir(
         std::env::var_os("XDG_CACHE_HOME").as_deref(),
