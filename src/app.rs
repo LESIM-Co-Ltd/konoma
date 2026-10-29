@@ -38,8 +38,9 @@ use crate::preview::markdown::{math_cells, mermaid_cells};
 #[cfg(test)]
 use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
+use konoma_host_core::copy::at_ref_text;
 pub(crate) use konoma_host_core::paths::home_relative;
-use konoma_host_core::paths::{rel_from, rel_to_open};
+use konoma_host_core::paths::rel_to_open;
 
 mod bookmark_actions;
 mod change_jump;
@@ -5893,37 +5894,10 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
     })
 }
 
-/// Assemble the copy string (a pure function; does not touch the clipboard).
-/// `open_dir` is the base for relative paths (the launch directory).
+/// Assemble the copy string (a pure function; does not touch the clipboard). The shared
+/// implementation lives in `konoma_host_core::copy`.
 fn copy_text(path: &Path, open_dir: &Path, kind: CopyKind) -> String {
-    match kind {
-        CopyKind::Name => path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        CopyKind::Full => path.display().to_string(),
-        CopyKind::Parent => path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        // Use exactly the same basis as the top-left title display (format_path's Relative).
-        CopyKind::Relative => rel_to_open(open_dir, path),
-        CopyKind::AtRef => at_ref_text(open_dir, path),
-    }
-}
-
-/// `@path` reference for AI agents (Claude Code's `@file` context syntax). Under `open_dir` the path is
-/// strictly relative to it (`src/app.rs` — no leading dir name, unlike `rel_to_open`); outside it is
-/// `..`-relative; if neither works, absolute. Prefixed with `@`.
-fn at_ref_text(open_dir: &Path, path: &Path) -> String {
-    let rel = match path.strip_prefix(open_dir) {
-        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-        _ => match rel_from(open_dir, path) {
-            Some(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-            _ => path.display().to_string(),
-        },
-    };
-    format!("@{rel}")
+    konoma_host_core::copy::path_text(path, open_dir, kind)
 }
 
 /// Write to the clipboard (the shared part lives in `konoma_host_core::clipboard`, which also holds

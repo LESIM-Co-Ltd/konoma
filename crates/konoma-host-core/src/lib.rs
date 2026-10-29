@@ -4,6 +4,7 @@
 
 #[cfg(feature = "clipboard")]
 pub mod clipboard;
+pub mod copy;
 pub mod editor;
 pub mod help;
 pub mod help_msg;

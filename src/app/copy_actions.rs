@@ -22,23 +22,13 @@ impl App {
     /// Copy the selected path to the clipboard according to the kind, and show the result in flash (FR-6).
     pub fn copy_path(&mut self, kind: CopyKind) {
         let Some(path) = self.copy_target() else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
+            self.flash = Some(konoma_host_core::copy::no_target_notice(self.lang).into());
             return;
         };
         let text = copy_text(&path, &self.tab.open_dir, kind);
         match set_clipboard(&text) {
-            Ok(()) => {
-                self.flash = Some(format!(
-                    "{}{text}",
-                    tr(self.lang, crate::i18n::Msg::CopiedPrefix)
-                ))
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}{e}",
-                    tr(self.lang, crate::i18n::Msg::CopyFailed)
-                ))
-            }
+            Ok(()) => self.flash = Some(konoma_host_core::copy::copied_notice(self.lang, &text)),
+            Err(e) => self.flash = Some(konoma_host_core::copy::copy_failed_notice(self.lang, &e)),
         }
     }
 
@@ -114,22 +104,11 @@ impl App {
     pub(super) fn set_clipboard_flash(&mut self, text: &str) {
         match set_clipboard(text) {
             Ok(()) => {
-                let first = text.lines().next().unwrap_or("");
-                let mut preview: String = first.chars().take(60).collect();
-                if first.chars().count() > 60 || text.lines().nth(1).is_some() {
-                    preview.push('…');
-                }
-                self.flash = Some(format!(
-                    "{}{preview}",
-                    tr(self.lang, crate::i18n::Msg::CopiedPrefix)
-                ));
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}{e}",
-                    tr(self.lang, crate::i18n::Msg::CopyFailed)
+                self.flash = Some(konoma_host_core::copy::copied_preview_notice(
+                    self.lang, text,
                 ))
             }
+            Err(e) => self.flash = Some(konoma_host_core::copy::copy_failed_notice(self.lang, &e)),
         }
     }
 }
