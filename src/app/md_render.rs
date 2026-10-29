@@ -253,14 +253,18 @@ impl App {
         } else {
             decorated
         };
-        let (lines, targets) = self.postprocess_md(decorated.lines);
+        let (lines, targets) = konoma_plugin::document_render::postprocess(
+            decorated.lines,
+            &mut decorated.images,
+            &self.doc_options(),
+            self.cfg.ui.icons,
+        );
         // Re-resolve every inline math placement's own `col` against these **decorated** lines — see
         // `render_inline_math`'s own doc comment ("`col` recorded here is *provisional*") for the full
         // reasoning and the real, confirmed bug this closes (a link/checkbox/emoji/autolink earlier on
         // the same line changing width during `postprocess_md` left the math visibly offset from its
         // own reserved cells). Must run after `postprocess_md`, before `lines`/`decorated.images` are
         // stored into the cache below.
-        Self::resolve_inline_math_cols(&lines, &mut decorated.images);
         // The `Rendered` presentation has no Tab-focus interactivity at all (`docs/
         // FEATURE-MD-RENDERED-DIFF.md` §3: "items は Diff では空") — reading/toggling a checkbox or
         // opening a link would have to pick one of the two versions to write back to, which this

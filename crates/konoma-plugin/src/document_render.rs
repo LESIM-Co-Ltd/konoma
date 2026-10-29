@@ -182,6 +182,22 @@ pub fn render_document(
     }
 }
 
+/// The post-pass over a rendered document's lines: collapse the `label (URL)` links, auto-link
+/// bare URLs and convert emoji shortcodes (per `opts`), then re-resolve the column of each
+/// inline math picture against the lines as they now are (those passes change a line's width
+/// left of the picture). Returns the lines and the link targets in order. Run it between
+/// [`render_document`] and [`wrap_row_prefix`], so the rows are counted on what is drawn.
+pub fn postprocess(
+    lines: Vec<Line<'static>>,
+    images: &mut [ImagePlacement],
+    opts: &DocOptions,
+    icons: bool,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let (lines, targets) = markdown::postprocess_lines(lines, icons, opts.autolink, opts.emoji);
+    markdown::resolve_inline_math_cols(&lines, images);
+    (lines, targets)
+}
+
 /// Prefix sums of the rows each line takes when wrapped at `width` (ratatui's own reflow):
 /// `[0, rows of line 0, ...]`, so the first row of line `i` is element `i`.
 pub fn wrap_row_prefix(lines: &[Line<'static>], width: u16) -> Vec<usize> {

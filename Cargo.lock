@@ -2048,6 +2048,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
+ "emojis",
  "flate2",
  "image",
  "konoma-base",

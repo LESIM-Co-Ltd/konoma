@@ -33,6 +33,8 @@ unicode-width.workspace = true
 mermaid-text.workspace = true
 # The Markdown renderer walks the same parser the block model uses.
 pulldown-cmark.workspace = true
+# `:shortcode:` emoji of the Markdown post-pass.
+emojis.workspace = true
 
 [dev-dependencies]
 # The core's `cfg(test)` helpers and corpora, which this crate's own tests use.

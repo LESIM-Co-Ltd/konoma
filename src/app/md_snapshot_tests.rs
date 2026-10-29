@@ -1195,3 +1195,89 @@ fn golden_sections_are_the_render_record_not_the_retired_scanners() {
         "ITEMS 節にコードブロックのソースが出ていない\n{dump}"
     );
 }
+
+/// The document the shared renderer builds alone (`konoma_plugin::document_render`: render, then
+/// the post-pass, then the wrap prefix — what the standalone app calls, with no `App`) is the very
+/// document `App::ensure_md_cache` caches, for every case of the corpus: the lines, the picture
+/// placements and the wrapped-row prefix. The slots answer as a picker-less `App` does (no image
+/// backend), the one answer set both sides can be driven into here.
+#[test]
+fn shared_document_rows_match_the_live_apps_cache_across_the_corpus() {
+    use konoma_plugin::document_render as dr;
+    let dir = crate::test_support::unique_tmp("konoma_shared_rows_vs_app");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+    let cfg = Config::default();
+    let code = crate::preview::markdown::CodeStyle {
+        bg: cfg.ui.theme.code_bg(),
+        label_bg: cfg.ui.theme.code_label_bg(),
+        label_right: cfg.ui.theme.code_label_right(),
+        tab_width: cfg.ui.tab_width,
+        wrap: cfg.ui.wrap,
+    };
+    let lang = crate::i18n::resolve_lang(&cfg.ui.lang);
+    let caption = crate::i18n::tr(lang, crate::i18n::Msg::MermaidCaption);
+    let image = |_: &str, _: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;
+    let mermaid = |_: &str| crate::preview::markdown::MermaidSlot::Text;
+    let math = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
+    let slots = dr::PictureSlots {
+        image: &image,
+        mermaid: &mermaid,
+        math: &math,
+        mermaid_on: false,
+        math_on: false,
+        remote_on: false,
+    };
+    let no_open = std::collections::HashMap::new();
+    let (mut cases, mut links, mut rows_checked) = (0usize, 0usize, 0usize);
+    for (name, src) in all_cases() {
+        std::fs::write(&f, &src).unwrap();
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.enter_preview(&f);
+        app.ensure_md_cache(SNAPSHOT_WIDTH);
+        let cache = app
+            .md_cache
+            .as_ref()
+            .expect("a Markdown preview has a cache");
+
+        let opts = app.doc_options();
+        let mut doc = dr::render_document(
+            &src,
+            &opts,
+            &dr::RenderSettings {
+                width: SNAPSHOT_WIDTH,
+                code,
+                code_theme: &cfg.ui.theme.code_theme,
+                icons: cfg.ui.icons,
+                mermaid_caption: caption,
+                details_open: &no_open,
+            },
+            &slots,
+        );
+        let (lines, _targets) = dr::postprocess(doc.lines, &mut doc.images, &opts, cfg.ui.icons);
+        let prefix = if cfg.ui.wrap {
+            dr::wrap_row_prefix(&lines, SNAPSHOT_WIDTH)
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            lines, cache.lines,
+            "{name}: 共有側の行が本体のキャッシュと違う"
+        );
+        assert_eq!(doc.images, cache.images, "{name}: 絵の配置が違う");
+        assert_eq!(prefix, cache.row_prefix, "{name}: 折り返しの行数が違う");
+        cases += 1;
+        links += _targets.len();
+        rows_checked += lines.len();
+    }
+    // The corpus has links, emoji shortcodes and bare URLs; if it stopped having them, the
+    // post-pass would be compared on nothing.
+    assert!(cases > 100, "コーパスが縮んだ ({cases})");
+    assert!(links > 20, "リンクを含むケースが激減 ({links})");
+    assert!(
+        rows_checked > 1000,
+        "比較した行が少なすぎる ({rows_checked})"
+    );
+}
