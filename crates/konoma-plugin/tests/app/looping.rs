@@ -127,14 +127,13 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     // The host's footer has no room left for the title at 60 columns: the hints are cut instead.
     assert!(r[7].starts_with("j/k:scroll  q:quit  ?:help"), "{r:?}");
     assert!(!r[6].contains("q:quit"));
-    // The footer row is reversed.
+    // The footer row is the host's: dim hints, not reversed.
     let buf = term.backend().buffer();
-    assert!(buf[(0, 7)]
+    assert!(buf[(0, 7)].modifier.contains(ratatui::style::Modifier::DIM));
+    assert!(!buf[(0, 7)]
         .modifier
         .contains(ratatui::style::Modifier::REVERSED));
-    assert!(!buf[(0, 0)]
-        .modifier
-        .contains(ratatui::style::Modifier::REVERSED));
+    assert!(!buf[(0, 0)].modifier.contains(ratatui::style::Modifier::DIM));
 }
 
 #[test]

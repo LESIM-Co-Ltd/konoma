@@ -246,6 +246,9 @@ pub struct Opened {
     pub plugin_id: String,
     /// The absolute path of the file (where a picture's relative references resolve from).
     pub path: PathBuf,
+    /// The note of the binding that picked the plugin (a CSV opened as `tsv`, say): it reaches the
+    /// copy menu as it reached the plugin.
+    pub hint: Option<String>,
     /// What the plugin declared it shows when it shows nothing ([`Manifest::unavailable`]).
     pub unavailable: crate::manifest::Unavailable,
     /// The display types the plugin declared ([`Manifest::shows`]).
@@ -319,7 +322,7 @@ pub fn open_file_bundled(
         .open(
             Input::File {
                 path: path.clone(),
-                hint,
+                hint: hint.clone(),
             },
             &cx,
         )
@@ -333,6 +336,7 @@ pub fn open_file_bundled(
         title,
         plugin_id: id,
         path,
+        hint,
         unavailable,
         shows,
         registry: Arc::new(registry),
@@ -485,6 +489,7 @@ pub fn run_bundled(
         unavailable: opened.unavailable.clone(),
         plugin_id: opened.plugin_id.clone(),
         path: opened.path.clone(),
+        hint: opened.hint.clone(),
         shows: opened.shows.clone(),
         reopen: Some(reopen),
         display,

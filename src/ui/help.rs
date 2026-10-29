@@ -71,13 +71,6 @@ pub fn leader_section(
     Some(sec)
 }
 
-/// Turn a key into the display string every which-key menu and help row uses (`Space`,
-/// `Ctrl-t`, `Enter`, `⇧Tab`). The one implementation: the footer's which-key line and the help
-/// share it.
-pub(crate) fn leader_key_str(kp: KeyPress) -> String {
-    crate::ops::keys::help_key(kp)
-}
-
 /// The help popup's frame and the number of body rows inside it (shared with the standalone
 /// app). Used by the e2e tests to know which help lines are actually on screen.
 #[cfg(test)]

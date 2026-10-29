@@ -153,14 +153,36 @@ pub(super) fn host_shot_at(
     picker: bool,
     frame: Option<usize>,
 ) -> Shot {
+    shot(&host_sim_at(root, file, h, spec, picker, frame).term)
+}
+
+/// Open `rel` (a path under the root, folders and all) from the tree: each folder on the way is
+/// selected and opened, then the file.
+pub(super) fn open_nested(s: &mut Sim, rel: &str) {
+    let parts: Vec<&str> = rel.split('/').collect();
+    for i in 0..parts.len() {
+        s.select(&parts[..=i].join("/"));
+        s.enter();
+    }
+}
+
+/// The host after [`host_shot_at`]'s presses, not yet read: for a test that reads more than the
+/// screen (the clipboard, the notice).
+pub(super) fn host_sim_at(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+    picker: bool,
+    frame: Option<usize>,
+) -> Sim {
     let mut s = Sim::with_config_sized(root, cfg_en(), W, h);
     let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
     if picker {
         s = s.with_picker().with_media();
         s.app.attach_image_backend(Picker::halfblocks(), req_tx);
     }
-    s.select(file);
-    s.enter();
+    open_nested(&mut s, file);
     // The decode runs on the loader's thread and its answer is awaited; then every resize the
     // draw asks for is answered on this thread until a draw asks for no more.
     if picker {
@@ -188,7 +210,7 @@ pub(super) fn host_shot_at(
         assert!(!s.quit, "the host ended before the keys ran out: {spec}");
         settle(&mut s, &mut req_rx);
     }
-    shot(&s.term)
+    s
 }
 
 /// The zoom the host's status row shows (`x1.25`), or None.

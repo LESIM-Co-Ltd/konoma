@@ -468,7 +468,9 @@ pub(super) fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String>
                         }
                         col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
                     }
-                    out
+                    // The picture shows beside the panel: stop at the panel's right border
+                    // (no help text holds a `│`).
+                    out.split('│').next().unwrap_or("").to_string()
                 }
                 None => r.clone(),
             };

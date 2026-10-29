@@ -1,7 +1,7 @@
 //! Drawing a frame with ratatui.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier as RModifier, Style as RStyle};
+use ratatui::style::Style as RStyle;
 use ratatui::text::Line as RLine;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
@@ -269,7 +269,7 @@ pub fn body_of(area: Rect) -> Rect {
 pub fn draw(
     f: &mut ratatui::Frame,
     frame: &mut Frame,
-    footer: &str,
+    footer: &[ratatui::text::Span<'static>],
     bg: Option<ratatui::style::Color>,
 ) {
     let area = f.area();
@@ -328,9 +328,8 @@ pub fn draw(
         }
     }
     let foot = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    Paragraph::new(footer.to_string())
-        .style(RStyle::default().add_modifier(RModifier::REVERSED))
-        .render(foot, f.buffer_mut());
+    // The row is plain: the spans carry the style (the host's footer is dim hints, a bold notice).
+    Paragraph::new(RLine::from(footer.to_vec())).render(foot, f.buffer_mut());
 }
 
 #[cfg(test)]

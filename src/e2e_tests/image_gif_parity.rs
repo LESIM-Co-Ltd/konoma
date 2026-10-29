@@ -732,6 +732,7 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: None,
+        hint: None,
         display: Default::default(),
         open_dir: None,
     };
@@ -1298,6 +1299,7 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: None,
+        hint: None,
         display: Default::default(),
         open_dir: None,
     };
@@ -1383,6 +1385,7 @@ fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: None,
+        hint: None,
         display: Default::default(),
         open_dir: None,
     };
@@ -1744,6 +1747,7 @@ fn run_watched(
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: None,
+        hint: None,
         display: Default::default(),
         open_dir: None,
     };
@@ -2004,6 +2008,7 @@ fn app_real_shot(
         path: opened.path.clone(),
         shows: opened.shows.clone(),
         reopen: None,
+        hint: None,
         display: Default::default(),
         open_dir: None,
     };

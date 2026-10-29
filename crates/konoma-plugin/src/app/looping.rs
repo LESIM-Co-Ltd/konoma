@@ -47,6 +47,9 @@ pub struct AppCx {
     pub plugin_id: String,
     /// The absolute path of the file (a failure's words end with it, as konoma's do).
     pub path: std::path::PathBuf,
+    /// The note of the binding that picked the plugin ([`Opened::hint`]): a copied table row is
+    /// joined by the separator the plugin read the file with.
+    pub hint: Option<String>,
     /// The display types the plugin declared it shows ([`crate::Manifest::shows`]). A page that
     /// fails before anything was shown is told apart by this (a picture's or a table's); empty
     /// says nothing, and the kind of the last view on screen is believed instead.
@@ -72,6 +75,7 @@ impl Default for AppCx {
             unavailable: crate::manifest::Unavailable::default(),
             plugin_id: String::new(),
             path: std::path::PathBuf::new(),
+            hint: None,
             shows: Vec::new(),
             reopen: None,
             display: super::Display::default(),
@@ -323,12 +327,20 @@ impl AppKeys {
         menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
     }
 
-    /// The which-key line of an open menu, as text.
-    fn which_key_line(&self, ctx: CoreContext, menu: CoreMenu, width: u16) -> Option<String> {
+    /// The which-key line of an open menu: the spans the host draws (a bold heading, dim items).
+    fn which_key_line(
+        &self,
+        ctx: CoreContext,
+        menu: CoreMenu,
+        width: u16,
+    ) -> Option<Vec<ratatui::text::Span<'static>>> {
         let view = self.copy_menu_view(ctx, menu)?;
         let items = konoma_host_core::help::which_key_items(&view.pairs());
-        let spans = konoma_widgets::footer_line::which_key_spans(&view.title, &items, width);
-        Some(spans.iter().map(|s| s.content.as_ref()).collect())
+        Some(konoma_widgets::footer_line::which_key_spans(
+            &view.title,
+            &items,
+            width,
+        ))
     }
 
     /// `sections` with the menu's section (`y n  name`) between the launch verbs and what is
@@ -1460,10 +1472,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
         };
         // What the last key did, or the menu waiting for its key, takes the footer over.
+        // The hints are dim, the notice bold and the menu's line a bold heading with dim items:
+        // the host's footer, spans and all.
         let footer = match (&st.flash, st.menu) {
-            (Some(note), _) => note.clone(),
-            (None, Some((c, m))) => keys.which_key_line(c, m, width).unwrap_or(footer),
-            (None, None) => footer,
+            (Some(note), _) => konoma_widgets::footer_line::flash_spans(note),
+            (None, Some((c, m))) => keys
+                .which_key_line(c, m, width)
+                .unwrap_or_else(|| hint_spans(footer)),
+            (None, None) => hint_spans(footer),
         };
         draw_frame(
             terminal,
@@ -1516,6 +1532,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             action,
                             keys.lang,
                             &cx.path,
+                            cx.hint.as_deref(),
                             cx.open_dir.as_deref(),
                             table,
                         );
@@ -1759,6 +1776,12 @@ struct HelpPanel {
     title: String,
 }
 
+/// The key hints as the host draws them: one dim span.
+fn hint_spans(row: String) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::Stylize;
+    vec![ratatui::text::Span::from(row).dim()]
+}
+
 /// Draw `frame` and `footer`, then the pictures over it. A frame on which a picture moved or went
 /// is cleared and drawn again (the cells of its old place would stay on screen otherwise), and the
 /// deletes of the kitty images that went are written after it. The right to write to the terminal
@@ -1766,7 +1789,7 @@ struct HelpPanel {
 fn draw_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     frame: &mut Frame,
-    footer: &str,
+    footer: &[ratatui::text::Span<'static>],
     bg: Option<ratatui::style::Color>,
     mut pictures: Option<&mut Pictures>,
     panel: Option<HelpPanel>,

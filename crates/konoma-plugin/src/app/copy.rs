@@ -34,12 +34,15 @@ impl CopyGrid for AppGrid<'_> {
 
 /// Run a menu item and return the notice to show. `None`: the item does nothing here.
 ///
+/// `hint` is the note of the binding that picked the plugin (it decides the delimiter of a
+/// CSV/TSV row, as it did when the table was read).
 /// `open_dir` is the directory the program was started in (the base of the relative title); a
 /// file opened with no such directory is relative to its own.
 pub(super) fn run(
     action: CoreAction,
     lang: Lang,
     path: &Path,
+    hint: Option<&str>,
     open_dir: Option<&Path>,
     table: Option<&TableFrame>,
 ) -> Option<String> {
@@ -63,7 +66,7 @@ pub(super) fn run(
             let sep = if t.addressed {
                 String::new()
             } else {
-                (crate::table_sep::delimiter(None, path) as char).to_string()
+                (crate::table_sep::delimiter(hint, path) as char).to_string()
             };
             let text = copy::table_text(
                 &AppGrid(&*t.grid),
