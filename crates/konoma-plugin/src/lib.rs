@@ -104,6 +104,7 @@ pub mod proc;
 #[cfg(feature = "ratatui")]
 pub mod ratatui_draw;
 pub mod registry;
+pub mod reopen;
 pub mod scope;
 pub mod session;
 pub mod settings;

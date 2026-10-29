@@ -612,6 +612,7 @@ fn app_pictures(
         term: TermCaps::new(),
         title: String::new(),
         shows: prepared.opened.shows.clone(),
+        reopen: Some(prepared.reopen.clone()),
         ..AppCx::default()
     };
     let mut events = SettleOn {
@@ -865,4 +866,155 @@ fn with_remote_images_off_nothing_is_fetched_and_the_text_stays_as_in_the_host()
     same("off: before", &hb, &ab);
     same("off: settled", &ha, &aa);
     assert_eq!(picture_cells(&aa), 0);
+}
+
+// ---- a converted document: Word answers with a `Reopen` -------------------------------------------
+//
+// A docx is opened by the document plugin, which hands its Markdown over ("open this again as
+// markdown"). konoma opens the plugin that takes `markdown` and draws what it answers; the app
+// does the same with the plugins it was given (`ReopenSource`). The same file must give the same
+// page, with and without a plugin to open it again.
+
+use super::word::{build_docx, para};
+
+fn office_docs() -> Vec<Arc<dyn Plugin>> {
+    vec![Arc::new(konoma_office::DocumentPlugin)]
+}
+
+/// A host config in which no plugin takes the content type `markdown`.
+fn cfg_no_markdown() -> Config {
+    let mut cfg = cfg_en();
+    let mut t = toml::Table::new();
+    t.insert("enabled".into(), toml::Value::Boolean(false));
+    cfg.plugins.insert("markdown".into(), t);
+    cfg
+}
+
+/// What the app shows for `file` when only `plugins` are given (no Markdown plugin unless they
+/// are one), after `spec`'s keys: the settled screen, no pictures.
+fn app_reopen_term(
+    file: &std::path::Path,
+    plugins: Vec<Arc<dyn Plugin>>,
+    w: u16,
+    h: u16,
+    spec: &str,
+) -> Terminal<TestBackend> {
+    let loaded = (
+        konoma_host_core::shared::SharedConfig::parse("[ui]\nlang = \"en\"\n").expect("config"),
+        None,
+    );
+    let Ok(mut prepared) = prepare(plugins, file, TermCaps::new(), loaded) else {
+        panic!("the app did not open {}", file.display());
+    };
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: String::new(),
+        shows: prepared.opened.shows.clone(),
+        reopen: Some(prepared.reopen.clone()),
+        ..AppCx::default()
+    };
+    let ev: Vec<AppEvent> = presses(spec)
+        .into_iter()
+        .map(|(code, mods)| {
+            let ev = KeyEvent::new(code, mods);
+            AppEvent::Key(konoma_plugin::app::key_from_crossterm(&ev).expect("a key"))
+        })
+        .collect();
+    let mut it = ev.into_iter();
+    run_with(
+        &mut term,
+        &mut *prepared.opened.session,
+        &mut it,
+        &cx,
+        &prepared.keys,
+    )
+    .unwrap();
+    term
+}
+
+fn docx_body() -> String {
+    let mut body = para("Quarterly notes");
+    for i in 0..40 {
+        body += &para(&format!("paragraph {i} of the converted document"));
+    }
+    body
+}
+
+#[test]
+fn a_docx_reopened_as_markdown_shows_the_same_page_as_the_host() {
+    let dir = sandbox("reopen-docx");
+    build_docx(&dir.join("d.docx"), &docx_body());
+    let root = canon(&dir);
+    let mut checked = 0;
+    for (spec, w, h) in [("", 100u16, 30u16), ("<C-f>", 100, 30), ("G", 60, 20)] {
+        let hs = host_term(&root, "d.docx", w, h + 1, spec);
+        let a = app_reopen_term(
+            &root.join("d.docx"),
+            office_docs_with_markdown(),
+            w,
+            h,
+            spec,
+        );
+        let host_rows = inner(&hs.term);
+        assert!(
+            host_rows.iter().any(|r| r.contains("paragraph")),
+            "the host shows the document\n{}",
+            rows_of(&hs.term).join("\n")
+        );
+        assert_eq!(
+            host_rows,
+            inner(&a),
+            "{w}x{h} [{spec}]: the page differs\nhost:\n{}\napp:\n{}",
+            rows_of(&hs.term).join("\n"),
+            rows_of(&a).join("\n")
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
+
+fn office_docs_with_markdown() -> Vec<Arc<dyn Plugin>> {
+    let mut all = office_docs();
+    all.push(Arc::new(konoma_markdown::MarkdownPlugin));
+    all
+}
+
+#[test]
+fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
+    let dir = sandbox("reopen-docx-none");
+    build_docx(&dir.join("d.docx"), &docx_body());
+    let root = canon(&dir);
+    let mut s = Sim::with_config_sized(&root, cfg_no_markdown(), 100, 31);
+    s.select("d.docx");
+    s.enter();
+    s.term.clear().expect("clear");
+    s.draw();
+    let a = app_reopen_term(&root.join("d.docx"), office_docs(), 100, 30, "");
+    // The host frames the failure with its own hint and path lines; the app draws the failure
+    // message alone. What must agree is the message itself.
+    let host_rows = inner(&s.term);
+    let app_rows = rows_of(&a);
+    let said = "no plugin is available to show this document";
+    assert_eq!(host_rows[0], said, "host:\n{}", rows_of(&s.term).join("\n"));
+    assert_eq!(app_rows[0], said, "app:\n{}", app_rows.join("\n"));
+    assert!(
+        app_rows[1..app_rows.len() - 1].iter().all(|r| r.is_empty()),
+        "nothing else is drawn\n{}",
+        app_rows.join("\n")
+    );
+    // A markdown plugin beside the Word one is what makes the same file show its text.
+    let with = app_reopen_term(
+        &root.join("d.docx"),
+        office_docs_with_markdown(),
+        100,
+        30,
+        "",
+    );
+    assert!(
+        inner(&with).iter().any(|r| r.contains("paragraph")),
+        "{}",
+        rows_of(&with).join("\n")
+    );
 }

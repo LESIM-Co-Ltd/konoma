@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
+use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Settings};
 
@@ -38,6 +39,48 @@ pub use looping::{
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
 pub use still::{failure_line, StillShape};
 pub use term::{install_panic_hook_with, key_from_crossterm};
+
+/// Finds the plugin that takes a content type (what a [`View::Reopen`](crate::View) names), with
+/// the settings it is opened with. **The one place the app looks a content type up**: it is built
+/// from the registry of the program ([`ReopenSource::from_registry`]).
+#[derive(Clone)]
+pub struct ReopenSource(Arc<ContentLookup>);
+
+type ContentLookup = dyn Fn(&str) -> Option<ContentTarget>;
+
+impl ReopenSource {
+    /// A source from any lookup.
+    pub fn new(lookup: impl Fn(&str) -> Option<ContentTarget> + 'static) -> ReopenSource {
+        ReopenSource(Arc::new(lookup))
+    }
+
+    /// The plugin `registry` names for a content type ([`Registry::resolve_content`]: the rule
+    /// konoma follows), with the settings `settings_of` gives for it.
+    pub fn from_registry(
+        registry: Arc<Registry>,
+        settings_of: Box<dyn Fn(&str) -> Settings>,
+    ) -> ReopenSource {
+        ReopenSource::new(move |content_type| {
+            let id = registry.resolve_content(content_type)?;
+            let plugin = registry.plugin(&id)?;
+            Some(ContentTarget {
+                settings: settings_of(&id),
+                plugin,
+            })
+        })
+    }
+
+    /// The plugin that takes `content_type`, if any.
+    pub fn target(&self, content_type: &str) -> Option<ContentTarget> {
+        (self.0)(content_type)
+    }
+}
+
+impl fmt::Debug for ReopenSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReopenSource")
+    }
+}
 
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
 #[derive(Debug)]
@@ -278,6 +321,8 @@ pub struct Prepared {
     pub svg_max_px: u32,
     /// What a document's pictures need (who draws mermaid and math, `external.remote_images`).
     pub doc_env: doc_pictures::DocEnv,
+    /// Where a `Reopen` is opened again (put it in [`AppCx::reopen`]).
+    pub reopen: ReopenSource,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -317,6 +362,7 @@ pub fn prepare(
         konoma_host_core::lang::Lang::En => "en",
     };
     let (tables, moved) = (plugin_tables.clone(), moved_ui.clone());
+    let (tables2, moved2) = (plugin_tables.clone(), moved_ui.clone());
     let settings_of = |id: &str| crate::config::plugin_settings(&plugin_tables, &moved_ui, id);
     match open_file_with(plugins, path, lang, term, &settings_of) {
         Ok(opened) => Ok(Prepared {
@@ -325,6 +371,10 @@ pub fn prepare(
                 lang,
                 Box::new(move |id| crate::config::plugin_settings(&tables, &moved, id)),
                 remote_images,
+            ),
+            reopen: ReopenSource::from_registry(
+                Arc::clone(&opened.registry),
+                Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
             ),
             opened,
             keys,
@@ -360,6 +410,7 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         lang,
         svg_max_px,
         doc_env,
+        reopen,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -380,6 +431,7 @@ pub fn run(plugins: Vec<Arc<dyn Plugin>>, path: &Path) -> Result<(), AppError> {
         plugin_id: opened.plugin_id.clone(),
         path: opened.path.clone(),
         shows: opened.shows.clone(),
+        reopen: Some(reopen),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are

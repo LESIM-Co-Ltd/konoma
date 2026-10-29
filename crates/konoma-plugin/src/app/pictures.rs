@@ -236,6 +236,14 @@ impl Pictures {
         self.doc.as_mut().expect("just made")
     }
 
+    /// A document was replaced by another (a `Reopen`): forget every picture of the old one and
+    /// drop what its workers still owe (their results land on nothing).
+    pub fn reset_document(&mut self) {
+        if let Some(d) = self.doc.as_mut() {
+            d.reset();
+        }
+    }
+
     /// Whether the page must be laid out again (a picture's result changed what it reserves).
     pub fn take_doc_relayout(&mut self) -> bool {
         self.doc.as_mut().is_some_and(DocPics::take_relayout)

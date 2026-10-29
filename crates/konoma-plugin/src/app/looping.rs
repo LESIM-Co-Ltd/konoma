@@ -29,6 +29,7 @@ use crate::manifest::ViewKind;
 use crate::pages;
 use crate::session::{Session, TermCaps, ViewCx};
 use crate::view::{PageLayout, View, ViewReq};
+use crate::Cancel;
 use crate::{Line, Settings};
 
 /// What the app tells the loop about its surroundings.
@@ -49,6 +50,9 @@ pub struct AppCx {
     /// fails before anything was shown is told apart by this (a picture's or a table's); empty
     /// says nothing, and the kind of the last view on screen is believed instead.
     pub shows: Vec<crate::manifest::ViewKind>,
+    /// Where a [`View::Reopen`] is opened again (who takes the content type it names). `None`:
+    /// no plugin takes any, and a `Reopen` is "no plugin is available to show this document".
+    pub reopen: Option<super::ReopenSource>,
 }
 
 impl Default for AppCx {
@@ -62,6 +66,7 @@ impl Default for AppCx {
             plugin_id: String::new(),
             path: std::path::PathBuf::new(),
             shows: Vec::new(),
+            reopen: None,
         }
     }
 }
@@ -884,6 +889,10 @@ const MIN_REDRAW: Duration = Duration::from_millis(33);
 /// The longest (24 hours, as the host).
 const MAX_REDRAW: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The one content type the app shows a `Reopen` as (konoma's `markdown`, which the document
+/// widget draws).
+const REOPEN_ACCEPTS: &str = "markdown";
+
 /// What the loop keeps between two frames.
 #[derive(Default)]
 struct State {
@@ -963,6 +972,17 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
     let mut st = State::default();
+    // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
+    // from then on it is the one asked.
+    let mut swapped: Option<Box<dyn Session>> = None;
+    macro_rules! sess {
+        () => {
+            match swapped.as_deref_mut() {
+                Some(s) => s,
+                None => &mut *session,
+            }
+        };
+    }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     // The frame of the last view, and when that view is due again (a wake for the pictures
     // draws this frame again).
@@ -985,7 +1005,38 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let shown = match session.view(&req, &vcx) {
+            let mut viewed = sess!().view(&req, &vcx);
+            // "Open this again as Markdown": the plugin that takes the content type is opened
+            // on the text (the rule konoma follows, `crate::reopen`), and its session replaces
+            // this one. Everything of the old document is dropped with it: the scroll, the
+            // laid-out page and the pictures (a result the old document asked for lands on
+            // nothing).
+            if let Ok(View::Reopen(r)) = viewed {
+                let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
+                viewed = match crate::reopen::reopen_document(
+                    target.as_ref(),
+                    REOPEN_ACCEPTS,
+                    r,
+                    &cx.lang,
+                    &Cancel::never(),
+                    cx.term,
+                ) {
+                    Ok(opened) => {
+                        swapped = Some(opened.session);
+                        st = State::default();
+                        st.page = usize::from(body_rows).max(1);
+                        st.width = size.width;
+                        if let Some(p) = pictures.as_mut() {
+                            p.forget();
+                            p.forget_still();
+                            p.reset_document();
+                        }
+                        Ok(View::Document(opened.document))
+                    }
+                    Err(f) => Err(f),
+                };
+            }
+            let shown = match viewed {
                 Ok(v) => {
                     st.table_failed = false;
                     st.image_failed = false;
@@ -999,7 +1050,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     // What kind of paged page failed: what the plugin declares it shows, else
                     // what was on screen before (a first page that fails has nothing before it).
                     let picture = failed_page_is_picture(cx, &st);
-                    note_failed_page(session, cx, &mut st, picture);
+                    note_failed_page(sess!(), cx, &mut st, picture);
                     Err(Some(failure_frame(
                         image_failure_for(&cx.unavailable, &f),
                         f.message.get(&cx.lang),
@@ -1032,7 +1083,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
                 new.clamp_cursor();
                 st.table_sheets = new.addressed;
-                let layout = session.layout().clipped();
+                let layout = sess!().layout().clipped();
                 st.pages = match layout.pages {
                     Some(PageLayout::Separate { count, titles }) => {
                         count.or((!titles.is_empty()).then_some(titles.len()))
@@ -1042,7 +1093,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
             if matches!(frame, Frame::Image(_)) {
                 // A picture's pages are what the host counts: the count the layout reports.
-                let layout = session.layout().clipped();
+                let layout = sess!().layout().clipped();
                 st.pages = pages::count_of(&layout)
                     .flatten()
                     .map(|n| n as usize)
@@ -1085,7 +1136,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         if let (Frame::Image(_), Some(why)) =
             (&base, pictures.as_ref().and_then(Pictures::still_failure))
         {
-            note_failed_page(session, cx, &mut st, true);
+            note_failed_page(sess!(), cx, &mut st, true);
             base = failure_frame(
                 why,
                 "[can not preview]",

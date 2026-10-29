@@ -742,3 +742,49 @@ fn a_fence_shrinks_to_leave_the_viewport_its_chrome_but_never_below_four_rows() 
     assert_eq!(mermaid_fit_rows(24, 1), 4);
     assert_eq!(mermaid_fit_rows(2, 40), 4);
 }
+
+fn outside_job() -> DecodeJob {
+    DecodeJob {
+        svg_max_px: 256,
+        roots: None,
+        read_path: None,
+        svg: Arc::new(NoSvg),
+        generation: (0, Arc::new(AtomicU64::new(0))),
+    }
+}
+
+#[test]
+fn begin_decode_files_the_entry_stamped_with_the_pass_and_starts_the_decode() {
+    let (mut st, rx) = State::new().with_results();
+    st.cache.frame = 7;
+    let file = PathBuf::from("/x/a.png");
+    st.pictures().begin_decode(file.clone(), outside_job());
+    let e = &st.cache.cache[&file];
+    assert_eq!(e.last_used, 7, "eviction order follows the pass");
+    assert_eq!(
+        e.wish.ticket().priority(),
+        7,
+        "decode priority follows the pass"
+    );
+    assert!(!e.failed, "a started decode leaves the entry waiting");
+    // The decode really ran: its answer (a refusal here) arrives for this path.
+    assert_eq!(rx.recv().unwrap().path, file);
+    // Asked again in a later pass the same entry is stamped again, not filed twice.
+    st.cache.frame = 9;
+    st.pictures().begin_decode(file.clone(), outside_job());
+    assert_eq!(st.cache.cache.len(), 1);
+    assert_eq!(st.cache.cache[&file].last_used, 9);
+    assert_eq!(st.cache.cache[&file].wish.ticket().priority(), 9);
+}
+
+#[test]
+fn begin_decode_with_no_results_channel_files_the_entry_and_starts_nothing() {
+    let mut st = State::new();
+    st.cache.frame = 3;
+    let file = PathBuf::from("/x/b.png");
+    st.pictures().begin_decode(file.clone(), outside_job());
+    let e = &st.cache.cache[&file];
+    assert_eq!((e.last_used, e.wish.ticket().priority()), (3, 3));
+    // Nothing to deliver to is not a failed start: the entry is not marked failed.
+    assert!(!e.failed);
+}

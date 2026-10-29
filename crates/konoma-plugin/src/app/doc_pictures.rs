@@ -323,6 +323,29 @@ impl DocPics {
         self.cache.advance_gifs_if_due();
     }
 
+    /// The document is another one now: nothing of the old one stays. The decodes in flight are
+    /// cancelled (their generation moves on), the channels are new ones (a result they were to
+    /// send lands on nothing), the cached pictures are dropped with the kitty images they pinned,
+    /// and the page is laid out again.
+    pub fn reset(&mut self) {
+        let old = std::mem::replace(&mut self.generation, Arc::new(AtomicU64::new(0)));
+        old.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.res_tx, self.res_rx) = channel();
+        (self.fetch_tx, self.fetch_rx) = channel();
+        self.remote_inflight.clear();
+        self.remote_failed.clear();
+        let pinned: HashSet<u32> = self
+            .cache
+            .kitty_ids
+            .values()
+            .flat_map(|slots| slots.iter().flatten().copied())
+            .collect();
+        self.cache.kitty_deletes.extend(pinned);
+        self.cache.kitty_ids.clear();
+        self.cache.cache.clear();
+        self.bump();
+    }
+
     fn bump(&mut self) {
         self.epoch += 1;
         self.relayout = true;
@@ -534,5 +557,46 @@ mod tests {
         // A plugin that sets no `rows` at all is the default too (not a cap of 0 or a guess).
         assert_eq!(pics_with(Some(Settings::new())).fence_rows(40), 24);
         assert_eq!(pics_with(Some(Settings::new())).fence_rows(10), 8);
+    }
+
+    #[test]
+    fn reset_cancels_the_old_jobs_and_drops_what_the_old_document_asked_for() {
+        let mut d = pics(None);
+        let old_gen = Arc::clone(&d.generation);
+        let stale_tx = d.res_tx.clone();
+        let stale_fetch = d.fetch_tx.clone();
+        d.remote_inflight.insert("http://x/a.png".into());
+        d.remote_failed.insert("http://x/b.png".into());
+        d.cache
+            .cache
+            .insert(PathBuf::from("/x/p.png"), Default::default());
+        let (epoch, _) = (d.epoch, d.relayout = false);
+
+        d.reset();
+
+        // The jobs of the old document see their generation move on; the new one starts at 0.
+        assert_eq!(old_gen.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(d.generation.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!Arc::ptr_eq(&old_gen, &d.generation));
+        // A result the old document was to receive lands on nothing.
+        let _ = stale_tx.send(DecodedImage {
+            path: PathBuf::from("/x/p.png"),
+            image: Err("late".into()),
+            svg: None,
+            reraster: false,
+            frames: None,
+            request: 0,
+        });
+        let _ = stale_fetch.send(RemoteFetch {
+            url: "http://x/a.png".into(),
+            ok: true,
+        });
+        assert!(d.res_rx.try_recv().is_err());
+        assert!(d.fetch_rx.try_recv().is_err());
+        assert!(d.remote_inflight.is_empty());
+        assert!(d.remote_failed.is_empty());
+        assert!(d.cache.cache.is_empty());
+        assert!(d.relayout, "the page is laid out again");
+        assert_eq!(d.epoch, epoch + 1, "a cached layout is built again");
     }
 }

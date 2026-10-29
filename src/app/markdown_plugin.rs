@@ -23,7 +23,8 @@
 //! representation follows (`reset_view_for_repr_change`).
 
 use konoma_plugin::view::{DocOptions, TextSource, View};
-use konoma_plugin::{Plugin, Settings};
+#[cfg(test)]
+use konoma_plugin::Plugin;
 
 use super::plugin_host::MadeText;
 use super::*;
@@ -39,13 +40,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// The plugin that takes a content type, with the settings it is opened with (owned: it moves to
-/// a worker thread).
-#[derive(Clone)]
-pub(super) struct ContentTarget {
-    pub(super) plugin: Arc<dyn Plugin>,
-    pub(super) settings: Settings,
-}
+pub(super) use konoma_plugin::reopen::ContentTarget;
 
 impl App {
     /// The plugin that takes the content type `content_type` (`Registry::resolve_content`: a user
