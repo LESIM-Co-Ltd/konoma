@@ -217,11 +217,4 @@ impl App {
 
 /// A document's table and image alignment options as the renderer's type. An unrecognized value
 /// is the option's default.
-pub(super) fn block_aligns(o: &DocOptions) -> crate::preview::markdown::BlockAligns {
-    use crate::preview::markdown::{BlockAlign, BlockAligns};
-    let d = BlockAligns::default();
-    BlockAligns {
-        table: BlockAlign::from_config(&o.table_align, d.table),
-        image: BlockAlign::from_config(&o.image_align, d.image),
-    }
-}
+pub(super) use konoma_plugin::document_render::block_aligns;

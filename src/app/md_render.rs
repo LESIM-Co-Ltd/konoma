@@ -298,19 +298,7 @@ impl App {
         // 1-cell glyph shifts every wrap point by exactly 1 column either way), which is what
         // `md_slice`'s per-frame `Paragraph` (given the *real*, gutter-prepended line) wraps at.
         let row_prefix = if self.cfg.ui.wrap && render_width > 0 {
-            use ratatui::text::Text;
-            use ratatui::widgets::{Paragraph, Wrap};
-            let mut pre = Vec::with_capacity(lines.len() + 1);
-            let mut acc = 0usize;
-            pre.push(0);
-            for line in &lines {
-                acc += Paragraph::new(Text::from(vec![line.clone()]))
-                    .wrap(Wrap { trim: false })
-                    .line_count(render_width)
-                    .max(1);
-                pre.push(acc);
-            }
-            pre
+            konoma_plugin::document_render::wrap_row_prefix(&lines, render_width)
         } else {
             Vec::new()
         };
@@ -1070,114 +1058,41 @@ impl App {
         match &self.tab.preview_kind {
             Some(_) if is_doc => {
                 let theme = &self.cfg.ui.theme;
-                // How the document is drawn: the options its plugin returned with it.
+                // How the document is drawn: the options its plugin returned with it. The one
+                // shared renderer (also the standalone app's) does the preprocessing and drawing.
                 let opts = self.doc_options();
-                // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
-                // metadata block is prepended to the result below (and image line indices offset).
-                let (fm_lines, src) = if opts.front_matter {
-                    match crate::preview::markdown::strip_front_matter(&src) {
-                        (Some(fm), body) => (
-                            crate::preview::markdown::render_front_matter(&fm, width),
-                            body,
-                        ),
-                        (None, body) => (Vec::new(), body),
-                    }
-                } else {
-                    (Vec::new(), src)
-                };
-                // Footnotes: rewrite `[^1]` refs to superscripts and pull `[^1]: …` defs into a
-                // section at the end (fence-aware; no-op without definitions).
-                // Each pre-pass also reports, per output line, which body line it came from, so the
-                // checkbox toggle can prove the checkbox it is about to edit really is the one on
-                // screen instead of trusting that the two counts tally (see `markdown::LineOrigin`).
-                let origin = crate::preview::markdown::identity_origin(&src);
-                let (src, origin) = if opts.footnotes {
-                    crate::preview::markdown::process_footnotes_traced(&src, &origin)
-                } else {
-                    (src, origin)
-                };
-                // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode konoma's own renderer draws.
-                let (src, origin) = if opts.inline_html {
-                    crate::preview::markdown::process_inline_html_traced(&src, &origin)
-                } else {
-                    (src, origin)
-                };
-                // Preprocessing is done: from here on `src` is exactly what the renderer parses.
-                // Keep it so the source scanners (`y c`, the checkbox toggle) can read the very same
-                // string instead of re-deriving this chain from the file — see `MdCache::pre_src`.
-                let pre_src = src.clone();
-                // Compute each `<details>` block's effective open/closed state and pass it to the
-                // renderer (thread-local) + stash it so ensure_md_cache can load it onto MdCache
-                // (the toggle's baseline value).
-                let details_states: Vec<bool> =
-                    crate::preview::markdown::collect_details_open(&src)
-                        .iter()
-                        .enumerate()
-                        .map(|(ord, &attr)| {
-                            self.details_open
-                                .get(&ord)
-                                .copied()
-                                .unwrap_or_else(|| details_default_open(&opts.details, attr))
-                        })
-                        .collect();
-                crate::preview::markdown::set_details_open(details_states.clone());
-                let (mut lines, mut images, extras) =
-                    crate::preview::markdown::render_markdown_with_images_aligned(
-                        &src,
+                let r = konoma_plugin::document_render::render_document(
+                    &src,
+                    &opts,
+                    &konoma_plugin::document_render::RenderSettings {
                         width,
                         code,
-                        &theme.code_theme,
-                        self.cfg.ui.icons,
-                        &opts.task_states,
-                        slot_of,
-                        mermaid_slot,
-                        tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        opts.alerts,
-                        math_slot,
+                        code_theme: &theme.code_theme,
+                        icons: self.cfg.ui.icons,
+                        mermaid_caption: tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                        details_open: &self.details_open,
+                    },
+                    &konoma_plugin::document_render::PictureSlots {
+                        image: slot_of,
+                        mermaid: mermaid_slot,
+                        math: math_slot,
+                        mermaid_on,
                         math_on,
-                        // `[ui] md_table_align` / `[ui] md_image_align`. The default pair is the
-                        // historical layout (tables left, images and diagrams centered), so an
-                        // unconfigured konoma draws exactly what it always did.
-                        super::markdown_plugin::block_aligns(&opts),
-                    );
-                let remote = if self.picker.is_some() {
-                    crate::preview::markdown::collect_remote_image_urls(&src)
-                } else {
-                    Vec::new()
-                };
-                let fences = if mermaid_on {
-                    crate::preview::markdown::collect_mermaid_fences(&src)
-                } else {
-                    Vec::new()
-                };
-                let math = if math_on {
-                    crate::preview::markdown::collect_math_exprs(&src)
-                } else {
-                    Vec::new()
-                };
-                // Prepend the front-matter metadata block, shifting image placements down past it.
-                if !fm_lines.is_empty() {
-                    for p in &mut images {
-                        p.line += fm_lines.len();
-                    }
-                    let mut all = fm_lines;
-                    all.extend(lines);
-                    lines = all;
-                }
+                        remote_on: self.picker.is_some(),
+                    },
+                );
                 DecoratedMarkdown {
-                    lines,
-                    images,
-                    remote_urls: remote,
-                    mermaid_fences: fences,
-                    math_exprs: math,
+                    lines: r.lines,
+                    images: r.images,
+                    remote_urls: r.remote_urls,
+                    mermaid_fences: r.mermaid_fences,
+                    math_exprs: r.math_exprs,
                     src_lines,
-                    pre_src,
-                    pre_origin: origin,
-                    // `render_markdown_with_images`'s own record, straight from the same parse it
-                    // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox
-                    // toggle read a focused item's source straight off this list, by ordinal, with
-                    // no re-scan and no count-guard reconciliation of any kind.
-                    extras,
+                    pre_src: r.pre_src,
+                    pre_origin: r.pre_origin,
+                    // `y c`/the checkbox toggle read a focused item's source straight off this
+                    // list, by ordinal, with no re-scan — see `MdRenderExtras`'s own doc comment.
+                    extras: r.extras,
                     diff_marks: Vec::new(),
                 }
             }
@@ -1222,19 +1137,8 @@ impl App {
     }
 }
 
-/// The default open state of a `<details>` block from `[ui] md_details` and the tag's own `open`
-/// attribute: `"open"`/`"closed"` force it, `"auto"` (or anything else) honors the attribute the way
-/// GitHub does.
-///
-/// A free function taking the config string rather than only an `&App` method, so the
-/// golden-snapshot harness (`app::md_snapshot_tests::render_case_with_width`) applies **this** rule instead
-/// of a hand-copied mirror of it. Until 2026-08-25 that harness computed the states straight from
-/// `collect_details_open` — i.e. from the tags' own attributes, which is only what `"auto"` happens
-/// to mean — so `[ui] md_details` was structurally unobservable from every golden.
-pub(super) fn details_default_open(md_details: &str, open_attr: bool) -> bool {
-    match md_details {
-        "open" => true,
-        "closed" => false,
-        _ => open_attr,
-    }
-}
+/// The default open state of a `<details>` block now lives in the shared renderer
+/// (`konoma_plugin::document_render`); the golden-snapshot harness reaches it by this path so it
+/// applies the rule the app applies rather than a hand-copied mirror.
+#[cfg(test)]
+pub(super) use konoma_plugin::document_render::details_default_open;
