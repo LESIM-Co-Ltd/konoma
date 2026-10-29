@@ -613,6 +613,10 @@ pub enum CoreFoot {
     Scroll,
     /// `g/G:ends`.
     Ends,
+    /// `h/l:hscroll` (text that does not wrap).
+    HScroll,
+    /// `0/$:line ends` (text that does not wrap).
+    LineEnds,
     /// `h/j/k/l:cell` (a table).
     Cell,
     /// `h/j/k/l:pan` (an image).
@@ -663,6 +667,8 @@ impl CoreFoot {
         match self {
             CoreFoot::Scroll => FootKind::Group(SCROLL, CoreMsg::Scroll),
             CoreFoot::Ends => FootKind::Group(ENDS, CoreMsg::HintEnds),
+            CoreFoot::HScroll => FootKind::Group(HSCROLL, CoreMsg::HintHscroll),
+            CoreFoot::LineEnds => FootKind::Group(LINE_ENDS, CoreMsg::HintLineEnds),
             CoreFoot::Cell => FootKind::Group(HJKL, CoreMsg::HintCell),
             CoreFoot::Pan => FootKind::Group(HJKL, CoreMsg::HintPan),
             CoreFoot::Zoom => FootKind::Group(ZOOM, CoreMsg::Zoom),

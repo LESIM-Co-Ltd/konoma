@@ -4,7 +4,10 @@
 //! scroll label on the border and a scrollbar on it, which the app does not), the same footer
 //! hints and the same help rows for the keys both have.
 
-use super::table_parity::{help_lines, hints, presses, rows_of, same_row, APP_H, HOST_H, W};
+use super::table_parity::{
+    hints, panel_at, panel_box, panel_lines, presses, rows_of, same_footer, same_help_rows, APP_H,
+    HOST_H, W,
+};
 use super::*;
 use konoma_plugin::app::{open_file, prepare_bundled, run_with, AppCx, AppEvent, AppKeys};
 use konoma_plugin::TermCaps;
@@ -126,6 +129,40 @@ const HOST_ONLY: &[&str] = &[
     "y:copy",
 ];
 
+/// The help rows only the host has for a Markdown file, by their start (the keys and sections of
+/// the search, the links, the tasks, bookmarks, tabs, the editor and the chords).
+pub(super) const HELP_HOST_ONLY: &[&str] = &[
+    "Launch",
+    "Actions",
+    "Tabs",
+    "t ",
+    "[ / ]",
+    "1 - 9",
+    "T ",
+    "P ",
+    "F ",
+    "Sort & display",
+    "Copy path",
+    "Space ",
+    ", ",
+    "y ",
+    "e ",
+    "o ",
+    "h / l",
+    "0 / $",
+    "/ n / N",
+    "Y ",
+    "R ",
+    "O ",
+    "Tab ",
+    "Enter ",
+    "Ctrl-t",
+    "+ / - / =",
+    "Ctrl-n / Ctrl-p",
+    "m / '",
+    "r ",
+];
+
 /// One Markdown file per case: (file name, text).
 fn fixtures() -> Vec<(String, String)> {
     let long: String = (0..60)
@@ -205,7 +242,8 @@ fn the_page_scroll_and_footer_agree_with_the_host() {
         std::fs::write(dir.join(&name), body).unwrap();
     }
     let root = canon(&dir);
-    let (mut checked, mut scrolled) = (0, 0);
+    let (mut checked, mut scrolled, mut compared) = (0, 0, 0);
+    let mut seen_host_only = std::collections::BTreeSet::new();
     for (name, _) in fixtures() {
         for spec in SPECS {
             let what = format!("{name} [{spec}]");
@@ -223,24 +261,19 @@ fn the_page_scroll_and_footer_agree_with_the_host() {
                 hints(rows_of(&h.term).last().expect("footer")),
                 hints(rows_of(&a).last().expect("footer")),
             );
-            for t in hh.iter().filter(|t| !ah.contains(t)) {
-                assert!(
-                    HOST_ONLY.contains(&t.as_str()),
-                    "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
-                );
-            }
-            for t in ah.iter().filter(|t| !hh.contains(t)) {
-                assert!(
-                    t.starts_with("q:quit") || t.starts_with("line "),
-                    "{what}: the app footer has `{t}` that the host lacks\nhost: {hh:?}\napp: {ah:?}"
-                );
-            }
+            let (alone, n) = same_footer(&what, &hh, &ah, HOST_ONLY, &|t| {
+                t.starts_with("q:quit") || t.starts_with("line ")
+            });
+            seen_host_only.extend(alone);
+            compared += n;
             checked += 1;
             scrolled += usize::from(hi.first().is_some_and(|l| l != "Top") && name == "scroll.md");
         }
     }
     assert!(checked >= 13 * SPECS.len(), "{checked}");
     assert!(scrolled > 5, "{scrolled}");
+    assert!(compared > 800, "{compared}");
+    assert!(seen_host_only.len() >= 8, "{seen_host_only:?}");
 }
 
 /// The rows only the host's help lists for a Markdown file (search, links, bookmarks, the tabs...)
@@ -253,13 +286,14 @@ fn the_document_help_rows_agree_with_the_host() {
     }
     let root = canon(&dir);
     let mut compared = 0;
+    let mut seen = std::collections::BTreeSet::new();
     for (name, _) in fixtures() {
         for spec in ["?", "G ?", "j j ?", "<C-f> ?", "? j", "? G", "? <C-d>"] {
             let what = format!("{name} [{spec}]");
             let h = host_term(&root, &name, 100, 130, spec);
             let a = app_term(&root.join(&name), 99, 130, spec);
             let hr = rows_of(&h.term);
-            let (py, px) = hr
+            let (py, _px) = hr
                 .iter()
                 .enumerate()
                 .find_map(|(y, r)| {
@@ -267,11 +301,13 @@ fn the_document_help_rows_agree_with_the_host() {
                         .map(|b| (y, unicode_width::UnicodeWidthStr::width(&r[..b])))
                 })
                 .unwrap_or_else(|| panic!("{what}: the host's help panel in {hr:#?}"));
-            let hl: Vec<String> = help_lines(&hr[py + 1..], Some(px))
+            let hl: Vec<String> = panel_lines(&hr)
                 .into_iter()
                 .filter(|l| !l.is_empty())
                 .collect();
-            let al: Vec<String> = help_lines(&rows_of(&a), None)
+            let ar = rows_of(&a);
+            let (apy, _) = panel_at(&ar).unwrap_or_else(|| panic!("{what}: the app's help panel"));
+            let al: Vec<String> = panel_lines(&ar)
                 .into_iter()
                 .filter(|l| !l.is_empty())
                 .collect();
@@ -279,33 +315,26 @@ fn the_document_help_rows_agree_with_the_host() {
             if spec.starts_with("? ") {
                 continue;
             }
-            let mut last = 0;
-            // The title sits on the host's border and in the app's footer.
-            let mut al = al;
-            let title = al.pop().expect("a title");
-            let border: String = hr[py].split_whitespace().collect::<Vec<_>>().join(" ");
+            // Both panels carry the same title on their border.
+            let edge = |r: &str| -> String {
+                let from = r.find('┌').unwrap_or(0);
+                let to = r.rfind('┐').map_or(r.len(), |i| i + '┐'.len_utf8());
+                r[from..to].split_whitespace().collect::<Vec<_>>().join(" ")
+            };
+            let (border, aborder) = (edge(&hr[py]), edge(&ar[apy]));
             assert!(
-                border.contains(&title),
-                "{what}: `{title}` not in `{border}`"
+                border.contains(
+                    aborder.trim_matches(|c| c == '┌' || c == '┐' || c == '─' || c == ' ')
+                ),
+                "{what}: `{aborder}` not in `{border}`"
             );
-            for row in &al {
-                // The app says `quit` where the host says `back to tree`.
-                let found = hl.iter().position(|r| {
-                    same_row(r, row) || (row.starts_with("q / Esc") && r.starts_with("q / Esc"))
-                });
-                let at = found.unwrap_or_else(|| {
-                    panic!("{what}: the app's help row `{row}` is not in the host's\nhost: {hl:#?}\napp: {al:#?}")
-                });
-                assert!(
-                    at >= last || row.starts_with("q / Esc"),
-                    "{what}: `{row}` is out of order"
-                );
-                last = last.max(at);
-                compared += 1;
-            }
+            let (n, used) = same_help_rows(&what, &hl, &al, HELP_HOST_ONLY);
+            compared += n;
+            seen.extend(used);
         }
     }
     assert!(compared > 13 * 4 * 6, "{compared}");
+    assert!(seen.len() >= 12, "{seen:?}");
 }
 
 /// Narrow and short terminals: the wrapping, the clamp of the scroll and the page size follow
@@ -1936,4 +1965,58 @@ fn a_markdown_file_cut_at_the_display_limit_shows_the_hosts_notice_and_frame() {
         with_note >= 2,
         "the notice was never on screen: {with_note}"
     );
+}
+
+/// The help panel over a page is placed and framed the same in both: the same column, the same
+/// width (66, or two columns less than a narrower terminal), the same title on the border, in
+/// large, medium, small and narrow terminals; and the keys inside it scroll it (the rows differ
+/// between the two, so the scrolled rows are not compared, only that they move).
+#[test]
+fn the_help_panel_over_a_document_is_placed_as_the_hosts_panel() {
+    let dir = sandbox("doc-panel");
+    for (name, body) in fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let (mut compared, mut moved) = (0, 0);
+    for (name, _) in fixtures() {
+        for (w, h) in [
+            (200u16, 70u16),
+            (100, 40),
+            (80, 24),
+            (66, 14),
+            (60, 12),
+            (40, 10),
+        ] {
+            let top = |spec: &str| -> (Vec<String>, Vec<String>) {
+                let hs = host_term(&root, &name, w, h + 1, spec);
+                let a = app_term(&root.join(&name), w, h, spec);
+                (panel_box(&rows_of(&hs.term)).1, panel_box(&rows_of(&a)).1)
+            };
+            let what = format!("{name} {w}x{h}");
+            let ((hy, hx), (ay, ax)) = (
+                panel_box(&rows_of(&host_term(&root, &name, w, h + 1, "?").term)).0,
+                panel_box(&rows_of(&app_term(&root.join(&name), w, h, "?"))).0,
+            );
+            let _ = (hy, ay);
+            assert_eq!(hx, ax, "{what}: the panel's column");
+            let (hb, ab) = top("?");
+            assert_eq!(hb[0], ab[0], "{what}: the border and its title");
+            assert_eq!(
+                hb.last().unwrap(),
+                ab.last().unwrap(),
+                "{what}: the bottom border"
+            );
+            assert_eq!(hb[1].chars().count(), ab[1].chars().count(), "{what}");
+            // Pressed inside the panel, `j` and `G` scroll a panel that has more than it shows.
+            let (_, scrolled) = top("? G");
+            if ab.len() == usize::from(h - 2) {
+                assert_ne!(scrolled[1], ab[1], "{what}: the panel did not scroll");
+                moved += 1;
+            }
+            compared += 1;
+        }
+    }
+    assert!(compared >= 13 * 6 - 6, "{compared}");
+    assert!(moved >= 13, "{moved}");
 }

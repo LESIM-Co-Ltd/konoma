@@ -7,7 +7,7 @@
 //! the app has no caret), `h` `l` and `$` after the caret has moved (they follow the caret), the
 //! colors.
 
-use super::table_parity::{presses, rows_of};
+use super::table_parity::{hints, panel_lines, presses, rows_of, same_footer, same_help_rows};
 use super::*;
 use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, Display};
 use konoma_plugin::TermCaps;
@@ -91,8 +91,10 @@ fn host_text(
     s
 }
 
-/// The frame: from the top border to the bottom border, the whole width.
-fn frame_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+/// The frame by cell (from the top border to the bottom border, the whole width), with the cell after a wide character left out. The test backend keeps a
+/// stale cell there when a wide character was drawn in an earlier frame (the host repaints before
+/// its last frame, the app does not); a real terminal never shows it, as ratatui skips it.
+fn frame_cells(term: &Terminal<TestBackend>) -> Vec<String> {
     let rows = rows_of(term);
     let top = rows
         .iter()
@@ -102,7 +104,23 @@ fn frame_rows(term: &Terminal<TestBackend>) -> Vec<String> {
         .iter()
         .rposition(|l| l.starts_with('└'))
         .expect("a frame end");
-    rows[top..=bottom].to_vec()
+    let buf = term.backend().buffer();
+    (top..=bottom)
+        .map(|y| {
+            let mut covered = false;
+            let mut line = String::new();
+            for x in 0..buf.area.width {
+                let sym = buf[(x, y as u16)].symbol();
+                // What the skipped cell holds is not looked at, not even its width.
+                let skipped = covered;
+                covered = !skipped && unicode_width::UnicodeWidthStr::width(sym) > 1;
+                if !skipped {
+                    line.push_str(sym);
+                }
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
 }
 
 fn fixtures() -> Vec<(String, String)> {
@@ -191,8 +209,11 @@ fn the_text_frame_agrees_with_the_host() {
                             continue;
                         }
                         // The test backend keeps a stale cell where a wide character was drawn
-                        // in an earlier frame (the host repaints before its last frame, the app
-                        // does not): with wide characters, one press is compared.
+                        // in an earlier frame, and not only in the cell after the wide
+                        // character (a tab mark after the text of a row shows too): the host
+                        // repaints before its last frame, the app does not. With wide characters,
+                        // one press is compared. Leaving out the cell after a wide character
+                        // (`frame_cells`) is not enough: the stale ones are elsewhere in the row.
                         if name == "tabswide.rs" && spec.split(' ').count() > 1 {
                             continue;
                         }
@@ -200,7 +221,9 @@ fn the_text_frame_agrees_with_the_host() {
                             format!("{name} wrap={wrap} tab_width={tab_width} {w}x{h} [{spec}]");
                         let host = host_text(&root, &name, wrap, tab_width, (w, h), spec);
                         let app = app_text(&root.join(&name), wrap, tab_width, (w, h - 1), spec);
-                        let (hr, ar) = (frame_rows(&host.term), frame_rows(&app));
+                        // Compared by cell, the cell after a wide character left out (see
+                        // `frame_cells`).
+                        let (hr, ar) = (frame_cells(&host.term), frame_cells(&app));
                         assert_eq!(
                             hr,
                             ar,
@@ -249,3 +272,153 @@ fn a_framed_text_is_titled_by_its_relative_path_and_the_footer_has_no_line_numbe
     assert!(!foot.contains("line "), "{foot}");
     assert!(rows.iter().any(|r| r.contains('%')), "{rows:?}");
 }
+
+/// What only the host's footer has for a text, spelled out in full.
+const HOST_ONLY: &[&str] = &[
+    ",:view",
+    "[/]:tab",
+    "/:search",
+    "C-n/C-p:next/prev file",
+    "e:edit",
+    "o:open in app",
+    "q:back",
+    "v/V:select",
+    "Y:@ref",
+    "F:FOLLOW",
+    "y:copy",
+    "Tab:focus",
+    "Tab:next tab",
+    "O:outline",
+    "R:raw source",
+];
+
+/// The footer of a text is the host's footer without the host's own words: the same words in
+/// the same order, wrapped or not, in a wide, a narrow and a very narrow terminal (where the
+/// line is cut and ends with an ellipsis).
+#[test]
+fn the_text_footer_agrees_with_the_host() {
+    let dir = sandbox("text-footer");
+    for (name, body) in fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let (mut compared, mut cut) = (0, 0);
+    let mut seen = std::collections::BTreeSet::new();
+    for name in ["code.rs", "long.rs", "tabs.rs"] {
+        for wrap in [true, false] {
+            for (w, h) in [(200u16, 26u16), (120, 20), (80, 12), (50, 12), (30, 8)] {
+                for spec in ["", "G", "<C-f>", "l", "g"] {
+                    let what = format!("{name} wrap={wrap} {w}x{h} [{spec}]");
+                    let host = host_text(&root, name, wrap, 4, (w, h), spec);
+                    let app = app_text(&root.join(name), wrap, 4, (w, h - 1), spec);
+                    let (hf, af) = (
+                        hints(rows_of(&host.term).last().expect("footer")),
+                        hints(rows_of(&app).last().expect("footer")),
+                    );
+                    // The host always names `h/l:hscroll` and `0/$:line ends`; the app names
+                    // them only when the text can scroll sideways.
+                    let mut only = HOST_ONLY.to_vec();
+                    for t in ["h/l:hscroll", "0/$:line ends"] {
+                        if !af.iter().any(|a| a == t) {
+                            only.push(t);
+                        }
+                    }
+                    let (alone, n) =
+                        same_footer(&what, &hf, &af, &only, &|t| t.starts_with("q:quit"));
+                    seen.extend(alone);
+                    compared += n;
+                    cut += usize::from(hf.last().is_some_and(|t| t.ends_with('…')));
+                }
+            }
+        }
+    }
+    assert!(compared > 200, "{compared}");
+    assert!(cut > 20, "{cut}");
+    assert!(seen.len() >= 6, "{seen:?}");
+}
+
+/// The help over a text: the rows are the host's without the host's own (the search, the
+/// selection, the tabs, the editor, the chords...), the same rows in the same order; the panel is
+/// placed and framed as the host's in large, medium, small and narrow terminals.
+#[test]
+fn the_help_over_a_text_agrees_with_the_host() {
+    let dir = sandbox("text-help");
+    for (name, body) in fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let mut compared = 0;
+    let mut seen = std::collections::BTreeSet::new();
+    for name in ["code.rs", "long.rs", "cjk.rs"] {
+        for wrap in [true, false] {
+            for spec in ["?", "G ?", "<C-f> ?"] {
+                let what = format!("{name} wrap={wrap} [{spec}]");
+                let host = host_text(&root, name, wrap, 4, (100, 130), spec);
+                let app = app_text(&root.join(name), wrap, 4, (99, 129), spec);
+                let (hr, ar) = (rows_of(&host.term), rows_of(&app));
+                let nonblank = |v: Vec<String>| -> Vec<String> {
+                    v.into_iter().filter(|l| !l.is_empty()).collect()
+                };
+                let (hl, al) = (nonblank(panel_lines(&hr)), nonblank(panel_lines(&ar)));
+                let (n, used) = same_help_rows(&what, &hl, &al, TEXT_HELP_HOST_ONLY);
+                compared += n;
+                seen.extend(used);
+            }
+        }
+    }
+    assert!(compared > 60, "{compared}");
+    assert!(seen.len() >= 6, "{seen:?}");
+    // The frame of the panel, in every size.
+    for name in ["code.rs", "long.rs"] {
+        for (w, h) in [
+            (200u16, 70u16),
+            (100, 40),
+            (80, 24),
+            (66, 14),
+            (60, 12),
+            (40, 10),
+        ] {
+            let what = format!("{name} {w}x{h}");
+            let host = host_text(&root, name, true, 4, (w, h + 1), "?");
+            let app = app_text(&root.join(name), true, 4, (w, h), "?");
+            let ((_, hx), hb) = super::table_parity::panel_box(&rows_of(&host.term));
+            let ((_, ax), ab) = super::table_parity::panel_box(&rows_of(&app));
+            assert_eq!(hx, ax, "{what}: the panel's column");
+            assert_eq!(hb[0], ab[0], "{what}: the border and its title");
+            assert_eq!(hb.last(), ab.last(), "{what}: the bottom border");
+        }
+    }
+}
+
+/// The help rows only the host has for a text, by their start.
+const TEXT_HELP_HOST_ONLY: &[&str] = &[
+    "Launch",
+    "Actions",
+    "Sort & display",
+    "Copy path",
+    "Space ",
+    ", ",
+    "y ",
+    "e ",
+    "o ",
+    "Tabs",
+    "t ",
+    "[ / ]",
+    "1 - 9",
+    "T ",
+    "P ",
+    "F ",
+    "h / l",
+    "0 / $",
+    "/ n / N",
+    "Y ",
+    "v / V",
+    "Ctrl-n / Ctrl-p",
+    "m / '",
+    "r ",
+    "Tab ",
+    "Enter ",
+    "O ",
+    "R ",
+    "j / k / ↑ ↓ caret",
+];

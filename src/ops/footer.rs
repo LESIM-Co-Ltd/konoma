@@ -52,13 +52,10 @@ const PAGE_KEYS: &[Action] = &[
     Action::Navigate(Motion::PageDown),
     Action::Navigate(Motion::PageUp),
 ];
+#[cfg(feature = "git")]
 const HSCROLL: &[Action] = &[
     Action::Navigate(Motion::Left),
     Action::Navigate(Motion::Right),
-];
-const LINE_ENDS: &[Action] = &[
-    Action::Navigate(Motion::LineHome),
-    Action::Navigate(Motion::LineEnd),
 ];
 const HJKL: &[Action] = &[
     Action::Navigate(Motion::Left),
@@ -364,8 +361,8 @@ fn text_preview(app: &App) -> Vec<Foot> {
         Foot::Core(CoreFoot::Edit),
         Foot::Core(CoreFoot::Open),
         Foot::Core(CoreFoot::Ends),
-        Foot::Group(HSCROLL, Msg::HintHscroll),
-        Foot::Group(LINE_ENDS, Msg::HintLineEnds),
+        Foot::Core(CoreFoot::HScroll),
+        Foot::Core(CoreFoot::LineEnds),
         Foot::Group(TABS, Msg::HintTab),
         Foot::Core(CoreFoot::Options),
         Foot::Core(CoreFoot::PageKeys),

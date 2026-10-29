@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
-    core_sections, ctrl_c_token, help_title, pad_cells, render_foot, scroll_keys, CoreFoot,
-    CoreLookup, CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
+    core_sections, ctrl_c_token, help_title, render_foot, scroll_keys, CoreFoot, CoreLookup,
+    CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup,
 };
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
@@ -192,31 +192,43 @@ impl AppKeys {
         let leave = tok(CoreFoot::Back)
             .or_else(|| tok(CoreFoot::Quit))
             .unwrap_or_else(|| ctrl_c_token(self.lang));
-        let mut out = vec![leave];
+        // The host's order for a text: the scroll, what leaves, the help, then the ends, the
+        // sideways keys (text that does not wrap) and the page keys. `scrolls` is false for a
+        // frame no motion moves: only what leaves and the help.
+        let mut out = Vec::new();
         if scrolls {
             out.extend(tok(CoreFoot::Scroll));
         }
+        out.push(leave);
         out.extend(tok(CoreFoot::Help));
-        out
-    }
-
-    /// The footer's key hints of a Markdown document: those of a text, then the ends and the
-    /// page keys the host names there (the text of a plain file leaves them out).
-    pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
-        let facts = self.facts_paged(false);
-        let look = CoreLookup {
-            keys: &self.keys,
-            ctx: CoreContext::Text,
-        };
-        let mut out = self.footer_tokens(scrolls);
         if scrolls {
-            for f in [CoreFoot::Ends, CoreFoot::PageKeys] {
-                out.extend(
-                    render_foot(f, CoreContext::Text, &facts, &look, self.lang).map(|t| t.text),
-                );
+            for f in [
+                CoreFoot::Ends,
+                CoreFoot::HScroll,
+                CoreFoot::LineEnds,
+                CoreFoot::PageKeys,
+            ] {
+                out.extend(tok(f));
             }
         }
         out
+    }
+
+    /// The footer's key hints of a Markdown document: the same as a text (the host's footer of
+    /// a document has no sideways keys: the lines wrap).
+    pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        self.footer_hints_paged(scrolls, false)
+            .into_iter()
+            .filter(|t| {
+                !t.ops.iter().any(|o| {
+                    matches!(
+                        o,
+                        HelpOp::Act(CoreAction::Navigate(Motion::Left | Motion::LineHome))
+                    )
+                })
+            })
+            .map(|t| t.text)
+            .collect()
     }
 
     /// [`AppKeys::footer_hints`] as the text the footer shows.
@@ -272,7 +284,7 @@ impl AppKeys {
     }
 
     /// The `?` help as lines: a heading and the aligned rows of each section.
-    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<Line> {
+    fn help_lines(&self, paged: bool, scrolls: bool) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.help_sections_scrolling(paged, scrolls))
     }
 
@@ -289,6 +301,32 @@ impl AppKeys {
         };
         let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
         help_title(&close, &scroll_keys(&look, &facts), self.lang)
+    }
+
+    /// The footer's key hints while the `?` help is open: scrolling, the ends, closing (the
+    /// host's footer of its help).
+    pub fn help_footer_tokens(&self) -> Vec<String> {
+        let facts = self.facts_scrolling(false, true);
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Text,
+        };
+        let mut out: Vec<String> = [CoreFoot::Scroll, CoreFoot::Ends]
+            .into_iter()
+            .filter_map(|f| render_foot(f, CoreContext::Text, &facts, &look, self.lang))
+            .map(|t| t.text)
+            .collect();
+        let mut close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
+        let esc = KeyPress::key(crossterm::event::KeyCode::Esc);
+        if !close.contains(&esc) {
+            close.push(esc);
+        }
+        out.push(format!(
+            "{}:{}",
+            konoma_host_core::help::write_keys(&close, true),
+            CoreMsg::FtClose.tr(self.lang)
+        ));
+        out
     }
 
     // ---- Tables ----
@@ -479,7 +517,7 @@ impl AppKeys {
     }
 
     /// The `?` help of a table as lines.
-    fn table_help_lines(&self, mode: TableMode) -> Vec<Line> {
+    fn table_help_lines(&self, mode: TableMode) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.table_help_sections(mode))
     }
 
@@ -649,7 +687,7 @@ impl AppKeys {
         )
     }
 
-    fn image_help_lines(&self, paged: bool) -> Vec<Line> {
+    fn image_help_lines(&self, paged: bool) -> Vec<ratatui::text::Line<'static>> {
         lines_of(&self.image_help_sections(paged))
     }
 
@@ -767,25 +805,13 @@ impl AppKeys {
     }
 }
 
-/// A help as lines: a heading and the aligned rows of each section.
-fn lines_of(secs: &[CoreSection]) -> Vec<Line> {
-    let w = secs
+/// A help as lines: a heading and the aligned rows of each section (the host's drawing, shared).
+fn lines_of(secs: &[CoreSection]) -> Vec<ratatui::text::Line<'static>> {
+    let parts: Vec<(&str, &[(String, String)])> = secs
         .iter()
-        .flat_map(|s| s.rows.iter())
-        .map(|(k, _)| unicode_width::UnicodeWidthStr::width(k.as_str()))
-        .max()
-        .unwrap_or(0);
-    let mut out = Vec::new();
-    for (i, s) in secs.iter().enumerate() {
-        if i > 0 {
-            out.push(Line::raw(""));
-        }
-        out.push(Line::raw(s.title.clone()));
-        for (k, d) in &s.rows {
-            out.push(Line::raw(format!("  {}  {d}", pad_cells(k, w))));
-        }
-    }
-    out
+        .map(|s| (s.title.as_str(), s.rows.as_slice()))
+        .collect();
+    konoma_widgets::help_panel::help_lines(&parts)
 }
 
 /// What a still picture on screen lets the keys do.
@@ -1188,8 +1214,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             || (image_mode.is_some() && st.image_failed && st.scrolls);
         // The picture's own frame holds no text: no motion scrolls it, and none is named.
         let text_scrolls = !matches!(base, Frame::ImageFailed(_));
-        let mut help_frame: Frame;
         let footer;
+        let mut panel: Option<HelpPanel> = None;
+        let width = terminal.size().map(|s| s.width).unwrap_or(0);
         let frame: &mut Frame = match st.help {
             Some(top) => {
                 let (lines, title) = match (mode, image_mode) {
@@ -1199,12 +1226,27 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     (None, _) => (keys.help_lines(paged, text_scrolls), keys.help_title()),
                 };
-                let rows = usize::from(body_rows);
-                let top = top.min(lines.len().saturating_sub(rows));
+                // The panel is laid out in the whole screen, as the host's is; the scroll is
+                // settled at draw time (the end of the help is as far as it goes).
+                let screen = terminal
+                    .size()
+                    .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                    .unwrap_or_default();
+                let top = top.min(usize::from(konoma_widgets::help_panel::max_scroll(
+                    lines.len(),
+                    screen,
+                )));
                 st.help = Some(top);
-                help_frame = Frame::Lines(lines.into_iter().skip(top).take(rows).collect());
-                footer = format!(" {}", title.trim());
-                &mut help_frame
+                footer = konoma_widgets::help_panel::fit_tokens(
+                    &keys.help_footer_tokens(),
+                    screen.width,
+                );
+                panel = Some(HelpPanel {
+                    lines,
+                    scroll: top as u16,
+                    title,
+                });
+                &mut base
             }
             None => {
                 footer = match mode {
@@ -1219,7 +1261,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     .join("  ");
                             }
                         }
-                        format!(" {}", keys.table_footer_tokens(m).join("  "))
+                        draw::footer_row(&keys.table_footer_tokens(m), "", "", width)
                     }
                     None if image_mode.is_some() && !failed_text_screen => {
                         let m = image_mode.unwrap_or(ImageMode {
@@ -1249,10 +1291,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             .and_then(Pictures::still_busy)
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
-                        format!(
-                            " {busy}{}{zoom}{page}  {}",
-                            keys.image_footer_tokens(m.paged).join("  "),
-                            cx.title
+                        draw::footer_row(
+                            &keys.image_footer_tokens(m.paged),
+                            format!("{zoom}{page}  {busy}").trim_end(),
+                            &cx.title,
+                            width,
                         )
                     }
                     None => draw::footer(
@@ -1268,12 +1311,20 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         &base,
                         st.scroll,
                         st.scrolls,
+                        width,
                     ),
                 };
                 &mut base
             }
         };
-        draw_frame(terminal, frame, &footer, st.display.bg(), pictures.as_mut())?;
+        draw_frame(
+            terminal,
+            frame,
+            &footer,
+            st.display.bg(),
+            pictures.as_mut(),
+            panel,
+        )?;
 
         // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
         // came from the pictures' shorter wake leaves the view as it is.
@@ -1281,7 +1332,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Some(w) => Some(w),
             None => view_due.map(|d| d.saturating_duration_since(Instant::now())),
         };
-        let pic_wait = pictures.as_ref().and_then(Pictures::wake_in);
+        // The canvas under the open help is still drawn (the host draws it too) but not animated:
+        // nothing wakes the loop for it.
+        let pic_wait = pictures
+            .as_ref()
+            .and_then(Pictures::wake_in)
+            .filter(|_| st.help.is_none());
         let picture_first = match (view_left, pic_wait) {
             (Some(v), Some(p)) => p < v,
             (None, Some(_)) => true,
@@ -1508,6 +1564,13 @@ fn table_move(t: &mut TableFrame, m: Motion) {
     t.state.step(step, t.grid.nrows(), t.grid.ncols());
 }
 
+/// The `?` help to draw over the screen: its lines, the first line shown and the title.
+struct HelpPanel {
+    lines: Vec<ratatui::text::Line<'static>>,
+    scroll: u16,
+    title: String,
+}
+
 /// Draw `frame` and `footer`, then the pictures over it. A frame on which a picture moved or went
 /// is cleared and drawn again (the cells of its old place would stay on screen otherwise), and the
 /// deletes of the kitty images that went are written after it. The right to write to the terminal
@@ -1518,6 +1581,7 @@ fn draw_frame<B: Backend>(
     footer: &str,
     bg: Option<ratatui::style::Color>,
     mut pictures: Option<&mut Pictures>,
+    panel: Option<HelpPanel>,
 ) -> Result<(), AppError> {
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     let on_canvas = matches!(frame, Frame::Canvas(_));
@@ -1551,6 +1615,17 @@ fn draw_frame<B: Backend>(
                             f.buffer_mut(),
                         ),
                     }
+                }
+                // The `?` help sits above everything else, as the host draws it.
+                if let Some(h) = &panel {
+                    let area = f.area();
+                    konoma_widgets::help_panel::render_panel(
+                        f.buffer_mut(),
+                        area,
+                        h.lines.clone(),
+                        h.scroll,
+                        h.title.clone(),
+                    );
                 }
             })
             .map_err(|e| terr(&e))?;

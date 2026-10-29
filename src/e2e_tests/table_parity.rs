@@ -142,6 +142,61 @@ pub(super) fn hints(footer: &str) -> Vec<String> {
         .collect()
 }
 
+/// Compare two footers in order. The host's tokens without those only the host has (`host_only`,
+/// spelled out in full) must equal the app's without those only the app has (`app_only`): the
+/// same words, in the same order. When either footer was cut short (its last token ends with
+/// ` …`), the shorter list must be the start of the longer one, because the host spends width on
+/// its own tokens and so cuts earlier. Returns the tokens the host has alone (so that the caller
+/// can check each listed one occurs) and how many tokens were compared.
+pub(super) fn same_footer(
+    what: &str,
+    hh: &[String],
+    ah: &[String],
+    host_only: &[&str],
+    app_only: &dyn Fn(&str) -> bool,
+) -> (Vec<String>, usize) {
+    let strip = |v: &[String]| -> (Vec<String>, bool) {
+        let mut v = v.to_vec();
+        let cut = v.last().is_some_and(|t| t.ends_with('…'));
+        if cut {
+            let l = v.pop().unwrap();
+            let l = l.trim_end_matches('…').trim_end().to_string();
+            if !l.is_empty() {
+                v.push(l);
+            }
+        }
+        (v, cut)
+    };
+    let (hh2, hcut) = strip(hh);
+    let (ah2, acut) = strip(ah);
+    let mut alone = Vec::new();
+    let hf: Vec<&String> = hh2
+        .iter()
+        .filter(|t| {
+            let o = host_only.contains(&t.as_str());
+            if o {
+                alone.push((*t).clone());
+            }
+            !o
+        })
+        .collect();
+    let af: Vec<&String> = ah2.iter().filter(|t| !app_only(t)).collect();
+    let n = hf.len().min(af.len());
+    if hcut || acut {
+        assert_eq!(
+            hf[..n],
+            af[..n],
+            "{what}: the cut footers differ\nhost: {hh:?}\napp: {ah:?}"
+        );
+    } else {
+        assert_eq!(
+            hf, af,
+            "{what}: the footers differ in order or words\nhost: {hh:?}\napp: {ah:?}"
+        );
+    }
+    (alone, n)
+}
+
 /// The fixture files: (name, whether a wide character is in it).
 fn fixtures() -> (crate::test_support::TmpDir, Vec<(&'static str, bool)>) {
     let dir = sandbox("parity");
@@ -316,6 +371,7 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
     let root = canon(&dir);
     let (mut checked, mut skipped, mut popups, mut paged, mut left) = (0, 0, 0, 0, 0);
     let mut seen_host_only = std::collections::BTreeSet::new();
+    let mut compared = 0;
     for (file, _) in &files {
         for spec in SPECS {
             let (h, _s) = host_rows(&root, file, HOST_H, spec);
@@ -350,23 +406,11 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
                 skipped += 1;
                 continue;
             }
-            // What only one of them says: the host has search, copy, files and tabs; the app
-            // says `quit` where the host says `back`.
-            let host_only: Vec<&String> = hh.iter().filter(|t| !ah.contains(t)).collect();
-            let app_only: Vec<&String> = ah.iter().filter(|t| !hh.contains(t)).collect();
-            for t in &host_only {
-                seen_host_only.insert((*t).clone());
-                assert!(
-                    HOST_ONLY.contains(&t.as_str()),
-                    "{what}: the host footer has `{t}` that the app lacks\nhost: {hh:?}\napp: {ah:?}"
-                );
-            }
-            for t in &app_only {
-                assert!(
-                    t.starts_with("q:quit"),
-                    "{what}: the app footer has `{t}` that the host lacks\nhost: {hh:?}\napp: {ah:?}"
-                );
-            }
+            // The host has search, copy, files and tabs; the app says `quit` where the host
+            // says `back`. Without those the two footers are the same words in the same order.
+            let (alone, n) = same_footer(&what, &hh, &ah, HOST_ONLY, &|t| t.starts_with("q:quit"));
+            seen_host_only.extend(alone);
+            compared += n;
             checked += 1;
             popups += usize::from(af.iter().any(|l| l.contains("Cell ·")));
             paged += usize::from(af[0].contains("Two") || af[0].contains("Three"));
@@ -378,6 +422,7 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
     for p in HOST_ONLY {
         assert!(seen_host_only.contains(*p), "HOST_ONLY `{p}` never occurs");
     }
+    assert!(compared > 3000, "{compared}");
     assert!(popups > 200, "{popups}");
     assert!(paged > 30, "{paged}");
     assert!(left > 0 && left < 40, "{left}");
@@ -417,10 +462,118 @@ pub(super) fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String>
                 }
                 None => r.clone(),
             };
-            let cut = cut.trim_end_matches(['│', ' ', '┐', '┘']);
+            let cut = cut.trim_end_matches(['│', ' ', '┐', '┘', '█']);
             cut.split_whitespace().collect::<Vec<_>>().join(" ")
         })
         .collect()
+}
+
+/// The rows of the help panel on a screen (the app draws it over the screen as the host does):
+/// the text under its top border, cut at the panel's left edge.
+pub(super) fn panel_lines(rows: &[String]) -> Vec<String> {
+    let (py, px) = panel_at(rows).unwrap_or_else(|| panic!("a help panel in {rows:#?}"));
+    // Down to the panel's bottom border: the base display shows around and below it.
+    let at_edge = |r: &String| {
+        let mut col = 0;
+        for c in r.chars() {
+            if col >= px {
+                return c;
+            }
+            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        ' '
+    };
+    let body: Vec<String> = rows[py + 1..]
+        .iter()
+        .take_while(|r| at_edge(r) != '└')
+        .cloned()
+        .collect();
+    help_lines(&body, Some(px))
+}
+
+/// The help panel as drawn: from its top-left corner to its bottom-right one, border included,
+/// every cell, with the position of the corner. The panel is as wide as its top border.
+pub(super) fn panel_box(rows: &[String]) -> ((usize, usize), Vec<String>) {
+    let (py, px) = panel_at(rows).unwrap_or_else(|| panic!("a help panel in {rows:#?}"));
+    // The cells of a row from display column `px` to the panel's right edge.
+    let cells = |r: &str| -> Vec<(usize, char)> {
+        let mut col = 0;
+        let mut v = Vec::new();
+        for c in r.chars() {
+            v.push((col, c));
+            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        v
+    };
+    let top = cells(&rows[py]);
+    let right = top
+        .iter()
+        .find(|(col, c)| *col > px && *c == '┐')
+        .map(|(col, _)| *col)
+        .expect("the panel's right edge");
+    let mut out = Vec::new();
+    for r in &rows[py..] {
+        let line: String = cells(r)
+            .into_iter()
+            .filter(|(col, _)| *col >= px && *col <= right)
+            .map(|(_, c)| c)
+            .collect();
+        let last = line.starts_with('└');
+        out.push(line);
+        if last {
+            break;
+        }
+    }
+    ((py, px), out)
+}
+
+/// The help rows (blank rows left out) of a host and of the app for a text or a Markdown file:
+/// the host's without the rows only the host has (named by their start in `host_only`: search,
+/// links, tasks, bookmarks, the tabs, the editor...) must be the app's, same rows, same order.
+/// The app says `quit` where the host says `back to tree`. Returns the rows compared and the
+/// `host_only` entries that took a row away.
+pub(super) fn same_help_rows(
+    what: &str,
+    hl: &[String],
+    al: &[String],
+    host_only: &[&str],
+) -> (usize, Vec<String>) {
+    let norm = |r: &String| -> String {
+        if r.starts_with("q / Esc") {
+            "q / Esc".to_string()
+        } else if r.starts_with("Q quit") {
+            "Q quit".to_string()
+        } else {
+            r.clone()
+        }
+    };
+    let mut used = Vec::new();
+    let kept: Vec<String> = hl
+        .iter()
+        .filter(|r| {
+            let hit = host_only.iter().find(|p| r.starts_with(**p));
+            if let Some(p) = hit {
+                used.push((*p).to_string());
+            }
+            hit.is_none()
+        })
+        .map(norm)
+        .collect();
+    let app: Vec<String> = al.iter().map(norm).collect();
+    assert_eq!(
+        kept, app,
+        "{what}: the help rows differ\nhost: {hl:#?}\napp: {al:#?}"
+    );
+    (kept.len(), used)
+}
+
+/// The row and the display column of the help panel's top-left corner.
+pub(super) fn panel_at(rows: &[String]) -> Option<(usize, usize)> {
+    rows.iter().enumerate().find_map(|(y, r)| {
+        r.find("┌ Help")
+            .or_else(|| r.find("┌ ヘルプ"))
+            .map(|b| (y, unicode_width::UnicodeWidthStr::width(&r[..b])))
+    })
 }
 
 /// The rows of the table section of a help: from its heading to the blank row.
@@ -513,7 +666,7 @@ fn the_table_help_rows_agree_with_the_host() {
                 })
                 .expect("the help panel");
             let hl = help_lines(&h[py + 1..], Some(px));
-            let al = help_lines(&a, None);
+            let al = panel_lines(&a);
             let (hs, asec) = (table_section(&hl), table_section(&al));
             for row in &asec {
                 // The app says `quit` where the host says `back to tree`.
@@ -690,7 +843,7 @@ fn a_sheet_that_fails_has_the_same_footer_and_help_as_the_host() {
             .expect("the help panel");
         let py = h.iter().position(|r| r.contains("┌ Help")).unwrap();
         let hs = table_section(&help_lines(&h[py + 1..], Some(px)));
-        let asec = table_section(&help_lines(&a, None));
+        let asec = table_section(&panel_lines(&a));
         assert!(
             asec.iter().any(|r| r.starts_with("J / K")),
             "{what}: {asec:#?}"
@@ -792,7 +945,7 @@ fn a_first_sheet_that_fails_turns_and_names_its_keys_as_the_host_does() {
         .map(|b| unicode_width::UnicodeWidthStr::width(&h[py][..b]))
         .unwrap();
     let hs = table_section(&help_lines(&h[py + 1..], Some(px)));
-    let asec = table_section(&help_lines(&a, None));
+    let asec = table_section(&panel_lines(&a));
     assert!(hs.iter().any(|r| r.starts_with("J / K")), "{hs:#?}");
     assert!(asec.iter().any(|r| r.starts_with("J / K")), "{asec:#?}");
 }

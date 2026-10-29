@@ -216,7 +216,28 @@ impl TableFrame {
     }
 }
 
-/// The footer: the keys first (a narrow terminal cuts the end), where the text is (only for a
+/// The footer row: the key hints as the host fits them (no leading space, an ellipsis when some
+/// are cut), then what the app alone says. `state` (the zoom, the page, where a bare text is)
+/// has its room kept, so a narrow terminal cuts hints and not it; `title` follows only when it
+/// fits whole after them.
+pub fn footer_row(hints: &[String], state: &str, title: &str, width: u16) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let state = state.trim_end();
+    let keep = u16::try_from(state.width()).unwrap_or(u16::MAX);
+    let mut row = konoma_widgets::help_panel::fit_tokens(hints, width.saturating_sub(keep));
+    row.push_str(state);
+    let title = title.trim_end();
+    if !title.is_empty()
+        && !row.ends_with('…')
+        && row.width() + title.width() + 2 <= usize::from(width)
+    {
+        row.push_str("  ");
+        row.push_str(title);
+    }
+    row
+}
+
+/// The footer of a text or a document: the keys (the host's fit), where the text is (only for a
 /// frame that scrolls: `scrolls`), the title.
 pub fn footer(
     hints: &[String],
@@ -224,6 +245,7 @@ pub fn footer(
     frame: &Frame,
     scroll: usize,
     scrolls: bool,
+    width: u16,
 ) -> String {
     let pos = match frame {
         Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
@@ -234,7 +256,7 @@ pub fn footer(
         // A document says where it is on its frame (the scroll label), as the host does.
         _ => String::new(),
     };
-    format!(" {}{pos}  {title}", hints.join("  "))
+    footer_row(hints, &pos, title, width)
 }
 
 /// The part of `area` the body is drawn in: all of it but the footer row.

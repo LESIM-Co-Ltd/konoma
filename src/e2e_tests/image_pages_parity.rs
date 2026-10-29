@@ -8,7 +8,7 @@
 use super::image_parity::{
     app_zoom, host_zoom, image_section, shot, Shot, WhenIdle, HOST_ONLY, HOST_ONLY_ROWS,
 };
-use super::table_parity::{help_lines, hints, presses, same_row, APP_H, HOST_H, W};
+use super::table_parity::{help_lines, hints, panel_lines, presses, same_row, APP_H, HOST_H, W};
 use super::*;
 use konoma_plugin::app::{
     key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, AppKeys, Pictures,
@@ -294,7 +294,7 @@ fn the_image_help_names_the_page_keys_as_the_host_does() {
                 })
                 .expect("the help panel");
             let hs = image_section(&help_lines(&h.rows[py + 1..], Some(px)));
-            let asec = image_section(&help_lines(&a.rows, None));
+            let asec = image_section(&panel_lines(&a.rows));
             for row in &asec {
                 if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
                     continue;

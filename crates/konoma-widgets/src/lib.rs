@@ -9,6 +9,7 @@
 pub mod colors;
 pub mod gif_player;
 pub mod gitdiff;
+pub mod help_panel;
 pub mod icons;
 pub mod image_view;
 pub mod inline_images;

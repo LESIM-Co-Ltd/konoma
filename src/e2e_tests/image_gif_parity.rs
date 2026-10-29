@@ -12,7 +12,7 @@
 use super::image_parity::{
     app_zoom, host_shot_at, host_zoom, image_section, PngPlugin, Shot, HOST_ONLY, HOST_ONLY_ROWS,
 };
-use super::table_parity::{help_lines, hints, presses, same_row, APP_H, HOST_H, W};
+use super::table_parity::{help_lines, hints, panel_lines, presses, same_row, APP_H, HOST_H, W};
 use super::*;
 use konoma_plugin::app::{
     key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, Next,
@@ -452,7 +452,7 @@ fn the_help_rows_of_a_gif_agree_with_the_host() {
                 })
                 .expect("the help panel");
             let hs = image_section(&help_lines(&h.rows[py + 1..], Some(px)));
-            let asec = image_section(&help_lines(&a.rows, None));
+            let asec = image_section(&panel_lines(&a.rows));
             for row in &asec {
                 if row.starts_with("q / Esc") {
                     assert!(hs.iter().any(|r| r.starts_with("q / Esc")), "{what}: {row}");
@@ -1106,7 +1106,7 @@ fn picture_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool, paged: bool
         })
         .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
     let hl = help_lines(&h.rows[py + 1..], Some(px));
-    let al = help_lines(&a.rows, None);
+    let al = panel_lines(&a.rows);
     let has = |l: &[String], p: &str| l.iter().any(|r| r.starts_with(p));
     // No text is on screen to scroll: no motion row is named by either.
     for (side, l) in [("host", &hl), ("app", &al)] {
@@ -1920,7 +1920,7 @@ fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, boo
         })
         .unwrap_or_else(|| panic!("{what}: the help panel\n{}", h.rows.join("\n")));
     let hs = text_section(&help_lines(&h.rows[py + 1..], Some(px)));
-    let asec = text_section(&help_lines(&a.rows, None));
+    let asec = text_section(&panel_lines(&a.rows));
     for row in &asec {
         if row.starts_with("q / Esc") || row.starts_with("? ") || row.starts_with("Q ") {
             continue;

@@ -124,8 +124,8 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
         assert_eq!(row, &format!("line {i:02}"), "row {i}");
     }
     assert!(r[6].starts_with('└'), "{r:?}");
-    assert!(r[7].ends_with("title"), "{r:?}");
-    assert!(r[7].contains("q:quit"), "{r:?}");
+    // The host's footer has no room left for the title at 60 columns: the hints are cut instead.
+    assert!(r[7].starts_with("j/k:scroll  q:quit  ?:help"), "{r:?}");
     assert!(!r[6].contains("q:quit"));
     // The footer row is reversed.
     let buf = term.backend().buffer();
@@ -345,8 +345,10 @@ fn a_canvas_follows_the_safety_rules_of_the_host_painter() {
         "a continuation cell is skipped"
     );
     assert!(
-        rows(&term)[2].contains("q:qui"),
-        "the footer owns the last row"
+        // (6 columns hold no hint whole with the host's room for the ellipsis: the row is blank)
+        !rows(&term)[2].contains('日') && !rows(&term)[2].contains('c'),
+        "the footer owns the last row: {:?}",
+        rows(&term)
     );
 }
 

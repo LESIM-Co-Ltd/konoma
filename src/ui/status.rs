@@ -19,6 +19,7 @@ use crate::i18n::{tr, Lang, Msg};
 use crate::keymap::Context;
 #[cfg(feature = "git")]
 use crate::keymap::Screen;
+use konoma_widgets::help_panel::fit_tokens;
 
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
 fn chip(lang: Lang, msg: Msg, bg: Color, dark_bg: bool) -> Span<'static> {
@@ -417,43 +418,6 @@ fn whichkey_spans_fit(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
 /// (Tree = `ui::tree::footer_hints` / Preview = `ui::preview::footer_hints`. Kind differences are absorbed inside preview.)
 pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
     crate::ops::footer::tokens(app, app.base_context())
-}
-
-/// Join tokens with the separator `  ` and return only as many as fit in display width `max`.
-/// If cut off partway (not all fit), append ` …` at the end to indicate there is more.
-fn fit_tokens(tokens: &[String], max: u16) -> String {
-    const SEP: &str = "  ";
-    let max = max as usize;
-    let ellipsis = " …";
-    let mut out = String::new();
-    let mut used = 0usize;
-    let mut shown = 0usize;
-    for tok in tokens {
-        let add = if out.is_empty() {
-            tok.width()
-        } else {
-            SEP.width() + tok.width()
-        };
-        // If tokens remain, reserve room for the ellipsis and check whether it still fits.
-        let reserve = if shown + 1 < tokens.len() {
-            ellipsis.width()
-        } else {
-            0
-        };
-        if used + add + reserve > max {
-            break;
-        }
-        if !out.is_empty() {
-            out.push_str(SEP);
-        }
-        out.push_str(tok);
-        used += add;
-        shown += 1;
-    }
-    if shown < tokens.len() && shown > 0 {
-        out.push_str(ellipsis);
-    }
-    out
 }
 
 /// Render everything on one line (for statusbar="bottom"/"top"). Concatenates context + footer.
