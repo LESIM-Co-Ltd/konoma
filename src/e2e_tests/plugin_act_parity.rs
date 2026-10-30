@@ -612,7 +612,8 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
         open_dir: Some(root.to_path_buf()),
         display: Display::default(),
         acts,
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let mut evs: std::collections::VecDeque<AppEvent> = steps
         .iter()

@@ -323,11 +323,7 @@ const SPECS: &[&str] = &[
 
 /// What only the host's footer says (the files, the editor, the tabs, the pages, `q` going
 /// back), spelled out in full: a word the host adds that is not listed here fails the comparison.
-pub(super) const HOST_ONLY: &[&str] = &[
-    "[/]:tab",
-    "C-n/C-p:next/prev file",
-    "q:back",
-];
+pub(super) const HOST_ONLY: &[&str] = &["[/]:tab", "C-n/C-p:next/prev file", "q:back"];
 
 #[test]
 fn the_picture_the_zoom_and_the_footer_agree_with_the_host() {

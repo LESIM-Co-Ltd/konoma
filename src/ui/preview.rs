@@ -266,22 +266,20 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
                 crate::i18n::Lang::Jp => "ja",
                 crate::i18n::Lang::En => "en",
             };
-            let failure = app.document_error();
-            let mut body = failure.map_or_else(
-                || "[can not preview]".to_string(),
-                |f| f.message.get(lang).to_string(),
-            );
             // "Press `e` to open it in an Office app" only while `e` really does that
             // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
             // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
-            if failure.is_some_and(|f| f.kind == konoma_plugin::FailureKind::Unsupported)
-                && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
-                    == Some(crate::i18n::Msg::HintOpen)
-            {
-                body.push('\n');
-                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
-            }
-            (format!("{body}\n{}", path.display()), false)
+            let opens_app = app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+                == Some(crate::i18n::Msg::HintOpen);
+            (
+                konoma_plugin::canvas_pictures::document_failure_text(
+                    app.document_error(),
+                    (lang, app.lang),
+                    opens_app,
+                    path,
+                ),
+                false,
+            )
         }
         // A plugin the host has no screen of its own for (one the user registered) that answered
         // with a text view: its lines, drawn as plain scrolling text.

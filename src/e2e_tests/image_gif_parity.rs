@@ -752,6 +752,7 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         open_dir: None,
         acts: Default::default(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let mut cx = cx;
     cx.display.wrap = TURN_WRAP.with(|w| w.get());
@@ -1323,6 +1324,7 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         open_dir: None,
         acts: Default::default(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1411,6 +1413,7 @@ fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in
         open_dir: None,
         acts: Default::default(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1770,6 +1773,7 @@ fn run_watched(
         open_dir: None,
         acts: Default::default(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let mut events = Watched {
         screen: Arc::clone(&screen),
@@ -2034,6 +2038,7 @@ fn app_real_shot(
         open_dir: None,
         acts: Default::default(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
     };
     let keys = presses(spec)
         .into_iter()

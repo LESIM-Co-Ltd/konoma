@@ -43,6 +43,7 @@ pub(super) fn app_term_plugins(
         path: opened.path.clone(),
         open_dir: opened.path.parent().map(|p| p.to_path_buf()),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -514,6 +515,7 @@ fn app_term_with(
         display: display.clone(),
         path: opened.path.clone(),
         launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1012,6 +1014,7 @@ fn app_pictures_on(
         path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
         launch: Some(prepared.launch.clone()),
+        converts: prepared.opened.manifest.converts,
         ..AppCx::default()
     };
     let mut events = SettleOn {
@@ -1332,6 +1335,7 @@ fn app_reopen_term_bundled(
         path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
         launch: Some(prepared.launch.clone()),
+        converts: prepared.opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1533,21 +1537,28 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
     s.term.clear().expect("clear");
     s.draw();
     let a = app_reopen_term(&root.join("d.docx"), office_docs(), 100, 30, "");
-    // The host frames the failure with its own hint line; the message and the path line (the
-    // launched file, which the app now knows for `e`/`o`) are the same on both sides.
     let host_rows = inner(&s.term);
     let app_rows = rows_of(&a);
+    // Every row agrees: the message, the line that says `e` opens an Office app, and the path.
     let said = "no plugin is available to show this document";
     assert_eq!(host_rows[0], said, "host:\n{}", rows_of(&s.term).join("\n"));
-    assert_eq!(app_rows[0], said, "app:\n{}", app_rows.join("\n"));
-    // KNOWN GAP (reported, not fixed): the host puts "Press `e` to open it in an Office app"
-    // on host_rows[1] while `e` opens the file; the app has no such line yet. The path line is
-    // the host's third row and the app's second.
-    // (the host's frame is two columns narrower, so its long path is cut: compare the cut part)
-    assert!(app_rows[1].starts_with(host_rows[2].trim_end()), "the path line");
-    assert!(
-        app_rows[2..app_rows.len() - 1].iter().all(|r| r.is_empty()),
-        "nothing else is drawn\n{}",
+    assert_eq!(app_rows[0], host_rows[0], "app:\n{}", app_rows.join("\n"));
+    assert_eq!(host_rows[1], "Press `e` to open it in an Office app");
+    assert_eq!(app_rows[1], host_rows[1], "the \"e opens an app\" line");
+    // The path is the rest of what is drawn; a frame that is narrower wraps it earlier, so the
+    // rows from the third on are compared joined.
+    let rest = |rows: &[String]| -> String {
+        rows[2..rows.len() - 1]
+            .iter()
+            .map(|r| r.trim_end())
+            .collect::<String>()
+    };
+    assert!(rest(&host_rows).starts_with('/'), "{}", host_rows.join("\n"));
+    assert_eq!(
+        rest(&app_rows),
+        rest(&host_rows),
+        "the path line\nhost:\n{}\napp:\n{}",
+        host_rows.join("\n"),
         app_rows.join("\n")
     );
     // A markdown plugin beside the Word one is what makes the same file show its text.

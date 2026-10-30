@@ -124,6 +124,27 @@ pub fn raw_file_body(path: &Path, lang: Lang) -> String {
     }
 }
 
+/// The words of a document (Word, a presentation) that did not load, as konoma and the standalone
+/// app both draw them: the failure's message (or `[can not preview]` with none), then, only when
+/// the failure is `Unsupported` and `e` really opens an application (`edit_opens_app`, the same
+/// predicate as the footer's `e` hint), the line that says so, then the path.
+pub fn document_failure_text(
+    failure: Option<&Failure>,
+    (lang_code, lang): (&str, Lang),
+    edit_opens_app: bool,
+    path: &Path,
+) -> String {
+    let mut body = failure.map_or_else(
+        || "[can not preview]".to_string(),
+        |f| f.message.get(lang_code).to_string(),
+    );
+    if edit_opens_app && failure.is_some_and(|f| f.kind == FailureKind::Unsupported) {
+        body.push('\n');
+        body.push_str(CoreMsg::DocErrUnsupportedOpen.tr(lang));
+    }
+    plain_failure_text(&body, path)
+}
+
 /// The failure's message, then the file's path: what a plugin with nothing declared shows.
 pub fn plain_failure_text(message: &str, path: &Path) -> String {
     format!("{message}\n{}", path.display())

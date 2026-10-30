@@ -108,6 +108,7 @@ pub enum CoreMsg {
     SvgMemory,
     SvgCrashed,
     SvgInvalid,
+    DocErrUnsupportedOpen,
     PluginInputFull,
     PluginPasteCut,
     PluginReadOnly,
@@ -235,6 +236,7 @@ impl CoreMsg {
         CoreMsg::SvgMemory,
         CoreMsg::SvgCrashed,
         CoreMsg::SvgInvalid,
+        CoreMsg::DocErrUnsupportedOpen,
         CoreMsg::PluginInputFull,
         CoreMsg::PluginPasteCut,
         CoreMsg::PluginReadOnly,
@@ -369,6 +371,7 @@ impl CoreMsg {
             CoreMsg::SvgMemory => "[svg] not drawn: drawing it needed too much memory",
             CoreMsg::SvgCrashed => "[svg] not drawn: the renderer stopped while drawing it",
             CoreMsg::SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
+            CoreMsg::DocErrUnsupportedOpen => "Press `e` to open it in an Office app",
             CoreMsg::PluginInputFull => "the plugin is not answering: input refused",
             CoreMsg::PluginPasteCut => "the paste was too long: cut for the plugin",
             CoreMsg::PluginReadOnly => {
@@ -511,6 +514,7 @@ impl CoreMsg {
             CoreMsg::SvgInvalid => {
                 "[svg] 描画しません: ファイルが壊れているか、SVG として正しくありません"
             }
+            CoreMsg::DocErrUnsupportedOpen => "Office アプリで開くには `e` を押してください",
             CoreMsg::PluginInputFull => "プラグインが応答しません: 入力を受け付けません",
             CoreMsg::PluginPasteCut => "貼り付けが長すぎるため、プラグインには途中までを渡しました",
             CoreMsg::PluginReadOnly => {

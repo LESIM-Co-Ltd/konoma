@@ -21,8 +21,6 @@ use std::collections::BTreeSet;
 const HOST_ONLY: &[&str] = &[
     "PreviewFileNext",
     "PreviewFilePrev",
-    "RequestEdit",
-    "OpenExternal",
     "TabPrev",
     "TabNext",
     "MarkSet",
@@ -54,6 +52,8 @@ const SHARED: &[&str] = &[
     "ImageZoomIn",
     "ImageZoomOut",
     "ImageZoomReset",
+    "RequestEdit",
+    "OpenExternal",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -927,7 +927,7 @@ fn matrix(kind: Kind) {
     // At least back, the help and the three declared actions' worth (path, wrap, ...) per variant.
     // (measured: 6 to 9 items and 14 to 21 host-only items per variant, 14.01 at the least.)
     assert!(t.items >= t.variants * 6, "{kind:?} items {}", t.items);
-    assert!(t.hidden >= t.variants * 14, "{kind:?} hidden {}", t.hidden);
+    assert!(t.hidden >= t.variants * 10, "{kind:?} hidden {}", t.hidden);
     assert_eq!(t.helps, t.variants);
 }
 

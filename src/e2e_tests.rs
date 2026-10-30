@@ -21206,6 +21206,7 @@ mod render_snapshot;
 mod canvas_keys_parity;
 mod copy_parity;
 mod document_parity;
+mod launch_parity;
 mod image_gif_parity;
 mod image_pages_parity;
 mod image_parity;

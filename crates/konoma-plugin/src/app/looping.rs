@@ -71,6 +71,17 @@ pub struct AppCx {
     /// What `e` and `o` need (`None`: the program has neither key). Both keys act, are named in
     /// the footer, the help and the `Space` menu, and run only when this is set.
     pub launch: Option<super::LaunchCx>,
+    /// The plugin shows a converted form of the file ([`crate::Manifest::converts`]): with a
+    /// `Document` among `shows`, this is konoma's "Word document or presentation".
+    pub converts: bool,
+}
+
+impl AppCx {
+    /// The file is a converted document (Word, a presentation): konoma's `is_document()`,
+    /// decided by what the plugin declares (it shows a document and converts), never by its id.
+    pub fn is_document(&self) -> bool {
+        self.converts && self.shows.contains(&ViewKind::Document)
+    }
 }
 
 impl Default for AppCx {
@@ -90,6 +101,7 @@ impl Default for AppCx {
             display: super::Display::default(),
             acts: super::AppActs::default(),
             launch: None,
+            converts: false,
         }
     }
 }
@@ -1814,6 +1826,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     Err(Some(failure_frame(
                         image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
+                        Some(&f),
                         cx,
                         own.lang(),
                         usize::from(body_rows),
@@ -1909,6 +1922,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             base = failure_frame(
                 why,
                 "[can not preview]",
+                None,
                 cx,
                 own.lang(),
                 usize::from(body_rows),
@@ -3106,6 +3120,7 @@ fn note_failed_page(session: &dyn Session, cx: &AppCx, st: &mut State, picture: 
 fn failure_frame(
     why: Option<ImageFailure>,
     message: &str,
+    failure: Option<&crate::session::Failure>,
     cx: &AppCx,
     lang: Lang,
     rows: usize,
@@ -3113,6 +3128,19 @@ fn failure_frame(
 ) -> Frame {
     use crate::canvas_pictures::{raw_file_body, unavailable_text};
     st.failed_body = None;
+    // A converted document (Word, a presentation) that did not load is told as konoma tells it, with
+    // the line that says `e` opens it in an Office app only while `e` does that.
+    if cx.is_document() && matches!(cx.unavailable, crate::manifest::Unavailable::Message) {
+        let text = crate::canvas_pictures::document_failure_text(
+            failure,
+            (&cx.lang, lang),
+            cx.launch.as_ref().is_some_and(|l| {
+                l.facts(st.verbs(cx), &cx.path).edit == Some(crate::host::launch::EditWord::App)
+            }),
+            &cx.path,
+        );
+        return Frame::Lines(text.lines().map(Line::raw).collect());
+    }
     let text = unavailable_text(
         st.unavailable(cx),
         message,
@@ -3396,6 +3424,7 @@ mod reopen_state_tests {
             display: Default::default(),
             acts: Default::default(),
             launch: None,
+            converts: false,
         }
     }
 }

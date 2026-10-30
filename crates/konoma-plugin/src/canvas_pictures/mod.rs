@@ -94,8 +94,8 @@ pub use embed::EMBED_STAND_IN;
 pub use embed::{embed_render_for, EmbedPicture, EmbedRender};
 #[cfg(feature = "config")]
 pub use failure_msg::{
-    image_failure_for, image_failure_message, image_failure_msg, plain_failure_text, raw_file_body,
-    svg_fail_msg, unavailable_text,
+    document_failure_text, image_failure_for, image_failure_message, image_failure_msg,
+    plain_failure_text, raw_file_body, svg_fail_msg, unavailable_text,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hash::content_hash;
