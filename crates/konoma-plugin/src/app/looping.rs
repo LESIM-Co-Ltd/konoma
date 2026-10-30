@@ -1301,6 +1301,25 @@ impl State {
     }
 }
 
+/// The state after a `Reopen`: everything of the old document is dropped (the scroll, the laid-out
+/// page) and the plugin showing the file is `to`. What waited for the session is kept by the rule
+/// the host follows ([`typing::retain_declared`]): the typed keys stay, and an action stays only if
+/// `to` declared it (`None`: the show's own plugin, whose declarations are `own`).
+fn state_after_reopen(old: State, to: Option<ReopenedAs>, own: &super::AppActs) -> State {
+    let mut act_queue = old.act_queue;
+    let declared = to.as_ref().map_or(own, |r| &r.acts);
+    typing::retain_declared(&mut act_queue, |action| {
+        declared.bindings.iter().any(|b| b.act == action)
+    });
+    State {
+        display: old.display,
+        reopened_as: to,
+        key_queue: old.key_queue,
+        act_queue,
+        ..State::default()
+    }
+}
+
 /// What the loop keeps between two frames.
 #[derive(Default)]
 struct State {
@@ -1523,9 +1542,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 ) {
                     Ok(opened) => {
                         swapped = Some(opened.session);
-                        st = State {
-                            display: st.display.clone(),
-                            reopened_as: target.as_ref().map(|t| {
+                        st = state_after_reopen(
+                            st,
+                            target.as_ref().map(|t| {
                                 let m = t.plugin.manifest();
                                 ReopenedAs {
                                     acts: cx
@@ -1538,8 +1557,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     plugin_id: m.id,
                                 }
                             }),
-                            ..State::default()
-                        };
+                            &cx.acts,
+                        );
                         st.page = usize::from(body_rows).max(1);
                         st.width = size.width;
                         if let Some(p) = pictures.as_mut() {
@@ -2858,5 +2877,96 @@ fn kind_name(v: &View) -> &'static str {
         View::Canvas(_) => "canvas",
         View::Reopen(_) => "document",
         View::Message(_) => "message",
+    }
+}
+
+#[cfg(test)]
+mod reopen_state_tests {
+    use super::*;
+    use crate::host::acts::ActBinding;
+    use crate::host::typing::QueuedAct;
+
+    fn acts_of(ids: &[&str]) -> super::super::AppActs {
+        super::super::AppActs {
+            bindings: ids
+                .iter()
+                .map(|id| ActBinding {
+                    act: id.to_string(),
+                    key: None,
+                    context: None,
+                    label: crate::text::Tr::new(id.to_string()),
+                    help: crate::text::Tr::new(id.to_string()),
+                    footer: None,
+                    writes: false,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn dest(ids: &[&str]) -> ReopenedAs {
+        ReopenedAs {
+            acts: acts_of(ids),
+            shows: Vec::new(),
+            unavailable: Default::default(),
+            plugin_id: "dest".into(),
+        }
+    }
+
+    fn waiting() -> State {
+        State {
+            scroll: 9,
+            key_queue: vec![Key::char('a'), Key::char('b')],
+            act_queue: vec![
+                QueuedAct::now("bump"),
+                QueuedAct {
+                    action: "tbump".into(),
+                    after_keys: 2,
+                },
+                QueuedAct::now("nope"),
+            ],
+            ..State::default()
+        }
+    }
+
+    fn kept(st: &State) -> Vec<(&str, usize)> {
+        st.act_queue
+            .iter()
+            .map(|q| (q.action.as_str(), q.after_keys))
+            .collect()
+    }
+
+    #[test]
+    fn a_reopen_keeps_the_typing_and_only_the_actions_the_destination_declared() {
+        let own = acts_of(&["bump", "save"]);
+        let st = state_after_reopen(waiting(), Some(dest(&["tbump", "tsave"])), &own);
+        assert_eq!(kept(&st), [("tbump", 2)]);
+        assert_eq!(st.key_queue.len(), 2, "the typed keys stay");
+        assert_eq!(st.scroll, 0, "the old document's scroll is dropped");
+        assert_eq!(st.plugin_id(&dummy_cx()), "dest");
+    }
+
+    #[test]
+    fn without_a_destination_the_shows_own_declarations_decide() {
+        let own = acts_of(&["bump", "save"]);
+        let st = state_after_reopen(waiting(), None, &own);
+        assert_eq!(kept(&st), [("bump", 0)]);
+    }
+
+    fn dummy_cx() -> AppCx {
+        AppCx {
+            lang: "en".into(),
+            term: crate::TermCaps::new(),
+            title: String::new(),
+            unavailable: Default::default(),
+            plugin_id: "own".into(),
+            path: Default::default(),
+            hint: None,
+            shows: Vec::new(),
+            reopen: None,
+            open_dir: None,
+            display: Default::default(),
+            acts: Default::default(),
+        }
     }
 }

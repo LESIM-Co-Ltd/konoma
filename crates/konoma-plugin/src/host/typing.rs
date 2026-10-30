@@ -217,6 +217,15 @@ pub fn admit_act(acts: &mut Vec<QueuedAct>, queued_keys: usize, action: &str) ->
     Admitted::queued()
 }
 
+/// A new session arrives that belongs to another plugin (a `Reopen`): what waited for the old one
+/// goes to it only if its plugin declared the action. The press was made for the keys of the
+/// plugin that was on screen, and a session is never sent an action it does not know. The keys
+/// are the user's typing and stay (they are not actions of a plugin); the order of what is kept is
+/// unchanged. `declared` says whether the new session's plugin declares an action id.
+pub fn retain_declared(acts: &mut Vec<QueuedAct>, declared: impl Fn(&str) -> bool) {
+    acts.retain(|q| declared(&q.action));
+}
+
 /// The next job for a session that is at hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NextJob {
@@ -300,6 +309,31 @@ mod tests {
 
     fn keys(n: usize) -> Vec<Key> {
         (0..n).map(|_| Key::char('a')).collect()
+    }
+
+    #[test]
+    fn a_new_session_keeps_only_the_actions_its_plugin_declared_in_order() {
+        let mut acts = vec![
+            QueuedAct::now("bump"),
+            QueuedAct {
+                action: "tbump".into(),
+                after_keys: 2,
+            },
+            QueuedAct::now("nope"),
+            QueuedAct {
+                action: "tsave".into(),
+                after_keys: 1,
+            },
+        ];
+        retain_declared(&mut acts, |a| a == "tbump" || a == "tsave");
+        assert_eq!(
+            acts.iter()
+                .map(|q| (q.action.as_str(), q.after_keys))
+                .collect::<Vec<_>>(),
+            [("tbump", 2), ("tsave", 1)]
+        );
+        retain_declared(&mut acts, |_| false);
+        assert!(acts.is_empty());
     }
 
     // --- the key a plugin receives -----------------------------------------------------------

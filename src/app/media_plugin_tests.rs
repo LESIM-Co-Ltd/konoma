@@ -205,6 +205,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
     let path = PathBuf::from("/x/file.bin");
     PluginWork {
         id: id.to_string(),
+        session_id: id.to_string(),
         gen: 0,
         job: PluginJob::Open {
             plugin,

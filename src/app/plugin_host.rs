@@ -266,9 +266,9 @@ impl PluginShow {
     ) {
         self.flow.reopened_as = owner;
         let declared = keys.acts_of(self.acting());
-        self.flow
-            .acts
-            .retain(|q| declared.iter().any(|b| b.act.act() == q.action));
+        konoma_plugin::host::typing::retain_declared(&mut self.flow.acts, |action| {
+            declared.iter().any(|b| b.act.act() == action)
+        });
     }
 }
 
@@ -416,7 +416,14 @@ pub(crate) struct GroupSlot {
 
 /// One job with everything it needs, owned (it moves to a thread).
 pub(crate) struct PluginWork {
+    /// The plugin the file was given to: the show's, the one the result comes back under (the
+    /// generation check and who owns the screen go by it).
     pub(super) id: String,
+    /// The plugin whose **session** the job runs on: `id`, except after a `Reopen`, where it is the
+    /// destination. Everything that belongs to the plugin the session is (its settings, read scope,
+    /// declared `shows`, trust, external programs) is decided from this one, set once in
+    /// [`App::plugin_work`]; nothing of the plugin the file was given to carries over.
+    pub(super) session_id: String,
     pub(super) gen: u64,
     pub(super) job: PluginJob,
     pub(super) req: ViewReq,
@@ -784,6 +791,7 @@ impl PluginWork {
     fn run_inner(self, cancel: Cancel) -> PluginResult {
         let PluginWork {
             id,
+            session_id,
             gen,
             job,
             req,
@@ -812,9 +820,10 @@ impl PluginWork {
         let term = TermCaps::new().pixels(pixels).colors(colors);
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
-        let profile = crate::plugins::profile_of(&id);
+        let profile = crate::plugins::profile_of(&session_id);
         let trust_own_svg = profile.own_svg;
-        let (declared_shows, unscreened) = (crate::plugins::shows_of(&id), profile.unscreened);
+        let (declared_shows, unscreened) =
+            (crate::plugins::shows_of(&session_id), profile.unscreened);
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
             let cx = ViewCx::new(&settings, &lang)
                 .with_cancel(cancel.clone())
@@ -830,7 +839,7 @@ impl PluginWork {
             let mut session_acts: Option<Vec<String>> = None;
             let viewed = session
                 .view(&req, &cx)
-                .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, &req, v));
+                .and_then(|v| undeclared_view(&session_id, &declared_shows, unscreened, &req, v));
             let (view, failure) = match viewed {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(
@@ -888,7 +897,11 @@ impl PluginWork {
                         .cancelled(&cancelled)
                         .trust_own_svg(trust_own_svg);
                         Box::new(super::canvas_images::decode_canvas(
-                            &id, &c, known, &path, &policy,
+                            &session_id,
+                            &c,
+                            known,
+                            &path,
+                            &policy,
                         ))
                     }));
                     (Some(View::Canvas(c)), None)
@@ -900,9 +913,9 @@ impl PluginWork {
                         ja: "プラグインが画像を返しませんでした",
                     ))),
                 ),
-                Ok(mut v) => match gate_text_file(&mut v, &id, &path, &read_scope) {
+                Ok(mut v) => match gate_text_file(&mut v, &session_id, &path, &read_scope) {
                     Ok(()) => {
-                        made_text = write_made_text(&mut v, &id);
+                        made_text = write_made_text(&mut v, &session_id);
                         (Some(v), None)
                     }
                     Err(f) => (None, Some(f)),
@@ -1528,48 +1541,48 @@ impl App {
         job: PluginJob,
         req: ViewReq,
     ) -> PluginWork {
-        let external = match id.as_str() {
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        // Whose session the job runs on, decided once. An `Open` brings a session of the plugin
+        // the file was given to (it may reopen it again); every other job runs on the show's
+        // current session, which after a `Reopen` is the destination's. What belongs to the
+        // plugin the session is -- settings, read scope, shows, trust, the actions it declares,
+        // external programs -- is read for this id, never for the one the file was given to.
+        let session_id = match (&job, self.plugin.as_ref()) {
+            (PluginJob::Open { .. }, _) => id.clone(),
+            (_, Some(p)) if p.id == id => p.acting().to_string(),
+            _ => id.clone(),
+        };
+        let external = match session_id.as_str() {
             konoma_media::PDF_ID => self.cfg.external.pdf,
             konoma_media::VIDEO_ID => self.cfg.external.video,
             _ => false,
         };
-        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
-        let manifest = registry.manifest(&id);
-        let group = manifest.and_then(|m| m.work_group.clone());
-        // What works is asked of the session for the actions of **its** plugin: after a `Reopen`
-        // that is the destination's, for every job but an `Open` (which brings a session of the
-        // plugin the file was given to, and may reopen it again).
-        let acting = match (&job, self.plugin.as_ref()) {
-            (PluginJob::Open { .. }, _) => None,
-            (_, Some(p)) if p.id == id => Some(p.acting().to_string()),
-            _ => None,
-        };
-        let act_manifest = match &acting {
-            Some(a) => registry.manifest(a),
-            None => manifest,
-        };
-        let act_ids = act_manifest
+        // The work group is the file's plugin's (it is the one whose job runs).
+        let group = registry.manifest(&id).and_then(|m| m.work_group.clone());
+        let act_ids = registry
+            .manifest(&session_id)
             .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
             .unwrap_or_default();
         // Standard plugins read freely (no scope IO). A user plugin's scope is memoised on the
         // app, so a key press or a timed redraw does not walk the disk again.
-        let read_scope = if crate::plugins::read_scope::is_host_owned(&registry, &id) {
+        let read_scope = if crate::plugins::read_scope::is_host_owned(&registry, &session_id) {
             konoma_plugin::ReadScope::unrestricted()
         } else {
-            self.scope_memo_for(&id, &path, |m| m.scope.clone())
+            self.scope_memo_for(&session_id, &path, |m| m.scope.clone())
         };
         let scope_fp = read_scope.fingerprint();
         PluginWork {
             group,
             act_ids,
             read_scope,
-            settings: crate::plugins::effective_settings(&self.cfg, &id),
+            settings: crate::plugins::effective_settings(&self.cfg, &session_id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
             colors: self.plugin_colors,
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
             document: self.document_job(&id),
             id,
+            session_id,
             path,
             external,
             default_raster_px: self.cfg.ui.svg_max_px,
