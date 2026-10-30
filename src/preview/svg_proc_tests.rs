@@ -247,6 +247,7 @@ struct Outcome {
 fn contained(name: &str, doc: &[u8], base: Option<&Path>, lim: Limits) -> Outcome {
     let _g = serial();
     let before = own_rss();
+    let _ = bin(); // the one-time warm-up is not part of the drawing's time
     let t = Instant::now();
     let result = draw(doc, base, lim, &never);
     let took = t.elapsed();
@@ -372,9 +373,11 @@ fn a_request_over_what_the_child_reads_is_too_large_not_a_crash() {
     // The child ends instead of answering when a request is over its limit, which would be
     // reported as a crash: the supervisor says what it is, without starting a process.
     let big = vec![b' '; super::svg_guard::MAX_SVG_BYTES + 1];
+    // Resolve the binary first: its one-time warm-up must not count as the refusal's time.
+    let exe = bin();
     let t = Instant::now();
     let r = run_with(
-        &bin(),
+        &exe,
         limits(),
         &Request {
             data: &big,
@@ -1582,6 +1585,7 @@ fn referenced_svg_files_cannot_take_the_child_down() {
         let outer = svg(&format!(
             r##"<rect width="800" height="600" fill="#0a0"/><image width="800" height="600" href="{target}"/>"##
         ));
+        let _ = bin(); // the one-time warm-up is not part of the drawing's time
         let t = Instant::now();
         let r = draw(outer.as_bytes(), Some(&dir), limits(), &never);
         // The refused file is simply not drawn: the outer picture still comes out whole, and
@@ -1647,6 +1651,7 @@ fn bench_files() {
             continue;
         };
         let before = own_rss();
+        let _ = bin(); // the one-time warm-up is not part of the drawing's time
         let t = Instant::now();
         let r = draw(&data, p.parent(), Limits::default(), &never);
         let took = t.elapsed();
