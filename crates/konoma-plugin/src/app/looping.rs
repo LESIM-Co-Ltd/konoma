@@ -156,6 +156,11 @@ impl AppKeys {
     /// holds a failure has no text, so the motions do nothing there and are not named (as the
     /// host's gate leaves them out).
     pub fn facts_scrolling(&self, paged: bool, scrolls: bool) -> HelpFacts {
+        self.facts_in(CoreContext::Text, paged, scrolls)
+    }
+
+    /// [`AppKeys::facts_scrolling`] over the text screen of key context `ctx` (see [`text_ctx`]).
+    pub fn facts_in(&self, ctx: CoreContext, paged: bool, scrolls: bool) -> HelpFacts {
         let acted = |op: &HelpOp| match op {
             HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
             // The sideways motions only act on text that does not wrap.
@@ -170,7 +175,7 @@ impl AppKeys {
             _ => false,
         };
         let mut off: Vec<HelpOp> = Vec::new();
-        for row in konoma_host_core::help::rows_of(CoreContext::Text) {
+        for row in konoma_host_core::help::rows_of(ctx) {
             for op in row.ops() {
                 if !acted(op) && !off.contains(op) {
                     off.push(*op);
@@ -196,12 +201,17 @@ impl AppKeys {
 
     /// [`AppKeys::footer_hints`] over a text of a document with pages (`paged`).
     pub fn footer_hints_paged(&self, scrolls: bool, paged: bool) -> Vec<CoreToken> {
-        let facts = self.facts_paged(paged);
+        self.footer_hints_in(CoreContext::Text, scrolls, paged)
+    }
+
+    /// [`AppKeys::footer_hints_paged`] over the text screen of key context `ctx`.
+    pub fn footer_hints_in(&self, ctx: CoreContext, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        let facts = self.facts_in(ctx, paged, true);
         let look = CoreLookup {
             keys: &self.keys,
-            ctx: CoreContext::Text,
+            ctx,
         };
-        let tok = |f: CoreFoot| render_foot(f, CoreContext::Text, &facts, &look, self.lang);
+        let tok = |f: CoreFoot| render_foot(f, ctx, &facts, &look, self.lang);
         let leave = tok(CoreFoot::Back)
             .or_else(|| tok(CoreFoot::Quit))
             .unwrap_or_else(|| ctrl_c_token(self.lang));
@@ -232,7 +242,7 @@ impl AppKeys {
     /// The footer's key hints of a Markdown document: the same as a text (the host's footer of
     /// a document has no sideways keys: the lines wrap).
     pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
-        self.footer_hints_paged(scrolls, false)
+        self.footer_hints_in(CoreContext::Document, scrolls, false)
             .into_iter()
             .filter(|t| {
                 !t.ops.iter().any(|o| {
@@ -263,8 +273,13 @@ impl AppKeys {
     /// (`scrolls`: the frame scrolls) or of anything else (a message, a canvas: the motions do
     /// nothing there). What the hints and the help rows name must pass this.
     pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
-        match self.act(key) {
-            None => !in_help && self.menu_key_acts(CoreContext::Text, key),
+        self.acts_on_in(CoreContext::Text, key, in_help, scrolls)
+    }
+
+    /// [`AppKeys::acts_on`] over the text screen of key context `ctx`.
+    pub fn acts_on_in(&self, ctx: CoreContext, key: &Key, in_help: bool, scrolls: bool) -> bool {
+        match self.act_in(ctx, key) {
+            None => !in_help && self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
                 !in_help && scrolls && !self.wrap
@@ -286,17 +301,22 @@ impl AppKeys {
 
     /// [`AppKeys::help_sections_paged`] over a text that `scrolls` or not.
     pub fn help_sections_scrolling(&self, paged: bool, scrolls: bool) -> Vec<CoreSection> {
+        self.help_sections_in(CoreContext::Text, paged, scrolls)
+    }
+
+    /// [`AppKeys::help_sections_scrolling`] over the text screen of key context `ctx`.
+    pub fn help_sections_in(
+        &self,
+        ctx: CoreContext,
+        paged: bool,
+        scrolls: bool,
+    ) -> Vec<CoreSection> {
         let look = CoreLookup {
             keys: &self.keys,
-            ctx: CoreContext::Text,
+            ctx,
         };
-        let secs = core_sections(
-            CoreContext::Text,
-            &self.facts_scrolling(paged, scrolls),
-            &look,
-            self.lang,
-        );
-        self.with_copy_section(CoreContext::Text, CoreMenu::Copy, secs)
+        let secs = core_sections(ctx, &self.facts_in(ctx, paged, scrolls), &look, self.lang);
+        self.with_copy_section(ctx, CoreMenu::Copy, secs)
     }
 
     /// The menu `key` opens in `ctx` when it is the copy menu (`y`) or the options menu (`,`):
@@ -327,9 +347,11 @@ impl AppKeys {
         };
         [
             (CoreContext::Text, CoreMenu::Copy),
+            (CoreContext::Document, CoreMenu::Copy),
             (CoreContext::Image, CoreMenu::Copy),
             (CoreContext::Table, CoreMenu::TableCopy),
             (CoreContext::Text, CoreMenu::Options),
+            (CoreContext::Document, CoreMenu::Options),
             (CoreContext::Image, CoreMenu::Options),
             (CoreContext::Table, CoreMenu::Options),
             (CoreContext::Canvas, CoreMenu::Options),
@@ -412,10 +434,15 @@ impl AppKeys {
     /// and the keys that scroll it, left out when none does. The leaving key `q` closes it too
     /// and is not named, as in the host.
     pub fn help_title(&self) -> String {
-        let facts = self.facts();
+        self.help_title_in(CoreContext::Text)
+    }
+
+    /// [`AppKeys::help_title`] over the text screen of key context `ctx`.
+    pub fn help_title_in(&self, ctx: CoreContext) -> String {
+        let facts = self.facts_in(ctx, false, true);
         let look = CoreLookup {
             keys: &self.keys,
-            ctx: CoreContext::Text,
+            ctx,
         };
         let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
         help_title(&close, &scroll_keys(&look, &facts), self.lang)
@@ -1120,6 +1147,11 @@ impl AppKeys {
 
     /// What the app does for `key` (`None` = nothing).
     fn act(&self, key: &Key) -> Option<Act> {
+        self.act_in(CoreContext::Text, key)
+    }
+
+    /// [`AppKeys::act`] over the text screen of key context `ctx`.
+    fn act_in(&self, ctx: CoreContext, key: &Key) -> Option<Act> {
         if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
             return Some(Act::Quit);
         }
@@ -1139,13 +1171,24 @@ impl AppKeys {
             }
         }
         let kp = key_press(key)?;
-        match self.keys.resolve(CoreContext::Text, kp) {
+        match self.keys.resolve(ctx, kp) {
             CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
             _ => None,
         }
+    }
+}
+
+/// The shared keys' context of a text screen: the decorated document (`Frame::Document`) is
+/// `Document`, source and plain text (and a page that failed to draw) are `Text`. The one place
+/// that decides it, as konoma's `key_context` is for the host.
+fn text_ctx(base: &Frame) -> CoreContext {
+    if matches!(base, Frame::Document(_)) {
+        CoreContext::Document
+    } else {
+        CoreContext::Text
     }
 }
 
@@ -1740,7 +1783,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else if canvas_keys {
             CoreContext::Canvas
         } else {
-            CoreContext::Text
+            text_ctx(&base)
         };
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
@@ -1765,8 +1808,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         (keys.canvas_help_sections(), keys.canvas_help_title())
                     }
                     (None, _) => (
-                        keys.help_sections_scrolling(paged, text_scrolls),
-                        keys.help_title(),
+                        keys.help_sections_in(text_ctx(&base), paged, text_scrolls),
+                        keys.help_title_in(text_ctx(&base)),
                     ),
                 };
                 // The plugin's own keys: one section under its name, right after the screen's
@@ -1870,10 +1913,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             } else if matches!(base, draw::Frame::Document(_)) {
                                 keys.document_footer_tokens(st.scrolls)
                             } else {
-                                keys.footer_tokens_paged(
+                                keys.footer_hints_in(
+                                    text_ctx(&base),
                                     st.scrolls || (failed_text_screen && text_scrolls),
                                     paged,
                                 )
+                                .into_iter()
+                                .map(|t| t.text)
+                                .collect()
                             },
                         ),
                         &cx.title,
@@ -2082,13 +2129,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     },
                     _ if declared.is_some() => None,
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
-                    (false, Some(_)) if failed_text => keys.act(&key).or_else(|| {
-                        keys.image_act(&key, false)
-                            .filter(|a| matches!(a, Act::Page(_)))
-                    }),
+                    (false, Some(_)) if failed_text => {
+                        keys.act_in(text_ctx(&base), &key).or_else(|| {
+                            keys.image_act(&key, false)
+                                .filter(|a| matches!(a, Act::Page(_)))
+                        })
+                    }
                     (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
                     (false, None) if canvas_keys => keys.canvas_act(&key, st.help.is_some()),
-                    (false, None) => keys.act(&key),
+                    (false, None) => keys.act_in(text_ctx(&base), &key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`. Nor does a key over a picture: the
@@ -2122,7 +2171,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     } else if canvas_keys {
                         CoreContext::Canvas
                     } else {
-                        CoreContext::Text
+                        text_ctx(&base)
                     };
                     if let Some(menu) = keys.copy_menu_of(ctx, &key) {
                         if keys.copy_menu_view(ctx, menu).is_some() {

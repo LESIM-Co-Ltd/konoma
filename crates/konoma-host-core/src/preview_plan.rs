@@ -735,6 +735,44 @@ mod tests {
         v
     }
 
+    /// The plugin's operations go right after the plan's first entry: the head of the split is
+    /// that entry's operations and the tail is the rest, in this order (a swap would put the
+    /// plugin's keys after the screen's last).
+    #[test]
+    fn the_split_puts_the_first_entry_in_the_head_and_the_rest_in_the_tail() {
+        let facts = HelpFacts::default();
+        let mut checked = 0;
+        for ctx in CTXS {
+            let st = PreviewState {
+                decorated: ctx == CoreContext::Document,
+                ..Default::default()
+            };
+            let plan = footer_plan(ctx, &st);
+            assert!(
+                plan.len() > PLUGIN_AT,
+                "{ctx:?}: a plan longer than the cut"
+            );
+            let first = match &plan[0] {
+                PvFoot::Core(c) => foot_priority(*c, ctx, &facts)
+                    .into_iter()
+                    .filter_map(|(op, _)| match op {
+                        HelpOp::Act(a) => Some(PreviewOp::Core(a)),
+                        HelpOp::Cancel => Some(PreviewOp::Cancel),
+                        HelpOp::Menu(_) => None,
+                    })
+                    .collect::<Vec<_>>(),
+                PvFoot::Op(o) => vec![*o],
+                other => panic!("{ctx:?}: the first entry {other:?} is not checked here"),
+            };
+            let (head, tail) = priority_split(ctx, &st, &facts, |_| None::<()>, |_| ());
+            let head: Vec<PreviewOp> = head.into_iter().map(|(o, _)| o).collect();
+            assert_eq!(head, first, "{ctx:?}: the head");
+            assert!(!tail.is_empty(), "{ctx:?}: the tail");
+            checked += 1;
+        }
+        assert_eq!(checked, CTXS.len());
+    }
+
     /// Each state changes exactly what the field says it reads, and nothing else.
     #[test]
     fn the_footer_plan_reads_only_the_fields_it_names() {
