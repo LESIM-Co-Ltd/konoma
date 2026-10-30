@@ -46,8 +46,25 @@ impl HostBuilder {
 
     /// Add a plugin. Its id must not be one that is already taken (a standard plugin's, or one
     /// added before); `run` fails otherwise.
+    ///
+    /// Creating the plugin value must not start a thread: `run` still changes the process
+    /// environment afterwards, which is only sound while this is the single thread. Start threads
+    /// once konoma calls into the plugin.
     pub fn plugin(mut self, plugin: impl Plugin) -> Self {
         self.added.push(Arc::new(plugin));
+        self
+    }
+
+    /// Add the plugins a plugin crate offers: its library's `plugins()` function, which is what
+    /// `konoma plugin install` writes into the program it builds. Each one follows the rules of
+    /// [`plugin`](Self::plugin) (its id must be free; `run` fails otherwise).
+    ///
+    /// The generated `main` calls the crate's `plugins()` before [`run`](Self::run), and `run`
+    /// removes an environment variable early on. So `plugins()`, the code that creates the plugin
+    /// values, must not start a thread (it would race with `getenv`); a plugin starts its threads
+    /// after it is created, from the places where konoma calls into it.
+    pub fn plugins(mut self, plugins: Vec<Box<dyn Plugin>>) -> Self {
+        self.added.extend(plugins.into_iter().map(Arc::from));
         self
     }
 
@@ -172,6 +189,33 @@ mod tests {
             .resolve()
             .unwrap();
         assert_eq!(s.added.len(), 2);
+    }
+
+    #[test]
+    fn plugins_adds_a_crates_whole_list() {
+        let list: Vec<Box<dyn Plugin>> = vec![Box::new(Fake("a")), Box::new(Fake("b"))];
+        let s = Host::builder()
+            .standard_plugins()
+            .plugin(Fake("mine"))
+            .plugins(list)
+            .resolve()
+            .unwrap();
+        let ids: Vec<String> = s.added.iter().map(|p| p.manifest().id).collect();
+        assert_eq!(ids, ["mine", "a", "b"]);
+        assert!(Host::builder().plugins(Vec::new()).resolve().is_ok());
+    }
+
+    #[test]
+    fn plugins_go_through_the_same_id_check() {
+        let std_id: Vec<Box<dyn Plugin>> = vec![Box::new(Fake("markdown"))];
+        let e = err(Host::builder().standard_plugins().plugins(std_id));
+        assert!(e.contains("`markdown`"), "{e}");
+        let internal: Vec<Box<dyn Plugin>> = vec![Box::new(Fake("text"))];
+        assert!(err(Host::builder().plugins(internal)).contains("`text`"));
+        let dup: Vec<Box<dyn Plugin>> = vec![Box::new(Fake("x")), Box::new(Fake("x"))];
+        assert!(err(Host::builder().plugins(dup)).contains("`x`"));
+        let across: Vec<Box<dyn Plugin>> = vec![Box::new(Fake("x"))];
+        assert!(err(Host::builder().plugin(Fake("x")).plugins(across)).contains("`x`"));
     }
 
     #[test]
