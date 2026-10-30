@@ -21,6 +21,7 @@ pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]
 mod settings_parity_tests;
+pub(crate) mod statics;
 #[cfg(test)]
 mod survivor_tests;
 #[cfg(test)]
@@ -176,9 +177,29 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
 
 /// A registry of the standard plugins, with `disabled` ids switched off.
 pub(crate) fn build_registry(disabled: &[String]) -> Registry {
+    build_registry_with(disabled, statics::current())
+}
+
+/// [`build_registry`] with the plugins the program linked in given explicitly (`None` = the plain
+/// standard set).
+fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>) -> Registry {
     let mut r = Registry::new();
-    for m in standard_manifests().into_iter().chain(internal_manifests()) {
-        // The declarations are static; a refusal would be a bug that `tests` catches.
+    // What the program that started konoma linked in (`konoma::Host`): a replaced standard plugin
+    // keeps its place in the order; the added ones follow the standard ones.
+    if linked.is_none_or(|s| s.standard) {
+        for m in standard_manifests() {
+            // The declarations are static; a refusal would be a bug that `tests` catches.
+            let _ = match linked.and_then(|s| s.replaced.get(&m.id)) {
+                Some(p) => register(&mut r, Arc::clone(p), PluginOrigin::User),
+                None => register(&mut r, plugin_of(m), PluginOrigin::Standard),
+            };
+        }
+    }
+    for p in linked.map(|s| s.added.as_slice()).unwrap_or_default() {
+        // A taken or malformed id was refused when the program was assembled (`HostBuilder`).
+        let _ = register(&mut r, Arc::clone(p), PluginOrigin::User);
+    }
+    for m in internal_manifests() {
         let _ = register(&mut r, plugin_of(m), PluginOrigin::Standard);
     }
     for id in disabled {

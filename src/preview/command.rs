@@ -1357,7 +1357,7 @@ mod tests {
     /// there would drop the SVG-process shutdown without a test noticing).
     #[test]
     fn main_leaves_only_through_the_cleanup_helpers() {
-        let main = include_str!("../main.rs");
+        let main = include_str!("../lib.rs");
         assert!(
             main.contains("preview::command::leave_for_good()"),
             "normal exit"
