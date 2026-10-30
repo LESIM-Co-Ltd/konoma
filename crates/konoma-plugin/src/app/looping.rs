@@ -1456,18 +1456,14 @@ struct ReopenedAs {
     /// The actions the destination declared, with the user's `[keys.<id>]` of it: from a
     /// `Reopen` on, the keys, the footer and the help are its, as the session is.
     acts: super::AppActs,
-    /// The verbs (`edit`, `open`) the destination declared: from a `Reopen` on, `e` and `o` go
-    /// where the destination says, as its actions do.
-    verbs: Vec<crate::manifest::VerbDecl>,
 }
 
 impl State {
-    /// The verbs of the plugin showing the file now (the destination's after a `Reopen`).
-    fn verbs<'a>(&'a self, cx: &'a AppCx) -> &'a [crate::manifest::VerbDecl] {
-        match &self.reopened_as {
-            Some(r) => &r.verbs,
-            None => cx.launch.as_ref().map_or(&[], |l| &l.verbs),
-        }
+    /// The verbs (`edit`, `open`) that apply to the file: always the declarations of the plugin
+    /// that took the file over, also after a `Reopen` (a verb belongs to the file, so `e` on a
+    /// reopened docx still opens the docx).
+    fn verbs<'a>(&self, cx: &'a AppCx) -> &'a [crate::manifest::VerbDecl] {
+        cx.launch.as_ref().map_or(&[], |l| &l.verbs)
     }
 
     /// The display types of the plugin showing the file now.
@@ -1780,7 +1776,6 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     shows: m.shows,
                                     unavailable: m.unavailable,
                                     plugin_id: m.id,
-                                    verbs: m.verbs,
                                 }
                             }),
                             &cx.acts,
@@ -3343,7 +3338,6 @@ mod reopen_state_tests {
             shows: Vec::new(),
             unavailable: Default::default(),
             plugin_id: "dest".into(),
-            verbs: Vec::new(),
         }
     }
 

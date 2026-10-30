@@ -183,6 +183,8 @@ fn app_gif_shot(path: &std::path::Path, h: u16, spec: &str, until: Until, pictur
         term: TermCaps::new(),
         title: "t".into(),
         unavailable: opened.unavailable.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let keys = presses(spec)
@@ -393,6 +395,8 @@ fn a_gif_of_one_frame_and_a_broken_gif_are_shown_as_in_the_host() {
         term: TermCaps::new(),
         title: "t".into(),
         unavailable: opened.unavailable.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let keys = presses("+")
@@ -747,7 +751,7 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         display: Default::default(),
         open_dir: None,
         acts: Default::default(),
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
     };
     let mut cx = cx;
     cx.display.wrap = TURN_WRAP.with(|w| w.get());
@@ -1318,7 +1322,7 @@ fn app_msg_rows(path: &std::path::Path) -> Vec<String> {
         display: Default::default(),
         open_dir: None,
         acts: Default::default(),
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1406,7 +1410,7 @@ fn control_characters_and_a_full_width_path_in_a_failure_message_are_drawn_as_in
         display: Default::default(),
         open_dir: None,
         acts: Default::default(),
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
     };
     let mut events = OnceShowing {
         screen: Arc::clone(&screen),
@@ -1454,8 +1458,6 @@ const TEXT_HOST_ONLY: &[&str] = &[
     "F:FOLLOW",
     "C-n/C-p:next/prev file",
     "q:back",
-    "e:edit",
-    "o:open in app",
     "[/]:tab",
 ];
 
@@ -1767,7 +1769,7 @@ fn run_watched(
         display: Default::default(),
         open_dir: None,
         acts: Default::default(),
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
     };
     let mut events = Watched {
         screen: Arc::clone(&screen),
@@ -2031,7 +2033,7 @@ fn app_real_shot(
         display: Default::default(),
         open_dir: None,
         acts: Default::default(),
-        launch: None,
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
     };
     let keys = presses(spec)
         .into_iter()

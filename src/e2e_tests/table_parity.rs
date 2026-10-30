@@ -41,6 +41,16 @@ pub(super) fn presses(spec: &str) -> Vec<(KC, KM)> {
     spec.split_whitespace().map(token).collect()
 }
 
+/// How `e` and `o` run in the app of a parity test: konoma's defaults and the verbs the plugin
+/// declared. Nothing can start (the seams refuse); the launch parity test records instead.
+pub(super) fn default_launch(manifest: &konoma_plugin::Manifest) -> konoma_plugin::app::LaunchCx {
+    konoma_plugin::app::LaunchCx::new(
+        konoma_host_core::editor::EditorConfig::default(),
+        &konoma_host_core::shared::SharedExternal::default(),
+        manifest.verbs.clone(),
+    )
+}
+
 /// The rows of a buffer, a wide symbol counted once.
 pub(super) fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
@@ -76,6 +86,8 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         term: TermCaps::new(),
         title: "t".into(),
         shows: opened.shows.clone(),
+        path: opened.path.clone(),
+        launch: Some(default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -445,9 +457,6 @@ const HOST_ONLY: &[&str] = &[
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "e:open",
-    "o:open in app",
     "O:pages",
     "q:back",
 ];

@@ -110,6 +110,8 @@ fn app_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> Shot 
         term: TermCaps::new(),
         title: "t".into(),
         unavailable: opened.unavailable.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let keys = presses(spec)
@@ -324,8 +326,6 @@ const SPECS: &[&str] = &[
 pub(super) const HOST_ONLY: &[&str] = &[
     "[/]:tab",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "o:open in app",
     "q:back",
 ];
 

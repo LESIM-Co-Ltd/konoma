@@ -56,6 +56,7 @@ fn app_text_by(
             tab_width,
             ..Display::default()
         },
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -444,8 +445,6 @@ const HOST_ONLY: &[&str] = &[
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "o:open in app",
     "q:back",
     "v/V:select",
     "Y:@ref",
@@ -552,11 +551,8 @@ fn the_help_over_a_text_agrees_with_the_host() {
 
 /// The help rows only the host has for a text, by their start.
 const TEXT_HELP_HOST_ONLY: &[&str] = &[
-    "Launch",
     "Actions",
     "Space ",
-    "e ",
-    "o ",
     "Tabs",
     "t ",
     "[ / ]",

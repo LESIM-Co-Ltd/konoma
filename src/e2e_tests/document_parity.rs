@@ -42,6 +42,7 @@ pub(super) fn app_term_plugins(
         // The file is opened from its directory, as the host opens it from its root.
         path: opened.path.clone(),
         open_dir: opened.path.parent().map(|p| p.to_path_buf()),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -129,8 +130,6 @@ const HOST_ONLY: &[&str] = &[
     "Tab:focus",
     "F:FOLLOW",
     "O:outline",
-    "e:edit",
-    "o:open in app",
     "q:back",
     "R:raw source",
 ];
@@ -138,7 +137,6 @@ const HOST_ONLY: &[&str] = &[
 /// The help rows only the host has for a Markdown file, by their start (the keys and sections of
 /// the search, the links, the tasks, bookmarks, tabs, the editor and the chords).
 pub(super) const HELP_HOST_ONLY: &[&str] = &[
-    "Launch",
     "Actions",
     "Tabs",
     "t ",
@@ -148,8 +146,6 @@ pub(super) const HELP_HOST_ONLY: &[&str] = &[
     "P ",
     "F ",
     "Space ",
-    "e ",
-    "o ",
     "h / l",
     "0 / $",
     "/ n / N",
@@ -516,6 +512,8 @@ fn app_term_with(
         lang: "en".into(),
         shows: opened.shows.clone(),
         display: display.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1011,7 +1009,9 @@ fn app_pictures_on(
         term: TermCaps::new(),
         title: String::new(),
         shows: prepared.opened.shows.clone(),
+        path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
+        launch: Some(prepared.launch.clone()),
         ..AppCx::default()
     };
     let mut events = SettleOn {
@@ -1329,7 +1329,9 @@ fn app_reopen_term_bundled(
         shows: prepared.opened.shows.clone(),
         unavailable: prepared.opened.unavailable.clone(),
         plugin_id: prepared.opened.plugin_id.clone(),
+        path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
+        launch: Some(prepared.launch.clone()),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1400,8 +1402,8 @@ fn a_docx_reopened_as_markdown_has_the_hosts_footer_and_help() {
     build_docx(&dir.join("d.docx"), &docx_body());
     let root = canon(&dir);
     let (mut footers, mut helps) = (0, 0);
-    // A Word file is opened, not edited, by the host (`e:open`); the app has no `e`.
-    let host_only: Vec<&str> = HOST_ONLY.iter().copied().chain(["e:open"]).collect();
+    // A Word file is opened, not edited, by the host (`e:open`); the reopened app does the same.
+    let host_only: Vec<&str> = HOST_ONLY.to_vec();
     for spec in ["", "G", "<C-f>"] {
         let what = format!("d.docx [{spec}]");
         let hs = host_term(&root, "d.docx", 220, 31, spec);
@@ -1531,15 +1533,20 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
     s.term.clear().expect("clear");
     s.draw();
     let a = app_reopen_term(&root.join("d.docx"), office_docs(), 100, 30, "");
-    // The host frames the failure with its own hint and path lines; the app draws the failure
-    // message alone. What must agree is the message itself.
+    // The host frames the failure with its own hint line; the message and the path line (the
+    // launched file, which the app now knows for `e`/`o`) are the same on both sides.
     let host_rows = inner(&s.term);
     let app_rows = rows_of(&a);
     let said = "no plugin is available to show this document";
     assert_eq!(host_rows[0], said, "host:\n{}", rows_of(&s.term).join("\n"));
     assert_eq!(app_rows[0], said, "app:\n{}", app_rows.join("\n"));
+    // KNOWN GAP (reported, not fixed): the host puts "Press `e` to open it in an Office app"
+    // on host_rows[1] while `e` opens the file; the app has no such line yet. The path line is
+    // the host's third row and the app's second.
+    // (the host's frame is two columns narrower, so its long path is cut: compare the cut part)
+    assert!(app_rows[1].starts_with(host_rows[2].trim_end()), "the path line");
     assert!(
-        app_rows[1..app_rows.len() - 1].iter().all(|r| r.is_empty()),
+        app_rows[2..app_rows.len() - 1].iter().all(|r| r.is_empty()),
         "nothing else is drawn\n{}",
         app_rows.join("\n")
     );

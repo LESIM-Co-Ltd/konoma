@@ -54,8 +54,8 @@ pub struct LaunchCx {
     pub office_apps: bool,
     /// `[external] open_links`.
     pub open_links: bool,
-    /// The verbs the plugin that shows the file declares ([`crate::Manifest::verbs`]). After a
-    /// `Reopen` the plugin it opened in declares them instead.
+    /// The verbs the plugin that took the file over declares ([`crate::Manifest::verbs`]). They
+    /// stay the file's after a `Reopen`: a verb belongs to the file, not to the plugin showing it.
     pub verbs: Vec<VerbDecl>,
     /// Starts the programs of a GUI chain.
     pub runner: Runner,

@@ -92,6 +92,7 @@ fn app_with(
         hint: o.hint.clone(),
         open_dir: Some(root.to_path_buf()),
         display: Display::default(),
+        launch: Some(super::table_parity::default_launch(&o.manifest)),
         ..AppCx::default()
     };
     let mut evs: std::collections::VecDeque<AppEvent> = keys
@@ -174,12 +175,7 @@ fn the_footer_of_a_canvas_agrees_with_the_host() {
         .collect();
     let ah = hints(ar.last().unwrap());
     // What only the host has: the file jump, the editor, the opener, the tabs.
-    const HOST_ONLY: [&str; 4] = [
-        "C-n/C-p:next/prev file",
-        "e:edit",
-        "o:open in app",
-        "[/]:tab",
-    ];
+    const HOST_ONLY: [&str; 2] = ["C-n/C-p:next/prev file", "[/]:tab"];
     let (alone, compared) = same_footer("canvas footer", &hh, &ah, &HOST_ONLY, &|_| false);
     let seen: std::collections::BTreeSet<String> = alone.into_iter().collect();
     assert_all_seen("HOST_ONLY", &HOST_ONLY, &seen);
@@ -205,8 +201,7 @@ fn the_help_of_a_canvas_agrees_with_the_host() {
     }
     // The rows only the host has, by their start: the launch keys, the menus, the tabs, the
     // file jump, the `@path` copy, the paste and the follow mode.
-    const HOST_ONLY: [&str; 16] = [
-        "Launch",
+    const HOST_ONLY: [&str; 13] = [
         "Actions",
         "Space ",
         "Tabs",
@@ -220,8 +215,6 @@ fn the_help_of_a_canvas_agrees_with_the_host() {
         "Ctrl-n / Ctrl-p",
         "m / '",
         "r ",
-        "e ",
-        "o ",
     ];
     let nonblank =
         |v: Vec<String>| -> Vec<String> { v.into_iter().filter(|l| !l.is_empty()).collect() };
