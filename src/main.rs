@@ -1465,7 +1465,8 @@ fn run_external(
 ) -> Result<std::io::Result<std::process::ExitStatus>> {
     // The suspend / run / restore sequence is the shared `hand_off` (raw mode, synchronized
     // update, alternate screen, input modes; see its documentation). Only the frame is ours.
-    let status = konoma_host_core::term::hand_off(prog, args, cwd, &mut || {
+    // konoma turns bracketed paste on at startup (drag and drop), so it was on before the hand-off.
+    let status = konoma_host_core::term::hand_off(prog, args, cwd, true, &mut || {
         // A frame (a kitty transmit is a run of chunks) is written under the right to write to
         // the terminal, like the run loop's: an exit signal must not land inside it.
         let _writing = preview::command::terminal_write();
