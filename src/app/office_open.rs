@@ -8,18 +8,19 @@
 use std::path::{Path, PathBuf};
 
 use super::App;
-use crate::i18n::{tr, Msg};
+use crate::i18n::Msg;
 
 // The pure chain (what to try, in which order, and how a launch is judged) is shared with the
 // standalone plugin app; only the App side stays here.
 #[cfg(test)]
-pub(crate) use konoma_plugin::launch::{attempts_for_verb, plan};
+pub(crate) use konoma_plugin::launch::{attempts_for_verb, plan, OfficeKind};
 pub(crate) use konoma_plugin::launch::{
-    office_kind, run_chain, Attempt, Disabled, Launch, LaunchPolicy, OfficeKind, OfficeOs, Opener,
-    Runner,
+    office_kind, run_chain, Attempt, Launch, LaunchPolicy, OfficeOs, Opener, Runner,
 };
 
-/// What `e` does for a file.
+/// What `e` does for a file, as the tests word it (a view of [`App::edit_launch`]; the footer, the
+/// help and the handler read `host::launch::edit_word` of the same launch).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditTarget {
     /// The external editor (`$EDITOR` / `[editor]`).
@@ -104,8 +105,8 @@ impl App {
         )
     }
 
-    /// What `e` does for `path`, as the help row and the `e` handler word it (a view of
-    /// [`App::edit_launch`]).
+    /// What `e` does for `path` (test view of [`App::edit_launch`]).
+    #[cfg(test)]
     pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
         match self.edit_launch(path) {
             Launch::Editor { .. } | Launch::Terminal(_) => EditTarget::Editor,
@@ -133,10 +134,11 @@ impl App {
             super::open_app::VerbTarget::File(p) => Some(p),
             _ => None,
         };
-        match path.map(|p| self.edit_target(&p)) {
-            Some(EditTarget::OfficeApp(_) | EditTarget::DeclaredApp) => Some(office_label),
-            Some(EditTarget::OfficeDisabled) => None,
-            Some(EditTarget::Editor) | None => Some(editor_label),
+        use konoma_plugin::host::launch::{edit_word, EditWord};
+        match path.map(|p| edit_word(&self.edit_launch(&p))) {
+            Some(EditWord::App) => Some(office_label),
+            Some(EditWord::Off) => None,
+            Some(EditWord::Editor) | None => Some(editor_label),
         }
     }
 
@@ -148,8 +150,8 @@ impl App {
             // The terminal hand-over of a declared chain is not wired in the host yet; the
             // editor path is the safe landing.
             Launch::Editor { .. } | Launch::Terminal(_) => false,
-            Launch::Disabled(_) => {
-                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
+            Launch::Disabled(d) => {
+                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, d));
                 true
             }
             Launch::Gui(attempts) => {
@@ -180,26 +182,10 @@ impl App {
 
     /// Report a finished attempt via flash. Returns whether anything changed (redraw).
     pub fn apply_office_open(&mut self, r: OfficeOpenResult) -> bool {
-        self.flash = Some(match r.outcome {
-            Ok(opener) => match opener {
-                Opener::Microsoft(k) => tr(self.lang, Msg::OfficeOpenedIn).replace(
-                    "{app}",
-                    match k {
-                        OfficeKind::Word => "Microsoft Word",
-                        OfficeKind::Excel => "Microsoft Excel",
-                        OfficeKind::PowerPoint => "Microsoft PowerPoint",
-                    },
-                ),
-                Opener::LibreOffice => {
-                    tr(self.lang, Msg::OfficeOpenedIn).replace("{app}", "LibreOffice")
-                }
-                Opener::SystemDefault => tr(self.lang, Msg::OfficeOpenedDefault).to_string(),
-                Opener::Declared => tr(self.lang, Msg::Opened)
-                    .trim_end_matches([':', ' '])
-                    .to_string(),
-            },
-            Err(e) => format!("{}{e}", tr(self.lang, Msg::OfficeOpenFailed)),
-        });
+        // The wording is the shared one (the standalone app tells the same).
+        self.flash = Some(konoma_plugin::host::launch::chain_notice(
+            self.lang, &r.outcome,
+        ));
         true
     }
 }

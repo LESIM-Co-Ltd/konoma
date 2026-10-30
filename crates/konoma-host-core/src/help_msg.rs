@@ -116,6 +116,18 @@ pub enum CoreMsg {
     PluginKeyBad,
     StPluginInput,
     StPluginInputHint,
+    /// The notices of `e` and `o` (the launch verbs), told alike by konoma and the standalone app.
+    CannotEditDirectory,
+    EditorFailed,
+    NoFileToEdit,
+    NotAFile,
+    Opened,
+    ExternalOpenLinksDisabled,
+    OfficeAppsDisabled,
+    OfficeOpenedIn,
+    OfficeOpenedDefault,
+    OfficeOpenFailed,
+    NoFileToOpenApp,
 }
 impl CoreMsg {
     /// Every message, for the tests that walk the whole set.
@@ -231,6 +243,17 @@ impl CoreMsg {
         CoreMsg::PluginKeyBad,
         CoreMsg::StPluginInput,
         CoreMsg::StPluginInputHint,
+        CoreMsg::CannotEditDirectory,
+        CoreMsg::EditorFailed,
+        CoreMsg::NoFileToEdit,
+        CoreMsg::NotAFile,
+        CoreMsg::Opened,
+        CoreMsg::ExternalOpenLinksDisabled,
+        CoreMsg::OfficeAppsDisabled,
+        CoreMsg::OfficeOpenedIn,
+        CoreMsg::OfficeOpenedDefault,
+        CoreMsg::OfficeOpenFailed,
+        CoreMsg::NoFileToOpenApp,
     ];
     pub fn en(self) -> &'static str {
         match self {
@@ -358,6 +381,21 @@ impl CoreMsg {
             CoreMsg::PluginKeyBad => "[keys.{plugin}] key `{key}` not used: {why}",
             CoreMsg::StPluginInput => "INPUT",
             CoreMsg::StPluginInputHint => "the plugin is taking your typing   Esc:leave",
+            CoreMsg::CannotEditDirectory => "cannot edit a directory",
+            CoreMsg::EditorFailed => "editor failed: ",
+            CoreMsg::NoFileToEdit => "no file to edit",
+            CoreMsg::NotAFile => "not a file",
+            CoreMsg::Opened => "opened: ",
+            CoreMsg::ExternalOpenLinksDisabled => {
+                "opening links/files is disabled (config: [external] open_links = false)"
+            }
+            CoreMsg::OfficeAppsDisabled => {
+                "opening Office documents in an app is disabled (config: [external] office_apps = false)"
+            }
+            CoreMsg::OfficeOpenedIn => "opened in {app}",
+            CoreMsg::OfficeOpenedDefault => "opened with the default app",
+            CoreMsg::OfficeOpenFailed => "could not open: ",
+            CoreMsg::NoFileToOpenApp => "no file to open in an app",
         }
     }
     pub fn ja(self) -> &'static str {
@@ -483,6 +521,21 @@ impl CoreMsg {
             CoreMsg::PluginKeyBad => "[keys.{plugin}] キー `{key}` を使えません: {why}",
             CoreMsg::StPluginInput => "入力",
             CoreMsg::StPluginInputHint => "プラグインが入力を受けています   Esc:抜ける",
+            CoreMsg::CannotEditDirectory => "ディレクトリは編集できません",
+            CoreMsg::EditorFailed => "エディタ起動失敗: ",
+            CoreMsg::NoFileToEdit => "編集対象がありません",
+            CoreMsg::NotAFile => "ファイルではありません",
+            CoreMsg::Opened => "開きました: ",
+            CoreMsg::ExternalOpenLinksDisabled => {
+                "リンク/ファイルを開く機能は無効です(設定: [external] open_links = false)"
+            }
+            CoreMsg::OfficeAppsDisabled => {
+                "Office アプリで開く機能は無効です(設定: [external] office_apps = false)"
+            }
+            CoreMsg::OfficeOpenedIn => "{app} で開きました",
+            CoreMsg::OfficeOpenedDefault => "既定のアプリで開きました",
+            CoreMsg::OfficeOpenFailed => "開けませんでした: ",
+            CoreMsg::NoFileToOpenApp => "アプリで開く対象がありません",
         }
     }
     pub fn tr(self, lang: Lang) -> &'static str {

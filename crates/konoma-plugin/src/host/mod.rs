@@ -14,4 +14,5 @@
 
 pub mod acts;
 pub mod bind;
+pub mod launch;
 pub mod typing;

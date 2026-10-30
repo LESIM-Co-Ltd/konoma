@@ -9,7 +9,7 @@
 //! Office files, the OS default for everything else) on a worker thread, like `e` does for Office
 //! files (`office_open`), so the UI never blocks.
 
-use super::office_open::{Disabled, Launch, OfficeOs};
+use super::office_open::{Launch, OfficeOs};
 use super::*;
 use crate::i18n::Msg;
 
@@ -145,11 +145,8 @@ impl App {
         );
         match launch {
             Launch::Gui(attempts) | Launch::Terminal(attempts) => self.start_chain(attempts),
-            Launch::Disabled(Disabled::OfficeApps) => {
-                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into())
-            }
-            Launch::Disabled(Disabled::OpenLinks) => {
-                self.flash = Some(tr(self.lang, Msg::ExternalOpenLinksDisabled).into())
+            Launch::Disabled(d) => {
+                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, d))
             }
             // `o` never opens the editor.
             Launch::Editor { .. } => {}

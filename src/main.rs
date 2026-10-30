@@ -1381,9 +1381,9 @@ fn run_editor(
     match status {
         Ok(_) => app.reload_preview(), // apply the rewritten result (drop the cache + re-open the window)
         Err(e) => {
-            app.flash = Some(format!(
-                "{}{e}",
-                i18n::tr(app.lang, crate::i18n::Msg::EditorFailed)
+            app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
+                app.lang,
+                &e.to_string(),
             ))
         }
     }
