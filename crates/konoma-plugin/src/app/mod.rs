@@ -21,6 +21,7 @@ mod doc_pictures;
 mod document;
 mod draw;
 mod edit_line;
+mod launch;
 mod looping;
 mod pictures;
 mod space;
@@ -41,6 +42,7 @@ pub use acts::AppActs;
 pub use display::Display;
 pub use doc_pictures::DocEnv;
 pub use edit_line::edit_line;
+pub use launch::{HandOff, LaunchCx, LaunchFacts};
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
@@ -410,6 +412,9 @@ pub struct Prepared {
     pub display: Display,
     /// The actions the plugin declared, with the user's keys (put it in [`AppCx::acts`]).
     pub acts: AppActs,
+    /// How `e` and `o` run (the program puts [`LaunchCx::live`] of it in [`AppCx::launch`]; a test
+    /// puts a recording runner there instead).
+    pub launch: LaunchCx,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -457,6 +462,7 @@ pub fn prepare_bundled(
     let display = Display::of(&loaded.0);
     let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
     let user_keys = loaded.0.keys.clone();
+    let launch_settings = (loaded.0.editor.clone(), loaded.0.external.clone());
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
@@ -501,6 +507,11 @@ pub fn prepare_bundled(
                 &plugin_tables,
             )
             .0,
+            launch: LaunchCx::new(
+                launch_settings.0,
+                &launch_settings.1,
+                opened.manifest.verbs.clone(),
+            ),
             opened,
             keys,
             lang,
@@ -550,6 +561,7 @@ pub fn run_bundled(
         reopen,
         display,
         acts,
+        launch,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -575,6 +587,7 @@ pub fn run_bundled(
         display,
         open_dir: std::env::current_dir().ok(),
         acts,
+        launch: Some(launch.live()),
     };
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are

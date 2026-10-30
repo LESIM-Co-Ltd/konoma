@@ -18,8 +18,9 @@ use konoma_host_core::preview_plan::{
     PreviewState,
 };
 
-use super::AppActs;
+use super::{AppActs, LaunchFacts};
 use crate::host::acts::{self as hacts, ActBinding, ActGate};
+use crate::host::launch::EditWord;
 
 /// What an item of the menu runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,10 @@ pub(super) enum SpaceOp {
     Zoom(i8),
     /// Fits the picture again.
     ZoomReset,
+    /// `e`: edit the file (in the editor, or the app its plugin declares).
+    Edit,
+    /// `o`: open the file in another app.
+    Open,
     /// A display option the `,` menu has too (the path style, the wrap).
     Core(CoreAction),
     /// The declared action at this place among the actions of the screen's key context.
@@ -56,9 +61,10 @@ enum Cand {
 /// carries the selection keys as it does in the host. `windowed` is whether the screen is that
 /// windowed text (`windowed_text`): a message, a failed page and the like are not, and the host
 /// plans no selection keys for them either.
-fn state(ctx: CoreContext, windowed: bool) -> PreviewState {
+fn state(ctx: CoreContext, windowed: bool, launch: &LaunchFacts) -> PreviewState {
     PreviewState {
-        edit_named: true,
+        // The host names `e` unless it only explains (Office documents switched off).
+        edit_named: launch.edit.is_none_or(|w| w != EditWord::Off),
         decorated: ctx == CoreContext::Document,
         windowed: ctx == CoreContext::Text && windowed,
         ..PreviewState::default()
@@ -84,6 +90,7 @@ pub(super) fn items(
     acts: &AppActs,
     act_ctx: &str,
     windowed: bool,
+    launch: &LaunchFacts,
     enabled: impl Fn(&str) -> bool,
 ) -> Vec<Item<SpaceOp, String>> {
     let here = hacts::acts_in(&acts.bindings, act_ctx);
@@ -102,7 +109,7 @@ pub(super) fn items(
         })
         .collect();
     let refs: Vec<&ActBinding<usize>> = numbered.iter().collect();
-    let st = state(ctx, windowed);
+    let st = state(ctx, windowed, launch);
 
     let declared: Vec<(Cand, Option<KeyPress>)> = hacts::menu_candidates(&refs)
         .into_iter()
@@ -152,6 +159,9 @@ pub(super) fn items(
             Cand::Op(o @ PreviewOp::Core(CoreAction::CyclePathStyle | CoreAction::ToggleWrap)) => {
                 unkeyed(ctx).contains(&o)
             }
+            // `e` and `o` act where the program has them and they do something now.
+            Cand::Op(PreviewOp::Core(CoreAction::RequestEdit)) => launch.edit_acts(),
+            Cand::Op(PreviewOp::Core(CoreAction::OpenExternal)) => launch.open,
             // The rest is what only konoma runs (or the app does not offer): it keeps its letter.
             Cand::Op(_) => false,
             Cand::Declared(i) => {
@@ -168,6 +178,17 @@ pub(super) fn items(
             }
             Cand::Op(PreviewOp::Core(CoreAction::ImageZoomOut)) => {
                 Some(CoreMsg::MenuZoomOut.tr(lang).to_string())
+            }
+            Cand::Op(PreviewOp::Core(CoreAction::RequestEdit)) => Some(
+                match launch.edit {
+                    Some(EditWord::App) => CoreMsg::HintOpen,
+                    _ => CoreMsg::HintEdit,
+                }
+                .tr(lang)
+                .to_string(),
+            ),
+            Cand::Op(PreviewOp::Core(CoreAction::OpenExternal)) => {
+                Some(CoreMsg::HintOpenApp.tr(lang).to_string())
             }
             Cand::Op(PreviewOp::ToggleTableCell) => {
                 Some(CoreMsg::HintViewCell.tr(lang).to_string())
@@ -189,6 +210,8 @@ pub(super) fn items(
             Cand::Op(PreviewOp::Core(CoreAction::ImageZoomIn)) => SpaceOp::Zoom(1),
             Cand::Op(PreviewOp::Core(CoreAction::ImageZoomOut)) => SpaceOp::Zoom(-1),
             Cand::Op(PreviewOp::Core(CoreAction::ImageZoomReset)) => SpaceOp::ZoomReset,
+            Cand::Op(PreviewOp::Core(CoreAction::RequestEdit)) => SpaceOp::Edit,
+            Cand::Op(PreviewOp::Core(CoreAction::OpenExternal)) => SpaceOp::Open,
             Cand::Op(PreviewOp::Core(a)) => SpaceOp::Core(a),
             Cand::Declared(i) => SpaceOp::Declared(i),
             Cand::Op(_) => return None,
@@ -229,6 +252,7 @@ mod tests {
             &AppActs::default(),
             "text",
             true,
+            &LaunchFacts::default(),
             |_| true,
         )
         .into_iter()
@@ -242,7 +266,7 @@ mod tests {
         // `Y` in its footer plan, windowed text has them, and the decorated document is not
         // windowed whatever is asked.
         let plan = |ctx, windowed| {
-            let st = state(ctx, windowed);
+            let st = state(ctx, windowed, &LaunchFacts::default());
             konoma_host_core::preview_plan::priority(
                 ctx,
                 &st,
@@ -265,9 +289,9 @@ mod tests {
         assert!(has_select(&plan(CoreContext::Text, true)));
         assert!(!has_select(&plan(CoreContext::Text, false)));
         assert!(!has_select(&plan(CoreContext::Document, true)));
-        assert!(state(CoreContext::Text, true).windowed);
-        assert!(!state(CoreContext::Text, false).windowed);
-        assert!(!state(CoreContext::Document, true).windowed);
+        assert!(state(CoreContext::Text, true, &LaunchFacts::default()).windowed);
+        assert!(!state(CoreContext::Text, false, &LaunchFacts::default()).windowed);
+        assert!(!state(CoreContext::Document, true, &LaunchFacts::default()).windowed);
     }
 
     #[test]

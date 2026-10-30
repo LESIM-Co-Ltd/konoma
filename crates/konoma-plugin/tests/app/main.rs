@@ -3,6 +3,7 @@
 mod config;
 mod help;
 mod keys;
+mod launch;
 mod looping;
 mod open;
 mod options;

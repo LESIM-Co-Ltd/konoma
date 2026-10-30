@@ -68,6 +68,9 @@ pub struct AppCx {
     /// The actions the plugin declared ([`crate::Manifest::actions`]), with the user's keys: the
     /// footer and the help name them, and their keys run them.
     pub acts: super::AppActs,
+    /// What `e` and `o` need (`None`: the program has neither key). Both keys act, are named in
+    /// the footer, the help and the `Space` menu, and run only when this is set.
+    pub launch: Option<super::LaunchCx>,
 }
 
 impl Default for AppCx {
@@ -86,6 +89,7 @@ impl Default for AppCx {
             reopen: None,
             display: super::Display::default(),
             acts: super::AppActs::default(),
+            launch: None,
         }
     }
 }
@@ -111,6 +115,8 @@ pub struct AppKeys {
     /// The text on screen has the caret (the file's text in the host's frame): the sideways keys
     /// move it whether the text wraps or not.
     caret: bool,
+    /// What `e` and `o` do on the screen now (the loop sets it for each frame).
+    launch: super::LaunchFacts,
 }
 
 impl AppKeys {
@@ -122,7 +128,53 @@ impl AppKeys {
             lang: Lang::En,
             wrap: true,
             caret: false,
+            launch: super::LaunchFacts::default(),
         }
+    }
+
+    /// The same keys with `e` and `o` doing what `launch` says.
+    pub fn with_launch(mut self, launch: super::LaunchFacts) -> AppKeys {
+        self.launch = launch;
+        self
+    }
+
+    /// `facts` with `e` and `o` on when they act, and named as the host names them: `e` is
+    /// `edit` for the editor and `open` for an application, and its help says so
+    /// (`ctx` picks the editor's wording).
+    fn with_launch_facts(&self, ctx: CoreContext, mut facts: HelpFacts) -> HelpFacts {
+        let edit = HelpOp::Act(CoreAction::RequestEdit);
+        let open = HelpOp::Act(CoreAction::OpenExternal);
+        if self.launch.edit_acts() {
+            facts.off.retain(|o| *o != edit);
+            let app = self.launch.edit == Some(crate::host::launch::EditWord::App);
+            let (label, help) = if app {
+                (CoreMsg::HintOpen, CoreMsg::EditInOfficeApp)
+            } else if matches!(ctx, CoreContext::Text | CoreContext::Document) {
+                (CoreMsg::HintEdit, CoreMsg::EditExternalEnv)
+            } else {
+                (CoreMsg::HintEdit, CoreMsg::EditExternal)
+            };
+            facts.label.push((CoreAction::RequestEdit, Some(label)));
+            facts.help.push((CoreAction::RequestEdit, Some(help)));
+        }
+        if self.launch.open {
+            facts.off.retain(|o| *o != open);
+        }
+        facts
+    }
+
+    /// The footer tokens of `e` and `o` over `ctx`, those that act (the host's plan puts them
+    /// right after the help).
+    fn launch_tokens(
+        &self,
+        ctx: CoreContext,
+        facts: &HelpFacts,
+        look: &CoreLookup,
+    ) -> Vec<CoreToken> {
+        [CoreFoot::Edit, CoreFoot::Open]
+            .into_iter()
+            .filter_map(|f| render_foot(f, ctx, facts, look, self.lang))
+            .collect()
     }
 
     /// The same keys over a text that has the caret (`true`: the file's text in the host's
@@ -193,14 +245,15 @@ impl AppKeys {
                 }
             }
         }
-        HelpFacts {
+        let facts = HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
             help: vec![
                 (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
                 (CoreAction::Quit, Some(CoreMsg::QuitApp)),
             ],
-        }
+        };
+        self.with_launch_facts(ctx, facts)
     }
 
     /// The footer's key hints: what leaves (`q` or else `Q` or else `Ctrl-C`, whichever really
@@ -235,6 +288,7 @@ impl AppKeys {
         }
         out.push(leave);
         out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(ctx, &facts, &look));
         // The host names the `,` menu on any text screen, one that scrolls or not.
         for f in [
             CoreFoot::Ends,
@@ -538,7 +592,7 @@ impl AppKeys {
                 }
             }
         }
-        HelpFacts {
+        let facts = HelpFacts {
             off,
             label: {
                 let mut v = vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))];
@@ -559,7 +613,8 @@ impl AppKeys {
                 }
                 v
             },
-        }
+        };
+        self.with_launch_facts(CoreContext::Table, facts)
     }
 
     fn table_lookup(&self) -> CoreLookup<'_> {
@@ -594,6 +649,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Table, &facts, &look));
         out.extend(tok(CoreFoot::Options));
         out
     }
@@ -756,6 +812,14 @@ impl AppKeys {
             }
             CoreResolution::Action(CoreAction::PageNext) if !popup => Some(Act::Page(1)),
             CoreResolution::Action(CoreAction::PagePrev) if !popup => Some(Act::Page(-1)),
+            CoreResolution::Action(CoreAction::RequestEdit)
+                if !popup && self.launch.edit_acts() =>
+            {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if !popup && self.launch.open => {
+                Some(Act::Open)
+            }
             _ => None,
         }
     }
@@ -818,14 +882,15 @@ impl AppKeys {
                 }
             }
         }
-        HelpFacts {
+        let facts = HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
             help: vec![
                 (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
                 (CoreAction::Quit, Some(CoreMsg::QuitApp)),
             ],
-        }
+        };
+        self.with_launch_facts(CoreContext::Image, facts)
     }
 
     fn image_lookup(&self) -> CoreLookup<'_> {
@@ -852,6 +917,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Image, &facts, &look));
         out.extend(tok(CoreFoot::Options));
         out
     }
@@ -918,6 +984,10 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
             CoreResolution::Action(CoreAction::PageNext) => Some(Act::Page(1)),
             CoreResolution::Action(CoreAction::PagePrev) => Some(Act::Page(-1)),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
             _ => None,
         }
     }
@@ -975,14 +1045,15 @@ impl AppKeys {
                 }
             }
         }
-        HelpFacts {
+        let facts = HelpFacts {
             off,
             label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
             help: vec![
                 (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
                 (CoreAction::Quit, Some(CoreMsg::QuitApp)),
             ],
-        }
+        };
+        self.with_launch_facts(CoreContext::Canvas, facts)
     }
 
     fn canvas_lookup(&self) -> CoreLookup<'_> {
@@ -1004,6 +1075,7 @@ impl AppKeys {
                 .unwrap_or_else(|| ctrl_c_token(self.lang)),
         );
         out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Canvas, &facts, &look));
         out.extend(tok(CoreFoot::Options));
         out
     }
@@ -1052,6 +1124,7 @@ impl AppKeys {
             acts,
             act_ctx,
             windowed,
+            &self.launch,
             enabled,
         )
     }
@@ -1146,6 +1219,10 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
             _ => None,
         }
     }
@@ -1205,6 +1282,10 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
             _ => None,
         }
     }
@@ -1286,6 +1367,10 @@ enum Act {
     Zoom(i32),
     /// A still picture back to fit.
     ZoomReset,
+    /// `e`: the editor, or the application the plugin declares.
+    Edit,
+    /// `o`: open in another application.
+    Open,
 }
 
 /// The key as the shared tables name it. Alt and the keys that are not part of the shared
@@ -1356,6 +1441,9 @@ impl<I: Iterator<Item = AppEvent>> EventSource for I {
 
 use crate::host::typing::{MAX_REDRAW_AFTER as MAX_REDRAW, MIN_REDRAW_AFTER as MIN_REDRAW};
 
+/// How soon the loop looks again while a chain `e` or `o` started on a worker has not answered.
+const LAUNCH_WAKE: Duration = Duration::from_millis(50);
+
 /// The one content type the app shows a `Reopen` as (konoma's `markdown`, which the document
 /// widget draws).
 const REOPEN_ACCEPTS: &str = "markdown";
@@ -1368,9 +1456,20 @@ struct ReopenedAs {
     /// The actions the destination declared, with the user's `[keys.<id>]` of it: from a
     /// `Reopen` on, the keys, the footer and the help are its, as the session is.
     acts: super::AppActs,
+    /// The verbs (`edit`, `open`) the destination declared: from a `Reopen` on, `e` and `o` go
+    /// where the destination says, as its actions do.
+    verbs: Vec<crate::manifest::VerbDecl>,
 }
 
 impl State {
+    /// The verbs of the plugin showing the file now (the destination's after a `Reopen`).
+    fn verbs<'a>(&'a self, cx: &'a AppCx) -> &'a [crate::manifest::VerbDecl] {
+        match &self.reopened_as {
+            Some(r) => &r.verbs,
+            None => cx.launch.as_ref().map_or(&[], |l| &l.verbs),
+        }
+    }
+
     /// The display types of the plugin showing the file now.
     fn shows<'a>(&'a self, cx: &'a AppCx) -> &'a [ViewKind] {
         self.reopened_as.as_ref().map_or(&cx.shows, |r| &r.shows)
@@ -1589,6 +1688,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         };
     }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
+    // The notices of the GUI chains `e` and `o` walk on a worker; `launching` counts those out.
+    let (launch_tx, launch_rx) =
+        std::sync::mpsc::channel::<Result<crate::launch::Opener, String>>();
+    let mut launching = 0usize;
     // The frame of the last view, and when that view is due again (a wake for the pictures
     // draws this frame again).
     let mut base = Frame::Lines(Vec::new());
@@ -1613,6 +1716,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             need_view = true;
         }
         let mut view_wait = None;
+        while let Ok(outcome) = launch_rx.try_recv() {
+            launching = launching.saturating_sub(1);
+            st.flash = Some(crate::host::launch::chain_notice(own.lang(), &outcome));
+        }
         // The file is opened again with its plugin (an `Outcome::Reload`): the new session is the
         // one asked from here on, and a `Reopen` the file leads to is decided again. The frame
         // on screen and the scroll stay until the new view lands. A source that does not know the
@@ -1673,6 +1780,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     shows: m.shows,
                                     unavailable: m.unavailable,
                                     plugin_id: m.id,
+                                    verbs: m.verbs,
                                 }
                             }),
                             &cx.acts,
@@ -1824,6 +1932,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             }
             _ => super::edit_line::clear(),
         }
+        // What `e` and `o` do now: one answer for the keys, the footer, the help and the menu.
+        own.launch = match cx.launch.as_ref() {
+            Some(lc) => lc.facts(st.verbs(cx), &cx.path),
+            None => super::LaunchFacts::default(),
+        };
         let keys = &own;
         let mode = shown_mode(&base, &st);
         let image_mode = image_mode(&base, pictures.as_ref(), &st);
@@ -2059,6 +2172,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             .as_ref()
             .and_then(Pictures::wake_in)
             .filter(|_| st.help.is_none());
+        // A chain on a worker is waited for in short steps: its notice is drawn when it lands.
+        let pic_wait = match (pic_wait, launching > 0) {
+            (_, false) => pic_wait,
+            (Some(p), true) => Some(p.min(LAUNCH_WAKE)),
+            (None, true) => Some(LAUNCH_WAKE),
+        };
         let picture_first = match (view_left, pic_wait) {
             (Some(v), Some(p)) => p < v,
             (None, Some(_)) => true,
@@ -2219,6 +2338,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         Some(space::SpaceOp::Cell) => Some(Act::Cell),
                         Some(space::SpaceOp::Zoom(d)) => Some(Act::Zoom(d.into())),
                         Some(space::SpaceOp::ZoomReset) => Some(Act::ZoomReset),
+                        Some(space::SpaceOp::Edit) => Some(Act::Edit),
+                        Some(space::SpaceOp::Open) => Some(Act::Open),
                         _ => None,
                     },
                     _ if declared.is_some() => None,
@@ -2379,7 +2500,59 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             p.still_zoom_reset();
                         }
                     }
+                    (Some(act @ (Act::Edit | Act::Open)), None) => {
+                        if let Some(lc) = cx.launch.as_ref() {
+                            let verbs = st.verbs(cx).to_vec();
+                            let mut redraw = || {
+                                let _writing = konoma_host_core::term::terminal_write();
+                                terminal
+                                    .clear()
+                                    .map_err(|e| std::io::Error::other(e.to_string()))
+                            };
+                            let done = if act == Act::Edit {
+                                super::launch::edit(
+                                    lc,
+                                    &verbs,
+                                    &cx.path,
+                                    super::edit_line::edit_line(),
+                                    own.lang(),
+                                    &launch_tx,
+                                    &mut redraw,
+                                )
+                            } else {
+                                super::launch::open(
+                                    lc,
+                                    &verbs,
+                                    &cx.path,
+                                    own.lang(),
+                                    &launch_tx,
+                                    &mut redraw,
+                                )
+                            };
+                            if lc.worker && done.notice.is_none() && !done.handed && !done.reload {
+                                // A chain was handed to a worker (or nothing was started).
+                                launching += 1;
+                            }
+                            if done.notice.is_some() {
+                                st.flash = done.notice;
+                            }
+                            if done.reload {
+                                st.reload = true;
+                            }
+                            if done.handed {
+                                // The terminal was another program's meanwhile: the pictures
+                                // placed on it are drawn again.
+                                if let Some(p) = pictures.as_mut() {
+                                    p.forget();
+                                    p.forget_still();
+                                    p.reset_document();
+                                }
+                                need_view = true;
+                            }
+                        }
+                    }
                     (Some(Act::Cell | Act::Page(_) | Act::Zoom(_) | Act::ZoomReset), Some(_)) => {}
+                    (Some(Act::Edit | Act::Open), Some(_)) => {}
                     (None, _) => {}
                 }
                 if kept_failure && !need_view {
@@ -3170,6 +3343,7 @@ mod reopen_state_tests {
             shows: Vec::new(),
             unavailable: Default::default(),
             plugin_id: "dest".into(),
+            verbs: Vec::new(),
         }
     }
 
@@ -3227,6 +3401,7 @@ mod reopen_state_tests {
             open_dir: None,
             display: Default::default(),
             acts: Default::default(),
+            launch: None,
         }
     }
 }
