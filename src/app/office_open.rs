@@ -12,8 +12,11 @@ use crate::i18n::{tr, Msg};
 
 // The pure chain (what to try, in which order, and how a launch is judged) is shared with the
 // standalone plugin app; only the App side stays here.
+#[cfg(test)]
+pub(crate) use konoma_plugin::launch::{attempts_for_verb, plan};
 pub(crate) use konoma_plugin::launch::{
-    attempts_for_verb, office_kind, plan, run_chain, Attempt, OfficeKind, OfficeOs, Opener, Runner,
+    office_kind, run_chain, Attempt, Disabled, Launch, LaunchPolicy, OfficeKind, OfficeOs, Opener,
+    Runner,
 };
 
 /// What `e` does for a file.
@@ -23,6 +26,9 @@ pub(crate) enum EditTarget {
     Editor,
     /// An Office app of this kind (the platform chain in [`plan`]).
     OfficeApp(OfficeKind),
+    /// A GUI program chain the plugin that shows the file declares for `edit` (not an Office
+    /// document).
+    DeclaredApp,
     /// An Office document while `[external] office_apps = false`: `e` only flashes why.
     OfficeDisabled,
 }
@@ -63,31 +69,57 @@ impl App {
         self.office_runner = r;
     }
 
-    /// What `e` does for `path`. The one decision `try_open_in_office` acts on and the `?` help
-    /// row is worded from ([[hint-shown-iff-key-acts]]): an explicit per-extension `[editor] ext`
-    /// entry always wins (the user asked for it), then the Office-app switch.
-    pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
-        let Some(kind) = office_kind(path) else {
-            return EditTarget::Editor;
-        };
+    /// The settings the launch verbs read, for `path`.
+    pub(crate) fn launch_policy(&self, path: &Path) -> LaunchPolicy {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if self
-            .cfg
-            .editor
-            .ext
-            .get(&ext)
-            .is_some_and(|c| !c.trim().is_empty())
-        {
-            return EditTarget::Editor;
+        LaunchPolicy {
+            editor_ext_explicit: self
+                .cfg
+                .editor
+                .ext
+                .get(&ext)
+                .is_some_and(|c| !c.trim().is_empty()),
+            office_apps: self.cfg.external.office_apps,
+            open_links: self.cfg.external.open_links,
         }
-        if !self.cfg.external.office_apps {
-            return EditTarget::OfficeDisabled;
+    }
+
+    /// Where `e` goes for `path`: the shared [`konoma_plugin::launch::resolve_launch`] over the
+    /// `edit` verb the plugin that shows the file declares, `[editor] ext` and `[external]`. The
+    /// declaration is found from the path alone (the footer asks every frame, so no file is read),
+    /// and `e` acts on the same answer the hint is worded from ([[hint-shown-iff-key-acts]]).
+    pub(crate) fn edit_launch(&self, path: &Path) -> Launch {
+        let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let decl = crate::plugins::declared_verb_by_path(
+            &self.cfg.preview.rules,
+            &self.cfg.plugin_disabled(),
+            &abs,
+            konoma_plugin::Verb::Edit,
+        );
+        konoma_plugin::launch::resolve_launch(
+            konoma_plugin::Verb::Edit,
+            OfficeOs::current(),
+            decl.as_ref(),
+            &abs,
+            &self.launch_policy(path),
+        )
+    }
+
+    /// What `e` does for `path`, as the help row and the `e` handler word it (a view of
+    /// [`App::edit_launch`]).
+    pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
+        match self.edit_launch(path) {
+            Launch::Editor { .. } | Launch::Terminal(_) => EditTarget::Editor,
+            Launch::Disabled(_) => EditTarget::OfficeDisabled,
+            Launch::Gui(_) => match office_kind(path) {
+                Some(kind) => EditTarget::OfficeApp(kind),
+                None => EditTarget::DeclaredApp,
+            },
         }
-        EditTarget::OfficeApp(kind)
     }
 
     /// The help row for `e` as it acts *now*: the label to show (`editor_label` when it opens an
@@ -107,28 +139,29 @@ impl App {
             _ => None,
         };
         match path.map(|p| self.edit_target(&p)) {
-            Some(EditTarget::OfficeApp(_)) => Some(office_label),
+            Some(EditTarget::OfficeApp(_) | EditTarget::DeclaredApp) => Some(office_label),
             Some(EditTarget::OfficeDisabled) => None,
             Some(EditTarget::Editor) | None => Some(editor_label),
         }
     }
 
-    /// Where `e` goes: an Office document without an explicit `[editor] ext` entry is opened in a GUI
-    /// app (returns `true` = handled here); everything else returns `false` and takes the `$EDITOR`
-    /// path unchanged.
+    /// Where `e` goes (see [`App::edit_launch`]): a chain of GUI programs the file's plugin
+    /// declares is walked from a worker (returns `true` = handled here); everything that opens the
+    /// editor returns `false` and takes the `$EDITOR` path unchanged.
     pub(super) fn try_open_in_office(&mut self, path: &Path) -> bool {
-        let kind = match self.edit_target(path) {
-            EditTarget::Editor => return false,
-            EditTarget::OfficeDisabled => {
+        match self.edit_launch(path) {
+            // The terminal hand-over of a declared chain is not wired in the host yet; the
+            // editor path is the safe landing.
+            Launch::Editor { .. } | Launch::Terminal(_) => false,
+            Launch::Disabled(_) => {
                 self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
-                return true;
+                true
             }
-            EditTarget::OfficeApp(kind) => kind,
-        };
-        let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let attempts = plan(OfficeOs::current(), kind, &abs);
-        self.start_chain(attempts);
-        true
+            Launch::Gui(attempts) => {
+                self.start_chain(attempts);
+                true
+            }
+        }
     }
 
     /// Walk `attempts` on a worker (the chain waits on exit codes, which can take seconds; the UI

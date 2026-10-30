@@ -4150,7 +4150,14 @@ impl App {
         };
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
-            Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
+            Some(p) => {
+                // The declaration says whether the editor is asked for a line.
+                let line = match self.edit_launch(&p) {
+                    konoma_plugin::launch::Launch::Editor { line: false } => None,
+                    _ => self.preview_edit_line(),
+                };
+                self.pending_edit = Some((p, line));
+            }
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
     }

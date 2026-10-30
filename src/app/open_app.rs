@@ -9,7 +9,7 @@
 //! Office files, the OS default for everything else) on a worker thread, like `e` does for Office
 //! files (`office_open`), so the UI never blocks.
 
-use super::office_open::{attempts_for_verb, office_kind, OfficeOs};
+use super::office_open::{Disabled, Launch, OfficeOs};
 use super::*;
 use crate::i18n::Msg;
 
@@ -71,27 +71,26 @@ impl App {
                 return;
             }
         };
-        let kind = office_kind(&path);
-        if kind.is_some() {
-            if !self.cfg.external.office_apps {
-                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
-                return;
-            }
-        } else if !self.cfg.external.open_links {
-            self.flash = Some(tr(self.lang, Msg::ExternalOpenLinksDisabled).into());
-            return;
-        }
         let verb =
             crate::plugins::open_verb(&self.cfg.preview.rules, &self.cfg.plugin_disabled(), &path);
         let abs: PathBuf = std::path::absolute(&path).unwrap_or(path);
-        let os = OfficeOs::current();
-        let mut attempts = attempts_for_verb(os, &verb, kind, &abs);
-        if attempts.is_empty() {
-            // A plugin whose `open` names nothing this platform can start: the OS default.
-            let fallback = konoma_plugin::VerbDecl::new(konoma_plugin::Verb::Open)
-                .launcher(konoma_plugin::Launcher::OsDefault);
-            attempts = attempts_for_verb(os, &fallback, kind, &abs);
+        let launch = konoma_plugin::launch::resolve_launch(
+            konoma_plugin::Verb::Open,
+            OfficeOs::current(),
+            Some(&verb),
+            &abs,
+            &self.launch_policy(&abs),
+        );
+        match launch {
+            Launch::Gui(attempts) | Launch::Terminal(attempts) => self.start_chain(attempts),
+            Launch::Disabled(Disabled::OfficeApps) => {
+                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into())
+            }
+            Launch::Disabled(Disabled::OpenLinks) => {
+                self.flash = Some(tr(self.lang, Msg::ExternalOpenLinksDisabled).into())
+            }
+            // `o` never opens the editor.
+            Launch::Editor { .. } => {}
         }
-        self.start_chain(attempts);
     }
 }

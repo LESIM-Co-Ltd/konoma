@@ -293,16 +293,18 @@ fn gate_edit(app: &App) -> Gate {
 fn gate_open_external(app: &App) -> Gate {
     match app.verb_target() {
         VerbTarget::File(p) => {
-            if crate::app::office_open::office_kind(&p).is_some() {
-                if app.cfg.external.office_apps {
-                    Gate::On
-                } else {
+            match konoma_plugin::launch::disabled_by(
+                konoma_plugin::Verb::Open,
+                &p,
+                &app.launch_policy(&p),
+            ) {
+                None => Gate::On,
+                Some(konoma_plugin::launch::Disabled::OfficeApps) => {
                     Gate::Off(Some(Msg::OfficeAppsDisabled))
                 }
-            } else if app.cfg.external.open_links {
-                Gate::On
-            } else {
-                Gate::Off(Some(Msg::ExternalOpenLinksDisabled))
+                Some(konoma_plugin::launch::Disabled::OpenLinks) => {
+                    Gate::Off(Some(Msg::ExternalOpenLinksDisabled))
+                }
             }
         }
         VerbTarget::Dir => Gate::Off(Some(Msg::NotAFile)),

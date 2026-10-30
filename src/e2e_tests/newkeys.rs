@@ -184,6 +184,137 @@ fn the_office_plugins_open_verb_is_the_chain_e_walks() {
     }
 }
 
+/// The Office plugins' declared `edit` verb, read through the shared decision, is exactly the
+/// chain `plan` builds, on both platforms and for every kind (`e` used to build it directly).
+#[test]
+fn the_office_plugins_edit_verb_resolves_to_the_chain_plan_builds() {
+    use konoma_plugin::launch::{resolve_launch, Launch, LaunchPolicy};
+    let policy = LaunchPolicy {
+        editor_ext_explicit: false,
+        office_apps: true,
+        open_links: true,
+    };
+    for (name, kind) in [
+        ("a.xlsx", OfficeKind::Excel),
+        ("a.ods", OfficeKind::Excel),
+        ("a.docx", OfficeKind::Word),
+        ("a.odt", OfficeKind::Word),
+        ("a.pptx", OfficeKind::PowerPoint),
+        ("a.odp", OfficeKind::PowerPoint),
+    ] {
+        let path = std::path::PathBuf::from("/work/nk").join(name);
+        let decl =
+            crate::plugins::declared_verb_by_path(&[], &[], &path, konoma_plugin::Verb::Edit)
+                .unwrap_or_else(|| panic!("{name}: no edit verb declared"));
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            assert_eq!(
+                resolve_launch(konoma_plugin::Verb::Edit, os, Some(&decl), &path, &policy),
+                Launch::Gui(plan(os, kind, &path)),
+                "{name} on {os:?}"
+            );
+        }
+    }
+    // The same on the platform this test runs on, spelled out.
+    let path = std::path::Path::new("/work/nk/a.xlsx");
+    let first = plan(OfficeOs::current(), OfficeKind::Excel, path).remove(0);
+    if cfg!(target_os = "macos") {
+        assert_eq!(first.args, ["-b", "com.microsoft.Excel", "/work/nk/a.xlsx"]);
+    } else {
+        assert_eq!(first.prog, "libreoffice");
+    }
+}
+
+/// `e` on an Office document walks the declared chain through the launcher seam; on a text file it
+/// raises the editor request; `[editor] ext` and `[external] office_apps` keep their meaning.
+#[test]
+fn e2e_e_follows_the_declared_edit_verb_and_the_settings() {
+    let dir = sandbox("nk_e_declared");
+    seed_files(&dir);
+    for n in ["book.xlsx", "doc.docx", "deck.pptx"] {
+        std::fs::write(dir.join(n), b"x").unwrap();
+    }
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config(&root, cfg_en());
+    let log = record(&mut s);
+    for (name, kind) in [
+        ("book.xlsx", OfficeKind::Excel),
+        ("doc.docx", OfficeKind::Word),
+        ("deck.pptx", OfficeKind::PowerPoint),
+    ] {
+        log.lock().unwrap().clear();
+        s.select(name);
+        assert!(has_token(&s, Context::Tree, "e:open"), "{name}");
+        s.key('e');
+        assert_eq!(
+            log.lock().unwrap().first(),
+            plan(OfficeOs::current(), kind, &root.join(name)).first(),
+            "{name}"
+        );
+        assert!(s.app.take_pending_edit().is_none(), "{name}");
+    }
+    // A text file goes to the editor.
+    log.lock().unwrap().clear();
+    s.select("notes.txt");
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("notes.txt"))
+    );
+
+    // office_apps = false: `e` explains and starts nothing; the footer does not offer it.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("book.xlsx");
+    assert!(!has_token(&s, Context::Tree, "e:open"));
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_none());
+    assert!(flash_is(&s, crate::i18n::Msg::OfficeAppsDisabled));
+
+    // An explicit `[editor] ext` wins even with office_apps = false.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    cfg.editor.ext.insert("xlsx".into(), "vim".into());
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("book.xlsx");
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("book.xlsx"))
+    );
+}
+
+/// `e` reads the `edit` verb of the plugin that shows the file: a rule that gives a Word file to
+/// the code plugin makes `e` open the editor, and the hint says "edit".
+#[test]
+fn e2e_e_reads_the_verb_of_the_plugin_the_rules_pick() {
+    let dir = sandbox("nk_e_rule");
+    std::fs::write(dir.join("doc.docx"), b"x").unwrap();
+    let root = canon(&dir);
+    let mut cfg = cfg_en();
+    cfg.preview.rules.push(crate::config::Rule {
+        glob: Some("*.docx".into()),
+        builtin: Some("code".into()),
+        ..Default::default()
+    });
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("doc.docx");
+    assert!(has_token(&s, Context::Tree, "e:edit"));
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("doc.docx"))
+    );
+}
+
 /// The two switches keep their meaning: `open_links` stops the OS default, `office_apps` stops
 /// the Office chain; a stopped `o` is neither offered nor started and says which switch it is.
 #[test]

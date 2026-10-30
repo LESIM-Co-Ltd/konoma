@@ -47,7 +47,7 @@ pub(crate) use listing::plugins_table;
 #[cfg(test)]
 pub(crate) use profile::record as record_for_test;
 pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
-pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
+pub(crate) use resolve::{plugin_id_by_path, plugin_id_of, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
 /// for plain text, an external command, or an unknown renderer is aimed at one of them, so the
@@ -143,6 +143,22 @@ pub(crate) fn open_verb(
                 .launcher(Launcher::OsDefault)
                 .mode(LaunchMode::Gui)
         })
+}
+
+/// The `verb` the plugin that takes `path` declares, decided from the path alone (nothing is
+/// read from the file, so the footer can ask every frame). `None` = no plugin takes it, or it
+/// declares no such verb.
+pub(crate) fn declared_verb_by_path(
+    rules: &[crate::config::Rule],
+    disabled: &[String],
+    path: &std::path::Path,
+    verb: Verb,
+) -> Option<VerbDecl> {
+    let id = plugin_id_by_path(rules, disabled, path)?;
+    with_registry(disabled, |r| {
+        r.manifest(&id)
+            .and_then(|m| m.verbs.iter().find(|v| v.verb == verb).cloned())
+    })
 }
 
 /// The host-internal pseudo plugins (see [`TEXT_ID`]).

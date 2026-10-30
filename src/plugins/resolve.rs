@@ -169,6 +169,28 @@ pub(crate) fn resolve_kind(
     kind_of(res, rules, disabled, preview_commands, path)
 }
 
+/// [`plugin_id_of`] decided from the path alone: no file is opened (no content sniff, no text
+/// probe), so a rule or binding that needs the content does not match. The footer asks this every
+/// frame, and `e` acts on the same answer so the key and its hint cannot disagree.
+pub(crate) fn plugin_id_by_path(
+    rules: &[Rule],
+    disabled: &[String],
+    path: &Path,
+) -> Option<String> {
+    let user = user_rules(rules, path);
+    let mime = || None;
+    let text = || false;
+    let facts = FileFacts {
+        path,
+        sniff_mime: &mime,
+        is_text: &text,
+    };
+    match with_registry(disabled, |r| r.resolve_file(&user, &facts)) {
+        Resolution::Plugin { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
 /// The id of the plugin that shows `path` (a user rule first, then the standard plugins), or
 /// `None` when no plugin takes it (plain text, or "can not preview"). The same decision
 /// `resolve_kind` makes, read for the verbs a plugin declares (`o` opens through them).
