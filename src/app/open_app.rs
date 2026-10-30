@@ -144,7 +144,8 @@ impl App {
             &self.launch_policy(&abs),
         );
         match launch {
-            Launch::Gui(attempts) | Launch::Terminal(attempts) => self.start_chain(attempts),
+            Launch::Gui(attempts) => self.start_chain(attempts),
+            Launch::Terminal(attempts) => self.queue_terminal_chain(&attempts, None, &abs),
             Launch::Disabled(d) => {
                 self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, d))
             }

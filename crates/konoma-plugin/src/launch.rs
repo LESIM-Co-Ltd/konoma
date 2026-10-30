@@ -302,6 +302,15 @@ pub fn run_chain(
     attempts: &[Attempt],
     runner: &(dyn Fn(&Attempt) -> io::Result<Option<i32>> + Send + Sync),
 ) -> Result<Opener, String> {
+    walk_chain(attempts, &mut |a| runner(a))
+}
+
+/// [`run_chain`] with a runner that may borrow mutably: the terminal chain hands the terminal over
+/// for every attempt, and the hand-over needs the host's terminal. The rule is the same one.
+pub fn walk_chain(
+    attempts: &[Attempt],
+    runner: &mut dyn FnMut(&Attempt) -> io::Result<Option<i32>>,
+) -> Result<Opener, String> {
     let mut last = String::from("no application to try");
     for a in attempts {
         match runner(a) {
@@ -311,6 +320,21 @@ pub fn run_chain(
         }
     }
     Err(last)
+}
+
+/// The attempts of a terminal chain with the `{line}` token of every argument filled in: `line` is
+/// the answer of [`crate::host::launch::edit_line`] (`1` when there is none, like the editor's own
+/// argv). Arguments without the token are left as they are.
+pub fn with_line(attempts: &[Attempt], line: Option<usize>) -> Vec<Attempt> {
+    let n = line.unwrap_or(1).to_string();
+    attempts
+        .iter()
+        .map(|a| Attempt {
+            opener: a.opener,
+            prog: a.prog.clone(),
+            args: a.args.iter().map(|x| x.replace("{line}", &n)).collect(),
+        })
+        .collect()
 }
 
 /// The exit code of a process that has finished. One killed by a signal has no code
@@ -476,6 +500,44 @@ mod tests {
 
     fn mac_chain() -> Vec<Attempt> {
         plan(OfficeOs::MacOs, OfficeKind::Excel, &p("b.xlsx"))
+    }
+
+    #[test]
+    fn walk_chain_takes_a_mutable_runner_and_follows_the_same_rule() {
+        let mut seen: Vec<String> = Vec::new();
+        let chain = mac_chain();
+        let out = walk_chain(&chain, &mut |a| {
+            seen.push(a.args.join(" "));
+            if a.opener == Opener::SystemDefault {
+                Ok(Some(0))
+            } else {
+                Ok(Some(1))
+            }
+        });
+        assert_eq!(out, Ok(Opener::SystemDefault));
+        assert_eq!(seen.len(), 3, "walked in order until one won");
+        let none = walk_chain(&[], &mut |_| Ok(Some(0)));
+        assert_eq!(none, Err("no application to try".to_string()));
+    }
+
+    #[test]
+    fn with_line_fills_the_token_in_every_argument_and_defaults_to_one() {
+        let a = vec![
+            Attempt {
+                opener: Opener::Declared,
+                prog: "v".into(),
+                args: vec!["+{line}".into(), "{line}:{line}".into(), "/p".into()],
+            },
+            Attempt {
+                opener: Opener::Declared,
+                prog: "w".into(),
+                args: vec!["/p".into()],
+            },
+        ];
+        let got = with_line(&a, Some(42));
+        assert_eq!(got[0].args, ["+42", "42:42", "/p"]);
+        assert_eq!(got[1], a[1]);
+        assert_eq!(with_line(&a, None)[0].args, ["+1", "1:1", "/p"]);
     }
 
     #[test]

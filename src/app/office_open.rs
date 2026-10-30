@@ -146,19 +146,38 @@ impl App {
     /// declares is walked from a worker (returns `true` = handled here); everything that opens the
     /// editor returns `false` and takes the `$EDITOR` path unchanged.
     pub(super) fn try_open_in_office(&mut self, path: &Path) -> bool {
-        match self.edit_launch(path) {
-            // The terminal hand-over of a declared chain is not wired in the host yet; the
-            // editor path is the safe landing.
-            Launch::Editor { .. } | Launch::Terminal(_) => false,
+        let launch = self.edit_launch(path);
+        match &launch {
+            Launch::Editor { .. } => false,
+            // A chain in terminal mode takes the terminal over like the editor does; the run loop
+            // walks it ([`App::take_pending_terminal`]).
+            Launch::Terminal(attempts) => {
+                let line =
+                    konoma_plugin::host::launch::edit_line(&launch, self.preview_edit_line());
+                self.queue_terminal_chain(attempts, line, path);
+                true
+            }
             Launch::Disabled(d) => {
-                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, d));
+                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, *d));
                 true
             }
             Launch::Gui(attempts) => {
-                self.start_chain(attempts);
+                self.start_chain(attempts.clone());
                 true
             }
         }
+    }
+
+    /// Ask the run loop to hand the terminal over and walk `attempts` (`{line}` filled in), in the
+    /// directory of `path`.
+    pub(super) fn queue_terminal_chain(
+        &mut self,
+        attempts: &[Attempt],
+        line: Option<usize>,
+        path: &Path,
+    ) {
+        let cwd = path.parent().unwrap_or(path).to_path_buf();
+        self.pending_terminal = Some((konoma_plugin::launch::with_line(attempts, line), cwd));
     }
 
     /// Walk `attempts` on a worker (the chain waits on exit codes, which can take seconds; the UI
@@ -436,5 +455,84 @@ mod tests {
     fn test_default_runner_never_launches() {
         let a = &mac_chain()[0];
         assert!((real_runner())(a).is_err());
+    }
+
+    /// A tab rooted at a sandbox holding `a.bin` (the test plugin `hexdump` takes `*.bin`), with
+    /// the plugin declaring `verbs`.
+    fn terminal_app(
+        name: &str,
+        verbs: Vec<konoma_plugin::VerbDecl>,
+    ) -> (App, crate::test_support::TmpDir, PathBuf) {
+        use crate::plugins::test_plugins::{self, Hexdump, Variant};
+        let dir = unique_tmp(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.bin");
+        std::fs::write(&file, b"0123456789abcdef0123").unwrap();
+        let marker = test_plugins::register(
+            name,
+            Arc::new(Hexdump(Variant {
+                verbs,
+                ..Default::default()
+            })),
+        );
+        let mut cfg = test_plugins::marker_config(&marker);
+        cfg.ui.lang = "en".into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let (r, _) = fake(|_| Ok(Some(0)));
+        app.set_office_runner(r);
+        app.tab.selected = app.tab.entries.iter().position(|e| e.path == file).unwrap();
+        (app, dir, file)
+    }
+
+    fn vim_like(verb: konoma_plugin::Verb) -> konoma_plugin::VerbDecl {
+        use konoma_plugin::{LaunchMode, Launcher, VerbDecl};
+        VerbDecl::new(verb)
+            .launcher(Launcher::Command(vec!["viewer".into(), "+{line}".into()]))
+            .launcher(Launcher::Command(vec!["fallback".into()]))
+            .mode(LaunchMode::Terminal)
+    }
+
+    /// A declared chain in terminal mode takes the terminal over: `e` queues it (not the editor,
+    /// not a worker), `{line}` is filled in with the caret like the editor's line, and the chain
+    /// runs in the file's directory.
+    #[test]
+    fn e_on_a_declared_terminal_chain_queues_a_hand_over_not_the_editor() {
+        let (mut app, dir, file) =
+            terminal_app("konoma_term_e", vec![vim_like(konoma_plugin::Verb::Edit)]);
+        app.request_edit();
+        assert!(app.take_pending_edit().is_none(), "not the editor");
+        let (attempts, cwd) = app.take_pending_terminal().expect("a terminal chain");
+        assert_eq!(cwd, dir.to_path_buf());
+        let abs = std::path::absolute(&file)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].prog, "viewer");
+        assert_eq!(attempts[0].args, ["+1".to_string(), abs.clone()]);
+        assert_eq!(attempts[1].prog, "fallback");
+        assert_eq!(attempts[1].args, [abs]);
+        assert!(app.take_pending_terminal().is_none(), "taken once");
+    }
+
+    #[test]
+    fn o_on_a_declared_terminal_chain_queues_a_hand_over_too() {
+        let (mut app, _dir, _file) =
+            terminal_app("konoma_term_o", vec![vim_like(konoma_plugin::Verb::Open)]);
+        app.open_in_other_app();
+        let (attempts, _) = app.take_pending_terminal().expect("a terminal chain");
+        assert_eq!(attempts[0].prog, "viewer");
+        assert_eq!(attempts[0].args[0], "+1");
+    }
+
+    /// A GUI-mode chain stays on the worker: nothing is queued for the terminal.
+    #[test]
+    fn a_gui_chain_does_not_take_the_terminal() {
+        let mut v = vim_like(konoma_plugin::Verb::Edit);
+        v.mode = konoma_plugin::LaunchMode::Gui;
+        let (mut app, _dir, _file) = terminal_app("konoma_term_gui", vec![v]);
+        app.request_edit();
+        assert!(app.take_pending_terminal().is_none());
+        assert!(app.take_pending_edit().is_none());
     }
 }

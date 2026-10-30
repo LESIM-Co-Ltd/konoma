@@ -1562,6 +1562,9 @@ pub struct App {
     /// the on-screen preview position; None = open at the top). The run loop takes it, suspends the TUI, and
     /// launches (because entering/leaving the terminal must happen on the render thread, here we only raise the "request").
     pending_edit: Option<(PathBuf, Option<usize>)>,
+    /// A launch chain that takes the terminal over (`Launch::Terminal`): the attempts (with `{line}`
+    /// filled in) and the directory they start in. The run loop hands the terminal over and walks them.
+    pending_terminal: Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)>,
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
@@ -2793,6 +2796,7 @@ impl App {
             hl_warming: false,
             spinner_frame: 0,
             pending_edit: None,
+            pending_terminal: None,
             pending_git_tool: false,
             md_cache: None,
             diff_cache: None,
@@ -4302,6 +4306,13 @@ impl App {
     /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
     pub fn take_pending_edit(&mut self) -> Option<(PathBuf, Option<usize>)> {
         self.pending_edit.take()
+    }
+
+    /// The terminal chain `e` / `o` asked for (see `pending_terminal`), if any.
+    pub fn take_pending_terminal(
+        &mut self,
+    ) -> Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)> {
+        self.pending_terminal.take()
     }
 
     /// `!`: request launching the backend's own external tool (lazygit for git, `[jj] tool` --
