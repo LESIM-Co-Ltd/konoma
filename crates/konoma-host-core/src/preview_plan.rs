@@ -1171,4 +1171,319 @@ mod tests {
             assert_eq!(joined, whole, "{ctx:?}");
         }
     }
+
+    // The footer plans below are written out by hand from the plans konoma's own footer had
+    // before they moved here (`ops/footer.rs`: `text_preview`, `table`, `image`, `canvas`), one
+    // list per state. They are not derived from `footer_plan`.
+    use CoreFoot as F;
+    use PvFoot as P;
+
+    fn op(o: PreviewOp) -> PvFoot {
+        P::Op(o)
+    }
+
+    /// The tail every text plan shares after the entries that depend on the state.
+    fn after_decorated() -> Vec<PvFoot> {
+        vec![
+            P::Core(F::Outline),
+            op(host(HostOp::CycleRepresentation)),
+            op(host(HostOp::SearchStart)),
+            P::Dyn(PvDyn::ChangeStatus),
+            op(core(CoreAction::ToggleFollow)),
+            P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+            P::Core(F::Back),
+            P::Core(F::Help),
+            P::Core(F::Edit),
+            P::Core(F::Open),
+            P::Core(F::Ends),
+            P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+            P::Core(F::Options),
+            P::Core(F::PageKeys),
+        ]
+    }
+
+    fn decorated_plan(focus: Option<Focus>, pannable: bool) -> Vec<PvFoot> {
+        let st = PreviewState {
+            decorated: true,
+            focus,
+            mermaid_pannable: pannable,
+            ..PreviewState::default()
+        };
+        footer_plan(CoreContext::Document, &st)
+    }
+
+    fn decorated_expected(middle: Vec<PvFoot>) -> Vec<PvFoot> {
+        let mut v = vec![
+            P::Core(F::Scroll),
+            op(host(HostOp::LinkFocusNext)),
+            P::Core(F::PageTurn),
+        ];
+        v.extend(middle);
+        v.extend(after_decorated());
+        v
+    }
+
+    #[test]
+    fn the_decorated_document_plan_follows_the_focused_item() {
+        assert_eq!(decorated_plan(None, false), decorated_expected(vec![]));
+        for f in [Focus::Task, Focus::Details] {
+            assert_eq!(
+                decorated_plan(Some(f), false),
+                decorated_expected(vec![P::Union(PvGroup::ToggleItem, CoreMsg::HintToggle)]),
+                "{f:?}"
+            );
+        }
+        assert_eq!(
+            decorated_plan(Some(Focus::CodeBlock), false),
+            decorated_expected(vec![P::Dyn(PvDyn::CopyCode)])
+        );
+        for f in [Focus::LocalLink, Focus::AnchorLink, Focus::ExternalLink] {
+            assert_eq!(
+                decorated_plan(Some(f), false),
+                decorated_expected(vec![
+                    op(PreviewOp::LinkOpen),
+                    op(host(HostOp::OpenLinkNewTab))
+                ]),
+                "{f:?}"
+            );
+        }
+        // A diagram: open and zoom; the pan and the fit only while it is pannable.
+        let zoom = vec![
+            op(PreviewOp::LinkOpen),
+            P::Group(PvGroup::Zoom, CoreMsg::Zoom),
+        ];
+        assert_eq!(
+            decorated_plan(Some(Focus::MermaidFence), false),
+            decorated_expected(zoom.clone())
+        );
+        let mut panned = zoom;
+        panned.extend([
+            P::Group(PvGroup::Hjkl, CoreMsg::HintPan),
+            P::Group(PvGroup::Home, CoreMsg::HintFit),
+        ]);
+        assert_eq!(
+            decorated_plan(Some(Focus::MermaidFence), true),
+            decorated_expected(panned)
+        );
+        // `pannable` is read only for a diagram.
+        for f in [None, Some(Focus::Task), Some(Focus::CodeBlock)] {
+            assert_eq!(decorated_plan(f, true), decorated_plan(f, false), "{f:?}");
+        }
+        // The Document context plans as the Text one does.
+        let st = PreviewState {
+            decorated: true,
+            ..PreviewState::default()
+        };
+        assert_eq!(
+            footer_plan(CoreContext::Text, &st),
+            footer_plan(CoreContext::Document, &st)
+        );
+    }
+
+    #[test]
+    fn the_text_plans_are_the_footers_of_code_and_of_a_document_without_text() {
+        // Plain text or code, not windowed.
+        let mut plain = vec![
+            P::Core(F::Scroll),
+            P::Dyn(PvDyn::SearchStatus),
+            op(host(HostOp::SearchStart)),
+            P::Dyn(PvDyn::ChangeStatus),
+        ];
+        let tail = vec![
+            op(core(CoreAction::ToggleFollow)),
+            op(PreviewOp::ToggleFollowDiffScope),
+            op(host(HostOp::CycleRepresentation)),
+            P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+            P::Core(F::Back),
+            P::Core(F::Help),
+            P::Core(F::Edit),
+            P::Core(F::Open),
+            P::Core(F::Ends),
+            P::Core(F::HScroll),
+            P::Core(F::LineEnds),
+            P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+            P::Core(F::Options),
+            P::Core(F::PageKeys),
+        ];
+        let mut windowed = plain.clone();
+        windowed.extend([
+            P::Group(PvGroup::Select, CoreMsg::HintSelect),
+            P::As(host(HostOp::PreviewCopySelectionRef), CoreMsg::WkAtRef),
+        ]);
+        plain.extend(tail.clone());
+        windowed.extend(tail);
+        for ctx in [CoreContext::Text, CoreContext::Document] {
+            let at = |st: PreviewState| footer_plan(ctx, &st);
+            assert_eq!(at(PreviewState::default()), plain, "{ctx:?}");
+            let w = PreviewState {
+                windowed: true,
+                ..PreviewState::default()
+            };
+            assert_eq!(at(w), windowed, "{ctx:?}");
+            // The focus is read only by a decorated document.
+            let f = PreviewState {
+                focus: Some(Focus::Task),
+                ..PreviewState::default()
+            };
+            assert_eq!(at(f), plain, "{ctx:?}");
+            // A document without text: only the keys that still act, whatever else is set.
+            let missing = vec![
+                op(core(CoreAction::ToggleFollow)),
+                P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+                P::Core(F::Back),
+                P::Core(F::Help),
+                P::Core(F::Edit),
+                P::Core(F::Open),
+                P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+                P::Core(F::Options),
+            ];
+            for (decorated, windowed, focus) in [
+                (false, false, None),
+                (true, false, None),
+                (true, true, Some(Focus::CodeBlock)),
+                (false, true, None),
+            ] {
+                let st = PreviewState {
+                    text_missing: true,
+                    decorated,
+                    windowed,
+                    focus,
+                    ..PreviewState::default()
+                };
+                assert_eq!(at(st), missing, "{ctx:?} {st:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_picture_table_and_canvas_plans_are_konomas_footers() {
+        let st = PreviewState::default();
+        assert_eq!(
+            footer_plan(CoreContext::Image, &st),
+            vec![
+                P::Core(F::Zoom),
+                P::Core(F::ZoomReset),
+                P::Core(F::Pan),
+                P::Core(F::PageTurn),
+                P::Core(F::Outline),
+                op(host(HostOp::ImageReturnToDiff)),
+                P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+                P::Core(F::Back),
+                P::Core(F::Help),
+                P::Core(F::Edit),
+                P::Core(F::Open),
+                P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+                P::Core(F::Options),
+            ]
+        );
+        assert_eq!(
+            footer_plan(CoreContext::Table, &st),
+            vec![
+                P::Core(F::Cell),
+                op(PreviewOp::ToggleTableCell),
+                P::Dyn(PvDyn::SearchStatus),
+                P::Core(F::PageTurn),
+                P::Core(F::Outline),
+                op(host(HostOp::CycleRepresentation)),
+                op(host(HostOp::SearchStart)),
+                P::Core(F::TableCopy),
+                P::Core(F::Ends),
+                P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+                P::Core(F::Back),
+                P::Core(F::Help),
+                P::Core(F::Edit),
+                P::Core(F::Open),
+                P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+                P::Core(F::Options),
+            ]
+        );
+        assert_eq!(
+            footer_plan(CoreContext::Canvas, &st),
+            vec![
+                P::Core(F::Back),
+                P::Core(F::PageTurn),
+                P::Core(F::Outline),
+                op(host(HostOp::CycleRepresentation)),
+                P::Group(PvGroup::FileJump, CoreMsg::HintFileJump),
+                P::Core(F::Help),
+                P::Core(F::Edit),
+                P::Core(F::Open),
+                P::Group(PvGroup::Tabs, CoreMsg::HintTab),
+                P::Core(F::Options),
+            ]
+        );
+        // None of them reads the state of a text.
+        let busy = PreviewState {
+            text_missing: true,
+            decorated: true,
+            focus: Some(Focus::Task),
+            windowed: true,
+            ..PreviewState::default()
+        };
+        for ctx in [CoreContext::Image, CoreContext::Table, CoreContext::Canvas] {
+            assert_eq!(footer_plan(ctx, &busy), footer_plan(ctx, &st), "{ctx:?}");
+        }
+    }
+
+    #[test]
+    fn the_priority_of_a_focused_item_lists_its_operations_with_the_plans_labels() {
+        // The operations between the page keys and the outline are what the focus adds.
+        let between = |focus: Option<Focus>, pannable: bool| {
+            let st = PreviewState {
+                decorated: true,
+                focus,
+                mermaid_pannable: pannable,
+                ..PreviewState::default()
+            };
+            let all = priority(
+                CoreContext::Document,
+                &st,
+                &HelpFacts::default(),
+                |_| None::<CoreMsg>,
+                |m| m,
+            );
+            let from = all
+                .iter()
+                .position(|(o, _)| *o == core(CoreAction::PagePrev))
+                .expect("the page keys")
+                + 1;
+            let to = all
+                .iter()
+                .position(|(o, _)| *o == core(CoreAction::ToggleOutline))
+                .expect("the outline");
+            all[from..to].to_vec()
+        };
+        let toggle = |o| (o, Some(CoreMsg::HintToggle));
+        assert_eq!(between(None, false), vec![]);
+        for f in [Focus::Task, Focus::Details] {
+            assert_eq!(
+                between(Some(f), false),
+                vec![
+                    toggle(host(HostOp::ToggleFocusedItem)),
+                    toggle(PreviewOp::LinkOpen)
+                ]
+            );
+        }
+        assert_eq!(between(Some(Focus::CodeBlock), false), vec![]);
+        assert_eq!(
+            between(Some(Focus::LocalLink), false),
+            vec![
+                (PreviewOp::LinkOpen, None),
+                (host(HostOp::OpenLinkNewTab), None)
+            ]
+        );
+        let zoom = |o| (o, Some(CoreMsg::Zoom));
+        let mut want = vec![
+            (PreviewOp::LinkOpen, None),
+            zoom(core(CoreAction::ImageZoomIn)),
+            zoom(core(CoreAction::ImageZoomOut)),
+        ];
+        assert_eq!(between(Some(Focus::MermaidFence), false), want);
+        want.extend(
+            [Motion::Left, Motion::Down, Motion::Up, Motion::Right]
+                .map(|m| (nav(m), Some(CoreMsg::HintPan))),
+        );
+        want.push((nav(Motion::LineHome), Some(CoreMsg::HintFit)));
+        assert_eq!(between(Some(Focus::MermaidFence), true), want);
+    }
 }

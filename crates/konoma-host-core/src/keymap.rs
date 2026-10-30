@@ -606,36 +606,32 @@ impl HostOp {
     }
 }
 
+/// The letters that say what an operation is, keyed by config name: the one table behind
+/// [`mnemonic_of_name`] and [`mnemonic_names`], so an entry cannot be in one and not the other.
+const MNEMONICS: [(&str, char); 8] = [
+    ("bookmark_delete", 'd'),
+    ("bookmark_edit", 'e'),
+    ("cycle_path_style", 'p'),
+    ("toggle_wrap", 'w'),
+    ("toggle_focused_item", 't'),
+    ("toggle_follow_diff_scope", 'f'),
+    ("git_open_log", 'l'),
+    ("git_open_graph", 'g'),
+];
+
 /// The letter that says what an operation is, tried by the `Space` menu before the free letters
 /// (`menu::assign`). Keyed by the config name, so one table serves konoma's `Action` (which also
 /// has operations of screens a standalone app does not have) and the standalone app's
 /// [`CoreAction`]; an operation konoma has only under its `git` feature is simply never asked
 /// for without it.
 pub fn mnemonic_of_name(name: &str) -> Option<char> {
-    Some(match name {
-        "bookmark_delete" => 'd',
-        "bookmark_edit" => 'e',
-        "cycle_path_style" => 'p',
-        "toggle_wrap" => 'w',
-        "toggle_focused_item" => 't',
-        "toggle_follow_diff_scope" => 'f',
-        "git_open_log" => 'l',
-        "git_open_graph" => 'g',
-        _ => return None,
-    })
+    MNEMONICS.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
 }
 
-/// The names [`mnemonic_of_name`] knows, for the test that each one names a real operation.
-pub const MNEMONIC_NAMES: [&str; 8] = [
-    "bookmark_delete",
-    "bookmark_edit",
-    "cycle_path_style",
-    "toggle_wrap",
-    "toggle_focused_item",
-    "toggle_follow_diff_scope",
-    "git_open_log",
-    "git_open_graph",
-];
+/// The names [`mnemonic_of_name`] knows, for the tests that each one names a real operation.
+pub fn mnemonic_names() -> impl Iterator<Item = &'static str> {
+    MNEMONICS.iter().map(|(n, _)| *n)
+}
 
 // =============================================================================
 // Bindings, contexts, tables.
@@ -2317,9 +2313,27 @@ mod host_op_tests {
 
     #[test]
     fn every_mnemonic_name_is_a_real_operation_and_the_table_is_complete() {
-        for n in MNEMONIC_NAMES {
+        for n in mnemonic_names() {
             assert!(mnemonic_of_name(n).is_some(), "{n}");
         }
+        // The whole table, written out: an entry added or lost shows here, and no two share a
+        // letter (the menu would hand one of them a free letter instead).
+        let want = [
+            ("bookmark_delete", 'd'),
+            ("bookmark_edit", 'e'),
+            ("cycle_path_style", 'p'),
+            ("toggle_wrap", 'w'),
+            ("toggle_focused_item", 't'),
+            ("toggle_follow_diff_scope", 'f'),
+            ("git_open_log", 'l'),
+            ("git_open_graph", 'g'),
+        ];
+        let got: Vec<(&str, char)> = mnemonic_names()
+            .map(|n| (n, mnemonic_of_name(n).unwrap()))
+            .collect();
+        assert_eq!(got, want);
+        let letters: std::collections::BTreeSet<char> = got.iter().map(|(_, c)| *c).collect();
+        assert_eq!(letters.len(), want.len());
         // The shared operations: the path style, wrapping and the focused item.
         assert_eq!(
             mnemonic_of_name(&CoreAction::CyclePathStyle.name()),

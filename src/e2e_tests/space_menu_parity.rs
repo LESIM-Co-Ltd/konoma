@@ -504,6 +504,8 @@ struct HostView {
     line: Vec<(char, String)>,
     keys: Vec<Vec<KeyPress>>,
     bound: Vec<KeyPress>,
+    /// The menus `y` and `,` open on this screen: the prefix and the items by key and operation.
+    menus: Vec<(char, Vec<(char, Action)>)>,
 }
 
 fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
@@ -546,6 +548,26 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
             .into_iter()
             .map(|(k, _)| k),
     );
+    let copy_id = if ctx.name() == "table" {
+        LeaderId::TableCopy
+    } else {
+        LeaderId::Copy
+    };
+    let menus: Vec<(char, Vec<(char, Action)>)> = [(',', LeaderId::Options), ('y', copy_id)]
+        .into_iter()
+        .filter_map(|(pre, id)| {
+            let m = s.app.keymaps.menu(ctx, id)?;
+            let its = m
+                .items
+                .iter()
+                .filter_map(|it| match it.key.code {
+                    KeyCode::Char(c) if !it.key.ctrl => Some((c, it.action)),
+                    _ => None,
+                })
+                .collect();
+            Some((pre, its))
+        })
+        .collect();
     s.press(KeyCode::Char(' '), KeyModifiers::NONE);
     s.term.clear().expect("clear");
     s.draw();
@@ -556,6 +578,7 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
         line,
         keys,
         bound,
+        menus,
     }
 }
 
@@ -652,6 +675,78 @@ fn rewrites(root: &std::path::Path, kind: Kind, scheme: &str) -> Vec<Rewrite> {
             }
         }
     }
+    // The user's edits of the menus `,` and `y` open (a chord `"<prefix> <key>"`): each item taken
+    // away, moved to a free key, turned into another display operation; an item added; and a whole
+    // menu emptied. The `Space` menu does not read these menus, so none of them may move it.
+    let swap = |name: &str| match name {
+        "cycle_path_style" => "toggle_wrap",
+        _ => "cycle_path_style",
+    };
+    for head in &tables {
+        let head = format!("keys.{head}");
+        for (pre, its) in &v.menus {
+            let tag = format!("{:?} the `{pre}` menu in [{head}]", kind);
+            let mut emptied = String::new();
+            for &(k, a) in its {
+                let chord = format!("{pre} {k}");
+                let name = action_name(a);
+                emptied.push_str(&toml_pair(&chord, "noop"));
+                out.push(Rewrite {
+                    name: format!("{tag}: {chord} taken away"),
+                    toml: format!("[{head}]\n{}", toml_pair(&chord, "noop")),
+                });
+                out.push(Rewrite {
+                    name: format!("{tag}: {chord} moved to {free}"),
+                    toml: format!(
+                        "[{head}]\n{}{}",
+                        toml_pair(&chord, "noop"),
+                        toml_pair(&format!("{pre} {free}"), &name)
+                    ),
+                });
+                if matches!(name.as_str(), "cycle_path_style" | "toggle_wrap") {
+                    out.push(Rewrite {
+                        name: format!("{tag}: {chord} turned into {}", swap(&name)),
+                        toml: format!("[{head}]\n{}", toml_pair(&chord, swap(&name))),
+                    });
+                }
+            }
+            if !its.is_empty() {
+                out.push(Rewrite {
+                    name: format!("{tag}: emptied"),
+                    toml: format!("[{head}]\n{emptied}"),
+                });
+            }
+            for added in ["toggle_wrap", "cycle_path_style"] {
+                out.push(Rewrite {
+                    name: format!("{tag}: {added} added under {free}"),
+                    toml: format!("[{head}]\n{}", toml_pair(&format!("{pre} {free}"), added)),
+                });
+            }
+        }
+    }
+    // Every operation the shared tables name (each core action once per payload, and each host
+    // operation), bound to a free key in each context's table, whether or not the operation acts
+    // there: a gate that is closed in that context must hide it from the menu on both sides.
+    let mut op_names: Vec<String> = konoma_host_core::keymap::CoreAction::all()
+        .into_iter()
+        .filter(|a| !matches!(a, konoma_host_core::keymap::CoreAction::TabGoto(_)))
+        .map(|a| a.name())
+        .collect();
+    op_names.extend(
+        konoma_host_core::keymap::HostOp::ALL
+            .into_iter()
+            .map(|o| o.name().to_string()),
+    );
+    op_names.sort();
+    op_names.dedup();
+    for ctx in ["text", "document", "table", "image", "canvas"] {
+        for op in &op_names {
+            out.push(Rewrite {
+                name: format!("{kind:?} {op} assigned to {free} in [keys.{ctx}]"),
+                toml: format!("[keys.{ctx}]\n{}", toml_pair(&free.to_string(), op)),
+            });
+        }
+    }
     for t in &tables {
         let mut gone = String::new();
         let mut seen: Vec<String> = Vec::new();
@@ -732,8 +827,10 @@ fn check(root: &std::path::Path, o: &Opt, tag: &str, t: &mut Tally) -> Vec<(char
     );
     let want: Vec<&Item> = v.items.iter().filter(|i| is_shared(i)).collect();
     for it in v.items.iter().filter(|i| !is_shared(i)) {
+        // An operation the user assigned to a key (the `assigned to` rewrites) can put any of the
+        // host's operations in its menu; it is still not shared, so the app must not name it.
         assert!(
-            HOST_ONLY.contains(&it.action.as_str()),
+            HOST_ONLY.contains(&it.action.as_str()) || tag.contains(" assigned to "),
             "{tag}: the host item {it:?} is neither shared nor listed as host-only"
         );
         t.hidden += 1;
@@ -818,16 +915,16 @@ fn matrix(kind: Kind) {
         LANGS.len() * SCHEMES.len() + LANGS.len() * rewrites_n,
         "{kind:?}"
     );
-    // (measured per view: 204 to 256 of 868 to 1016; the floors sit below the smallest.)
+    // (measured per view: 244 to 348 changed, 1216 to 1306 rewrites; the floors sit below the smallest.)
     assert!(
-        rewrites_n >= 430,
-        "{kind:?}: {rewrites_n} rewrites (measured 432 to 506)"
+        rewrites_n >= 1200,
+        "{kind:?}: {rewrites_n} rewrites (measured 1216 to 1306)"
     );
-    assert!(t.changed >= 200, "{kind:?} changed {}", t.changed);
+    assert!(t.changed >= 240, "{kind:?} changed {}", t.changed);
     // At least back, the help and the three declared actions' worth (path, wrap, ...) per variant.
-    // (measured: 6 to 9 items and 14 to 21 host-only items per variant.)
+    // (measured: 6 to 9 items and 14 to 21 host-only items per variant, 14.01 at the least.)
     assert!(t.items >= t.variants * 6, "{kind:?} items {}", t.items);
-    assert!(t.hidden >= t.variants * 13, "{kind:?} hidden {}", t.hidden);
+    assert!(t.hidden >= t.variants * 14, "{kind:?} hidden {}", t.hidden);
     assert_eq!(t.helps, t.variants);
 }
 

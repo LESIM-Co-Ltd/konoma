@@ -15,7 +15,7 @@
 use super::canvas::{open_with, Draw, Opened, Painter};
 use super::*;
 use crate::i18n::Msg;
-use crate::keymap::{Action, Context};
+use crate::keymap::{Action, Context, Motion};
 use crate::ops::{core_help, decl, footer, help, menu, preview_plan as pp};
 use konoma_host_core::preview_plan as core;
 use std::collections::BTreeSet;
@@ -309,4 +309,262 @@ fn the_description_is_what_konoma_says() {
         c.states.iter().any(|s| s.contains("windowed: true")),
         "no windowed text"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The footer plan, pinned by hand. The comparison above sets the host's footer against the
+// description with the same function on both sides; the lists below are written out from the
+// footer konoma had before the plans moved to `konoma_host_core::preview_plan` (`ops/footer.rs`:
+// `text_preview`, `table`, `image` and their focus arms), each token expanded to the keys it
+// stands for, so a plan that drifts from it shows up here. (A mermaid diagram is not a focus
+// this harness reaches without the media tools; the description's own tests pin its pan keys.)
+// ---------------------------------------------------------------------------------------------
+
+type Plan = Vec<(Action, Option<Msg>)>;
+
+fn plan_of(s: &Sim) -> Plan {
+    footer::priority(&s.app, s.app.base_context())
+        .into_iter()
+        .filter(|(a, _)| !matches!(a, Action::Plugin(_)))
+        .collect()
+}
+
+fn nav(m: Motion, l: Msg) -> (Action, Option<Msg>) {
+    (Action::Navigate(m), Some(l))
+}
+
+fn op(a: Action, l: Msg) -> (Action, Option<Msg>) {
+    (a, Some(l))
+}
+
+/// The tail every footer ends with once `Back` is reached: back, help, edit (`edit` is its
+/// label), open in the app.
+fn back_help_edit_open(edit: Option<Msg>) -> Plan {
+    vec![
+        op(Action::PreviewBack, Msg::GitBack),
+        op(Action::ToggleHelp, Msg::HintHelp),
+        (Action::RequestEdit, edit),
+        op(Action::OpenExternal, Msg::HintOpenApp),
+    ]
+}
+
+fn file_jump() -> Plan {
+    vec![
+        op(Action::PreviewFileNext, Msg::HintFileJump),
+        op(Action::PreviewFilePrev, Msg::HintFileJump),
+    ]
+}
+
+fn tabs() -> Plan {
+    vec![
+        op(Action::TabPrev, Msg::HintTab),
+        op(Action::TabNext, Msg::HintTab),
+    ]
+}
+
+fn ends() -> Plan {
+    vec![
+        nav(Motion::Top, Msg::HintEnds),
+        nav(Motion::Bottom, Msg::HintEnds),
+    ]
+}
+
+fn page_keys() -> Plan {
+    vec![
+        nav(Motion::PageDown, Msg::HintPage),
+        nav(Motion::PageUp, Msg::HintPage),
+    ]
+}
+
+fn cat(parts: Vec<Plan>) -> Plan {
+    parts.into_iter().flatten().collect()
+}
+
+#[test]
+fn the_footer_plan_of_a_decorated_document_is_the_one_konoma_had() {
+    use crate::app::MdFocus;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for lang in ["en", "ja"] {
+        for keys in ["vim", "less"] {
+            let (mut s, _dir) = open_kind(Kind::Document, cfg_of(lang, keys, true));
+            for i in 0..8 {
+                let focus = s.app.md_focused_kind();
+                let tag = format!("{lang} {keys} tab {i} {focus:?}");
+                let head = vec![
+                    nav(Motion::Down, Msg::Scroll),
+                    nav(Motion::Up, Msg::Scroll),
+                    op(Action::LinkFocusNext, Msg::HintFocus),
+                    op(Action::PageNext, Msg::HintPage),
+                    op(Action::PagePrev, Msg::HintPage),
+                ];
+                let focus_part: Plan = match focus {
+                    None | Some(MdFocus::CodeBlock) => vec![],
+                    Some(MdFocus::Task) | Some(MdFocus::Details) => vec![
+                        op(Action::ToggleFocusedItem, Msg::HintToggle),
+                        op(Action::LinkOpen, Msg::HintToggle),
+                    ],
+                    Some(MdFocus::LocalLink) => vec![
+                        op(Action::LinkOpen, Msg::HintOpen),
+                        op(Action::OpenLinkNewTab, Msg::HintNewTab),
+                    ],
+                    Some(MdFocus::AnchorLink) => vec![
+                        op(Action::LinkOpen, Msg::HintJump),
+                        (Action::OpenLinkNewTab, None),
+                    ],
+                    Some(MdFocus::ExternalLink) => vec![
+                        op(Action::LinkOpen, Msg::HintBrowser),
+                        (Action::OpenLinkNewTab, None),
+                    ],
+                    Some(other) => panic!("{tag}: unexpected focus {other:?}"),
+                };
+                let tail = cat(vec![
+                    vec![
+                        op(Action::ToggleOutline, Msg::HintOutline),
+                        op(Action::CycleRepresentation, Msg::HintRawSource),
+                        op(Action::SearchStart, Msg::HintSearch),
+                        op(Action::ToggleFollow, Msg::StFollow),
+                    ],
+                    file_jump(),
+                    back_help_edit_open(Some(Msg::HintEdit)),
+                    ends(),
+                    tabs(),
+                    page_keys(),
+                ]);
+                let want = cat(vec![head, focus_part, tail]);
+                assert_eq!(plan_of(&s), want, "{tag}");
+                seen.insert(format!("{focus:?}"));
+                s.tab();
+            }
+        }
+    }
+    for f in [
+        "None",
+        "Some(Task)",
+        "Some(Details)",
+        "Some(CodeBlock)",
+        "Some(LocalLink)",
+        "Some(AnchorLink)",
+        "Some(ExternalLink)",
+    ] {
+        assert!(seen.contains(f), "focus {f} never planned: {seen:?}");
+    }
+}
+
+#[test]
+fn the_footer_plan_of_a_document_without_text_is_the_one_konoma_had() {
+    let mut n = 0;
+    for lang in ["en", "ja"] {
+        for keys in ["vim", "less"] {
+            let (s, _dir) = open_kind(Kind::WordLoading, cfg_of(lang, keys, true));
+            // Only the keys that still act: no scroll, search, page or representation keys; `e`
+            // is labelled `open` (the Office app) because there is no text to edit.
+            let want = cat(vec![
+                vec![op(Action::ToggleFollow, Msg::StFollow)],
+                file_jump(),
+                back_help_edit_open((!(lang == "ja" && keys == "less")).then_some(Msg::HintOpen)),
+                tabs(),
+            ]);
+            assert_eq!(plan_of(&s), want, "{lang} {keys}");
+            n += 1;
+        }
+    }
+    assert_eq!(n, 4);
+}
+
+#[test]
+fn the_footer_plan_of_code_and_text_is_the_one_konoma_had() {
+    let mut n = 0;
+    for lang in ["en", "ja"] {
+        for keys in ["vim", "less"] {
+            for git in [true, false] {
+                for (kind, repr) in [(Kind::Text, None), (Kind::TextRaw, Some(Msg::HintRendered))] {
+                    let (s, _dir) = open_kind(kind, cfg_of(lang, keys, git));
+                    // Windowed text carries the range selection: `v`, `V`, then `Y` under the
+                    // short label.
+                    #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+                    let mut follow = vec![op(Action::ToggleFollow, Msg::StFollow)];
+                    // The diff scope is there whenever the feature is, whatever `external.git` says.
+                    #[cfg(feature = "git")]
+                    {
+                        follow.push(op(Action::ToggleFollowDiffScope, Msg::HintFollowScope));
+                    }
+                    let want = cat(vec![
+                        vec![
+                            nav(Motion::Down, Msg::Scroll),
+                            nav(Motion::Up, Msg::Scroll),
+                            op(Action::SearchStart, Msg::HintSearch),
+                            op(Action::PreviewEnterVisual, Msg::HintSelect),
+                            op(Action::PreviewEnterVisualLine, Msg::HintSelect),
+                            op(Action::PreviewCopySelectionRef, Msg::WkAtRef),
+                        ],
+                        follow,
+                        vec![(Action::CycleRepresentation, repr)],
+                        file_jump(),
+                        back_help_edit_open(Some(Msg::HintEdit)),
+                        ends(),
+                        vec![
+                            nav(Motion::Left, Msg::HintHscroll),
+                            nav(Motion::Right, Msg::HintHscroll),
+                            nav(Motion::LineHome, Msg::HintLineEnds),
+                            nav(Motion::LineEnd, Msg::HintLineEnds),
+                        ],
+                        tabs(),
+                        page_keys(),
+                    ]);
+                    assert_eq!(plan_of(&s), want, "{kind:?} {lang} {keys} git={git}");
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 16);
+}
+
+#[test]
+fn the_footer_plan_of_a_table_and_a_picture_is_the_one_konoma_had() {
+    for lang in ["en", "ja"] {
+        for keys in ["vim", "less"] {
+            let (s, _dir) = open_kind(Kind::Table, cfg_of(lang, keys, true));
+            let want = cat(vec![
+                vec![
+                    nav(Motion::Left, Msg::HintCell),
+                    nav(Motion::Down, Msg::HintCell),
+                    nav(Motion::Up, Msg::HintCell),
+                    nav(Motion::Right, Msg::HintCell),
+                    op(Action::ToggleTableCell, Msg::HintViewCell),
+                    op(Action::PageNext, Msg::HintPage),
+                    op(Action::PagePrev, Msg::HintPage),
+                    op(Action::ToggleOutline, Msg::HintOutline),
+                    (Action::CycleRepresentation, None),
+                    op(Action::SearchStart, Msg::HintSearch),
+                ],
+                ends(),
+                file_jump(),
+                back_help_edit_open(Some(Msg::HintEdit)),
+                tabs(),
+            ]);
+            assert_eq!(plan_of(&s), want, "table {lang} {keys}");
+
+            let (s, _dir) = open_kind(Kind::Image, cfg_of(lang, keys, true));
+            let want = cat(vec![
+                vec![
+                    op(Action::ImageZoomIn, Msg::Zoom),
+                    op(Action::ImageZoomOut, Msg::Zoom),
+                    op(Action::ImageZoomReset, Msg::HintFit),
+                    nav(Motion::Left, Msg::HintPan),
+                    nav(Motion::Down, Msg::HintPan),
+                    nav(Motion::Up, Msg::HintPan),
+                    nav(Motion::Right, Msg::HintPan),
+                    op(Action::PageNext, Msg::HintPage),
+                    op(Action::PagePrev, Msg::HintPage),
+                    op(Action::ToggleOutline, Msg::HintOutline),
+                    (Action::ImageReturnToDiff, None),
+                ],
+                file_jump(),
+                back_help_edit_open(Some(Msg::HintEdit)),
+                tabs(),
+            ]);
+            assert_eq!(plan_of(&s), want, "image {lang} {keys}");
+        }
+    }
 }

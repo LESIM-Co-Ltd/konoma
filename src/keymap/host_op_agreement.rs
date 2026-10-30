@@ -210,8 +210,8 @@ fn every_host_operation_has_the_name_konoma_gives_its_action() {
 
 #[test]
 fn every_mnemonic_names_an_action_of_the_host_or_of_a_build_without_it() {
-    use konoma_host_core::keymap::{mnemonic_of_name, MNEMONIC_NAMES};
-    for n in MNEMONIC_NAMES {
+    use konoma_host_core::keymap::{mnemonic_names, mnemonic_of_name};
+    for n in mnemonic_names() {
         let known = action_from_str(n).is_some();
         let git_only = matches!(
             n,

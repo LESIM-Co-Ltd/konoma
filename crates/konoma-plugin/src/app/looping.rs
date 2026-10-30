@@ -282,12 +282,12 @@ impl AppKeys {
             return self.help_acts_on(key);
         }
         match self.act_in(ctx, key) {
-            None => !in_help && self.menu_key_acts(ctx, key),
+            None => self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
-                !in_help && scrolls && !self.wrap
+                scrolls && !self.wrap
             }
-            Some(Act::Move(_)) => in_help || scrolls,
+            Some(Act::Move(_)) => scrolls,
             Some(_) => true,
         }
     }
@@ -462,8 +462,7 @@ impl AppKeys {
     }
 
     /// [`AppKeys::help_title`] over the text screen of key context `ctx`.
-    pub fn help_title_in(&self, ctx: CoreContext) -> String {
-        let _ = ctx;
+    pub fn help_title_in(&self, _ctx: CoreContext) -> String {
         self.overlay_title()
     }
 
@@ -697,8 +696,7 @@ impl AppKeys {
     }
 
     /// The title of the `?` help over a table (see [`AppKeys::help_title`]).
-    pub fn table_help_title(&self, mode: TableMode) -> String {
-        let _ = mode;
+    pub fn table_help_title(&self, _mode: TableMode) -> String {
         self.overlay_title()
     }
 
@@ -1031,6 +1029,7 @@ impl AppKeys {
         lang: &str,
         acts: &super::AppActs,
         act_ctx: &str,
+        windowed: bool,
         enabled: impl Fn(&str) -> bool,
     ) -> Vec<konoma_host_core::menu::Item<super::space::SpaceOp, String>> {
         super::space::items(
@@ -1041,6 +1040,7 @@ impl AppKeys {
             lang,
             acts,
             act_ctx,
+            windowed,
             enabled,
         )
     }
@@ -1208,6 +1208,13 @@ fn text_ctx(base: &Frame) -> CoreContext {
     } else {
         CoreContext::Text
     }
+}
+
+/// Whether the screen is the file's text in the host's frame, which the host windows
+/// (`is_windowed`) and so plans the range-selection keys for. A message, a page that failed to
+/// draw and the bare text of one are not.
+fn windowed_text(base: &Frame) -> bool {
+    matches!(base, Frame::Text(t) if t.border.is_some())
 }
 
 /// A help as lines: a heading and the aligned rows of each section (the host's drawing, shared).
@@ -1803,6 +1810,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else {
             text_ctx(&base)
         };
+        // Whether the text is the file's, in the host's frame (the footer plan's selection keys).
+        let windowed = windowed_text(&base);
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
         let en: Vec<String> = enabled_ids(&*sess!(), &acts);
@@ -1835,7 +1844,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
                     secs.insert(keys.plugin_section_at(act_ctx, &secs), own);
                 }
-                let items = keys.space_items(core_ctx, &cx.lang, &acts, act_ctx, act_on);
+                let items = keys.space_items(
+                    core_ctx,
+                    &cx.lang,
+                    &acts,
+                    act_ctx,
+                    windowed_text(&base),
+                    act_on,
+                );
                 keys.insert_actions_section(core_ctx, &items, &mut secs);
                 let lines = lines_of(&secs);
                 // The panel is laid out in the whole screen, as the host's is; the scroll is
@@ -1963,7 +1979,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 ))]
             }
             (None, Some((c, CoreMenu::Actions))) => keys.space_line(
-                &keys.space_items(c, &cx.lang, &acts, act_ctx, act_on),
+                &keys.space_items(c, &cx.lang, &acts, act_ctx, windowed, act_on),
                 width,
             ),
             (None, Some((c, m))) => keys
@@ -2050,7 +2066,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         // (below); any other key only closes the menu.
                         in_menu = true;
                         need_view = false;
-                        let items = keys.space_items(ctx, &cx.lang, &acts, act_ctx, act_on);
+                        let items = keys.space_items(
+                            ctx,
+                            &cx.lang,
+                            &acts,
+                            act_ctx,
+                            windowed_text(&base),
+                            act_on,
+                        );
                         match key_press(&key)
                             .and_then(|kp| items.iter().find(|i| i.key == kp))
                             .map(|i| i.action)
@@ -3048,5 +3071,37 @@ mod reopen_state_tests {
             display: Default::default(),
             acts: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod windowed_text_tests {
+    use super::*;
+    use crate::app::draw::{TextBorder, TextFrame};
+
+    fn text(border: bool) -> Frame {
+        Frame::Text(TextFrame {
+            lines: Vec::new(),
+            wrap: false,
+            hscroll: 0,
+            border: border.then(|| TextBorder {
+                name: "a.txt".into(),
+                lang: Lang::En,
+                extent: konoma_widgets::scroll::ScrollExtent {
+                    pos: 0,
+                    max: 0,
+                    viewport: 1,
+                },
+            }),
+        })
+    }
+
+    #[test]
+    fn only_the_files_text_in_the_hosts_frame_is_windowed() {
+        assert!(windowed_text(&text(true)));
+        // The bare text of a page that failed, a message and an empty body are not.
+        assert!(!windowed_text(&text(false)));
+        assert!(!windowed_text(&Frame::Lines(vec![Line::raw("message")])));
+        assert!(!windowed_text(&Frame::Lines(Vec::new())));
     }
 }
