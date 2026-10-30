@@ -1571,3 +1571,285 @@ fn a_layout_reported_again_keeps_the_page_list_width_floor_and_a_changed_list_re
     app.adopt_layout(&d);
     assert_eq!(app.outline_width_floor(""), 30);
 }
+
+// ---- the session a job runs on, after a `Reopen` ------------------------------------------------
+
+/// After a `Reopen` the session is the destination's: the settings, the read scope and the
+/// declared `shows` a job carries are the destination's, whichever plugin the file was given to.
+mod after_reopen {
+    use super::*;
+    use crate::app::plugin_host::{PluginJob, PluginPhase, PluginShow};
+    use crate::plugins::test_plugins;
+    use konoma_plugin::ViewKind;
+
+    /// What the session was given: `<scope allows the probe file> level=<n>`.
+    type Seen = Arc<Mutex<Vec<String>>>;
+
+    struct Who {
+        id: String,
+        shows: ViewKind,
+        probe: PathBuf,
+        seen: Seen,
+    }
+
+    impl Plugin for Who {
+        fn manifest(&self) -> Manifest {
+            Manifest::new(self.id.as_str(), "0").shows(self.shows)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(WhoSession {
+                shows: self.shows,
+                probe: self.probe.clone(),
+                seen: self.seen.clone(),
+            }))
+        }
+    }
+
+    struct WhoSession {
+        shows: ViewKind,
+        probe: PathBuf,
+        seen: Seen,
+    }
+
+    impl Session for WhoSession {
+        fn view(&mut self, _: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+            self.seen.lock().unwrap().push(format!(
+                "view scope={} level={}",
+                cx.read_scope.allows(&self.probe),
+                cx.settings.int("level", 0)
+            ));
+            Ok(match self.shows {
+                ViewKind::Text => View::text(["x"]),
+                _ => View::Table(TableView {
+                    grid: Arc::new(Rows(1)),
+                    title: None,
+                    rainbow: false,
+                    addressed: false,
+                }),
+            })
+        }
+        fn act(&mut self, _: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+            self.seen.lock().unwrap().push(format!(
+                "act scope={} level={}",
+                cx.read_scope.allows(&self.probe),
+                cx.settings.int("level", 0)
+            ));
+            Ok(Outcome::Redraw)
+        }
+    }
+
+    struct Rig {
+        app: App,
+        file: PathBuf,
+        a: String,
+        b: String,
+        seen: Seen,
+        session_of_b: Option<Box<dyn Session>>,
+        _dirs: (crate::test_support::TmpDir, crate::test_support::TmpDir),
+    }
+
+    /// Plugin A (shows a table, `level = 1`, reads the tab root only) and plugin B (shows text,
+    /// `level = 7`, `read_dirs` adds the folder holding the probe file). Both are user plugins.
+    fn rig(tag: &str) -> Rig {
+        let (dir, file) = sandbox(&format!("konoma_reopen_{tag}"));
+        let outside = unique_tmp(&format!("konoma_reopen_out_{tag}"));
+        std::fs::create_dir_all(&outside).unwrap();
+        let probe = outside.join("probe.txt");
+        std::fs::write(&probe, "p").unwrap();
+        let seen = Seen::default();
+        let (a, b) = (format!("who-a-{tag}"), format!("who-b-{tag}"));
+        let ma = test_plugins::register(
+            &a,
+            Arc::new(Who {
+                id: a.clone(),
+                shows: ViewKind::Table,
+                probe: probe.clone(),
+                seen: seen.clone(),
+            }),
+        );
+        let mb = test_plugins::register(
+            &b,
+            Arc::new(Who {
+                id: b.clone(),
+                shows: ViewKind::Text,
+                probe: probe.clone(),
+                seen: seen.clone(),
+            }),
+        );
+        let mut cfg = cfg_from(&format!(
+            "[plugins.\"{a}\"]\nlevel = 1\n[plugins.\"{b}\"]\nlevel = 7\nread_dirs = [{:?}]\n",
+            outside.to_str().unwrap()
+        ));
+        for m in [ma, mb] {
+            let mut t = toml::Table::new();
+            t.insert("enabled".into(), toml::Value::Boolean(false));
+            cfg.plugins.insert(m, t);
+        }
+        let app = App::new(dir.to_path_buf(), cfg).unwrap();
+        Rig {
+            app,
+            file,
+            a,
+            b,
+            seen,
+            session_of_b: None,
+            _dirs: (dir, outside),
+        }
+    }
+
+    /// The app shows `own`'s file and holds a session of `dest` (a `Reopen` into it).
+    fn reopened(r: &mut Rig, own: &str, dest: Option<&str>) {
+        let flow = plugin_host::ShowFlow {
+            reopened_as: dest.map(str::to_string),
+            ..Default::default()
+        };
+        r.app.plugin = Some(PluginShow {
+            id: own.to_string(),
+            path: r.file.clone(),
+            phase: PluginPhase::Ready,
+            session: None,
+            layout: Layout::single(),
+            view: None,
+            req: ViewReq::default(),
+            enabled: Default::default(),
+            flow,
+        });
+        r.session_of_b = Some(Box::new(WhoSession {
+            shows: ViewKind::Text,
+            probe: PathBuf::new(),
+            seen: r.seen.clone(),
+        }));
+    }
+
+    fn work(r: &mut Rig, own: &str, session: Box<dyn Session>) -> plugin_host::PluginWork {
+        r.app.plugin_work(
+            own.to_string(),
+            r.file.clone(),
+            PluginJob::View { session },
+            ViewReq::new(80, 24),
+        )
+    }
+
+    fn session_probing(r: &Rig, shows: ViewKind) -> Box<dyn Session> {
+        let probe = r._dirs.1.join("probe.txt");
+        Box::new(WhoSession {
+            shows,
+            probe,
+            seen: r.seen.clone(),
+        })
+    }
+
+    #[test]
+    fn a_view_after_a_reopen_carries_the_destinations_settings_scope_and_shows() {
+        let mut r = rig("view");
+        let (a, b) = (r.a.clone(), r.b.clone());
+        reopened(&mut r, &a, Some(&b));
+        // The session is B's (it shows text, which A never declared): A's `shows` would turn the
+        // view into a failure.
+        let s = session_probing(&r, ViewKind::Text);
+        let w = work(&mut r, &a, s);
+        assert_eq!(
+            w.id, a,
+            "the result still comes back under the file's plugin"
+        );
+        assert_eq!(w.session_id, b);
+        let res = w.run_on_the_spot();
+        assert!(
+            res.failure.is_none(),
+            "{:?}",
+            res.failure.map(|f| f.message.en().to_string())
+        );
+        assert!(res.view.is_some());
+        assert_eq!(res.id, a);
+        assert_eq!(*r.seen.lock().unwrap(), ["view scope=true level=7"]);
+    }
+
+    #[test]
+    fn an_action_after_a_reopen_carries_the_destinations_settings_and_scope() {
+        let mut r = rig("act");
+        let (a, b) = (r.a.clone(), r.b.clone());
+        reopened(&mut r, &a, Some(&b));
+        let session = session_probing(&r, ViewKind::Text);
+        let w = r.app.plugin_work(
+            a.clone(),
+            r.file.clone(),
+            PluginJob::Act {
+                session,
+                action: "any".into(),
+            },
+            ViewReq::new(80, 24),
+        );
+        let _ = w.run_on_the_spot();
+        assert_eq!(*r.seen.lock().unwrap(), ["act scope=true level=7"]);
+    }
+
+    #[test]
+    fn without_a_reopen_the_files_plugin_is_the_session() {
+        let mut r = rig("plain");
+        let a = r.a.clone();
+        reopened(&mut r, &a, None);
+        let s = session_probing(&r, ViewKind::Table);
+        let w = work(&mut r, &a, s);
+        assert_eq!(w.session_id, a);
+        let res = w.run_on_the_spot();
+        assert!(res.failure.is_none());
+        assert_eq!(*r.seen.lock().unwrap(), ["view scope=false level=1"]);
+    }
+
+    #[test]
+    fn a_standard_origin_with_a_user_destination_is_limited_and_the_reverse_is_not() {
+        let mut r = rig("std");
+        let (a, b) = (r.a.clone(), r.b.clone());
+        let std_id = konoma_markdown::MARKDOWN_ID.to_string();
+        // Word-like: the file's plugin is a standard one, the destination a user plugin.
+        reopened(&mut r, &std_id, Some(&b));
+        let s = session_probing(&r, ViewKind::Text);
+        let w = work(&mut r, &std_id, s);
+        assert_eq!(w.session_id, b);
+        assert!(
+            w.read_scope.is_restricted(),
+            "the user plugin's session reads under its scope"
+        );
+        assert_eq!(w.settings.int("level", 0), 7);
+        // The file's plugin is a user plugin, the destination a standard one.
+        reopened(&mut r, &a, Some(&std_id));
+        let s = session_probing(&r, ViewKind::Text);
+        let w = work(&mut r, &a, s);
+        assert_eq!(w.session_id, std_id);
+        assert!(!w.read_scope.is_restricted());
+        assert_eq!(
+            w.settings.int("level", 0),
+            0,
+            "A's settings do not carry over"
+        );
+        // Standard to standard (the shipped Word -> Markdown): still the standard scope.
+        reopened(&mut r, "office", Some(&std_id));
+        let s = session_probing(&r, ViewKind::Text);
+        let w = work(&mut r, "office", s);
+        assert_eq!(w.session_id, std_id);
+        assert!(!w.read_scope.is_restricted());
+    }
+
+    /// An `Open` brings a session of the file's own plugin, whatever the show held before.
+    #[test]
+    fn an_open_is_the_files_plugins_session_even_while_a_reopened_one_is_shown() {
+        let mut r = rig("open");
+        let (a, b) = (r.a.clone(), r.b.clone());
+        reopened(&mut r, &a, Some(&b));
+        let (plugin, _) = stand(Script::default());
+        let w = r.app.plugin_work(
+            a.clone(),
+            r.file.clone(),
+            PluginJob::Open {
+                plugin,
+                input: Input::File {
+                    path: r.file.clone(),
+                    hint: None,
+                },
+            },
+            ViewReq::new(80, 24),
+        );
+        assert_eq!(w.session_id, a);
+        assert_eq!(w.settings.int("level", 0), 1);
+    }
+}

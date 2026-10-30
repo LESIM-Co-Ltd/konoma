@@ -106,6 +106,26 @@ pub(crate) fn count_resolve_preview_calls<T>(f: impl FnOnce() -> T) -> (T, usize
 }
 
 thread_local! {
+    /// How many times `plugins::plugin_id_of` got past its gate and read the file, **on this thread**.
+    static PLUGIN_ID_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::plugin_id_of` after the `is_previewable` gate, right before it sniffs.
+pub(crate) fn note_plugin_id_read() {
+    let _ = PLUGIN_ID_READS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times `plugin_id_of` read a file while it did)`.
+pub(crate) fn count_plugin_id_reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = PLUGIN_ID_READS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        PLUGIN_ID_READS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
     /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
     /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
     /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest
@@ -230,42 +250,24 @@ pub(crate) fn jj_scratch_seeded(name: &str) -> Option<TmpDir> {
     Some(dir)
 }
 
-thread_local! {
-    /// Test-only stand-in for the OS clipboard (see `app::set_clipboard` / `paste_jump::read_clipboard`).
-    ///
-    /// Every copy key (`y c`, `Y`, table copy, git-log copy, ...) used to call `arboard` for real in
-    /// `cargo test`, which overwrote whatever the *developer* had on their real system clipboard —
-    /// a reported, reproducible bug (running the suite could clobber an in-progress paste). Routing
-    /// both the write side and the read side (`P`/paste-jump) through this sink instead of arboard
-    /// makes `cargo test` clipboard-independent by construction: the arboard-calling code isn't even
-    /// compiled into a `#[cfg(test)]` build (see the `#[cfg(not(test))]` bodies of those functions).
-    ///
-    /// Thread-local, not a process-wide static, for the same reason as `STAT_CALLS` above: `cargo
-    /// test`'s default runner reuses a fixed pool of OS threads across many tests, but never runs two
-    /// tests *concurrently* on the same thread, so a thread-local sink can never let one test's copy
-    /// leak into another test running at the same time. It can still leak into a *later* test that
-    /// happens to land on the same worker thread and forgets to set its own value first — every test
-    /// that asserts an "empty clipboard" state must call `clear_test_clipboard()` before reading.
-    static CLIPBOARD: RefCell<Option<String>> = const { RefCell::new(None) };
-}
+// The test-only stand-in for the OS clipboard lives in `konoma_host_core::clipboard` (the real
+// `set_clipboard` / `read_clipboard` go through it in test builds, so `cargo test` never touches
+// the developer's clipboard). These wrappers keep the tests' call sites unchanged. The sink is
+// thread-local: a test asserting an "empty clipboard" must call `clear_test_clipboard()` first.
 
-/// Test-only stand-in for the clipboard's write side. `set_clipboard` writes here instead of arboard
-/// when built for tests.
+/// Write side of the sink (`set_clipboard` writes here in test builds).
 pub(crate) fn set_test_clipboard(text: &str) {
-    CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
+    konoma_host_core::clipboard::set_test_clipboard(text);
 }
 
-/// Test-only stand-in for the clipboard's read side (`P` / paste-jump). `read_clipboard` reads from
-/// here instead of arboard when built for tests.
+/// Read side of the sink (`P` / paste-jump reads here in test builds).
 pub(crate) fn get_test_clipboard() -> Option<String> {
-    CLIPBOARD.with(|c| c.borrow().clone())
+    konoma_host_core::clipboard::get_test_clipboard()
 }
 
-/// Reset the test clipboard sink to "empty" (mirrors an environment where the real clipboard is
-/// unavailable). Tests that assert the "no clipboard" flash must call this first — see the
-/// thread-reuse caveat on `CLIPBOARD` above.
+/// Reset the sink to "empty" (an environment where the clipboard is unavailable).
 pub(crate) fn clear_test_clipboard() {
-    CLIPBOARD.with(|c| *c.borrow_mut() = None);
+    konoma_host_core::clipboard::clear_test_clipboard();
 }
 
 /// Test-only override for the remote-image cache root (`app::cache_root()`). Call with a sandboxed

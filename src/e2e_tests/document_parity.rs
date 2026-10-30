@@ -42,6 +42,8 @@ pub(super) fn app_term_plugins(
         // The file is opened from its directory, as the host opens it from its root.
         path: opened.path.clone(),
         open_dir: opened.path.parent().map(|p| p.to_path_buf()),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -123,15 +125,12 @@ fn inner(term: &Terminal<TestBackend>) -> Vec<String> {
 /// footers (`assert_all_seen`). `y:copy` and `e:open` are not here: the host offers them only
 /// while a code block or a diagram has the focus, and the app has no focus to compare.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
     "Tab:focus",
     "F:FOLLOW",
     "O:outline",
-    "e:edit",
-    "o:open in app",
     "q:back",
     "R:raw source",
 ];
@@ -139,7 +138,6 @@ const HOST_ONLY: &[&str] = &[
 /// The help rows only the host has for a Markdown file, by their start (the keys and sections of
 /// the search, the links, the tasks, bookmarks, tabs, the editor and the chords).
 pub(super) const HELP_HOST_ONLY: &[&str] = &[
-    "Launch",
     "Actions",
     "Tabs",
     "t ",
@@ -148,13 +146,7 @@ pub(super) const HELP_HOST_ONLY: &[&str] = &[
     "T ",
     "P ",
     "F ",
-    "Sort & display",
-    "Copy path",
     "Space ",
-    ", ",
-    "y ",
-    "e ",
-    "o ",
     "h / l",
     "0 / $",
     "/ n / N",
@@ -282,6 +274,89 @@ fn the_page_scroll_and_footer_agree_with_the_host() {
     assert!(compared > 800, "{compared}");
     assert!(seen_host_only.len() >= 8, "{seen_host_only:?}");
     super::table_parity::assert_all_seen("document HOST_ONLY", HOST_ONLY, &seen_host_only);
+}
+
+/// Markdown for the `e` line: long enough to scroll many windows, with the shapes that make the
+/// proportional estimate and its correction by content differ (headings, wrapped paragraphs,
+/// lists, tables, code, blank runs, a repeated sentence, one-word lines).
+fn edit_fixtures() -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = fixtures()
+        .into_iter()
+        .filter(|(n, _)| ["scroll.md", "wrap.md", "cjk.md", "list.md"].contains(&n.as_str()))
+        .collect();
+    let mixed: String = (0..60)
+        .map(|i| match i % 6 {
+            0 => format!("## Section {i}\n\n"),
+            1 => format!(
+                "{}\n\n",
+                "a sentence that repeats and wraps around ".repeat(4)
+            ),
+            2 => format!("- item {i} of a list\n- another unique item {i} here\n\n"),
+            3 => format!("| col a | col b |\n|---|---|\n| cell {i} | value {i} |\n\n"),
+            4 => format!("```rust\nlet unique_{i} = {i};\n```\n\n"),
+            _ => "x\n\n\n\n".to_string(),
+        })
+        .collect();
+    v.push(("mixed.md".into(), mixed));
+    v.push(("one.md".into(), "single line\n".into()));
+    v.push(("blank.md".into(), "\n\n\n".into()));
+    v
+}
+
+/// The line `e` opens a rendered Markdown document at, after the scroll: the host and the app
+/// give the same line (the proportional estimate from the top of the page, corrected by the
+/// content), for every pair of the scroll keys and for runs of one key past the window.
+#[test]
+fn the_line_e_opens_in_a_document_agrees_with_the_host() {
+    let dir = sandbox("doc-edit-line");
+    for (name, body) in edit_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let motions = [
+        "j", "k", "g", "G", "<C-f>", "<C-b>", "<C-d>", "<C-u>", "<PgDn>", "<PgUp>",
+    ];
+    let mut specs: Vec<String> = vec![String::new()];
+    for a in motions {
+        specs.push(a.to_string());
+        for b in motions {
+            specs.push(format!("{a} {b}"));
+        }
+    }
+    for n in [1usize, 3, 7, 12, 20, 45] {
+        specs.push(vec!["j"; n].join(" "));
+        specs.push(format!("G {}", vec!["k"; n].join(" ")));
+        specs.push(format!(
+            "{} <C-d> {}",
+            vec!["j"; n].join(" "),
+            vec!["k"; n / 2 + 1].join(" ")
+        ));
+    }
+    let (mut checked, mut some, mut nonzero) = (0usize, 0usize, 0usize);
+    let mut at = std::collections::BTreeSet::new();
+    for (name, _) in edit_fixtures() {
+        for spec in &specs {
+            let what = format!("{name} [{spec}]");
+            // A small terminal: the documents are taller than the window.
+            let h = host_term(&root, &name, 60, 12, spec);
+            let _a = app_term(&root.join(&name), 60, 11, spec);
+            let (he, ae) = (
+                h.app.preview_edit_line_for_test(),
+                konoma_plugin::app::edit_line(),
+            );
+            assert_eq!(he, ae, "{what}: the line `e` opens differs");
+            checked += 1;
+            if let Some(l) = he {
+                some += 1;
+                nonzero += usize::from(l > 1);
+                at.insert((name.clone(), l));
+            }
+        }
+    }
+    assert!(checked >= 800, "{checked}");
+    assert!(some >= 700, "documents with a line: {some}");
+    assert!(nonzero >= 300, "lines past the first: {nonzero}");
+    assert!(at.len() >= 45, "distinct (file, line): {}", at.len());
 }
 
 /// The rows only the host's help lists for a Markdown file (search, links, bookmarks, the tabs...)
@@ -438,6 +513,9 @@ fn app_term_with(
         lang: "en".into(),
         shows: opened.shows.clone(),
         display: display.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -933,7 +1011,10 @@ fn app_pictures_on(
         term: TermCaps::new(),
         title: String::new(),
         shows: prepared.opened.shows.clone(),
+        path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
+        launch: Some(prepared.launch.clone()),
+        converts: prepared.opened.manifest.converts,
         ..AppCx::default()
     };
     let mut events = SettleOn {
@@ -1251,7 +1332,10 @@ fn app_reopen_term_bundled(
         shows: prepared.opened.shows.clone(),
         unavailable: prepared.opened.unavailable.clone(),
         plugin_id: prepared.opened.plugin_id.clone(),
+        path: prepared.opened.path.clone(),
         reopen: Some(prepared.reopen.clone()),
+        launch: Some(prepared.launch.clone()),
+        converts: prepared.opened.manifest.converts,
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -1322,8 +1406,8 @@ fn a_docx_reopened_as_markdown_has_the_hosts_footer_and_help() {
     build_docx(&dir.join("d.docx"), &docx_body());
     let root = canon(&dir);
     let (mut footers, mut helps) = (0, 0);
-    // A Word file is opened, not edited, by the host (`e:open`); the app has no `e`.
-    let host_only: Vec<&str> = HOST_ONLY.iter().copied().chain(["e:open"]).collect();
+    // A Word file is opened, not edited, by the host (`e:open`); the reopened app does the same.
+    let host_only: Vec<&str> = HOST_ONLY.to_vec();
     for spec in ["", "G", "<C-f>"] {
         let what = format!("d.docx [{spec}]");
         let hs = host_term(&root, "d.docx", 220, 31, spec);
@@ -1453,16 +1537,32 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
     s.term.clear().expect("clear");
     s.draw();
     let a = app_reopen_term(&root.join("d.docx"), office_docs(), 100, 30, "");
-    // The host frames the failure with its own hint and path lines; the app draws the failure
-    // message alone. What must agree is the message itself.
     let host_rows = inner(&s.term);
     let app_rows = rows_of(&a);
+    // Every row agrees: the message, the line that says `e` opens an Office app, and the path.
     let said = "no plugin is available to show this document";
     assert_eq!(host_rows[0], said, "host:\n{}", rows_of(&s.term).join("\n"));
-    assert_eq!(app_rows[0], said, "app:\n{}", app_rows.join("\n"));
+    assert_eq!(app_rows[0], host_rows[0], "app:\n{}", app_rows.join("\n"));
+    assert_eq!(host_rows[1], "Press `e` to open it in an Office app");
+    assert_eq!(app_rows[1], host_rows[1], "the \"e opens an app\" line");
+    // The path is the rest of what is drawn; a frame that is narrower wraps it earlier, so the
+    // rows from the third on are compared joined.
+    let rest = |rows: &[String]| -> String {
+        rows[2..rows.len() - 1]
+            .iter()
+            .map(|r| r.trim_end())
+            .collect::<String>()
+    };
     assert!(
-        app_rows[1..app_rows.len() - 1].iter().all(|r| r.is_empty()),
-        "nothing else is drawn\n{}",
+        rest(&host_rows).starts_with('/'),
+        "{}",
+        host_rows.join("\n")
+    );
+    assert_eq!(
+        rest(&app_rows),
+        rest(&host_rows),
+        "the path line\nhost:\n{}\napp:\n{}",
+        host_rows.join("\n"),
         app_rows.join("\n")
     );
     // A markdown plugin beside the Word one is what makes the same file show its text.

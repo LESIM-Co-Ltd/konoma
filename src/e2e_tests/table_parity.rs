@@ -41,6 +41,16 @@ pub(super) fn presses(spec: &str) -> Vec<(KC, KM)> {
     spec.split_whitespace().map(token).collect()
 }
 
+/// How `e` and `o` run in the app of a parity test: konoma's defaults and the verbs the plugin
+/// declared. Nothing can start (the seams refuse); the launch parity test records instead.
+pub(super) fn default_launch(manifest: &konoma_plugin::Manifest) -> konoma_plugin::app::LaunchCx {
+    konoma_plugin::app::LaunchCx::new(
+        konoma_host_core::editor::EditorConfig::default(),
+        &konoma_host_core::shared::SharedExternal::default(),
+        manifest.verbs.clone(),
+    )
+}
+
 /// The rows of a buffer, a wide symbol counted once.
 pub(super) fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
@@ -76,6 +86,8 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         term: TermCaps::new(),
         title: "t".into(),
         shows: opened.shows.clone(),
+        path: opened.path.clone(),
+        launch: Some(default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -442,16 +454,11 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
 /// The hints only the host has (search, copy, the files, the tabs, `q` going back), spelled out
 /// in full: a word the host adds that is not listed here fails the comparison.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "e:open",
-    "o:open in app",
     "O:pages",
     "q:back",
-    "y:copy",
 ];
 
 /// The text of a help panel, one string per row, the runs of spaces made one.
@@ -469,7 +476,9 @@ pub(super) fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String>
                         }
                         col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
                     }
-                    out
+                    // The picture shows beside the panel: stop at the panel's right border
+                    // (no help text holds a `│`).
+                    out.split('│').next().unwrap_or("").to_string()
                 }
                 None => r.clone(),
             };
@@ -570,7 +579,36 @@ pub(super) fn same_help_rows(
         })
         .map(norm)
         .collect();
-    let app: Vec<String> = al.iter().map(norm).collect();
+    // The `Space` menu's section is the one place the two helps differ by letters, not only by
+    // rows: the host assigns the letters of the items without a key along its whole menu (the
+    // host-only items included), the app along its own. The section is compared by what it names:
+    // each label the app lists is a label of the host's section, and the app has the section
+    // whenever the host does (`space_menu_parity` compares the menus themselves).
+    let space_label = |r: &String| -> Option<String> {
+        let rest = r.strip_prefix("Space ")?;
+        rest.split_once(' ').map(|(_, l)| l.trim().to_string())
+    };
+    let host_space: Vec<String> = hl.iter().filter_map(&space_label).collect();
+    let app_space: Vec<String> = al.iter().filter_map(&space_label).collect();
+    if host_only.contains(&"Space ") {
+        for l in &app_space {
+            assert!(
+                host_space.contains(l),
+                "{what}: the app's Space item `{l}` is not one of the host's: {host_space:?}"
+            );
+        }
+        assert!(
+            host_space.is_empty() || !app_space.is_empty(),
+            "{what}: the app's help lacks the Space section the host has"
+        );
+    }
+    let app: Vec<String> = al
+        .iter()
+        .filter(|r| {
+            !(host_only.contains(&"Space ") && (r.starts_with("Space ") || r.as_str() == "Actions"))
+        })
+        .map(norm)
+        .collect();
     assert_eq!(
         kept, app,
         "{what}: the help rows differ\nhost: {hl:#?}\napp: {al:#?}"

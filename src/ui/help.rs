@@ -58,21 +58,17 @@ pub fn leader_section(
     if menu.items.is_empty() {
         return None;
     }
-    let mut sec = HelpSection::new(menu.title);
-    for it in &menu.items {
-        sec = sec.row(
-            format!("{prefix} {}", leader_key_str(it.key)),
-            it.label.clone(),
-        );
+    let pairs: Vec<(KeyPress, String)> = menu
+        .items
+        .iter()
+        .map(|i| (i.key, i.label.clone()))
+        .collect();
+    let shared = konoma_host_core::help::menu_section(&menu.title, prefix, &pairs)?;
+    let mut sec = HelpSection::new(shared.title);
+    for (keys, label) in shared.rows {
+        sec = sec.row(keys, label);
     }
     Some(sec)
-}
-
-/// Turn a key into the display string every which-key menu and help row uses (`Space`,
-/// `Ctrl-t`, `Enter`, `⇧Tab`). The one implementation: the footer's which-key line and the help
-/// share it.
-pub(crate) fn leader_key_str(kp: KeyPress) -> String {
-    crate::ops::keys::help_key(kp)
 }
 
 /// The help popup's frame and the number of body rows inside it (shared with the standalone

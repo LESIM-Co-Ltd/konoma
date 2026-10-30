@@ -3,9 +3,10 @@
 //! must draw the same frame: the path title, the position label, the scrollbar on the right
 //! border and the rows inside, wrapped or cut and scrolled sideways.
 //!
-//! Not compared (known differences): `j`/`k` (the host moves a caret and the window follows it;
-//! the app has no caret), `h` `l` and `$` after the caret has moved (they follow the caret), the
-//! colors.
+//! The caret (the line cursor, the column cursor, the window that follows them) is shared code
+//! (`konoma_widgets::caret`): the same keys must give the same frame, the same cells carrying the
+//! caret and the line highlight, and the same line for `e`. Range selection (`v` `V`) and the
+//! other colors are not compared.
 
 use super::table_parity::{hints, panel_lines, presses, rows_of, same_footer, same_help_rows};
 use super::*;
@@ -19,16 +20,29 @@ fn app_text(
     path: &std::path::Path,
     wrap: bool,
     tab_width: usize,
+    size: (u16, u16),
+    spec: &str,
+) -> Terminal<TestBackend> {
+    app_text_by(
+        Arc::new(konoma_code::CodePlugin),
+        path,
+        wrap,
+        tab_width,
+        size,
+        spec,
+    )
+}
+
+/// [`app_text`] with the plugin that shows the file given.
+fn app_text_by(
+    plugin: Arc<dyn konoma_plugin::Plugin>,
+    path: &std::path::Path,
+    wrap: bool,
+    tab_width: usize,
     (w, h): (u16, u16),
     spec: &str,
 ) -> Terminal<TestBackend> {
-    let mut opened = open_file(
-        vec![Arc::new(konoma_code::CodePlugin)],
-        path,
-        "en",
-        TermCaps::new(),
-    )
-    .expect("opens");
+    let mut opened = open_file(vec![plugin], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(Screen::new(w, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
@@ -42,6 +56,7 @@ fn app_text(
             tab_width,
             ..Display::default()
         },
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -199,12 +214,6 @@ fn the_text_frame_agrees_with_the_host() {
             for &tab_width in tab_widths {
                 for (w, h) in [(60u16, 12u16), (200, 26), (24, 8)] {
                     for spec in SPECS {
-                        // `$` puts the host's caret on the last character and the window follows
-                        // the caret's first cell: a last wide character is cut by one cell, where the
-                        // app (no caret) shows the end of the line.
-                        if name.starts_with("cjk") && spec.contains('$') {
-                            continue;
-                        }
                         let what =
                             format!("{name} wrap={wrap} tab_width={tab_width} {w}x{h} [{spec}]");
                         let host = host_text(&root, &name, wrap, tab_width, (w, h), spec);
@@ -242,6 +251,175 @@ fn the_text_frame_agrees_with_the_host() {
     assert!(marks > 100, "frames with a tab mark: {marks}");
 }
 
+/// The cells that carry the caret (the reversed character) or the highlighted line, by their
+/// place in the frame (from the top border), with the symbols: where the caret is drawn, not only
+/// what the text says.
+fn caret_cells(term: &Terminal<TestBackend>) -> Vec<(usize, u16, u8)> {
+    use ratatui::style::{Color, Modifier};
+    let rows = rows_of(term);
+    let top = rows
+        .iter()
+        .position(|l| l.starts_with('┌'))
+        .expect("a frame");
+    let bottom = rows
+        .iter()
+        .rposition(|l| l.starts_with('└'))
+        .expect("a frame end");
+    let buf = term.backend().buffer();
+    let mut out = Vec::new();
+    for y in top..=bottom {
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y as u16)];
+            let mut flags = 0u8;
+            if c.modifier.contains(Modifier::REVERSED) {
+                flags |= 1;
+            }
+            if c.bg == Color::Rgb(55, 60, 74) {
+                flags |= 2;
+            }
+            if flags != 0 {
+                out.push((y - top, x, flags));
+            }
+        }
+    }
+    out
+}
+
+/// Files for the caret: the shapes its motions and its follow of the window depend on.
+fn caret_fixtures() -> Vec<(String, String)> {
+    let mut v = fixtures();
+    // A file longer than every window, with lines wider and narrower than the screen.
+    let big: String = (0..400)
+        .map(|i| match i % 7 {
+            0 => format!("// {} {i}\n", "wide ".repeat(30)),
+            3 => "\n".to_string(),
+            _ => format!("let v{i} = {i};\n"),
+        })
+        .collect();
+    v.push(("big.rs".into(), big));
+    v.push(("single.rs".into(), "fn main() {}\n".into()));
+    v.push(("lone-noeol.rs".into(), "x".into()));
+    v.push((
+        "fullwidth.rs".into(),
+        (0..50)
+            .map(|i| {
+                if i % 5 == 4 {
+                    "\n".to_string()
+                } else {
+                    format!("{}{i}\n", "全角の文字だけの行です、".repeat(1 + i % 6))
+                }
+            })
+            .collect(),
+    ));
+    v
+}
+
+/// The motions of a text, each key once: the caret's lines, the pages, the ends and the columns.
+const MOTIONS: &[&str] = &[
+    "j", "k", "g", "G", "<C-f>", "<C-b>", "<C-d>", "<C-u>", "<PgDn>", "<PgUp>", "h", "l", "0", "$",
+];
+
+/// The key sequences, built from the cases and not by hand: every pair of motions; every motion
+/// after a start (the top, the end, a page, a half page, the line end, a run of `j` that passes
+/// the window) followed by `j` and by `k`; and runs of one key around the window's size, at both
+/// ends of the file.
+fn caret_specs() -> Vec<String> {
+    let mut out: Vec<String> = vec![String::new()];
+    for a in MOTIONS {
+        out.push((*a).to_string());
+        for b in MOTIONS {
+            out.push(format!("{a} {b}"));
+        }
+    }
+    let run = |k: &str, n: usize| vec![k; n].join(" ");
+    let starts = [
+        "G".to_string(),
+        "<C-f>".to_string(),
+        "<C-d>".to_string(),
+        "$".to_string(),
+        "l l l l l".to_string(),
+        run("j", 13),
+    ];
+    for st in &starts {
+        for m in MOTIONS {
+            for tail in ["j", "k"] {
+                out.push(format!("{st} {m} {tail}"));
+            }
+        }
+    }
+    // Runs around the sizes of the windows used (10, 6 rows): short of, at and past the window.
+    for n in [1usize, 2, 5, 6, 7, 9, 10, 11, 12, 13, 25, 60] {
+        out.push(run("j", n));
+        out.push(format!("G {}", run("k", n)));
+        out.push(format!("{} {}", run("j", n), run("k", n / 2 + 1)));
+        out.push(format!("{} G {}", run("j", n), run("j", 3)));
+    }
+    out
+}
+
+fn check_caret(wrap: bool) {
+    let dir = sandbox(if wrap { "caret-wrap" } else { "caret-nowrap" });
+    for (name, body) in caret_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let specs = caret_specs();
+    let (mut checked, mut carets, mut lined, mut lines_seen) = (0usize, 0usize, 0usize, 0usize);
+    let mut at = std::collections::BTreeSet::new();
+    for (name, _) in caret_fixtures() {
+        for (w, h) in [(60u16, 12u16), (24, 8)] {
+            for spec in &specs {
+                // The small terminal takes the longer sequences (the window is a few rows there:
+                // the runs and the starts pass it); the pairs are checked in the larger one.
+                if w < 40 && spec.split_whitespace().count() == 2 {
+                    continue;
+                }
+                let what = format!("{name} wrap={wrap} {w}x{h} [{spec}]");
+                let host = host_text(&root, &name, wrap, 4, (w, h), spec);
+                let app = app_text(&root.join(&name), wrap, 4, (w, h - 1), spec);
+                let (hr, ar) = (frame_cells(&host.term), frame_cells(&app));
+                assert_eq!(
+                    hr,
+                    ar,
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&host.term).join("\n"),
+                    rows_of(&app).join("\n")
+                );
+                let (hc, ac) = (caret_cells(&host.term), caret_cells(&app));
+                assert_eq!(hc, ac, "{what}: the caret and its line differ");
+                let (he, ae) = (
+                    host.app.preview_edit_line_for_test(),
+                    konoma_plugin::app::edit_line(),
+                );
+                assert_eq!(he, ae, "{what}: the line `e` opens differs");
+                checked += 1;
+                carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
+                lined += usize::from(hc.iter().any(|c| c.2 & 2 != 0));
+                if let Some(l) = he {
+                    at.insert(l);
+                    lines_seen += 1;
+                }
+            }
+        }
+    }
+    // The bounds sit well below what the cases give (the exact counts are not the point).
+    assert!(checked >= 7000, "{checked}");
+    assert!(carets >= 5500, "frames with the caret character: {carets}");
+    assert!(lined >= 5500, "frames with the highlighted line: {lined}");
+    assert!(lines_seen >= 7000, "`e` lines compared: {lines_seen}");
+    assert!(at.len() >= 80, "distinct `e` lines: {}", at.len());
+}
+
+#[test]
+fn the_caret_agrees_with_the_host_wrapping() {
+    check_caret(true);
+}
+
+#[test]
+fn the_caret_agrees_with_the_host_scrolling_sideways() {
+    check_caret(false);
+}
+
 /// The title is the path relative to the folder the app was opened in, a framed text carries no
 /// "line N" in its footer (the label on the frame says where it is), and nothing is named
 /// "preview" while a path is known.
@@ -264,12 +442,9 @@ fn a_framed_text_is_titled_by_its_relative_path_and_the_footer_has_no_line_numbe
 /// What only the host's footer has for a text, spelled out in full. The focus, the outline and
 /// the raw source belong to a decorated document, so a text never shows them.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "o:open in app",
     "q:back",
     "v/V:select",
     "Y:@ref",
@@ -299,16 +474,8 @@ fn the_text_footer_agrees_with_the_host() {
                         hints(rows_of(&host.term).last().expect("footer")),
                         hints(rows_of(&app).last().expect("footer")),
                     );
-                    // The host always names `h/l:hscroll` and `0/$:line ends`; the app names
-                    // them only when the text can scroll sideways.
-                    let mut only = HOST_ONLY.to_vec();
-                    for t in ["h/l:hscroll", "0/$:line ends"] {
-                        if !af.iter().any(|a| a == t) {
-                            only.push(t);
-                        }
-                    }
                     let (alone, n) =
-                        same_footer(&what, &hf, &af, &only, &|t| t.starts_with("q:quit"));
+                        same_footer(&what, &hf, &af, HOST_ONLY, &|t| t.starts_with("q:quit"));
                     seen.extend(alone);
                     compared += n;
                     cut += usize::from(hf.last().is_some_and(|t| t.ends_with('…')));
@@ -384,15 +551,8 @@ fn the_help_over_a_text_agrees_with_the_host() {
 
 /// The help rows only the host has for a text, by their start.
 const TEXT_HELP_HOST_ONLY: &[&str] = &[
-    "Launch",
     "Actions",
-    "Sort & display",
-    "Copy path",
     "Space ",
-    ", ",
-    "y ",
-    "e ",
-    "o ",
     "Tabs",
     "t ",
     "[ / ]",
@@ -400,8 +560,6 @@ const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "T ",
     "P ",
     "F ",
-    "h / l",
-    "0 / $",
     "/ n / N",
     "Y ",
     "v / V",
@@ -409,3 +567,132 @@ const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "m / '",
     "r ",
 ];
+
+// ---- generated text (`TextSource::Owned` / `Lines`) -----------------------------------------------
+
+/// A plugin that hands the interface its own text. The caret is drawn on it in both hosts; `e`
+/// has a line only when the plugin says the lines are the file's (`file_lines`).
+struct GenText {
+    id: String,
+    owned: bool,
+    file_lines: bool,
+}
+
+fn gen_body() -> String {
+    let mut out: Vec<String> = (0..40).map(|i| format!("generated line {i:02}")).collect();
+    out[3] = format!("long {}", "0123456789".repeat(12));
+    out[7] = String::new();
+    out.join("\n")
+}
+
+impl konoma_plugin::Plugin for GenText {
+    fn manifest(&self) -> konoma_plugin::Manifest {
+        use konoma_plugin::prelude::*;
+        Manifest::new(self.id.as_str(), "0.1.0")
+            .bind(Bind::files(["*.gen"]))
+            .shows(ViewKind::Text)
+    }
+
+    fn open(
+        &self,
+        _: konoma_plugin::Input,
+        _: &konoma_plugin::OpenCx,
+    ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+        Ok(Box::new(GenSession {
+            owned: self.owned,
+            file_lines: self.file_lines,
+        }))
+    }
+}
+
+struct GenSession {
+    owned: bool,
+    file_lines: bool,
+}
+
+impl konoma_plugin::Session for GenSession {
+    fn view(
+        &mut self,
+        _: &konoma_plugin::ViewReq,
+        _: &konoma_plugin::ViewCx,
+    ) -> Result<konoma_plugin::View, konoma_plugin::Failure> {
+        use konoma_plugin::view::{TextSource, TextView};
+        let body = gen_body();
+        let source = if self.owned {
+            TextSource::Owned(body)
+        } else {
+            TextSource::Lines(body.lines().map(konoma_plugin::Line::raw).collect())
+        };
+        Ok(konoma_plugin::View::Text(TextView {
+            source,
+            styler: None,
+            file_lines: self.file_lines,
+            syntax_name: None,
+        }))
+    }
+}
+
+/// The caret, its line and the frame on a plugin's own text, and the line `e` opens at, are the
+/// host's, for each of the ways to hand text over and for `file_lines` both ways.
+#[test]
+fn the_caret_on_generated_text_agrees_with_the_host() {
+    let specs: Vec<String> = caret_specs()
+        .into_iter()
+        .filter(|s| s.split_whitespace().count() <= 2)
+        .collect();
+    let (mut checked, mut some, mut none, mut carets) = (0usize, 0usize, 0usize, 0usize);
+    for (owned, file_lines) in [(true, true), (true, false), (false, true), (false, false)] {
+        for wrap in [true, false] {
+            let name = format!("gen-{owned}-{file_lines}-{wrap}");
+            let dir = sandbox(&name);
+            std::fs::write(dir.join("a.gen"), "x").unwrap();
+            let id = format!("x-gen-{name}");
+            let mk = || GenText {
+                id: id.clone(),
+                owned,
+                file_lines,
+            };
+            let marker = crate::plugins::test_plugins::register(&name, Arc::new(mk()));
+            let root = canon(&dir);
+            for spec in &specs {
+                let what = format!("owned={owned} file_lines={file_lines} wrap={wrap} [{spec}]");
+                let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+                cfg.ui.lang = "en".into();
+                cfg.ui.wrap = wrap;
+                let mut s = Sim::with_config_sized(&root, cfg, 60, 12);
+                s.select("a.gen");
+                s.enter();
+                s.draw();
+                for (code, mods) in presses(spec) {
+                    s.press(code, mods);
+                    assert!(!s.quit, "{what}: the host ended early");
+                }
+                s.term.clear().expect("clear");
+                s.draw();
+                let app = app_text_by(Arc::new(mk()), &root.join("a.gen"), wrap, 4, (60, 11), spec);
+                assert_eq!(
+                    frame_cells(&s.term),
+                    frame_cells(&app),
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&s.term).join("\n"),
+                    rows_of(&app).join("\n")
+                );
+                let (hc, ac) = (caret_cells(&s.term), caret_cells(&app));
+                assert_eq!(hc, ac, "{what}: the caret and its line differ");
+                let (he, ae) = (
+                    s.app.preview_edit_line_for_test(),
+                    konoma_plugin::app::edit_line(),
+                );
+                assert_eq!(he, ae, "{what}: the line `e` opens differs");
+                assert_eq!(he.is_some(), file_lines, "{what}: `e` follows file_lines");
+                carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
+                some += usize::from(he.is_some());
+                none += usize::from(he.is_none());
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 1700, "{checked}");
+    assert!(carets >= 1480, "frames with the caret character: {carets}");
+    assert!(some >= 850 && none >= 850, "{some} {none}");
+}

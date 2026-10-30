@@ -31,6 +31,10 @@ mod defaults_snapshot;
 #[cfg(test)]
 mod defaults_tests;
 #[cfg(test)]
+mod host_op_agreement;
+#[cfg(test)]
+mod menu_agreement;
+#[cfg(test)]
 mod override_resolution;
 #[cfg(test)]
 mod shared_agreement;
@@ -38,8 +42,9 @@ mod shared_agreement;
 // The key types of layers 0-3 live in `konoma_host_core::keymap`, shared with the standalone
 // plugin app: the host builds those layers of its tables from the shared ones.
 use konoma_host_core::keymap::{
-    basic_table, global_table, is_fixed_key, own_table, type_table, verbs_table, CoreAction,
-    CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType,
+    basic_table, default_menus, global_table, is_fixed_key, menu_label, own_table, type_table,
+    verbs_table, CoreAction, CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType, HostOp,
+    MenuScope, MenuSet,
 };
 pub use konoma_host_core::keymap::{scheme_from_str, KeyPress, KeyScheme, Motion};
 
@@ -63,11 +68,15 @@ impl From<CoreAction> for Action {
             CoreAction::PageNext => Action::PageNext,
             CoreAction::PagePrev => Action::PagePrev,
             CoreAction::ToggleOutline => Action::ToggleOutline,
+            CoreAction::ToggleTableCell => Action::ToggleTableCell,
             CoreAction::RequestEdit => Action::RequestEdit,
             CoreAction::OpenExternal => Action::OpenExternal,
             CoreAction::CopyPath(k) => Action::CopyPath(k),
             CoreAction::TableCopy(k) => Action::TableCopy(k),
             CoreAction::SortSet(k) => Action::SortSet(k),
+            CoreAction::CopyCodeBlock => Action::CopyCodeBlock,
+            CoreAction::CyclePathStyle => Action::CyclePathStyle,
+            CoreAction::ToggleWrap => Action::ToggleWrap,
         }
     }
 }
@@ -93,20 +102,54 @@ impl Action {
             Action::PageNext => CoreAction::PageNext,
             Action::PagePrev => CoreAction::PagePrev,
             Action::ToggleOutline => CoreAction::ToggleOutline,
+            Action::ToggleTableCell => CoreAction::ToggleTableCell,
             Action::RequestEdit => CoreAction::RequestEdit,
             Action::OpenExternal => CoreAction::OpenExternal,
             Action::CopyPath(k) => CoreAction::CopyPath(k),
             Action::TableCopy(k) => CoreAction::TableCopy(k),
             Action::SortSet(k) => CoreAction::SortSet(k),
+            Action::CopyCodeBlock => CoreAction::CopyCodeBlock,
+            Action::CyclePathStyle => CoreAction::CyclePathStyle,
+            Action::ToggleWrap => CoreAction::ToggleWrap,
             _ => return None,
         })
     }
+}
+
+/// The host's action for an operation only the full app runs. `None` for the one konoma does not
+/// have in this build (the project's tool needs the `git` feature).
+pub(crate) fn host_op_action(o: HostOp) -> Option<Action> {
+    Some(match o {
+        HostOp::SearchStart => Action::SearchStart,
+        HostOp::SearchNext => Action::SearchNext,
+        HostOp::SearchPrev => Action::SearchPrev,
+        HostOp::PreviewEnterVisual => Action::PreviewEnterVisual,
+        HostOp::PreviewEnterVisualLine => Action::PreviewEnterVisualLine,
+        HostOp::PreviewCopySelectionRef => Action::PreviewCopySelectionRef,
+        HostOp::MarkSet => Action::MarkSet,
+        HostOp::MarkJump => Action::MarkJump,
+        HostOp::Refresh => Action::Refresh,
+        HostOp::OpenGitView => Action::OpenGitView,
+        #[cfg(feature = "git")]
+        HostOp::GitLaunchTool => Action::GitLaunchTool,
+        #[cfg(not(feature = "git"))]
+        HostOp::GitLaunchTool => return None,
+        HostOp::CycleRepresentation => Action::CycleRepresentation,
+        HostOp::ImageReturnToDiff => Action::ImageReturnToDiff,
+        HostOp::PreviewFileNext => Action::PreviewFileNext,
+        HostOp::PreviewFilePrev => Action::PreviewFilePrev,
+        HostOp::OpenLinkNewTab => Action::OpenLinkNewTab,
+        HostOp::LinkFocusNext => Action::LinkFocusNext,
+        HostOp::LinkFocusPrev => Action::LinkFocusPrev,
+        HostOp::ToggleFocusedItem => Action::ToggleFocusedItem,
+    })
 }
 
 impl From<CoreBinding> for Binding {
     fn from(b: CoreBinding) -> Binding {
         match b {
             CoreBinding::Run(a) => Binding::Run(a.into()),
+            CoreBinding::Host(o) => host_op_action(o).map_or(Binding::Unbound, Binding::Run),
             CoreBinding::Menu(CoreMenu::Actions) => Binding::Leader(LeaderId::Actions),
             CoreBinding::Menu(CoreMenu::Copy) => Binding::Leader(LeaderId::Copy),
             CoreBinding::Menu(CoreMenu::TableCopy) => Binding::Leader(LeaderId::TableCopy),
@@ -117,8 +160,13 @@ impl From<CoreBinding> for Binding {
 }
 
 /// A shared table as the host's table type.
+/// A key bound to an operation this build does not have is left out (not turned into `Unbound`,
+/// which would hide what a lower layer gives the key).
 fn host_table(t: CoreTable) -> ContextMap {
-    t.into_iter().map(|(k, b)| (k, b.into())).collect()
+    t.into_iter()
+        .filter(|(_, b)| !matches!(b, CoreBinding::Host(o) if host_op_action(*o).is_none()))
+        .map(|(k, b)| (k, b.into()))
+        .collect()
 }
 
 // =============================================================================
@@ -801,7 +849,14 @@ pub struct KeyMap {
     /// A context's own version of a menu: the `,` menus (which differ per context) and the
     /// copies made when `[keys.<context>]` writes `y x` or `space x` for one context only. It
     /// wins over `leaders`; see [`KeyMap::menu`].
+    /// For the preview contexts' Copy, TableCopy and Options menus, `preview_menus` is the source
+    /// of truth and `sync_preview_menus` copies it here, so writing here directly is overwritten by the next sync.
     pub ctx_menus: HashMap<(Context, LeaderId), LeaderMenu>,
+    /// The menus of the preview contexts (`y`'s two and their `,` menus), kept in the shared
+    /// form: the defaults and the editing rules are the standalone app's
+    /// (`konoma_host_core::keymap::MenuSet`). `leaders` and `ctx_menus` hold their copy for the
+    /// preview contexts (and the tree's `y`), refreshed after each edit (`sync_preview_menus`).
+    preview_menus: MenuSet<Action, Msg>,
     /// The operations each context has by default, whatever the config did to their keys: the
     /// `Space` menu lists them even when a key was moved away or lost to a conflict.
     pub default_ops: HashMap<Context, Vec<Action>>,
@@ -1335,41 +1390,10 @@ impl KeyMap {
         contexts.insert(Context::TreeVisual, visual);
 
         // --- Preview: text / markdown. `text` and `document` carry the same keys for now (they
-        // were one table); B3 tells them apart. ---
-        let mut ptext: ContextMap = host_table(own_table(CoreContext::Text));
-        ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        // `p` is the project's screen on every context (below); the path style is in the `,` menu.
-        ptext.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        ptext.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        ptext.insert(KeyPress::ch('r'), run(Action::Refresh));
-        ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
-        ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
-        ptext.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        // Ctrl-t = open the focused Markdown link in a new tab (Enter still opens in the same tab).
-        // Consistent with the TUI convention (fzf/Telescope's Ctrl-t = new tab) + konoma's t = new
-        // tab. Ctrl+letter is reliable in every terminal + tmux (unlike Ctrl+Enter, no kitty
-        // protocol required). No-op when no link is focused.
-        ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
-        // Ctrl-n/Ctrl-p = preview the next/previous file in tree display order (file paging). J/K
-        // conflict with the image context's PDF page paging, and Ctrl-j is indistinguishable from
-        // Enter (LF) on legacy terminals/tmux, so neither is used.
-        ptext.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // Y = copy an @path#L reference for the caret line (hands the location to Claude Code). If
-        // there's a selection, the range is used instead (Y in the visual context).
-        ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        // +/-/= : zoom/reset the focused inline mermaid diagram in place (the display area stays
-        // fixed). No-op when no diagram is focused (guarded on the image_zoom_by side). `0` is kept
-        // as-is for LineHome (go to line start).
-        // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
-        ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        // Heading outline (Markdown preview). `O` toggles it open/closed (`o` is the verb "open").
-        // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
-        // `App::page_turn` does nothing for any other text preview).
+        // were one table); B3 tells them apart. The keys of the operations only konoma runs
+        // (search, bookmarks, reload, file paging, ...) come with the shared table
+        // (`konoma_host_core::keymap::host_ops_table`). ---
+        let ptext: ContextMap = host_table(own_table(CoreContext::Text));
         contexts.insert(Context::Document, ptext.clone());
         contexts.insert(Context::Text, ptext);
 
@@ -1384,47 +1408,17 @@ impl KeyMap {
         contexts.insert(Context::TextVisual, pvis);
 
         // --- Preview: image ---
-        let mut pimg: ContextMap = host_table(own_table(CoreContext::Image));
-        // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
-        // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
-        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::CycleRepresentation`,
-        // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
-        // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
-        pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        pimg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        pimg.insert(KeyPress::ch('r'), run(Action::Refresh));
-        // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
-        pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        // `R` here is `ImageReturnToDiff` (shared table), not `CycleRepresentation`: the latter's
+        // non-diff fallthrough (`toggle_md_raw`) is wrong for a standalone `.mmd` picture
+        // (`docs/FEATURE-MEDIA-DIFF.md` §6).
+        let pimg: ContextMap = host_table(own_table(CoreContext::Image));
         contexts.insert(Context::Image, pimg);
 
         // --- Preview: table (csv/tsv) ---
         // hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last column / y→ = copy
-        // the cell/row/column.
-        let mut ptbl: ContextMap = host_table(own_table(CoreContext::Table));
-        // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
-        // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
-        // `O` = the list of the sheets of a workbook (2+ visible sheets; the gate refuses elsewhere).
-        // R = the next representation of a table plugin that declares several (the host walks
-        // them; nothing happens, and no hint shows, for a table with one).
-        ptbl.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        ptbl.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        ptbl.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        ptbl.insert(KeyPress::ch('r'), run(Action::Refresh));
-        // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
-        ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // In-table search (same `/` n N as the text preview). The cursor jumps to the matching cell.
-        ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        // the cell/row/column. J/K/O (sheets) and `/` n N (in-table search) come from the shared
+        // tables; the handlers no-op where they do not apply.
+        let ptbl: ContextMap = host_table(own_table(CoreContext::Table));
         contexts.insert(Context::Table, ptbl);
 
         // --- Preview: a plugin's canvas ---
@@ -1437,17 +1431,7 @@ impl KeyMap {
         // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
         // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
         // the plugin's).
-        let mut pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
-        pcvs.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        pcvs.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        pcvs.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        pcvs.insert(KeyPress::ch('r'), run(Action::Refresh));
-        pcvs.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        pcvs.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pcvs.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        pcvs.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        pcvs.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        let pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
         contexts.insert(Context::Canvas, pcvs);
 
         // --- Version-control contexts (feature gate) ---
@@ -1660,9 +1644,7 @@ impl KeyMap {
 
         // --- Leaders ---
         let mut leaders: HashMap<LeaderId, LeaderMenu> = HashMap::new();
-        leaders.insert(LeaderId::Copy, copy_leader_default());
         leaders.insert(LeaderId::File, file_leader_default());
-        leaders.insert(LeaderId::TableCopy, table_copy_leader_default());
         #[cfg(feature = "git")]
         leaders.insert(LeaderId::GitCopy, git_copy_leader_default());
         #[cfg(feature = "git")]
@@ -1681,11 +1663,13 @@ impl KeyMap {
             global,
             leaders,
             ctx_menus,
+            preview_menus: default_menus().map(&|a: CoreAction| Action::from(a), &Msg::from_core),
             default_ops: HashMap::new(),
             conflicts: Vec::new(),
             warnings: Vec::new(),
             renames: Vec::new(),
         };
+        km.sync_preview_menus();
         km.default_ops = Context::all()
             .into_iter()
             .map(|c| (c, km.bound_actions(c).into_iter().map(|(_, a)| a).collect()))
@@ -1868,15 +1852,21 @@ impl KeyMap {
             Some(a) => m.set(suf, a),
             None => m.remove(suf),
         };
+        let entry = action.map(|a| (a, leader_label(a)));
         match target {
             KeyTarget::OldSort => Err(format!("`{}` opens no menu in [keys.sort]", pre.label())),
             KeyTarget::Global => {
                 let id = prefix_menu(pre).ok_or_else(|| "no such menu".to_string())?;
-                if let Some(m) = self.leaders.get_mut(&id) {
+                if let Some(cm) = core_menu(id) {
+                    // The shared menus (the preview contexts' and the tree's `y`).
+                    let _ = self.preview_menus.edit(MenuScope::Global, cm, suf, entry);
+                    self.sync_preview_menus();
+                } else if let Some(m) = self.leaders.get_mut(&id) {
                     edit(m);
                 }
-                for ((_, mid), m) in self.ctx_menus.iter_mut() {
-                    if *mid == id {
+                // The menus only konoma's own contexts have (the tree's `,` menu, ...).
+                for ((c, mid), m) in self.ctx_menus.iter_mut() {
+                    if *mid == id && core_context(*c).is_none() {
                         edit(m);
                     }
                 }
@@ -1893,6 +1883,13 @@ impl KeyMap {
                         c.header()
                     ));
                 }
+                if let (Some(cc), Some(cm)) = (core_context(c), core_menu(id)) {
+                    self.preview_menus
+                        .edit(MenuScope::Context(cc), cm, suf, entry)
+                        .map_err(|_| format!("{} has no menu to change", c.header()))?;
+                    self.sync_preview_menus();
+                    return Ok(());
+                }
                 let base = self
                     .ctx_menus
                     .get(&(c, id))
@@ -1902,6 +1899,19 @@ impl KeyMap {
                 edit(self.ctx_menus.entry((c, id)).or_insert(base));
                 Ok(())
             }
+        }
+    }
+
+    /// Refresh `leaders` / `ctx_menus` from the shared preview menus.
+    fn sync_preview_menus(&mut self) {
+        for (cm, menu) in &self.preview_menus.shared {
+            let id = leader_id(*cm);
+            self.leaders.insert(id, leader_menu(id, menu));
+        }
+        for ((cc, cm), menu) in &self.preview_menus.per_context {
+            let id = leader_id(*cm);
+            self.ctx_menus
+                .insert((Context::from(*cc), id), leader_menu(id, menu));
         }
     }
 
@@ -2241,6 +2251,65 @@ fn prefix_menu(kp: KeyPress) -> Option<LeaderId> {
     }
 }
 
+/// The shared menu a leader is, if it is one the shared tables define.
+fn core_menu(id: LeaderId) -> Option<CoreMenu> {
+    match id {
+        LeaderId::Copy => Some(CoreMenu::Copy),
+        LeaderId::TableCopy => Some(CoreMenu::TableCopy),
+        LeaderId::Options => Some(CoreMenu::Options),
+        _ => None,
+    }
+}
+
+fn leader_id(m: CoreMenu) -> LeaderId {
+    match m {
+        CoreMenu::Actions => LeaderId::Actions,
+        CoreMenu::Copy => LeaderId::Copy,
+        CoreMenu::TableCopy => LeaderId::TableCopy,
+        CoreMenu::Options => LeaderId::Options,
+    }
+}
+
+/// The shared context a context is, if the shared tables define it.
+fn core_context(c: Context) -> Option<CoreContext> {
+    Some(match c {
+        Context::Text => CoreContext::Text,
+        Context::Document => CoreContext::Document,
+        Context::Image => CoreContext::Image,
+        Context::Table => CoreContext::Table,
+        Context::Canvas => CoreContext::Canvas,
+        _ => return None,
+    })
+}
+
+impl From<CoreContext> for Context {
+    fn from(c: CoreContext) -> Context {
+        match c {
+            CoreContext::Text => Context::Text,
+            CoreContext::Document => Context::Document,
+            CoreContext::Image => Context::Image,
+            CoreContext::Table => Context::Table,
+            CoreContext::Canvas => Context::Canvas,
+        }
+    }
+}
+
+fn leader_menu(id: LeaderId, m: &konoma_host_core::keymap::Menu<Action, Msg>) -> LeaderMenu {
+    LeaderMenu {
+        id,
+        title: m.title,
+        items: m
+            .items
+            .iter()
+            .map(|it| LeaderItem {
+                key: it.key,
+                action: it.action,
+                label: it.label,
+            })
+            .collect(),
+    }
+}
+
 fn leader_name(id: LeaderId) -> &'static str {
     match id {
         LeaderId::Copy => "copy",
@@ -2252,77 +2321,6 @@ fn leader_name(id: LeaderId) -> &'static str {
         LeaderId::BranchCopy => "branch_copy",
         LeaderId::Options => "options",
         LeaderId::Actions => "actions",
-    }
-}
-
-fn copy_leader_default() -> LeaderMenu {
-    LeaderMenu {
-        id: LeaderId::Copy,
-        title: Msg::WkCopyPathTitle,
-        items: vec![
-            LeaderItem {
-                key: KeyPress::ch('n'),
-                action: Action::CopyPath(CopyKind::Name),
-                label: Msg::WkName,
-            },
-            LeaderItem {
-                key: KeyPress::ch('r'),
-                action: Action::CopyPath(CopyKind::Relative),
-                label: Msg::WkRelative,
-            },
-            LeaderItem {
-                key: KeyPress::ch('f'),
-                action: Action::CopyPath(CopyKind::Full),
-                label: Msg::WkFull,
-            },
-            LeaderItem {
-                key: KeyPress::ch('p'),
-                action: Action::CopyPath(CopyKind::Parent),
-                label: Msg::WkParent,
-            },
-            LeaderItem {
-                key: KeyPress::ch('@'),
-                action: Action::CopyPath(CopyKind::AtRef),
-                label: Msg::WkAtRef,
-            },
-            // Markdown code block copy. Displayed in the which-key menu only while a code block is
-            // focused (see ui::status::whichkey_spans); harmless no-op otherwise.
-            LeaderItem {
-                key: KeyPress::ch('c'),
-                action: Action::CopyCodeBlock,
-                label: Msg::WkCodeBlock,
-            },
-        ],
-    }
-}
-
-/// The `y` cell/row/column copy leader (CSV/TSV table preview). `f` keeps the full-path copy reachable.
-fn table_copy_leader_default() -> LeaderMenu {
-    LeaderMenu {
-        id: LeaderId::TableCopy,
-        title: Msg::WkTableCopyTitle,
-        items: vec![
-            LeaderItem {
-                key: KeyPress::ch('c'),
-                action: Action::TableCopy(TableCopyKind::Cell),
-                label: Msg::WkCell,
-            },
-            LeaderItem {
-                key: KeyPress::ch('r'),
-                action: Action::TableCopy(TableCopyKind::Row),
-                label: Msg::WkRow,
-            },
-            LeaderItem {
-                key: KeyPress::ch('C'),
-                action: Action::TableCopy(TableCopyKind::Column),
-                label: Msg::WkColumn,
-            },
-            LeaderItem {
-                key: KeyPress::ch('f'),
-                action: Action::CopyPath(CopyKind::Full),
-                label: Msg::WkFull,
-            },
-        ],
     }
 }
 
@@ -2381,7 +2379,8 @@ fn branch_copy_leader_default() -> LeaderMenu {
     }
 }
 
-/// The `,` menus: what each context lets you sort and show. The letters of the tree's menu are
+/// The `,` menus of the contexts only konoma has (the preview contexts' are in the shared
+/// tables, `default_menus`): what each lets you sort and show. The letters of the tree's menu are
 /// the old sort menu's (`n s m e` the key, `r` the direction, `.` the folders first).
 fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
     let item = |c: char, action: Action| LeaderItem {
@@ -2400,28 +2399,20 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
         )
     };
     let path = || item('p', Action::CyclePathStyle);
-    let wrap = || item('w', Action::ToggleWrap);
     #[cfg_attr(not(feature = "git"), allow(unused_mut))]
-    let mut v = vec![
-        menu(
-            Context::Tree,
-            vec![
-                item('n', Action::SortSet(SortKey::Name)),
-                item('s', Action::SortSet(SortKey::Size)),
-                item('m', Action::SortSet(SortKey::Modified)),
-                item('e', Action::SortSet(SortKey::Ext)),
-                item('r', Action::SortToggleReverse),
-                item('.', Action::SortToggleDirsFirst),
-                path(),
-                item('h', Action::ToggleHidden),
-            ],
-        ),
-        menu(Context::Text, vec![path(), wrap()]),
-        menu(Context::Document, vec![path(), wrap()]),
-        menu(Context::Image, vec![path()]),
-        menu(Context::Table, vec![path()]),
-        menu(Context::Canvas, vec![path()]),
-    ];
+    let mut v = vec![menu(
+        Context::Tree,
+        vec![
+            item('n', Action::SortSet(SortKey::Name)),
+            item('s', Action::SortSet(SortKey::Size)),
+            item('m', Action::SortSet(SortKey::Modified)),
+            item('e', Action::SortSet(SortKey::Ext)),
+            item('r', Action::SortToggleReverse),
+            item('.', Action::SortToggleDirsFirst),
+            path(),
+            item('h', Action::ToggleHidden),
+        ],
+    )];
     #[cfg(feature = "git")]
     v.push(menu(
         Context::Diff,
@@ -2476,13 +2467,11 @@ fn file_leader_default() -> LeaderMenu {
 
 /// The label key for which-key display. Actions outside any leader get an empty label.
 fn leader_label(a: Action) -> Msg {
+    // The shared actions are labelled by the shared table (`menu_label`).
+    if let Some(c) = a.core() {
+        return Msg::from_core(menu_label(c));
+    }
     match a {
-        Action::CopyPath(CopyKind::Name) => Msg::WkName,
-        Action::CopyPath(CopyKind::Relative) => Msg::WkRelative,
-        Action::CopyPath(CopyKind::Full) => Msg::WkFull,
-        Action::CopyPath(CopyKind::Parent) => Msg::WkParent,
-        Action::CopyPath(CopyKind::AtRef) => Msg::WkAtRef,
-        Action::CopyCodeBlock => Msg::WkCodeBlock,
         Action::FileCreate => Msg::WkCreate,
         Action::FileRename => Msg::WkRename,
         Action::FileDelete => Msg::WkDelete,
@@ -2490,9 +2479,6 @@ fn leader_label(a: Action) -> Msg {
         Action::FileCut => Msg::CutHint,
         Action::FilePaste => Msg::WkPaste,
         Action::FileDuplicate => Msg::WkDuplicate,
-        Action::TableCopy(TableCopyKind::Cell) => Msg::WkCell,
-        Action::TableCopy(TableCopyKind::Row) => Msg::WkRow,
-        Action::TableCopy(TableCopyKind::Column) => Msg::WkColumn,
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => Msg::WkShortHash,
         #[cfg(feature = "git")]
@@ -2507,15 +2493,9 @@ fn leader_label(a: Action) -> Msg {
         Action::GitCopy(GitCopyKind::Date) => Msg::WkDate,
         #[cfg(feature = "git")]
         Action::CopyBranchName => Msg::WkBranchName,
-        Action::SortSet(SortKey::Name) => Msg::FtSortName,
-        Action::SortSet(SortKey::Size) => Msg::FtSortSize,
-        Action::SortSet(SortKey::Modified) => Msg::FtSortMod,
-        Action::SortSet(SortKey::Ext) => Msg::FtSortExt,
         Action::SortToggleReverse => Msg::FtSortReverse,
         Action::SortToggleDirsFirst => Msg::FtSortDirs,
-        Action::CyclePathStyle => Msg::HintPath,
         Action::ToggleHidden => Msg::HintHidden,
-        Action::ToggleWrap => Msg::HintWrap,
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => Msg::HintFollowScope,
         _ => Msg::Empty,
@@ -2537,7 +2517,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         // Global
         "tab_new" => Action::TabNew,
         "tab_close" => Action::TabClose,
-        "copy_code_block" => Action::CopyCodeBlock,
         // Tree
         "close_tab_or_quit" => Action::CloseTabOrQuit,
         "filter_start" => Action::FilterStart,
@@ -2545,11 +2524,9 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "tree_activate" => Action::TreeActivate,
         "tree_leave" => Action::TreeLeave,
         "toggle_hidden" => Action::ToggleHidden,
-        "toggle_wrap" => Action::ToggleWrap,
         "toggle_info" => Action::ToggleInfo,
         "open_git_view" => Action::OpenGitView,
         "refresh" => Action::Refresh,
-        "cycle_path_style" => Action::CyclePathStyle,
         "open_sort_menu" => Action::OpenSortMenu,
         "mark_set" => Action::MarkSet,
         "mark_jump" => Action::MarkJump,
@@ -2746,25 +2723,25 @@ pub fn action_name(a: Action) -> String {
         | Action::OpenExternal
         | Action::CopyPath(_)
         | Action::TableCopy(_)
-        | Action::SortSet(_) => {
+        | Action::SortSet(_)
+        | Action::CopyCodeBlock
+        | Action::CyclePathStyle
+        | Action::ToggleWrap => {
             return a.core().map(|c| c.name()).unwrap_or_default();
         }
         Action::Noop => "noop",
         Action::TabNew => "tab_new",
         Action::TabClose => "tab_close",
         Action::TabGoto(_) => "tab_goto",
-        Action::CopyCodeBlock => "copy_code_block",
         Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
         Action::TreeDescend => "tree_descend",
         Action::TreeActivate => "tree_activate",
         Action::TreeLeave => "tree_leave",
         Action::ToggleHidden => "toggle_hidden",
-        Action::ToggleWrap => "toggle_wrap",
         Action::ToggleInfo => "toggle_info",
         Action::OpenGitView => "open_git_view",
         Action::Refresh => "refresh",
-        Action::CyclePathStyle => "cycle_path_style",
         Action::OpenSortMenu => "open_sort_menu",
         Action::MarkSet => "mark_set",
         Action::MarkJump => "mark_jump",

@@ -985,6 +985,13 @@ fn run(
             needs_redraw = true;
         }
 
+        // A declared chain in terminal mode (`e` / `o`): hand the terminal over for each attempt,
+        // the first that starts and does not fail wins.
+        if let Some((attempts, cwd)) = app.take_pending_terminal() {
+            run_terminal_chain(terminal, app, &attempts, &cwd)?;
+            needs_redraw = true;
+        }
+
         // External git tool request (`O`): launch the configured git.tool (default lazygit)
         // synchronously in the repo workdir.
         if app.take_launch_git_tool() {
@@ -1381,9 +1388,34 @@ fn run_editor(
     match status {
         Ok(_) => app.reload_preview(), // apply the rewritten result (drop the cache + re-open the window)
         Err(e) => {
-            app.flash = Some(format!(
-                "{}{e}",
-                i18n::tr(app.lang, crate::i18n::Msg::EditorFailed)
+            app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
+                app.lang,
+                &e.to_string(),
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Walk a terminal chain (see `Launch::Terminal`): every attempt takes the terminal over like the
+/// editor does; the first that starts and does not exit non-zero wins. What it may have rewritten
+/// is read again; a chain that all failed is told like a failed editor.
+fn run_terminal_chain(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    attempts: &[konoma_plugin::launch::Attempt],
+    cwd: &std::path::Path,
+) -> Result<()> {
+    let outcome = konoma_plugin::launch::walk_chain(attempts, &mut |a| {
+        let status = run_external(terminal, app, &a.prog, &a.args, cwd)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        status.map(|s| Some(konoma_plugin::launch::status_code(s)))
+    });
+    match outcome {
+        Ok(_) => app.reload_preview(),
+        Err(e) => {
+            app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
+                app.lang, &e,
             ))
         }
     }
@@ -1465,7 +1497,8 @@ fn run_external(
 ) -> Result<std::io::Result<std::process::ExitStatus>> {
     // The suspend / run / restore sequence is the shared `hand_off` (raw mode, synchronized
     // update, alternate screen, input modes; see its documentation). Only the frame is ours.
-    let status = konoma_host_core::term::hand_off(prog, args, cwd, &mut || {
+    // konoma turns bracketed paste on at startup (drag and drop), so it was on before the hand-off.
+    let status = konoma_host_core::term::hand_off(prog, args, cwd, true, &mut || {
         // A frame (a kitty transmit is a run of chunks) is written under the right to write to
         // the terminal, like the run loop's: an exit signal must not land inside it.
         let _writing = preview::command::terminal_write();

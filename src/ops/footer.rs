@@ -6,7 +6,7 @@
 // (config applied, layers followed), joined with `/`. A token is shown only while its operation
 // acts (`ops::gate`), so the footer never offers a key that would refuse.
 
-use crate::app::{App, MdFocus};
+use crate::app::App;
 use crate::i18n::{tr, Msg};
 use crate::keymap::{Action, Context, KeyPress, LeaderId, Motion};
 #[cfg(feature = "git")]
@@ -41,6 +41,9 @@ pub enum Foot {
     /// An entry of the shared layers 1 to 3: the shared builder (`konoma_host_core::help`) writes
     /// it, so the standalone app prints the same token. Only the contexts of `core_ctx` use it.
     Core(CoreFoot),
+    /// The whole footer of the `?` help, written by the shared builder
+    /// (`konoma_host_core::help::help_footer_with`) that the standalone app also calls.
+    HelpOverlay,
 }
 
 const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
@@ -64,23 +67,17 @@ const HJKL: &[Action] = &[
     Action::Navigate(Motion::Right),
 ];
 const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
-const FILE_JUMP: &[Action] = &[Action::PreviewFileNext, Action::PreviewFilePrev];
-const ZOOM: &[Action] = &[Action::ImageZoomIn, Action::ImageZoomOut];
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
 #[cfg(feature = "git")]
 const NEXT_PREV_CHANGE: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
-const HOME: &[Action] = &[Action::Navigate(Motion::LineHome)];
 #[cfg(feature = "git")]
 const BACK_ESC_PREVIEW: &[Action] = &[Action::PreviewBack, Action::Cancel];
-const CLOSE_HELP: &[Action] = &[Action::ToggleHelp, Action::Cancel];
 const CLOSE_INFO: &[Action] = &[Action::InfoClose, Action::Cancel];
 const CLOSE_CELL: &[Action] = &[Action::ToggleTableCell, Action::Cancel];
-const TOGGLE_ITEM: &[Action] = &[Action::ToggleFocusedItem, Action::LinkOpen];
 const VISUAL_EXIT: &[Action] = &[Action::PreviewExitVisual, Action::Cancel];
 const ALL_FILES: &[Action] = &[Action::ToggleChangedFilter, Action::TreeLeave];
-const SELECT: &[Action] = &[Action::PreviewEnterVisual, Action::PreviewEnterVisualLine];
 #[cfg(feature = "git")]
 const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
 #[cfg(feature = "git")]
@@ -96,14 +93,9 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
     // order of the priority the plugin declared (a stable sort: declaration order within one
     // priority). Only actions that asked for a footer entry are planned here; the others are in
     // the `?` help and the `Space` menu.
-    let mut acts: Vec<_> = app
-        .plugin_acts_in(ctx)
-        .into_iter()
-        .filter_map(|b| b.footer.map(|p| (p, b.act)))
-        .collect();
-    acts.sort_by_key(|(p, _)| *p);
-    let at = 1.min(v.len());
-    v.splice(at..at, acts.into_iter().map(|(_, a)| Foot::Plugin(a)));
+    let acts = konoma_plugin::host::acts::footer_order(&app.plugin_acts_in(ctx));
+    let at = konoma_host_core::preview_plan::PLUGIN_AT.min(v.len());
+    v.splice(at..at, acts.into_iter().map(|b| Foot::Plugin(b.act)));
     v
 }
 
@@ -118,7 +110,7 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
             Foot::Leader(LeaderId::File, Msg::FtOps),
             Foot::As(Action::Cancel, Msg::FtCancel),
         ],
-        Context::Text | Context::Document => text_preview(app),
+        Context::Text | Context::Document => preview(app, ctx),
         Context::TextVisual => vec![
             Foot::Group(
                 if app.preview_visual_linewise() {
@@ -132,19 +124,15 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
             Foot::As(Action::PreviewCopySelectionRef, Msg::WkAtRef),
             Foot::Union(VISUAL_EXIT, Msg::FtCancel),
         ],
-        Context::Image => image(app),
-        Context::Table => table(app),
-        Context::Canvas => canvas(app),
+        Context::Image => preview(app, ctx),
+        Context::Table => preview(app, ctx),
+        Context::Canvas => preview(app, ctx),
         Context::TableCell => vec![
             Foot::Group(SCROLL, Msg::Scroll),
             Foot::Group(ENDS, Msg::FtTopBottom),
             Foot::Union(CLOSE_CELL, Msg::FtClose),
         ],
-        Context::Help => vec![
-            Foot::Group(SCROLL, Msg::Scroll),
-            Foot::Group(ENDS, Msg::FtTopBottom),
-            Foot::Union(CLOSE_HELP, Msg::FtClose),
-        ],
+        Context::Help => vec![Foot::HelpOverlay],
         Context::Info => vec![Foot::Union(CLOSE_INFO, Msg::FtClose)],
         // The bookmark list, the tab list and the outline have no footer of their own: they show
         // the screen underneath (see `status::footer_spans`).
@@ -215,164 +203,34 @@ pub fn changed_filter_plan() -> Vec<Foot> {
     ]
 }
 
-fn table(_app: &App) -> Vec<Foot> {
-    vec![
-        Foot::Core(CoreFoot::Cell),
-        Foot::Op(Action::ToggleTableCell),
-        Foot::Dyn(search_status),
-        Foot::Core(CoreFoot::PageTurn),
-        Foot::Core(CoreFoot::Outline),
-        Foot::Op(Action::CycleRepresentation),
-        Foot::Op(Action::SearchStart),
-        Foot::Leader(LeaderId::TableCopy, Msg::CopyHint),
-        Foot::Core(CoreFoot::Ends),
-        Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Core(CoreFoot::Back),
-        Foot::Core(CoreFoot::Help),
-        Foot::Core(CoreFoot::Edit),
-        Foot::Core(CoreFoot::Open),
-        Foot::Group(TABS, Msg::HintTab),
-        Foot::Core(CoreFoot::Options),
-    ]
-}
-
-/// A plugin's canvas: only the keys the host keeps (`keys::reserved("canvas")`). The plugin's own
-/// operations are spliced in after the first entry (`plan`), so they come right after `q:back`.
-fn canvas(_app: &App) -> Vec<Foot> {
-    vec![
-        Foot::Core(CoreFoot::Back),
-        Foot::Core(CoreFoot::PageTurn),
-        Foot::Core(CoreFoot::Outline),
-        Foot::Op(Action::CycleRepresentation),
-        Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Core(CoreFoot::Help),
-        Foot::Core(CoreFoot::Edit),
-        Foot::Core(CoreFoot::Open),
-        Foot::Group(TABS, Msg::HintTab),
-        Foot::Core(CoreFoot::Options),
-    ]
-}
-
-fn image(_app: &App) -> Vec<Foot> {
-    vec![
-        Foot::Core(CoreFoot::Zoom),
-        Foot::Core(CoreFoot::ZoomReset),
-        Foot::Core(CoreFoot::Pan),
-        Foot::Core(CoreFoot::PageTurn),
-        Foot::Core(CoreFoot::Outline),
-        Foot::Op(Action::ImageReturnToDiff),
-        Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Core(CoreFoot::Back),
-        Foot::Core(CoreFoot::Help),
-        Foot::Core(CoreFoot::Edit),
-        Foot::Core(CoreFoot::Open),
-        Foot::Group(TABS, Msg::HintTab),
-        Foot::Core(CoreFoot::Options),
-    ]
-}
-
-/// Whether the text preview is shown as a decorated Markdown / document view (the screen with
-/// links to follow) rather than as text.
-fn is_decorated_footer(app: &App) -> bool {
-    app.document_ready() && !app.is_raw_source()
-}
-
-fn text_preview(app: &App) -> Vec<Foot> {
-    // A Word/OpenDocument file that is still loading or failed to convert has no text yet: `R`,
-    // `/`, scrolling and the like do nothing, so only the keys that still act are listed.
-    if app.document_text_missing() {
-        return vec![
-            Foot::Op(Action::ToggleFollow),
-            Foot::Group(FILE_JUMP, Msg::HintFileJump),
-            Foot::Core(CoreFoot::Back),
-            Foot::Core(CoreFoot::Help),
-            Foot::Core(CoreFoot::Edit),
-            Foot::Core(CoreFoot::Open),
-            Foot::Group(TABS, Msg::HintTab),
-            Foot::Core(CoreFoot::Options),
-        ];
-    }
-    if is_decorated_footer(app) {
-        // `Tab` always cycles focus; everything else here depends on the focused item.
-        let mut v = vec![
-            Foot::Core(CoreFoot::Scroll),
-            Foot::Op(Action::LinkFocusNext),
-            Foot::Core(CoreFoot::PageTurn),
-        ];
-        match app.md_focused_kind() {
-            Some(MdFocus::Task) | Some(MdFocus::Details) => {
-                v.push(Foot::Union(TOGGLE_ITEM, Msg::HintToggle));
-            }
-            Some(MdFocus::CodeBlock) => v.push(Foot::Dyn(copy_code_token)),
-            Some(MdFocus::MermaidFence) => {
-                v.push(Foot::Op(Action::LinkOpen));
-                v.push(Foot::Group(ZOOM, Msg::Zoom));
-                // hjkl/0 pan only once zoomed AND the diagram is fully on screen.
-                if app.fence_zoom_level() > 1.001 && app.focused_fence_fully_visible() {
-                    v.push(Foot::Group(HJKL, Msg::HintPan));
-                    v.push(Foot::Group(HOME, Msg::HintFit));
-                }
-            }
-            Some(_) => {
-                v.push(Foot::Op(Action::LinkOpen));
-                v.push(Foot::Op(Action::OpenLinkNewTab));
-            }
-            None => {}
-        }
-        v.extend([
-            Foot::Core(CoreFoot::Outline),
-            Foot::Op(Action::CycleRepresentation),
-            Foot::Op(Action::SearchStart),
-            Foot::Dyn(change_status),
-            Foot::Op(Action::ToggleFollow),
-            Foot::Group(FILE_JUMP, Msg::HintFileJump),
-            Foot::Core(CoreFoot::Back),
-            Foot::Core(CoreFoot::Help),
-            Foot::Core(CoreFoot::Edit),
-            Foot::Core(CoreFoot::Open),
-            Foot::Core(CoreFoot::Ends),
-            Foot::Group(TABS, Msg::HintTab),
-            Foot::Core(CoreFoot::Options),
-            Foot::Core(CoreFoot::PageKeys),
-        ]);
-        return v;
-    }
-    // Code / plain text. While searching, show n/N (match cur/total) up front.
-    let mut v = vec![
-        Foot::Core(CoreFoot::Scroll),
-        Foot::Dyn(search_status),
-        Foot::Op(Action::SearchStart),
-        Foot::Dyn(change_status),
-    ];
-    // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only. The label
-    // of `Y` is the short one here (the long wording is the help's).
-    if app.is_windowed() {
-        v.push(Foot::Group(SELECT, Msg::HintSelect));
-        v.push(Foot::As(Action::PreviewCopySelectionRef, Msg::WkAtRef));
-    }
-    v.push(Foot::Op(Action::ToggleFollow));
-    #[cfg(feature = "git")]
-    v.push(Foot::Op(Action::ToggleFollowDiffScope));
-    v.extend([
-        Foot::Op(Action::CycleRepresentation),
-        Foot::Group(FILE_JUMP, Msg::HintFileJump),
-        Foot::Core(CoreFoot::Back),
-        Foot::Core(CoreFoot::Help),
-        Foot::Core(CoreFoot::Edit),
-        Foot::Core(CoreFoot::Open),
-        Foot::Core(CoreFoot::Ends),
-        Foot::Core(CoreFoot::HScroll),
-        Foot::Core(CoreFoot::LineEnds),
-        Foot::Group(TABS, Msg::HintTab),
-        Foot::Core(CoreFoot::Options),
-        Foot::Core(CoreFoot::PageKeys),
-    ]);
-    v
+/// The footer plan of a preview screen (text, document, image, table, canvas): the description in
+/// `konoma_host_core::preview_plan` (shared with the standalone app) lowered to this host's
+/// operations and words. What it leaves out is what this build does not have.
+fn preview(app: &App, ctx: Context) -> Vec<Foot> {
+    use crate::ops::preview_plan as pp;
+    use konoma_host_core::preview_plan::{footer_plan, PvFoot};
+    let Some(cctx) = pp::core_of(ctx) else {
+        return Vec::new();
+    };
+    footer_plan(cctx, &pp::state(app, ctx))
+        .into_iter()
+        .filter_map(|f| {
+            Some(match f {
+                PvFoot::Op(o) => Foot::Op(pp::action_of(o)?),
+                PvFoot::As(o, m) => Foot::As(pp::action_of(o)?, Msg::from_core(m)),
+                PvFoot::Group(g, m) => Foot::Group(pp::group(g), Msg::from_core(m)),
+                PvFoot::GroupOp(g) => Foot::GroupOp(pp::group(g)),
+                PvFoot::Union(g, m) => Foot::Union(pp::group(g), Msg::from_core(m)),
+                PvFoot::Dyn(d) => Foot::Dyn(pp::dyn_token(d)),
+                PvFoot::Core(c) => Foot::Core(c),
+            })
+        })
+        .collect()
 }
 
 /// `n/N:match[3/12]` while a search has hits (`+` once collecting stopped at the cap), `n/N:match`
 /// while a search is active but nothing matched.
-fn search_status(app: &App, ctx: Context) -> Option<String> {
+pub(crate) fn search_status(app: &App, ctx: Context) -> Option<String> {
     let keys = join_keys(app, ctx, SEARCH_MATCH);
     if keys.is_empty() {
         return None;
@@ -388,7 +246,7 @@ fn search_status(app: &App, ctx: Context) -> Option<String> {
 }
 
 /// `n/N:change` while no search is active and the file on screen has a change to step to.
-fn change_status(app: &App, ctx: Context) -> Option<String> {
+pub(crate) fn change_status(app: &App, ctx: Context) -> Option<String> {
     if app.preview_search_query().is_some() || !app.preview_has_changes() {
         return None;
     }
@@ -397,7 +255,7 @@ fn change_status(app: &App, ctx: Context) -> Option<String> {
 }
 
 /// `y c:copy code`: the copy menu's key followed by the code-block item's key.
-fn copy_code_token(app: &App, ctx: Context) -> Option<String> {
+pub(crate) fn copy_code_token(app: &App, ctx: Context) -> Option<String> {
     let lead = app
         .keymaps
         .leader_keys_of(ctx)
@@ -604,7 +462,7 @@ pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
                     }
                 }
             }
-            Foot::Leader(..) | Foot::Dyn(_) => {}
+            Foot::Leader(..) | Foot::Dyn(_) | Foot::HelpOverlay => {}
         }
     }
     v
@@ -757,18 +615,34 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                         .collect(),
                 })
             }
+            Foot::HelpOverlay => {
+                let lookup = crate::ops::core_help::HostLookup { app, ctx };
+                out.extend(
+                    konoma_host_core::help::help_footer_with(&lookup, lang)
+                        .into_iter()
+                        .map(|t| Token {
+                            text: t.text,
+                            keys: t.keys,
+                            actions: t
+                                .ops
+                                .iter()
+                                .filter_map(|o| crate::ops::core_help::action_of(*o))
+                                .collect(),
+                        }),
+                );
+                continue;
+            }
             Foot::Plugin(p) => {
                 let action = Action::Plugin(*p);
-                if !action_enabled(app, ctx, action) {
-                    continue;
-                }
                 match app.plugin_binding_in(ctx, *p) {
-                    Some(b) => b.key.map(|key| Token {
-                        text: format!(
-                            "{}:{}",
-                            write_keys(&[key], ctx),
-                            b.label.get(app.plugin_lang())
-                        ),
+                    Some(b) => konoma_plugin::host::acts::footer_token(
+                        b,
+                        action_enabled(app, ctx, action),
+                        app.plugin_lang(),
+                        |key| write_keys(&[key], ctx),
+                    )
+                    .map(|(text, key)| Token {
+                        text,
                         keys: vec![key],
                         actions: vec![action],
                     }),

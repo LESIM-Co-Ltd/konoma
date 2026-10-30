@@ -314,7 +314,7 @@ fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
 pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     let lang = app.lang;
     if let Some(msg) = &app.flash {
-        return vec![Span::from(msg.clone()).bold()];
+        return konoma_widgets::footer_line::flash_spans(msg);
     }
     // which-key: after pressing a leader (Space = file management / y = path copy), show the
     // candidates for the next keystroke.
@@ -401,17 +401,17 @@ fn whichkey_spans_fit(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lead = app.pending_leader?;
     let ctx = app.key_context()?;
     let menu = crate::ops::menu::menu(app, ctx, lead, crate::ops::menu::View::Open)?;
-    let prefix = format!("{} ▸ ", menu.title);
-    let room = width.saturating_sub(prefix.width() as u16);
-    let tokens: Vec<String> = menu
+    let pairs: Vec<(crate::keymap::KeyPress, String)> = menu
         .items
         .iter()
-        .map(|it| format!("{}:{}", crate::ui::help::leader_key_str(it.key), it.label))
+        .map(|it| (it.key, it.label.to_string()))
         .collect();
-    Some(vec![
-        Span::from(prefix).bold(),
-        Span::from(fit_tokens(&tokens, room)).dim(),
-    ])
+    let items = konoma_host_core::help::which_key_items(&pairs);
+    Some(konoma_widgets::footer_line::which_key_spans(
+        &menu.title,
+        &items,
+        width,
+    ))
 }
 
 /// Operation hints are **owned by each view**. Here we just delegate to the active view.

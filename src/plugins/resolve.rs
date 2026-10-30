@@ -172,7 +172,17 @@ pub(crate) fn resolve_kind(
 /// The id of the plugin that shows `path` (a user rule first, then the standard plugins), or
 /// `None` when no plugin takes it (plain text, or "can not preview"). The same decision
 /// `resolve_kind` makes, read for the verbs a plugin declares (`o` opens through them).
+///
+/// Passes the same gate the preview does (`preview::is_previewable`): what is not a regular file
+/// (a FIFO, a device, a directory, a missing path) is taken by no plugin and is never opened, since
+/// the content sniff below opens the file and a FIFO without a writer blocks that forever. The
+/// footer asks this every frame, so the gate has to live here and not in each caller.
 pub(crate) fn plugin_id_of(rules: &[Rule], disabled: &[String], path: &Path) -> Option<String> {
+    if !crate::preview::is_previewable(path) {
+        return None;
+    }
+    #[cfg(test)]
+    crate::test_support::note_plugin_id_read();
     let user = user_rules(rules, path);
     let mime = || konoma_host_core::sniff::mime_of_path(path);
     let text = || crate::preview::text::is_probably_text(path);

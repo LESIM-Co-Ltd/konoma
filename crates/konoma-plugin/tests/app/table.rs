@@ -359,6 +359,22 @@ fn enter_opens_the_full_cell_popup_and_esc_closes_it() {
 }
 
 #[test]
+fn a_key_written_for_the_cell_popup_opens_and_closes_it() {
+    // `toggle_table_cell` is the host's name for the popup: a key written for it under
+    // `[keys.table]` opens the popup, and the same key closes it (the popup toggles).
+    let c = SharedConfig::parse("[keys.table]\nx = \"toggle_table_cell\"\n").expect("parses");
+    let k = AppKeys::new(&c.keys, &c.ui.keys).with_lang(Lang::En);
+    let (_d, p) = people();
+    let (rows, _, _) = run_keyed(&p, SIZE, vec![kk('x')], &k);
+    assert!(all(&rows).contains("Cell · name"), "{}", all(&rows));
+    let (rows, _, _) = run_keyed(&p, SIZE, vec![kk('x'), kc(KeyCode::Esc)], &k);
+    assert!(!all(&rows).contains("Cell ·"), "{}", all(&rows));
+    // Without the config `x` does nothing.
+    let rows = run(&p, SIZE, vec![kk('x')]);
+    assert!(!all(&rows).contains("Cell ·"), "{}", all(&rows));
+}
+
+#[test]
 fn q_closes_the_popup_first_and_then_quits() {
     let (_d, p) = people();
     let (r, _, left) = run_counted(&p, SIZE, vec![kc(KeyCode::Enter), kk('q'), kk('j')]);
@@ -655,7 +671,8 @@ fn every_key_the_table_footer_and_help_name_acts() {
                             };
                             assert!(
                                 k.table_acts_on(&key, true, under)
-                                    || k.table_acts_on(&key, false, under),
+                                    || k.table_acts_on(&key, false, under)
+                                    || k.acts_in_copy_menu(&key),
                                 "{name} {lang:?} {mode:?}: the help names {key:?} for `{desc}` but it does nothing"
                             );
                             rows += 1;
@@ -797,7 +814,9 @@ fn what_acts_over_a_table_is_what_the_loop_does() {
         let k = keys_of(cfg, Lang::En);
         let opener = k
             .table_footer_hints(TableMode::default())
-            .pop()
+            .into_iter()
+            .rev()
+            .find(is_help_hint)
             .and_then(|t| token_keys(&t.text).into_iter().next());
         // (file, mode, set-up): the cursor is moved off the edges first so a motion that acts
         // changes the screen whichever way it goes.
@@ -1020,4 +1039,14 @@ fn a_book_with_one_sheet_that_reads_has_no_page_hint_after_the_keys() {
     let (_d, p) = file("s.book", "a,b\n");
     let (r, _, _) = run_counted(&p, SIZE, chars("J"));
     assert!(!footer(&r).contains("J/K"), "{}", footer(&r));
+}
+
+/// Whether a footer hint is the one that opens the help (the last hint is the `,` menu's now).
+fn is_help_hint(t: &konoma_host_core::help::CoreToken) -> bool {
+    t.ops.iter().any(|o| {
+        matches!(
+            o,
+            konoma_host_core::help::HelpOp::Act(konoma_host_core::keymap::CoreAction::ToggleHelp)
+        )
+    })
 }

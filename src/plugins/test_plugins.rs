@@ -73,6 +73,8 @@ pub(crate) struct Variant {
     /// Like `hold`, but for a session on a file shorter than 10 bytes (`small.bin`): a test that
     /// has two actions out at once, on two files, lets them end in the order it chooses.
     pub hold_small: Option<Arc<Latch>>,
+    /// The `edit` / `open` verbs the plugin declares (none by default).
+    pub verbs: Vec<konoma_plugin::VerbDecl>,
 }
 
 /// A gate a test opens by hand: [`Latch::wait`] returns once [`Latch::open`] was called (or after a
@@ -126,6 +128,9 @@ impl Plugin for Hexdump {
             .action(width);
         if !self.0.no_shows {
             m = m.shows(ViewKind::Text);
+        }
+        for v in &self.0.verbs {
+            m = m.verb(v.clone());
         }
         if self.0.extra_acts {
             m = m

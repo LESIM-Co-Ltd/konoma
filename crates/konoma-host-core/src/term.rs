@@ -186,22 +186,25 @@ fn run_child(prog: &str, args: &[String], cwd: &Path) -> io::Result<ExitStatus> 
 
 /// The way back into the TUI after the child, written to `out`: begin a synchronized update, enter
 /// the alternate screen, `redraw`, end the update, then pop the kitty keyboard protocol, disable
-/// mouse reporting (both left by the child) and turn bracketed paste on again (konoma itself uses
-/// it to receive drag and drop).
+/// mouse reporting (both left by the child) and put bracketed paste back the way it was before the
+/// hand-off: turned on again only when `bracketed_paste` says it was on (konoma uses it to receive
+/// drag and drop), and left alone otherwise, so a host that never enabled it does not get it.
 ///
 /// The redraw is cosmetic, so its error is dropped; `EndSynchronizedUpdate` is always sent after
 /// it so the terminal never waits for the end of a sync.
-fn resume<W: Write>(out: &mut W, redraw: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+fn resume<W: Write>(
+    out: &mut W,
+    redraw: &mut dyn FnMut() -> io::Result<()>,
+    bracketed_paste: bool,
+) -> io::Result<()> {
     let _ = execute!(out, BeginSynchronizedUpdate);
     execute!(out, EnterAlternateScreen)?;
     let _ = redraw();
     let _ = execute!(out, EndSynchronizedUpdate);
-    let _ = execute!(
-        out,
-        PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
-        EnableBracketedPaste,
-    );
+    let _ = execute!(out, PopKeyboardEnhancementFlags, DisableMouseCapture,);
+    if bracketed_paste {
+        let _ = execute!(out, EnableBracketedPaste);
+    }
     Ok(())
 }
 
@@ -220,18 +223,22 @@ fn resume<W: Write>(out: &mut W, redraw: &mut dyn FnMut() -> io::Result<()>) -> 
 /// - Last, the input the child left behind (terminal-query answers, stray keys) is drained for a
 ///   moment so the decoder is back in sync.
 ///
+/// `bracketed_paste` is whether bracketed paste was on before the hand-off; it is turned on again
+/// only then.
+///
 /// `redraw` must clear and draw a whole frame, and must hold [`terminal_write`] while it writes
 /// (a frame is a run of chunks an exit signal must not land inside). Its error is ignored.
 pub fn hand_off(
     prog: &str,
     args: &[String],
     cwd: &Path,
+    bracketed_paste: bool,
     redraw: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<io::Result<ExitStatus>> {
     disable_raw_mode()?;
     let status = run_child(prog, args, cwd);
     enable_raw_mode()?;
-    resume(&mut io::stdout(), redraw)?;
+    resume(&mut io::stdout(), redraw, bracketed_paste)?;
     while event::poll(Duration::from_millis(10)).unwrap_or(false) {
         let _ = event::read();
     }
@@ -288,6 +295,10 @@ mod tests {
 
     /// The bytes `resume` wrote, split at the frame marker.
     fn resume_trace(redraw_result: io::Result<()>) -> String {
+        resume_trace_with(redraw_result, true)
+    }
+
+    fn resume_trace_with(redraw_result: io::Result<()>, bracketed_paste: bool) -> String {
         let tty = FakeTty::default();
         let seen = tty.clone();
         let mut out = tty;
@@ -298,7 +309,7 @@ mod tests {
                 .map(|_| ())
                 .map_err(|e| io::Error::from(e.kind()))
         };
-        resume(&mut out, &mut redraw).unwrap();
+        resume(&mut out, &mut redraw, bracketed_paste).unwrap();
         let bytes = out.0.borrow().clone();
         String::from_utf8(bytes).unwrap()
     }
@@ -320,6 +331,26 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_stays_off_when_it_was_off_before_the_hand_off() {
+        let got = resume_trace_with(Ok(()), false);
+        let want = [
+            ansi(BeginSynchronizedUpdate),
+            ansi(EnterAlternateScreen),
+            "<FRAME>".to_string(),
+            ansi(EndSynchronizedUpdate),
+            ansi(PopKeyboardEnhancementFlags),
+            ansi(DisableMouseCapture),
+        ]
+        .concat();
+        assert_eq!(got, want);
+        assert!(!got.contains("\x1b[?2004h"), "{got:?}");
+        // And on: the paste mode comes back after the frame, last.
+        let on = resume_trace_with(Ok(()), true);
+        assert!(on.ends_with(&ansi(EnableBracketedPaste)), "{on:?}");
+        assert!(on.find("<FRAME>").unwrap() < on.find("\x1b[?2004h").unwrap());
+    }
+
+    #[test]
     fn a_failed_redraw_still_ends_the_synchronized_update_and_resets_the_input_modes() {
         let got = resume_trace(Err(io::ErrorKind::BrokenPipe.into()));
         let frame = got.find("<FRAME>").unwrap();
@@ -331,10 +362,14 @@ mod tests {
     #[test]
     fn a_terminal_that_cannot_enter_the_alternate_screen_is_an_error_before_any_frame() {
         let mut redrawn = false;
-        let r = resume(&mut DeadTty, &mut || {
-            redrawn = true;
-            Ok(())
-        });
+        let r = resume(
+            &mut DeadTty,
+            &mut || {
+                redrawn = true;
+                Ok(())
+            },
+            true,
+        );
         assert!(r.is_err());
         assert!(!redrawn, "no frame is drawn when the screen switch failed");
     }
