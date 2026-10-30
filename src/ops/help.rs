@@ -888,11 +888,20 @@ pub fn listed_actions(app: &App, ctx: Context) -> Vec<Action> {
 /// The operations the help of `ctx` lists, in the order it declares them: those of the screen
 /// itself, and those of the rows every screen lists (layer 0: tabs, help, quit). The `Space` menu
 /// lists the operations that are not in the footer in this order.
-pub fn declared_groups(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
+pub fn declared_groups_by_rows(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
     let flat = |rows: Vec<Row>| -> Vec<Action> {
         rows.iter()
             .flat_map(|r| r.groups.iter().flat_map(|g| g.iter().copied()))
             .collect()
     };
     (flat(view_rows(app, ctx).1), flat(global_rows()))
+}
+
+pub fn declared_groups(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
+    // The preview screens: the description in `konoma_host_core::preview_plan`, which the
+    // standalone app's menu is built from too.
+    if let Some(d) = crate::ops::preview_plan::declared(app, ctx) {
+        return d;
+    }
+    declared_groups_by_rows(app, ctx)
 }

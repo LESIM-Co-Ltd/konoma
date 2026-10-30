@@ -116,7 +116,7 @@ impl Action {
 
 /// The host's action for an operation only the full app runs. `None` for the one konoma does not
 /// have in this build (the project's tool needs the `git` feature).
-fn host_op_action(o: HostOp) -> Option<Action> {
+pub(crate) fn host_op_action(o: HostOp) -> Option<Action> {
     Some(match o {
         HostOp::SearchStart => Action::SearchStart,
         HostOp::SearchNext => Action::SearchNext,
