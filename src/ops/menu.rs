@@ -188,22 +188,11 @@ fn label_of(app: &App, ctx: Context, a: Action, prio: &[(Action, Option<Msg>)]) 
         .or_else(|| special_label(a))
 }
 
-/// A letter that says what the operation is, tried before the free letters in order.
+/// A letter that says what the operation is, tried before the free letters in order. The table
+/// is shared with the standalone app (`konoma_host_core::keymap::mnemonic_of_name`), keyed by the
+/// operation's config name.
 fn mnemonic(a: Action) -> Option<char> {
-    Some(match a {
-        Action::BookmarkDelete => 'd',
-        Action::BookmarkEdit => 'e',
-        Action::CyclePathStyle => 'p',
-        Action::ToggleWrap => 'w',
-        Action::ToggleFocusedItem => 't',
-        #[cfg(feature = "git")]
-        Action::ToggleFollowDiffScope => 'f',
-        #[cfg(feature = "git")]
-        Action::GitOpenLog => 'l',
-        #[cfg(feature = "git")]
-        Action::GitOpenGraph => 'g',
-        _ => return None,
-    })
+    konoma_host_core::keymap::mnemonic_of_name(&crate::keymap::action_name(a))
 }
 
 /// Every operation `ctx` can run, in the order the menu lists them: the keyed ones by their key

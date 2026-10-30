@@ -490,6 +490,148 @@ impl CoreAction {
 }
 
 // =============================================================================
+// HostOp: the operations only the full app runs.
+// =============================================================================
+
+/// An operation a context's keys can name but that only the full app (konoma) runs: it needs the
+/// tree, the project's screens, the marks or the search state, none of which the standalone app
+/// has. The standalone app never runs one; it still knows their names and default keys, so that
+/// its `Space` menu is built over the same candidates as konoma's (a letter is given to an
+/// operation before the ones that do not act are hidden), and `[keys.<context>]` reads them with
+/// the same rules.
+///
+/// Kept apart from [`CoreAction`] on purpose: a `CoreAction` is something a standalone app must be
+/// able to carry out (it matches on every one), and konoma's `Action::core()` answers `None` for
+/// everything outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostOp {
+    /// `/`: start a search.
+    SearchStart,
+    /// `n` / `N`: the next / previous match.
+    SearchNext,
+    SearchPrev,
+    /// `v` / `V`: a charwise / linewise selection.
+    PreviewEnterVisual,
+    PreviewEnterVisualLine,
+    /// `Y`: copy an `@path#L12-34` reference.
+    PreviewCopySelectionRef,
+    /// `m` / `'`: set a bookmark / open the list.
+    MarkSet,
+    MarkJump,
+    /// `r`: reload the preview.
+    Refresh,
+    /// `p`: the project's screen.
+    OpenGitView,
+    /// `!`: the project's tool (needs konoma's `git` feature; konoma leaves the key unbound
+    /// without it).
+    GitLaunchTool,
+    /// `R`: the next representation of the preview.
+    CycleRepresentation,
+    /// `R` over a picture that is a diff's own representation: back to the diff.
+    ImageReturnToDiff,
+    /// `Ctrl-n` / `Ctrl-p`: the next / previous file in the tree's order.
+    PreviewFileNext,
+    PreviewFilePrev,
+    /// `Ctrl-t`: open the focused link in a new tab.
+    OpenLinkNewTab,
+    /// Tab / BackTab (fixed keys): the next / previous focusable item.
+    LinkFocusNext,
+    LinkFocusPrev,
+    /// Enter / Space on a focused item (a fixed key): open or fold it.
+    ToggleFocusedItem,
+}
+
+impl HostOp {
+    /// Every operation, once: for tests that walk the whole set.
+    pub const ALL: [HostOp; 19] = [
+        HostOp::SearchStart,
+        HostOp::SearchNext,
+        HostOp::SearchPrev,
+        HostOp::PreviewEnterVisual,
+        HostOp::PreviewEnterVisualLine,
+        HostOp::PreviewCopySelectionRef,
+        HostOp::MarkSet,
+        HostOp::MarkJump,
+        HostOp::Refresh,
+        HostOp::OpenGitView,
+        HostOp::GitLaunchTool,
+        HostOp::CycleRepresentation,
+        HostOp::ImageReturnToDiff,
+        HostOp::PreviewFileNext,
+        HostOp::PreviewFilePrev,
+        HostOp::OpenLinkNewTab,
+        HostOp::LinkFocusNext,
+        HostOp::LinkFocusPrev,
+        HostOp::ToggleFocusedItem,
+    ];
+
+    /// The canonical config string (the name `[keys]` and konoma's own keymap use).
+    pub fn name(self) -> &'static str {
+        match self {
+            HostOp::SearchStart => "search_start",
+            HostOp::SearchNext => "search_next",
+            HostOp::SearchPrev => "search_prev",
+            HostOp::PreviewEnterVisual => "preview_enter_visual",
+            HostOp::PreviewEnterVisualLine => "preview_enter_visual_line",
+            HostOp::PreviewCopySelectionRef => "preview_copy_selection_ref",
+            HostOp::MarkSet => "mark_set",
+            HostOp::MarkJump => "mark_jump",
+            HostOp::Refresh => "refresh",
+            HostOp::OpenGitView => "open_git_view",
+            HostOp::GitLaunchTool => "git_launch_tool",
+            HostOp::CycleRepresentation => "cycle_representation",
+            HostOp::ImageReturnToDiff => "image_return_to_diff",
+            HostOp::PreviewFileNext => "preview_next_file",
+            HostOp::PreviewFilePrev => "preview_prev_file",
+            HostOp::OpenLinkNewTab => "open_link_new_tab",
+            HostOp::LinkFocusNext => "link_focus_next",
+            HostOp::LinkFocusPrev => "link_focus_prev",
+            HostOp::ToggleFocusedItem => "toggle_focused_item",
+        }
+    }
+
+    /// The inverse of [`HostOp::name`]. The old name `toggle_markdown_raw` is an alias of
+    /// `cycle_representation`.
+    pub fn from_name(s: &str) -> Option<HostOp> {
+        if s == "toggle_markdown_raw" {
+            return Some(HostOp::CycleRepresentation);
+        }
+        HostOp::ALL.into_iter().find(|o| o.name() == s)
+    }
+}
+
+/// The letter that says what an operation is, tried by the `Space` menu before the free letters
+/// (`menu::assign`). Keyed by the config name, so one table serves konoma's `Action` (which also
+/// has operations of screens a standalone app does not have) and the standalone app's
+/// [`CoreAction`]; an operation konoma has only under its `git` feature is simply never asked
+/// for without it.
+pub fn mnemonic_of_name(name: &str) -> Option<char> {
+    Some(match name {
+        "bookmark_delete" => 'd',
+        "bookmark_edit" => 'e',
+        "cycle_path_style" => 'p',
+        "toggle_wrap" => 'w',
+        "toggle_focused_item" => 't',
+        "toggle_follow_diff_scope" => 'f',
+        "git_open_log" => 'l',
+        "git_open_graph" => 'g',
+        _ => return None,
+    })
+}
+
+/// The names [`mnemonic_of_name`] knows, for the test that each one names a real operation.
+pub const MNEMONIC_NAMES: [&str; 8] = [
+    "bookmark_delete",
+    "bookmark_edit",
+    "cycle_path_style",
+    "toggle_wrap",
+    "toggle_focused_item",
+    "toggle_follow_diff_scope",
+    "git_open_log",
+    "git_open_graph",
+];
+
+// =============================================================================
 // Bindings, contexts, tables.
 // =============================================================================
 
@@ -510,6 +652,9 @@ pub enum CoreMenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreBinding {
     Run(CoreAction),
+    /// An operation only the full app runs: the standalone app resolves the key to
+    /// [`CoreResolution::Unbound`] (it has nothing to run) and konoma maps it to its own action.
+    Host(HostOp),
     Menu(CoreMenu),
     /// Only in a context's own table: this key is deliberately unbound there, so what it would
     /// inherit from layer 1 or 2 does not apply (`global` still does).
@@ -528,7 +673,8 @@ fn resolution_of(b: &CoreBinding) -> CoreResolution {
     match b {
         CoreBinding::Run(a) => CoreResolution::Action(*a),
         CoreBinding::Menu(m) => CoreResolution::Menu(*m),
-        CoreBinding::Unbound => CoreResolution::Unbound,
+        // Nothing the standalone app can run (see `CoreKeys::host_op`).
+        CoreBinding::Host(_) | CoreBinding::Unbound => CoreResolution::Unbound,
     }
 }
 
@@ -614,6 +760,10 @@ fn run(a: CoreAction) -> CoreBinding {
 
 fn nav(m: Motion) -> CoreBinding {
     CoreBinding::Run(CoreAction::Navigate(m))
+}
+
+fn host(o: HostOp) -> CoreBinding {
+    CoreBinding::Host(o)
 }
 
 // --- The default tables, one function per table so a host can take the pieces it uses. ---
@@ -737,10 +887,62 @@ pub fn type_table(vt: CoreViewType, scheme: KeyScheme) -> CoreTable {
     }
 }
 
-/// The part of a context's own table that is shared. A host adds the keys only it has.
+/// The default keys of the operations only the full app runs ([`HostOp`]), per context: the
+/// search, the bookmarks, the reload, the project's screen, the file paging and the rest. They
+/// live here, next to the shared keys, so that a key is never given twice and both hosts see the
+/// same keys taken.
+pub fn host_ops_table(ctx: CoreContext) -> CoreTable {
+    let mut m = CoreTable::new();
+    // `p` is the project's screen on every context; the path style is in the `,` menu.
+    m.insert(KeyPress::ch('p'), host(HostOp::OpenGitView));
+    m.insert(KeyPress::ch('!'), host(HostOp::GitLaunchTool));
+    m.insert(KeyPress::ch('r'), host(HostOp::Refresh));
+    // `m` registers the previewed file, `'` opens the list.
+    m.insert(KeyPress::ch('m'), host(HostOp::MarkSet));
+    m.insert(KeyPress::ch('\''), host(HostOp::MarkJump));
+    // `Ctrl-n` / `Ctrl-p` page through the files in tree order (`J` / `K` are the page turn, and
+    // `Ctrl-j` is indistinguishable from Enter on legacy terminals, so neither is used).
+    m.insert(KeyPress::ctrl_ch('n'), host(HostOp::PreviewFileNext));
+    m.insert(KeyPress::ctrl_ch('p'), host(HostOp::PreviewFilePrev));
+    let searching = |m: &mut CoreTable| {
+        m.insert(KeyPress::ch('/'), host(HostOp::SearchStart));
+        m.insert(KeyPress::ch('n'), host(HostOp::SearchNext));
+        m.insert(KeyPress::ch('N'), host(HostOp::SearchPrev));
+    };
+    match ctx {
+        CoreContext::Text | CoreContext::Document => {
+            searching(&mut m);
+            m.insert(KeyPress::ch('v'), host(HostOp::PreviewEnterVisual));
+            m.insert(KeyPress::ch('V'), host(HostOp::PreviewEnterVisualLine));
+            m.insert(KeyPress::ch('R'), host(HostOp::CycleRepresentation));
+            // Open the focused link in a new tab (Enter still opens it in the same tab).
+            m.insert(KeyPress::ctrl_ch('t'), host(HostOp::OpenLinkNewTab));
+            // `Y`: an `@path#L` reference for the caret line (or the selection).
+            m.insert(KeyPress::ch('Y'), host(HostOp::PreviewCopySelectionRef));
+        }
+        CoreContext::Image => {
+            // Back to the diff while this picture is the diff's own representation; a no-op
+            // otherwise (not `CycleRepresentation`, whose fallthrough is for text).
+            m.insert(KeyPress::ch('R'), host(HostOp::ImageReturnToDiff));
+        }
+        CoreContext::Table => {
+            searching(&mut m);
+            m.insert(KeyPress::ch('R'), host(HostOp::CycleRepresentation));
+        }
+        CoreContext::Canvas => {
+            m.insert(KeyPress::ch('R'), host(HostOp::CycleRepresentation));
+            m.insert(KeyPress::ch('Y'), host(HostOp::PreviewCopySelectionRef));
+        }
+    }
+    m
+}
+
+/// The part of a context's own table that is shared: the commands every host runs and the keys
+/// of the operations only the full app runs ([`host_ops_table`]).
 pub fn own_table(ctx: CoreContext) -> CoreTable {
     let mut m = back_table();
     m.extend(verbs_table());
+    m.extend(host_ops_table(ctx));
     m.insert(KeyPress::ch(','), CoreBinding::Menu(CoreMenu::Options));
     match ctx {
         CoreContext::Text | CoreContext::Document => {
@@ -1130,11 +1332,12 @@ impl CoreKeys {
         };
         let action = if action == "noop" || action == "disabled" {
             None
+        } else if let Some(a) = CoreAction::from_name(action) {
+            Some(CoreBinding::Run(a))
+        } else if let Some(o) = HostOp::from_name(action) {
+            Some(CoreBinding::Host(o))
         } else {
-            match CoreAction::from_name(action) {
-                Some(a) => Some(a),
-                None => return,
-            }
+            return;
         };
         match keys[..] {
             [kp] => {
@@ -1149,6 +1352,13 @@ impl CoreKeys {
                 if pre != KeyPress::ch(' ') && chord_prefix_menu(pre).is_none() {
                     return;
                 }
+                // The menus hold what a standalone app can run; an operation of the full app
+                // has no entry there.
+                let action = match action {
+                    Some(CoreBinding::Run(a)) => Some(a),
+                    Some(_) => return,
+                    None => None,
+                };
                 for &t in targets {
                     self.set_menu_entry(t, pre, suf, action);
                 }
@@ -1188,11 +1398,11 @@ impl CoreKeys {
     /// Bind `kp` to `action` in `target`'s own table, or unbind it there (`None`). Unbinding
     /// must also hide what the context inherits from layers 1-2, hence the explicit
     /// [`CoreBinding::Unbound`] mark; layer 0 still applies.
-    fn set_key(&mut self, target: Target, kp: KeyPress, action: Option<CoreAction>) {
+    fn set_key(&mut self, target: Target, kp: KeyPress, action: Option<CoreBinding>) {
         match target {
             Target::Global => match action {
                 Some(a) => {
-                    self.global.insert(kp, run(a));
+                    self.global.insert(kp, a);
                 }
                 None => {
                     self.global.remove(&kp);
@@ -1203,7 +1413,7 @@ impl CoreKeys {
                 let table = self.contexts.entry(c).or_default();
                 match action {
                     Some(a) => {
-                        table.insert(kp, run(a));
+                        table.insert(kp, a);
                     }
                     None if inherited => {
                         table.insert(kp, CoreBinding::Unbound);
@@ -1273,7 +1483,7 @@ impl CoreKeys {
                 })
                 .collect();
             for (k, m) in menu_keys {
-                if let Some(CoreBinding::Run(_)) = self.local(ctx, k) {
+                if let Some(CoreBinding::Run(_) | CoreBinding::Host(_)) = self.local(ctx, k) {
                     self.contexts
                         .entry(ctx)
                         .or_default()
@@ -1309,8 +1519,19 @@ impl CoreKeys {
         }
     }
 
+    /// The operation of the full app `kp` is bound to in `ctx` ([`HostOp`]; `None` for any other
+    /// key). The same lookup as [`CoreKeys::resolve`], which answers
+    /// [`CoreResolution::Unbound`] for such a key.
+    pub fn host_op(&self, ctx: CoreContext, kp: KeyPress) -> Option<HostOp> {
+        match self.local(ctx, kp).or_else(|| self.global.get(&kp)) {
+            Some(CoreBinding::Host(o)) => Some(*o),
+            _ => None,
+        }
+    }
+
     /// What `kp` does in `ctx`: the context's own table, its layer-2 tables, the basic layer,
-    /// then `global`.
+    /// then `global`. A key bound to an operation only the full app runs ([`HostOp`]) is
+    /// `Unbound` here: the standalone app has nothing to run for it.
     pub fn resolve(&self, ctx: CoreContext, kp: KeyPress) -> CoreResolution {
         if let Some(b) = self.local(ctx, kp) {
             return resolution_of(b);
@@ -1915,5 +2136,252 @@ mod tests {
                 None
             )
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod host_op_tests {
+    use super::*;
+
+    fn cfg(tables: &[(&str, &[(&str, &str)])]) -> KeysFileConfig {
+        KeysFileConfig {
+            surfaces: tables
+                .iter()
+                .map(|(n, es)| {
+                    (
+                        n.to_string(),
+                        es.iter()
+                            .map(|(k, a)| (k.to_string(), a.to_string()))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn op(k: &CoreKeys, c: CoreContext, key: char) -> Option<HostOp> {
+        k.host_op(c, KeyPress::ch(key))
+    }
+
+    #[test]
+    fn host_op_names_round_trip_and_are_distinct_from_the_core_names() {
+        let mut seen = std::collections::HashSet::new();
+        for o in HostOp::ALL {
+            assert_eq!(HostOp::from_name(o.name()), Some(o), "{}", o.name());
+            assert!(seen.insert(o.name()), "duplicate {}", o.name());
+            assert_eq!(
+                CoreAction::from_name(o.name()),
+                None,
+                "{} is a core action name too",
+                o.name()
+            );
+        }
+        assert_eq!(
+            HostOp::from_name("toggle_markdown_raw"),
+            Some(HostOp::CycleRepresentation)
+        );
+        assert_eq!(HostOp::from_name("quit"), None);
+        assert_eq!(HostOp::from_name("tab_goto"), None);
+    }
+
+    #[test]
+    fn every_mnemonic_name_is_a_real_operation_and_the_table_is_complete() {
+        for n in MNEMONIC_NAMES {
+            assert!(mnemonic_of_name(n).is_some(), "{n}");
+        }
+        // The shared operations: the path style, wrapping and the focused item.
+        assert_eq!(
+            mnemonic_of_name(&CoreAction::CyclePathStyle.name()),
+            Some('p')
+        );
+        assert_eq!(mnemonic_of_name(&CoreAction::ToggleWrap.name()), Some('w'));
+        assert_eq!(
+            mnemonic_of_name(HostOp::ToggleFocusedItem.name()),
+            Some('t')
+        );
+        // Nothing else of the shared operations has one.
+        for a in CoreAction::all() {
+            let n = a.name();
+            if !matches!(n.as_str(), "cycle_path_style" | "toggle_wrap") {
+                assert_eq!(mnemonic_of_name(&n), None, "{n}");
+            }
+        }
+        for o in HostOp::ALL {
+            if o != HostOp::ToggleFocusedItem {
+                assert_eq!(mnemonic_of_name(o.name()), None, "{}", o.name());
+            }
+        }
+        assert_eq!(mnemonic_of_name("no_such_operation"), None);
+    }
+
+    #[test]
+    fn the_defaults_bind_the_host_operations_but_the_standalone_resolution_stays_unbound() {
+        let k = CoreKeys::defaults(KeyScheme::Vim);
+        for (c, key, want) in [
+            (CoreContext::Text, 'r', HostOp::Refresh),
+            (CoreContext::Text, '/', HostOp::SearchStart),
+            (CoreContext::Document, 'n', HostOp::SearchNext),
+            (CoreContext::Text, 'R', HostOp::CycleRepresentation),
+            (CoreContext::Image, 'R', HostOp::ImageReturnToDiff),
+            (CoreContext::Table, 'R', HostOp::CycleRepresentation),
+            (CoreContext::Canvas, 'Y', HostOp::PreviewCopySelectionRef),
+            (CoreContext::Table, 'm', HostOp::MarkSet),
+            (CoreContext::Image, '\'', HostOp::MarkJump),
+            (CoreContext::Canvas, 'p', HostOp::OpenGitView),
+            (CoreContext::Text, '!', HostOp::GitLaunchTool),
+            (CoreContext::Text, 'v', HostOp::PreviewEnterVisual),
+            (CoreContext::Text, 'V', HostOp::PreviewEnterVisualLine),
+        ] {
+            assert_eq!(op(&k, c, key), Some(want), "{c:?} {key}");
+            assert_eq!(
+                k.resolve(c, KeyPress::ch(key)),
+                CoreResolution::Unbound,
+                "{c:?} {key}: the standalone app has nothing to run"
+            );
+        }
+        assert_eq!(
+            k.host_op(CoreContext::Text, KeyPress::ctrl_ch('t')),
+            Some(HostOp::OpenLinkNewTab)
+        );
+        assert_eq!(
+            k.host_op(CoreContext::Image, KeyPress::ctrl_ch('n')),
+            Some(HostOp::PreviewFileNext)
+        );
+        // Searching is for the text and table contexts, not a picture or a canvas.
+        assert_eq!(op(&k, CoreContext::Image, '/'), None);
+        assert_eq!(op(&k, CoreContext::Canvas, 'n'), None);
+        // A core key is not a host operation.
+        assert_eq!(op(&k, CoreContext::Text, 'j'), None);
+        assert_eq!(op(&k, CoreContext::Text, 'q'), None);
+    }
+
+    #[test]
+    fn a_host_operation_name_is_read_from_a_context_table() {
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[(
+                "text",
+                &[("x", "search_start"), ("X", "toggle_markdown_raw")],
+            )]),
+        );
+        assert_eq!(op(&k, CoreContext::Text, 'x'), Some(HostOp::SearchStart));
+        assert_eq!(
+            op(&k, CoreContext::Text, 'X'),
+            Some(HostOp::CycleRepresentation)
+        );
+        assert_eq!(
+            op(&k, CoreContext::Table, 'x'),
+            None,
+            "only the text context"
+        );
+        assert_eq!(
+            op(&k, CoreContext::Text, 'r'),
+            Some(HostOp::Refresh),
+            "the default key stays"
+        );
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('x')),
+            CoreResolution::Unbound
+        );
+    }
+
+    #[test]
+    fn a_host_operation_taking_an_inherited_key_hides_what_it_inherited() {
+        let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("text", &[("j", "refresh")])]));
+        assert_eq!(op(&k, CoreContext::Text, 'j'), Some(HostOp::Refresh));
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('j')),
+            CoreResolution::Unbound,
+            "`j` no longer moves"
+        );
+        assert_eq!(
+            k.resolve(CoreContext::Document, KeyPress::ch('j')),
+            CoreResolution::Action(CoreAction::Navigate(Motion::Down))
+        );
+    }
+
+    #[test]
+    fn noop_frees_a_host_key_and_a_core_action_replaces_it() {
+        let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("text", &[("r", "noop")])]));
+        assert_eq!(op(&k, CoreContext::Text, 'r'), None);
+        assert_eq!(op(&k, CoreContext::Image, 'r'), Some(HostOp::Refresh));
+        let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("text", &[("r", "page_next")])]));
+        assert_eq!(op(&k, CoreContext::Text, 'r'), None);
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('r')),
+            CoreResolution::Action(CoreAction::PageNext)
+        );
+    }
+
+    #[test]
+    fn a_host_operation_cannot_take_a_menu_key_or_a_global_key() {
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[(
+                "text",
+                &[("y", "refresh"), ("space", "refresh"), ("Q", "refresh")],
+            )]),
+        );
+        assert_eq!(op(&k, CoreContext::Text, 'y'), None);
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('y')),
+            CoreResolution::Menu(CoreMenu::Copy)
+        );
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch(' ')),
+            CoreResolution::Menu(CoreMenu::Actions)
+        );
+        assert_eq!(op(&k, CoreContext::Text, 'Q'), None);
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('Q')),
+            CoreResolution::Action(CoreAction::Quit)
+        );
+    }
+
+    #[test]
+    fn a_global_table_can_bind_a_host_operation_and_a_context_cannot_take_the_key() {
+        let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("global", &[("x", "mark_set")])]));
+        for c in CoreContext::ALL {
+            assert_eq!(op(&k, c, 'x'), Some(HostOp::MarkSet), "{c:?}");
+        }
+        let k = CoreKeys::from_config(
+            KeyScheme::Vim,
+            &cfg(&[
+                ("global", &[("x", "mark_set")]),
+                ("text", &[("x", "page_next")]),
+            ]),
+        );
+        // The same rule as for a core `global` key: a context cannot take it for another action.
+        for c in CoreContext::ALL {
+            assert_eq!(op(&k, c, 'x'), Some(HostOp::MarkSet), "{c:?}");
+        }
+        assert_eq!(
+            k.resolve(CoreContext::Text, KeyPress::ch('x')),
+            CoreResolution::Unbound
+        );
+    }
+
+    #[test]
+    fn a_chord_entry_of_a_host_operation_is_ignored() {
+        let before = CoreKeys::defaults(KeyScheme::Vim);
+        let k = CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("text", &[("y x", "refresh")])]));
+        assert_eq!(
+            format!("{:?}", k.menu(CoreContext::Text, CoreMenu::Copy)),
+            format!("{:?}", before.menu(CoreContext::Text, CoreMenu::Copy))
+        );
+    }
+
+    #[test]
+    fn every_host_operation_can_be_written_in_a_config() {
+        for o in HostOp::ALL {
+            let k =
+                CoreKeys::from_config(KeyScheme::Vim, &cfg(&[("document", &[("x", o.name())])]));
+            assert_eq!(
+                k.host_op(CoreContext::Document, KeyPress::ch('x')),
+                Some(o),
+                "{}",
+                o.name()
+            );
+        }
     }
 }

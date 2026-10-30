@@ -31,6 +31,8 @@ mod defaults_snapshot;
 #[cfg(test)]
 mod defaults_tests;
 #[cfg(test)]
+mod host_op_agreement;
+#[cfg(test)]
 mod menu_agreement;
 #[cfg(test)]
 mod override_resolution;
@@ -41,7 +43,7 @@ mod shared_agreement;
 // plugin app: the host builds those layers of its tables from the shared ones.
 use konoma_host_core::keymap::{
     basic_table, default_menus, global_table, is_fixed_key, menu_label, own_table, type_table,
-    verbs_table, CoreAction, CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType,
+    verbs_table, CoreAction, CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType, HostOp,
     MenuScope, MenuSet,
 };
 pub use konoma_host_core::keymap::{scheme_from_str, KeyPress, KeyScheme, Motion};
@@ -112,10 +114,40 @@ impl Action {
     }
 }
 
+/// The host's action for an operation only the full app runs. `None` for the one konoma does not
+/// have in this build (the project's tool needs the `git` feature).
+fn host_op_action(o: HostOp) -> Option<Action> {
+    Some(match o {
+        HostOp::SearchStart => Action::SearchStart,
+        HostOp::SearchNext => Action::SearchNext,
+        HostOp::SearchPrev => Action::SearchPrev,
+        HostOp::PreviewEnterVisual => Action::PreviewEnterVisual,
+        HostOp::PreviewEnterVisualLine => Action::PreviewEnterVisualLine,
+        HostOp::PreviewCopySelectionRef => Action::PreviewCopySelectionRef,
+        HostOp::MarkSet => Action::MarkSet,
+        HostOp::MarkJump => Action::MarkJump,
+        HostOp::Refresh => Action::Refresh,
+        HostOp::OpenGitView => Action::OpenGitView,
+        #[cfg(feature = "git")]
+        HostOp::GitLaunchTool => Action::GitLaunchTool,
+        #[cfg(not(feature = "git"))]
+        HostOp::GitLaunchTool => return None,
+        HostOp::CycleRepresentation => Action::CycleRepresentation,
+        HostOp::ImageReturnToDiff => Action::ImageReturnToDiff,
+        HostOp::PreviewFileNext => Action::PreviewFileNext,
+        HostOp::PreviewFilePrev => Action::PreviewFilePrev,
+        HostOp::OpenLinkNewTab => Action::OpenLinkNewTab,
+        HostOp::LinkFocusNext => Action::LinkFocusNext,
+        HostOp::LinkFocusPrev => Action::LinkFocusPrev,
+        HostOp::ToggleFocusedItem => Action::ToggleFocusedItem,
+    })
+}
+
 impl From<CoreBinding> for Binding {
     fn from(b: CoreBinding) -> Binding {
         match b {
             CoreBinding::Run(a) => Binding::Run(a.into()),
+            CoreBinding::Host(o) => host_op_action(o).map_or(Binding::Unbound, Binding::Run),
             CoreBinding::Menu(CoreMenu::Actions) => Binding::Leader(LeaderId::Actions),
             CoreBinding::Menu(CoreMenu::Copy) => Binding::Leader(LeaderId::Copy),
             CoreBinding::Menu(CoreMenu::TableCopy) => Binding::Leader(LeaderId::TableCopy),
@@ -126,8 +158,13 @@ impl From<CoreBinding> for Binding {
 }
 
 /// A shared table as the host's table type.
+/// A key bound to an operation this build does not have is left out (not turned into `Unbound`,
+/// which would hide what a lower layer gives the key).
 fn host_table(t: CoreTable) -> ContextMap {
-    t.into_iter().map(|(k, b)| (k, b.into())).collect()
+    t.into_iter()
+        .filter(|(_, b)| !matches!(b, CoreBinding::Host(o) if host_op_action(*o).is_none()))
+        .map(|(k, b)| (k, b.into()))
+        .collect()
 }
 
 // =============================================================================
@@ -1351,41 +1388,10 @@ impl KeyMap {
         contexts.insert(Context::TreeVisual, visual);
 
         // --- Preview: text / markdown. `text` and `document` carry the same keys for now (they
-        // were one table); B3 tells them apart. ---
-        let mut ptext: ContextMap = host_table(own_table(CoreContext::Text));
-        ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        // `p` is the project's screen on every context (below); the path style is in the `,` menu.
-        ptext.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        ptext.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        ptext.insert(KeyPress::ch('r'), run(Action::Refresh));
-        ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
-        ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
-        ptext.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        // Ctrl-t = open the focused Markdown link in a new tab (Enter still opens in the same tab).
-        // Consistent with the TUI convention (fzf/Telescope's Ctrl-t = new tab) + konoma's t = new
-        // tab. Ctrl+letter is reliable in every terminal + tmux (unlike Ctrl+Enter, no kitty
-        // protocol required). No-op when no link is focused.
-        ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
-        // Ctrl-n/Ctrl-p = preview the next/previous file in tree display order (file paging). J/K
-        // conflict with the image context's PDF page paging, and Ctrl-j is indistinguishable from
-        // Enter (LF) on legacy terminals/tmux, so neither is used.
-        ptext.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // Y = copy an @path#L reference for the caret line (hands the location to Claude Code). If
-        // there's a selection, the range is used instead (Y in the visual context).
-        ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        // +/-/= : zoom/reset the focused inline mermaid diagram in place (the display area stays
-        // fixed). No-op when no diagram is focused (guarded on the image_zoom_by side). `0` is kept
-        // as-is for LineHome (go to line start).
-        // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
-        ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        // Heading outline (Markdown preview). `O` toggles it open/closed (`o` is the verb "open").
-        // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
-        // `App::page_turn` does nothing for any other text preview).
+        // were one table); B3 tells them apart. The keys of the operations only konoma runs
+        // (search, bookmarks, reload, file paging, ...) come with the shared table
+        // (`konoma_host_core::keymap::host_ops_table`). ---
+        let ptext: ContextMap = host_table(own_table(CoreContext::Text));
         contexts.insert(Context::Document, ptext.clone());
         contexts.insert(Context::Text, ptext);
 
@@ -1400,47 +1406,17 @@ impl KeyMap {
         contexts.insert(Context::TextVisual, pvis);
 
         // --- Preview: image ---
-        let mut pimg: ContextMap = host_table(own_table(CoreContext::Image));
-        // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
-        // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
-        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::CycleRepresentation`,
-        // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
-        // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
-        pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        pimg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        pimg.insert(KeyPress::ch('r'), run(Action::Refresh));
-        // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
-        pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        // `R` here is `ImageReturnToDiff` (shared table), not `CycleRepresentation`: the latter's
+        // non-diff fallthrough (`toggle_md_raw`) is wrong for a standalone `.mmd` picture
+        // (`docs/FEATURE-MEDIA-DIFF.md` §6).
+        let pimg: ContextMap = host_table(own_table(CoreContext::Image));
         contexts.insert(Context::Image, pimg);
 
         // --- Preview: table (csv/tsv) ---
         // hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last column / y→ = copy
-        // the cell/row/column.
-        let mut ptbl: ContextMap = host_table(own_table(CoreContext::Table));
-        // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
-        // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
-        // `O` = the list of the sheets of a workbook (2+ visible sheets; the gate refuses elsewhere).
-        // R = the next representation of a table plugin that declares several (the host walks
-        // them; nothing happens, and no hint shows, for a table with one).
-        ptbl.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        ptbl.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        ptbl.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        ptbl.insert(KeyPress::ch('r'), run(Action::Refresh));
-        // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
-        ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // In-table search (same `/` n N as the text preview). The cursor jumps to the matching cell.
-        ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        // the cell/row/column. J/K/O (sheets) and `/` n N (in-table search) come from the shared
+        // tables; the handlers no-op where they do not apply.
+        let ptbl: ContextMap = host_table(own_table(CoreContext::Table));
         contexts.insert(Context::Table, ptbl);
 
         // --- Preview: a plugin's canvas ---
@@ -1453,17 +1429,7 @@ impl KeyMap {
         // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
         // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
         // the plugin's).
-        let mut pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
-        pcvs.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        #[cfg(feature = "git")]
-        pcvs.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-        pcvs.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
-        pcvs.insert(KeyPress::ch('r'), run(Action::Refresh));
-        pcvs.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        pcvs.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pcvs.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        pcvs.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        pcvs.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        let pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
         contexts.insert(Context::Canvas, pcvs);
 
         // --- Version-control contexts (feature gate) ---

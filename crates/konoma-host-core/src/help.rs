@@ -984,7 +984,9 @@ impl CoreKeys {
     /// [`CoreKeys::resolve`].
     pub fn layer_of_key(&self, ctx: CoreContext, kp: KeyPress) -> Option<KeyLayer> {
         if let Some(b) = self.contexts.get(&ctx).and_then(|m| m.get(&kp)) {
-            return (*b != CoreBinding::Unbound).then_some(KeyLayer::View);
+            // An operation of the full app is not something this app runs: not a bound key.
+            return (!matches!(b, CoreBinding::Unbound | CoreBinding::Host(_)))
+                .then_some(KeyLayer::View);
         }
         for vt in ctx.view_types() {
             if self.types.get(vt).is_some_and(|m| m.contains_key(&kp)) {
