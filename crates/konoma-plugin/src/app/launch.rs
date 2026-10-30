@@ -169,6 +169,7 @@ impl LaunchCx {
         LaunchFacts {
             edit: Some(edit_word(&self.resolve(verbs, Verb::Edit, &abs))),
             open: disabled_by(Verb::Open, &abs, &self.policy(&abs)).is_none(),
+            open_key: true,
         }
     }
 }
@@ -181,9 +182,18 @@ pub struct LaunchFacts {
     pub edit: Option<EditWord>,
     /// `o` opens the file.
     pub open: bool,
+    /// The program has an `o` key at all. When `open` is off the key still answers, with the
+    /// notice that says why (as konoma's does); it is just not named in the footer or the help.
+    pub open_key: bool,
 }
 
 impl LaunchFacts {
+    /// The program has an `e` key: it acts, or it answers with the notice that opening is
+    /// switched off (as konoma's does). Only an acting `e` is named ([`LaunchFacts::edit_acts`]).
+    pub fn edit_key(&self) -> bool {
+        self.edit.is_some()
+    }
+
     /// `e` starts something (it is not absent and does not only explain).
     pub fn edit_acts(&self) -> bool {
         matches!(self.edit, Some(EditWord::Editor | EditWord::App))

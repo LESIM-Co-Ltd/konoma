@@ -1553,7 +1553,11 @@ fn a_docx_with_no_plugin_to_reopen_it_shows_what_the_host_shows() {
             .map(|r| r.trim_end())
             .collect::<String>()
     };
-    assert!(rest(&host_rows).starts_with('/'), "{}", host_rows.join("\n"));
+    assert!(
+        rest(&host_rows).starts_with('/'),
+        "{}",
+        host_rows.join("\n")
+    );
     assert_eq!(
         rest(&app_rows),
         rest(&host_rows),

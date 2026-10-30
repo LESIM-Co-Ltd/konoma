@@ -109,9 +109,27 @@ fn o_walks_the_os_default_chain_and_never_the_editor() {
 fn o_is_a_notice_when_opening_is_switched_off() {
     let (edits, guis, frame, _) = run("[external]\nopen_links = false\n", "o");
     assert!(edits.is_empty() && guis.is_empty(), "{edits:?} {guis:?}");
-    // KNOWN GAP (reported): konoma flashes `disabled_notice` for this `o`; the app has no `o` at all
-    // while it is switched off (the key and its hint share one predicate), so nothing is drawn.
-    assert!(!frame.contains("opened") && !frame.contains("o:open in app"), "{frame}");
+    // The key answers as konoma's does, with the shared notice (the screen is narrow, so the
+    // front of the line is compared; the parity test in konoma compares the whole of it); the
+    // footer does not name a key that does not act.
+    let notice = konoma_host_core::help_msg::CoreMsg::ExternalOpenLinksDisabled
+        .tr(konoma_host_core::lang::Lang::En);
+    assert!(frame.contains(&notice[..40]), "{frame}");
+    assert!(
+        !frame.contains("opened") && !frame.contains("o:open in app"),
+        "{frame}"
+    );
+}
+
+#[test]
+fn o_without_a_launch_answers_nothing() {
+    // No `LaunchCx`: the program has neither key, so there is no notice either.
+    let c = SharedConfig::parse("").expect("parses");
+    let keys = AppKeys::new(&c.keys, &c.ui.keys);
+    let key = Key::char('o');
+    assert!(!keys.acts_on(&key, false, true));
+    assert!(!keys.table_acts_on(&key, false, Default::default()));
+    assert!(!keys.canvas_acts_on(&key, false));
 }
 
 #[test]

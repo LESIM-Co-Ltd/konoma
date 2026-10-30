@@ -199,8 +199,8 @@ fn the_menu_lists_what_the_app_has_under_konomas_keys_labels_and_order() {
     }
     // Not vacuous: the three declared actions, `back`, `help` and `path` at least, in each of the
     // ten runs.
-    // (measured: 72, the picture's zoom items among them.)
-    assert!(compared >= 72, "{compared}");
+    // (measured: 92, the picture's zoom items and the shared `e` / `o` items among them.)
+    assert!(compared >= 90, "{compared}");
     let missing: Vec<&&str> = HOST_ONLY.iter().filter(|e| !seen.contains(**e)).collect();
     assert!(missing.is_empty(), "HOST_ONLY never occurs: {missing:?}");
     for want in [
@@ -925,9 +925,11 @@ fn matrix(kind: Kind) {
     );
     assert!(t.changed >= 240, "{kind:?} changed {}", t.changed);
     // At least back, the help and the three declared actions' worth (path, wrap, ...) per variant.
-    // (measured: 6 to 9 items and 14 to 21 host-only items per variant, 14.01 at the least.)
-    assert!(t.items >= t.variants * 6, "{kind:?} items {}", t.items);
-    assert!(t.hidden >= t.variants * 10, "{kind:?} hidden {}", t.hidden);
+    // (measured per variant: items 8.0 (canvas) to 11.0 (image); host-only items 12.01 (image) to
+    // 19.0 (document). `RequestEdit` / `OpenExternal` moved from host-only to shared, which is the
+    // 2.0 the least dropped by (14.01 before).)
+    assert!(t.items >= t.variants * 7, "{kind:?} items {}", t.items);
+    assert!(t.hidden >= t.variants * 12, "{kind:?} hidden {}", t.hidden);
     assert_eq!(t.helps, t.variants);
 }
 

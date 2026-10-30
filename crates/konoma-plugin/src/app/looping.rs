@@ -824,12 +824,10 @@ impl AppKeys {
             }
             CoreResolution::Action(CoreAction::PageNext) if !popup => Some(Act::Page(1)),
             CoreResolution::Action(CoreAction::PagePrev) if !popup => Some(Act::Page(-1)),
-            CoreResolution::Action(CoreAction::RequestEdit)
-                if !popup && self.launch.edit_acts() =>
-            {
+            CoreResolution::Action(CoreAction::RequestEdit) if !popup && self.launch.edit_key() => {
                 Some(Act::Edit)
             }
-            CoreResolution::Action(CoreAction::OpenExternal) if !popup && self.launch.open => {
+            CoreResolution::Action(CoreAction::OpenExternal) if !popup && self.launch.open_key => {
                 Some(Act::Open)
             }
             _ => None,
@@ -996,10 +994,12 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
             CoreResolution::Action(CoreAction::PageNext) => Some(Act::Page(1)),
             CoreResolution::Action(CoreAction::PagePrev) => Some(Act::Page(-1)),
-            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
                 Some(Act::Edit)
             }
-            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
             _ => None,
         }
     }
@@ -1231,10 +1231,12 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
-            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
                 Some(Act::Edit)
             }
-            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
             _ => None,
         }
     }
@@ -1294,10 +1296,12 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
-            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_acts() => {
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
                 Some(Act::Edit)
             }
-            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open => Some(Act::Open),
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
             _ => None,
         }
     }
