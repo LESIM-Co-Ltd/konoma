@@ -26,6 +26,9 @@ pub struct TextFrame {
     pub wrap: bool,
     /// Cells scrolled off the left edge (0 while wrapping).
     pub hscroll: u16,
+    /// Rows scrolled off the top, counted in drawn rows (wrapped rows while wrapping). 0 for the
+    /// text whose lines are already the window.
+    pub vscroll: u16,
     /// The bordered frame of the host's windowed text (the path, the position label and the
     /// scrollbar). `None`: the lines are drawn bare (the file shown as text after a page failed).
     pub border: Option<TextBorder>,
@@ -303,7 +306,8 @@ pub fn draw(
             if t.wrap {
                 para = para.wrap(ratatui::widgets::Wrap { trim: false });
             }
-            para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
+            para.scroll((t.vscroll, t.hscroll))
+                .render(body, f.buffer_mut());
             if let Some(e) = t.border.as_ref().and_then(|b| b.extent) {
                 konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, e);
             }

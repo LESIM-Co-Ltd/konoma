@@ -2231,8 +2231,6 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
     TURN_WRAP.with(|w| w.set(wrap));
     let mut checked = 0;
     let mut moved = 0;
-    let mut skipped = 0;
-    let mut over_scrolled: std::collections::HashMap<String, bool> = Default::default();
     for spec in specs {
         let keys: &'static str = Box::leak(spec.clone().into_boxed_str());
         let mk = || {
@@ -2260,46 +2258,6 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
                 .expect("a frame end");
             s.rows[top + 1..=end].to_vec()
         };
-        // Known host quirk, deliberately not copied: with wrap on, the host counts the block's
-        // border rows in the wrapped height, so the end of the text over-scrolls and leaves blank
-        // rows above the bottom border (and later keys move from there). A sequence whose host
-        // shot, or the shot of any prefix of it, shows that is not compared.
-        if wrap {
-            let toks: Vec<&str> = spec.split_whitespace().collect();
-            let mut over = false;
-            for i in 1..=toks.len() {
-                // A run of one key only moves one way, so its end is where it went furthest.
-                if i < toks.len() && toks[i] == toks[i - 1] {
-                    continue;
-                }
-                let prefix = toks[..i].join(" ");
-                if let Some(&known) = over_scrolled.get(&prefix) {
-                    over |= known;
-                } else {
-                    let pk: &'static str = Box::leak(prefix.clone().into_boxed_str());
-                    let mut p =
-                        TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
-                    p.first_fails = true;
-                    p.then = pk;
-                    let hs = host_turn_shot(&root, p);
-                    HOST_EDIT_LINE.with(|l| l.take());
-                    let r = rows_of(&hs);
-                    let blank = r.len() >= 3
-                        && r[r.len() - 2]
-                            .trim_matches(|c| c == '│' || c == ' ')
-                            .is_empty();
-                    over_scrolled.insert(prefix, blank);
-                    over |= blank;
-                }
-                if over {
-                    break;
-                }
-            }
-            if over {
-                skipped += 1;
-                continue;
-            }
-        }
         assert_eq!(
             rows_of(&h),
             rows_of(&a),
@@ -2330,10 +2288,6 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
     TURN_WRAP.with(|w| w.set(true));
     // Some of the sequences scroll the first lines away (the windows differ if they did not).
     assert!(moved >= specs.len() / 4, "scrolled shots: {moved}");
-    assert!(
-        skipped <= specs.len() / 3,
-        "too many shots skipped for the host's end quirk: {skipped}"
-    );
     checked
 }
 
@@ -2341,21 +2295,32 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
 fn the_text_of_a_failed_page_agrees_with_the_host_wrapping_long() {
     let specs = failed_text_specs();
     let n = failed_text_keys_agree(&long_broken_svg(90), true, &specs);
-    assert!(n >= 210, "{n}");
+    assert_eq!(n, specs.len(), "every sequence is compared");
+    assert!(n >= 262, "{n}");
 }
 
 #[test]
 fn the_text_of_a_failed_page_agrees_with_the_host_scrolling_sideways_long() {
     let specs = failed_text_specs();
     let n = failed_text_keys_agree(&long_broken_svg(90), false, &specs);
-    assert!(n >= 260, "{n}");
+    assert_eq!(n, specs.len(), "every sequence is compared");
+    assert!(n >= 262, "{n}");
 }
 
-// Not covered: wrapping lines wider than the page. The host scrolls the failed page by wrapped
-// rows; the app scrolls it by logical lines, so the two differ after a vertical key there.
 #[test]
 fn the_text_of_a_failed_page_agrees_with_the_host_scrolling_sideways_wide() {
     let specs = failed_text_specs();
     let n = failed_text_keys_agree(&wide_broken_svg(40), false, &specs);
-    assert!(n >= 260, "{n}");
+    assert_eq!(n, specs.len(), "every sequence is compared");
+    assert!(n >= 262, "{n}");
+}
+
+// Lines wider than the page, wrapped: the host scrolls the failed page by the wrapped rows, and
+// the app does too (a vertical key then moves by drawn rows, not by logical lines).
+#[test]
+fn the_text_of_a_failed_page_agrees_with_the_host_wrapping_wide() {
+    let specs = failed_text_specs();
+    let n = failed_text_keys_agree(&wide_broken_svg(40), true, &specs);
+    assert_eq!(n, specs.len(), "every sequence is compared");
+    assert!(n >= 262, "{n}");
 }

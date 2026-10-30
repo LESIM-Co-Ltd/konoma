@@ -2991,23 +2991,32 @@ fn set_failed_paging(st: &mut State, rows: usize) -> usize {
     rows
 }
 
-/// The rows of the kept text of a failed page, from the scroll the state has (clamped).
+/// The kept text of a failed page, scrolled as the host scrolls it: the whole text is drawn
+/// and moved up by the scroll, which counts drawn rows (the wrapped rows while wrapping, so a
+/// long line takes several), clamped against the same count the host uses.
 fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame {
     let rows = set_failed_paging(st, rows);
     let body = st.failed_body.take();
-    let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
-    clamp(st, lines.len(), rows);
-    st.scrolls = true;
-    st.caret_on = false;
-    let shown = lines
+    let all: Vec<Line> = body
+        .as_ref()
+        .map_or(&[][..], |b| &b.lines[..])
         .iter()
-        .skip(st.scroll)
-        .take(rows)
         .map(Line::raw)
         .collect();
+    st.scrolls = true;
+    st.caret_on = false;
     // In the host's frame (the path alone on its border), as the host draws it: no caret, no
     // position label. The window is the rows inside the border.
-    let frame = text_frame(st, shown, Some((name, lang, None)), false);
+    let mut frame = text_frame(st, all, Some((name, lang, None)), false);
+    if let Frame::Text(t) = &mut frame {
+        let total = if t.wrap {
+            konoma_widgets::text::wrapped_row_count(t.lines.clone(), st.width.saturating_sub(2))
+        } else {
+            t.lines.len()
+        };
+        clamp(st, total, rows);
+        t.vscroll = u16::try_from(st.scroll).unwrap_or(u16::MAX);
+    }
     st.failed_body = body;
     frame
 }
@@ -3101,6 +3110,7 @@ fn text_frame(
         lines,
         wrap: st.display.wrap,
         hscroll,
+        vscroll: 0,
         border: framed.map(|(name, lang, extent)| super::draw::TextBorder {
             name: name.to_string(),
             lang,
@@ -3231,6 +3241,7 @@ mod windowed_text_tests {
             lines: Vec::new(),
             wrap: false,
             hscroll: 0,
+            vscroll: 0,
             border: border.then(|| TextBorder {
                 name: "a.txt".into(),
                 lang: Lang::En,
