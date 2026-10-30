@@ -186,7 +186,10 @@ fn the_menu_lists_what_the_app_has_under_konomas_keys_labels_and_order() {
                     keyed(w)
                 );
                 assert!(
-                    keyed(w) || (k.is_alphanumeric() && *k != 'q'),
+                    keyed(w)
+                        // The picture's zoom items keep the keys of the zoom itself (`+`, `-`, ...).
+                        || (w.action.starts_with("ImageZoom") && !k.is_whitespace())
+                        || (k.is_alphanumeric() && *k != 'q'),
                     "{kind:?} {lang}: the letter of {l}: {k}"
                 );
                 assert!(letters.insert(*k), "{kind:?} {lang}: {k} is used twice");
@@ -195,9 +198,9 @@ fn the_menu_lists_what_the_app_has_under_konomas_keys_labels_and_order() {
         }
     }
     // Not vacuous: the three declared actions, `back`, `help` and `path` at least, in each of the
-    // eight runs.
-    // (measured: 54.)
-    assert!(compared >= 50, "{compared}");
+    // ten runs.
+    // (measured: 72, the picture's zoom items among them.)
+    assert!(compared >= 72, "{compared}");
     let missing: Vec<&&str> = HOST_ONLY.iter().filter(|e| !seen.contains(**e)).collect();
     assert!(missing.is_empty(), "HOST_ONLY never occurs: {missing:?}");
     for want in [
@@ -242,7 +245,7 @@ fn an_item_runs_the_action_the_key_would_and_the_plugin_sees_the_same() {
                 assert!(!hr.left && !ar.left, "{kind:?} {lang} {steps:?}: left");
                 assert_eq!(hr.log, want_log, "{kind:?} {lang} {steps:?}: host log");
                 assert_eq!(ar.log, want_log, "{kind:?} {lang} {steps:?}: app log");
-                let (hc, ac) = (counter(&hr.rows).unwrap(), counter(&ar.rows).unwrap());
+                let (hc, ac) = (hr.state.clone().unwrap(), ar.state.clone().unwrap());
                 assert!(hc.starts_with(want_n), "{kind:?} {lang} {steps:?}: {hc}");
                 assert_eq!(hc, ac, "{kind:?} {lang} {steps:?}");
                 // The menu is closed after the pick.
@@ -270,7 +273,7 @@ fn a_key_that_is_not_an_item_only_closes_the_menu() {
                     line_items(&r.rows).is_none(),
                     "{kind:?} {close} {who}: the menu is still open"
                 );
-                assert!(counter(&r.rows).unwrap().starts_with("n=0 "), "{who}");
+                assert!(r.state.clone().unwrap().starts_with("n=0 "), "{who}");
             }
             compared += 1;
         }
@@ -961,7 +964,7 @@ fn the_matrix_has_a_test_for_every_view() {
     for k in KINDS {
         assert!(VIEWS.contains(&k), "{k:?}");
     }
-    assert_eq!(VIEWS.len(), KINDS.len() + 1);
+    assert_eq!(VIEWS.len(), KINDS.len());
 }
 
 /// A key written only under `[keys.document]` acts in the app's decorated document, as in the
