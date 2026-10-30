@@ -7,6 +7,10 @@ fn konoma(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_konoma"))
         .args(args)
         .env("HOME", std::env::temp_dir().join("konoma-cli-args-home"))
+        // No rebuilt konoma is looked for in the user's data directory.
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("KONOMA_PLUGIN_SWITCHED_FROM")
         .stdin(std::process::Stdio::null())
         .output()
         .expect("start konoma")
@@ -45,6 +49,8 @@ fn help_prints_the_usage_and_exits_0() {
             "konoma FILE",
             "--plugin PATH",
             "--plugins",
+            "konoma plugin <install|update|remove|list|clean>",
+            "konoma ./plugin",
             "-h, --help",
             "-V, --version",
             "Documentation: https://lesim-co-ltd.github.io/konoma/\n",

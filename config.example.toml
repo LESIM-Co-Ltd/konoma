@@ -570,6 +570,12 @@ code_theme = "TwoDark"
 # [plugins.mermaid]
 # theme = "forest"
 # rows = 30
+#
+# Plugin crates added with `konoma plugin install` are built into a konoma of their own (the list is
+# plugins.toml next to this file). The build cache is deleted after every build; to keep it for faster
+# rebuilds (it is large), set the key below and clear it with `konoma plugin clean`.
+# [plugins]
+# keep_build_cache = true
 
 # ── Keybindings (FR-8) ───────────────────────────────────────────────────────
 # [Top-level sections] — write these at the outermost level of the file, NOT inside [ui].

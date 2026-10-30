@@ -258,6 +258,42 @@ pub(crate) fn with_registry<T>(disabled: &[String], f: impl FnOnce(&Registry) ->
 /// other key is the plugin's own setting.
 pub(crate) type PluginTables = BTreeMap<String, toml::Table>;
 
+/// The keys of `[plugins]` that are not a plugin's table: options of `konoma plugin`
+/// (`keep_build_cache`, read by that command from the file itself). They are accepted here, with
+/// the type they must have, and are not plugins.
+const PLUGINS_OPTIONS: &[&str] = &["keep_build_cache"];
+
+/// Read `[plugins]`: every `[plugins.<id>]` table, and the options of [`PLUGINS_OPTIONS`] (checked,
+/// then set aside). Any other key that is not a table is a mistake worth a clear message.
+pub(crate) fn deserialize_tables<'de, D>(d: D) -> Result<PluginTables, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let raw = <BTreeMap<String, toml::Value> as serde::Deserialize>::deserialize(d)?;
+    let mut out = PluginTables::new();
+    for (key, value) in raw {
+        match value {
+            toml::Value::Table(t) => {
+                out.insert(key, t);
+            }
+            toml::Value::Boolean(_) if PLUGINS_OPTIONS.contains(&key.as_str()) => {}
+            _ if PLUGINS_OPTIONS.contains(&key.as_str()) => {
+                return Err(D::Error::custom(format!(
+                    "[plugins] {key} must be true or false"
+                )));
+            }
+            _ => {
+                return Err(D::Error::custom(format!(
+                    "[plugins] {key} must be a table ([plugins.{key}]); the options of `konoma plugin` are {}",
+                    PLUGINS_OPTIONS.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The ids whose table says `enabled = false`.
 pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
     tables

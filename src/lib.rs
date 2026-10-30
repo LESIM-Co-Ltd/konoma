@@ -22,6 +22,7 @@ mod keymap;
 #[cfg(test)]
 mod mem_tests;
 mod ops;
+mod plugin_cli;
 mod plugins;
 mod preview;
 mod session;
@@ -204,7 +205,31 @@ fn validate_root(path: &Path) -> Result<()> {
 /// The `--version`/`-V` output (a plain function, not printed directly, so it's testable and its
 /// content is guaranteed to match what actually prints).
 fn version_text() -> String {
-    format!("konoma {}\n", env!("CARGO_PKG_VERSION"))
+    plugin_cli::switch::version_line(
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe().ok().as_deref(),
+        konoma_base::xdg::data_dir().as_deref(),
+    )
+}
+
+/// Replace this process with the konoma rebuilt with plugins (`konoma plugin install`), when there
+/// is one and this is not it. Returns when there is nothing to hand over to, or when starting it
+/// failed (said on stderr; this konoma then runs with the standard plugins).
+fn hand_over_to_rebuilt_konoma(args: &[String], switched_from: Option<&std::ffi::OsStr>) {
+    let Some(bin) = plugin_cli::switch::target(
+        args,
+        switched_from,
+        std::env::current_exe().ok().as_deref(),
+        konoma_base::xdg::data_dir().as_deref(),
+    ) else {
+        return;
+    };
+    let err = plugin_cli::switch::exec(&bin, args, env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "konoma: could not start {} ({err}); running without its plugins. \
+         `konoma plugin update` rebuilds it, `konoma plugin remove` takes the plugins out.",
+        bin.display()
+    );
 }
 
 /// The `--help`/`-h` output. Kept in sync with the README's "Usage" section by hand (both are short).
@@ -214,6 +239,7 @@ fn help_text() -> String {
          \n\
          Usage: konoma [DIR]\n\
          \x20\x20\x20\x20\x20\x20 konoma FILE\n\
+         \x20\x20\x20\x20\x20\x20 konoma plugin <install|update|remove|list|clean>\n\
          \n\
          Opens DIR in the tree view (defaults to the current directory).\n\
          Given a FILE, opens its directory in the tree with FILE selected and previewed;\n\
@@ -224,6 +250,8 @@ fn help_text() -> String {
          \x20\x20                   a plugin). A rebuilt program is started again on the next open (r);\n\
          \x20\x20                   a changed manifest takes effect after konoma is restarted.\n\
          \x20\x20    --plugins   List which plugin shows which files and exit\n\
+         \x20\x20    plugin      Add plugin crates to konoma and rebuild it (run `konoma plugin` for\n\
+         \x20\x20                   the commands). To open a folder named plugin: konoma ./plugin\n\
          \x20\x20-h, --help      Print this help and exit\n\
          \x20\x20-V, --version   Print version and exit\n\
          \n\
@@ -254,7 +282,17 @@ fn run_application() -> Result<()> {
         let rest: Vec<_> = std::env::args_os().skip(2).collect();
         std::process::exit(preview::svg_proc::child_main(&rest));
     }
+    // Before anything else is started: no thread exists yet (the environment may only be changed
+    // while there is just one), and no child process can inherit the variable. Still after the
+    // drawing child's branch above, which runs nothing else.
+    let switched_from = plugin_cli::switch::take_switched_from();
     let args: Vec<String> = std::env::args().collect();
+    // `konoma plugin ...` is a command of its own (never handed over, so that it can repair a
+    // rebuilt konoma that does not start). A folder named `plugin` opens as `konoma ./plugin`.
+    if plugin_cli::is_plugin_command(&args) {
+        std::process::exit(plugin_cli::run(&args));
+    }
+    hand_over_to_rebuilt_konoma(&args, switched_from.as_deref());
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let (dev_plugins, args) = extract_dev_plugins(&args, &cwd).map_err(|e| anyhow::anyhow!(e))?;
     // Resolved — and, for `Open`, validated — **before any terminal initialization** below (see
@@ -441,6 +479,18 @@ fn run_application() -> Result<()> {
         .map(|(cols, _)| usize::from(cols))
         .unwrap_or(80)
         .saturating_sub(2);
+    // A konoma newer than the rebuilt one that was handed over to: say how to rebuild.
+    let cfg_err = match plugin_cli::switch::stale_notice(
+        env!("CARGO_PKG_VERSION"),
+        switched_from.as_deref(),
+        app.lang,
+    ) {
+        Some(note) => Some(match cfg_err {
+            Some(e) => format!("{note} / {e}"),
+            None => note,
+        }),
+        None => cfg_err,
+    };
     app.flash = app.startup_flash(cfg_err, footer_width);
     // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
     // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.

@@ -263,6 +263,9 @@ pub enum Msg {
     GraphPickerHeadLocked,
     HelpJumpTab,
     JustNow,
+    /// Startup note: the konoma built with plugins (`{embedded}`) is older than the konoma that
+    /// started it (`{base}`).
+    PluginBuildStale,
     Keymap,
     /// Startup note: `{old}` is an old `[keys.…]` table name; `{new}` is what to write instead.
     KeymapOldName,
@@ -1189,6 +1192,7 @@ fn en(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "current branch (HEAD) is always shown",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
+        PluginBuildStale => "the konoma with plugins ({embedded}) is older than this konoma ({base}) — run `konoma plugin update` to rebuild it",
         Keymap => "keymap",
         KeymapOldName => "{old} is an old name — write {new} instead",
         KeymapConflictDetail => "{key}: kept {kept}, dropped {dropped}",
@@ -1840,6 +1844,7 @@ fn jp(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
+        PluginBuildStale => "プラグイン入りの konoma ({embedded}) が本体 ({base}) より古いです — `konoma plugin update` で作り直してください",
         Keymap => "キーマップ",
         KeymapOldName => "{old} は古い名前です — {new} に書き換えてください",
         KeymapConflictDetail => "{key}: {kept} を維持し {dropped} を破棄",
@@ -2837,6 +2842,7 @@ mod tests {
         Msg::GraphPickerHeadLocked,
         Msg::HelpJumpTab,
         Msg::JustNow,
+        Msg::PluginBuildStale,
         Msg::Keymap,
         Msg::KeymapOldName,
         Msg::KeymapConflictDetail,

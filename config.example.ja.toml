@@ -528,6 +528,12 @@ code_theme = "TwoDark"
 # [plugins.mermaid]
 # theme = "forest"
 # rows = 30
+#
+# `konoma plugin install` で足したプラグインの crate は、konoma を組み直して取り込む（一覧はこのファイルの隣の
+# plugins.toml）。ビルドのキャッシュは毎回消す。再ビルドを速くしたい時だけ下のキーで残せる（大きい）。
+# 消すのは `konoma plugin clean`。
+# [plugins]
+# keep_build_cache = true
 
 # ── キーバインド (FR-8) ──────────────────────────────────────────────────────
 # 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
