@@ -590,6 +590,9 @@ pub fn run_bundled(
         launch: Some(launch.live()),
         converts: opened.manifest.converts,
     };
+    // Before the terminal is taken: a signal from here on restores it (see the function).
+    // Before the terminal is taken: a signal from here on restores it (see the function).
+    term::install_exit_signals();
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are
     // read (konoma does the same); what was typed meanwhile is replayed, and a late reply is

@@ -242,6 +242,12 @@ pub fn disabled_by(verb: Verb, path: &Path, policy: &LaunchPolicy) -> Option<Dis
 /// - `o` (`Verb::Open`): `[editor] ext` does not reach it. The declared chain, or the OS default
 ///   when there is none or it names nothing this platform can start.
 ///
+/// A declaration in terminal mode ([`LaunchMode::Terminal`]) is not gated by [`disabled_by`], on
+/// purpose: `[external]` switches off GUI applications (`office_apps`) and the OS default handler
+/// (`open_links`), and a program that runs in the terminal is the `$EDITOR` case, which neither
+/// covers. A chain that names nothing on this OS falls to the OS default, which is a GUI launch
+/// and so is gated.
+///
 /// `path` should be absolute: it is the argument of every attempt.
 pub fn resolve_launch(
     verb: Verb,
@@ -982,6 +988,59 @@ mod tests {
             assert_eq!(a.len(), 1);
             assert_eq!(a[0].prog, "tui-ed");
             assert_eq!(a[0].args, ["-n", "/tmp/x/a.x"]);
+        }
+    }
+
+    #[test]
+    fn a_terminal_declaration_is_not_stopped_by_either_external_switch() {
+        // `office_apps` stops GUI Office applications and `open_links` the OS default handler; a
+        // program that runs in the terminal is the `$EDITOR` case and meets neither. Both verbs,
+        // an Office file and another, both switches off.
+        let off = policy(false, false, false);
+        for verb in [Verb::Edit, Verb::Open] {
+            let d = VerbDecl::new(verb)
+                .launcher(cmd(&["tui-prog", "-n"]))
+                .mode(LaunchMode::Terminal);
+            for name in ["a.docx", "a.xlsx", "a.txt"] {
+                for os in [OfficeOs::MacOs, OfficeOs::Other] {
+                    let got = resolve_launch(verb, os, Some(&d), &p(name), &off);
+                    let Launch::Terminal(a) = got else {
+                        panic!("{verb:?} {name}: {got:?}")
+                    };
+                    assert_eq!(a.len(), 1, "{verb:?} {name}");
+                    assert_eq!(a[0].prog, "tui-prog");
+                    assert_eq!(a[0].args, ["-n", &format!("/tmp/x/{name}")]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_open_chain_that_names_nothing_here_falls_to_the_os_default_which_is_stopped() {
+        // The chain names a macOS bundle only, so on another OS it names nothing and `o` opens
+        // with the OS default. That is a GUI launch whatever mode was declared, so the switches
+        // stop it: `open_links` for a plain file, `office_apps` for an Office document.
+        for mode in [LaunchMode::Terminal, LaunchMode::Gui] {
+            let d = VerbDecl::new(Verb::Open)
+                .launcher(mac("com.example.Viewer"))
+                .mode(mode);
+            let off = policy(false, false, false);
+            assert_eq!(
+                resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.txt"), &off),
+                Launch::Disabled(Disabled::OpenLinks),
+                "{mode:?}"
+            );
+            assert_eq!(
+                resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.docx"), &off),
+                Launch::Disabled(Disabled::OfficeApps),
+                "{mode:?}"
+            );
+            // With the switches on it is the OS default as a GUI launch, not a terminal one.
+            let got = resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.txt"), &ALL_ON);
+            let Launch::Gui(a) = got else {
+                panic!("{mode:?}: {got:?}")
+            };
+            assert_eq!(a[0].prog, "xdg-open");
         }
     }
 

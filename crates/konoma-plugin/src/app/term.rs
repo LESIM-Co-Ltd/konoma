@@ -130,21 +130,68 @@ pub fn install_panic_hook_with(restore: fn()) {
 /// Leave the alternate screen and raw mode, show the cursor. Best effort: it runs from a panic
 /// hook and from `Drop`, so it never fails or panics.
 fn restore_terminal() {
+    drop(leave_terminal(&mut std::io::stdout(), true));
+}
+
+/// The teardown of the terminal, written to `out`: the pictures first (they were placed on the
+/// alternate screen, and a terminal deletes an image from the screen it is on), then raw mode
+/// off (when `raw_mode`; it is a termios setting, not an escape), then bracketed paste off, the
+/// alternate screen left and the cursor shown. The same order as konoma's `leave_for_good`.
+///
+/// Returns the right to write to the terminal it took (`None` when a stuck frame did not give it
+/// within the wait: a stuck frame must not hold the exit). The signal path keeps it until the
+/// process is gone, so a frame cannot be drawn onto the restored terminal.
+#[must_use]
+fn leave_terminal(
+    out: &mut dyn std::io::Write,
+    raw_mode: bool,
+) -> Option<konoma_host_core::term::TerminalWrite> {
     use crossterm::{cursor::Show, execute, terminal};
-    // The pictures first: they were placed on the alternate screen, and a terminal deletes an
-    // image from the screen it is on. (Not waited for long: a stuck frame must not hold the exit.)
-    {
-        let _writing =
-            konoma_host_core::term::terminal_write_within(std::time::Duration::from_millis(200));
-        super::pictures::delete_placed_pictures(&mut std::io::stdout());
+    let writing =
+        konoma_host_core::term::terminal_write_within(std::time::Duration::from_millis(200));
+    super::pictures::delete_placed_pictures(out);
+    if raw_mode {
+        let _ = terminal::disable_raw_mode();
     }
-    let _ = terminal::disable_raw_mode();
+    let mut out = out;
     let _ = execute!(
-        std::io::stdout(),
+        &mut out,
         crossterm::event::DisableBracketedPaste,
         terminal::LeaveAlternateScreen,
         Show
     );
+    writing
+}
+
+/// What the signal thread does for `sig` (`child_running`: a foreground child owns the terminal):
+/// `None` when the signal is ignored (SIGINT while the child runs: Ctrl-C reached the child too
+/// and it decides; leaving here would tear the screen down under it), otherwise `leave` (the
+/// terminal teardown) and the conventional `128 + sig` to exit with, with the terminal guard
+/// `leave` returned for the caller to keep until the process is gone.
+fn exit_on_signal(
+    sig: i32,
+    child_running: bool,
+    leave: impl FnOnce() -> Option<konoma_host_core::term::TerminalWrite>,
+) -> Option<(i32, Option<konoma_host_core::term::TerminalWrite>)> {
+    if konoma_host_core::term::ignore_signal(sig, child_running) {
+        return None;
+    }
+    Some((128 + sig, leave()))
+}
+
+/// Restore the terminal when SIGTERM, SIGHUP or SIGINT ends the program, as konoma does. The
+/// terminal is handed to a child (`hand_off`) with raw mode off, and Ctrl-C reaches the whole
+/// process group: without this the default action would kill the program with the alternate
+/// screen, bracketed paste and the pictures left on the terminal.
+pub(super) fn install_exit_signals() {
+    konoma_host_core::term::install_exit_signals(|sig, running| {
+        let (code, writing) = exit_on_signal(sig, running, || {
+            leave_terminal(&mut std::io::stdout(), true)
+        })?;
+        // The terminal stays ours until the process is gone.
+        std::mem::forget(writing);
+        Some(code)
+    });
 }
 
 /// The terminal in raw mode on the alternate screen; restored on `leave` and on `Drop`.
@@ -196,5 +243,55 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.leave();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // The signal numbers (the same on macOS and Linux).
+    const SIGHUP: i32 = 1;
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    /// Runs `exit_on_signal` with a teardown that only counts its calls.
+    fn answer(sig: i32, child_running: bool) -> (Option<i32>, usize) {
+        let left = Cell::new(0);
+        let code = exit_on_signal(sig, child_running, || {
+            left.set(left.get() + 1);
+            None
+        })
+        .map(|(code, _)| code);
+        (code, left.get())
+    }
+
+    #[test]
+    fn sigint_while_a_child_owns_the_terminal_is_ignored_and_leaves_nothing() {
+        assert_eq!(answer(SIGINT, true), (None, 0));
+    }
+
+    #[test]
+    fn sigint_without_a_child_restores_the_terminal_and_exits_130() {
+        assert_eq!(answer(SIGINT, false), (Some(130), 1));
+    }
+
+    #[test]
+    fn sigterm_and_sighup_end_the_program_even_while_a_child_runs() {
+        assert_eq!(answer(SIGTERM, true), (Some(143), 1));
+        assert_eq!(answer(SIGHUP, true), (Some(129), 1));
+        assert_eq!(answer(SIGTERM, false), (Some(143), 1));
+        assert_eq!(answer(SIGHUP, false), (Some(129), 1));
+    }
+
+    #[test]
+    fn the_teardown_writes_paste_off_then_leaves_the_alternate_screen_then_shows_the_cursor() {
+        let mut out: Vec<u8> = Vec::new();
+        // No raw mode: that is a setting of the real terminal, which a test must not touch.
+        drop(leave_terminal(&mut out, false));
+        let got = String::from_utf8(out).unwrap();
+        // Nothing was placed, so there are no picture deletes in front.
+        assert_eq!(got, "\x1b[?2004l\x1b[?1049l\x1b[?25h");
     }
 }

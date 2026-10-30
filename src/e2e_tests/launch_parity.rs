@@ -171,10 +171,15 @@ struct Seen {
     started: Vec<String>,
     /// The `e` / `o` tokens of the footer.
     hints: Vec<String>,
-    /// The notice, if one was shown.
+    /// The host's notice (its `flash`) at the end of the keys, if one was shown. The app has no
+    /// such value: its notice is the footer row (see `footer`).
     notice: Option<String>,
+    /// The footer row after the keys: a notice replaces the hints in it.
+    footer: String,
     /// The editor's argv as the app started it (the host records only the line).
     editor_argv: Vec<String>,
+    /// The directory every terminal chain was handed the terminal in, in order.
+    cwds: Vec<String>,
 }
 
 /// The editor of the cases: the line reaches it as `+<n>`.
@@ -250,17 +255,19 @@ fn host(root: &std::path::Path, c: &Case) -> Seen {
     }));
     s.draw();
     let mut out = Vec::new();
+    let mut cwds = Vec::new();
     for ch in c.keys.chars() {
         s.key(ch);
         out.append(&mut started.lock().unwrap());
         if let Some((_, line)) = s.app.take_pending_edit() {
             out.push(format!("edit:{line:?}"));
         }
-        if let Some((chain, _)) = s.app.take_pending_terminal() {
+        if let Some((chain, cwd)) = s.app.take_pending_terminal() {
             out.push(format!(
                 "term:{}",
                 chain.iter().map(argv).collect::<Vec<_>>().join(" | ")
             ));
+            cwds.push(cwd.display().to_string());
         }
         s.draw();
     }
@@ -273,7 +280,9 @@ fn host(root: &std::path::Path, c: &Case) -> Seen {
         started: out,
         hints: eo(hints(rows.last().expect("a footer"))),
         notice,
+        footer: rows.last().expect("a footer").clone(),
         editor_argv: Vec::new(),
+        cwds,
     }
 }
 
@@ -303,10 +312,16 @@ fn app(root: &std::path::Path, c: &Case) -> Seen {
     } = prepared;
     let started: Started = Default::default();
     let editor_argv: Started = Default::default();
-    let (s1, s2, s3) = (started.clone(), started.clone(), editor_argv.clone());
+    let cwds: Started = Default::default();
+    let (s1, s2, s3, s4) = (
+        started.clone(),
+        started.clone(),
+        editor_argv.clone(),
+        cwds.clone(),
+    );
     let launch = launch
         .with_os(OfficeOs::current())
-        .with_hand_off(Arc::new(move |a, _, _| {
+        .with_hand_off(Arc::new(move |a, cwd, _| {
             // The editor is recorded as the host records it, by the line it was asked to open at.
             if a.prog == EDITOR {
                 s3.lock().unwrap().push(argv(a));
@@ -315,6 +330,7 @@ fn app(root: &std::path::Path, c: &Case) -> Seen {
                     .push(format!("edit:{:?}", editor_line(a)));
             } else {
                 s1.lock().unwrap().push(format!("term:{}", argv(a)));
+                s4.lock().unwrap().push(cwd.display().to_string());
             }
             Ok(Some(0))
         }))
@@ -362,11 +378,14 @@ fn app(root: &std::path::Path, c: &Case) -> Seen {
     let rows = rows_of(&shown);
     let started = started.lock().unwrap().clone();
     let editor_argv = editor_argv.lock().unwrap().clone();
+    let cwds = cwds.lock().unwrap().clone();
     Seen {
         started,
         hints: eo(hints(rows.last().expect("a footer"))),
-        notice: Some(rows.join("\n")),
+        notice: None,
+        footer: rows.last().expect("a footer").clone(),
         editor_argv,
+        cwds,
     }
 }
 
@@ -522,6 +541,7 @@ fn e_and_o_start_the_same_things_in_the_host_and_in_the_app() {
     super::word::build_docx(&dir.join("d.docx"), &docx_body());
     let root = canon(&dir);
     let (mut compared, mut noticed, mut lines) = (0, 0, std::collections::BTreeSet::new());
+    let (mut both_noticed, mut both_quiet, mut with_cwd) = (0, 0, 0);
     for c in cases() {
         let (h, a) = (host(&root, &c), app(&root, &c));
         let who = format!("{} / {:?} / {:?}", c.name, c.engine, c.shape);
@@ -531,6 +551,7 @@ fn e_and_o_start_the_same_things_in_the_host_and_in_the_app() {
         };
         let (h0, a0) = (host(&root, &idle), app(&root, &idle));
         assert_eq!(h0.hints, a0.hints, "hints: {who}");
+        compared += 1;
         // The editor is recorded as `edit:<line>` on both sides, every GUI / terminal argv in full:
         // the host's record and the app's must be the same list.
         assert!(
@@ -538,6 +559,7 @@ fn e_and_o_start_the_same_things_in_the_host_and_in_the_app() {
             "nothing happened: {who}"
         );
         assert_eq!(h.started, a.started, "started: {who}");
+        compared += 1;
         for s in &h.started {
             if s.starts_with("edit:") {
                 lines.insert(s.clone());
@@ -551,25 +573,47 @@ fn e_and_o_start_the_same_things_in_the_host_and_in_the_app() {
                 "the editor was not started with {flag}: {:?}: {who}",
                 a.editor_argv
             );
+            compared += 1;
         }
-        // A notice the host shows (switched off, or a chain's outcome) is on the app's screen too.
-        if let Some(n) = &h.notice {
-            let screen = a.notice.as_deref().unwrap_or("");
-            assert!(
-                screen.contains(n.as_str()),
-                "notice {n:?} missing in the app: {who}\n{screen}"
-            );
-            if n.contains("disabled") {
-                noticed += 1;
+        // The notice, in both directions. A notice replaces the hints in the app's footer, so it
+        // is there when the footer is not the idle one; the host shows it in its `flash`.
+        let app_notice = (a.footer != a0.footer).then_some(a.footer.as_str());
+        match (&h.notice, app_notice) {
+            (Some(n), Some(screen)) => {
+                assert!(
+                    screen.contains(n.as_str()),
+                    "notice {n:?} differs in the app: {who}\n{screen}"
+                );
+                if n.contains("disabled") {
+                    noticed += 1;
+                }
+                both_noticed += 1;
             }
+            (Some(n), None) => panic!("the host says {n:?}, the app says nothing: {who}"),
+            (None, Some(screen)) => panic!("the app says {screen:?}, the host nothing: {who}"),
+            (None, None) => both_quiet += 1,
         }
-        compared += 3;
+        compared += 1;
+        // The directory a terminal chain gets the terminal in, on both sides.
+        assert_eq!(h.cwds, a.cwds, "terminal cwd: {who}");
+        if !h.cwds.is_empty() {
+            with_cwd += 1;
+        }
+        compared += 1;
     }
     // Both ends of the caret moves were seen: the line the editor was asked for is not always 1.
     assert!(lines.len() >= 3, "{lines:?}");
     assert!(noticed >= 1, "{noticed}");
-    // (measured: 55 cases, 3 comparisons each = 165.)
-    assert!(compared >= 160, "{compared}");
+    // The notice was compared both when there was one and when there was none, and terminal
+    // chains were seen with their directory.
+    assert!(
+        both_noticed >= 1 && both_quiet >= 1,
+        "{both_noticed} {both_quiet}"
+    );
+    assert!(with_cwd >= 1, "{with_cwd}");
+    // (measured: 227 = 55 cases x 4 comparisons [hints, started, notice, terminal cwd] + 7 cases
+    // that also check the editor's flag; a comparison is counted only where it was made.)
+    assert!(compared >= 225, "{compared}");
 }
 
 /// A Word file with enough paragraphs to scroll.
