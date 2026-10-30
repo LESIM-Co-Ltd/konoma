@@ -20,16 +20,29 @@ fn app_text(
     path: &std::path::Path,
     wrap: bool,
     tab_width: usize,
+    size: (u16, u16),
+    spec: &str,
+) -> Terminal<TestBackend> {
+    app_text_by(
+        Arc::new(konoma_code::CodePlugin),
+        path,
+        wrap,
+        tab_width,
+        size,
+        spec,
+    )
+}
+
+/// [`app_text`] with the plugin that shows the file given.
+fn app_text_by(
+    plugin: Arc<dyn konoma_plugin::Plugin>,
+    path: &std::path::Path,
+    wrap: bool,
+    tab_width: usize,
     (w, h): (u16, u16),
     spec: &str,
 ) -> Terminal<TestBackend> {
-    let mut opened = open_file(
-        vec![Arc::new(konoma_code::CodePlugin)],
-        path,
-        "en",
-        TermCaps::new(),
-    )
-    .expect("opens");
+    let mut opened = open_file(vec![plugin], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(Screen::new(w, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
@@ -558,3 +571,132 @@ const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "m / '",
     "r ",
 ];
+
+// ---- generated text (`TextSource::Owned` / `Lines`) -----------------------------------------------
+
+/// A plugin that hands the interface its own text. The caret is drawn on it in both hosts; `e`
+/// has a line only when the plugin says the lines are the file's (`file_lines`).
+struct GenText {
+    id: String,
+    owned: bool,
+    file_lines: bool,
+}
+
+fn gen_body() -> String {
+    let mut out: Vec<String> = (0..40).map(|i| format!("generated line {i:02}")).collect();
+    out[3] = format!("long {}", "0123456789".repeat(12));
+    out[7] = String::new();
+    out.join("\n")
+}
+
+impl konoma_plugin::Plugin for GenText {
+    fn manifest(&self) -> konoma_plugin::Manifest {
+        use konoma_plugin::prelude::*;
+        Manifest::new(self.id.as_str(), "0.1.0")
+            .bind(Bind::files(["*.gen"]))
+            .shows(ViewKind::Text)
+    }
+
+    fn open(
+        &self,
+        _: konoma_plugin::Input,
+        _: &konoma_plugin::OpenCx,
+    ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+        Ok(Box::new(GenSession {
+            owned: self.owned,
+            file_lines: self.file_lines,
+        }))
+    }
+}
+
+struct GenSession {
+    owned: bool,
+    file_lines: bool,
+}
+
+impl konoma_plugin::Session for GenSession {
+    fn view(
+        &mut self,
+        _: &konoma_plugin::ViewReq,
+        _: &konoma_plugin::ViewCx,
+    ) -> Result<konoma_plugin::View, konoma_plugin::Failure> {
+        use konoma_plugin::view::{TextSource, TextView};
+        let body = gen_body();
+        let source = if self.owned {
+            TextSource::Owned(body)
+        } else {
+            TextSource::Lines(body.lines().map(konoma_plugin::Line::raw).collect())
+        };
+        Ok(konoma_plugin::View::Text(TextView {
+            source,
+            styler: None,
+            file_lines: self.file_lines,
+            syntax_name: None,
+        }))
+    }
+}
+
+/// The caret, its line and the frame on a plugin's own text, and the line `e` opens at, are the
+/// host's, for each of the ways to hand text over and for `file_lines` both ways.
+#[test]
+fn the_caret_on_generated_text_agrees_with_the_host() {
+    let specs: Vec<String> = caret_specs()
+        .into_iter()
+        .filter(|s| s.split_whitespace().count() <= 2)
+        .collect();
+    let (mut checked, mut some, mut none, mut carets) = (0usize, 0usize, 0usize, 0usize);
+    for (owned, file_lines) in [(true, true), (true, false), (false, true), (false, false)] {
+        for wrap in [true, false] {
+            let name = format!("gen-{owned}-{file_lines}-{wrap}");
+            let dir = sandbox(&name);
+            std::fs::write(dir.join("a.gen"), "x").unwrap();
+            let id = format!("x-gen-{name}");
+            let mk = || GenText {
+                id: id.clone(),
+                owned,
+                file_lines,
+            };
+            let marker = crate::plugins::test_plugins::register(&name, Arc::new(mk()));
+            let root = canon(&dir);
+            for spec in &specs {
+                let what = format!("owned={owned} file_lines={file_lines} wrap={wrap} [{spec}]");
+                let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+                cfg.ui.lang = "en".into();
+                cfg.ui.wrap = wrap;
+                let mut s = Sim::with_config_sized(&root, cfg, 60, 12);
+                s.select("a.gen");
+                s.enter();
+                s.draw();
+                for (code, mods) in presses(spec) {
+                    s.press(code, mods);
+                    assert!(!s.quit, "{what}: the host ended early");
+                }
+                s.term.clear().expect("clear");
+                s.draw();
+                let app = app_text_by(Arc::new(mk()), &root.join("a.gen"), wrap, 4, (60, 11), spec);
+                assert_eq!(
+                    frame_cells(&s.term),
+                    frame_cells(&app),
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&s.term).join("\n"),
+                    rows_of(&app).join("\n")
+                );
+                let (hc, ac) = (caret_cells(&s.term), caret_cells(&app));
+                assert_eq!(hc, ac, "{what}: the caret and its line differ");
+                let (he, ae) = (
+                    s.app.preview_edit_line_for_test(),
+                    konoma_plugin::app::edit_line(),
+                );
+                assert_eq!(he, ae, "{what}: the line `e` opens differs");
+                assert_eq!(he.is_some(), file_lines, "{what}: `e` follows file_lines");
+                carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
+                some += usize::from(he.is_some());
+                none += usize::from(he.is_none());
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 1700, "{checked}");
+    assert!(carets >= 1480, "frames with the caret character: {carets}");
+    assert!(some >= 850 && none >= 850, "{some} {none}");
+}

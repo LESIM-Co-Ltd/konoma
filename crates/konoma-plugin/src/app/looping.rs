@@ -1225,7 +1225,12 @@ fn text_ctx(base: &Frame) -> CoreContext {
 /// (`is_windowed`) and so plans the range-selection keys for. A message, a page that failed to
 /// draw and the bare text of one are not.
 fn windowed_text(base: &Frame) -> bool {
-    matches!(base, Frame::Text(t) if t.border.is_some())
+    matches!(base, Frame::Text(t) if t.border.as_ref().is_some_and(|b| b.extent.is_some()))
+}
+
+/// The text of a page that failed to draw, in the host's frame (the path alone on the border).
+fn failed_text(base: &Frame) -> bool {
+    matches!(base, Frame::Text(t) if t.border.as_ref().is_some_and(|b| b.extent.is_none()))
 }
 
 /// A help as lines: a heading and the aligned rows of each section (the host's drawing, shared).
@@ -1595,6 +1600,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         st.page = usize::from(body_rows).max(1);
         st.width = size.width;
         st.half = None;
+        // The kept text of a failed page is scrolled by the keys without asking the session
+        // again: its window is the rows inside the host's border, paged as the host pages it.
+        if st
+            .failed_body
+            .as_ref()
+            .is_some_and(|b| b.page == st.at_page)
+        {
+            set_failed_paging(&mut st, usize::from(body_rows));
+        }
         if view_due.is_some_and(|d| Instant::now() >= d) {
             need_view = true;
         }
@@ -1798,9 +1812,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 &mut st,
             );
         }
-        own.caret = windowed_text(&base);
+        // The sideways keys are named and act on the file's text (they move the caret) and on the
+        // text of a failed page (the host names them there whether it wraps or not).
+        own.caret = windowed_text(&base) || failed_text(&base);
         match &base {
-            Frame::Text(t) if t.border.is_some() && st.file_text => {
+            Frame::Text(_) if windowed_text(&base) && st.file_text => {
                 super::edit_line::publish_text(st.caret_line)
             }
             Frame::Document(d) => {
@@ -2367,7 +2383,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (None, _) => {}
                 }
                 if kept_failure && !need_view {
-                    base = failed_window(&mut st, usize::from(body_rows));
+                    let name = frame_name_of(cx, st.display.path_style);
+                    base = failed_window(&mut st, usize::from(body_rows), &name, own.lang());
                 }
             }
         }
@@ -2666,6 +2683,16 @@ fn scroll_by(m: Motion, st: &mut State) {
     }
     let page = st.page;
     let half = st.half.unwrap_or((page / 2).max(1));
+    // The host's text window (the caret's) steps 4 cells; its failed page, with no caret, 2.
+    let step = if st
+        .failed_body
+        .as_ref()
+        .is_some_and(|b| b.page == st.at_page)
+    {
+        2
+    } else {
+        4
+    };
     match m {
         Motion::Down => st.scroll = st.scroll.saturating_add(1),
         Motion::Up => st.scroll = st.scroll.saturating_sub(1),
@@ -2675,13 +2702,13 @@ fn scroll_by(m: Motion, st: &mut State) {
         Motion::HalfUp => st.scroll = st.scroll.saturating_sub(half),
         Motion::Top => st.scroll = 0,
         Motion::Bottom => st.scroll = st.total,
-        // Sideways, the host's steps (4 cells, and the ends settled at draw time). Wrapping,
+        // Sideways, the host's steps (see `step`, and the ends settled at draw time). Wrapping,
         // there is nothing to scroll.
         Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd if st.display.wrap => {
             st.hscroll = 0
         }
-        Motion::Left => st.hscroll = st.hscroll.saturating_sub(4),
-        Motion::Right => st.hscroll = st.hscroll.saturating_add(4),
+        Motion::Left => st.hscroll = st.hscroll.saturating_sub(step),
+        Motion::Right => st.hscroll = st.hscroll.saturating_add(step),
         Motion::LineHome => st.hscroll = 0,
         Motion::LineEnd => st.hscroll = u16::MAX,
     }
@@ -2735,8 +2762,11 @@ fn frame_of(
             st.page = rows.saturating_sub(1).max(1);
             st.half = Some((rows / 2).max(1));
             let framed = |st: &mut State, lines: Vec<Line>, extent| {
-                text_frame(st, lines, Some((name, lang, extent)))
+                text_frame(st, lines, Some((name, lang, Some(extent))), true)
             };
+            // Text a plugin made has a line in the file only if the plugin says so (the host's
+            // `text_plugin_lines_are_file_lines`): that decides whether `e` opens at the caret.
+            st.file_text = t.file_lines;
             let frame = match t.source {
                 TextSource::Owned(s) => {
                     let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
@@ -2802,7 +2832,7 @@ fn frame_of(
                 }
             };
             st.scrolls = true;
-            st.caret_on = matches!(&frame, Frame::Text(t) if t.border.is_some());
+            st.caret_on = windowed_text(&frame);
             (frame, None)
         }
         View::Document(dv) => {
@@ -2939,7 +2969,7 @@ fn failure_frame(
                 // characters (a tab too) when it draws.
                 lines: t.lines().map(str::to_string).collect(),
             });
-            failed_window(st, rows)
+            failed_window(st, rows, &frame_name_of(cx, st.display.path_style), lang)
         }
         Some(t) => Frame::Lines(t.lines().map(Line::raw).collect()),
         None => Frame::ImageFailed(FailedImage {
@@ -2951,8 +2981,19 @@ fn failure_frame(
     }
 }
 
+/// The window of a failed page's text for a body of `rows` rows: the rows inside the host's
+/// border, with the page and half-page steps the host takes. Returns the window's rows.
+fn set_failed_paging(st: &mut State, rows: usize) -> usize {
+    let rows = rows.saturating_sub(2);
+    st.text_rows = rows;
+    st.page = rows.saturating_sub(1).max(1);
+    st.half = Some((rows / 2).max(1));
+    rows
+}
+
 /// The rows of the kept text of a failed page, from the scroll the state has (clamped).
-fn failed_window(st: &mut State, rows: usize) -> Frame {
+fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame {
+    let rows = set_failed_paging(st, rows);
     let body = st.failed_body.take();
     let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
     clamp(st, lines.len(), rows);
@@ -2964,7 +3005,9 @@ fn failed_window(st: &mut State, rows: usize) -> Frame {
         .take(rows)
         .map(Line::raw)
         .collect();
-    let frame = text_frame(st, shown, None);
+    // In the host's frame (the path alone on its border), as the host draws it: no caret, no
+    // position label. The window is the rows inside the border.
+    let frame = text_frame(st, shown, Some((name, lang, None)), false);
     st.failed_body = body;
     frame
 }
@@ -3005,7 +3048,8 @@ fn settle_hscroll(st: &mut State, max_cols: usize, width: u16) -> u16 {
 fn text_frame(
     st: &mut State,
     lines: Vec<Line>,
-    framed: Option<(&str, Lang, konoma_widgets::scroll::ScrollExtent)>,
+    framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
+    caret: bool,
 ) -> Frame {
     // The tabs become the host's mark and tab stops (the one function it uses, with the same
     // `[ui] tab_width`), before the width of the widest line is measured.
@@ -3015,7 +3059,7 @@ fn text_frame(
     );
     // The file's text in the host's frame has the caret: its line is kept inside the text and
     // the column on a real character, and the line and the character are drawn as the host's.
-    let lines = if framed.is_some() {
+    let lines = if framed.is_some() && caret {
         st.caret_line = st.caret_line.min(st.lines.saturating_sub(1));
         st.caret_col = konoma_widgets::caret::settled_col(
             &lines,
@@ -3049,7 +3093,7 @@ fn text_frame(
     } else {
         st.width
     };
-    if framed.is_some() && !st.display.wrap {
+    if framed.is_some() && caret && !st.display.wrap {
         st.hscroll = konoma_widgets::caret::follow_hscroll(&lines, usize::from(width), st.hscroll);
     }
     let hscroll = settle_hscroll(st, max_cols, width);
@@ -3190,11 +3234,11 @@ mod windowed_text_tests {
             border: border.then(|| TextBorder {
                 name: "a.txt".into(),
                 lang: Lang::En,
-                extent: konoma_widgets::scroll::ScrollExtent {
+                extent: Some(konoma_widgets::scroll::ScrollExtent {
                     pos: 0,
                     max: 0,
                     viewport: 1,
-                },
+                }),
             }),
         })
     }

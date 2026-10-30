@@ -638,7 +638,9 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     let pages: usize = if plugin.paged { 2 } else { 1 };
     let mut at: usize = if first_fails { 0 } else { 1.min(pages - 1) };
     STAND_IN.with(|s| *s.borrow_mut() = Some(Arc::new(plugin)));
-    let mut s = Sim::with_config_sized(root, cfg_en(), W, HOST_H)
+    let mut cfg = cfg_en();
+    cfg.ui.wrap = TURN_WRAP.with(|w| w.get());
+    let mut s = Sim::with_config_sized(root, cfg, W, HOST_H)
         .with_picker()
         .with_media();
     let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -707,7 +709,16 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
         settle(&mut s, &mut req_rx);
     }
     STAND_IN.with(|s| *s.borrow_mut() = None);
+    HOST_EDIT_LINE.with(|l| l.set(Some(s.app.preview_edit_line_for_test())));
     super::image_parity::shot(&s.term)
+}
+
+thread_local! {
+    /// `[ui] wrap` of the next shots of the host and the app (`host_turn_shot`, `app_turn_shot`).
+    static TURN_WRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// The line `e` would open the host's editor at after the last `host_turn_shot`.
+    static HOST_EDIT_LINE: std::cell::Cell<Option<Option<usize>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// What the app shows after `J`, once it shows what the host ended on (`after`).
@@ -737,6 +748,8 @@ fn app_turn_shot(path: &std::path::Path, plugin: TurnPlugin, after: Until) -> Sh
         open_dir: None,
         acts: Default::default(),
     };
+    let mut cx = cx;
+    cx.display.wrap = TURN_WRAP.with(|w| w.get());
     let key = presses("J")
         .into_iter()
         .map(|(code, mods)| {
@@ -1440,8 +1453,6 @@ const TEXT_HOST_ONLY: &[&str] = &[
     "q:back",
     "e:edit",
     "o:open in app",
-    "h/l:hscroll",
-    "0/$:line ends",
     "[/]:tab",
 ];
 
@@ -1899,12 +1910,13 @@ fn text_chrome_agrees(what: &str, h: &Shot, a: &Shot, help: bool) -> (usize, boo
             hints(h.rows.last().expect("footer")),
             hints(a.rows.last().expect("footer")),
         );
-        // The app's footer ends with where the text is and the title.
+        // The app's footer ends with the title; the text is in the host's frame, which says
+        // nothing of where it is (no `line N`).
         assert!(ah.len() > 3, "{what}: {ah:?}");
-        let (ah, at) = ah.split_at(ah.len() - 2);
+        let (ah, at) = ah.split_at(ah.len() - 1);
         assert!(
-            at[0].starts_with("line "),
-            "{what}: the app says where the text is: {at:?}"
+            !at[0].starts_with("line "),
+            "{what}: the app says where the text is as a bare text does: {at:?}"
         );
         for t in ah {
             assert!(
@@ -2158,4 +2170,192 @@ fn a_broken_png_the_real_plugin_hands_over_is_shown_as_in_the_host() {
             picture_chrome_agrees(&what, &h, &a, help, false);
         }
     }
+}
+
+// ---- the text of a failed page: the host's frame, no caret ------------------------------------
+//
+// The host draws the file's text of a page that failed to draw (an SVG that cannot be drawn) as a
+// plain paragraph in a frame whose border names the path alone: no caret, no position label, no
+// scrollbar, and `e` opens the file at its top. The app draws the same, whatever the keys do.
+
+/// The motions the keys of a text have, each once.
+const FAILED_MOTIONS: &[&str] = &[
+    "j", "k", "g", "G", "<C-f>", "<C-b>", "<C-d>", "<C-u>", "<PgDn>", "<PgUp>", "h", "l", "0", "$",
+];
+
+/// A broken SVG of lines wider than the screen, each different (so a column cut shows).
+fn wide_broken_svg(n: usize) -> String {
+    let lines: Vec<String> = (0..n)
+        .map(|i| {
+            let tail: String = (0..(150 + 17 * (i % 5)))
+                .map(|c| char::from(b'a' + ((c + i) % 26) as u8))
+                .collect();
+            format!("wide-line-{i:03}-{tail}")
+        })
+        .collect();
+    format!("<svg>\n{}\n</svg>", lines.join("\n"))
+}
+
+/// The key sequences, built from the cases: each motion; every pair of motions; runs of one key
+/// short of, at and past the window and the file; the ends and back.
+fn failed_text_specs() -> Vec<String> {
+    let mut out: Vec<String> = vec![String::new()];
+    for a in FAILED_MOTIONS {
+        out.push((*a).to_string());
+        for b in FAILED_MOTIONS {
+            out.push(format!("{a} {b}"));
+        }
+    }
+    let run = |k: &str, n: usize| vec![k; n].join(" ");
+    for n in [1usize, 5, 20, 21, 22, 23, 24, 40, 100] {
+        out.push(run("j", n));
+        out.push(format!("G {}", run("k", n)));
+        out.push(format!("{} {}", run("j", n), run("k", n / 2 + 1)));
+        out.push(format!("{} G {}", run("j", n), run("j", 3)));
+    }
+    for n in [1usize, 3, 10, 40, 100] {
+        out.push(run("l", n));
+        out.push(format!("$ {}", run("h", n)));
+        out.push(format!("{} 0 {}", run("l", n), run("l", 2)));
+    }
+    out
+}
+
+/// A failed page's text after each of the specs, with `wrap` set the same in both: the cells inside
+/// the frame and the rows from the first one to the bottom border are the host's, no cell carries
+/// the caret's line highlight, and `e` has no line in either. Returns the number of shots compared.
+fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
+    let dir = fixtures();
+    std::fs::write(dir.join("turn.svg"), svg).unwrap();
+    let root = canon(&dir);
+    TURN_WRAP.with(|w| w.set(wrap));
+    let mut checked = 0;
+    let mut moved = 0;
+    let mut skipped = 0;
+    let mut over_scrolled: std::collections::HashMap<String, bool> = Default::default();
+    for spec in specs {
+        let keys: &'static str = Box::leak(spec.clone().into_boxed_str());
+        let mk = || {
+            let mut p = TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
+            p.first_fails = true;
+            p.then = keys;
+            p
+        };
+        let what = format!("wrap={wrap} [{spec}]");
+        let h = host_turn_shot(&root, mk());
+        let host_edit = HOST_EDIT_LINE
+            .with(|l| l.take())
+            .expect("host_turn_shot ran");
+        let a = app_turn_shot(&root.join("turn.svg"), mk(), Until::Nothing);
+        let rows_of = |s: &Shot| -> Vec<String> {
+            let top = s
+                .rows
+                .iter()
+                .position(|r| r.starts_with('┌'))
+                .expect("a frame");
+            let end = s
+                .rows
+                .iter()
+                .rposition(|r| r.starts_with('└'))
+                .expect("a frame end");
+            s.rows[top + 1..=end].to_vec()
+        };
+        // Known host quirk, deliberately not copied: with wrap on, the host counts the block's
+        // border rows in the wrapped height, so the end of the text over-scrolls and leaves blank
+        // rows above the bottom border (and later keys move from there). A sequence whose host
+        // shot, or the shot of any prefix of it, shows that is not compared.
+        if wrap {
+            let toks: Vec<&str> = spec.split_whitespace().collect();
+            let mut over = false;
+            for i in 1..=toks.len() {
+                // A run of one key only moves one way, so its end is where it went furthest.
+                if i < toks.len() && toks[i] == toks[i - 1] {
+                    continue;
+                }
+                let prefix = toks[..i].join(" ");
+                if let Some(&known) = over_scrolled.get(&prefix) {
+                    over |= known;
+                } else {
+                    let pk: &'static str = Box::leak(prefix.clone().into_boxed_str());
+                    let mut p =
+                        TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
+                    p.first_fails = true;
+                    p.then = pk;
+                    let hs = host_turn_shot(&root, p);
+                    HOST_EDIT_LINE.with(|l| l.take());
+                    let r = rows_of(&hs);
+                    let blank = r.len() >= 3
+                        && r[r.len() - 2]
+                            .trim_matches(|c| c == '│' || c == ' ')
+                            .is_empty();
+                    over_scrolled.insert(prefix, blank);
+                    over |= blank;
+                }
+                if over {
+                    break;
+                }
+            }
+            if over {
+                skipped += 1;
+                continue;
+            }
+        }
+        assert_eq!(
+            rows_of(&h),
+            rows_of(&a),
+            "{what}\nhost:\n{}\napp:\n{}",
+            h.rows.join("\n"),
+            a.rows.join("\n")
+        );
+        assert_eq!(h.cells, a.cells, "{what}: the cells differ");
+        let hl = RColor::Rgb(55, 60, 74);
+        assert!(
+            !h.cells.iter().any(|c| c.2 == hl) && !a.cells.iter().any(|c| c.2 == hl),
+            "{what}: a caret line on a failed page"
+        );
+        assert_eq!(host_edit, None, "{what}: the host opens the file at a line");
+        assert_eq!(
+            konoma_plugin::app::edit_line(),
+            None,
+            "{what}: the app opens the file at a line"
+        );
+        // The top border names the path alone: no position label.
+        let top = |s: &Shot| s.rows.iter().find(|r| r.starts_with('┌')).unwrap().clone();
+        for t in [top(&h), top(&a)] {
+            assert!(!t.contains('['), "{what}: a position label: {t}");
+        }
+        checked += 1;
+        moved += usize::from(!rows_of(&h).iter().any(|r| r.contains("[svg] not drawn")));
+    }
+    TURN_WRAP.with(|w| w.set(true));
+    // Some of the sequences scroll the first lines away (the windows differ if they did not).
+    assert!(moved >= specs.len() / 4, "scrolled shots: {moved}");
+    assert!(
+        skipped <= specs.len() / 3,
+        "too many shots skipped for the host's end quirk: {skipped}"
+    );
+    checked
+}
+
+#[test]
+fn the_text_of_a_failed_page_agrees_with_the_host_wrapping_long() {
+    let specs = failed_text_specs();
+    let n = failed_text_keys_agree(&long_broken_svg(90), true, &specs);
+    assert!(n >= 210, "{n}");
+}
+
+#[test]
+fn the_text_of_a_failed_page_agrees_with_the_host_scrolling_sideways_long() {
+    let specs = failed_text_specs();
+    let n = failed_text_keys_agree(&long_broken_svg(90), false, &specs);
+    assert!(n >= 260, "{n}");
+}
+
+// Not covered: wrapping lines wider than the page. The host scrolls the failed page by wrapped
+// rows; the app scrolls it by logical lines, so the two differ after a vertical key there.
+#[test]
+fn the_text_of_a_failed_page_agrees_with_the_host_scrolling_sideways_wide() {
+    let specs = failed_text_specs();
+    let n = failed_text_keys_agree(&wide_broken_svg(40), false, &specs);
+    assert!(n >= 260, "{n}");
 }

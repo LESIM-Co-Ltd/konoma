@@ -36,8 +36,10 @@ pub struct TextBorder {
     /// The path as the host titles it (or the file name).
     pub name: String,
     pub lang: Lang,
-    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in).
-    pub extent: konoma_widgets::scroll::ScrollExtent,
+    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in). `None`
+    /// for the text of a page that failed to draw: the host frames it with the path alone (no
+    /// position label, no scrollbar) and it has no caret.
+    pub extent: Option<konoma_widgets::scroll::ScrollExtent>,
 }
 
 /// What is drawn in the body.
@@ -289,21 +291,21 @@ pub fn draw(
             let text: Vec<RLine> = t.lines.clone();
             let mut para = Paragraph::new(text);
             if let Some(b) = &t.border {
-                para = para.block(
-                    Block::bordered()
-                        .title(super::document::path_title(&b.name))
-                        .title(konoma_widgets::scroll::scroll_title(
-                            b.extent,
-                            super::document::scroll_words(b.lang),
-                        )),
-                );
+                let mut block = Block::bordered().title(super::document::path_title(&b.name));
+                if let Some(e) = b.extent {
+                    block = block.title(konoma_widgets::scroll::scroll_title(
+                        e,
+                        super::document::scroll_words(b.lang),
+                    ));
+                }
+                para = para.block(block);
             }
             if t.wrap {
                 para = para.wrap(ratatui::widgets::Wrap { trim: false });
             }
             para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
-            if let Some(b) = &t.border {
-                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, b.extent);
+            if let Some(e) = t.border.as_ref().and_then(|b| b.extent) {
+                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, e);
             }
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
