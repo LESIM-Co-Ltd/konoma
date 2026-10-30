@@ -23,7 +23,11 @@
 
 use crate::help::{foot_priority, CoreFoot, HelpFacts, HelpOp};
 use crate::help_msg::CoreMsg;
-use crate::keymap::{CoreAction, CoreContext, HostOp, Motion};
+use crate::keymap::{
+    mnemonic_of_name, CoreAction, CoreBinding, CoreContext, CoreKeys, HostOp, KeyPress, Motion,
+};
+use crate::menu::Skeleton;
+use crossterm::event::KeyCode;
 
 /// An operation of a preview screen, from any layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -338,8 +342,32 @@ pub fn priority<L: Copy>(
     op_label: impl Fn(PreviewOp) -> Option<L>,
     word: impl Fn(CoreMsg) -> L,
 ) -> Vec<(PreviewOp, Option<L>)> {
-    let mut v: Vec<(PreviewOp, Option<L>)> = Vec::new();
-    for f in footer_plan(ctx, st) {
+    let (mut head, tail) = priority_split(ctx, st, facts, op_label, word);
+    head.extend(tail);
+    head
+}
+
+/// How many entries of a footer plan come before the open plugin's own operations: they are
+/// planned right after the screen's first entry (the way back on a canvas, the scrolling keys or
+/// the cell elsewhere).
+pub const PLUGIN_AT: usize = 1;
+
+/// [`priority`] cut where the plugin's operations go ([`PLUGIN_AT`]): the operations of the
+/// plan's first entries, then the rest.
+#[allow(clippy::type_complexity)]
+pub fn priority_split<L: Copy>(
+    ctx: CoreContext,
+    st: &PreviewState,
+    facts: &HelpFacts,
+    op_label: impl Fn(PreviewOp) -> Option<L>,
+    word: impl Fn(CoreMsg) -> L,
+) -> (Vec<(PreviewOp, Option<L>)>, Vec<(PreviewOp, Option<L>)>) {
+    let plan = footer_plan(ctx, st);
+    let at = PLUGIN_AT.min(plan.len());
+    let mut head: Vec<(PreviewOp, Option<L>)> = Vec::new();
+    let mut tail: Vec<(PreviewOp, Option<L>)> = Vec::new();
+    for (i, f) in plan.into_iter().enumerate() {
+        let v = if i < at { &mut head } else { &mut tail };
         match f {
             PvFoot::Op(o) => v.push((o, op_label(o))),
             PvFoot::As(o, m) => v.push((o, Some(word(m)))),
@@ -363,7 +391,7 @@ pub fn priority<L: Copy>(
             }
         }
     }
-    v
+    (head, tail)
 }
 
 const SEARCH: &[PreviewOp] = &[host(HostOp::SearchStart)];
@@ -540,9 +568,131 @@ pub fn is_named(op: PreviewOp, st: &PreviewState) -> bool {
     }
 }
 
+impl PreviewOp {
+    /// The letter that says what the operation is, tried by the `Space` menu before the free
+    /// letters (`crate::keymap::mnemonic_of_name`, keyed by the operation's config name).
+    pub fn mnemonic(self) -> Option<char> {
+        let name = match self {
+            PreviewOp::Core(a) => a.name(),
+            PreviewOp::Host(o) => o.name().to_string(),
+            PreviewOp::ToggleFollowDiffScope => "toggle_follow_diff_scope".to_string(),
+            PreviewOp::Cancel
+            | PreviewOp::TabNew
+            | PreviewOp::ToggleTableCell
+            | PreviewOp::LinkOpen => return None,
+        };
+        mnemonic_of_name(&name)
+    }
+}
+
+/// One fixed key of a preview screen and the operation it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PvFixed {
+    pub key: KeyPress,
+    pub op: PreviewOp,
+    /// A second way to press an operation that has its own key (the arrows, `Home` / `End`).
+    pub alias: bool,
+}
+
+/// The fixed keys (`Enter`, `Tab`, `Esc`, the arrows) of a preview screen and the operation each
+/// runs, in the order konoma lists them. A canvas keeps only `Esc`: its other fixed keys are the
+/// plugin's.
+pub fn fixed_keys(ctx: CoreContext) -> Vec<PvFixed> {
+    let own = |code, op| PvFixed {
+        key: KeyPress::key(code),
+        op,
+        alias: false,
+    };
+    let alias = |code, m| PvFixed {
+        key: KeyPress::key(code),
+        op: nav(m),
+        alias: true,
+    };
+    if ctx == CoreContext::Canvas {
+        return vec![own(KeyCode::Esc, PreviewOp::Cancel)];
+    }
+    let mut v = vec![
+        alias(KeyCode::Up, Motion::Up),
+        alias(KeyCode::Down, Motion::Down),
+        alias(KeyCode::Left, Motion::Left),
+        alias(KeyCode::Right, Motion::Right),
+        alias(KeyCode::Home, Motion::Top),
+        alias(KeyCode::End, Motion::Bottom),
+        own(KeyCode::Esc, PreviewOp::Cancel),
+    ];
+    match ctx {
+        CoreContext::Text | CoreContext::Document => {
+            v.push(own(KeyCode::Enter, PreviewOp::LinkOpen));
+            v.push(own(KeyCode::Tab, host(HostOp::LinkFocusNext)));
+            v.push(own(KeyCode::BackTab, host(HostOp::LinkFocusPrev)));
+        }
+        // The grid opens the full-cell popup and the popup closes itself (the same toggle).
+        CoreContext::Table => v.push(own(KeyCode::Enter, PreviewOp::ToggleTableCell)),
+        CoreContext::Image | CoreContext::Canvas => {}
+    }
+    v
+}
+
+/// The operations a preview screen has that no key is bound to by default (they used to have
+/// one, or never did): the `Space` menu is where they are always reachable.
+pub fn unkeyed(ctx: CoreContext) -> Vec<PreviewOp> {
+    let path = core(CoreAction::CyclePathStyle);
+    let wrap = core(CoreAction::ToggleWrap);
+    match ctx {
+        CoreContext::Text => vec![path, wrap],
+        CoreContext::Document => vec![path, wrap, host(HostOp::ToggleFocusedItem)],
+        CoreContext::Image | CoreContext::Table | CoreContext::Canvas => vec![path],
+    }
+}
+
+/// The operations a key runs now in `ctx` (`keys` with the user's overrides, or the defaults),
+/// each under its key, in the keymap's display order.
+pub fn bound_ops(keys: &CoreKeys, ctx: CoreContext) -> Vec<(KeyPress, PreviewOp)> {
+    keys.bound(ctx)
+        .into_iter()
+        .filter_map(|(k, b)| match b {
+            CoreBinding::Run(a) => Some((k, PreviewOp::Core(a))),
+            CoreBinding::Host(o) => Some((k, PreviewOp::Host(o))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `Space` menu's candidates of a preview screen, from its keys, the defaults of its keys,
+/// its fixed keys and its unkeyed operations; `declared` are the open plugin's own, which come
+/// last. `named` says whether an operation can be a candidate ([`is_named`] with the state the
+/// caller knows); an operation that is not takes no letter. Movement, `Esc` and a tab by number
+/// are never offered.
+pub fn space_skeleton<A: Copy + PartialEq>(
+    keys: &CoreKeys,
+    defaults: &CoreKeys,
+    ctx: CoreContext,
+    lift: impl Fn(PreviewOp) -> A,
+    declared: Vec<(A, Option<KeyPress>)>,
+) -> Skeleton<A> {
+    Skeleton {
+        bound: bound_ops(keys, ctx)
+            .into_iter()
+            .map(|(k, o)| (k, lift(o)))
+            .collect(),
+        defaults: bound_ops(defaults, ctx)
+            .into_iter()
+            .map(|(_, o)| lift(o))
+            .collect(),
+        fixed: fixed_keys(ctx)
+            .into_iter()
+            .filter(|f| !f.alias)
+            .map(|f| lift(f.op))
+            .collect(),
+        unkeyed: unkeyed(ctx).into_iter().map(lift).collect(),
+        declared,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::{CoreResolution, KeyScheme};
 
     const CTXS: [CoreContext; 5] = [
         CoreContext::Text,
@@ -849,5 +999,136 @@ mod tests {
         pan.push(PvFoot::Group(PvGroup::Hjkl, CoreMsg::HintPan));
         pan.push(PvFoot::Group(PvGroup::Home, CoreMsg::HintFit));
         assert_eq!(middle(Some(Focus::MermaidFence), true), pan);
+    }
+
+    #[test]
+    fn the_fixed_keys_of_a_screen_are_its_own_and_a_canvas_keeps_only_esc() {
+        let ops = |ctx| {
+            fixed_keys(ctx)
+                .into_iter()
+                .filter(|f| !f.alias)
+                .map(|f| (f.key.code, f.op))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ops(CoreContext::Canvas),
+            vec![(KeyCode::Esc, PreviewOp::Cancel)]
+        );
+        for ctx in [CoreContext::Text, CoreContext::Document] {
+            assert_eq!(
+                ops(ctx),
+                vec![
+                    (KeyCode::Esc, PreviewOp::Cancel),
+                    (KeyCode::Enter, PreviewOp::LinkOpen),
+                    (KeyCode::Tab, host(HostOp::LinkFocusNext)),
+                    (KeyCode::BackTab, host(HostOp::LinkFocusPrev)),
+                ],
+                "{ctx:?}"
+            );
+        }
+        assert_eq!(
+            ops(CoreContext::Table),
+            vec![
+                (KeyCode::Esc, PreviewOp::Cancel),
+                (KeyCode::Enter, PreviewOp::ToggleTableCell)
+            ]
+        );
+        for ctx in CTXS.into_iter().filter(|c| *c != CoreContext::Canvas) {
+            assert!(
+                fixed_keys(ctx).iter().filter(|f| f.alias).count() >= 6,
+                "{ctx:?}: the arrows and Home / End are aliases"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unkeyed_operations_of_a_screen_are_the_ones_no_default_key_reaches() {
+        let defaults = CoreKeys::defaults(KeyScheme::Vim);
+        for ctx in CTXS {
+            let bound: Vec<PreviewOp> = bound_ops(&defaults, ctx)
+                .into_iter()
+                .map(|(_, o)| o)
+                .collect();
+            for o in unkeyed(ctx) {
+                assert!(!bound.contains(&o), "{ctx:?}: {o:?} has a key");
+            }
+            assert!(
+                unkeyed(ctx).contains(&core(CoreAction::CyclePathStyle)),
+                "{ctx:?}"
+            );
+        }
+        assert!(unkeyed(CoreContext::Document).contains(&host(HostOp::ToggleFocusedItem)));
+        assert!(!unkeyed(CoreContext::Text).contains(&host(HostOp::ToggleFocusedItem)));
+    }
+
+    #[test]
+    fn the_bound_operations_keep_the_host_operations_the_standalone_cannot_resolve() {
+        let keys = CoreKeys::defaults(KeyScheme::Vim);
+        let b = bound_ops(&keys, CoreContext::Text);
+        assert!(
+            b.iter().any(|(_, o)| matches!(o, PreviewOp::Host(_))),
+            "{b:?}"
+        );
+        assert!(
+            b.iter().any(|(_, o)| matches!(o, PreviewOp::Core(_))),
+            "{b:?}"
+        );
+        // The resolve of the same keys drops the host operations: that is why they are read here.
+        for (k, o) in &b {
+            if matches!(o, PreviewOp::Host(_)) {
+                assert_eq!(keys.resolve(CoreContext::Text, *k), CoreResolution::Unbound);
+            }
+        }
+    }
+
+    #[test]
+    fn the_space_skeleton_holds_every_source_and_a_rebound_key_stays_a_candidate() {
+        let defaults = CoreKeys::defaults(KeyScheme::Vim);
+        for ctx in CTXS {
+            let sk = space_skeleton(&defaults, &defaults, ctx, |o| o, Vec::new());
+            let all: Vec<PreviewOp> = sk
+                .candidates(|_| true)
+                .into_iter()
+                .map(|(o, _)| o)
+                .collect();
+            for o in unkeyed(ctx) {
+                assert!(all.contains(&o), "{ctx:?}: unkeyed {o:?}");
+            }
+            for f in fixed_keys(ctx).into_iter().filter(|f| !f.alias) {
+                if f.op != PreviewOp::Cancel {
+                    assert!(all.contains(&f.op), "{ctx:?}: fixed {:?}", f.op);
+                }
+            }
+            for (_, o) in bound_ops(&defaults, ctx) {
+                assert!(all.contains(&o), "{ctx:?}: bound {o:?}");
+            }
+        }
+        // A key the user moved away still leaves the operation in the menu (by the defaults).
+        let mut moved = defaults.clone();
+        moved.global.remove(&KeyPress::ch('?'));
+        assert!(
+            !bound_ops(&moved, CoreContext::Text)
+                .contains(&(KeyPress::ch('?'), core(CoreAction::ToggleHelp))),
+            "the key is moved away"
+        );
+        let sk = space_skeleton(&moved, &defaults, CoreContext::Text, |o| o, Vec::new());
+        let all: Vec<PreviewOp> = sk
+            .candidates(|_| true)
+            .into_iter()
+            .map(|(o, _)| o)
+            .collect();
+        assert!(all.contains(&core(CoreAction::ToggleHelp)), "{all:?}");
+    }
+
+    #[test]
+    fn the_plugin_operations_go_where_the_split_cuts_the_priority() {
+        let st = PreviewState::default();
+        let facts = HelpFacts::default();
+        for ctx in CTXS {
+            let (h, t) = priority_split(ctx, &st, &facts, |_| None::<()>, |_| ());
+            let whole = priority(ctx, &st, &facts, |_| None::<()>, |_| ());
+            let joined: Vec<_> = h.into_iter().chain(t).collect();
+            assert_eq!(joined, whole, "{ctx:?}");
+        }
     }
 }

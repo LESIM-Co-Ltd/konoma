@@ -92,7 +92,7 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
     // priority). Only actions that asked for a footer entry are planned here; the others are in
     // the `?` help and the `Space` menu.
     let acts = konoma_plugin::host::acts::footer_order(&app.plugin_acts_in(ctx));
-    let at = 1.min(v.len());
+    let at = konoma_host_core::preview_plan::PLUGIN_AT.min(v.len());
     v.splice(at..at, acts.into_iter().map(|b| Foot::Plugin(b.act)));
     v
 }

@@ -41,6 +41,58 @@ pub fn add_candidate<A: Copy + PartialEq>(
     }
 }
 
+/// What a screen's `Space` menu starts from, before any of it is named, ordered or given a
+/// letter: the operations the screen can run, as the sources the menu reads them from. The caller
+/// fills it from its keys (konoma's keymap, a standalone app's [`crate::keymap::CoreKeys`]) and
+/// from what it declares; [`Skeleton::candidates`] folds it, so every host folds the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skeleton<A> {
+    /// Every key that runs an operation now, in the order the menu lists them (the keymap's
+    /// display order).
+    pub bound: Vec<(KeyPress, A)>,
+    /// What the screen has by default but no key reaches now (moved away by `[keys]`, or lost to
+    /// a conflict).
+    pub defaults: Vec<A>,
+    /// The operations of the fixed keys (`Enter`, `Tab`, ...), aliases left out.
+    pub fixed: Vec<A>,
+    /// The operations with no key by default (they used to have one, or never did): the menu is
+    /// where they are always reachable.
+    pub unkeyed: Vec<A>,
+    /// The operations the open plugin declared, keyed or not.
+    pub declared: Vec<(A, Option<KeyPress>)>,
+}
+
+impl<A: Copy + PartialEq> Skeleton<A> {
+    /// The candidates: every source in the order above, an operation once, under the first plain
+    /// key it has. `offered` says whether an operation can be a candidate at all (it is named,
+    /// and is not a movement or a closing); one that is not takes no letter.
+    pub fn candidates(&self, offered: impl Fn(A) -> bool) -> Vec<(A, Option<KeyPress>)> {
+        let mut out: Vec<(A, Option<KeyPress>)> = Vec::new();
+        let mut add = |a: A, key: Option<KeyPress>| {
+            if offered(a) {
+                // The first plain key of an operation is the one the menu uses.
+                add_candidate(&mut out, a, key);
+            }
+        };
+        for &(k, a) in &self.bound {
+            add(a, plain_key(k));
+        }
+        for &a in &self.defaults {
+            add(a, None);
+        }
+        for &a in &self.fixed {
+            add(a, None);
+        }
+        for &a in &self.unkeyed {
+            add(a, None);
+        }
+        for &(a, k) in &self.declared {
+            add(a, k);
+        }
+        out
+    }
+}
+
 /// The key each candidate gets. Keys the operations already have come first (so a habit carries
 /// over), then a mnemonic letter, then the first free letter. An operation left without a letter
 /// (more operations than letters) gets `None`.
@@ -131,6 +183,34 @@ mod tests {
 
     fn k(c: char) -> Option<KeyPress> {
         Some(KeyPress::ch(c))
+    }
+
+    #[test]
+    fn a_skeleton_folds_its_sources_in_order_and_skips_what_is_not_offered() {
+        let sk = Skeleton::<u32> {
+            bound: vec![
+                (KeyPress::ch('x'), 1),
+                (KeyPress::ctrl_ch('n'), 2),
+                (KeyPress::ch('y'), 9),
+            ],
+            defaults: vec![1, 3],
+            fixed: vec![4, 3],
+            unkeyed: vec![5],
+            declared: vec![(6, k('z')), (2, k('w'))],
+        };
+        let got = sk.candidates(|a| a != 9);
+        // `2` has only a Ctrl key in `bound`, so the later plain key of its declaration is its own.
+        assert_eq!(
+            got,
+            vec![
+                (1, k('x')),
+                (2, k('w')),
+                (3, None),
+                (4, None),
+                (5, None),
+                (6, k('z'))
+            ]
+        );
     }
 
     #[test]

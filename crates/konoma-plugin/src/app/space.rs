@@ -4,14 +4,18 @@
 //! the plugin's declared actions).
 //!
 //! What is in it is what acts in the app: leaving, the `?` help and every declared action that
-//! works now. The host's own operations (tabs, search, bookmarks, the editor, ...) are not here:
-//! a menu names an operation only while its key acts, and those keys do nothing in the app.
+//! works now. The host's own operations (tabs, search, bookmarks, the editor, ...) are not shown:
+//! a menu names an operation only while its key acts, and those keys do nothing in the app. They
+//! are candidates all the same, so they take their letters before they are hidden.
 
-use konoma_host_core::help::{default_label, menu_view, CoreLookup, HelpOp, KeyLookup};
+use konoma_host_core::help::{default_label, menu_view, HelpFacts};
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{CoreAction, CoreContext, CoreKeys, CoreMenu, KeyPress};
 use konoma_host_core::lang::Lang;
-use konoma_host_core::menu::{add_candidate, build_items, plain_key, Item};
+use konoma_host_core::menu::{build_items, Item};
+use konoma_host_core::preview_plan::{
+    help_everywhere, help_order, is_named, priority_split, space_skeleton, PreviewOp, PreviewState,
+};
 
 use super::AppActs;
 use crate::host::acts::{self as hacts, ActBinding, ActGate};
@@ -31,11 +35,39 @@ pub(super) enum SpaceOp {
     Declared(usize),
 }
 
+/// A candidate of the menu: an operation konoma's screen has (the app runs only a few of them, but
+/// every one takes its place, so the letters run as konoma's do) or a declared action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cand {
+    Op(PreviewOp),
+    Declared(usize),
+}
+
+/// What the app knows of the open file for the plans and the names. It has no search or
+/// selection state, no focused link, no representation to step to and no Office conversion, so
+/// those are the defaults; `e` is named as it is for any file but an Office document, and a
+/// document is the decorated view.
+fn state(ctx: CoreContext) -> PreviewState {
+    PreviewState {
+        edit_named: true,
+        decorated: ctx == CoreContext::Document,
+        ..PreviewState::default()
+    }
+}
+
 /// The menu on the screen of key context `act_ctx` (`ctx` is the same for the shared keys):
 /// the items that act now, in the order and under the keys konoma gives them.
-/// `lang_str` is the language the declared texts are looked up by. `enabled` says whether the session lets a declared action run now.
+///
+/// The candidates, their order and the letters come from `konoma_host_core::menu` and
+/// `konoma_host_core::preview_plan`, the same description konoma builds its menu from, so an
+/// operation only konoma runs (search, bookmarks, the editor, ...) takes its letter here too and
+/// is then hidden: a letter does not move because the app cannot do what another host can.
+/// `defaults` are the keys without the user's overrides. `lang_str` is the language the declared
+/// texts are looked up by. `enabled` says whether the session lets a declared action run now.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn items(
     keys: &CoreKeys,
+    defaults: &CoreKeys,
     ctx: CoreContext,
     lang: Lang,
     lang_str: &str,
@@ -59,17 +91,9 @@ pub(super) fn items(
         })
         .collect();
     let refs: Vec<&ActBinding<usize>> = numbered.iter().collect();
-    let look = CoreLookup { keys, ctx };
-    let own_key = |a: CoreAction| look.keys_of(HelpOp::Act(a)).into_iter().find_map(plain_key);
+    let st = state(ctx);
 
-    let mut cands: Vec<(SpaceOp, Option<KeyPress>)> = Vec::new();
-    add_candidate(&mut cands, SpaceOp::Back, own_key(CoreAction::PreviewBack));
-    add_candidate(&mut cands, SpaceOp::Help, own_key(CoreAction::ToggleHelp));
-    if ctx == CoreContext::Table {
-        add_candidate(&mut cands, SpaceOp::Cell, None);
-    }
-    // The display options the screen's `,` menu offers, in the order konoma lists them (the
-    // path style, then the wrap); they have no key of their own.
+    // The display options the screen's `,` menu offers: the app runs these two.
     let options = menu_view(keys, ctx, CoreMenu::Options, lang, false);
     let option_label = |a: CoreAction| {
         options
@@ -77,59 +101,82 @@ pub(super) fn items(
             .and_then(|v| v.items.iter().find(|i| i.action == a))
             .map(|i| i.label.clone())
     };
-    for a in [CoreAction::CyclePathStyle, CoreAction::ToggleWrap] {
-        if option_label(a).is_some() {
-            add_candidate(&mut cands, SpaceOp::Core(a), None);
-        }
-    }
-    // The declared actions come last, as konoma lists them: after what the screen has by itself.
-    for (i, key) in hacts::menu_candidates(&refs) {
-        add_candidate(&mut cands, SpaceOp::Declared(i), key);
-    }
 
-    // The footer plan decides the order: the declared actions that asked for a footer entry come
-    // right after the screen's first entry, which is the way back on a canvas only (the other
-    // screens' first entries are their scrolling keys); the help closes the plan.
-    let declared: Vec<SpaceOp> = hacts::footer_order(&refs)
+    let declared: Vec<(Cand, Option<KeyPress>)> = hacts::menu_candidates(&refs)
         .into_iter()
-        .map(|b| SpaceOp::Declared(b.act))
+        .map(|(i, key)| (Cand::Declared(i), key))
         .collect();
-    let mut prio: Vec<SpaceOp> = Vec::new();
-    if ctx == CoreContext::Canvas {
-        prio.push(SpaceOp::Back);
-        prio.extend(declared);
-    } else {
-        prio.extend(declared);
-        prio.push(SpaceOp::Cell);
-        prio.push(SpaceOp::Back);
-    }
-    prio.push(SpaceOp::Help);
+    let cands = space_skeleton(keys, defaults, ctx, Cand::Op, declared).candidates(|c| match c {
+        Cand::Op(o) => is_named(o, &st),
+        Cand::Declared(_) => true,
+    });
+
+    // The footer plan decides the order, with the declared actions that asked for a footer entry
+    // right after its first entries (as konoma plans them); then what the help declares for the
+    // screen, then what it declares for every screen.
+    let facts = HelpFacts::default();
+    let (head, tail) = priority_split(ctx, &st, &facts, |_| None::<()>, |_| ());
+    let declared_first: Vec<Cand> = hacts::footer_order(&refs)
+        .into_iter()
+        .map(|b| Cand::Declared(b.act))
+        .collect();
+    let mut prio: Vec<Cand> = head.into_iter().map(|(o, _)| Cand::Op(o)).collect();
+    prio.extend(declared_first);
+    prio.extend(tail.into_iter().map(|(o, _)| Cand::Op(o)));
+    let own: Vec<Cand> = help_order(ctx, &st).into_iter().map(Cand::Op).collect();
+    let everywhere: Vec<Cand> = help_everywhere().into_iter().map(Cand::Op).collect();
 
     build_items(
         cands,
         &prio,
-        &[],
-        &[],
-        |_| None,
-        |op| match op {
-            SpaceOp::Back | SpaceOp::Help | SpaceOp::Cell | SpaceOp::Core(_) => true,
-            SpaceOp::Declared(i) => {
+        &own,
+        &everywhere,
+        |c| match c {
+            Cand::Op(o) => o.mnemonic(),
+            Cand::Declared(_) => None,
+        },
+        |c| match c {
+            Cand::Op(PreviewOp::Core(CoreAction::PreviewBack | CoreAction::ToggleHelp)) => true,
+            Cand::Op(PreviewOp::ToggleTableCell) => ctx == CoreContext::Table,
+            Cand::Op(PreviewOp::Core(
+                a @ (CoreAction::CyclePathStyle | CoreAction::ToggleWrap),
+            )) => option_label(a).is_some(),
+            // The rest is what only konoma runs (or the app does not offer): it keeps its letter.
+            Cand::Op(_) => false,
+            Cand::Declared(i) => {
                 let b = here[i];
                 hacts::gate(Some(b), enabled(&b.act), acts.read_only) == ActGate::On
             }
         },
-        |op| match op {
-            SpaceOp::Back => {
-                default_label(ctx, CoreAction::PreviewBack).map(|m| m.tr(lang).to_string())
+        |c| match c {
+            Cand::Op(PreviewOp::Core(a @ (CoreAction::PreviewBack | CoreAction::ToggleHelp))) => {
+                default_label(ctx, a).map(|m| m.tr(lang).to_string())
             }
-            SpaceOp::Help => {
-                default_label(ctx, CoreAction::ToggleHelp).map(|m| m.tr(lang).to_string())
+            Cand::Op(PreviewOp::ToggleTableCell) => {
+                Some(CoreMsg::HintViewCell.tr(lang).to_string())
             }
-            SpaceOp::Cell => Some(CoreMsg::HintViewCell.tr(lang).to_string()),
-            SpaceOp::Core(a) => option_label(a),
-            SpaceOp::Declared(i) => hacts::menu_label(&refs, &i, lang_str).map(str::to_string),
+            Cand::Op(PreviewOp::Core(a)) => option_label(a),
+            Cand::Op(_) => None,
+            Cand::Declared(i) => hacts::menu_label(&refs, &i, lang_str).map(str::to_string),
         },
     )
+    .into_iter()
+    .filter_map(|it| {
+        let action = match it.action {
+            Cand::Op(PreviewOp::Core(CoreAction::PreviewBack)) => SpaceOp::Back,
+            Cand::Op(PreviewOp::Core(CoreAction::ToggleHelp)) => SpaceOp::Help,
+            Cand::Op(PreviewOp::ToggleTableCell) => SpaceOp::Cell,
+            Cand::Op(PreviewOp::Core(a)) => SpaceOp::Core(a),
+            Cand::Declared(i) => SpaceOp::Declared(i),
+            Cand::Op(_) => return None,
+        };
+        Some(Item {
+            key: it.key,
+            action,
+            label: it.label,
+        })
+    })
+    .collect()
 }
 
 /// The declared action `op` stands for, among the actions of `act_ctx`.
@@ -141,5 +188,51 @@ pub(super) fn declared<'a>(
     match op {
         SpaceOp::Declared(i) => hacts::acts_in(&acts.bindings, act_ctx).get(i).copied(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use konoma_host_core::keymap::KeyScheme;
+
+    fn letters(keys: &CoreKeys, defaults: &CoreKeys, ctx: CoreContext) -> Vec<(KeyPress, SpaceOp)> {
+        items(
+            keys,
+            defaults,
+            ctx,
+            Lang::En,
+            "en",
+            &AppActs::default(),
+            "text",
+            |_| true,
+        )
+        .into_iter()
+        .map(|i| (i.key, i.action))
+        .collect()
+    }
+
+    #[test]
+    fn an_operation_whose_key_the_user_moved_away_stays_in_the_menu() {
+        let defaults = CoreKeys::defaults(KeyScheme::Vim);
+        let mut moved = defaults.clone();
+        let help = KeyPress::ch('?');
+        moved.global.remove(&help);
+        for c in [CoreContext::Text, CoreContext::Table, CoreContext::Image] {
+            assert!(
+                !moved.bound(c).iter().any(|(k, _)| *k == help),
+                "{c:?}: the help key is moved away"
+            );
+            let has_help = |keys: &CoreKeys| {
+                letters(keys, &defaults, c)
+                    .iter()
+                    .any(|(_, a)| *a == SpaceOp::Help)
+            };
+            assert!(has_help(&defaults), "{c:?}");
+            assert!(
+                has_help(&moved),
+                "{c:?}: the menu is how it stays reachable"
+            );
+        }
     }
 }

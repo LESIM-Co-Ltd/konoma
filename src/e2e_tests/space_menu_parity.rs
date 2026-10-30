@@ -6,8 +6,10 @@
 //! The host's menu holds more (tabs, search, bookmarks, the editor, ...): those keys do nothing in
 //! the app, so the menu does not name them. `HOST_ONLY` lists them by operation, and every entry
 //! must occur: a new item in the host forces a decision here. The letters of the items that have no
-//! key of their own (`back`, `path`, `wrap`) run along the whole menu, host-only items included,
-//! so they cannot be the same; they are checked to be free single letters instead.
+//! key of their own (`back`, `path`, `wrap`) run along the whole menu, host-only items included:
+//! the app builds the same candidates (the host's operations take their letters and are hidden),
+//! so the letters are the host's. The one exception is a document, which is the text context in
+//! the app.
 
 use super::plugin_act_parity::*;
 use super::table_parity::{panel_lines, APP_H, HOST_H};
@@ -169,14 +171,22 @@ fn the_menu_lists_what_the_app_has_under_konomas_keys_labels_and_order() {
             );
             let mut letters = BTreeSet::new();
             for ((k, l), w) in aline.iter().zip(&want) {
-                if keyed(w) {
-                    assert_eq!(*k, w.key, "{kind:?} {lang}: the key of {l}");
-                } else {
-                    assert!(
-                        k.is_alphanumeric() && *k != 'q',
-                        "{kind:?} {lang}: the letter of {l}: {k}"
+                // The letters are konoma's too: the app builds them from the same candidates and
+                // the host's operations (hidden there) take theirs before it. A document is the
+                // text context in the app (no focus over links, no outline), so its menu has the
+                // host's text letters, not the document's: only its keyed items are compared.
+                if kind != Kind::Document || keyed(w) {
+                    assert_eq!(
+                        *k,
+                        w.key,
+                        "{kind:?} {lang}: the key of {l} (keyed: {})",
+                        keyed(w)
                     );
                 }
+                assert!(
+                    keyed(w) || (k.is_alphanumeric() && *k != 'q'),
+                    "{kind:?} {lang}: the letter of {l}: {k}"
+                );
                 assert!(letters.insert(*k), "{kind:?} {lang}: {k} is used twice");
                 compared += 1;
             }

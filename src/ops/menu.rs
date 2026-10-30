@@ -28,7 +28,7 @@ use crate::keymap::{Action, Context, KeyPress, LeaderId};
 
 use super::{action_enabled, decl, footer, help, keys};
 use crate::plugins::PluginAct;
-use konoma_host_core::menu::{self as menu_core, add_candidate, plain_key};
+use konoma_host_core::menu::{self as menu_core, Skeleton};
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,15 +123,15 @@ fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu
 /// Operations a context has that no key is bound to by default (they used to have one, or never
 /// did): the menu is where they are always reachable.
 fn unkeyed(ctx: Context) -> Vec<Action> {
+    // The preview screens' are described once (the standalone app's menu reads the same list).
+    if let Some(cctx) = super::preview_plan::core_of(ctx) {
+        return konoma_host_core::preview_plan::unkeyed(cctx)
+            .into_iter()
+            .filter_map(super::preview_plan::action_of)
+            .collect();
+    }
     let mut v: Vec<Action> = Vec::new();
     match ctx {
-        Context::Text => v.extend([Action::CyclePathStyle, Action::ToggleWrap]),
-        Context::Document => v.extend([
-            Action::CyclePathStyle,
-            Action::ToggleWrap,
-            Action::ToggleFocusedItem,
-        ]),
-        Context::Image | Context::Table | Context::Canvas => v.push(Action::CyclePathStyle),
         Context::Bookmarks => v.push(Action::BookmarkDelete),
         #[cfg(feature = "git")]
         Context::Diff => v.extend([Action::ToggleFollowDiffScope, Action::CyclePathStyle]),
@@ -203,46 +203,42 @@ fn candidates(
     ctx: Context,
     prio: &[(Action, Option<Msg>)],
 ) -> Vec<(Action, Option<KeyPress>)> {
-    let mut out: Vec<(Action, Option<KeyPress>)> = Vec::new();
-    let mut add = |a: Action, key: Option<KeyPress>| {
+    // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
+    // its key (a collision, a rebinding) is still reachable.
+    let declared = konoma_plugin::host::acts::menu_candidates(&app.plugin_acts_in(ctx))
+        .into_iter()
+        .map(|(act, key)| (Action::Plugin(act), key))
+        .collect();
+    let skeleton = Skeleton {
+        bound: app.keymaps.bound_actions(ctx),
+        // What the context has by default but no key reaches now (moved away by `[keys]`, or lost
+        // to a conflict).
+        defaults: app
+            .keymaps
+            .default_ops
+            .get(&ctx)
+            .cloned()
+            .unwrap_or_default(),
+        fixed: keys::fixed_bindings(ctx)
+            .into_iter()
+            .filter(|f| !f.alias)
+            .map(|f| f.action)
+            .collect(),
+        unkeyed: unkeyed(ctx),
+        declared,
+    };
+    skeleton.candidates(|a| {
         if matches!(
             a,
             Action::Noop | Action::Navigate(_) | Action::TabGoto(_) | Action::Cancel
         ) {
-            return;
+            return false;
         }
         // A plugin's operation is named by the plugin, not by a message of ours.
-        if !matches!(a, Action::Plugin(_))
-            && decl::repr_label(app, a).is_none()
-            && label_of(app, ctx, a, prio).is_none()
-        {
-            return;
-        }
-        // The first plain key of an operation is the one the menu uses.
-        add_candidate(&mut out, a, key);
-    };
-    for (k, a) in app.keymaps.bound_actions(ctx) {
-        add(a, plain_key(k));
-    }
-    // What the context has by default but no key reaches now (moved away by `[keys]`, or lost
-    // to a conflict).
-    for &a in app.keymaps.default_ops.get(&ctx).into_iter().flatten() {
-        add(a, None);
-    }
-    for f in keys::fixed_bindings(ctx) {
-        if !f.alias {
-            add(f.action, None);
-        }
-    }
-    for a in unkeyed(ctx) {
-        add(a, None);
-    }
-    // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
-    // its key (a collision, a rebinding) is still reachable.
-    for (act, key) in konoma_plugin::host::acts::menu_candidates(&app.plugin_acts_in(ctx)) {
-        add(Action::Plugin(act), key);
-    }
-    out
+        matches!(a, Action::Plugin(_))
+            || decl::repr_label(app, a).is_some()
+            || label_of(app, ctx, a, prio).is_some()
+    })
 }
 
 /// The shared assignment, with this host's mnemonics (the menu tests call it directly).

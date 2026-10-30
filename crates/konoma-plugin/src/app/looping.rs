@@ -103,6 +103,8 @@ impl Default for AppCx {
 #[derive(Clone, Debug)]
 pub struct AppKeys {
     keys: CoreKeys,
+    /// The keys with no overrides: the `Space` menu's candidates include what a rebinding took away.
+    defaults: CoreKeys,
     lang: Lang,
     /// `[ui] wrap`: while the text wraps, the sideways keys do nothing and are not named.
     wrap: bool,
@@ -113,6 +115,7 @@ impl AppKeys {
     pub fn new(keys: &KeysConfig, ui_keys: &str) -> AppKeys {
         AppKeys {
             keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
+            defaults: CoreKeys::defaults(scheme_from_str(ui_keys)),
             lang: Lang::En,
             wrap: true,
         }
@@ -967,7 +970,16 @@ impl AppKeys {
         act_ctx: &str,
         enabled: impl Fn(&str) -> bool,
     ) -> Vec<konoma_host_core::menu::Item<super::space::SpaceOp, String>> {
-        super::space::items(&self.keys, ctx, self.lang, lang, acts, act_ctx, enabled)
+        super::space::items(
+            &self.keys,
+            &self.defaults,
+            ctx,
+            self.lang,
+            lang,
+            acts,
+            act_ctx,
+            enabled,
+        )
     }
 
     /// The which-key line of the open `Space` menu.

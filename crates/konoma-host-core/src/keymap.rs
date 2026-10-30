@@ -1529,6 +1529,30 @@ impl CoreKeys {
         }
     }
 
+    /// Every key that runs an operation in `ctx` right now (config applied), with what it is
+    /// bound to: an operation of the shared layers or one only the full app runs
+    /// ([`CoreBinding::Host`]). A key counts as the lookup of [`CoreKeys::resolve`] and
+    /// [`CoreKeys::host_op`] finds it, so a key hidden by an `Unbound` mark or shadowed by a more
+    /// specific layer is not listed; menus are left out. In the order of
+    /// [`crate::help::display_order`]. The `Space` menu's candidates start from this list.
+    pub fn bound(&self, ctx: CoreContext) -> Vec<(KeyPress, CoreBinding)> {
+        let mut keys = self.local_keys(ctx);
+        keys.extend(self.global.keys().copied());
+        keys.sort_by_key(|k| format!("{k:?}"));
+        keys.dedup();
+        let mut out: Vec<(KeyPress, CoreBinding)> = keys
+            .into_iter()
+            .filter_map(
+                |k| match self.local(ctx, k).or_else(|| self.global.get(&k)) {
+                    Some(b @ (CoreBinding::Run(_) | CoreBinding::Host(_))) => Some((k, *b)),
+                    _ => None,
+                },
+            )
+            .collect();
+        out.sort_by_key(|(k, _)| crate::help::display_order(*k));
+        out
+    }
+
     /// What `kp` does in `ctx`: the context's own table, its layer-2 tables, the basic layer,
     /// then `global`. A key bound to an operation only the full app runs ([`HostOp`]) is
     /// `Unbound` here: the standalone app has nothing to run for it.
