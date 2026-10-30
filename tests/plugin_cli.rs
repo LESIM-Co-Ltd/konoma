@@ -25,11 +25,14 @@ build)
   cp Cargo.toml "$FAKE_DIR/last-Cargo.toml"
   cp src/main.rs "$FAKE_DIR/last-main.rs"
   if [ -n "$FAKE_GRANDCHILD" ]; then
-    # like a build tool that passes the signal on to the jobs it started
-    if [ -n "$FAKE_TERM_KILLS_GROUP" ]; then trap 'trap "" TERM; kill -TERM -- -$$; exit 1' TERM; fi
+    # like a build tool that passes the signal on to the job it started
+    # (sent to the job's pid, not the group: `kill -- -$$` fails in dash)
+    gc=
+    if [ -n "$FAKE_TERM_KILLS_GROUP" ]; then trap 'trap "" TERM; [ -n "$gc" ] && kill -TERM "$gc"; exit 1' TERM; fi
     # a process of its own, as rustc is to cargo; its pid goes to the file
     if [ -n "$FAKE_GC_IGNORE_TERM" ]; then (trap '' TERM; exec sleep 300) & else sleep 300 & fi
-    echo $! > "$FAKE_GRANDCHILD"
+    gc=$!
+    echo $gc > "$FAKE_GRANDCHILD"
     touch "$FAKE_MARK"
     wait
     exit 1
@@ -689,13 +692,17 @@ fn signal(pid: u32, sig: &str) {
     assert!(st.success(), "kill {sig} {pid}");
 }
 
+/// A process counts as dead when `ps` no longer lists it or it is a zombie (state `Z`).
+/// `kill -0` is not enough: a zombie nobody reaps (e.g. when PID 1 in a container is a bare
+/// `sleep`) still succeeds, so a finished process would be waited for until the timeout.
 fn alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
         .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+        .output()
+        .expect("`ps` is needed to check whether a process is alive");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    !matches!(stat.trim().chars().next(), None | Some('Z'))
 }
 
 /// Wait for `cond`, at most `secs`; panics with `what` otherwise.
