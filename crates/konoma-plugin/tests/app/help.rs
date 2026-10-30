@@ -185,10 +185,10 @@ fn the_footer_and_the_help_in_english() {
     );
     assert_eq!(rows, body);
     // The help is a panel over the text (the host's), not a screen of its own: the text shows
-    // around it, and the footer is the help's.
+    // around it, and the footer is the help's: the host's `Help` context closes with `q` too.
     assert!(r[0].starts_with("┌ title "), "{}", r[0]);
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
-    assert_eq!(r[37], "j/k:scroll  g/G:ends  ?/Esc:close");
+    assert_eq!(r[37], "j/k:scroll  g/G:top/bottom  ?/q/Esc:close");
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn title_of(config: &str, lang: Lang) -> String {
 #[test]
 fn the_help_title_names_the_keys_that_close_and_scroll_it() {
     // Rebound: `x` toggles the help and `?` does not, so the title names `x`.
-    let c = "[keys.text]\nx = \"toggle_help\"\n[keys.global]\n\"?\" = \"noop\"\n";
+    let c = "[keys.global]\nx = \"toggle_help\"\n\"?\" = \"noop\"\n";
     assert_eq!(
         title_of(c, Lang::En),
         " Help  (x/Esc to close, j/k to scroll)"
@@ -405,33 +405,33 @@ fn the_help_title_names_the_keys_that_close_and_scroll_it() {
     let (r, _) = run(&k, (70, 6), vec![key('?')]);
     assert!(r[5].contains("q:quit"), "`?` did not open it: {r:?}");
     // Both keys close it.
-    let c = "[keys.text]\nx = \"toggle_help\"\n";
+    let c = "[keys.global]\nx = \"toggle_help\"\n";
     assert_eq!(
         title_of(c, Lang::En),
         " Help  (?/x/Esc to close, j/k to scroll)"
     );
     // Unbound `j`: only `k` scrolls; both unbound: the clause is gone.
     assert_eq!(
-        title_of("[keys.text]\nj = \"noop\"\n", Lang::En),
+        title_of("[keys.help]\nj = \"noop\"\n", Lang::En),
         " Help  (?/Esc to close, k to scroll)"
     );
     assert_eq!(
-        title_of("[keys.text]\nj = \"noop\"\nk = \"noop\"\n", Lang::En),
+        title_of("[keys.help]\nj = \"noop\"\nk = \"noop\"\n", Lang::En),
         " Help  (?/Esc to close)"
     );
     // A key rebound to move down is named.
     assert_eq!(
-        title_of("[keys.text]\nH = \"navigate:down\"\n", Lang::En),
+        title_of("[keys.help]\nH = \"navigate:down\"\n", Lang::En),
         " Help  (?/Esc to close, H/k/j to scroll)"
     );
     // Japanese, with the same keys.
     assert_eq!(
-        title_of("[keys.text]\nj = \"noop\"\nk = \"noop\"\n", Lang::Jp),
+        title_of("[keys.help]\nj = \"noop\"\nk = \"noop\"\n", Lang::Jp),
         " ヘルプ  (?/Esc で閉じる)"
     );
     assert_eq!(
         title_of(
-            "[keys.text]\nx = \"toggle_help\"\n[keys.global]\n\"?\" = \"noop\"\n",
+            "[keys.global]\nx = \"toggle_help\"\n\"?\" = \"noop\"\n",
             Lang::Jp
         ),
         " ヘルプ  (x/Esc で閉じる, j/k スクロール)"
@@ -445,8 +445,14 @@ fn the_help_title_follows_the_global_table_and_the_scheme_too() {
         title_of("[keys.global]\nw = \"toggle_help\"\n", Lang::En),
         " Help  (?/w/Esc to close, j/k to scroll)"
     );
+    // The help is its own context: the text table's `j` does not reach it (the host's `Help`
+    // context resolves its own table, then the basic one, then `global`).
+    assert_eq!(
+        title_of("[keys.text]\nj = \"noop\"\n", Lang::En),
+        " Help  (?/Esc to close, j/k to scroll)"
+    );
     // The title is the one `AppKeys` reports.
-    let k = keys("[keys.text]\nj = \"noop\"\n", Lang::En);
+    let k = keys("[keys.help]\nj = \"noop\"\n", Lang::En);
     assert_eq!(k.help_title(), " Help  (?/Esc to close, k to scroll) ");
 }
 
@@ -459,11 +465,21 @@ fn q_with_the_help_open_quits_the_app_like_the_host() {
     let k = keys("", Lang::En);
     let (_, left) = run(&k, (70, 6), vec![key('?'), key('Q'), key('x')]);
     assert_eq!(left, 1, "`Q` ended the loop from the help");
-    // With `q` unbound `Q` still quits from the help.
-    let k = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
+    // `q` closes the help (the host's `Help` table), it does not quit.
+    let k = keys("", Lang::En);
+    let (r, left) = run(&k, (70, 6), vec![key('?'), key('q'), key('x')]);
+    assert_eq!(left, 0, "`q` quit from the help");
+    assert!(!help_open(&r), "`q` closed the help: {r:?}");
+    // The text table's `q` is not the help's: unbinding it there changes nothing here.
+    let kt = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
+    let (r, left) = run(&kt, (70, 6), vec![key('?'), key('q'), key('x')]);
+    assert_eq!(left, 0);
+    assert!(!help_open(&r), "{r:?}");
+    // With the help's `q` unbound `Q` still quits from the help.
+    let k = keys("[keys.help]\nq = \"noop\"\n", Lang::En);
     let (_, left) = run(&k, (70, 6), vec![key('?'), key('Q'), key('x')]);
     assert_eq!(left, 1);
-    // `q` unbound: it does nothing in the help (the help stays), `Esc` still closes it.
+    // `q` unbound there: it does nothing in the help (the help stays), `Esc` still closes it.
     let (r, left) = run(&k, (70, 6), vec![key('?'), key('q'), key('x')]);
     assert_eq!(left, 0);
     assert!(help_open(&r), "{r:?}");
@@ -716,12 +732,15 @@ fn every_key_the_footer_and_the_help_name_acts() {
                     }
                 }
             }
-            // The help rows: in the help every motion acts (it scrolls the help).
+            // The help rows name the keys of the view behind the help (or the help's own scroll keys):
+            // each acts in one of the two.
             for sec in k.help_sections() {
                 for (keys_text, desc) in &sec.rows {
                     for key in row_keys(keys_text) {
                         assert!(
-                            k.acts_on(&key, true, true) || k.acts_in_copy_menu(&key),
+                            k.acts_on(&key, true, true)
+                                || k.acts_on(&key, false, true)
+                                || k.acts_in_copy_menu(&key),
                             "{name} {lang:?}: the help names {key:?} for `{desc}` but it does nothing"
                         );
                         checked_rows += 1;

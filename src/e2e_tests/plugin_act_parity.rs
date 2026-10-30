@@ -36,6 +36,9 @@ pub(super) enum Kind {
     Table,
     /// A document (the host's decorated widget); the line is its Markdown.
     Document,
+    /// A still picture (the shared picture view). Not in [`KINDS`]: the line the other tests read
+    /// (`n=0 ...`) is not drawn on a picture, so only the tests that read the menu take it.
+    Image,
 }
 
 pub(super) const KINDS: [Kind; 4] = [Kind::Canvas, Kind::Text, Kind::Table, Kind::Document];
@@ -114,10 +117,18 @@ impl Plugin for Acty {
             Kind::Text => ViewKind::Text,
             Kind::Table => ViewKind::Table,
             Kind::Document => ViewKind::Document,
+            Kind::Image => ViewKind::Image,
         };
         let m = Manifest::new(self.id.as_str(), "0.1.0")
             .bind(Bind::files(["*.pnt"]))
             .shows(kind);
+        // A picture needs a picture backend: without one both sides say so (and the host shows
+        // the file as text), as for a bundled picture viewer.
+        let m = if self.opt.kind == Kind::Image {
+            m.unavailable(konoma_plugin::Unavailable::Picture)
+        } else {
+            m
+        };
         let m = if self.opt.reload {
             m.action(
                 Act::new("reload")
@@ -237,6 +248,13 @@ impl Session for ActySession {
                 View::Canvas(c)
             }
             Kind::Text => View::text([line]),
+            Kind::Image => View::Image(konoma_plugin::view::ImageView::new(
+                konoma_plugin::view::ImageData::Rgba {
+                    width: 8,
+                    height: 8,
+                    pixels: Arc::new([40u8, 90, 200, 255].repeat(8 * 8)),
+                },
+            )),
             Kind::Document => View::Document(DocumentView {
                 markdown: line,
                 origin: Origin::File(self.path.clone()),
@@ -466,6 +484,9 @@ pub(super) fn host_sim_sized(
         cfg.plugins.insert(m2, t);
     }
     let mut s = Sim::with_config_sized(root, cfg, W, h);
+    if o.kind == Kind::Image {
+        s = s.with_picker();
+    }
     open_nested(&mut s, "a.pnt");
     s.draw();
     (s, log, opens)
@@ -572,7 +593,23 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
         keys: evs,
         turns: 0,
     };
-    run_with_pictures(&mut term, &mut *opened.session, &mut ev, &cx, &keys, None).unwrap();
+    let pictures = (o.kind == Kind::Image).then(|| {
+        konoma_plugin::app::Pictures::new(
+            ratatui_image::picker::Picker::halfblocks(),
+            &opened.plugin_id,
+            &opened.path,
+            800,
+        )
+    });
+    run_with_pictures(
+        &mut term,
+        &mut *opened.session,
+        &mut ev,
+        &cx,
+        &keys,
+        pictures,
+    )
+    .unwrap();
     let left = sentinel && !ev.keys.is_empty();
     let buf = term.backend().1.clone();
     let mut shown = Terminal::new(ratatui::backend::TestBackend::new(

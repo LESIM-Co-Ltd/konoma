@@ -29,6 +29,10 @@ pub(super) enum SpaceOp {
     Help,
     /// `Enter` over a table: the full-cell popup.
     Cell,
+    /// Zooms the picture in (`1`) or out (`-1`).
+    Zoom(i8),
+    /// Fits the picture again.
+    ZoomReset,
     /// A display option the `,` menu has too (the path style, the wrap).
     Core(CoreAction),
     /// The declared action at this place among the actions of the screen's key context.
@@ -46,11 +50,14 @@ enum Cand {
 /// What the app knows of the open file for the plans and the names. It has no search or
 /// selection state, no focused link, no representation to step to and no Office conversion, so
 /// those are the defaults; `e` is named as it is for any file but an Office document, and a
-/// document is the decorated view.
+/// document is the decorated view. The text of the app is the host's windowed text (the host
+/// windows the very file the app does), so the footer plan, whose order the letters follow,
+/// carries the selection keys as it does in the host.
 fn state(ctx: CoreContext) -> PreviewState {
     PreviewState {
         edit_named: true,
         decorated: ctx == CoreContext::Document,
+        windowed: ctx == CoreContext::Text,
         ..PreviewState::default()
     }
 }
@@ -138,6 +145,11 @@ pub(super) fn items(
         |c| match c {
             Cand::Op(PreviewOp::Core(CoreAction::PreviewBack | CoreAction::ToggleHelp)) => true,
             Cand::Op(PreviewOp::ToggleTableCell) => ctx == CoreContext::Table,
+            // A picture zooms whatever it is doing (the host's gate says the same); over text
+            // the keys zoom a focused diagram only, which the app has none of.
+            Cand::Op(PreviewOp::Core(
+                CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
+            )) => ctx == CoreContext::Image,
             Cand::Op(PreviewOp::Core(
                 a @ (CoreAction::CyclePathStyle | CoreAction::ToggleWrap),
             )) => option_label(a).is_some(),
@@ -149,8 +161,14 @@ pub(super) fn items(
             }
         },
         |c| match c {
-            Cand::Op(PreviewOp::Core(a @ (CoreAction::PreviewBack | CoreAction::ToggleHelp))) => {
-                default_label(ctx, a).map(|m| m.tr(lang).to_string())
+            Cand::Op(PreviewOp::Core(
+                a @ (CoreAction::PreviewBack | CoreAction::ToggleHelp | CoreAction::ImageZoomReset),
+            )) => default_label(ctx, a).map(|m| m.tr(lang).to_string()),
+            Cand::Op(PreviewOp::Core(CoreAction::ImageZoomIn)) => {
+                Some(CoreMsg::MenuZoomIn.tr(lang).to_string())
+            }
+            Cand::Op(PreviewOp::Core(CoreAction::ImageZoomOut)) => {
+                Some(CoreMsg::MenuZoomOut.tr(lang).to_string())
             }
             Cand::Op(PreviewOp::ToggleTableCell) => {
                 Some(CoreMsg::HintViewCell.tr(lang).to_string())
@@ -166,6 +184,9 @@ pub(super) fn items(
             Cand::Op(PreviewOp::Core(CoreAction::PreviewBack)) => SpaceOp::Back,
             Cand::Op(PreviewOp::Core(CoreAction::ToggleHelp)) => SpaceOp::Help,
             Cand::Op(PreviewOp::ToggleTableCell) => SpaceOp::Cell,
+            Cand::Op(PreviewOp::Core(CoreAction::ImageZoomIn)) => SpaceOp::Zoom(1),
+            Cand::Op(PreviewOp::Core(CoreAction::ImageZoomOut)) => SpaceOp::Zoom(-1),
+            Cand::Op(PreviewOp::Core(CoreAction::ImageZoomReset)) => SpaceOp::ZoomReset,
             Cand::Op(PreviewOp::Core(a)) => SpaceOp::Core(a),
             Cand::Declared(i) => SpaceOp::Declared(i),
             Cand::Op(_) => return None,

@@ -327,6 +327,9 @@ pub enum CoreAction {
     PagePrev,
     /// The list of the pages (or the headings of a document).
     ToggleOutline,
+    /// Over a table: the full-cell popup (`Enter` is its fixed key; a key written in `[keys]`
+    /// opens it too).
+    ToggleTableCell,
     // --- Layer 3 ---
     /// `e`: edit the file in the editor.
     RequestEdit,
@@ -364,6 +367,7 @@ impl CoreAction {
             CoreAction::PageNext,
             CoreAction::PagePrev,
             CoreAction::ToggleOutline,
+            CoreAction::ToggleTableCell,
             CoreAction::RequestEdit,
             CoreAction::OpenExternal,
             CoreAction::CopyCodeBlock,
@@ -419,6 +423,7 @@ impl CoreAction {
             CoreAction::PageNext => "page_next",
             CoreAction::PagePrev => "page_prev",
             CoreAction::ToggleOutline => "toggle_outline",
+            CoreAction::ToggleTableCell => "toggle_table_cell",
             CoreAction::RequestEdit => "request_edit",
             CoreAction::OpenExternal => "open_external",
             CoreAction::CopyPath(CopyKind::Name) => "copy_name",
@@ -467,6 +472,7 @@ impl CoreAction {
                 CoreAction::PagePrev
             }
             "toggle_outline" => CoreAction::ToggleOutline,
+            "toggle_table_cell" => CoreAction::ToggleTableCell,
             "request_edit" => CoreAction::RequestEdit,
             "open_external" => CoreAction::OpenExternal,
             "copy_name" => CoreAction::CopyPath(CopyKind::Name),
@@ -786,6 +792,15 @@ pub fn global_table() -> CoreTable {
     }
     g.insert(KeyPress::ch('?'), run(CoreAction::ToggleHelp));
     g
+}
+
+/// The help's own table: the ends, and `q` closes it (`?` closes it from `global`).
+pub fn help_table() -> CoreTable {
+    let mut h = CoreTable::new();
+    h.insert(KeyPress::ch('g'), nav(Motion::Top));
+    h.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+    h.insert(KeyPress::ch('q'), run(CoreAction::ToggleHelp));
+    h
 }
 
 /// Layer 1: the keys every context with a cursor shares.
@@ -1237,6 +1252,10 @@ pub struct CoreKeys {
     pub types: HashMap<CoreViewType, CoreTable>,
     pub basic: CoreTable,
     pub global: CoreTable,
+    /// The `[keys.help]` table: what the `?` help (open over any screen) answers to before the
+    /// basic table and `global`. It is konoma's `Help` context; it is not a screen, so it is not a
+    /// [`CoreContext`].
+    pub help: CoreTable,
     /// The menus `y` and `,` open, with the `"y x" = "..."` overrides applied.
     pub menus: MenuSet<CoreAction, CoreMsg>,
 }
@@ -1245,6 +1264,7 @@ pub struct CoreKeys {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     Global,
+    Help,
     Context(CoreContext),
 }
 
@@ -1268,6 +1288,7 @@ impl CoreKeys {
                 .collect(),
             basic: basic_table(),
             global: global_table(),
+            help: help_table(),
             menus: default_menus(),
         }
     }
@@ -1300,6 +1321,8 @@ impl CoreKeys {
             let table = &cfg.surfaces[name];
             if name == "global" {
                 new_tables.push((vec![Target::Global], table));
+            } else if name == "help" {
+                new_tables.push((vec![Target::Help], table));
             } else if let Some(c) = CoreContext::from_name(name) {
                 new_tables.push((vec![Target::Context(c)], table));
             } else if let Some(cs) = old_surface_contexts(name) {
@@ -1379,6 +1402,8 @@ impl CoreKeys {
     ) {
         let entry = action.map(|a| (a, menu_label(a)));
         match target {
+            // The help has no menu of its own.
+            Target::Help => {}
             Target::Global => {
                 if let Some(m) = chord_prefix_menu(pre) {
                     let _ = self.menus.edit(MenuScope::Global, m, suf, entry);
@@ -1406,6 +1431,17 @@ impl CoreKeys {
                 }
                 None => {
                     self.global.remove(&kp);
+                }
+            },
+            Target::Help => match action {
+                Some(a) => {
+                    self.help.insert(kp, a);
+                }
+                None if self.basic.contains_key(&kp) => {
+                    self.help.insert(kp, CoreBinding::Unbound);
+                }
+                None => {
+                    self.help.remove(&kp);
                 }
             },
             Target::Context(c) => {
@@ -1517,6 +1553,77 @@ impl CoreKeys {
                 }
             }
         }
+        self.validate_help(defaults, &global_keys);
+    }
+
+    /// The same two rules for the help's table as for a context's.
+    fn validate_help(&mut self, defaults: &CoreKeys, global_keys: &[KeyPress]) {
+        let menu_keys: Vec<(KeyPress, CoreMenu)> = defaults
+            .help_local_keys()
+            .into_iter()
+            .filter_map(|k| match defaults.help_local(k) {
+                Some(CoreBinding::Menu(m)) => Some((k, *m)),
+                _ => None,
+            })
+            .collect();
+        for (k, m) in menu_keys {
+            if let Some(CoreBinding::Run(_) | CoreBinding::Host(_)) = self.help_local(k) {
+                self.help.insert(k, CoreBinding::Menu(m));
+            }
+        }
+        let shadows: Vec<(KeyPress, Option<CoreBinding>)> = global_keys
+            .iter()
+            .filter_map(|gk| {
+                let local = self.help_local(*gk)?;
+                let global = self.global.get(gk);
+                if Some(local) == global {
+                    return None;
+                }
+                let default_local = defaults.help_local(*gk);
+                if Some(local) == default_local {
+                    return None;
+                }
+                Some((*gk, default_local.copied()))
+            })
+            .collect();
+        for (gk, restore) in shadows {
+            match restore {
+                Some(b) => {
+                    self.help.insert(gk, b);
+                }
+                None => self.set_key(Target::Help, gk, None),
+            }
+        }
+    }
+
+    /// The binding `kp` has in the help before `global`: its own table, then the basic table.
+    /// `None` when it has none or the help unbound it.
+    pub fn help_local(&self, kp: KeyPress) -> Option<&CoreBinding> {
+        match self.help.get(&kp) {
+            Some(CoreBinding::Unbound) => None,
+            Some(b) => Some(b),
+            None => self.basic.get(&kp),
+        }
+    }
+
+    /// Every key with an entry in the help's table or the basic table (not `global`).
+    pub fn help_local_keys(&self) -> Vec<KeyPress> {
+        let mut keys: Vec<KeyPress> = self.help.keys().copied().collect();
+        keys.extend(self.basic.keys().copied());
+        keys.sort_by_key(|k| format!("{k:?}"));
+        keys.dedup();
+        keys
+    }
+
+    /// What `kp` does while the `?` help is open (the lookup of [`CoreKeys::resolve`] for the help).
+    pub fn help_resolve(&self, kp: KeyPress) -> CoreResolution {
+        if let Some(b) = self.help_local(kp) {
+            return resolution_of(b);
+        }
+        if let Some(b) = self.global.get(&kp) {
+            return resolution_of(b);
+        }
+        CoreResolution::Unbound
     }
 
     /// The operation of the full app `kp` is bound to in `ctx` ([`HostOp`]; `None` for any other

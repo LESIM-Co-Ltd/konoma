@@ -945,7 +945,110 @@ impl KeyLookup for CoreLookup<'_> {
     }
 }
 
+/// [`KeyLookup`] over the keys of the `?` help (konoma's `Help` context): its table, the basic
+/// table and `global`. What the help's title, footer and keys read, so a `[keys.help]` change is
+/// seen by all three.
+pub struct HelpLookup<'a> {
+    pub keys: &'a CoreKeys,
+}
+
+impl KeyLookup for HelpLookup<'_> {
+    fn keys_of(&self, op: HelpOp) -> Vec<KeyPress> {
+        match op {
+            HelpOp::Act(a) => self.keys.help_keys_of(a),
+            HelpOp::Cancel => vec![KeyPress::key(KeyCode::Esc)],
+            HelpOp::Menu(_) => Vec::new(),
+        }
+    }
+
+    fn layer_of(&self, key: KeyPress) -> Option<KeyLayer> {
+        let k = self.keys;
+        if let Some(b) = k.help.get(&key) {
+            return (!matches!(b, CoreBinding::Unbound | CoreBinding::Host(_)))
+                .then_some(KeyLayer::View);
+        }
+        if k.basic.contains_key(&key) {
+            return Some(KeyLayer::Basic);
+        }
+        k.global.contains_key(&key).then_some(KeyLayer::Global)
+    }
+}
+
+/// The footer of the `?` help (`j/k:scroll  g/G:top/bottom  ?/q/Esc:close`), the same plan as
+/// konoma's footer for its `Help` context.
+pub fn help_footer_tokens(keys: &CoreKeys, lang: Lang) -> Vec<CoreToken> {
+    help_footer_with(&HelpLookup { keys }, lang)
+}
+
+/// [`help_footer_tokens`] over any key source, so konoma (which reads its own keymap) prints the
+/// very same footer through the same code.
+pub fn help_footer_with(look: &dyn KeyLookup, lang: Lang) -> Vec<CoreToken> {
+    let facts = HelpFacts::default();
+    let tok = |keys: Vec<KeyPress>, label: CoreMsg, ops: &[HelpOp]| -> Option<CoreToken> {
+        (!keys.is_empty()).then(|| CoreToken {
+            text: format!("{}:{}", write_keys(&keys, true), label.tr(lang)),
+            keys,
+            ops: ops.to_vec(),
+        })
+    };
+    let act = |a: CoreAction| HelpOp::Act(a);
+    let scroll = [
+        act(CoreAction::Navigate(Motion::Down)),
+        act(CoreAction::Navigate(Motion::Up)),
+    ];
+    let ends = [
+        act(CoreAction::Navigate(Motion::Top)),
+        act(CoreAction::Navigate(Motion::Bottom)),
+    ];
+    let close = [act(CoreAction::ToggleHelp), HelpOp::Cancel];
+    let mut union: Vec<KeyPress> = Vec::new();
+    for op in close {
+        for k in look.keys_of(op) {
+            if !union.contains(&k) {
+                union.push(k);
+            }
+        }
+    }
+    [
+        tok(group_keys(look, &facts, &scroll), CoreMsg::Scroll, &scroll),
+        tok(group_keys(look, &facts, &ends), CoreMsg::FtTopBottom, &ends),
+        tok(union, CoreMsg::FtClose, &close),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The title of the `?` help: the keys that close it from a layer every context shares (its own
+/// `q` is named by the footer), and the keys that scroll it.
+pub fn help_overlay_title(keys: &CoreKeys, lang: Lang) -> String {
+    let look = HelpLookup { keys };
+    let close: Vec<KeyPress> = look
+        .keys_of(HelpOp::Act(CoreAction::ToggleHelp))
+        .into_iter()
+        .filter(|k| look.layer_of(*k) == Some(KeyLayer::Global))
+        .collect();
+    let scroll = scroll_keys(&look, &HelpFacts::default());
+    help_title(&close, &scroll, lang)
+}
+
 impl CoreKeys {
+    /// Every key that runs `action` while the `?` help is open (config applied), in display order.
+    pub fn help_keys_of(&self, action: CoreAction) -> Vec<KeyPress> {
+        let want = CoreResolution::Action(action);
+        let binding = CoreBinding::Run(action);
+        let mut out: Vec<KeyPress> = Vec::new();
+        for t in [&self.help, &self.basic, &self.global] {
+            for (k, b) in t {
+                if *b == binding && !out.contains(k) && self.help_resolve(*k) == want {
+                    out.push(*k);
+                }
+            }
+        }
+        out.sort_by_key(|k| display_order(*k));
+        out
+    }
+
     /// Every key that runs `action` in `ctx` right now (config applied), in the order the lists
     /// show them ([`display_order`]). A key counts only if it *resolves* to the action, so a key
     /// shadowed by a more specific layer is not listed.

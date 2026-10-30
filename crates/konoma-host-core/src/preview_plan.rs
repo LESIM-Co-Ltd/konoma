@@ -651,6 +651,8 @@ pub fn bound_ops(keys: &CoreKeys, ctx: CoreContext) -> Vec<(KeyPress, PreviewOp)
     keys.bound(ctx)
         .into_iter()
         .filter_map(|(k, b)| match b {
+            // The cell popup is one operation however it is reached (`Enter` is its fixed key).
+            CoreBinding::Run(CoreAction::ToggleTableCell) => Some((k, PreviewOp::ToggleTableCell)),
             CoreBinding::Run(a) => Some((k, PreviewOp::Core(a))),
             CoreBinding::Host(o) => Some((k, PreviewOp::Host(o))),
             _ => None,

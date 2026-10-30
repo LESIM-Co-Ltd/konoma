@@ -11,10 +11,10 @@
 //! so the letters are the host's, a document's included (it is the document context in both).
 
 use super::plugin_act_parity::*;
-use super::table_parity::{panel_lines, APP_H, HOST_H};
-use crate::keymap::{KeyPress, LeaderId};
+use super::table_parity::{hints, panel_box, panel_lines, rows_of, APP_H, HOST_H};
+use crate::keymap::{action_name, Action, Context, KeyPress, LeaderId};
 use crate::ops::menu::{menu, View};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::collections::BTreeSet;
 
 /// The host's operations that have no counterpart in the app, by name (`{:?}` of the action).
@@ -51,6 +51,9 @@ const SHARED: &[&str] = &[
     "CyclePathStyle",
     "ToggleWrap",
     "ToggleTableCell",
+    "ImageZoomIn",
+    "ImageZoomOut",
+    "ImageZoomReset",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +61,8 @@ struct Item {
     key: char,
     label: String,
     action: String,
+    /// The operation itself (for the `[keys]` rewrites made from the menu's own list).
+    act: Action,
 }
 
 /// The menu the host builds for the file on screen: every item, with the operation it runs.
@@ -75,6 +80,7 @@ fn host_items(root: &std::path::Path, o: &Opt) -> Vec<Item> {
                 key,
                 label: i.label,
                 action: format!("{:?}", i.action),
+                act: i.action,
             }
         })
         .collect()
@@ -190,7 +196,8 @@ fn the_menu_lists_what_the_app_has_under_konomas_keys_labels_and_order() {
     }
     // Not vacuous: the three declared actions, `back`, `help` and `path` at least, in each of the
     // eight runs.
-    assert!(compared >= 8 * 6, "{compared}");
+    // (measured: 54.)
+    assert!(compared >= 50, "{compared}");
     let missing: Vec<&&str> = HOST_ONLY.iter().filter(|e| !seen.contains(**e)).collect();
     assert!(missing.is_empty(), "HOST_ONLY never occurs: {missing:?}");
     for want in [
@@ -473,5 +480,415 @@ fn after_a_reopen_the_menu_lists_the_destinations_actions() {
     assert_eq!(compared, 2);
 }
 
-#[allow(dead_code)]
-fn _uses(_: KeyPress) {}
+// ---------------------------------------------------------------------------------------------
+// The whole matrix: every view the app has x both languages x both key schemes x the user's
+// `[keys]` rewrites, made from the menu's own list of operations.
+// ---------------------------------------------------------------------------------------------
+
+/// Every view the standalone app has: the four of [`KINDS`] and a still picture.
+const VIEWS: [Kind; 5] = [
+    Kind::Text,
+    Kind::Document,
+    Kind::Table,
+    Kind::Image,
+    Kind::Canvas,
+];
+const LANGS: [&str; 2] = ["en", "ja"];
+const SCHEMES: [&str; 2] = ["vim", "less"];
+
+/// What the host shows over the file: its key context, every item of the `Space` menu, the line
+/// the open menu draws, the keys each operation has now, and every key the context binds.
+struct HostView {
+    ctx: Context,
+    items: Vec<Item>,
+    line: Vec<(char, String)>,
+    keys: Vec<Vec<KeyPress>>,
+    bound: Vec<KeyPress>,
+}
+
+fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
+    let (mut s, _log, _opens) = host_sim_sized(root, o, HOST_H);
+    let ctx = s.app.key_context().expect("a preview context");
+    let m = menu(&s.app, ctx, LeaderId::Actions, View::Open).expect("the Space menu");
+    let items: Vec<Item> = m
+        .items
+        .into_iter()
+        .map(|i| {
+            let KeyCode::Char(key) = i.key.code else {
+                panic!("a character key: {:?}", i.key)
+            };
+            Item {
+                key,
+                label: i.label,
+                action: format!("{:?}", i.action),
+                act: i.action,
+            }
+        })
+        .collect();
+    let keys = items
+        .iter()
+        .map(|i| match i.act {
+            Action::Plugin(_) => Vec::new(),
+            a => s.app.keymaps.keys_of(ctx, a),
+        })
+        .collect();
+    let mut bound: Vec<KeyPress> = s
+        .app
+        .keymaps
+        .bound_actions(ctx)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    bound.extend(
+        s.app
+            .keymaps
+            .leader_keys_of(ctx)
+            .into_iter()
+            .map(|(k, _)| k),
+    );
+    s.press(KeyCode::Char(' '), KeyModifiers::NONE);
+    s.term.clear().expect("clear");
+    s.draw();
+    let line = line_items(&rows_of(&s.term)).expect("the host's menu line");
+    HostView {
+        ctx,
+        items,
+        line,
+        keys,
+        bound,
+    }
+}
+
+/// A key as a config token (`None` for a key the rewrites do not write).
+fn key_token(k: KeyPress) -> Option<String> {
+    let base = match k.code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Tab => "tab".to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Esc => "esc".to_string(),
+        _ => return None,
+    };
+    Some(if k.ctrl { format!("ctrl-{base}") } else { base })
+}
+
+fn toml_pair(key: &str, val: &str) -> String {
+    format!(
+        "\"{}\" = \"{val}\"\n",
+        key.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// One change of the user's `[keys]`, with a name that says what it did.
+struct Rewrite {
+    name: String,
+    toml: String,
+}
+
+/// The rewrites made from the operations of the menu of `kind` (read from the host, in `scheme`):
+/// for each operation, in each table that could reach it (its context's, `[keys.text]`,
+/// `[keys.document]` and `[keys.global]`; a declared action's own `[keys."{id}"]`),
+///
+/// - take its keys away (`noop`),
+/// - move it to a key nothing has,
+/// - bind it to the letter another item of the menu would take (a letter free by default),
+///
+/// and, in each table, every operation's keys taken away at once, and every operation bound to
+/// the next one's letter at once.
+fn rewrites(root: &std::path::Path, kind: Kind, scheme: &str) -> Vec<Rewrite> {
+    let o = Opt::new(kind).toml(&format!("keys = \"{scheme}\"\n"));
+    let v = host_view(root, &o);
+    let own = v.ctx.name();
+    let mut tables: Vec<String> = Vec::new();
+    for t in [own.as_str(), "text", "document", "global"] {
+        if !tables.iter().any(|x| x == t) {
+            tables.push(t.to_string());
+        }
+    }
+    let free = ['Z', 'X', 'C', 'V', 'N', 'M']
+        .into_iter()
+        .find(|c| !v.bound.contains(&KeyPress::ch(*c)) && !v.items.iter().any(|i| i.key == *c))
+        .expect("a free key");
+    let letter_free = |c: char| c.is_alphanumeric() && !v.bound.contains(&KeyPress::ch(c));
+    let n = v.items.len();
+    // The letter of the next item (going round) that is free by default.
+    let next_letter = |i: usize| {
+        (1..n)
+            .map(|d| v.items[(i + d) % n].key)
+            .find(|c| letter_free(*c))
+    };
+    let mut out = Vec::new();
+    for (i, it) in v.items.iter().enumerate() {
+        let (name, cur, heads): (String, Vec<String>, Vec<String>) = match it.act {
+            Action::Plugin(p) => (
+                p.act().to_string(),
+                vec![it.key.to_string()],
+                vec!["keys.\"{id}\"".to_string()],
+            ),
+            a => (
+                action_name(a),
+                v.keys[i].iter().filter_map(|k| key_token(*k)).collect(),
+                tables.iter().map(|t| format!("keys.{t}")).collect(),
+            ),
+        };
+        for head in &heads {
+            let tag = format!("{:?} {} in [{head}]", kind, it.action);
+            let gone: String = cur.iter().map(|k| toml_pair(k, "noop")).collect();
+            if !cur.is_empty() {
+                out.push(Rewrite {
+                    name: format!("{tag}: keys taken away"),
+                    toml: format!("[{head}]\n{gone}"),
+                });
+                out.push(Rewrite {
+                    name: format!("{tag}: moved to {free}"),
+                    toml: format!("[{head}]\n{gone}{}", toml_pair(&free.to_string(), &name)),
+                });
+            }
+            if let Some(l) = next_letter(i) {
+                out.push(Rewrite {
+                    name: format!("{tag}: bound to the letter {l}"),
+                    toml: format!("[{head}]\n{}", toml_pair(&l.to_string(), &name)),
+                });
+            }
+        }
+    }
+    for t in &tables {
+        let mut gone = String::new();
+        let mut seen: Vec<String> = Vec::new();
+        for (i, it) in v.items.iter().enumerate() {
+            if matches!(it.act, Action::Plugin(_)) {
+                continue;
+            }
+            for k in v.keys[i].iter().filter_map(|k| key_token(*k)) {
+                if !seen.contains(&k) {
+                    gone.push_str(&toml_pair(&k, "noop"));
+                    seen.push(k);
+                }
+            }
+        }
+        out.push(Rewrite {
+            name: format!("{kind:?} every key taken away in [keys.{t}]"),
+            toml: format!("[keys.{t}]\n{gone}"),
+        });
+        let mut all = String::new();
+        let mut used: Vec<char> = Vec::new();
+        for (i, it) in v.items.iter().enumerate() {
+            if matches!(it.act, Action::Plugin(_)) {
+                continue;
+            }
+            if let Some(l) = next_letter(i).filter(|l| !used.contains(l)) {
+                all.push_str(&toml_pair(&l.to_string(), &action_name(it.act)));
+                used.push(l);
+            }
+        }
+        out.push(Rewrite {
+            name: format!("{kind:?} every operation bound to a letter in [keys.{t}]"),
+            toml: format!("[keys.{t}]\n{all}"),
+        });
+    }
+    out
+}
+
+/// The title of the help panel on a screen (the text in its top border).
+fn panel_title(rows: &[String]) -> String {
+    let (_, lines) = panel_box(rows);
+    lines
+        .first()
+        .map(|l| {
+            l.trim_matches(|c| c == '┌' || c == '┐' || c == '─')
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// What was compared over one matrix run.
+#[derive(Default)]
+struct Tally {
+    variants: usize,
+    /// The variants whose host menu differs from the same view without the rewrite.
+    changed: usize,
+    /// Items of the app's menu, compared by letter, label and place.
+    items: usize,
+    /// Items the host has and the app does not name (the host-only operations).
+    hidden: usize,
+    /// Help panels whose title and footer were compared.
+    helps: usize,
+    /// Variants where the app held a menu item under a letter the host's menu does not use.
+    cells: BTreeSet<(usize, usize)>,
+}
+
+/// One view under one configuration: the app's menu is the host's, less what the app cannot do.
+fn check(root: &std::path::Path, o: &Opt, tag: &str, t: &mut Tally) -> Vec<(char, String)> {
+    let v = host_view(root, o);
+    // The host's line is cut at the screen's width: what it draws is the start of its menu.
+    let menu_line: Vec<(char, String)> = v.items.iter().map(|i| (i.key, i.label.clone())).collect();
+    assert!(
+        !v.line.is_empty()
+            && v.line.len() <= menu_line.len()
+            && v.line[..] == menu_line[..v.line.len()],
+        "{tag}: the host's line is the start of its menu: {:?}",
+        v.line
+    );
+    let want: Vec<&Item> = v.items.iter().filter(|i| is_shared(i)).collect();
+    for it in v.items.iter().filter(|i| !is_shared(i)) {
+        assert!(
+            HOST_ONLY.contains(&it.action.as_str()),
+            "{tag}: the host item {it:?} is neither shared nor listed as host-only"
+        );
+        t.hidden += 1;
+    }
+    let ar = open_run_app(root, o, &[]);
+    let aline =
+        line_items(&ar.rows).unwrap_or_else(|| panic!("{tag}: the app's menu line: {:?}", ar.rows));
+    assert_eq!(
+        aline,
+        want.iter()
+            .map(|i| (i.key, i.label.clone()))
+            .collect::<Vec<_>>(),
+        "{tag}: the app's menu (letter, label, order)"
+    );
+    let mut letters = BTreeSet::new();
+    for (k, l) in &aline {
+        assert!(letters.insert(*k), "{tag}: {k} is used twice ({l})");
+        t.items += 1;
+    }
+    // The help over that screen: the title and the footer follow the same keys.
+    let help = v
+        .items
+        .iter()
+        .find(|i| i.action == "ToggleHelp")
+        .expect("the help in the menu")
+        .key;
+    let hr = host(root, o, HOST_H, &[K("<Sp>"), kc(help)]);
+    let ar = app(root, o, APP_H, &[K("<Sp>"), kc(help)], true);
+    assert_eq!(
+        panel_title(&hr.rows),
+        panel_title(&ar.rows),
+        "{tag}: the help's title"
+    );
+    assert_eq!(
+        hints(hr.rows.last().unwrap()),
+        hints(ar.rows.last().unwrap()),
+        "{tag}: the footer while the help is open"
+    );
+    t.helps += 1;
+    t.variants += 1;
+    v.line
+}
+
+fn matrix(kind: Kind) {
+    let (_dir, root) = fixture();
+    let mut t = Tally::default();
+    let mut rewrites_n = 0;
+    for (si, scheme) in SCHEMES.iter().enumerate() {
+        let rws = rewrites(&root, kind, scheme);
+        assert!(rws.len() >= 8, "{kind:?} {scheme}: {} rewrites", rws.len());
+        rewrites_n += rws.len();
+        for (li, lang) in LANGS.iter().enumerate() {
+            let base = format!("keys = \"{scheme}\"\n");
+            let plain = check(
+                &root,
+                &Opt::new(kind).lang(lang).toml(&base),
+                &format!("{kind:?} {lang} {scheme} plain"),
+                &mut t,
+            );
+            for rw in &rws {
+                let o = Opt::new(kind)
+                    .lang(lang)
+                    .toml(&format!("{base}{}", rw.toml));
+                let line = check(&root, &o, &format!("{lang} {scheme} {}", rw.name), &mut t);
+                if line != plain {
+                    t.changed += 1;
+                }
+                t.cells.insert((si, li));
+            }
+        }
+    }
+    eprintln!(
+        "matrix {kind:?}: rewrites {rewrites_n} variants {} changed {} items {} hidden {} helps {}",
+        t.variants, t.changed, t.items, t.hidden, t.helps
+    );
+    // Every scheme x language cell ran.
+    assert_eq!(t.cells.len(), SCHEMES.len() * LANGS.len(), "{kind:?}");
+    // Not vacuous: (plain + rewrites) in each of the four cells, and the rewrites change the menu
+    // in a good part of them (a rewrite that never shows would test nothing).
+    assert_eq!(
+        t.variants,
+        LANGS.len() * SCHEMES.len() + LANGS.len() * rewrites_n,
+        "{kind:?}"
+    );
+    // (measured per view: 204 to 256 of 868 to 1016; the floors sit below the smallest.)
+    assert!(
+        rewrites_n >= 430,
+        "{kind:?}: {rewrites_n} rewrites (measured 432 to 506)"
+    );
+    assert!(t.changed >= 200, "{kind:?} changed {}", t.changed);
+    // At least back, the help and the three declared actions' worth (path, wrap, ...) per variant.
+    // (measured: 6 to 9 items and 14 to 21 host-only items per variant.)
+    assert!(t.items >= t.variants * 6, "{kind:?} items {}", t.items);
+    assert!(t.hidden >= t.variants * 13, "{kind:?} hidden {}", t.hidden);
+    assert_eq!(t.helps, t.variants);
+}
+
+#[test]
+fn the_matrix_text() {
+    matrix(Kind::Text);
+}
+#[test]
+fn the_matrix_document() {
+    matrix(Kind::Document);
+}
+#[test]
+fn the_matrix_table() {
+    matrix(Kind::Table);
+}
+#[test]
+fn the_matrix_image() {
+    matrix(Kind::Image);
+}
+#[test]
+fn the_matrix_canvas() {
+    matrix(Kind::Canvas);
+}
+
+/// A view the app gains must get a matrix test: the list is every `Kind`, spelled out so that a
+/// new variant does not compile until it is placed here.
+#[test]
+fn the_matrix_has_a_test_for_every_view() {
+    for k in VIEWS {
+        match k {
+            Kind::Text | Kind::Document | Kind::Table | Kind::Image | Kind::Canvas => {}
+        }
+    }
+    for k in KINDS {
+        assert!(VIEWS.contains(&k), "{k:?}");
+    }
+    assert_eq!(VIEWS.len(), KINDS.len() + 1);
+}
+
+/// A key written only under `[keys.document]` acts in the app's decorated document, as in the
+/// host: the keys are read for the Document context there, not the Text one. The help opening is
+/// what shows it (it is shared, and a panel is on screen or it is not).
+#[test]
+fn a_key_written_under_keys_document_acts_in_the_apps_document() {
+    let (_dir, root) = fixture();
+    // The help's footer names how to close it; no other footer of a document does.
+    let help_open = |rows: &[String]| rows.last().is_some_and(|r| r.contains(":close"));
+    // `b` is a letter nothing in a document uses by default.
+    let plain = Opt::new(Kind::Document);
+    assert!(
+        !help_open(&app(&root, &plain, APP_H, &[K("b")], true).rows),
+        "b does nothing without the override"
+    );
+    let only_document = Opt::new(Kind::Document).toml("[keys.document]\n\"b\" = \"toggle_help\"\n");
+    let hr = host(&root, &only_document, HOST_H, &[K("b")]);
+    let ar = app(&root, &only_document, APP_H, &[K("b")], true);
+    assert!(help_open(&hr.rows), "the host opens the help on b");
+    assert!(help_open(&ar.rows), "the app opens the help on b");
+    assert_eq!(panel_title(&hr.rows), panel_title(&ar.rows));
+    // Written under `[keys.table]` it is for tables only: the document does not read it.
+    let other = Opt::new(Kind::Document).toml("[keys.table]\n\"b\" = \"toggle_help\"\n");
+    assert!(!help_open(&host(&root, &other, HOST_H, &[K("b")]).rows));
+    assert!(!help_open(&app(&root, &other, APP_H, &[K("b")], true).rows));
+}

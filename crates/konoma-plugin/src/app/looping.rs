@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
-    core_sections, ctrl_c_token, help_title, menu_view, render_foot, scroll_keys, CoreFoot,
-    CoreLookup, CoreSection, CoreToken, HelpFacts, HelpOp, KeyLookup, MenuView,
+    core_sections, ctrl_c_token, menu_view, render_foot, CoreFoot, CoreLookup, CoreSection,
+    CoreToken, HelpFacts, HelpOp, KeyLookup, MenuView,
 };
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_host_core::keymap::{
@@ -278,6 +278,9 @@ impl AppKeys {
 
     /// [`AppKeys::acts_on`] over the text screen of key context `ctx`.
     pub fn acts_on_in(&self, ctx: CoreContext, key: &Key, in_help: bool, scrolls: bool) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
         match self.act_in(ctx, key) {
             None => !in_help && self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
@@ -285,6 +288,27 @@ impl AppKeys {
                 !in_help && scrolls && !self.wrap
             }
             Some(Act::Move(_)) => in_help || scrolls,
+            Some(_) => true,
+        }
+    }
+
+    /// Whether `key` does something while the `?` help is open, over any screen: the answer of
+    /// [`AppKeys::help_act`], the one the loop runs. The help scrolls on the vertical motions;
+    /// the sideways ones leave it as it is.
+    fn help_acts_on(&self, key: &Key) -> bool {
+        match self.help_act(key) {
+            None => false,
+            Some(Act::Move(m)) => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
             Some(_) => true,
         }
     }
@@ -439,39 +463,48 @@ impl AppKeys {
 
     /// [`AppKeys::help_title`] over the text screen of key context `ctx`.
     pub fn help_title_in(&self, ctx: CoreContext) -> String {
-        let facts = self.facts_in(ctx, false, true);
-        let look = CoreLookup {
-            keys: &self.keys,
-            ctx,
-        };
-        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
-        help_title(&close, &scroll_keys(&look, &facts), self.lang)
+        let _ = ctx;
+        self.overlay_title()
+    }
+
+    /// The title of the `?` help. The help is konoma's `Help` context whatever is under it, so
+    /// its keys (and the title naming them) do not depend on the screen.
+    fn overlay_title(&self) -> String {
+        konoma_host_core::help::help_overlay_title(&self.keys, self.lang)
+    }
+
+    /// What the app does for `key` while the `?` help is open: the help's own keys, the basic
+    /// table and `global`, as konoma's `Help` context resolves them.
+    fn help_act(&self, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        if key.mods.is_empty() {
+            match key.code {
+                KeyCode::Down => return Some(Act::Move(Motion::Down)),
+                KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Home => return Some(Act::Move(Motion::Top)),
+                KeyCode::End => return Some(Act::Move(Motion::Bottom)),
+                KeyCode::Esc => return Some(Act::Back),
+                _ => {}
+            }
+        }
+        match self.keys.help_resolve(key_press(key)?) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            _ => None,
+        }
     }
 
     /// The footer's key hints while the `?` help is open: scrolling, the ends, closing (the
     /// host's footer of its help).
     pub fn help_footer_tokens(&self) -> Vec<String> {
-        let facts = self.facts_scrolling(false, true);
-        let look = CoreLookup {
-            keys: &self.keys,
-            ctx: CoreContext::Text,
-        };
-        let mut out: Vec<String> = [CoreFoot::Scroll, CoreFoot::Ends]
+        konoma_host_core::help::help_footer_tokens(&self.keys, self.lang)
             .into_iter()
-            .filter_map(|f| render_foot(f, CoreContext::Text, &facts, &look, self.lang))
             .map(|t| t.text)
-            .collect();
-        let mut close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
-        let esc = KeyPress::key(crossterm::event::KeyCode::Esc);
-        if !close.contains(&esc) {
-            close.push(esc);
-        }
-        out.push(format!(
-            "{}:{}",
-            konoma_host_core::help::write_keys(&close, true),
-            CoreMsg::FtClose.tr(self.lang)
-        ));
-        out
+            .collect()
     }
 
     // ---- Tables ----
@@ -665,10 +698,8 @@ impl AppKeys {
 
     /// The title of the `?` help over a table (see [`AppKeys::help_title`]).
     pub fn table_help_title(&self, mode: TableMode) -> String {
-        let facts = self.table_facts(mode);
-        let look = self.table_lookup();
-        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
-        help_title(&close, &scroll_keys(&look, &facts), self.lang)
+        let _ = mode;
+        self.overlay_title()
     }
 
     /// What the app does for `key` over a table (`None` = nothing). `popup`: the full-cell popup
@@ -709,6 +740,8 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
             CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
             CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            // A key written for the cell popup opens it; the popup itself answers to its own keys.
+            CoreResolution::Action(CoreAction::ToggleTableCell) if !popup => Some(Act::Cell),
             CoreResolution::Action(CoreAction::Navigate(m)) => {
                 allowed(m, literal_page).then_some(Act::Move(m))
             }
@@ -721,6 +754,9 @@ impl AppKeys {
     /// Whether `key` does something over a table (in the `?` help when `in_help`). What the hints
     /// and the help rows name must pass this.
     pub fn table_acts_on(&self, key: &Key, in_help: bool, mode: TableMode) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
         match self.table_act(key, mode.popup && !in_help) {
             None => !in_help && !mode.popup && self.menu_key_acts(CoreContext::Table, key),
             // The help scrolls on the vertical motions; the others do nothing while it is open.
@@ -834,20 +870,17 @@ impl AppKeys {
     /// on the vertical motions whatever the picture is doing, so they are named from the text's
     /// facts.
     pub fn image_help_title(&self) -> String {
-        let look = self.image_lookup();
-        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
-        help_title(&close, &scroll_keys(&look, &self.facts()), self.lang)
+        self.overlay_title()
     }
 
     /// What the app does for `key` over a still picture (`None` = nothing). Over the picture the
-    /// four directions pan; in the `?` help (`in_help`) every motion is the help's.
-    fn image_act(&self, key: &Key, in_help: bool) -> Option<Act> {
+    /// four directions pan (the `?` help has its own keys: [`AppKeys::help_act`]).
+    fn image_act(&self, key: &Key) -> Option<Act> {
         if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
             return Some(Act::Quit);
         }
-        let allowed = |m: Motion| {
-            in_help || matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
-        };
+        let allowed =
+            |m: Motion| matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down);
         if key.mods.is_empty() {
             let fixed = match key.code {
                 KeyCode::Down => Some(Motion::Down),
@@ -874,8 +907,8 @@ impl AppKeys {
             CoreResolution::Action(CoreAction::ImageZoomIn) => Some(Act::Zoom(1)),
             CoreResolution::Action(CoreAction::ImageZoomOut) => Some(Act::Zoom(-1)),
             CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
-            CoreResolution::Action(CoreAction::PageNext) if !in_help => Some(Act::Page(1)),
-            CoreResolution::Action(CoreAction::PagePrev) if !in_help => Some(Act::Page(-1)),
+            CoreResolution::Action(CoreAction::PageNext) => Some(Act::Page(1)),
+            CoreResolution::Action(CoreAction::PagePrev) => Some(Act::Page(-1)),
             _ => None,
         }
     }
@@ -884,8 +917,11 @@ impl AppKeys {
     /// The hints and rows follow the host and name the reset and the pan even at fit, where this
     /// says no.
     pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
         let ready = mode.shape == StillShape::Ready;
-        match self.image_act(key, in_help) {
+        match self.image_act(key) {
             None => !in_help && self.menu_key_acts(CoreContext::Image, key),
             Some(Act::Zoom(_)) => !in_help && ready,
             Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
@@ -1079,31 +1115,15 @@ impl AppKeys {
     }
 
     /// The title of the `?` help over a canvas (see [`AppKeys::help_title`]). The help scrolls
-    /// on the vertical motions, named from the text's facts.
+    /// like any other `?` help.
     pub fn canvas_help_title(&self) -> String {
-        let look = self.canvas_lookup();
-        let close = look.keys_of(HelpOp::Act(CoreAction::ToggleHelp));
-        help_title(
-            &close,
-            &scroll_keys(&self.text_lookup(), &self.facts()),
-            self.lang,
-        )
-    }
-
-    fn text_lookup(&self) -> CoreLookup<'_> {
-        CoreLookup {
-            keys: &self.keys,
-            ctx: CoreContext::Text,
-        }
+        self.overlay_title()
     }
 
     /// What the app does for `key` over a canvas (`None` = nothing). Over the canvas only the
-    /// keys that leave or open the help act (the host hands the others to the plugin); in the
-    /// `?` help (`in_help`) the vertical motions are the help's, as over any text.
-    fn canvas_act(&self, key: &Key, in_help: bool) -> Option<Act> {
-        if in_help {
-            return self.act(key);
-        }
+    /// keys that leave or open the help act (the host hands the others to the plugin); the `?`
+    /// help has its own keys ([`AppKeys::help_act`]).
+    fn canvas_act(&self, key: &Key) -> Option<Act> {
         if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
             return Some(Act::Quit);
         }
@@ -1122,7 +1142,10 @@ impl AppKeys {
     /// Whether `key` does something over a canvas (in the `?` help when `in_help`). What the
     /// hints and the help rows name must pass this.
     pub fn canvas_acts_on(&self, key: &Key, in_help: bool) -> bool {
-        match self.canvas_act(key, in_help) {
+        if in_help {
+            return self.help_acts_on(key);
+        }
+        match self.canvas_act(key) {
             None => !in_help && self.menu_key_acts(CoreContext::Canvas, key),
             Some(Act::Move(m)) if in_help => matches!(
                 m,
@@ -1145,12 +1168,7 @@ impl AppKeys {
         AppKeys::new(&KeysConfig::default(), "vim")
     }
 
-    /// What the app does for `key` (`None` = nothing).
-    fn act(&self, key: &Key) -> Option<Act> {
-        self.act_in(CoreContext::Text, key)
-    }
-
-    /// [`AppKeys::act`] over the text screen of key context `ctx`.
+    /// What the app does for `key` over the text screen of key context `ctx` (`None` = nothing).
     fn act_in(&self, ctx: CoreContext, key: &Key) -> Option<Act> {
         if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
             return Some(Act::Quit);
@@ -2125,18 +2143,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         Some(space::SpaceOp::Back) => Some(Act::Back),
                         Some(space::SpaceOp::Help) => Some(Act::Help),
                         Some(space::SpaceOp::Cell) => Some(Act::Cell),
+                        Some(space::SpaceOp::Zoom(d)) => Some(Act::Zoom(d.into())),
+                        Some(space::SpaceOp::ZoomReset) => Some(Act::ZoomReset),
                         _ => None,
                     },
                     _ if declared.is_some() => None,
+                    // The help is its own context: the same keys over any screen.
+                    _ if st.help.is_some() => keys.help_act(&key),
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
-                    (false, Some(_)) if failed_text => {
-                        keys.act_in(text_ctx(&base), &key).or_else(|| {
-                            keys.image_act(&key, false)
-                                .filter(|a| matches!(a, Act::Page(_)))
-                        })
-                    }
-                    (false, Some(_)) => keys.image_act(&key, st.help.is_some()),
-                    (false, None) if canvas_keys => keys.canvas_act(&key, st.help.is_some()),
+                    (false, Some(_)) if failed_text => keys
+                        .act_in(text_ctx(&base), &key)
+                        .or_else(|| keys.image_act(&key).filter(|a| matches!(a, Act::Page(_)))),
+                    (false, Some(_)) => keys.image_act(&key),
+                    (false, None) if canvas_keys => keys.canvas_act(&key),
                     (false, None) => keys.act_in(text_ctx(&base), &key),
                 };
                 // A key over a table never asks the session again, but a page turn: a

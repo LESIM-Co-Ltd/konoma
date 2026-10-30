@@ -41,6 +41,9 @@ pub enum Foot {
     /// An entry of the shared layers 1 to 3: the shared builder (`konoma_host_core::help`) writes
     /// it, so the standalone app prints the same token. Only the contexts of `core_ctx` use it.
     Core(CoreFoot),
+    /// The whole footer of the `?` help, written by the shared builder
+    /// (`konoma_host_core::help::help_footer_with`) that the standalone app also calls.
+    HelpOverlay,
 }
 
 const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
@@ -71,7 +74,6 @@ const NEXT_PREV_CHANGE: &[Action] = &[Action::JumpNextChange, Action::JumpPrevCh
 const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
 #[cfg(feature = "git")]
 const BACK_ESC_PREVIEW: &[Action] = &[Action::PreviewBack, Action::Cancel];
-const CLOSE_HELP: &[Action] = &[Action::ToggleHelp, Action::Cancel];
 const CLOSE_INFO: &[Action] = &[Action::InfoClose, Action::Cancel];
 const CLOSE_CELL: &[Action] = &[Action::ToggleTableCell, Action::Cancel];
 const VISUAL_EXIT: &[Action] = &[Action::PreviewExitVisual, Action::Cancel];
@@ -130,11 +132,7 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
             Foot::Group(ENDS, Msg::FtTopBottom),
             Foot::Union(CLOSE_CELL, Msg::FtClose),
         ],
-        Context::Help => vec![
-            Foot::Group(SCROLL, Msg::Scroll),
-            Foot::Group(ENDS, Msg::FtTopBottom),
-            Foot::Union(CLOSE_HELP, Msg::FtClose),
-        ],
+        Context::Help => vec![Foot::HelpOverlay],
         Context::Info => vec![Foot::Union(CLOSE_INFO, Msg::FtClose)],
         // The bookmark list, the tab list and the outline have no footer of their own: they show
         // the screen underneath (see `status::footer_spans`).
@@ -464,7 +462,7 @@ pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
                     }
                 }
             }
-            Foot::Leader(..) | Foot::Dyn(_) => {}
+            Foot::Leader(..) | Foot::Dyn(_) | Foot::HelpOverlay => {}
         }
     }
     v
@@ -616,6 +614,23 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                         .filter_map(|o| crate::ops::core_help::action_of(*o))
                         .collect(),
                 })
+            }
+            Foot::HelpOverlay => {
+                let lookup = crate::ops::core_help::HostLookup { app, ctx };
+                out.extend(
+                    konoma_host_core::help::help_footer_with(&lookup, lang)
+                        .into_iter()
+                        .map(|t| Token {
+                            text: t.text,
+                            keys: t.keys,
+                            actions: t
+                                .ops
+                                .iter()
+                                .filter_map(|o| crate::ops::core_help::action_of(*o))
+                                .collect(),
+                        }),
+                );
+                continue;
             }
             Foot::Plugin(p) => {
                 let action = Action::Plugin(*p);

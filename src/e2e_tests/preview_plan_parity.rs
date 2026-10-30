@@ -90,7 +90,6 @@ const OUTSIDE_THE_DESCRIPTION: &[&str] = &[
     "Document: ToggleWrap",
     "Text: CyclePathStyle",
     "Text: CycleRepresentation",
-    "Text: GitLaunchTool",
     "Text: ImageZoomIn",
     "Text: ImageZoomOut",
     "Text: ImageZoomReset",
@@ -271,8 +270,22 @@ fn the_description_is_what_konoma_says() {
     // `CyclePathStyle` from the shared layers). They keep their place after the described ones.
     // Pinned: a new one is a decision (it changes the letters the menu hands out).
     let outside: Vec<&str> = c.outside.iter().map(String::as_str).collect();
-    assert_eq!(outside, OUTSIDE_THE_DESCRIPTION);
+    // Without the `git` feature the host has no git launcher to offer at all.
+    let with_git: &[&str] = if cfg!(feature = "git") {
+        &["Text: GitLaunchTool"]
+    } else {
+        &[]
+    };
+    let mut expected: Vec<&str> = OUTSIDE_THE_DESCRIPTION.to_vec();
+    expected.extend_from_slice(with_git);
+    expected.sort_unstable();
+    assert_eq!(outside, expected);
+    assert!(outside.len() >= 25, "{} outside entries", outside.len());
+    // The exception is the diff scope of the follow mode, which only exists with git.
+    #[cfg(feature = "git")]
     assert!(c.not_keyed >= 1, "the exception list is never used");
+    #[cfg(not(feature = "git"))]
+    assert_eq!(c.not_keyed, 0, "the diff scope exists without git");
     assert!(c.sessions >= 150, "{} sessions", c.sessions);
     assert!(c.plan_entries >= 3000, "{} plan entries", c.plan_entries);
     assert!(c.help_entries >= 5000, "{} help entries", c.help_entries);
