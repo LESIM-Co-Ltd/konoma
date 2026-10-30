@@ -279,6 +279,89 @@ fn the_page_scroll_and_footer_agree_with_the_host() {
     super::table_parity::assert_all_seen("document HOST_ONLY", HOST_ONLY, &seen_host_only);
 }
 
+/// Markdown for the `e` line: long enough to scroll many windows, with the shapes that make the
+/// proportional estimate and its correction by content differ (headings, wrapped paragraphs,
+/// lists, tables, code, blank runs, a repeated sentence, one-word lines).
+fn edit_fixtures() -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = fixtures()
+        .into_iter()
+        .filter(|(n, _)| ["scroll.md", "wrap.md", "cjk.md", "list.md"].contains(&n.as_str()))
+        .collect();
+    let mixed: String = (0..60)
+        .map(|i| match i % 6 {
+            0 => format!("## Section {i}\n\n"),
+            1 => format!(
+                "{}\n\n",
+                "a sentence that repeats and wraps around ".repeat(4)
+            ),
+            2 => format!("- item {i} of a list\n- another unique item {i} here\n\n"),
+            3 => format!("| col a | col b |\n|---|---|\n| cell {i} | value {i} |\n\n"),
+            4 => format!("```rust\nlet unique_{i} = {i};\n```\n\n"),
+            _ => "x\n\n\n\n".to_string(),
+        })
+        .collect();
+    v.push(("mixed.md".into(), mixed));
+    v.push(("one.md".into(), "single line\n".into()));
+    v.push(("blank.md".into(), "\n\n\n".into()));
+    v
+}
+
+/// The line `e` opens a rendered Markdown document at, after the scroll: the host and the app
+/// give the same line (the proportional estimate from the top of the page, corrected by the
+/// content), for every pair of the scroll keys and for runs of one key past the window.
+#[test]
+fn the_line_e_opens_in_a_document_agrees_with_the_host() {
+    let dir = sandbox("doc-edit-line");
+    for (name, body) in edit_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let motions = [
+        "j", "k", "g", "G", "<C-f>", "<C-b>", "<C-d>", "<C-u>", "<PgDn>", "<PgUp>",
+    ];
+    let mut specs: Vec<String> = vec![String::new()];
+    for a in motions {
+        specs.push(a.to_string());
+        for b in motions {
+            specs.push(format!("{a} {b}"));
+        }
+    }
+    for n in [1usize, 3, 7, 12, 20, 45] {
+        specs.push(vec!["j"; n].join(" "));
+        specs.push(format!("G {}", vec!["k"; n].join(" ")));
+        specs.push(format!(
+            "{} <C-d> {}",
+            vec!["j"; n].join(" "),
+            vec!["k"; n / 2 + 1].join(" ")
+        ));
+    }
+    let (mut checked, mut some, mut nonzero) = (0usize, 0usize, 0usize);
+    let mut at = std::collections::BTreeSet::new();
+    for (name, _) in edit_fixtures() {
+        for spec in &specs {
+            let what = format!("{name} [{spec}]");
+            // A small terminal: the documents are taller than the window.
+            let h = host_term(&root, &name, 60, 12, spec);
+            let _a = app_term(&root.join(&name), 60, 11, spec);
+            let (he, ae) = (
+                h.app.preview_edit_line_for_test(),
+                konoma_plugin::app::edit_line(),
+            );
+            assert_eq!(he, ae, "{what}: the line `e` opens differs");
+            checked += 1;
+            if let Some(l) = he {
+                some += 1;
+                nonzero += usize::from(l > 1);
+                at.insert((name.clone(), l));
+            }
+        }
+    }
+    assert!(checked >= 800, "{checked}");
+    assert!(some >= 700, "documents with a line: {some}");
+    assert!(nonzero >= 300, "lines past the first: {nonzero}");
+    assert!(at.len() >= 45, "distinct (file, line): {}", at.len());
+}
+
 /// The rows only the host's help lists for a Markdown file (search, links, bookmarks, the tabs...)
 /// are not in the app's; every row the app lists must be the host's, in the host's order.
 #[test]

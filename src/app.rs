@@ -109,7 +109,6 @@ pub use bookmark_actions::FsBurstKinds;
 // type unqualified since it's defined there, so this re-export would be unused_imports outside cfg(test).
 #[cfg(test)]
 pub use preview_visual::PreviewSelection;
-use preview_visual::*;
 // Referenced by `ui/table.rs` (the full-cell popup renderer) as `crate::app::TableCellView`.
 pub use table_actions::TableCellView;
 
@@ -4207,7 +4206,9 @@ impl App {
             return None;
         }
         if self.is_windowed() {
-            return Some(self.tab.preview_cursor_line + 1);
+            return Some(konoma_widgets::caret::text_edit_line(
+                self.tab.preview_cursor_line,
+            ));
         }
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
@@ -4220,21 +4221,44 @@ impl App {
         {
             if let Some(c) = &self.md_cache {
                 let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
-                if same && c.src_lines > 0 && self.md_view_rows > 0 {
+                if same {
                     // Prefer the on-screen Tab focus (the visible "cursor"); otherwise the top of view.
-                    let (logical, row) = match self.md_focused_visible_line() {
-                        Some(hit) => hit,
-                        None => (
-                            self.md_top_logical_line().unwrap_or(0),
-                            self.tab.preview_scroll as usize,
-                        ),
+                    let focus = self.md_focused_visible_line();
+                    let view = konoma_widgets::caret::MdView {
+                        scroll: self.tab.preview_scroll as usize,
+                        view_rows: self.md_view_rows,
+                        src_lines: c.src_lines,
+                        lines: &c.lines,
+                        row_prefix: &c.row_prefix,
+                        wrap: self.cfg.ui.wrap,
+                        width_known: c.width != 0,
+                        focus,
                     };
-                    let est = (row * c.src_lines / self.md_view_rows).min(c.src_lines - 1);
-                    return Some(self.md_content_anchor_line(logical, est).unwrap_or(est) + 1);
+                    // Re-reads the file so it matches what the editor will open (an agent may have
+                    // edited it since the preview was built).
+                    return konoma_widgets::caret::md_edit_line(&view, &|| {
+                        let content = crate::preview::text::load(c.path.as_path()).ok()?;
+                        Some(content.lines.iter().map(|l| l.to_string()).collect())
+                    });
                 }
             }
         }
         None
+    }
+
+    /// The 0-based decorated (logical) line at the top of the current Markdown view.
+    fn md_top_logical_line(&self) -> Option<usize> {
+        let c = self.md_cache.as_ref()?;
+        konoma_widgets::caret::md_top_logical_line(&konoma_widgets::caret::MdView {
+            scroll: self.tab.preview_scroll as usize,
+            view_rows: self.md_view_rows,
+            src_lines: c.src_lines,
+            lines: &c.lines,
+            row_prefix: &c.row_prefix,
+            wrap: self.cfg.ui.wrap,
+            width_known: c.width != 0,
+            focus: None,
+        })
     }
 
     /// The (decorated logical line, top display row) of the Tab-focused Markdown item, but only when it
@@ -4246,61 +4270,6 @@ impl App {
         let scroll = self.tab.preview_scroll as usize;
         let vh = self.tab.preview_viewport.max(1) as usize;
         (row < scroll + vh && row + h > scroll).then_some((item.line, row))
-    }
-
-    /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
-    /// so it matches what the renderer draws (`preview_scroll` is in post-wrap display rows).
-    fn md_top_logical_line(&self) -> Option<usize> {
-        let c = self.md_cache.as_ref()?;
-        if c.lines.is_empty() {
-            return None;
-        }
-        let scroll = self.tab.preview_scroll as usize;
-        if !self.cfg.ui.wrap || c.width == 0 || c.row_prefix.len() != c.lines.len() + 1 {
-            return Some(scroll.min(c.lines.len() - 1));
-        }
-        // prefix is each line's starting display row (monotonically increasing). The line
-        // containing scroll = pp(p <= scroll) - 1.
-        let i = c
-            .row_prefix
-            .partition_point(|&p| p <= scroll)
-            .saturating_sub(1);
-        Some(i.min(c.lines.len() - 1))
-    }
-
-    /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
-    /// visible span of decorated logical line `logical` (a single span carries no Markdown markers, so its
-    /// text is a verbatim substring of the source) and find the source line containing it, closest to
-    /// `est`. Returns a 0-based source line, or None to fall back to `est`. Re-reads the file so it
-    /// matches what the editor will open (an agent may have edited it since the preview was built).
-    fn md_content_anchor_line(&self, logical: usize, est: usize) -> Option<usize> {
-        use ratatui::style::Modifier;
-        let c = self.md_cache.as_ref()?;
-        let line = c.lines.get(logical)?;
-        // Longest non-hidden, non-blank span (hidden spans carry link/URL targets, not on-screen text).
-        let key = line
-            .spans
-            .iter()
-            .filter(|s| !s.style.add_modifier.contains(Modifier::HIDDEN))
-            .map(|s| s.content.trim())
-            .filter(|t| !t.is_empty())
-            .max_by_key(|t| t.chars().count())?;
-        if key.chars().count() < 4 {
-            return None;
-        }
-        let content = crate::preview::text::load(c.path.as_path()).ok()?;
-        let mut best: Option<usize> = None;
-        let mut best_d = usize::MAX;
-        for (i, sl) in content.lines.iter().enumerate() {
-            if sl.contains(key) {
-                let d = i.abs_diff(est);
-                if d < best_d {
-                    best_d = d;
-                    best = Some(i);
-                }
-            }
-        }
-        best
     }
 
     /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
@@ -4948,26 +4917,41 @@ impl App {
     /// and the last page) and reposition the caret at the row it occupied before the move, so the
     /// caret and the window always move together on a page/half-page step.
     fn windowed_page_scroll(&mut self, delta: i32) {
-        let row_in_view = self
-            .tab
-            .preview_cursor_line
-            .saturating_sub(self.tab.preview_top_line);
-        self.win_scroll_lines(delta);
+        // The total is counted (and cached) first so the window stops at the last page.
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1);
-        self.tab.preview_cursor_line = self
-            .tab
-            .preview_top_line
-            .saturating_add(row_in_view)
-            .min(maxl);
+        let mut c = self.caret();
+        c.page(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
+    }
+
+    /// The caret and the window as the pure [`konoma_widgets::caret::Caret`] sees them.
+    fn caret(&self) -> konoma_widgets::caret::Caret {
+        konoma_widgets::caret::Caret {
+            top: self.tab.preview_top_line,
+            line: self.tab.preview_cursor_line,
+            col: self.tab.preview_cursor_col,
+        }
+    }
+
+    /// Take the caret `c` the pure moves computed: the window follows by the lines its top moved
+    /// (the byte position is found from the line starts), then the caret is written.
+    fn apply_caret(&mut self, c: konoma_widgets::caret::Caret) {
+        let moved = c.top as i64 - self.tab.preview_top_line as i64;
+        if moved != 0 {
+            self.win_scroll_lines(moved.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        }
+        self.tab.preview_cursor_line = c.line;
+        self.tab.preview_cursor_col = c.col;
     }
 
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
-            self.tab.preview_cursor_line = 0;
+            let mut c = self.caret();
+            c.to_top();
             self.tab.preview_byte_top = 0;
-            self.tab.preview_top_line = 0;
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         } else {
             self.tab.preview_scroll = 0;
         }
@@ -4984,17 +4968,18 @@ impl App {
         let vh = self.tab.preview_viewport.max(1) as usize;
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
-        let cur = self.tab.preview_top_line;
         if let Some(b) = self
             .preview_win
             .as_mut()
             .map(|w| w.last_page_top(vh).unwrap_or(0))
         {
             self.tab.preview_byte_top = b;
-            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
         }
         if let Some(t) = total {
-            self.tab.preview_cursor_line = t.saturating_sub(1);
+            let mut c = self.caret();
+            c.to_bottom(t, vh);
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         }
     }
 
@@ -5031,23 +5016,9 @@ impl App {
     /// In visual mode the anchor stays fixed, so moving the cursor extends the selection.
     fn preview_cursor_move(&mut self, delta: i32) {
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1) as i64;
-        let next =
-            (self.tab.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
-        self.tab.preview_cursor_line = next;
-        self.follow_cursor();
-    }
-
-    /// Scroll the window (byte-based) just enough that the line cursor is on screen.
-    fn follow_cursor(&mut self) {
-        let vh = self.tab.preview_viewport.max(1) as usize;
-        let top = self.tab.preview_top_line;
-        let cur = self.tab.preview_cursor_line;
-        if cur < top {
-            self.win_scroll_lines(-((top - cur) as i32));
-        } else if cur >= top + vh {
-            self.win_scroll_lines((cur + 1 - (top + vh)) as i32);
-        }
+        let mut c = self.caret();
+        c.step(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
     }
 
     /// Windowed scroll (delta lines). Computes the surrounding line-head bytes each time to move preview_byte_top, and
@@ -5235,18 +5206,16 @@ impl App {
                 .collect();
         }
         let top_line = self.tab.preview_top_line;
-        // Clamp the 2D caret column to the visible cursor line's actual length and write it back (correcting `l`/`$` overrun).
-        // Since the caret line is always visible via viewport follow, its actual length can be obtained from content here.
-        if self.tab.preview_cursor_line >= top_line
-            && self.tab.preview_cursor_line < top_line + content.len()
-        {
-            let ln = &content[self.tab.preview_cursor_line - top_line];
-            let len: usize = ln.spans.iter().map(|s| s.content.chars().count()).sum();
-            // The read-only caret always sits on an actual character (0 for an empty line). `$` goes to the last character.
-            self.tab.preview_cursor_col = self.tab.preview_cursor_col.min(len.saturating_sub(1));
-        }
+        // Clamp the 2D caret column to the visible cursor line's actual length and write it back.
+        self.tab.preview_cursor_col = konoma_widgets::caret::settled_col(
+            &content,
+            top_line,
+            h,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+        );
         // Highlight the line cursor/selection range (before the gutter = column index is aligned to the body's start at 0).
-        let content = apply_preview_caret(
+        let content = konoma_widgets::caret::apply_caret(
             content,
             top_line,
             self.tab.preview_cursor_line,

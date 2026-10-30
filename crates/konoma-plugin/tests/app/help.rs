@@ -34,9 +34,21 @@ fn run(k: &AppKeys, size: (u16, u16), events: Vec<AppEvent>) -> (Vec<String>, us
 fn run_as(
     k: &AppKeys,
     name: &str,
-    (w, h): (u16, u16),
+    size: (u16, u16),
     events: Vec<AppEvent>,
 ) -> (Vec<String>, usize) {
+    let (rows, left, _) = run_marked(k, name, size, events);
+    (rows, left)
+}
+
+/// [`run_as`] plus where the caret and its line are drawn (the cells that are reversed or carry
+/// the line highlight), as text: a key that only moves the caret changes this and no row.
+fn run_marked(
+    k: &AppKeys,
+    name: &str,
+    (w, h): (u16, u16),
+    events: Vec<AppEvent>,
+) -> (Vec<String>, usize, String) {
     let dir = unique_tmp("app_help");
     std::fs::create_dir_all(dir.as_path()).unwrap();
     let p = dir.as_path().join(name);
@@ -72,7 +84,18 @@ fn run_as(
             row.trim_end().to_string()
         })
         .collect();
-    (rows, it.count())
+    let mut marks = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y)];
+            if c.modifier.contains(ratatui::style::Modifier::REVERSED) {
+                marks.push_str(&format!("R({x},{y})"));
+            } else if c.bg == ratatui::style::Color::Rgb(55, 60, 74) && x == 1 {
+                marks.push_str(&format!("L({y})"));
+            }
+        }
+    }
+    (rows, it.count(), marks)
 }
 
 /// Whether the help panel is on the screen.
@@ -143,13 +166,15 @@ fn the_footer_and_the_help_in_english() {
     assert!(r[2].starts_with("│line 01"), "{}", r[2]);
     assert_eq!(
         r[4],
-        "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
     );
     let (r, left) = run(&k, (70, 38), vec![key('?')]);
     assert_eq!(left, 0);
     let body = [
         "Preview: text / Markdown",
         "  g / G           top / bottom",
+        "  h / l / \u{2190} \u{2192}     horizontal scroll",
+        "  0 / $           line start / line end (horizontal)",
         "  Ctrl-f / Ctrl-b  ·  PageDown / PageUp  page",
         "  Ctrl-d / Ctrl-u half page",
         "  q / Esc         quit",
@@ -198,12 +223,14 @@ fn the_footer_and_the_help_in_japanese() {
     assert!(r[1].starts_with("│line 00"), "{}", r[1]);
     assert_eq!(
         r[4],
-        "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  ,:表示 …"
+        "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  h/l:横移動 …"
     );
     let (r, _) = run(&k, (70, 36), vec![key('?')]);
     let body = [
         "プレビュー: テキスト/Markdown",
         "  g / G           先頭 / 末尾",
+        "  h / l / \u{2190} \u{2192}     横スクロール(非折返し時)",
+        "  0 / $           行頭 / 行末へ(横)",
         "  Ctrl-f / Ctrl-b  ·  PageDown / PageUp  ページ",
         "  Ctrl-d / Ctrl-u 半ページ",
         "  q / Esc         終了",
@@ -248,7 +275,16 @@ fn the_help_closes_with_question_esc_and_q_and_scrolls() {
         let (r, left) = run(
             &k,
             (70, 6),
-            vec![key('?'), close.clone(), key('j'), key('q'), key('x')],
+            // Three `j` take the caret past the 3 rows of the window: the text scrolls.
+            vec![
+                key('?'),
+                close.clone(),
+                key('j'),
+                key('j'),
+                key('j'),
+                key('q'),
+                key('x'),
+            ],
         );
         assert_eq!(
             left, 1,
@@ -288,7 +324,7 @@ fn unbinding_q_changes_the_footer_and_the_help() {
     let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  Q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  Q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
     );
     // Both gone: only Ctrl-C quits, and the footer says that rather than `q`.
     let k = keys(
@@ -298,7 +334,7 @@ fn unbinding_q_changes_the_footer_and_the_help() {
     let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  C-c:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title"
+        "j/k:scroll  C-c:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
     );
     let (r, _) = run(&k, (70, 28), vec![key('?')]);
     assert!(
@@ -322,12 +358,14 @@ fn the_less_scheme_names_its_own_keys() {
     let (r, _) = run(&k, (80, 3), vec![]);
     assert_eq!(
         r[2],
-        "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  f/b/PgDn/PgUp:page  title"
+        "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
     );
     let (r, _) = run(&k, (80, 40), vec![key('?')]);
     let body = [
         "Preview: text / Markdown",
         "  g / G           top / bottom",
+        "  h / l / \u{2190} \u{2192}     horizontal scroll",
+        "  0 / $           line start / line end (horizontal)",
         "  f / b  \u{b7}  PageDown / PageUp  page",
         "  d / u           half page",
         "  q / Esc         quit",
@@ -526,6 +564,8 @@ fn a_full_width_key_aligns_the_help_by_cells() {
     let descs = [
         "toggle this help",
         "top / bottom",
+        "horizontal scroll",
+        "line start / line end (horizontal)",
         "back",
         "help",
         "half page",
@@ -552,8 +592,8 @@ fn a_full_width_key_aligns_the_help_by_cells() {
     assert!(cols.windows(2).all(|p| p[0] == p[1]), "{cols:?} {rows:?}");
     // The key is bound, so the footer's hint names it and it scrolls.
     let k = keys("[keys.text]\n\"あ\" = \"navigate:down\"\n", Lang::En);
-    let (r, _) = run(&k, (70, 5), vec![key('あ')]);
-    assert!(r[1].starts_with("│line 01"), "{r:?}");
+    let (r, _) = run(&k, (70, 5), vec![key('あ'); 3]);
+    assert!(r[1].starts_with("│line 02"), "{r:?}");
     assert!(r[4].contains("あ"), "{r:?}");
 }
 
@@ -568,11 +608,12 @@ fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
     for name in ["a.t", "a.o", "a.l"] {
         let (r, _) = run_as(&k, name, (80, 5), vec![]);
         assert_eq!(
-            r[4], "j/k:scroll  q:quit  ?:help  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page  title",
+            r[4], "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …",
             "{name}"
         );
-        let (r, _) = run_as(&k, name, (70, 5), vec![key('j')]);
-        assert!(r[1].starts_with("│line 01"), "{name}: `j` scrolled {r:?}");
+        // The window is 2 rows: three `j` take the caret past it and the text scrolls.
+        let (r, _) = run_as(&k, name, (70, 5), vec![key('j'); 3]);
+        assert!(r[1].starts_with("│line 02"), "{name}: `j` scrolled {r:?}");
     }
     // A canvas, a message, a view the app cannot show and a failure do not: no hint, no
     // position, and the key does nothing (the screen is the one before).
@@ -769,12 +810,21 @@ const FRAMES: [(&str, bool); 8] = [
 /// The frames that are a plugin's canvas: the loop takes the host's `Canvas` keys there.
 const CANVAS_FRAMES: [&str; 2] = ["a.c", "a.big"];
 
+/// The frames that are the file's text in the host's frame: they have the caret, so the
+/// sideways keys act whether the text wraps or not.
+const CARET_FRAMES: [&str; 3] = ["a.t", "a.o", "a.l"];
+
+/// The keys as the loop holds them over `frame`.
+fn keys_of(k: &AppKeys, frame: &str) -> AppKeys {
+    k.clone().with_caret(CARET_FRAMES.contains(&frame))
+}
+
 /// `acts_on` of the keys that belong to `frame`: the canvas's own over a canvas.
 fn frame_acts_on(k: &AppKeys, frame: &str, key: &Key, in_help: bool, scrolls: bool) -> bool {
     if CANVAS_FRAMES.contains(&frame) {
         k.canvas_acts_on(key, in_help)
     } else {
-        k.acts_on(key, in_help, scrolls)
+        keys_of(k, frame).acts_on(key, in_help, scrolls)
     }
 }
 
@@ -787,7 +837,7 @@ fn frame_footer_hints(
     if CANVAS_FRAMES.contains(&frame) {
         k.canvas_footer_hints()
     } else {
-        k.footer_hints(scrolls)
+        keys_of(k, frame).footer_hints(scrolls)
     }
 }
 
@@ -806,8 +856,10 @@ fn observe(
         ev.push(AppEvent::Key(p.clone()));
     }
     ev.push(AppEvent::Resize);
-    let (rows, left) = run_as(k, name, REAL_SIZE, ev);
+    let (mut rows, left, marks) = run_marked(k, name, REAL_SIZE, ev);
     assert!(left <= 1, "{left} events left");
+    // The caret is part of what the screen shows.
+    rows.push(marks);
     (rows, left == 1)
 }
 
@@ -843,6 +895,10 @@ fn acts_in_the_loop(k: &AppKeys, name: &str, help: Option<&Key>, key: &Key) -> b
     }
     for _ in 0..3 {
         setup.push(AppEvent::Key(Key::new(KeyCode::Down)));
+    }
+    // And two columns in (the caret of a text): `h` and `0` then move it back.
+    for _ in 0..2 {
+        setup.push(AppEvent::Key(Key::new(KeyCode::Right)));
     }
     let (before, before_quit) = observe(k, name, &setup, None);
     assert!(!before_quit, "the set-up alone ends the loop");
@@ -893,12 +949,17 @@ fn what_acts_on_a_frame_is_what_the_loop_does() {
         let k = keys(cfg, Lang::En);
         // The keys to try: the extras and every key the footer and the help name.
         let mut cands = extra.clone();
-        for t in k.footer_hints(true) {
+        for t in k
+            .footer_hints(true)
+            .into_iter()
+            .chain(k.clone().with_caret(true).footer_hints(true))
+        {
             cands.extend(token_keys(&t.text));
         }
         for sec in k
             .help_sections()
             .into_iter()
+            .chain(k.clone().with_caret(true).help_sections())
             .chain(k.canvas_help_sections())
         {
             for (keys_text, _) in &sec.rows {

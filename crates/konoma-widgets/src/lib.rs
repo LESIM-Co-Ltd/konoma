@@ -6,6 +6,7 @@
 // as code blocks with odd attributes. They are prose, not doctests.
 #![allow(rustdoc::invalid_codeblock_attributes)]
 
+pub mod caret;
 pub mod colors;
 pub mod footer_line;
 pub mod gif_player;

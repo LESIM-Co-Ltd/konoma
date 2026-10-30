@@ -1392,22 +1392,11 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     // convention as the table). The caret column is derived from the rendered line's REVERSED span
     // start position (= the display column, gutter included).
     if !wrap {
-        if let Some((caret_disp, caret_row)) = caret_display_col(&lines) {
-            let w = inner.width as usize;
-            let line_w = lines[caret_row].width();
-            if line_w <= w {
-                // If the caret line fits within the screen width, display it from the start (does not isolate a character on a short line).
-                app.tab.preview_hscroll = 0;
-            } else {
-                // A long line that doesn't fit follows with minimal movement (places the caret at the edge).
-                let h = app.tab.preview_hscroll as usize;
-                if caret_disp < h {
-                    app.tab.preview_hscroll = caret_disp as u16;
-                } else if caret_disp >= h + w {
-                    app.tab.preview_hscroll = (caret_disp + 1 - w) as u16;
-                }
-            }
-        }
+        app.tab.preview_hscroll = konoma_widgets::caret::follow_hscroll(
+            &lines,
+            inner.width as usize,
+            app.tab.preview_hscroll,
+        );
     }
     let mut para = Paragraph::new(Text::from(lines)).block(block);
     if wrap {
@@ -1426,23 +1415,6 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(e) = extent {
         render_scrollbar(frame, area, e);
     }
-}
-
-/// The `(display_column, row_index)` of the 2D caret in the rendered windowed lines, or None if it isn't drawn
-/// (e.g. an empty line). The caret is the single span carrying the REVERSED modifier, so its start column is the
-/// sum of the widths of the spans before it (gutter included). Used for non-wrap horizontal follow.
-fn caret_display_col(lines: &[ratatui::text::Line<'static>]) -> Option<(usize, usize)> {
-    use ratatui::style::Modifier;
-    for (row, line) in lines.iter().enumerate() {
-        let mut disp = 0usize;
-        for span in &line.spans {
-            if span.style.add_modifier.contains(Modifier::REVERSED) {
-                return Some((disp, row));
-            }
-            disp += span.width();
-        }
-    }
-    None
 }
 
 /// Shared component for a loading display that draws one line of "spinner  message" centered inside the frame.

@@ -20,6 +20,7 @@ mod display;
 mod doc_pictures;
 mod document;
 mod draw;
+mod edit_line;
 mod looping;
 mod pictures;
 mod space;
@@ -39,6 +40,7 @@ use crate::{Input, Manifest, Settings};
 pub use acts::AppActs;
 pub use display::Display;
 pub use doc_pictures::DocEnv;
+pub use edit_line::edit_line;
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };

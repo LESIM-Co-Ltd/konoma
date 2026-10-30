@@ -3,9 +3,10 @@
 //! must draw the same frame: the path title, the position label, the scrollbar on the right
 //! border and the rows inside, wrapped or cut and scrolled sideways.
 //!
-//! Not compared (known differences): `j`/`k` (the host moves a caret and the window follows it;
-//! the app has no caret), `h` `l` and `$` after the caret has moved (they follow the caret), the
-//! colors.
+//! The caret (the line cursor, the column cursor, the window that follows them) is shared code
+//! (`konoma_widgets::caret`): the same keys must give the same frame, the same cells carrying the
+//! caret and the line highlight, and the same line for `e`. Range selection (`v` `V`) and the
+//! other colors are not compared.
 
 use super::table_parity::{hints, panel_lines, presses, rows_of, same_footer, same_help_rows};
 use super::*;
@@ -199,12 +200,6 @@ fn the_text_frame_agrees_with_the_host() {
             for &tab_width in tab_widths {
                 for (w, h) in [(60u16, 12u16), (200, 26), (24, 8)] {
                     for spec in SPECS {
-                        // `$` puts the host's caret on the last character and the window follows
-                        // the caret's first cell: a last wide character is cut by one cell, where the
-                        // app (no caret) shows the end of the line.
-                        if name.starts_with("cjk") && spec.contains('$') {
-                            continue;
-                        }
                         let what =
                             format!("{name} wrap={wrap} tab_width={tab_width} {w}x{h} [{spec}]");
                         let host = host_text(&root, &name, wrap, tab_width, (w, h), spec);
@@ -240,6 +235,175 @@ fn the_text_frame_agrees_with_the_host() {
     assert!(pcts > 20, "{pcts}");
     assert!(thumbs > 100, "{thumbs}");
     assert!(marks > 100, "frames with a tab mark: {marks}");
+}
+
+/// The cells that carry the caret (the reversed character) or the highlighted line, by their
+/// place in the frame (from the top border), with the symbols: where the caret is drawn, not only
+/// what the text says.
+fn caret_cells(term: &Terminal<TestBackend>) -> Vec<(usize, u16, u8)> {
+    use ratatui::style::{Color, Modifier};
+    let rows = rows_of(term);
+    let top = rows
+        .iter()
+        .position(|l| l.starts_with('┌'))
+        .expect("a frame");
+    let bottom = rows
+        .iter()
+        .rposition(|l| l.starts_with('└'))
+        .expect("a frame end");
+    let buf = term.backend().buffer();
+    let mut out = Vec::new();
+    for y in top..=bottom {
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y as u16)];
+            let mut flags = 0u8;
+            if c.modifier.contains(Modifier::REVERSED) {
+                flags |= 1;
+            }
+            if c.bg == Color::Rgb(55, 60, 74) {
+                flags |= 2;
+            }
+            if flags != 0 {
+                out.push((y - top, x, flags));
+            }
+        }
+    }
+    out
+}
+
+/// Files for the caret: the shapes its motions and its follow of the window depend on.
+fn caret_fixtures() -> Vec<(String, String)> {
+    let mut v = fixtures();
+    // A file longer than every window, with lines wider and narrower than the screen.
+    let big: String = (0..400)
+        .map(|i| match i % 7 {
+            0 => format!("// {} {i}\n", "wide ".repeat(30)),
+            3 => "\n".to_string(),
+            _ => format!("let v{i} = {i};\n"),
+        })
+        .collect();
+    v.push(("big.rs".into(), big));
+    v.push(("single.rs".into(), "fn main() {}\n".into()));
+    v.push(("lone-noeol.rs".into(), "x".into()));
+    v.push((
+        "fullwidth.rs".into(),
+        (0..50)
+            .map(|i| {
+                if i % 5 == 4 {
+                    "\n".to_string()
+                } else {
+                    format!("{}{i}\n", "全角の文字だけの行です、".repeat(1 + i % 6))
+                }
+            })
+            .collect(),
+    ));
+    v
+}
+
+/// The motions of a text, each key once: the caret's lines, the pages, the ends and the columns.
+const MOTIONS: &[&str] = &[
+    "j", "k", "g", "G", "<C-f>", "<C-b>", "<C-d>", "<C-u>", "<PgDn>", "<PgUp>", "h", "l", "0", "$",
+];
+
+/// The key sequences, built from the cases and not by hand: every pair of motions; every motion
+/// after a start (the top, the end, a page, a half page, the line end, a run of `j` that passes
+/// the window) followed by `j` and by `k`; and runs of one key around the window's size, at both
+/// ends of the file.
+fn caret_specs() -> Vec<String> {
+    let mut out: Vec<String> = vec![String::new()];
+    for a in MOTIONS {
+        out.push((*a).to_string());
+        for b in MOTIONS {
+            out.push(format!("{a} {b}"));
+        }
+    }
+    let run = |k: &str, n: usize| vec![k; n].join(" ");
+    let starts = [
+        "G".to_string(),
+        "<C-f>".to_string(),
+        "<C-d>".to_string(),
+        "$".to_string(),
+        "l l l l l".to_string(),
+        run("j", 13),
+    ];
+    for st in &starts {
+        for m in MOTIONS {
+            for tail in ["j", "k"] {
+                out.push(format!("{st} {m} {tail}"));
+            }
+        }
+    }
+    // Runs around the sizes of the windows used (10, 6 rows): short of, at and past the window.
+    for n in [1usize, 2, 5, 6, 7, 9, 10, 11, 12, 13, 25, 60] {
+        out.push(run("j", n));
+        out.push(format!("G {}", run("k", n)));
+        out.push(format!("{} {}", run("j", n), run("k", n / 2 + 1)));
+        out.push(format!("{} G {}", run("j", n), run("j", 3)));
+    }
+    out
+}
+
+fn check_caret(wrap: bool) {
+    let dir = sandbox(if wrap { "caret-wrap" } else { "caret-nowrap" });
+    for (name, body) in caret_fixtures() {
+        std::fs::write(dir.join(&name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let specs = caret_specs();
+    let (mut checked, mut carets, mut lined, mut lines_seen) = (0usize, 0usize, 0usize, 0usize);
+    let mut at = std::collections::BTreeSet::new();
+    for (name, _) in caret_fixtures() {
+        for (w, h) in [(60u16, 12u16), (24, 8)] {
+            for spec in &specs {
+                // The small terminal takes the longer sequences (the window is a few rows there:
+                // the runs and the starts pass it); the pairs are checked in the larger one.
+                if w < 40 && spec.split_whitespace().count() == 2 {
+                    continue;
+                }
+                let what = format!("{name} wrap={wrap} {w}x{h} [{spec}]");
+                let host = host_text(&root, &name, wrap, 4, (w, h), spec);
+                let app = app_text(&root.join(&name), wrap, 4, (w, h - 1), spec);
+                let (hr, ar) = (frame_cells(&host.term), frame_cells(&app));
+                assert_eq!(
+                    hr,
+                    ar,
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&host.term).join("\n"),
+                    rows_of(&app).join("\n")
+                );
+                let (hc, ac) = (caret_cells(&host.term), caret_cells(&app));
+                assert_eq!(hc, ac, "{what}: the caret and its line differ");
+                let (he, ae) = (
+                    host.app.preview_edit_line_for_test(),
+                    konoma_plugin::app::edit_line(),
+                );
+                assert_eq!(he, ae, "{what}: the line `e` opens differs");
+                checked += 1;
+                carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
+                lined += usize::from(hc.iter().any(|c| c.2 & 2 != 0));
+                if let Some(l) = he {
+                    at.insert(l);
+                    lines_seen += 1;
+                }
+            }
+        }
+    }
+    // The bounds sit well below what the cases give (the exact counts are not the point).
+    assert!(checked >= 7000, "{checked}");
+    assert!(carets >= 5500, "frames with the caret character: {carets}");
+    assert!(lined >= 5500, "frames with the highlighted line: {lined}");
+    assert!(lines_seen >= 7000, "`e` lines compared: {lines_seen}");
+    assert!(at.len() >= 80, "distinct `e` lines: {}", at.len());
+}
+
+#[test]
+fn the_caret_agrees_with_the_host_wrapping() {
+    check_caret(true);
+}
+
+#[test]
+fn the_caret_agrees_with_the_host_scrolling_sideways() {
+    check_caret(false);
 }
 
 /// The title is the path relative to the folder the app was opened in, a framed text carries no
@@ -298,16 +462,8 @@ fn the_text_footer_agrees_with_the_host() {
                         hints(rows_of(&host.term).last().expect("footer")),
                         hints(rows_of(&app).last().expect("footer")),
                     );
-                    // The host always names `h/l:hscroll` and `0/$:line ends`; the app names
-                    // them only when the text can scroll sideways.
-                    let mut only = HOST_ONLY.to_vec();
-                    for t in ["h/l:hscroll", "0/$:line ends"] {
-                        if !af.iter().any(|a| a == t) {
-                            only.push(t);
-                        }
-                    }
                     let (alone, n) =
-                        same_footer(&what, &hf, &af, &only, &|t| t.starts_with("q:quit"));
+                        same_footer(&what, &hf, &af, HOST_ONLY, &|t| t.starts_with("q:quit"));
                     seen.extend(alone);
                     compared += n;
                     cut += usize::from(hf.last().is_some_and(|t| t.ends_with('…')));
@@ -395,8 +551,6 @@ const TEXT_HELP_HOST_ONLY: &[&str] = &[
     "T ",
     "P ",
     "F ",
-    "h / l",
-    "0 / $",
     "/ n / N",
     "Y ",
     "v / V",

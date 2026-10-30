@@ -108,6 +108,9 @@ pub struct AppKeys {
     lang: Lang,
     /// `[ui] wrap`: while the text wraps, the sideways keys do nothing and are not named.
     wrap: bool,
+    /// The text on screen has the caret (the file's text in the host's frame): the sideways keys
+    /// move it whether the text wraps or not.
+    caret: bool,
 }
 
 impl AppKeys {
@@ -118,7 +121,15 @@ impl AppKeys {
             defaults: CoreKeys::defaults(scheme_from_str(ui_keys)),
             lang: Lang::En,
             wrap: true,
+            caret: false,
         }
+    }
+
+    /// The same keys over a text that has the caret (`true`: the file's text in the host's
+    /// frame) or none (a message, a page that failed to draw, a document).
+    pub fn with_caret(mut self, caret: bool) -> AppKeys {
+        self.caret = caret;
+        self
     }
 
     /// The same keys for text that wraps (`true`, the default) or scrolls sideways (`[ui] wrap`).
@@ -166,7 +177,7 @@ impl AppKeys {
             // The sideways motions only act on text that does not wrap.
             HelpOp::Act(CoreAction::Navigate(
                 Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
-            )) => scrolls && !self.wrap,
+            )) => scrolls && (self.caret || !self.wrap),
             HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
@@ -285,7 +296,7 @@ impl AppKeys {
             None => self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
-                scrolls && !self.wrap
+                scrolls && (self.caret || !self.wrap)
             }
             Some(Act::Move(_)) => scrolls,
             Some(_) => true,
@@ -1411,6 +1422,19 @@ struct State {
     reopened_as: Option<ReopenedAs>,
     /// The first line shown of a text.
     scroll: usize,
+    /// The text on screen has the caret (the file's text in the host's frame).
+    caret_on: bool,
+    /// The line and the column (a char index) of the caret.
+    caret_line: usize,
+    caret_col: usize,
+    /// The text on screen is the file's own lines (not generated text): `e` has a line in it.
+    file_text: bool,
+    /// The Markdown document on screen was read from this file, which has this many lines
+    /// (`None`: it was converted, or there is none).
+    doc_edit: Option<(usize, std::path::PathBuf)>,
+    /// The number of lines and the rows shown of the text on screen (what the caret moves in).
+    lines: usize,
+    text_rows: usize,
     /// Cells scrolled off the left edge of a text that does not wrap.
     hscroll: u16,
     /// How the text and the documents look.
@@ -1537,6 +1561,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     // The keys follow the options the `,` menu changes (whether the text wraps decides which
     // sideways keys act), so the loop keeps its own copy.
     let mut own = keys_in.clone();
+    super::edit_line::clear();
     let mut st = State {
         display: cx.display.clone(),
         // The mistakes in the user's `[keys.<id>]` are told at start, as konoma's footer does.
@@ -1565,7 +1590,6 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     let mut view_due: Option<Instant> = None;
     let mut need_view = true;
     loop {
-        let keys = &own;
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
@@ -1674,7 +1698,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
                         cx,
-                        keys.lang(),
+                        own.lang(),
                         usize::from(body_rows),
                         &mut st,
                     )))
@@ -1685,7 +1709,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     view,
                     &mut st,
                     usize::from(body_rows),
-                    (&cx.lang, keys.lang()),
+                    (&cx.lang, own.lang()),
                     &frame_name,
                     pictures.as_mut(),
                 ),
@@ -1769,11 +1793,22 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 why,
                 "[can not preview]",
                 cx,
-                keys.lang(),
+                own.lang(),
                 usize::from(body_rows),
                 &mut st,
             );
         }
+        own.caret = windowed_text(&base);
+        match &base {
+            Frame::Text(t) if t.border.is_some() && st.file_text => {
+                super::edit_line::publish_text(st.caret_line)
+            }
+            Frame::Document(d) => {
+                super::edit_line::publish_document(&d.laid, d.scroll, d.wrap, st.doc_edit.clone())
+            }
+            _ => super::edit_line::clear(),
+        }
+        let keys = &own;
         let mode = shown_mode(&base, &st);
         let image_mode = image_mode(&base, pictures.as_ref(), &st);
         let paged = image_mode.is_some_and(|m| m.paged);
@@ -2595,7 +2630,40 @@ fn draw_frame<B: Backend>(
     Ok(())
 }
 
+/// The caret's moves over the text on screen: the host's, shared (`konoma_widgets::caret`).
+fn caret_by(m: Motion, st: &mut State) {
+    let rows = st.text_rows;
+    let page = i32::try_from(rows.saturating_sub(1).max(1)).unwrap_or(i32::MAX);
+    let half = i32::try_from((rows / 2).max(1)).unwrap_or(i32::MAX);
+    let mut c = konoma_widgets::caret::Caret {
+        top: st.scroll,
+        line: st.caret_line,
+        col: st.caret_col,
+    };
+    let total = st.lines;
+    match m {
+        Motion::Down => c.step(1, total, rows),
+        Motion::Up => c.step(-1, total, rows),
+        Motion::PageDown => c.page(page, total, rows),
+        Motion::PageUp => c.page(-page, total, rows),
+        Motion::HalfDown => c.page(half, total, rows),
+        Motion::HalfUp => c.page(-half, total, rows),
+        Motion::Top => c.to_top(),
+        Motion::Bottom => c.to_bottom(total, rows),
+        Motion::Left => c.col_move(-1),
+        Motion::Right => c.col_move(1),
+        Motion::LineHome => c.col_home(),
+        Motion::LineEnd => c.col_end(),
+    }
+    st.scroll = c.top;
+    st.caret_line = c.line;
+    st.caret_col = c.col;
+}
+
 fn scroll_by(m: Motion, st: &mut State) {
+    if st.caret_on {
+        return caret_by(m, st);
+    }
     let page = st.page;
     let half = st.half.unwrap_or((page / 2).max(1));
     match m {
@@ -2630,6 +2698,8 @@ fn frame_of(
 ) -> (Frame, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
+    st.caret_on = false;
+    st.file_text = false;
     match view {
         View::Table(t) => (
             Frame::Table(Box::new(TableFrame {
@@ -2661,6 +2731,7 @@ fn frame_of(
         View::Text(t) => {
             // The text sits in the host's frame: the window is the rows inside its border.
             let rows = rows.saturating_sub(2);
+            st.text_rows = rows;
             st.page = rows.saturating_sub(1).max(1);
             st.half = Some((rows / 2).max(1));
             let framed = |st: &mut State, lines: Vec<Line>, extent| {
@@ -2700,6 +2771,7 @@ fn frame_of(
                     framed(st, shown, extent)
                 }
                 TextSource::File(path) => {
+                    st.file_text = true;
                     let total = match &st.counted {
                         Some((p, n)) if *p == path => *n,
                         _ => match window::count_lines(&path) {
@@ -2730,6 +2802,7 @@ fn frame_of(
                 }
             };
             st.scrolls = true;
+            st.caret_on = matches!(&frame, Frame::Text(t) if t.border.is_some());
             (frame, None)
         }
         View::Document(dv) => {
@@ -2749,6 +2822,10 @@ fn frame_of(
             // A converted document cut at a budget, or a slide that had to leave something out,
             // says so in the title; a Markdown file cut at the display limit says so in its
             // text (see `document::lay_out`).
+            st.doc_edit = match &dv.origin {
+                crate::input::Origin::File(p) => Some((dv.markdown.lines().count(), p.clone())),
+                crate::input::Origin::Converted { .. } => None,
+            };
             let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
                 && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
             clamp(st, laid.rows(), inner_h);
@@ -2880,6 +2957,7 @@ fn failed_window(st: &mut State, rows: usize) -> Frame {
     let lines = body.as_ref().map_or(&[][..], |b| &b.lines[..]);
     clamp(st, lines.len(), rows);
     st.scrolls = true;
+    st.caret_on = false;
     let shown = lines
         .iter()
         .skip(st.scroll)
@@ -2935,6 +3013,27 @@ fn text_frame(
         lines.into_iter().map(ratatui_draw::into_line).collect(),
         st.display.tab_width,
     );
+    // The file's text in the host's frame has the caret: its line is kept inside the text and
+    // the column on a real character, and the line and the character are drawn as the host's.
+    let lines = if framed.is_some() {
+        st.caret_line = st.caret_line.min(st.lines.saturating_sub(1));
+        st.caret_col = konoma_widgets::caret::settled_col(
+            &lines,
+            st.scroll,
+            st.text_rows,
+            st.caret_line,
+            st.caret_col,
+        );
+        konoma_widgets::caret::apply_caret(
+            lines,
+            st.scroll,
+            st.caret_line,
+            st.caret_col,
+            konoma_widgets::caret::Selection::None,
+        )
+    } else {
+        lines
+    };
     let max_cols = lines
         .iter()
         .map(|l| {
@@ -2950,6 +3049,9 @@ fn text_frame(
     } else {
         st.width
     };
+    if framed.is_some() && !st.display.wrap {
+        st.hscroll = konoma_widgets::caret::follow_hscroll(&lines, usize::from(width), st.hscroll);
+    }
     let hscroll = settle_hscroll(st, max_cols, width);
     Frame::Text(super::draw::TextFrame {
         lines,
@@ -2965,6 +3067,7 @@ fn text_frame(
 
 /// Keep the last page full: the scroll is at most `total - rows`.
 fn clamp(st: &mut State, total: usize, rows: usize) {
+    st.lines = total;
     st.total = total.saturating_sub(rows);
     st.scroll = st.scroll.min(st.total);
 }
