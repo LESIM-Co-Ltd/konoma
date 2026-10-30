@@ -334,18 +334,18 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area); // the display area with the frame excluded
 
+    // Total display row count: the shared count of the text alone (not a block-carrying paragraph's
+    // `line_count`, which adds the frame's two border rows), otherwise the logical line count.
+    let total_rows = if wrap {
+        konoma_widgets::text::wrapped_row_count(body.as_str(), inner.width)
+    } else {
+        logical_lines
+    };
     let mut para = Paragraph::new(body).block(block);
     if wrap {
         // trim:false preserves leading whitespace (does not break code/text indentation).
         para = para.wrap(Wrap { trim: false });
     }
-
-    // Total display row count: let ratatui compute it while wrapping, otherwise use the logical line count.
-    let total_rows = if wrap {
-        para.line_count(inner.width)
-    } else {
-        logical_lines
-    };
 
     // Clamp so it never scrolls past the end (at least 1 line remains).
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
@@ -1624,6 +1624,57 @@ mod scroll_indicator_tests {
             }
         }
         (track, thumb)
+    }
+
+    /// A plain (non-windowed) text body drawn wrapped, scrolled as far as it goes: the last wrapped
+    /// row of the text is the last row inside the frame, with no blank rows under it. The height
+    /// the scroll is clamped against is the inside of the frame; a count that includes the frame's
+    /// two border rows let the scroll run two rows past the text.
+    #[test]
+    fn wrapped_plain_text_scrolled_to_the_end_ends_on_its_last_row() {
+        // Lines of different wrapped lengths (one to four rows at the width below).
+        let body: String = (0..30)
+            .map(|i| format!("l{i:02} {}\n", "word ".repeat(1 + (i * 7) % 16)))
+            .collect();
+        let dir = unique_tmp("konoma_ui_wrap_end");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.dat");
+        std::fs::write(&file, &body).unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        assert!(app.cfg.ui.wrap);
+        app.tab.preview_kind = Some(PreviewKind::Text(file.clone()));
+        app.tab.preview_path = Some(file);
+        app.tab.mode = crate::app::Mode::Preview;
+        let (w, h) = (30u16, 16u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        draw(&mut term, &mut app);
+        // Far past the end: the draw settles it.
+        app.tab.preview_scroll = u16::MAX;
+        draw(&mut term, &mut app);
+        let r = rows(&term);
+        // The frame's bottom border row, and the rows inside it above.
+        let bottom = r.iter().rposition(|l| l.starts_with('└')).expect("frame");
+        let inner: Vec<String> = r[1..bottom]
+            .iter()
+            .map(|l| l.trim_matches(|c| c == '│' || c == ' ').to_string())
+            .collect();
+        // The text's total wrapped rows, counted without the frame.
+        let total = Paragraph::new(body.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(w - 2);
+        assert_eq!(
+            usize::from(app.tab.preview_scroll),
+            total - usize::from(app.tab.preview_viewport),
+            "the scroll stops where the last row is the last row inside the frame"
+        );
+        assert!(
+            inner
+                .last()
+                .is_some_and(|l| l.starts_with("l29") || l.starts_with("word")),
+            "the last inside row shows the text, not blank:\n{}",
+            r.join("\n")
+        );
     }
 
     /// vim's `%P` semantics, in both languages: `All` when nothing is off-screen, `Top`/`Bot` at
