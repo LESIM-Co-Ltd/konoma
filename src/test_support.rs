@@ -106,6 +106,26 @@ pub(crate) fn count_resolve_preview_calls<T>(f: impl FnOnce() -> T) -> (T, usize
 }
 
 thread_local! {
+    /// How many times `plugins::plugin_id_of` got past its gate and read the file, **on this thread**.
+    static PLUGIN_ID_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::plugin_id_of` after the `is_previewable` gate, right before it sniffs.
+pub(crate) fn note_plugin_id_read() {
+    let _ = PLUGIN_ID_READS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times `plugin_id_of` read a file while it did)`.
+pub(crate) fn count_plugin_id_reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = PLUGIN_ID_READS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        PLUGIN_ID_READS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
     /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
     /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
     /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest

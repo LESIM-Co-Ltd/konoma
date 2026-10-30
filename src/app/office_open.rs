@@ -90,16 +90,11 @@ impl App {
 
     /// Where `e` goes for `path`: the shared [`konoma_plugin::launch::resolve_launch`] over the
     /// `edit` verb the plugin that shows the file declares, `[editor] ext` and `[external]`. The
-    /// declaration is found from the path alone (the footer asks every frame, so no file is read),
+    /// declaration comes from the same memoized full resolution `o` uses (`App::verb_plugin_id`),
     /// and `e` acts on the same answer the hint is worded from ([[hint-shown-iff-key-acts]]).
     pub(crate) fn edit_launch(&self, path: &Path) -> Launch {
         let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let decl = crate::plugins::declared_verb_by_path(
-            &self.cfg.preview.rules,
-            &self.cfg.plugin_disabled(),
-            &abs,
-            konoma_plugin::Verb::Edit,
-        );
+        let decl = self.declared_verb(&abs, konoma_plugin::Verb::Edit);
         konoma_plugin::launch::resolve_launch(
             konoma_plugin::Verb::Edit,
             OfficeOs::current(),
@@ -362,6 +357,8 @@ mod tests {
         app.cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
         for name in ["BOOK.XLSX", "Book.XlSx", "book.xlsx"] {
             let p = d.join(name);
+            // A real file: the decision passes the preview's gate, which a missing path does not.
+            std::fs::write(&p, b"x").unwrap();
             assert_eq!(app.edit_target(&p), EditTarget::Editor, "{name}");
             assert!(
                 !app.try_open_in_office(&p),
@@ -379,8 +376,17 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_handed_to_the_application_as_an_absolute_one() {
-        let (mut app, _d, log) = office_app("konoma_office_abs");
-        let rel = Path::new("some/dir/b.xlsx");
+        let (mut app, d, log) = office_app("konoma_office_abs");
+        // A relative spelling of a real file (the gate needs it to exist): up out of the working
+        // directory, then down the temporary directory's absolute path.
+        std::fs::write(d.join("b.xlsx"), b"x").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            rel.push("..");
+        }
+        rel.push(d.join("b.xlsx").strip_prefix("/").unwrap());
+        let rel = rel.as_path();
         assert!(rel.is_relative());
         assert!(app.try_open_in_office(rel));
         let log = log.lock().unwrap();
@@ -388,7 +394,7 @@ mod tests {
         for a in log.iter() {
             let last = a.args.last().unwrap();
             assert!(Path::new(last).is_absolute(), "{a:?}");
-            assert!(last.ends_with("some/dir/b.xlsx"), "{a:?}");
+            assert!(last.ends_with(rel.to_str().unwrap()), "{a:?}");
         }
     }
 

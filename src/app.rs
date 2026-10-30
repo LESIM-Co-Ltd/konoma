@@ -1745,6 +1745,10 @@ pub struct App {
     /// The read scope of the plugin document on screen, built once and reused between frames
     /// (see `App::with_scope_memo`); rebuilt when its inputs change.
     read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
+    /// The plugin that takes the file `e` / `o` / the footer ask about, decided once by the full
+    /// resolution (rules, content sniff, text probe) and reused until the file or the settings
+    /// change (see `App::verb_plugin_id`).
+    verb_plugin_memo: std::cell::RefCell<Option<open_app::VerbPluginMemo>>,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -2846,6 +2850,7 @@ impl App {
             scope_flashed: std::collections::HashSet::new(),
             md_scope_refusals: std::cell::RefCell::new(Vec::new()),
             read_scope_memo: std::cell::RefCell::new(None),
+            verb_plugin_memo: std::cell::RefCell::new(None),
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
