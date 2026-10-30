@@ -4332,10 +4332,13 @@ impl App {
             self.reload_media_if_changed();
             // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
             // it again (the old table stays on screen until the new one lands) and clamp the
-            // cursor within range (preserving its position).
+            // cursor within range (preserving its position). The picture plugins were handled
+            // just above (`reload_media_if_changed`, with its mtime guard); `reload_plugin` reads a
+            // picture's file again unconditionally, so it must not be reached from here for them.
             // (The `code` plugin has nothing to read again: its styler works on the lines the
             // window reader has just reopened.)
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+                && !self.shows_media_plugin()
                 && !self.shows_file_text_plugin()
             {
                 if !self.plugin_file_unchanged(named) {
@@ -4409,9 +4412,14 @@ impl App {
         if file_mtime(&path) == self.preview_media_mtime {
             return; // the target file is unchanged → avoid a wasted re-decode / external-tool run
         }
-        // Preserve the display state (zoom/center/page) and reload. The page count is the
-        // plugin's to report again (the file may have gained or lost pages); until it lands the
-        // page asked for is the one the user was on.
+        self.restart_media_load_keeping_view(&kind, &path);
+    }
+
+    /// Load the media again from scratch, keeping the display state (zoom/center/page). The page
+    /// count is the plugin's to report again (the file may have gained or lost pages); until it
+    /// lands the page asked for is the one the user was on. Shared by the file-change reload and a
+    /// picture plugin's `Outcome::Reload`, so both read the file again the same way.
+    pub(crate) fn restart_media_load_keeping_view(&mut self, kind: &PreviewKind, path: &Path) {
         let (zoom, center, page) = (
             self.tab.image_view.zoom,
             self.tab.image_view.center,
@@ -4419,7 +4427,7 @@ impl App {
         );
         self.clear_image(); // reset zoom/center/page/media generation
         self.tab.page = page.max(1);
-        self.start_media_load(&kind, &path); // also updates preview_media_mtime
+        self.start_media_load(kind, path); // also updates preview_media_mtime
         self.tab.image_view.zoom = zoom;
         self.tab.image_view.center = center;
     }

@@ -1344,14 +1344,17 @@ impl App {
             return;
         };
         // The picture plugins (a mermaid file among them) are started with the media load
-        // (`start_media_load`), which comes first and owns their show; this is not the place to
-        // touch it.
-        if self
+        // (`start_media_load`), which owns their show: a file to read again goes through it too,
+        // the way a changed file does (zoom, centre and page kept; the decode stays on the worker).
+        if let Some(kind) = self
             .tab
             .preview_kind
-            .as_ref()
-            .is_some_and(PreviewKind::is_media_plugin)
+            .clone()
+            .filter(PreviewKind::is_media_plugin)
         {
+            if keep_previous && self.kind_loads_media(&kind) {
+                self.restart_media_load_keeping_view(&kind, &path);
+            }
             return;
         }
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());

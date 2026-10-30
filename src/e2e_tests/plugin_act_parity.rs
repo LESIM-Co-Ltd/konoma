@@ -1196,7 +1196,6 @@ fn last_row(r: &Run) -> String {
 fn a_reload_opens_the_file_again_with_the_plugin_in_the_host_and_the_app() {
     let (_dir, root) = fixture();
     let mut compared = 0;
-    let mut skipped = 0;
     for kind in KINDS {
         // (steps, the counter after, how many sessions were opened, the file shown)
         for (steps, want_n, want_opens, want_log) in [
@@ -1232,22 +1231,15 @@ fn a_reload_opens_the_file_again_with_the_plugin_in_the_host_and_the_app() {
             reset_file(&root);
             let ar = app(&root, &o, APP_H, &steps, true);
             assert!(!hr.left && !ar.left, "{kind:?} {steps:?}: left");
-            if kind == Kind::Image {
-                // KNOWN DIVERGENCE: the host does not open a picture plugin's file again on
-                // `Outcome::Reload` (`reload_plugin` leaves the picture plugins to the media
-                // load); the app does. A picture draws no text either, so the file read cannot
-                // be compared. Only what the plugin saw is, until that is decided.
-                assert_eq!(hr.log, want_log, "{kind:?} {steps:?} host log");
-                assert_eq!(ar.log, want_log, "{kind:?} {steps:?} app log");
-                skipped += 1;
-                continue;
-            }
             let (hc, ac) = (hr.state.clone().unwrap(), ar.state.clone().unwrap());
             assert!(hc.starts_with(want_n), "{kind:?} {steps:?} host: {hc}");
             assert_eq!(hc, ac, "{kind:?} {steps:?}");
-            // The file was read again: the new session shows what the action wrote.
-            assert_eq!(file_of(&hr.rows).as_deref(), Some("v2"), "{kind:?} host");
-            assert_eq!(file_of(&ar.rows).as_deref(), Some("v2"), "{kind:?} app");
+            // The file was read again: the new session shows what the action wrote. (A picture
+            // draws no text: for it the new session itself, counted in `opens`, is the proof.)
+            if kind != Kind::Image {
+                assert_eq!(file_of(&hr.rows).as_deref(), Some("v2"), "{kind:?} host");
+                assert_eq!(file_of(&ar.rows).as_deref(), Some("v2"), "{kind:?} app");
+            }
             assert_eq!(hr.opens, want_opens, "{kind:?} {steps:?} host opens");
             assert_eq!(ar.opens, want_opens, "{kind:?} {steps:?} app opens");
             assert_eq!(hr.log, want_log, "{kind:?} {steps:?} host log");
@@ -1255,8 +1247,7 @@ fn a_reload_opens_the_file_again_with_the_plugin_in_the_host_and_the_app() {
             compared += 1;
         }
     }
-    assert_eq!(compared + skipped, KINDS.len() * 4);
-    assert_eq!(skipped, 4, "only the picture's reload is not compared");
+    assert_eq!(compared, KINDS.len() * 4);
 }
 
 /// A key the plugin answers with a reload (typed into a canvas): the file is opened again, the
