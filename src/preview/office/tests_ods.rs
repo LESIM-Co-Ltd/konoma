@@ -2168,6 +2168,79 @@ fn a_huge_space_count_is_counted_against_the_text_budget() {
 }
 
 #[test]
+fn displayed_error_text_is_charged_even_with_a_non_string_value_type() {
+    use calamine::Reader;
+    let dir = tmp("ods_error_text_budget");
+    let long = "x".repeat(200);
+    let rows = row(&format!(
+        r#"<table:table-cell office:value-type="float" office:string-value="" calcext:value-type="error"><text:p>{long}</text:p></table:table-cell>"#
+    ));
+    let p = write(
+        &dir,
+        "e.ods",
+        &ods_bytes(&content_xml("", &table("S", &rows)), None, None),
+    );
+    let mut oracle: calamine::Ods<_> = calamine::open_workbook(&p).unwrap();
+    assert_eq!(
+        oracle.worksheet_range("S").unwrap().get_value((0, 0)),
+        Some(&calamine::Data::String(long))
+    );
+    let limits = Limits {
+        max_text_bytes: 100,
+        ..Limits::default()
+    };
+    assert_eq!(
+        fmt_ods::read(&p, &limits).unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+}
+
+#[test]
+fn tabs_and_line_breaks_are_charged_before_calamine_allocates_them() {
+    use calamine::Reader;
+    let dir = tmp("ods_text_controls");
+    for control in [
+        "<text:tab/>",
+        "<text:line-break/>",
+        "</text:p><text:p>",
+        "&#x1F4F7;",
+    ] {
+        let rows = row(&text_cell(
+            "",
+            &format!("<text:p>a{}z</text:p>", control.repeat(200)),
+        ));
+        let p = write(
+            &dir,
+            "s.ods",
+            &ods_bytes(&content_xml("", &table("S", &rows)), None, None),
+        );
+        let mut oracle: calamine::Ods<_> = calamine::open_workbook(&p).unwrap();
+        let data = oracle.worksheet_range("S").unwrap();
+        let calamine::Data::String(text) = data.get_value((0, 0)).unwrap() else {
+            panic!()
+        };
+        assert_eq!(text.len(), if control.starts_with('&') { 802 } else { 202 });
+        assert_eq!(sheet0(&load(&p).unwrap()).display(0, 0), text);
+        let limits = Limits {
+            max_text_bytes: text.len() as u64,
+            ..Limits::default()
+        };
+        assert_eq!(
+            fmt_ods::read(&p, &limits).unwrap_err(),
+            OfficeError::TooLarge { what: "text" }
+        );
+        let exact = Limits {
+            max_text_bytes: text.len() as u64 + super::fmt_xlsx::STRING_OVERHEAD,
+            ..limits
+        };
+        assert_eq!(
+            fmt_ods::read(&p, &exact).unwrap().sheets["S"].text_bytes,
+            exact.max_text_bytes
+        );
+    }
+}
+
+#[test]
 fn a_very_long_cell_with_a_tab_is_not_collected_twice() {
     let long = "x".repeat((1 << 20) + 10);
     let rows = row(&text_cell(
@@ -2175,9 +2248,9 @@ fn a_very_long_cell_with_a_tab_is_not_collected_twice() {
         &format!("<text:p>{long}<text:tab/>y</text:p>"),
     ));
     let wb = load_ods_xml("ods_longtab", "", &table("S", &rows));
-    // Over the repair limit: left as calamine read it (still the whole text, minus the tab).
+    // calamine 0.38 keeps the tab too; konoma no longer needs a second text buffer.
     let d = sheet0(&wb).display(0, 0);
-    assert!(d.starts_with("xxx") && d.ends_with("xy"), "{}", d.len());
+    assert_eq!(d, format!("{long}\ty"));
 }
 
 // ---------------------------------------------------------------------------------------------

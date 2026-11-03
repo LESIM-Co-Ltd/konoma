@@ -306,6 +306,122 @@ fn builtin_and_custom_formats_apply_to_every_cell_kind() {
 }
 
 #[test]
+fn malformed_brt_names_are_rejected_like_calamine_038() {
+    use calamine::Reader;
+    let dir = tmp("xlsb_brtname");
+    let pkg = Pkg::new(None, vec![]);
+    let mut valid = vec![0; 9];
+    valid.extend(wide("Name"));
+    valid.extend(3u32.to_le_bytes());
+    valid.extend([0x1e, 1, 0]);
+    let mut bodies: Vec<Vec<u8>> = (0..=valid.len()).map(|n| valid[..n].to_vec()).collect();
+    let mut huge_name = valid.clone();
+    huge_name[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut huge_formula = valid.clone();
+    let at = 9 + wide("Name").len();
+    huge_formula[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    bodies.extend([huge_name, huge_formula]);
+    for body in bodies {
+        let mut wb = pkg.workbook_bin();
+        wb.truncate(wb.len() - rec(0x009D, &[]).len());
+        wb.extend(rec(0x0027, &body));
+        // Unknown records with nonempty bodies must be consumed, too (PR #761).
+        wb.extend(rec(0x777, &[0x27, 0, 0, 0]));
+        wb.extend(rec(0x009D, &[]));
+        let p = write(
+            &dir,
+            "n.xlsb",
+            &deflated(&[
+                ("xl/workbook.bin", &wb),
+                ("xl/_rels/workbook.bin.rels", pkg.rels().as_bytes()),
+            ]),
+        );
+        let oracle = calamine::Xlsb::new(std::io::Cursor::new(std::fs::read(&p).unwrap()));
+        assert_eq!(oracle.is_ok(), body == valid, "length {}", body.len());
+        assert_eq!(
+            fmt_xlsb::read_package(&p, &Limits::default()).is_ok(),
+            oracle.is_ok(),
+            "length {}",
+            body.len()
+        );
+    }
+}
+
+#[test]
+fn brt_names_beyond_the_format_pass_buffer_still_match_calamine() {
+    use calamine::Reader;
+    let dir = tmp("xlsb_long_brtname");
+    let pkg = Pkg::new(None, vec![]);
+    let mut name = vec![0; 9];
+    name.extend(wide(&"a".repeat(40_000)));
+    name.extend(3u32.to_le_bytes());
+    name.extend([0x1e, 1, 0]);
+    for missing in [0, 1, 2, 3, 4] {
+        let mut wb = pkg.workbook_bin();
+        wb.truncate(wb.len() - rec(0x009D, &[]).len());
+        wb.extend(rec(0x0027, &name[..name.len() - missing]));
+        wb.extend(rec(0x009D, &[]));
+        let p = write(
+            &dir,
+            "n.xlsb",
+            &deflated(&[
+                ("xl/workbook.bin", &wb),
+                ("xl/_rels/workbook.bin.rels", pkg.rels().as_bytes()),
+            ]),
+        );
+        let oracle = calamine::Xlsb::new(std::io::Cursor::new(std::fs::read(&p).unwrap()));
+        assert_eq!(oracle.is_ok(), missing == 0);
+        assert_eq!(
+            fmt_xlsb::read_package(&p, &Limits::default()).is_ok(),
+            oracle.is_ok()
+        );
+    }
+}
+
+#[test]
+fn integer_rk_dates_match_calamine_without_double_conversion() {
+    use calamine::Reader;
+    let dir = tmp("xlsb_rk_dates");
+    for date1904 in [false, true] {
+        let mut pkg = Pkg::new(
+            Some(styles_bin(&[], &[0, 14, 46])),
+            vec![sheet(
+                "S",
+                sheet_bin(&[(
+                    0,
+                    vec![
+                        rk_int(0, 0, 123),
+                        rk_int(1, 1, 46297),
+                        rk_int(2, 2, 2),
+                        real(3, 1, 46297.0),
+                    ],
+                )]),
+            )],
+        );
+        pkg.date1904 = date1904;
+        let p = pkg.write(&dir, "d.xlsb");
+        let mut oracle: calamine::Xlsb<_> = calamine::open_workbook(&p).unwrap();
+        let data = oracle.worksheet_range("S").unwrap();
+        let wb = load(&p).unwrap();
+        for col in [1, 2, 3] {
+            let calamine::Data::DateTime(dt) = data.get_value((0, col)).unwrap() else {
+                panic!()
+            };
+            assert_eq!(
+                wb.sheets[0].cell(0, col as usize).unwrap().cell_type(),
+                CellType::DateTime
+            );
+            assert_eq!(dt.as_f64(), if col == 2 { 2.0 } else { 46297.0 });
+        }
+        assert_eq!(text(&wb, 0, 0, 1), text(&wb, 0, 0, 3));
+        assert_eq!(
+            wb.sheets[0].cell(0, 0).unwrap().cell_type(),
+            CellType::Number
+        );
+    }
+}
+
+#[test]
 fn a_built_in_date_format_follows_the_locale() {
     let styles = styles_bin(&[], &[0, 14, 22]);
     let pkg = one_sheet(

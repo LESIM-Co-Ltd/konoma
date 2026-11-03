@@ -1634,6 +1634,72 @@ fn the_four_stream_names_are_found_at_the_root() {
 }
 
 #[test]
+fn workbook_precedes_book_without_regard_to_case_like_calamine_038() {
+    use calamine::Reader;
+    let dir = tmp("xls_case_priority");
+    for (book, workbook) in [
+        ("Book", "WORKBOOK"),
+        ("bOoK", "wOrKbOoK"),
+        ("BOOK", "Workbook"),
+    ] {
+        let p = dir.join("p.xls");
+        let chosen = harmless_book().stream();
+        write_cfb(
+            &p,
+            &[
+                (book, &book_with_far_cell(30, 2).stream()),
+                (workbook, &chosen),
+            ],
+        );
+        assert_eq!(
+            container::inspect(&p, &Limits::default()).unwrap(),
+            container::Detected::Xls
+        );
+        assert_eq!(
+            fmt_xls::read_workbook_stream(&p, &Limits::default()).unwrap(),
+            chosen
+        );
+        let mut oracle: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        let actual = oracle.worksheet_range("S").unwrap();
+        assert_eq!(actual.get_value((0, 0)), Some(&calamine::Data::Float(7.0)));
+        assert_eq!(actual.end(), Some((0, 0)));
+        assert_eq!(cell_text(&load(&p).unwrap(), 0, 0), "7.00");
+    }
+}
+
+#[test]
+fn case_duplicate_workbook_names_are_refused_before_calamine() {
+    let dir = tmp("xls_case_duplicate");
+    let p = dir.join("d.xls");
+    write_cfb(
+        &p,
+        &[
+            ("Workbook", &harmless_book().stream()),
+            ("ZZZZZZZZ", &book_with_far_cell(30, 2).stream()),
+        ],
+    );
+    let mut bytes = std::fs::read(&p).unwrap();
+    let name: Vec<_> = "ZZZZZZZZ"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let replacement: Vec<_> = "WORKBOOK"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let at = bytes.windows(name.len()).position(|s| s == name).unwrap();
+    bytes[at..at + name.len()].copy_from_slice(&replacement);
+    std::fs::write(&p, &bytes).unwrap();
+    // CFB names are case-insensitive: two such root siblings violate the directory ordering.
+    // Refusal keeps either unscanned stream out of the calamine container.
+    assert!(matches!(
+        container::inspect(&p, &Limits::default()),
+        Err(OfficeError::Corrupt(_))
+    ));
+    assert!(matches!(load(&p), Err(OfficeError::Corrupt(_))));
+}
+
+#[test]
 fn small_and_large_streams_in_both_sector_sizes_are_read_byte_for_byte() {
     use cfb::Version;
     let dir = tmp("xls_cfb_sizes");

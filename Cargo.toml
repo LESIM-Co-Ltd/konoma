@@ -238,7 +238,7 @@ tar = { version = "0.4.45", default-features = false }
 # not expose) are read by konoma's own "format pass" (preview/office/). In the tests calamine is also
 # the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
 # arithmetic lives in konoma's own numfmt).
-calamine = { version = "0.37", default-features = false }
+calamine = { version = "0.38", default-features = false }
 # Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
 # through calamine; the PowerPoint EMF/WMF pictures need it directly.
 encoding_rs = "0.8"

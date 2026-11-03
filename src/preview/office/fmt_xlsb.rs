@@ -159,6 +159,14 @@ impl<R: Read> Records<R> {
     /// Reads the next record: its id, with the first [`MAX_BODY`] bytes of its body in `buf`
     /// (the rest is skipped). `None` at a clean end of stream.
     fn next(&mut self, buf: &mut Vec<u8>) -> Result<Option<u16>, OfficeError> {
+        self.next_checked(buf, false)
+    }
+
+    fn next_checked(
+        &mut self,
+        buf: &mut Vec<u8>,
+        check_name: bool,
+    ) -> Result<Option<u16>, OfficeError> {
         let Some(b0) = self.byte()? else {
             return Ok(None);
         };
@@ -174,6 +182,11 @@ impl<R: Read> Records<R> {
             if b & 0x80 == 0 {
                 break;
             }
+        }
+        if check_name && id == 0x0027 {
+            check_name_body(&mut self.r, len)?;
+            buf.clear();
+            return Ok(Some(id));
         }
         let keep = len.min(MAX_BODY);
         buf.clear();
@@ -191,6 +204,32 @@ impl<R: Read> Records<R> {
         }
         Ok(Some(id))
     }
+}
+
+/// calamine 0.38 PR #761 checks BrtName's header, wide name and length-prefixed formula
+/// against the record itself. Stream the check so a valid name beyond MAX_BODY keeps constant
+/// memory and the following record cannot supply missing bytes.
+fn check_name_body(src: &mut impl Read, len: usize) -> Result<(), OfficeError> {
+    let bad = || OfficeError::Corrupt("truncated BrtName record".into());
+    let mut body = src.take(len as u64);
+    let mut head = [0; 13];
+    body.read_exact(&mut head).map_err(|_| bad())?;
+    let name_bytes = u64::from(u32_at(&head, 9).unwrap()) * 2;
+    if io::copy(&mut (&mut body).take(name_bytes), &mut io::sink()).map_err(|_| bad())?
+        != name_bytes
+    {
+        return Err(bad());
+    }
+    let mut count = [0; 4];
+    body.read_exact(&mut count).map_err(|_| bad())?;
+    if u64::from(u32::from_le_bytes(count)) > body.limit() {
+        return Err(bad());
+    }
+    let remaining = body.limit();
+    if io::copy(&mut body, &mut io::sink()).map_err(|_| bad())? != remaining {
+        return Err(bad());
+    }
+    Ok(())
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {
@@ -228,7 +267,17 @@ pub(crate) fn parse_workbook<R: Read>(
     let mut buf = Vec::new();
     let mut date1904 = false;
     let mut sheets = Vec::new();
-    while let Some(id) = rd.next(&mut buf)? {
+    let mut names = false;
+    while let Some(id) = rd.next_checked(&mut buf, names)? {
+        if names {
+            match id {
+                0x009D | 0x0225 | 0x018D | 0x0180 | 0x009A | 0x0252 | 0x0229 | 0x009B | 0x0084 => {
+                    break
+                }
+                _ => {} // Records::next has consumed the entire body, including unknown types.
+            }
+            continue;
+        }
         match id {
             BRT_WB_PROP => date1904 = buf.first().is_some_and(|b| b & 1 != 0),
             BRT_BUNDLE_SH => {
@@ -248,7 +297,7 @@ pub(crate) fn parse_workbook<R: Read>(
                 }
                 sheets.push((name, rid));
             }
-            BRT_END_BUNDLE_SHS => break,
+            BRT_END_BUNDLE_SHS => names = true,
             _ => {}
         }
     }
