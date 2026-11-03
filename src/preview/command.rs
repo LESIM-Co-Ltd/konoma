@@ -19,12 +19,11 @@
 // This module only builds argv and runs the child process; it does not know about `App`/`MediaJob`
 // (kept a pure/testable leaf, like `preview::video`).
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -347,13 +346,30 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// the process could not even be launched (missing binary, permission denied, ...).
 pub fn run_detached(argv: &[String]) -> Result<()> {
     let (prog, rest) = argv.split_first().context("empty command template")?;
-    Command::new(prog)
+    let child = Command::new(prog)
         .args(rest)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("failed to launch `{prog}`"))?;
+    // The player owns its lifetime; a waiter still reaps it without holding up the caller.
+    let pending = Arc::new(Mutex::new(Some(child)));
+    let waiter = pending.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("detached-command".into())
+        .spawn(move || {
+            if let Some(mut child) = waiter.lock().unwrap().take() {
+                let _ = child.wait();
+            }
+        })
+    {
+        if let Some(mut child) = pending.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(error).context("failed to start command waiter");
+    }
     Ok(())
 }
 
@@ -376,9 +392,11 @@ pub fn run_detached(argv: &[String]) -> Result<()> {
 /// disagree on how much is usable) — this is what stops a runaway/infinite-output command (`yes`,
 /// a `command="cat {path}"` misconfiguration reading a device file, ...) from growing this buffer
 /// without bound: once the cap is hit the child is killed rather than waiting for a natural exit
-/// that may never come. Both streams are drained on background threads (this thread instead polls
-/// `try_wait`, below) so a child that interleaves writes to both can't deadlock this by filling one
-/// pipe's small OS buffer while only the other is drained.
+/// that may never come. Both nonblocking streams are drained in bounded batches, so neither a full
+/// pipe nor a detached process retaining a pipe can prevent the deadline from being checked.
+/// Capture commands exist only to produce this output. Their process group is stopped even after
+/// a successful exit, so background helpers cannot leak into later previews. Detached players
+/// use `run_detached` instead and retain their own lifetime.
 ///
 /// Separately, the whole run is bounded by `RUN_TIMEOUT`: a command that produces *no* output at
 /// all (so the cap above never triggers) and never exits on its own used to block this function —
@@ -394,11 +412,6 @@ pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBu
 /// only to turn "never returns" into "eventually gives up," not to police normal runtimes.
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How often the poll loop in `run_capture_impl` re-checks the child and the reader threads'
-/// progress. Small enough that both a timeout and an output-cap kill are noticed promptly, without
-/// busy-polling.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-
 /// `run_capture`'s real body, parameterized on the timeout purely for testability: `run_capture`
 /// itself always passes the real, generous `RUN_TIMEOUT`; tests pass something short so a
 /// deliberately-hanging fixture command doesn't make the test suite itself slow (see
@@ -409,70 +422,46 @@ fn run_capture_impl(
     uses_out: bool,
     timeout: Duration,
 ) -> Result<PathBuf> {
+    run_capture_configured(argv, out, uses_out, timeout, |_| {})
+}
+
+fn run_capture_configured(
+    argv: &[String],
+    out: &Path,
+    uses_out: bool,
+    timeout: Duration,
+    configure: impl FnOnce(&mut Command),
+) -> Result<PathBuf> {
     let (prog, rest) = argv.split_first().context("empty command template")?;
-    let mut child = Command::new(prog)
-        .args(rest)
+    let mut command = Command::new(prog);
+    use std::os::unix::process::CommandExt;
+    command.args(rest).process_group(0);
+    configure(&mut command);
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to launch `{prog}`"))?;
 
-    let mut stdout = child.stdout.take().expect("stdout was piped above");
-    let mut stderr = child.stderr.take().expect("stderr was piped above");
-    let cap = crate::preview::text::MAX_BYTES;
-
-    // Draining stdout was previously synchronous on this thread; it now runs on a background
-    // thread (matching stderr) so this thread is free to poll `try_wait` below with a deadline —
-    // a blocking synchronous read can't be interrupted by a timeout on the same thread. The shared
-    // flag lets this thread notice a cap-triggered truncation and kill the child immediately
-    // (rather than only discovering it once the deadline arrives), preserving the prior fast-kill
-    // behavior for a runaway-output command like `yes`.
-    let stdout_capped = Arc::new(AtomicBool::new(false));
-    let stdout_capped_writer = Arc::clone(&stdout_capped);
-    let stdout_handle = std::thread::spawn(move || {
-        let (buf, truncated) = capped_read(&mut stdout, cap);
-        if truncated {
-            stdout_capped_writer.store(true, Ordering::Release);
+    let capture = konoma_plugin::proc::process::collect_output(
+        &mut child,
+        || false,
+        Some(timeout),
+        crate::preview::text::MAX_BYTES,
+        Duration::ZERO,
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            anyhow::anyhow!("timed out after {}s without exiting", timeout.as_secs())
+        } else {
+            anyhow::Error::new(error).context(format!("failed to wait for `{prog}`"))
         }
-        (buf, truncated)
-    });
-    let stderr_handle = std::thread::spawn(move || capped_read(&mut stderr, cap));
-
-    let deadline = Instant::now() + timeout;
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if stdout_capped.load(Ordering::Acquire) {
-                    // A runaway/infinite-output command: stop waiting for a natural exit and reap
-                    // it instead (same trigger the old synchronous-read version killed on).
-                    let _ = child.kill();
-                    break child
-                        .wait()
-                        .with_context(|| format!("failed to wait for `{prog}`"))?;
-                }
-                if Instant::now() >= deadline {
-                    timed_out = true;
-                    let _ = child.kill();
-                    break child
-                        .wait()
-                        .with_context(|| format!("failed to wait for `{prog}`"))?;
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(e) => return Err(e).context(format!("failed to wait for `{prog}`")),
-        }
-    };
-
-    let (stdout_buf, stdout_truncated) =
-        stdout_handle.join().unwrap_or_else(|_| (Vec::new(), false));
-    let (stderr_buf, _) = stderr_handle.join().unwrap_or_else(|_| (Vec::new(), false));
-
-    if timed_out {
-        bail!("timed out after {}s without exiting", timeout.as_secs());
-    }
+    })?;
+    let stdout_buf = capture.output.stdout;
+    let stderr_buf = capture.output.stderr;
+    let status = capture.output.status;
+    let stdout_truncated = capture.stdout_truncated;
 
     // A capped run's exit status is meaningless (the child was killed mid-flight rather than
     // allowed to finish naturally) — only judge success/failure when it ran to a real EOF.
@@ -542,31 +531,6 @@ fn find_suffixed_out(out: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Reads from `r` until EOF or `cap` bytes, whichever comes first — the rest is discarded, not
-/// buffered (that's the whole point: bounding memory against a command that never stops writing).
-/// Returns `(bytes read, whether the cap was hit before EOF)`.
-fn capped_read(r: &mut impl Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        if buf.len() >= cap {
-            return (buf, true);
-        }
-        match r.read(&mut chunk) {
-            Ok(0) => return (buf, false), // EOF
-            Ok(n) => {
-                let room = cap - buf.len();
-                let take = n.min(room);
-                buf.extend_from_slice(&chunk[..take]);
-                if take < n {
-                    return (buf, true); // filled the cap mid-chunk
-                }
-            }
-            Err(_) => return (buf, false), // a read error ends the capture, not a crash
-        }
-    }
-}
-
 /// The first non-empty, trimmed line of `bytes` (lossily decoded), or None if there isn't one.
 fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
     String::from_utf8_lossy(bytes)
@@ -579,6 +543,67 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn capture_success_leaves_no_background_helper() {
+        let dir = crate::test_support::unique_tmp("capture-background");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "/bin/sleep 300 </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' \"$!\" >&3\nexit 0",
+        );
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("output");
+        let expected = out.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture(&[program], &out, false))
+                .unwrap();
+        });
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let gone = fixture.gone();
+        assert_eq!(result.unwrap().unwrap(), expected);
+        worker.join().unwrap();
+        assert!(gone, "capture left its background helper alive");
+    }
+
+    #[test]
+    fn capture_stops_a_command_that_floods_stderr() {
+        let dir = crate::test_support::unique_tmp("capture-stderr-cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "printf '%s\\n' \"$$\" >&3\nexec /usr/bin/yes stderr-cap-fixture >&2",
+        );
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("output");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture_impl(
+                &[program],
+                &out,
+                false,
+                std::time::Duration::MAX,
+            ))
+            .unwrap();
+        });
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        if result.is_err() {
+            fixture.stop();
+        }
+        let gone = fixture.gone();
+        worker.join().unwrap();
+        let error = result
+            .expect("the stderr cap must stop the command")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error, "stderr-cap-fixture",
+            "the stderr cap, rather than the deadline, must stop the command"
+        );
+        assert!(gone, "the stderr writer survived capture");
+    }
+    #[test]
     fn only_an_uncaught_main_thread_panic_removes_the_temp_dir() {
         assert!(panic_ends_process(Some("main"), false));
         assert!(!panic_ends_process(Some("main"), true));
@@ -588,6 +613,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::test_support::command::CommandOutput;
     use crate::test_support::unique_tmp;
 
     /// `TERMINAL_WRITE` is process-global, so the tests that take it (directly or through the exit
@@ -1123,7 +1149,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env(ENV, "1")
-                .output()
+                .supervised_output()
                 .unwrap();
             assert!(
                 out.status.success(),
@@ -1170,7 +1196,7 @@ mod tests {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([name, "--exact", "--test-threads=1", "--nocapture"])
                 .env(ENV, "1")
-                .output()
+                .supervised_output()
                 .unwrap();
             assert!(
                 out.status.success(),
@@ -1445,7 +1471,7 @@ mod tests {
             ])
             .env(CHILD_ENV, "1")
             .env("TMPDIR", &*tmp)
-            .output()
+            .supervised_output()
             .unwrap();
         assert!(
             out.status.success(),
@@ -1470,5 +1496,50 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert!(left.is_empty(), "the child left {left:?} in its TMPDIR");
+    }
+
+    mod process_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/process_fixture.rs"
+        ));
+    }
+
+    #[test]
+    fn capture_deadline_includes_detached_pipe_holders() {
+        use std::os::unix::process::CommandExt;
+        let d = crate::test_support::unique_tmp("capture-detached");
+        std::fs::create_dir_all(&d).unwrap();
+        let out = d.join("out");
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run_capture_configured(
+                &["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                &out,
+                false,
+                Duration::from_millis(100),
+                |command| {
+                    command.process_group(0);
+                    ready_tx
+                        .send(process_fixture::PendingHelper::attach(command, true, false))
+                        .unwrap();
+                },
+            );
+            tx.send(result).unwrap();
+        });
+        let pending = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut helper = pending.ready();
+        let result = rx.recv_timeout(Duration::from_secs(6));
+        if result.is_err() {
+            helper.stop();
+        }
+        worker.join().unwrap();
+        helper.stop();
+        assert!(helper.gone());
+        let error = result
+            .expect("capture must bound detached pipe collection")
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error:#}");
     }
 }

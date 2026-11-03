@@ -649,9 +649,14 @@ impl Config {
         let Some(path) = dirs_config_path() else {
             return (Config::default(), None);
         };
+        Self::load_path_reporting(&path)
+    }
+
+    /// The same loader with an explicit path, also used by the plugin CLI and isolated tests.
+    pub(crate) fn load_path_reporting(path: &Path) -> (Self, Option<String>) {
         // An absent config file is normal (it runs on defaults). Only report an error when it can
         // be read but is broken.
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = std::fs::read_to_string(path) else {
             return (Config::default(), None);
         };
         match toml::from_str::<Config>(&text) {

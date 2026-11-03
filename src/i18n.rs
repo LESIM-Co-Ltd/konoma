@@ -14,6 +14,17 @@ pub fn resolve_lang(s: &str) -> Lang {
     Lang::resolve_with(s, os_lang)
 }
 
+pub(crate) fn config_language(config: &crate::config::Config) -> Lang {
+    config_language_with(config, os_lang)
+}
+
+pub(crate) fn config_language_with(
+    config: &crate::config::Config,
+    os: impl FnOnce() -> Lang,
+) -> Lang {
+    Lang::resolve_with(&config.ui.lang, os)
+}
+
 #[cfg(test)]
 fn os_lang() -> Lang {
     Lang::En

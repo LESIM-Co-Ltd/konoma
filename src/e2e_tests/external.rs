@@ -7,8 +7,10 @@ use super::*;
 use crate::plugins::external::{self, Env};
 use crate::plugins::external_testkit::{table, Lab, Mode, Rig, PATIENCE};
 use crate::plugins::{shared_registry, PluginTables};
+use crate::test_support::command::CommandOutput;
 use konoma_plugin::registry::PluginOrigin;
 use konoma_plugin::Plugin;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -702,9 +704,12 @@ fn e2e_ext_a_child_that_takes_too_long_shows_cannot_preview_with_a_reason() {
 
 /// A pid that existed and was reaped.
 fn dead_pid() -> u32 {
-    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let mut done = std::process::Command::new("true")
+        .process_group(0)
+        .spawn()
+        .unwrap();
     let pid = done.id();
-    done.wait().unwrap();
+    konoma_plugin::proc::process::wait(&mut done, std::time::Duration::from_secs(10)).unwrap();
     pid
 }
 
@@ -920,7 +925,7 @@ fn e2e_ext_the_exit_cleanup_really_stops_the_children() {
                 "--nocapture",
             ])
             .env(ENV, "1")
-            .output()
+            .supervised_output()
             .unwrap();
         assert!(
             out.status.success(),

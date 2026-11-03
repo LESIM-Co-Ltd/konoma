@@ -5,11 +5,12 @@ use std::io::{Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use konoma_plugin::proc::process::{CancellablePipe, Cancellation};
 use konoma_plugin::proc::{frame, proto::*, wire};
 use konoma_plugin::{Input, Manifest, ViewReq};
 
@@ -17,25 +18,25 @@ use crate::{Limits, Options};
 
 type WriteJob = (Vec<u8>, mpsc::SyncSender<Result<(), String>>);
 
-static SIGNAL_CLEANUP: AtomicBool = AtomicBool::new(false);
-static ACTIVE_GROUP: AtomicI32 = AtomicI32::new(0);
+static CAUGHT_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn stop_on_signal(signal: libc::c_int) {
-    let pid = ACTIVE_GROUP.load(Ordering::SeqCst);
-    // SAFETY: only async-signal-safe syscalls; the published pid names the CLI's owned group.
-    unsafe {
-        if pid > 0 {
-            libc::kill(-pid, libc::SIGKILL);
-            libc::waitpid(pid, std::ptr::null_mut(), 0);
-        }
-        libc::_exit(128 + signal);
-    }
+    let _ = CAUGHT_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-/// Installed only by the executable, leaving embedding applications' signal policy alone.
+fn interrupted() -> bool {
+    CAUGHT_SIGNAL.load(Ordering::SeqCst) != 0
+}
+
+pub(crate) fn signal_exit_code() -> Option<u8> {
+    let signal = CAUGHT_SIGNAL.load(Ordering::SeqCst);
+    (signal != 0).then_some((128 + signal) as u8)
+}
+
+/// Installed only by the executable; embedding applications retain their signal policy.
 pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
     for signal in [libc::SIGINT, libc::SIGTERM] {
-        // SAFETY: zeroed sigaction is initialized before installation; the handler is static.
+        // SAFETY: the action is initialized, and the handler only records an atomic value.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = stop_on_signal as *const () as usize;
@@ -45,43 +46,7 @@ pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
             }
         }
     }
-    SIGNAL_CLEANUP.store(true, Ordering::SeqCst);
     Ok(())
-}
-
-struct BlockSignals(Option<libc::sigset_t>);
-
-impl BlockSignals {
-    fn new() -> std::io::Result<Self> {
-        if !SIGNAL_CLEANUP.load(Ordering::SeqCst) {
-            return Ok(Self(None));
-        }
-        // The CLI has joined the preceding connection's threads before spawning another child.
-        // Block delivery until the new group is published, closing the spawn/registration gap.
-        unsafe {
-            let mut set = std::mem::zeroed();
-            let mut old = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            libc::sigaddset(&mut set, libc::SIGINT);
-            libc::sigaddset(&mut set, libc::SIGTERM);
-            let error = libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
-            if error != 0 {
-                return Err(std::io::Error::from_raw_os_error(error));
-            }
-            Ok(Self(Some(old)))
-        }
-    }
-}
-
-impl Drop for BlockSignals {
-    fn drop(&mut self) {
-        if let Some(old) = &self.0 {
-            // SAFETY: restore this thread's saved mask after the group was published.
-            unsafe {
-                libc::pthread_sigmask(libc::SIG_SETMASK, old, std::ptr::null_mut());
-            }
-        }
-    }
 }
 
 pub(crate) struct Connection {
@@ -93,12 +58,23 @@ pub(crate) struct Connection {
     tail: Arc<Mutex<VecDeque<u8>>>,
     threads: Vec<JoinHandle<()>>,
     stopped: bool,
+    cancel: Cancellation,
+    child: Arc<Mutex<std::process::Child>>,
 }
 
 impl Connection {
     pub fn spawn(options: &Options, limits: &Limits) -> Result<Self, String> {
-        let blocked = BlockSignals::new().map_err(|e| e.to_string())?;
-        let child_mask = blocked.0;
+        Self::spawn_with(options, limits, |_| {})
+    }
+
+    fn spawn_with(
+        options: &Options,
+        limits: &Limits,
+        configure: impl FnOnce(&mut Command),
+    ) -> Result<Self, String> {
+        if interrupted() {
+            return Err("interrupted".into());
+        }
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "konoma-plugin-test-{}-{}",
@@ -124,11 +100,6 @@ impl Connection {
         // SAFETY: setrlimit is async-signal-safe between fork and exec.
         unsafe {
             cmd.pre_exec(move || {
-                if let Some(mask) = &child_mask {
-                    if libc::sigprocmask(libc::SIG_SETMASK, mask, std::ptr::null_mut()) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
                 let none = libc::rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
@@ -139,6 +110,7 @@ impl Connection {
                 Ok(())
             });
         }
+        configure(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
@@ -147,16 +119,38 @@ impl Connection {
             }
         };
         let pid = child.id() as i32;
-        if SIGNAL_CLEANUP.load(Ordering::SeqCst) {
-            ACTIVE_GROUP.store(pid, Ordering::SeqCst);
-        }
-        drop(blocked);
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
+
+        let cancel = Cancellation::with_external(interrupted);
+        let pipes = (|| -> std::io::Result<_> {
+            Ok((
+                CancellablePipe::new(child.stdin.take().expect("piped stdin"), cancel.clone())?,
+                CancellablePipe::new(child.stdout.take().expect("piped stdout"), cancel.clone())?,
+                CancellablePipe::new(child.stderr.take().expect("piped stderr"), cancel.clone())?,
+            ))
+        })();
+        let (mut stdin, mut stdout, mut stderr) = match pipes {
+            Ok(pipes) => pipes,
+            Err(error) => {
+                konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(error.to_string());
+            }
+        };
         let (exit_tx, exit) = mpsc::sync_channel(1);
+        let child = Arc::new(Mutex::new(child));
+        let watched = child.clone();
+        let ending = cancel.clone();
         let waiter = std::thread::spawn(move || {
-            let _ = exit_tx.send(child.wait());
+            while !ending.is_cancelled() {
+                let status = konoma_plugin::proc::process::poll_exit(&watched.lock().unwrap());
+                match status {
+                    Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                    result => {
+                        let _ = exit_tx.send(result.map(Option::unwrap));
+                        break;
+                    }
+                }
+            }
         });
         let (frame_tx, frames) = mpsc::sync_channel(1);
         let reader = std::thread::spawn(move || loop {
@@ -212,6 +206,8 @@ impl Connection {
             tail,
             threads: vec![waiter, reader, sender, logger],
             stopped: false,
+            child,
+            cancel,
         })
     }
 
@@ -358,10 +354,11 @@ impl Connection {
     pub fn finish(&mut self) -> String {
         if !self.stopped {
             self.stopped = true;
-            // SAFETY: pid is the group leader created by process_group(0). Never a name match.
-            unsafe {
-                libc::kill(-self.pid, libc::SIGKILL);
-            }
+            self.cancel.cancel();
+            let mut child = self.child.lock().unwrap();
+            debug_assert_eq!(child.id(), self.pid as u32);
+            konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+            drop(child);
             self.writer.take();
             // Release a reader that may be waiting to hand off unsolicited frames.
             let (_tx, empty) = mpsc::channel();
@@ -369,7 +366,6 @@ impl Connection {
             for thread in self.threads.drain(..) {
                 let _ = thread.join();
             }
-            let _ = ACTIVE_GROUP.compare_exchange(self.pid, 0, Ordering::SeqCst, Ordering::SeqCst);
             let _ = std::fs::remove_dir_all(self.side.dir());
         }
         let bytes: Vec<u8> = self
@@ -404,6 +400,54 @@ pub(crate) fn cx() -> wire::WCx {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    mod process_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/process_fixture.rs"
+        ));
+    }
+
+    #[test]
+    fn handshake_timeout_cleans_up_with_detached_pipe_holders() {
+        let options = Options {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exec sleep 300".into()],
+            plugin: None,
+            files: vec![],
+        };
+        let limits = Limits {
+            start_timeout: Duration::from_millis(100),
+            ..Limits::default()
+        };
+        let mut pending = None;
+        let connection = Connection::spawn_with(&options, &limits, |command| {
+            pending = Some(process_fixture::PendingHelper::attach(command, true, false));
+        })
+        .unwrap();
+        let mut helper = pending.unwrap().ready();
+        let pid = connection.pid;
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = connection.handshake(&limits, None);
+            drop(connection);
+            tx.send(result).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(6));
+        if result.is_err() {
+            helper.stop();
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+        worker.join().unwrap();
+        let error = result
+            .expect("detached pipes must not block cleanup")
+            .unwrap_err();
+        assert!(error.contains("deadline"), "{error}");
+        helper.stop();
+        assert!(helper.gone());
+    }
 
     fn blocked() -> Connection {
         let options = Options {

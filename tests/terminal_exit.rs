@@ -5,22 +5,28 @@
 
 #![cfg(unix)]
 
+#[path = "support/command.rs"]
+mod command;
+use command::CommandOutput;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod environment {
+    include!("support/environment.rs");
+}
+
 struct Pty {
     master: Option<OwnedFd>,
     child: Child,
-    home: std::path::PathBuf,
+    _env: environment::Environment,
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.home);
     }
 }
 
@@ -55,8 +61,8 @@ fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
     // SAFETY: both fds were just returned by openpty and are owned by us.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
 
-    let home = std::env::temp_dir().join(format!("konoma-test-{tag}-{}", std::process::id()));
-    let work = home.join("work");
+    let env = environment::Environment::new(tag);
+    let work = env.path("work");
     std::fs::create_dir_all(&work).unwrap();
     setup(&work);
 
@@ -69,11 +75,8 @@ fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
     }
     let slave_fd = slave.as_raw_fd();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_konoma"));
+    env.configure(&mut cmd);
     cmd.arg(&work)
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", home.join("cfg"))
-        .env("XDG_CACHE_HOME", home.join("cache"))
-        .env("TMPDIR", &home)
         .env("TERM", "xterm-256color")
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -91,7 +94,7 @@ fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
     Pty {
         master: Some(master),
         child,
-        home,
+        _env: env,
     }
 }
 
@@ -198,7 +201,7 @@ fn sigterm_exits_143_and_restores_the_terminal() {
 fn children_of(ppid: u32) -> Vec<(u32, String)> {
     let out = Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,args="])
-        .output()
+        .supervised_output()
         .expect("ps");
     String::from_utf8_lossy(&out.stdout)
         .lines()

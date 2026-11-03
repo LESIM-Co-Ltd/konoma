@@ -2782,7 +2782,7 @@ impl App {
         bookmarks: crate::bookmarks::Bookmarks,
     ) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
-        let lang = crate::i18n::resolve_lang(&cfg.ui.lang);
+        let lang = crate::i18n::config_language(&cfg);
         let sort = Sort::from_config(&cfg.ui.sort);
         // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
         // fresh tab's starting value (rebuild_tree, called right after construction, reads

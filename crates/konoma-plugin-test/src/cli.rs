@@ -14,12 +14,13 @@ pub fn execute_process() -> u8 {
         eprintln!("{error}");
         return 1;
     }
-    execute(
+    let status = execute(
         std::env::args_os().skip(1),
         Limits::default(),
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
-    )
+    );
+    crate::connection::signal_exit_code().unwrap_or(status)
 }
 
 enum Parsed {
@@ -131,6 +132,9 @@ pub fn execute(
         }
         Parsed::Run(options) => {
             let report = run(&options, limits);
+            if let Some(status) = crate::connection::signal_exit_code() {
+                return status;
+            }
             let written = (|| {
                 for check in &report.checks {
                     match &check.status {

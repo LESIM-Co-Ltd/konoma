@@ -226,12 +226,30 @@ impl Launch for CommandLaunch {
             kill_group(&Mutex::new(Some(child)), pid);
             return Err(std::io::Error::other("the child's pipes are missing"));
         };
+        let cancel = super::process::Cancellation::default();
+        let pipes = (|| -> std::io::Result<_> {
+            Ok((
+                super::process::CancellablePipe::new(stdout, cancel.clone())?,
+                super::process::CancellablePipe::new(stdin, cancel.clone())?,
+                super::process::CancellablePipe::new(stderr, cancel.clone())?,
+            ))
+        })();
+        let (stdout, stdin, stderr) = match pipes {
+            Ok(pipes) => pipes,
+            Err(error) => {
+                kill_group(&Mutex::new(Some(child)), pid);
+                return Err(error);
+            }
+        };
         let child = Mutex::new(Some(child));
         Ok(Spawned {
             reader: Box::new(stdout),
             writer: Box::new(stdin),
             stderr: Some(Box::new(stderr)),
-            kill: Box::new(move || kill_group(&child, pid)),
+            kill: Box::new(move || {
+                cancel.cancel();
+                kill_group(&child, pid);
+            }),
             pid: Some(pid),
         })
     }
@@ -242,12 +260,8 @@ impl Launch for CommandLaunch {
 fn kill_group(child: &Mutex<Option<Child>>, pid: u32) {
     let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut c) = guard.take() {
-        // SAFETY: plain syscall on the group of a child this process started and has not reaped.
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
-        let _ = c.kill();
-        let _ = c.wait();
+        debug_assert_eq!(c.id(), pid);
+        super::process::stop_group(&mut c, Duration::ZERO);
     }
 }
 

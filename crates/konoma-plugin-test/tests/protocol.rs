@@ -1,5 +1,12 @@
 mod support;
 
+mod command {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/command.rs"
+    ));
+}
+use command::CommandOutput;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::time::Duration;
@@ -216,7 +223,7 @@ fn multi_plugin() {
             .arg(&o.program)
             .arg("--")
             .args(&o.args)
-            .output()
+            .supervised_output()
             .unwrap();
         assert_eq!(output.status.code(), Some(0), "{output:?}");
     }
@@ -233,7 +240,7 @@ fn clock() {
             "konoma-demo-clock",
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
+        .supervised_status()
         .unwrap();
     assert!(status.success());
     let mut o = options("good");
@@ -250,7 +257,7 @@ fn clock() {
         .arg("--file")
         .arg(&o.files[0])
         .arg(&o.program)
-        .output()
+        .supervised_output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
@@ -282,17 +289,17 @@ fn cli() {
         vec!["--", "x"],
         vec!["x", "extra"],
     ] {
-        let out = Command::new(exe).args(args).output().unwrap();
+        let out = Command::new(exe).args(args).supervised_output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{out:?}");
     }
     for flag in ["--help", "--version"] {
-        let out = Command::new(exe).arg(flag).output().unwrap();
+        let out = Command::new(exe).arg(flag).supervised_output().unwrap();
         assert_eq!(out.status.code(), Some(0));
         assert!(!out.stdout.is_empty());
     }
     let out = Command::new(exe)
         .arg("/definitely-absent-konoma-plugin")
-        .output()
+        .supervised_output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     for (mode, code) in [("good", 0), ("handshake-version", 1)] {
@@ -301,7 +308,7 @@ fn cli() {
             .arg(&o.program)
             .arg("--")
             .args(&o.args)
-            .output()
+            .supervised_output()
             .unwrap();
         assert_eq!(out.status.code(), Some(code), "{out:?}");
         let text = String::from_utf8(out.stdout).unwrap();
@@ -316,7 +323,7 @@ fn cli() {
         .arg(&o.program)
         .arg("--")
         .args(&o.args)
-        .output()
+        .supervised_output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(String::from_utf8(out.stdout)
@@ -338,6 +345,7 @@ fn cli_signals_stop_the_plugin_group() {
         let fd = child_ready.as_raw_fd();
         let mut command = Command::new(env!("CARGO_BIN_EXE_konoma-plugin-test"));
         command
+            .process_group(0)
             .arg(std::env::current_exe().unwrap())
             .args(["--", "--fixture", "signal"])
             .stdout(Stdio::null())
@@ -356,6 +364,12 @@ fn cli_signals_stop_the_plugin_group() {
         let mut bytes = [0; 4];
         ready.read_exact(&mut bytes).unwrap();
         let pgid = i32::from_ne_bytes(bytes);
+        let handoff = std::env::temp_dir().join(format!("konoma-plugin-test-{}-0", cli.id()));
+        assert!(
+            handoff.is_dir(),
+            "the active connection owns a handoff directory"
+        );
+        std::fs::write(handoff.join("signal-cleanup-probe"), b"owned by this test").unwrap();
         let mut member = Command::new("/bin/cat")
             .process_group(pgid)
             .stdin(Stdio::piped())
@@ -371,7 +385,12 @@ fn cli_signals_stop_the_plugin_group() {
         unsafe {
             libc::kill(cli.id() as i32, signal);
         }
-        let _ = cli.wait().unwrap();
+        let status = konoma_plugin::proc::process::wait(&mut cli, Duration::from_secs(10));
+        let handoff_removed = !handoff.exists();
+        // Clean up the exact fixture directory even when the old signal handler bypasses Drop.
+        if !handoff_removed {
+            std::fs::remove_dir_all(&handoff).unwrap();
+        }
         let ended = rx.recv_timeout(Duration::from_secs(3));
         if ended.is_err() {
             unsafe {
@@ -387,6 +406,11 @@ fn cli_signals_stop_the_plugin_group() {
                 .signal(),
             Some(libc::SIGKILL)
         );
+        assert!(
+            handoff_removed,
+            "signal exit left the handoff directory behind"
+        );
+        assert_eq!(status.unwrap().code(), Some(128 + signal));
     }
 }
 

@@ -4,6 +4,9 @@
 //!
 //! HOME, XDG_CONFIG_HOME and XDG_DATA_HOME are directories of the test, never the user's.
 
+#[path = "support/command.rs"]
+mod command;
+use command::CommandOutput;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -84,11 +87,21 @@ impl Sandbox {
     fn new(name: &str) -> Sandbox {
         let root = unique_tmp(name);
         let s = Sandbox { root };
-        for d in [s.home(), s.config(), s.data(), s.fake()] {
+        for d in [
+            s.home(),
+            s.config(),
+            s.data(),
+            s.fake(),
+            s.root.join("tmp"),
+            s.root.join("cache"),
+            s.root.join("runtime"),
+        ] {
             std::fs::create_dir_all(d).unwrap();
         }
         write_exe(&s.fake().join("cargo"), FAKE_CARGO);
         write_exe(&s.fake().join("fake-konoma"), FAKE_KONOMA);
+        std::fs::create_dir_all(s.config().join("konoma")).unwrap();
+        std::fs::write(s.config().join("konoma/config.toml"), "[ui]\nlang = 'en'\n").unwrap();
         std::fs::write(
             s.fake().join("lock-initial"),
             format!(
@@ -149,6 +162,9 @@ impl Sandbox {
             .env("HOME", self.home())
             .env("XDG_CONFIG_HOME", self.config())
             .env("XDG_DATA_HOME", self.data_base())
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
+            .env("TMPDIR", self.root.join("tmp"))
             .env("CARGO", self.fake().join("cargo"))
             .env("FAKE_DIR", self.fake())
             .env(
@@ -162,7 +178,9 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output().expect("start konoma")
+        self.command(args)
+            .supervised_output()
+            .expect("start konoma")
     }
 
     fn run_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
@@ -170,18 +188,38 @@ impl Sandbox {
         for (k, v) in envs {
             c.env(k, v);
         }
-        c.output().expect("start konoma")
+        c.supervised_output().expect("start konoma")
     }
 
     /// The work directories a run leaves in the data directory (`build`, `build-<pid>`).
     fn leftovers(&self) -> Vec<String> {
-        let Ok(rd) = std::fs::read_dir(self.data()) else {
-            return Vec::new();
-        };
-        rd.flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n == "build" || n.starts_with("build-") || n.starts_with(".konoma.new"))
-            .collect()
+        let mut found = Vec::new();
+        for (dir, label) in [
+            (self.data(), "data"),
+            (self.data().join("bin"), "bin"),
+            (
+                self.plugins_toml().parent().unwrap().to_path_buf(),
+                "config",
+            ),
+        ] {
+            let rd = match std::fs::read_dir(dir) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => panic!("{e}"),
+            };
+            for e in rd {
+                let name = e.unwrap().file_name().to_string_lossy().into_owned();
+                if name == "build"
+                    || name.starts_with("build-")
+                    || name.starts_with(".konoma.new-")
+                    || (name.starts_with('.') && name.contains(".tmp-"))
+                {
+                    found.push(format!("{label}/{name}"));
+                }
+            }
+        }
+        found.sort();
+        found
     }
 }
 
@@ -198,6 +236,24 @@ fn err(o: &Output) -> String {
 }
 fn code(o: &Output) -> i32 {
     o.status.code().unwrap_or(-1)
+}
+
+#[test]
+fn leftovers_include_all_atomic_and_staged_file_directories() {
+    let s = Sandbox::new("plugin-all-leftovers");
+    for (dir, name) in [
+        (s.data(), ".Cargo.lock.tmp-fixture"),
+        (s.data().join("bin"), ".konoma.new-fixture"),
+        (s.data().join("bin"), ".konoma.built.toml.tmp-fixture"),
+        (
+            s.plugins_toml().parent().unwrap().to_path_buf(),
+            ".plugins.toml.tmp-fixture",
+        ),
+    ] {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), b"partial").unwrap();
+    }
+    assert_eq!(s.leftovers().len(), 4, "{:?}", s.leftovers());
 }
 
 struct MetadataGate {
@@ -775,7 +831,7 @@ fn without_cargo_install_and_update_say_so_and_fail() {
     ] {
         let mut c = s.command(args);
         c.env_remove("CARGO").env("PATH", &nothing);
-        let o = c.output().unwrap();
+        let o = c.supervised_output().unwrap();
         assert_ne!(code(&o), 0);
         let e = err(&o);
         assert!(e.contains("cargo was not found"), "{e}");
@@ -795,7 +851,7 @@ fn without_cargo_install_and_update_say_so_and_fail() {
     .unwrap();
     let mut c = s.command(&["plugin", "update"]);
     c.env_remove("CARGO").env("PATH", &nothing);
-    let o = c.output().unwrap();
+    let o = c.supervised_output().unwrap();
     assert_ne!(code(&o), 0);
     assert!(err(&o).contains("cargo was not found"), "{}", err(&o));
     // a $CARGO that does not exist is not silently replaced by PATH
@@ -1069,7 +1125,7 @@ fn ctrl_c_stops_cargo_and_deletes_the_build_cache() {
     );
     let st = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
-        .status()
+        .supervised_status()
         .unwrap();
     assert!(st.success());
     let o = child.wait_with_output().unwrap();
@@ -1089,14 +1145,14 @@ impl Drop for KillOnDrop {
         let _ = Command::new("kill")
             .args(["-KILL", &self.0.to_string()])
             .stderr(Stdio::null())
-            .status();
+            .supervised_status();
     }
 }
 
 fn signal(pid: u32, sig: &str) {
     let st = Command::new("kill")
         .args([sig, &pid.to_string()])
-        .status()
+        .supervised_status()
         .unwrap();
     assert!(st.success(), "kill {sig} {pid}");
 }
@@ -1108,7 +1164,7 @@ fn alive(pid: u32) -> bool {
     let out = Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .stderr(Stdio::null())
-        .output()
+        .supervised_output()
         .expect("`ps` is needed to check whether a process is alive");
     let stat = String::from_utf8_lossy(&out.stdout);
     !matches!(stat.trim().chars().next(), None | Some('Z'))
@@ -1290,7 +1346,7 @@ fn removing_the_last_plugin_with_an_unwritable_list_says_how_to_finish() {
             Ok(())
         });
     }
-    let o = c.output().expect("start konoma");
+    let o = c.supervised_output().expect("start konoma");
     assert_eq!(code(&o), 1);
     let e = err(&o);
     assert!(
@@ -1705,7 +1761,7 @@ pub fn plugins() -> Vec<Box<dyn Plugin>> {
             .env("TMPDIR", &compiler_tmp)
             .current_dir(&home)
             .stdin(Stdio::null())
-            .output()
+            .supervised_output()
             .unwrap()
     };
     let t = Instant::now();

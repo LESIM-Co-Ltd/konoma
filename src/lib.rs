@@ -316,7 +316,7 @@ fn run_application(startup: host::Startup) -> Result<()> {
         Startup::Plugins => {
             // Reading the config is all it needs; the terminal is never touched.
             let (mut cfg, _) = config::Config::load_reporting();
-            let lang = i18n::resolve_lang(&cfg.ui.lang);
+            let lang = i18n::config_language(&cfg);
             cfg.external_plugins = plugins::external::install(
                 &plugins::external::Env::production(lang),
                 &cfg.plugins,
@@ -336,7 +336,7 @@ fn run_application(startup: host::Startup) -> Result<()> {
     // that is not cached is asked for its manifest once (bounded, in parallel). What failed is
     // said in the start-up message (`Config::plugin_report`).
     cfg.external_plugins = plugins::external::install(
-        &plugins::external::Env::production(i18n::resolve_lang(&cfg.ui.lang)),
+        &plugins::external::Env::production(i18n::config_language(&cfg)),
         &cfg.plugins,
         &dev_plugins,
     );
@@ -2870,15 +2870,10 @@ mod tests {
         let dir = unique_tmp("konoma_resolve_startup_fifo_test");
         std::fs::create_dir_all(&dir).unwrap();
         let fifo = dir.join("pipe");
-        let made = std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !made {
-            eprintln!("resolve_startup_refuses_a_fifo: mkfifo が使えないためスキップ");
-            return;
-        }
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is NUL-terminated and lies inside the test's private directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let err = resolve_startup(&argv(&[fifo.to_str().unwrap()])).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("not a directory"), "{msg}");

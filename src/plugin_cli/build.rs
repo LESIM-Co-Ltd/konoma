@@ -8,6 +8,7 @@
 //! directory is removed, unless `[plugins] keep_build_cache = true` asks to keep it.
 
 use std::ffi::{OsStr, OsString};
+#[cfg(test)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -238,33 +239,8 @@ fn in_own_group(cmd: &mut Command) -> &mut Command {
     cmd.process_group(0)
 }
 
-fn signal_group(pgid: u32, sig: libc::c_int) {
-    // SAFETY: kill(2) takes plain integers. A negative pid addresses the process group; the group
-    // id is the pid of a child this process started with `process_group(0)` and has not yet
-    // reaped, or of a group that still has members, so the id cannot name an unrelated group.
-    unsafe {
-        libc::kill(-(pgid as libc::pid_t), sig);
-    }
-}
-
-/// Stop `child` and everything in its process group: SIGTERM, a grace period, then SIGKILL.
 fn stop_group(child: &mut std::process::Child) {
-    let pgid = child.id();
-    signal_group(pgid, libc::SIGTERM);
-    let start = Instant::now();
-    while start.elapsed() < STOP_GRACE {
-        let _ = child.try_wait();
-        // SAFETY: signal 0 queries this owned process group, including surviving descendants.
-        if unsafe { libc::kill(-(pgid as libc::pid_t), 0) } == -1
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // Also after the leader is gone: what it started may have ignored SIGTERM.
-    signal_group(pgid, libc::SIGKILL);
-    let _ = child.wait();
+    konoma_plugin::proc::process::stop_group(child, STOP_GRACE);
 }
 
 /// Wait for a child started with [`in_own_group`]. On interruption or timeout the whole process
@@ -276,15 +252,13 @@ fn wait_for(
 ) -> Result<ExitStatus> {
     let start = Instant::now();
     loop {
-        if let Some(st) = child.try_wait()? {
+        if let Some(st) = konoma_plugin::proc::process::poll_exit(child)? {
             return Ok(st);
         }
         if interrupted.load(Ordering::SeqCst) {
-            stop_group(child);
             return Err(Interrupted.into());
         }
         if timeout.is_some_and(|t| start.elapsed() > t) {
-            stop_group(child);
             bail!("timed out");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -306,7 +280,9 @@ fn run_cargo(
         .stdin(Stdio::null())
         .spawn()
         .with_context(|| format!("cannot run {}", cargo.display()))?;
-    wait_for(&mut child, interrupted, None)
+    let result = wait_for(&mut child, interrupted, None);
+    stop_group(&mut child);
+    result
 }
 
 /// Run the new program with `--plugins`; an error carries what it printed.
@@ -354,79 +330,22 @@ fn verify_with_timeout(
     Ok(())
 }
 
-fn set_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> std::io::Result<()> {
-    let fd = pipe.as_raw_fd();
-    // SAFETY: fcntl operates on the live pipe descriptor and preserves its existing flags.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-/// Drain a bounded batch so even a continuously writing peer cannot starve cancellation checks.
-fn read_available(pipe: &mut impl Read, bytes: &mut Vec<u8>) -> std::io::Result<bool> {
-    for _ in 0..16 {
-        let mut buf = [0; 8192];
-        match pipe.read(&mut buf) {
-            Ok(0) => return Ok(true),
-            Ok(n) => bytes.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(false)
-}
-
 fn collect_output(
     child: &mut std::process::Child,
     interrupted: &AtomicBool,
     timeout: Option<Duration>,
 ) -> Result<Output> {
-    let started = Instant::now();
-    let result = (|| -> Result<Output> {
-        let mut out = child.stdout.take().context("missing piped stdout")?;
-        let mut err = child.stderr.take().context("missing piped stderr")?;
-        set_nonblocking(&out)?;
-        set_nonblocking(&err)?;
-        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-        let (mut out_done, mut err_done) = (false, false);
-        let mut status = None;
-        loop {
-            if interrupted.load(Ordering::SeqCst) {
-                return Err(Interrupted.into());
-            }
-            if timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                bail!("timed out");
-            }
-            if status.is_none() {
-                status = child.try_wait()?;
-            }
-            if !out_done {
-                out_done = read_available(&mut out, &mut stdout)?;
-            }
-            if !err_done {
-                err_done = read_available(&mut err, &mut stderr)?;
-            }
-            if let Some(status) = status {
-                if out_done && err_done {
-                    return Ok(Output {
-                        status,
-                        stdout,
-                        stderr,
-                    });
-                }
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    })();
-    // The closure owns the read ends: cancellation closes them regardless of which process
-    // retains a write end. No blocking reader or join can outlive the deadline.
-    if result.is_err() {
-        stop_group(child);
+    match konoma_plugin::proc::process::collect_output(
+        child,
+        || interrupted.load(Ordering::SeqCst),
+        timeout,
+        usize::MAX,
+        STOP_GRACE,
+    ) {
+        Ok(capture) => Ok(capture.output),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Err(Interrupted.into()),
+        Err(error) => Err(error.into()),
     }
-    result
 }
 
 /// Restore the saved lock; only a missing file permits fresh dependency resolution.
@@ -723,10 +642,15 @@ pub fn remove_program(data_dir: &Path) -> Result<()> {
 /// Remove the kept build cache and any work directory a killed run left. Returns the paths removed.
 pub fn clean(data_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
-    let Ok(rd) = std::fs::read_dir(data_dir) else {
-        return Ok(removed);
+    let rd = match std::fs::read_dir(data_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot enumerate {}", data_dir.display()))
+        }
     };
-    for e in rd.flatten() {
+    for e in rd {
+        let e = e.with_context(|| format!("cannot enumerate {}", data_dir.display()))?;
         let name = e.file_name().to_string_lossy().into_owned();
         if (name == "build" || name.starts_with("build-")) && e.path().is_dir() {
             std::fs::remove_dir_all(e.path())
@@ -740,9 +664,75 @@ pub fn clean(data_dir: &Path) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn successful_verification_entry_cleans_its_background_helper() {
+        let dir = crate::test_support::unique_tmp("verify-entry-background");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "/bin/sleep 300 </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' \"$!\" >&3\nexit 0",
+        );
+        let program = fixture.program.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::verify_with_timeout(
+                &program,
+                "fixture",
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Duration::MAX,
+            ))
+            .unwrap();
+        });
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let gone = fixture.gone();
+        worker.join().unwrap();
+        result.unwrap().unwrap();
+        assert!(
+            gone,
+            "successful verification left its background helper alive"
+        );
+    }
     use super::*;
     use konoma_test_support::{unique_tmp, TmpDir};
     use std::os::unix::fs::PermissionsExt;
+
+    mod process_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/process_fixture.rs"
+        ));
+    }
+
+    #[test]
+    fn verification_cleans_helpers_after_success_and_failure() {
+        let mut leaked = Vec::new();
+        for status in [0, 1] {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", &format!("exit {status}")])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            in_own_group(&mut command);
+            let pending = process_fixture::PendingHelper::attach(&mut command, false, true);
+            let mut child = command.spawn().unwrap();
+            let mut helper = pending.ready();
+            let output = collect_output(
+                &mut child,
+                &AtomicBool::new(false),
+                Some(Duration::from_secs(10)),
+            )
+            .unwrap();
+            assert_eq!(output.status.code(), Some(status));
+            if !helper.gone() {
+                leaked.push(status);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "verification left helpers alive for exit codes {leaked:?}"
+        );
+    }
 
     fn exe(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -817,81 +807,82 @@ mod tests {
     }
 
     fn inherited_pipes(interrupt: bool) {
-        let d = tmp("verify-inherited-pipes");
-        let ready = d.join("ready");
-        let hold = d.join("hold");
-        for path in [&ready, &hold] {
-            let path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-            // SAFETY: the C string is valid, and the FIFO is private to this test.
-            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-        }
-        let bin = d.join("verify");
-        std::fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\ncat '{}' &\nprintf '%s\\n' \"$$\" > '{}'\nexit 0\n",
-                hold.display(),
-                ready.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        inherited_pipes_with_deadline(interrupt, Arc::new(AtomicBool::new(false)), move || {
+            if interrupt {
+                Duration::from_secs(60)
+            } else {
+                Duration::from_millis(100)
+            }
+        });
+    }
+
+    fn inherited_pipes_with_deadline(
+        interrupt: bool,
+        ready_state: Arc<AtomicBool>,
+        deadline: impl FnOnce() -> Duration + Send + 'static,
+    ) {
+        capture_pipe_fixture(interrupt, false, ready_state, deadline);
+    }
+
+    fn capture_pipe_fixture(
+        interrupt: bool,
+        detached: bool,
+        ready_state: Arc<AtomicBool>,
+        deadline: impl FnOnce() -> Duration + Send + 'static,
+    ) {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        in_own_group(&mut command);
+        let pending = process_fixture::PendingHelper::attach(&mut command, detached, false);
+        let mut child = command.spawn().unwrap();
+        let mut helper = pending.ready();
+        // Startup and its readiness handshake are complete before the deadline is constructed.
+        ready_state.store(true, Ordering::SeqCst);
+        let timeout = deadline();
         let flag = Arc::new(AtomicBool::new(false));
         let worker_flag = flag.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = verify_with_timeout(
-                &bin,
-                "0.0.0",
-                &worker_flag,
-                if interrupt {
-                    Duration::from_secs(60)
-                } else {
-                    Duration::from_millis(100)
-                },
-            );
-            tx.send(result).unwrap();
+            tx.send(collect_output(&mut child, &worker_flag, Some(timeout)))
+                .unwrap();
         });
-        let pgid = match readiness_pid(&ready, Duration::from_secs(5)) {
-            Ok(pid) => pid,
-            Err(error) => {
-                flag.store(true, Ordering::SeqCst);
-                worker.join().unwrap();
-                panic!("the verifier did not announce its group: {error:#}");
-            }
-        };
-        // Observe the direct child's exit without reaping it. ECHILD means the verifier has
-        // already reaped it. Either way, interruption below happens after that exit, while the
-        // grandchild still holds both output pipes.
-        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
-        // SAFETY: pgid identifies our child; waitid initializes info and WNOWAIT preserves status.
-        let observed = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pgid as libc::id_t,
-                info.as_mut_ptr(),
-                libc::WEXITED | libc::WNOWAIT,
-            )
-        };
-        assert!(
-            observed == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
-        );
         if interrupt {
             flag.store(true, Ordering::SeqCst);
         }
         let result = rx.recv_timeout(Duration::from_secs(6));
         if result.is_err() {
-            signal_group(pgid, libc::SIGKILL);
+            helper.stop();
         }
         worker.join().unwrap();
+        helper.stop();
+        assert!(helper.gone());
         let error = result
-            .expect("verification must bound inherited pipe reads")
+            .expect("pipe collection must obey its bound")
             .unwrap_err();
         if interrupt {
             assert!(error.is::<Interrupted>(), "{error:#}");
         } else {
-            assert!(format!("{error:#}").contains("timed out"));
+            assert!(error.to_string().contains("timed out"), "{error:#}");
         }
+    }
+
+    #[test]
+    fn verification_fixture_starts_its_deadline_only_after_readiness() {
+        let ready = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicBool::new(false));
+        let seen = observed.clone();
+        let ready_at_start = ready.clone();
+        inherited_pipes_with_deadline(false, ready, move || {
+            seen.store(ready_at_start.load(Ordering::SeqCst), Ordering::SeqCst);
+            Duration::from_millis(100)
+        });
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "the timeout was started before the child was ready"
+        );
     }
 
     #[test]
@@ -900,114 +891,18 @@ mod tests {
     }
 
     fn detached_pipes(interrupt: bool) {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::net::UnixStream;
-        use std::os::unix::process::CommandExt;
-        let (mut ready, child_ready) = UnixStream::pair().unwrap();
-        ready
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let fd = child_ready.as_raw_fd();
-        let mut command = Command::new("/bin/sh");
-        command
-            .args(["-c", "exit 0"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        in_own_group(&mut command);
-        // SAFETY: after fork, use only async-signal-safe syscalls. The helper deliberately keeps
-        // the output descriptors while leaving the verifier's group; both paths publish its pid.
-        unsafe {
-            command.pre_exec(move || {
-                let helper = libc::fork();
-                if helper == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if helper == 0 {
-                    if libc::setsid() == -1 {
-                        libc::_exit(1);
-                    }
-                    let pid = libc::getpid();
-                    libc::write(
-                        fd,
-                        (&pid as *const libc::pid_t).cast(),
-                        std::mem::size_of_val(&pid),
-                    );
-                    libc::close(fd);
-                    // Exec closes Rust's private CLOEXEC spawn descriptors. Only stdout/stderr
-                    // survive, so the fixture cannot itself block Command::spawn's exec handshake.
-                    libc::execl(
-                        c"/bin/sleep".as_ptr(),
-                        c"sleep".as_ptr(),
-                        c"300".as_ptr(),
-                        std::ptr::null::<libc::c_char>(),
-                    );
-                    libc::_exit(1);
-                }
-                if libc::write(
-                    fd,
-                    (&helper as *const libc::pid_t).cast(),
-                    std::mem::size_of_val(&helper),
-                ) == -1
-                {
-                    libc::kill(helper, libc::SIGKILL);
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().unwrap();
-        let pgid = child.id();
-        drop(child_ready);
-        let mut bytes = [0; std::mem::size_of::<libc::pid_t>()];
-        ready.read_exact(&mut bytes).unwrap();
-        let helper = libc::pid_t::from_ne_bytes(bytes);
-        struct Helper(libc::pid_t);
-        impl Drop for Helper {
-            fn drop(&mut self) {
-                // SAFETY: the pid was recorded by our own fixture, never discovered by name.
-                unsafe {
-                    libc::kill(self.0, libc::SIGKILL);
-                }
-            }
-        }
-        let helper = Helper(helper);
-        ready.read_exact(&mut bytes).unwrap();
-        assert_eq!(libc::pid_t::from_ne_bytes(bytes), helper.0);
-        let flag = Arc::new(AtomicBool::new(false));
-        let worker_flag = flag.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let result = collect_output(
-                &mut child,
-                &worker_flag,
-                Some(if interrupt {
+        capture_pipe_fixture(
+            interrupt,
+            true,
+            Arc::new(AtomicBool::new(false)),
+            move || {
+                if interrupt {
                     Duration::from_secs(60)
                 } else {
                     Duration::from_millis(100)
-                }),
-            );
-            tx.send(result).unwrap();
-        });
-        if interrupt {
-            flag.store(true, Ordering::SeqCst);
-        }
-        let result = rx.recv_timeout(Duration::from_secs(6));
-        if result.is_err() {
-            // Release even the old unbounded reader joins before asserting the watchdog result.
-            unsafe {
-                libc::kill(helper.0, libc::SIGKILL);
-            }
-            signal_group(pgid, libc::SIGKILL);
-        }
-        worker.join().unwrap();
-        let error = result
-            .expect("detached pipe holders must not defeat verification bounds")
-            .unwrap_err();
-        if interrupt {
-            assert!(error.is::<Interrupted>(), "{error:#}");
-        } else {
-            assert!(error.to_string().contains("timed out"), "{error:#}");
-        }
+                }
+            },
+        );
     }
 
     #[test]
@@ -1026,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_waits_for_a_member_after_the_leader_exits() {
+    fn stopping_a_live_group_allows_its_term_handler_to_finish() {
         use std::io::BufRead;
         use std::os::unix::process::CommandExt;
         let mut leader = in_own_group(&mut Command::new("/bin/cat"))
@@ -1049,8 +944,10 @@ mod tests {
         let mut line = String::new();
         output.read_line(&mut line).unwrap();
         assert_eq!(line, "ready\n");
-        drop(leader.stdin.take());
-        leader.wait().unwrap();
+        // The leader remains alive on its open stdin until stop_group sends TERM.
+        assert!(konoma_plugin::proc::process::poll_exit(&leader)
+            .unwrap()
+            .is_none());
         let (tx, rx) = std::sync::mpsc::channel();
         let stopper = std::thread::spawn(move || {
             stop_group(&mut leader);
@@ -1058,7 +955,7 @@ mod tests {
         });
         line.clear();
         output.read_line(&mut line).unwrap();
-        // The handler must be given time to finish, even though the leader has already exited.
+        // A member of the live group must be given time to finish its TERM handler.
         use std::io::Write;
         let write = member.stdin.as_mut().unwrap().write_all(b"done\n");
         let status = member.wait().unwrap();
@@ -1137,6 +1034,27 @@ mod tests {
         std::fs::write(d.join("bin").join("cargo"), "x").unwrap();
         let path = d.join("bin");
         assert_eq!(find_cargo(None, Some(path.as_os_str())), None);
+    }
+
+    #[test]
+    fn clean_propagates_unreadable_directory_errors() {
+        let d = tmp("clean-unreadable");
+        let original = std::fs::metadata(&d).unwrap().permissions();
+        struct Restore<'a>(&'a Path, std::fs::Permissions);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                std::fs::set_permissions(self.0, self.1.clone()).unwrap();
+            }
+        }
+        let _restore = Restore(&d, original);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let error = clean(&d).expect_err("an unreadable directory must not look empty");
+        assert!(
+            error.chain().any(|e| e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)),
+            "{error:#}"
+        );
     }
 
     #[test]

@@ -322,6 +322,14 @@ fn set_str(t: &mut dyn TableLike, key: &str, val: &str) {
 
 /// Write `bytes` to `path` through a temporary file in the same directory and a rename.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_with(path, bytes, |p, b| std::fs::write(p, b))
+}
+
+fn write_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
@@ -330,12 +338,15 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         name.unwrap_or_else(|| "file".into()),
         std::process::id()
     ));
-    std::fs::write(&tmp, bytes).with_context(|| format!("cannot write {}", tmp.display()))?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("cannot replace {}", path.display()));
+    struct TempPath(std::path::PathBuf);
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
-    Ok(())
+    let tmp = TempPath(tmp);
+    write(&tmp.0, bytes).with_context(|| format!("cannot write {}", tmp.0.display()))?;
+    std::fs::rename(&tmp.0, path).with_context(|| format!("cannot replace {}", path.display()))
 }
 
 #[cfg(test)]
@@ -355,6 +366,24 @@ mod tests {
 
     fn err(t: &str) -> String {
         format!("{:#}", parse(t).unwrap_err())
+    }
+
+    #[test]
+    fn a_partial_write_failure_removes_the_atomic_temp_file() {
+        let d = tmp("atomic-partial-write");
+        let target = d.join("plugins.toml");
+        std::fs::write(&target, "old").unwrap();
+        let result = write_atomic_with(&target, b"new", |path, _| {
+            std::fs::write(path, b"partial")?;
+            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        let files: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files, [std::ffi::OsString::from("plugins.toml")]);
     }
 
     #[test]

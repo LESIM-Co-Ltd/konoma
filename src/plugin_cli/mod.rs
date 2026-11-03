@@ -404,6 +404,14 @@ fn cmd_clean(env: &Env) -> Result<()> {
     Ok(())
 }
 
+fn cli_language(
+    config_dir: &std::path::Path,
+    os: impl FnOnce() -> crate::i18n::Lang,
+) -> crate::i18n::Lang {
+    let (config, _) = crate::config::Config::load_path_reporting(&config_dir.join("config.toml"));
+    crate::i18n::config_language_with(&config, os)
+}
+
 fn production_env(interrupted: Arc<AtomicBool>) -> Result<Env> {
     use std::io::IsTerminal;
     let config_dir = konoma_base::xdg::xdg_config_home()
@@ -411,11 +419,7 @@ fn production_env(interrupted: Arc<AtomicBool>) -> Result<Env> {
         .context("cannot find the config directory (HOME is not set)")?;
     let data_dir =
         konoma_base::xdg::data_dir().context("cannot find the data directory (HOME is not set)")?;
-    let lang = std::fs::read_to_string(config_dir.join("config.toml"))
-        .ok()
-        .and_then(|s| toml::from_str::<crate::config::Config>(&s).ok())
-        .map(|c| crate::i18n::resolve_lang(&c.ui.lang))
-        .unwrap_or(crate::i18n::Lang::En);
+    let lang = cli_language(&config_dir, || crate::i18n::resolve_lang("auto"));
     Ok(Env {
         lang,
         config_dir,
@@ -472,6 +476,21 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn absent_config_uses_the_default_auto_language() {
+        let dir = konoma_test_support::unique_tmp("cli-default-language");
+        // The locale source is injected, so the machine's locale cannot affect this test.
+        for (locale, expected) in [
+            ("ja-JP", crate::i18n::Lang::Jp),
+            ("en-US", crate::i18n::Lang::En),
+        ] {
+            assert_eq!(
+                super::cli_language(&dir, || crate::i18n::Lang::from_lang_tag(locale)),
+                expected
+            );
+        }
+    }
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
