@@ -285,6 +285,7 @@ fn run_application() -> Result<()> {
     // Before anything else is started: no thread exists yet (the environment may only be changed
     // while there is just one), and no child process can inherit the variable. Still after the
     // drawing child's branch above, which runs nothing else.
+    let original_exe = plugin_cli::switch::take_original_exe();
     let switched_from = plugin_cli::switch::take_switched_from();
     let args: Vec<String> = std::env::args().collect();
     // `konoma plugin ...` is a command of its own (never handed over, so that it can repair a
@@ -492,6 +493,10 @@ fn run_application() -> Result<()> {
         None => cfg_err,
     };
     app.flash = app.startup_flash(cfg_err, footer_width);
+    let plugin_updates = plugin_cli::update_check::Worker::start(
+        app.cfg.external.update_check,
+        original_exe.as_deref(),
+    );
     // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
     // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.
     if let Some(pk) = picker.clone() {
@@ -521,6 +526,7 @@ fn run_application() -> Result<()> {
         &mut app,
         resp_rx,
         WorkerRx {
+            plugin_updates,
             media: media_rx,
             kitty: kitty_rx,
             md_img: md_img_rx,
@@ -759,6 +765,7 @@ fn is_ignore_rule_file(p: &Path) -> bool {
 
 /// Background-worker result receivers drained each iteration of the run loop.
 struct WorkerRx {
+    plugin_updates: plugin_cli::update_check::Worker,
     media: std::sync::mpsc::Receiver<MediaResult>,
     kitty: std::sync::mpsc::Receiver<KittyResult>,
     md_img: std::sync::mpsc::Receiver<MdImageResult>,
@@ -849,7 +856,7 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     mut resp_rx: UnboundedReceiver<ResizeResult>,
-    rx: WorkerRx,
+    mut rx: WorkerRx,
     startup_keys: Vec<crossterm::event::KeyEvent>,
     mut late_reply: konoma_widgets::term_query::LateKittyReply,
 ) -> Result<()> {
@@ -933,6 +940,7 @@ fn run(
     // the first frame is on screen.
     let mut startup_keys = startup_keys;
     loop {
+        needs_redraw |= rx.plugin_updates.apply(&mut app.flash, app.lang);
         if needs_redraw {
             // The right to write to the terminal for the whole frame (a signal's exit cleanup
             // waits for it, so its escapes never land between the chunks of a transmit).

@@ -18,6 +18,24 @@ use super::list_file::write_atomic;
 
 /// Set by a konoma that handed over; its value is that konoma's version.
 pub const SWITCHED_ENV: &str = "KONOMA_PLUGIN_SWITCHED_FROM";
+/// Original executable path, kept separate so the existing version marker retains its format.
+pub const SWITCHED_PATH_ENV: &str = "KONOMA_PLUGIN_SWITCHED_PATH";
+
+fn original_exe(from: Option<&OsStr>, current: Option<PathBuf>) -> Option<PathBuf> {
+    from.filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or(current)
+}
+
+/// Consume the path before the version marker and before any threads or child processes exist.
+pub fn take_original_exe() -> Option<PathBuf> {
+    let from = std::env::var_os(SWITCHED_PATH_ENV);
+    if from.is_some() {
+        debug_assert!(thread_count().is_none_or(|n| n == 1));
+        std::env::remove_var(SWITCHED_PATH_ENV);
+    }
+    original_exe(from.as_deref(), std::env::current_exe().ok())
+}
 
 /// Read [`SWITCHED_ENV`] and take it out of the environment, so that nothing konoma starts later
 /// (the shell or editor opened from it, a delegated command, the drawing child, a konoma started
@@ -228,16 +246,55 @@ pub fn version_line(own: &str, current_exe: Option<&Path>, data_dir: Option<&Pat
 /// with [`SWITCHED_ENV`] set to `own`. Returns only when the hand-over failed.
 pub fn exec(bin: &Path, args: &[String], own: &str) -> std::io::Error {
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(bin)
-        .args(args.iter().skip(1))
-        .env(SWITCHED_ENV, own)
-        .exec()
+    handover_command(bin, args, own, std::env::current_exe().ok().as_deref()).exec()
+}
+
+fn handover_command(
+    bin: &Path,
+    args: &[String],
+    own: &str,
+    original: Option<&Path>,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(args.iter().skip(1)).env(SWITCHED_ENV, own);
+    if let Some(original) = original {
+        cmd.env(SWITCHED_PATH_ENV, original);
+    }
+    cmd
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use konoma_test_support::{unique_tmp, TmpDir};
+
+    #[test]
+    fn update_handover_preserves_original_executable_separately_from_version() {
+        let cmd = handover_command(
+            Path::new("/data/bin/konoma"),
+            &a(&["konoma", "."]),
+            "0.31.2",
+            Some(Path::new("/opt/homebrew/bin/konoma")),
+        );
+        let vars: std::collections::BTreeMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(vars[OsStr::new(SWITCHED_ENV)], Some(OsStr::new("0.31.2")));
+        assert_eq!(
+            vars[OsStr::new(SWITCHED_PATH_ENV)],
+            Some(OsStr::new("/opt/homebrew/bin/konoma"))
+        );
+        assert_eq!(
+            original_exe(
+                Some(OsStr::new("/usr/bin/konoma")),
+                Some(PathBuf::from("/data/bin/konoma"))
+            ),
+            Some(PathBuf::from("/usr/bin/konoma"))
+        );
+        assert_eq!(
+            original_exe(None, Some(PathBuf::from("/example/.cargo/bin/konoma"))),
+            Some(PathBuf::from("/example/.cargo/bin/konoma"))
+        );
+        assert_eq!(original_exe(None, None), None);
+    }
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

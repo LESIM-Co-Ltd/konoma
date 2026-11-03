@@ -795,8 +795,11 @@ video            = true   # 外部フォールバックの抽出ツール(ffmpeg
                            # (純Rust・このフラグに関係なく常に動く)が扱えないファイル=.mp4/.m4v/.mov と
                            # .mkv/.webm の H.264/HEVC 以外の時だけ使う。false でもこれらのコンテナの
                            # H.264/HEVC のサムネイルは出る(上の pdf と hayro の関係と同じ)。
-remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
+remote_images    = true   # Markdown 内の http(s) 画像取得。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
+update_check     = true   # 公開 crates.io sparse index でプラグインの更新を、24 時間に 1 回まで裏で確認。
+                           # User-Agent は konoma/<版> だけ。利用者の情報は送らない。false で確認を止める。
+                           # 結果と確認日時は konoma のデータ置き場に保存し、`konoma plugin list` は通信せずに読む。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P`・`o`(ファイルを他のアプリで開く)等。
 office_apps      = true   # Office 文書(docx xlsx pptx odt ods odp 等)で `e` や `o` を押すと、$EDITOR(e)や OS の既定(o)に zip を渡さず GUI アプリで開く。
                            # Microsoft Office(macOS のみ)→ LibreOffice → OS の既定(`open`/`xdg-open`)の順。

@@ -2735,6 +2735,15 @@ impl Default for PerTab {
 
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
+        let bookmarks = crate::bookmarks::Bookmarks::load(&root);
+        Self::new_with_bookmarks(root, cfg, bookmarks)
+    }
+
+    pub(crate) fn new_with_bookmarks(
+        root: PathBuf,
+        cfg: Config,
+        bookmarks: crate::bookmarks::Bookmarks,
+    ) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
         let lang = crate::i18n::resolve_lang(&cfg.ui.lang);
         let sort = Sort::from_config(&cfg.ui.sort);
@@ -2766,7 +2775,7 @@ impl App {
             lang,
             cfg,
             sort,
-            bookmarks: crate::bookmarks::Bookmarks::load(&root),
+            bookmarks,
             session_store: None,
             session_restoring: false,
             mark_set_pending: false,

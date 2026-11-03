@@ -10,6 +10,7 @@ mod list_file;
 mod lock;
 mod project;
 pub(crate) mod switch;
+pub(crate) mod update_check;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -226,13 +227,20 @@ pub fn confirm_install(
 
 /// The text of `list`: one block per crate; `lock` maps crate names to their locked versions.
 pub fn list_text(list: &PluginList, lock: &BTreeMap<String, String>) -> String {
+    list_text_with_updates(list, lock, None)
+}
+
+fn list_text_with_updates(
+    list: &PluginList,
+    lock: &BTreeMap<String, String>,
+    updates: Option<&update_check::Snapshot>,
+) -> String {
     let mut s = String::new();
     if let Some(p) = &list.konoma_path {
         s.push_str(&format!("(konoma is built from the source at {p})\n"));
     }
     if list.plugins.is_empty() {
         s.push_str("No plugin crates are installed: konoma is the standard build.\n");
-        return s;
     }
     for (name, src) in &list.plugins {
         let version = lock
@@ -242,7 +250,15 @@ pub fn list_text(list: &PluginList, lock: &BTreeMap<String, String>) -> String {
         s.push_str(&format!("{name}  {version}\n    {}\n", src.describe()));
         if !src.has_update_check() {
             s.push_str("    no update check\n");
+        } else if let Some(note) = updates.and_then(|u| u.list_note(name, lock.get(name))) {
+            s.push_str(&format!("    {note}\n"));
         }
+    }
+    if let Some(u) = updates {
+        s.push_str(&format!(
+            "Last checked: {}\n",
+            konoma_base::epoch::format_epoch_utc(u.checked_at)
+        ));
     }
     s
 }
@@ -252,7 +268,11 @@ fn cmd_list(env: &Env) -> Result<()> {
     let lock = std::fs::read_to_string(env.lock_path())
         .map(|t| project::locked_versions(&t))
         .unwrap_or_default();
-    print!("{}", list_text(&list, &lock));
+    let text = match update_check::Snapshot::load(&env.data_dir) {
+        Some(updates) => list_text_with_updates(&list, &lock, Some(&updates)),
+        None => list_text(&list, &lock),
+    };
+    print!("{text}");
     Ok(())
 }
 

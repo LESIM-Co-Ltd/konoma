@@ -336,7 +336,8 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 | `vcs` | `"auto"` | どのバージョン管理システムが答えるか。**jj 対応はプレビュー版**([git スイートのガイド](/ja/guides/git/))。`"auto"` は git が答えられる場所を git のままにするので、今まで動いていたリポジトリの見え方は変わらない。jj が答えるのは git のリポジトリが無い場所だけ(`jj git init --no-colocate` で作ったもの・`jj workspace`)。`"git"` は常に git。`"jj"` は `.jj` があれば colocated でも jj——実際に jj で作業しているならこれ。`jj` バイナリが無い環境では git に落ちる。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
 | `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、これらのコンテナの H.264/HEVC のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
-| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
+| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
+| `update_check` | `true` | crates.io から入れたプラグインの更新を、公開 sparse index で 24 時間に 1 回まで、裏のスレッドで確認します。User-Agent は `konoma/<版>` だけで、利用者の情報は送りません。結果と最後の確認日時を konoma のデータ置き場に保存し、`konoma plugin list` では通信せずに表示します。`[external] update_check = false` で確認を止められます。 |
 | `office_apps` | `true` | Office 文書(Word/Excel/PowerPoint/ODF)で `e` や `o` を押すと、`$EDITOR`(`e`)や OS の既定(`o`)に zip を渡さず GUI アプリで開く。Microsoft Office(macOS)→ LibreOffice → OS の既定の順。`false` なら何も起動しない。`[editor.ext]` で拡張子を指定していればそちらが優先。 |
 | `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)・`o`(ファイルを他のアプリで開く)等。 |
 | `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |

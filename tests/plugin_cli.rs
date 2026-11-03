@@ -185,6 +185,40 @@ fn code(o: &Output) -> i32 {
 }
 
 #[test]
+fn plugin_list_reads_saved_updates_without_changing_the_record() {
+    let s = Sandbox::new("plugin-cli-update-list");
+    std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
+    std::fs::write(
+        s.plugins_toml(),
+        "[plugins.konoma-foo]\nversion = \"*\"\n[plugins.konoma-bar]\nversion = \"*\"\n",
+    )
+    .unwrap();
+    std::fs::copy(s.fake().join("lock-initial"), s.lock()).unwrap();
+    let plain = s.run(&["plugin", "list"]);
+    assert_eq!(code(&plain), 0, "{}", err(&plain));
+    assert!(!out(&plain).contains("Last checked:"));
+    let record = "checked_at = 100\nhost_version = \"0.1.0\"\n[plugins.konoma-foo]\ninstalled = \"0.3.2\"\n[plugins.konoma-foo.updates]\ncompatible = \"0.4.0\"\nneeds_host = \"1.0.0\"\n[plugins.konoma-bar]\ninstalled = \"1.0.0\"\n[plugins.konoma-bar.updates]\nneeds_host = \"2.0.0\"\n";
+    let path = s.data().join("plugin-updates.toml");
+    std::fs::write(&path, record).unwrap();
+    let o = s.run(&["plugin", "list"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    let text = out(&o);
+    assert!(text.contains("update available: 0.4.0"), "{text}");
+    assert!(text.contains("newer 2.0.0 needs a newer konoma"), "{text}");
+    assert!(!text.contains("newer 1.0.0 needs"), "{text}");
+    assert!(
+        text.contains("Last checked: 1970-01-01 00:01:40 UTC"),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), record);
+    assert!(s.cargo_log().is_empty());
+    std::fs::write(&path, "broken = [").unwrap();
+    let o = s.run(&["plugin", "list"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert_eq!(out(&o), out(&plain));
+}
+
+#[test]
 fn install_list_update_remove_cycle() {
     let s = Sandbox::new("plugin-cli-cycle");
 

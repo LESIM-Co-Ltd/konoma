@@ -852,8 +852,12 @@ video            = true   # The external fallback thumbnail extractors (ffmpegth
                            # anything that is not H.264 or HEVC in .mp4/.m4v/.mov and .mkv/.webm. false never launches
                            # them; H.264 and HEVC thumbnails from those containers keep working. Same relationship
                            # `pdf` above has with hayro.
-remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
+remote_images    = true   # Fetching http(s) images referenced from Markdown.
                            # Done in-process via ureq (rustls), not an external tool.
+update_check     = true   # Check the public crates.io sparse index for plugin updates in the background, at most once
+                           # every 24 hours. User-Agent: konoma/<version> only; no user information is sent.
+                           # Set false to disable. Results and the check time are saved in konoma's data directory;
+                           # `konoma plugin list` reads them without network access.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, `o` (open a file in another app), etc.
 office_apps      = true   # `e` or `o` on an Office document (Word/Excel/PowerPoint/ODF: docx xlsx pptx odt ods odp ...) opens it in a GUI app —
                            # Microsoft Office (macOS only), then LibreOffice, then the OS default (`open`/`xdg-open`) —

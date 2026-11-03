@@ -7,6 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- Background plugin update notices, checked against the public crates.io sparse index at most once per day: compatible updates and versions requiring a newer konoma are reported separately, with installation-specific host upgrade guidance. `[external] update_check = false` disables checks; `konoma plugin list` shows saved results and the last check time without network access.
 - **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
   that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
   developing a plugin). konoma asks the program for its manifest once and keeps it in its cache directory (keyed by the

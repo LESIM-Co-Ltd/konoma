@@ -68,7 +68,9 @@ pub struct ExternalConfig {
     pub pdf: bool,
     /// Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
     pub video: bool,
-    /// Fetching `http(s)://` images referenced from Markdown (`curl`) — the only outbound network call konoma makes.
+    /// Check crates.io for plugin updates in the background, at most once per day.
+    pub update_check: bool,
+    /// Fetching `http(s)://` images referenced from Markdown.
     pub remote_images: bool,
     /// Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
     pub open_links: bool,
@@ -90,6 +92,7 @@ impl Default for ExternalConfig {
             pdf: true,
             video: true,
             remote_images: true,
+            update_check: true,
             open_links: true,
             office_apps: true,
             preview_commands: true,

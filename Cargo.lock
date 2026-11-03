@@ -1759,6 +1759,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "resvg",
+ "semver",
  "serde",
  "serde_json",
  "signal-hook 0.4.5",
