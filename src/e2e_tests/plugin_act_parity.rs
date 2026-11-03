@@ -18,7 +18,8 @@ use super::*;
 use crossterm::event::KeyCode;
 use konoma_host_core::help_msg::CoreMsg;
 use konoma_plugin::app::{
-    key_from_crossterm, prepare_bundled, run_with_pictures, AppCx, AppEvent, Display,
+    key_from_crossterm, prepare_bundled, run_with_pictures, AppCx, AppEvent, Display, EventSource,
+    Next,
 };
 use konoma_plugin::key::KeyCode as PK;
 use konoma_plugin::prelude::*;
@@ -402,7 +403,7 @@ pub(super) enum Step {
 pub(super) use Step::{Paste, K};
 
 /// A key press from a token (the shared tokens, and `<Sp>` for the space bar).
-fn kt(t: &str) -> (KeyCode, KeyModifiers) {
+pub(super) fn kt(t: &str) -> (KeyCode, KeyModifiers) {
     match t {
         "<Sp>" => (KeyCode::Char(' '), KeyModifiers::NONE),
         t => super::table_parity::token(t),
@@ -560,6 +561,108 @@ pub(super) fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> R
 }
 
 pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], sentinel: bool) -> Run {
+    app_watching(root, o, h, steps, sentinel, None).0
+}
+
+/// The screen the app's loop draws on, shared with its event source (see [`Watched`]).
+struct SharedScreen(Arc<Mutex<TermScreen>>);
+
+impl ratatui::backend::Backend for SharedScreen {
+    type Error = std::convert::Infallible;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.0.lock().unwrap().draw(content)
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.0.lock().unwrap().get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        p: P,
+    ) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().set_cursor_position(p)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().clear()
+    }
+    fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().clear_region(c)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.0.lock().unwrap().size()
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.0.lock().unwrap().window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().flush()
+    }
+}
+
+/// What the app showed, and what the plugin had seen, at one moment of a run.
+struct Seen {
+    buf: ratatui::buffer::Buffer,
+    log: Vec<String>,
+    opens: usize,
+}
+
+/// The events one after the other, each only when the app is idle ([`WhenIdle`]), and a copy of
+/// the screen taken the moment the app is idle with `at_left` events not yet given: the screen a
+/// run that ended there would have ended on.
+struct Watched {
+    idle: WhenIdle,
+    at_left: Option<usize>,
+    screen: Arc<Mutex<TermScreen>>,
+    log: Log,
+    opens: Arc<AtomicUsize>,
+    seen: Option<Seen>,
+}
+
+impl EventSource for Watched {
+    fn next(&mut self, wait: Option<std::time::Duration>) -> Next {
+        if wait.is_none() && self.seen.is_none() && Some(self.idle.keys.len()) == self.at_left {
+            self.seen = Some(Seen {
+                buf: self.screen.lock().unwrap().1.clone(),
+                log: self.log.lock().unwrap().clone(),
+                opens: self.opens.load(Ordering::SeqCst),
+            });
+        }
+        self.idle.next(wait)
+    }
+}
+
+/// The rows of a screen the app drew (the cells as a terminal shows them).
+fn app_rows(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+    let mut shown = Terminal::new(ratatui::backend::TestBackend::new(
+        buf.area.width,
+        buf.area.height,
+    ))
+    .unwrap();
+    shown.draw(|f| *f.buffer_mut() = buf.clone()).expect("draw");
+    rows_of(&shown)
+}
+
+/// [`app`], and, with `snap_after` = n, also what a run of the first n `steps` alone (no sentinel)
+/// would have ended on: the screen, the log and the opens at the moment the app is idle after the
+/// n-th step. One run then stands for two that share their start.
+pub(super) fn app_watching(
+    root: &std::path::Path,
+    o: &Opt,
+    h: u16,
+    steps: &[Step],
+    sentinel: bool,
+    snap_after: Option<usize>,
+) -> (Run, Option<Run>) {
+    assert!(snap_after.is_none_or(|n| n <= steps.len()));
     let id = new_id();
     let log = Log::default();
     let opens = Arc::new(AtomicUsize::new(0));
@@ -598,7 +701,8 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
         acts,
         ..
     } = prepared;
-    let mut term = Terminal::new(TermScreen::new(W, h)).unwrap();
+    let screen = Arc::new(Mutex::new(TermScreen::new(W, h)));
+    let mut term = Terminal::new(SharedScreen(screen.clone())).unwrap();
     let cx = AppCx {
         lang: lang.to_string(),
         term: TermCaps::new(),
@@ -631,9 +735,17 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
             key_from_crossterm(&KeyEvent::new(c, m)).expect("a key"),
         ));
     }
-    let mut ev = WhenIdle {
-        keys: evs,
-        turns: 0,
+    let total = evs.len();
+    let mut ev = Watched {
+        idle: WhenIdle {
+            keys: evs,
+            turns: 0,
+        },
+        at_left: snap_after.map(|n| total - n),
+        screen: screen.clone(),
+        log: log.clone(),
+        opens: opens.clone(),
+        seen: None,
     };
     let pictures = (o.kind == Kind::Image).then(|| {
         konoma_plugin::app::Pictures::new(
@@ -652,22 +764,110 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
         pictures,
     )
     .unwrap();
-    let left = sentinel && !ev.keys.is_empty();
-    let buf = term.backend().1.clone();
-    let mut shown = Terminal::new(ratatui::backend::TestBackend::new(
-        buf.area.width,
-        buf.area.height,
-    ))
-    .unwrap();
-    shown.draw(|f| *f.buffer_mut() = buf.clone()).expect("draw");
+    let left = sentinel && !ev.idle.keys.is_empty();
+    let rows = app_rows(&screen.lock().unwrap().1);
     let log = log.lock().unwrap().clone();
-    let rows = rows_of(&shown);
-    Run {
+    let snap = snap_after.map(|_| {
+        let seen = ev.seen.take().expect("the app was idle after the steps");
+        let rows = app_rows(&seen.buf);
+        Run {
+            state: state_of(o.kind, &rows, &seen.log),
+            rows,
+            left: false,
+            log: seen.log,
+            opens: seen.opens,
+        }
+    });
+    let run = Run {
         state: state_of(o.kind, &rows, &log),
         rows,
         left,
         log,
         opens: opens.load(Ordering::SeqCst),
+    };
+    (run, snap)
+}
+
+/// The event-source call is the synchronization boundary: timed polls must not capture a screen,
+/// nor may later draws or plugin activity change the already captured result.
+#[test]
+fn watched_screen_is_captured_once_at_the_requested_idle_boundary() {
+    let screen = Arc::new(Mutex::new(TermScreen::new(2, 1)));
+    let log = Log::default();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let mut ev = Watched {
+        idle: WhenIdle {
+            keys: [AppEvent::Paste("one".into())].into(),
+            turns: 0,
+        },
+        at_left: Some(0),
+        screen: screen.clone(),
+        log: log.clone(),
+        opens: opens.clone(),
+        seen: None,
+    };
+    assert!(matches!(ev.next(None), Next::Event(_)));
+    assert!(ev.seen.is_none(), "the step has not been processed yet");
+    assert!(matches!(
+        ev.next(Some(std::time::Duration::ZERO)),
+        Next::Timeout
+    ));
+    assert!(ev.seen.is_none(), "a timed poll is not idle");
+    screen.lock().unwrap().1[(0, 0)].set_symbol("A");
+    log.lock().unwrap().push("first".into());
+    opens.store(1, Ordering::SeqCst);
+    assert!(matches!(ev.next(None), Next::End));
+    screen.lock().unwrap().1[(0, 0)].set_symbol("B");
+    log.lock().unwrap().push("second".into());
+    opens.store(2, Ordering::SeqCst);
+    assert!(matches!(ev.next(None), Next::End));
+    let seen = ev.seen.unwrap();
+    assert_eq!(seen.buf[(0, 0)].symbol(), "A");
+    assert_eq!(seen.log, ["first"]);
+    assert_eq!(seen.opens, 1);
+}
+
+#[test]
+fn app_watching_matches_separate_runs_at_each_step() {
+    // Each run gets an isolated plugin id, which appears as a section heading in the help.
+    let rows = |run: &Run| {
+        run.rows
+            .iter()
+            .map(|row| {
+                let mut row = row.clone();
+                if let Some(i) = row.find("actp-") {
+                    let end = i
+                        + 5
+                        + row[i + 5..]
+                            .chars()
+                            .take_while(char::is_ascii_digit)
+                            .count();
+                    // Keep the heading's width, including its padding, unchanged.
+                    row.replace_range(i..end, &" ".repeat(end - i));
+                }
+                row
+            })
+            .collect::<Vec<_>>()
+    };
+    let (_dir, root) = fixture();
+    for kind in KINDS {
+        let o = Opt::new(kind);
+        let steps = [K("x"), K("<Sp>"), K("?")];
+        let help = app(&root, &o, APP_H, &steps, true);
+        for n in 0..=steps.len() {
+            let expected = app(&root, &o, APP_H, &steps[..n], false);
+            let (actual_help, seen) = app_watching(&root, &o, APP_H, &steps, true, Some(n));
+            let seen = seen.unwrap();
+            assert_eq!(rows(&seen), rows(&expected), "{kind:?} after {n} steps");
+            assert_eq!(seen.log, expected.log);
+            assert_eq!(seen.opens, expected.opens);
+            assert_eq!(seen.state, expected.state);
+            assert_eq!(rows(&actual_help), rows(&help));
+            assert_eq!(actual_help.log, help.log);
+            assert_eq!(actual_help.opens, help.opens);
+            assert_eq!(actual_help.state, help.state);
+            assert_eq!(actual_help.left, help.left);
+        }
     }
 }
 
