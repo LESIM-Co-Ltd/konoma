@@ -475,11 +475,11 @@ fn run_application() -> Result<()> {
     // Report a config load error, keymap conflicts/ignored settings, `[plugins.*]` mistakes and
     // old names via a startup message (silently falling back to the default would go unnoticed).
     // What is wrong comes first, the guidance about old names last, and what does not fit the
-    // footer is counted instead of cut off (`App::set_startup_flash`).
-    let footer_width = crossterm::terminal::size()
+    // footer is counted instead of cut off. `App::set_startup_flash` derives the notice space
+    // from terminal columns with the same layout and context calculation as rendering.
+    let columns = crossterm::terminal::size()
         .map(|(cols, _)| usize::from(cols))
-        .unwrap_or(80)
-        .saturating_sub(2);
+        .unwrap_or(80);
     // A konoma newer than the rebuilt one that was handed over to: say how to rebuild.
     let cfg_err = match plugin_cli::switch::stale_notice(
         env!("CARGO_PKG_VERSION"),
@@ -492,7 +492,7 @@ fn run_application() -> Result<()> {
         }),
         None => cfg_err,
     };
-    app.set_startup_flash(cfg_err, footer_width);
+    app.set_startup_flash(cfg_err, columns);
     let plugin_updates = plugin_cli::update_check::Worker::start(
         app.cfg.external.update_check,
         original_exe.as_deref(),

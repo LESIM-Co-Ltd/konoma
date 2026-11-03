@@ -2601,8 +2601,9 @@ fn e2e_canvas_timer_runs_under_the_startup_notice_without_a_key() {
     ];
     let mut s = Sim::with_config_sized(&canon(&dir), cfg, 90, 26).with_async_plugins();
     // As `main` does: the notice first, then the file given on the command line.
-    // Match the first frame's width: this test isolates timer deadlines, not a resize.
-    s.app.set_startup_flash(None, 90);
+    // Pass terminal columns through the same footer-width calculation as startup.
+    let columns = usize::from(s.term.size().unwrap().width);
+    s.app.set_startup_flash(None, columns);
     let notice = s.app.flash.clone().expect("the old name is announced");
     assert!(notice.contains("old name"), "{notice}");
     s.app.open_startup_file(&canon(&dir).join("a.typ"));

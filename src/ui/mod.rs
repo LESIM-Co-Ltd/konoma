@@ -24,6 +24,15 @@ use ratatui::Frame;
 
 use crate::app::{App, Mode, StatusbarLayout};
 
+/// Space for a notice in a full-width status row, shared by startup and rendering.
+pub(crate) fn notice_footer_width(app: &App, columns: usize) -> usize {
+    if StatusbarLayout::parse(&app.cfg.ui.statusbar) == StatusbarLayout::Split {
+        columns
+    } else {
+        status::combined_footer_width(app, columns)
+    }
+}
+
 /// Full-screen rendering per mode + status chrome (placement via `ui.statusbar`).
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.begin_frame();
@@ -125,12 +134,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
     // Bottom row: split=key hints only / bottom=context + hints combined.
-    let footer_width = if split {
-        bottom.width
-    } else {
-        status::combined_footer_width(app, bottom.width)
-    };
-    app.refit_notice_flash(usize::from(footer_width));
+    // The vertical layout preserves the frame's width; use the actual row for later resizes.
+    let footer_width = notice_footer_width(app, usize::from(bottom.width));
+    app.refit_notice_flash(footer_width);
     if split {
         status::render_footer(frame, app, bottom);
     } else {

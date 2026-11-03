@@ -1847,7 +1847,7 @@ pub struct App {
     /// A transient message (copy result, etc.). Cleared on the next key input. Shown in the status line.
     pub flash: Option<String>,
     notice_flash: Option<Box<NoticeFlash>>,
-    /// Last drawn footer width, or the startup width before any frame has been drawn.
+    /// Notice space after layout and context, from startup columns or the last drawn footer.
     notice_flash_width: usize,
 
     /// Visibility state and scroll position of the `?` help (full key list) overlay.
@@ -3094,11 +3094,13 @@ impl App {
     /// The message on the footer when konoma starts, from everything that has something to say:
     /// a config that could not be read (`cfg_err`), key conflicts and ignored key settings,
     /// `[plugins.*]` mistakes, then the guidance about old names (keys and settings). What is
-    /// wrong comes first and the guidance last; when they do not all fit `width` columns, what
+    /// wrong comes first and the guidance last; when they do not all fit the footer, what
     /// does not fit is counted ("(+n more)"). An overlong first notice is shortened with an
     /// ellipsis while reserving room for the count.
-    /// Install the startup message together with its unabridged, priority-ordered notices.
-    pub(crate) fn set_startup_flash(&mut self, cfg_err: Option<String>, width: usize) {
+    /// Derive the footer's notice space from terminal columns, as rendering does, and install
+    /// the startup message together with its unabridged, priority-ordered notices.
+    pub(crate) fn set_startup_flash(&mut self, cfg_err: Option<String>, columns: usize) {
+        let width = crate::ui::notice_footer_width(self, columns);
         self.notice_flash_width = width;
         self.set_notice_flash(self.startup_notices(cfg_err), width);
     }
@@ -3127,7 +3129,7 @@ impl App {
         self.set_notice_flash(notices, self.notice_flash_width);
     }
 
-    /// Use the actual footer area on each draw, including a resize after the result arrived.
+    /// Use the actual notice space on each draw, including changes to terminal or context width.
     pub(crate) fn refit_notice_flash(&mut self, width: usize) {
         self.notice_flash_width = width;
         if self

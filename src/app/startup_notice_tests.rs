@@ -23,6 +23,69 @@ fn app_with(cfg: Config, lang: Lang) -> (crate::test_support::TmpDir, App) {
     (dir, app)
 }
 
+fn assert_startup_flash_survives_first_draw(layout: &str) {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut cfg = Config::default();
+    cfg.ui.statusbar = layout.into();
+    let (_d, mut app) = app_with(cfg, Lang::En);
+    let (cols, rows) = (120, 8);
+    app.set_startup_flash(Some("long configuration error ".repeat(20)), cols);
+    let flash = app.flash.clone().unwrap();
+    let rendered = app.notice_flash.as_ref().unwrap().rendered.clone();
+    let width = app.notice_flash.as_ref().unwrap().width;
+    // Compare the allocation too: an unchanged width should leave the rendering in place.
+    let allocation = app.notice_flash.as_ref().unwrap().rendered.as_ptr();
+    let mut term = Terminal::new(TestBackend::new(cols as u16, rows)).unwrap();
+    term.draw(|frame| crate::ui::render(frame, &mut app))
+        .unwrap();
+    let state = app.notice_flash.as_ref().unwrap();
+    assert_eq!(state.rendered, rendered);
+    assert_eq!(app.flash.as_deref(), Some(flash.as_str()));
+    assert_eq!(state.width, width);
+    assert_eq!(state.rendered.as_ptr(), allocation, "no first-frame refit");
+
+    let context_width = if layout == "split" {
+        0
+    } else {
+        let context = usize::from(crate::ui::status::context_width(&app)) + 2;
+        assert!(context > 2 && context < cols, "context shares the row");
+        context
+    };
+    let footer: String = (context_width as u16..cols as u16)
+        .map(|x| term.backend().buffer()[(x, rows - 1)].symbol())
+        .collect();
+    assert_eq!(footer, flash, "the entire startup flash reaches the footer");
+}
+
+#[test]
+fn startup_flash_split_survives_first_draw() {
+    assert_startup_flash_survives_first_draw("split");
+}
+
+#[test]
+fn startup_flash_bottom_survives_first_draw() {
+    assert_startup_flash_survives_first_draw("bottom");
+}
+
+#[test]
+fn startup_notice_footer_width_saturates_at_narrow_columns() {
+    let (_d, mut app) = app_with(Config::default(), Lang::En);
+    let context = usize::from(crate::ui::status::context_width(&app)) + 2;
+    for columns in [0, 1, 2, context - 1, context, context + 1] {
+        app.cfg.ui.statusbar = "split".into();
+        assert_eq!(crate::ui::notice_footer_width(&app, columns), columns);
+        app.cfg.ui.statusbar = "bottom".into();
+        let expected = if columns <= context { 0 } else { 1 };
+        assert_eq!(crate::ui::notice_footer_width(&app, columns), expected);
+        app.set_startup_flash(Some("long configuration error".repeat(20)), columns);
+        let state = app.notice_flash.as_ref().unwrap();
+        assert_eq!(state.width, expected);
+        assert_eq!(state.rendered, if expected == 0 { "" } else { "…" });
+    }
+}
+
 #[test]
 fn startup_flash_long_single_notice_is_bounded_and_ends_in_ellipsis() {
     use unicode_width::UnicodeWidthStr;
