@@ -71,17 +71,38 @@ mod tests {
         let first = acquire(&d, &mut Vec::new()).unwrap();
         let dir = d.to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::sync_channel(0);
+        struct Notice {
+            text: Vec<u8>,
+            attempted: Option<std::sync::mpsc::SyncSender<()>>,
+        }
+        impl Write for Notice {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.text.extend_from_slice(bytes);
+                if self.text.contains(&b'\n') {
+                    if let Some(tx) = self.attempted.take() {
+                        tx.send(()).unwrap();
+                    }
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
         let waiter = std::thread::spawn(move || {
-            let mut said = Vec::new();
+            let mut said = Notice {
+                text: Vec::new(),
+                attempted: Some(attempt_tx),
+            };
             let got = acquire(&dir, &mut said).is_ok();
-            tx.send(String::from_utf8(said).unwrap()).unwrap();
+            tx.send(String::from_utf8(said.text).unwrap()).unwrap();
             got
         });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_millis(300))
-                .is_err(),
-            "still waiting while the first holds the lock"
-        );
+        // A waiting notice is only written after try_lock observed the first holder.
+        attempt_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
         drop(first);
         let said = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         assert!(said.contains("waiting"), "{said}");

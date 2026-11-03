@@ -17,6 +17,11 @@ const OWN: &str = env!("CARGO_PKG_VERSION");
 const FAKE_CARGO: &str = r##"#!/bin/sh
 echo "$*" >> "$FAKE_DIR/cargo.log"
 case "$1" in
+metadata)
+  authors='["Fixture author"]'
+  if [ "$FAKE_METADATA_NAME" = konoma-bar ]; then authors='[]'; fi
+  printf '{"packages":[{"id":"fixture","name":"%s","authors":%s}],"resolve":{"root":"root","nodes":[{"id":"root","deps":[{"pkg":"fixture"}]}]}}\n' "$FAKE_METADATA_NAME" "$authors"
+  exit 0 ;;
 update)
   if [ -n "$FAKE_LOCK_NEW" ] && [ -f Cargo.lock ]; then cp "$FAKE_LOCK_NEW" Cargo.lock; fi
   exit 0 ;;
@@ -80,7 +85,7 @@ impl Sandbox {
         std::fs::write(
             s.fake().join("lock-initial"),
             format!(
-                "version = 4\n\n[[package]]\nname = \"konoma\"\nversion = \"{OWN}\"\n\n\
+                "version = 4\n\n[[package]]\nname = \"konoma-with-plugins\"\nversion = \"0.0.0\"\ndependencies = [\"konoma\", \"konoma-foo\", \"konoma-bar\"]\n\n[[package]]\nname = \"konoma\"\nversion = \"{OWN}\"\n\n\
                  [[package]]\nname = \"konoma-foo\"\nversion = \"0.3.2\"\n\n\
                  [[package]]\nname = \"konoma-bar\"\nversion = \"1.0.0\"\n"
             ),
@@ -89,7 +94,7 @@ impl Sandbox {
         std::fs::write(
             s.fake().join("lock-new"),
             format!(
-                "version = 4\n\n[[package]]\nname = \"konoma\"\nversion = \"{OWN}\"\n\n\
+                "version = 4\n\n[[package]]\nname = \"konoma-with-plugins\"\nversion = \"0.0.0\"\ndependencies = [\"konoma\", \"konoma-foo\", \"konoma-bar\"]\n\n[[package]]\nname = \"konoma\"\nversion = \"{OWN}\"\n\n\
                  [[package]]\nname = \"konoma-foo\"\nversion = \"0.3.5\"\n\n\
                  [[package]]\nname = \"konoma-bar\"\nversion = \"1.0.0\"\n"
             ),
@@ -139,6 +144,10 @@ impl Sandbox {
             .env("XDG_DATA_HOME", self.data_base())
             .env("CARGO", self.fake().join("cargo"))
             .env("FAKE_DIR", self.fake())
+            .env(
+                "FAKE_METADATA_NAME",
+                args.get(2).unwrap_or(&"").split('@').next().unwrap(),
+            )
             .env("FAKE_LOCK_NEW", self.fake().join("lock-new"))
             .current_dir(self.home())
             .stdin(Stdio::null());
@@ -185,7 +194,109 @@ fn code(o: &Output) -> i32 {
 }
 
 #[test]
-fn plugin_list_reads_saved_updates_without_changing_the_record() {
+fn install_path_resolves_symlinks_before_parent_components() {
+    let s = Sandbox::new("plugin-path-links");
+    std::fs::create_dir_all(s.root.join("sdk/subdir")).unwrap();
+    std::fs::create_dir_all(s.root.join("sdk/plugin")).unwrap();
+    std::os::unix::fs::symlink(s.root.join("sdk/subdir"), s.home().join("link")).unwrap();
+    let o = s.run(&[
+        "plugin",
+        "install",
+        "konoma-foo",
+        "--path",
+        "link/../plugin",
+        "--yes",
+    ]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    let saved = std::fs::read_to_string(s.plugins_toml()).unwrap();
+    let expected = s.root.join("sdk/plugin").canonicalize().unwrap();
+    assert!(saved.contains(expected.to_str().unwrap()), "{saved}");
+}
+
+#[test]
+fn install_path_must_exist_before_cargo_runs() {
+    let s = Sandbox::new("plugin-path-missing");
+    let o = s.run(&[
+        "plugin",
+        "install",
+        "konoma-foo",
+        "--path",
+        "missing",
+        "--yes",
+    ]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(s.cargo_log().is_empty());
+    assert!(!s.plugins_toml().exists());
+}
+
+#[test]
+fn standard_only_update_rebuilds_all() {
+    assert_standard_update(&["plugin", "update"], "update");
+}
+
+#[test]
+fn standard_only_update_rebuilds_a_named_standard_crate() {
+    assert_standard_update(
+        &["plugin", "update", "konoma-office"],
+        "update -p konoma-office",
+    );
+}
+
+fn assert_standard_update(args: &[&str], update: &str) {
+    let s = Sandbox::new("plugin-standard-update");
+    let o = s.run(args);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    let log = s.cargo_log();
+    assert!(log.lines().any(|l| l == update), "{log}");
+    assert!(log.contains("build --release"), "{log}");
+    assert!(s.program().is_file());
+}
+
+#[test]
+fn built_record_contains_resolved_plugin_versions() {
+    let s = Sandbox::new("plugin-record-versions");
+    let o = s.run(&["plugin", "install", "konoma-foo", "--yes"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    let record: toml::Table = std::fs::read_to_string(s.record())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        record["plugins"].get("konoma-foo").and_then(|v| v.as_str()),
+        Some("0.3.2")
+    );
+}
+
+#[test]
+fn install_confirmation_shows_resolved_authors_before_building() {
+    let s = Sandbox::new("plugin-authors");
+    let o = s.run(&["plugin", "install", "konoma-foo", "--yes"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(
+        out(&o).contains("Authors:       Fixture author"),
+        "{}",
+        out(&o)
+    );
+    let log = s.cargo_log();
+    assert!(
+        log.find("metadata").unwrap() < log.find("build --release").unwrap(),
+        "{log}"
+    );
+    let o = s.run(&["plugin", "install", "konoma-bar", "--yes"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(out(&o).contains("Authors:       not listed"), "{}", out(&o));
+    std::fs::write(
+        s.config().join("konoma/config.toml"),
+        "[ui]\nlang = \"ja\"\n",
+    )
+    .unwrap();
+    let o = s.run(&["plugin", "install", "konoma-bar", "--yes"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(out(&o).contains("作者:          記載なし"), "{}", out(&o));
+}
+
+#[test]
+fn plugin_list_reads_only_the_saved_timestamp_without_changing_it() {
     let s = Sandbox::new("plugin-cli-update-list");
     std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
     std::fs::write(
@@ -203,8 +314,8 @@ fn plugin_list_reads_saved_updates_without_changing_the_record() {
     let o = s.run(&["plugin", "list"]);
     assert_eq!(code(&o), 0, "{}", err(&o));
     let text = out(&o);
-    assert!(text.contains("update available: 0.4.0"), "{text}");
-    assert!(text.contains("newer 2.0.0 needs a newer konoma"), "{text}");
+    assert!(!text.contains("update available:"), "{text}");
+    assert!(!text.contains("needs a newer konoma"), "{text}");
     assert!(!text.contains("newer 1.0.0 needs"), "{text}");
     assert!(
         text.contains("Last checked: 1970-01-01 00:01:40 UTC"),
@@ -397,11 +508,6 @@ fn without_cargo_install_and_update_say_so_and_fail() {
         let mut c = s.command(args);
         c.env_remove("CARGO").env("PATH", &nothing);
         let o = c.output().unwrap();
-        // `update` with nothing installed has nothing to rebuild and needs no cargo
-        if args[1] == "update" {
-            assert_eq!(code(&o), 0, "{}", err(&o));
-            continue;
-        }
         assert_ne!(code(&o), 0);
         let e = err(&o);
         assert!(e.contains("cargo was not found"), "{e}");
@@ -462,6 +568,7 @@ fn the_standard_crates_are_refused() {
 #[test]
 fn a_relative_path_is_written_absolute() {
     let s = Sandbox::new("plugin-cli-path");
+    std::fs::create_dir_all(s.home().join("rel/baz")).unwrap();
     let o = s.run(&[
         "plugin",
         "install",
@@ -805,7 +912,10 @@ fn ctrl_c_at_the_question_ends_the_command() {
     // for an answer.
     let st = wait_exit(&mut child, 10, "Ctrl-C at the question");
     assert_eq!(st.signal(), Some(libc::SIGINT), "{st:?}");
-    assert!(s.cargo_log().is_empty(), "nothing was built");
+    assert!(
+        !s.cargo_log().contains("build --release"),
+        "nothing was built"
+    );
     assert!(!s.plugins_toml().exists() && !s.program().exists());
     assert!(s.leftovers().is_empty(), "{:?}", s.leftovers());
 }
@@ -872,6 +982,10 @@ fn a_lock_that_cannot_be_written_changes_nothing() {
     let o = s.run(&["plugin", "install", "konoma-foo", "-y"]);
     assert_eq!(code(&o), 1);
     let e = err(&o);
+    assert!(
+        s.cargo_log().is_empty(),
+        "cannot restore saved lock: cargo must not run"
+    );
     assert!(e.contains("Nothing was replaced"), "{e}");
     assert!(!e.contains("Now new"), "{e}");
     assert!(!s.plugins_toml().exists() && !s.record().exists() && !s.program().exists());
@@ -954,8 +1068,8 @@ fn a_second_plugin_command_waits_for_the_lock_and_list_does_not() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(child.try_wait().unwrap().is_none(), "still waiting");
     assert!(
-        s.cargo_log().is_empty() && !s.program().exists(),
-        "nothing happened"
+        s.cargo_log().lines().all(|l| l.starts_with("metadata ")) && !s.program().exists(),
+        "only metadata may precede the lock"
     );
 
     drop(held);
@@ -1186,7 +1300,7 @@ fn fake_rebuilt(s: &Sandbox) {
     write_exe(&s.program(), FAKE_KONOMA);
     std::fs::write(
         s.record(),
-        format!("konoma_version = \"{OWN}\"\nplugins = [\"konoma-foo\"]\n"),
+        format!("konoma_version = \"{OWN}\"\n[plugins]\nkonoma-foo = \"0.3.2\"\n"),
     )
     .unwrap();
 }
@@ -1270,14 +1384,34 @@ fn real_cargo_builds_konoma_with_a_path_plugin() {
     .unwrap();
     std::fs::write(
         plug.join("src/lib.rs"),
-        "pub fn plugins() -> Vec<Box<dyn konoma_plugin::Plugin>> {\n    Vec::new()\n}\n",
+        r#"use konoma_plugin::prelude::*;
+struct TestPlug;
+impl Plugin for TestPlug {
+    fn manifest(&self) -> Manifest {
+        assert!(std::env::var_os("KONOMA_PLUGIN_SWITCHED_FROM").is_none());
+        assert!(std::thread::spawn(|| std::process::Command::new("/bin/sh")
+            .args(["-c", "test -z \"${KONOMA_PLUGIN_SWITCHED_FROM+x}\""])
+            .status().unwrap().success()).join().unwrap());
+        Manifest::new("pr4-testplug", "0.1.0").bind(Bind::files(["*.pr4-testplug"])).shows(ViewKind::Text)
+    }
+    fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Err(Failure::unsupported(t!(en: "fixture", ja: "試験")))
+    }
+}
+pub fn plugins() -> Vec<Box<dyn Plugin>> {
+    assert!(std::env::var_os("KONOMA_PLUGIN_SWITCHED_FROM").is_none());
+    assert!(std::env::var_os("KONOMA_PLUGIN_SWITCHED_PATH").is_none());
+    vec![Box::new(TestPlug)]
+}
+"#,
     )
     .unwrap();
 
     let home = dir.join("home");
     let cfg = dir.join("config");
     let data = dir.join("data");
-    for d in [&home, &cfg.join("konoma"), &data] {
+    let compiler_tmp = dir.join("compiler-tmp");
+    for d in [&home, &cfg.join("konoma"), &data, &compiler_tmp] {
         std::fs::create_dir_all(d).unwrap();
     }
     std::fs::write(
@@ -1300,6 +1434,7 @@ fn real_cargo_builds_konoma_with_a_path_plugin() {
             .env("CARGO_HOME", &cargo_home)
             .env("RUSTUP_HOME", &rustup_home)
             .env("CARGO_NET_OFFLINE", "true")
+            .env("TMPDIR", &compiler_tmp)
             .current_dir(&home)
             .stdin(Stdio::null())
             .output()
@@ -1329,6 +1464,13 @@ fn real_cargo_builds_konoma_with_a_path_plugin() {
     let o = run(&["--plugins"]);
     assert_eq!(code(&o), 0, "{}", err(&o));
     assert!(out(&o).contains("markdown"), "{}", out(&o));
+    assert!(
+        out(&o)
+            .lines()
+            .any(|line| line.split_whitespace().any(|word| word == "pr4-testplug")),
+        "the added plugin must be registered: {}",
+        out(&o)
+    );
     let o = run(&["plugin", "list"]);
     assert!(out(&o).contains("konoma-testplug"), "{}", out(&o));
     let o = run(&["plugin", "remove", "konoma-testplug"]);

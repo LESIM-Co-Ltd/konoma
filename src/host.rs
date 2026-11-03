@@ -29,11 +29,31 @@ impl Host {
 
 /// The plugins a program links in. Nothing is checked until [`HostBuilder::run`], so the order of
 /// the calls does not matter.
-#[derive(Default)]
 pub struct HostBuilder {
+    startup: Startup,
     standard: bool,
     added: Vec<Arc<dyn Plugin>>,
     replaced: Vec<(String, Arc<dyn Plugin>)>,
+}
+
+pub(crate) struct Startup {
+    pub original_exe: Option<std::path::PathBuf>,
+    pub switched_from: Option<std::ffi::OsString>,
+}
+
+impl Default for HostBuilder {
+    fn default() -> Self {
+        // Capture and remove handover markers before plugin factories or manifests can run.
+        Self {
+            startup: Startup {
+                original_exe: crate::plugin_cli::switch::take_original_exe(),
+                switched_from: crate::plugin_cli::switch::take_switched_from(),
+            },
+            standard: false,
+            added: Vec::new(),
+            replaced: Vec::new(),
+        }
+    }
 }
 
 impl HostBuilder {
@@ -47,9 +67,8 @@ impl HostBuilder {
     /// Add a plugin. Its id must not be one that is already taken (a standard plugin's, or one
     /// added before); `run` fails otherwise.
     ///
-    /// Creating the plugin value must not start a thread: `run` still changes the process
-    /// environment afterwards, which is only sound while this is the single thread. Start threads
-    /// once konoma calls into the plugin.
+    /// Create the builder before creating plugins: it consumes the startup environment while
+    /// the process is still single-threaded.
     pub fn plugin(mut self, plugin: impl Plugin) -> Self {
         self.added.push(Arc::new(plugin));
         self
@@ -59,10 +78,8 @@ impl HostBuilder {
     /// `konoma plugin install` writes into the program it builds. Each one follows the rules of
     /// [`plugin`](Self::plugin) (its id must be free; `run` fails otherwise).
     ///
-    /// The generated `main` calls the crate's `plugins()` before [`run`](Self::run), and `run`
-    /// removes an environment variable early on. So `plugins()`, the code that creates the plugin
-    /// values, must not start a thread (it would race with `getenv`); a plugin starts its threads
-    /// after it is created, from the places where konoma calls into it.
+    /// The generated `main` creates the builder before calling the crate's `plugins()`, so startup
+    /// environment changes have already finished before that plugin code runs.
     pub fn plugins(mut self, plugins: Vec<Box<dyn Plugin>>) -> Self {
         self.added.extend(plugins.into_iter().map(Arc::from));
         self
@@ -77,7 +94,7 @@ impl HostBuilder {
 
     /// Check the ids and fix what is linked in. Touches nothing outside this value, so a failure
     /// here means konoma never started.
-    fn resolve(self) -> Result<StaticSet> {
+    fn resolve(&self) -> Result<StaticSet> {
         // The ids a registry would hold before the program's own plugins: the standard ones (when
         // asked for) and the host-internal ones, which nobody can take or replace.
         let mut taken: BTreeSet<String> = [
@@ -96,20 +113,20 @@ impl HostBuilder {
             }
         }
         let mut replaced = std::collections::BTreeMap::new();
-        for (target, plugin) in self.replaced {
-            if replaced.contains_key(&target) {
+        for (target, plugin) in &self.replaced {
+            if replaced.contains_key(target) {
                 bail!("the plugin `{target}` is replaced more than once");
             }
-            if !standard_ids.contains(&target) {
+            if !standard_ids.contains(target) {
                 bail!("cannot replace `{target}`: there is no standard plugin with that id");
             }
             // The replacement leaves the id it stands for; its own id must be free.
-            taken.remove(&target);
+            taken.remove(target);
             let id = plugin.manifest().id;
             if !taken.insert(id.clone()) {
                 bail!("plugin id `{id}` is already taken");
             }
-            replaced.insert(target, plugin);
+            replaced.insert(target.clone(), Arc::clone(plugin));
         }
         for plugin in &self.added {
             let id = plugin.manifest().id;
@@ -119,7 +136,7 @@ impl HostBuilder {
         }
         Ok(StaticSet {
             standard: self.standard,
-            added: self.added,
+            added: self.added.clone(),
             replaced,
         })
     }
@@ -129,6 +146,7 @@ impl HostBuilder {
     /// happens (no terminal is touched).
     pub fn run(self) -> Result<()> {
         let set = self.resolve()?;
+        let startup = self.startup;
         // Declared after the check above, which touches nothing, so a program (or a test) that
         // only learns its plugin set is wrong never becomes "the application". It is done here and
         // not in the caller's `main` so that every program that runs konoma -- the `konoma`
@@ -140,7 +158,7 @@ impl HostBuilder {
         if plugins::statics::install(set).is_err() {
             bail!("konoma was already started in this process");
         }
-        crate::run_application()
+        crate::run_application(startup)
     }
 }
 
@@ -165,6 +183,23 @@ mod tests {
             Ok(_) => panic!("expected an error"),
             Err(e) => e.to_string(),
         }
+    }
+
+    #[test]
+    fn startup_environment_is_consumed_before_any_plugin_code() {
+        let source = include_str!("host.rs");
+        let builder = &source[source.find("pub fn builder()").unwrap()..];
+        let builder = &builder[..builder.find("\n    }").unwrap()];
+        assert!(builder.contains("HostBuilder::default()"));
+        let default = source
+            .find("impl Default for HostBuilder")
+            .expect("startup must be captured when the builder is created");
+        let default =
+            &source[default..source[default..].find("\nimpl HostBuilder").unwrap() + default];
+        assert!(default.contains("take_switched_from()"));
+        assert!(default.contains("take_original_exe()"));
+        let run = &source[source.find("pub fn run(self)").unwrap()..];
+        assert!(run.contains("run_application(startup)"));
     }
 
     #[test]

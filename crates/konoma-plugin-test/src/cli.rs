@@ -8,6 +8,20 @@ use crate::{run, Limits, Options, Status};
 
 const HELP: &str = "Usage: konoma-plugin-test [OPTIONS] <PROGRAM> [-- <ARG>...]\n\nOptions:\n  --plugin <ID>   Select a plugin in a multi-plugin program\n  --file <PATH>   File to open (repeatable); omitted checks are reported as skipped\n  --help          Show this help\n  --version       Show version\n\nUses konoma's production deadlines. Child arguments precede --plugin <ID> --serve.\n";
 
+/// Process entry point: own signal cleanup only when running as the standalone tool.
+pub fn execute_process() -> u8 {
+    if let Err(error) = crate::connection::install_signal_cleanup() {
+        eprintln!("{error}");
+        return 1;
+    }
+    execute(
+        std::env::args_os().skip(1),
+        Limits::default(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
 enum Parsed {
     Run(Options),
     Help,

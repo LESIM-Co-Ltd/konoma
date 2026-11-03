@@ -230,19 +230,50 @@ impl Snapshot {
 
     pub(crate) fn load(data_dir: &Path) -> Option<Self> {
         let text = std::fs::read_to_string(data_dir.join("plugin-updates.toml")).ok()?;
-        let snapshot: Self = toml::from_str(&text).ok()?;
-        Version::parse(&snapshot.host_version).ok()?;
-        for observed in snapshot.plugins.values() {
-            Version::parse(&observed.installed).ok()?;
-            for v in [&observed.updates.compatible, &observed.updates.needs_host]
-                .into_iter()
-                .flatten()
-            {
-                Version::parse(v).ok()?;
-            }
-        }
-        Some(snapshot)
+        let saved: CheckTime = toml::from_str(&text).ok()?;
+        Some(Self {
+            checked_at: saved.checked_at,
+            host_version: String::new(),
+            plugins: BTreeMap::new(),
+        })
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct CheckTime {
+    checked_at: u64,
+}
+
+fn standard_targets() -> BTreeMap<String, (Version, VersionReq)> {
+    let manifest: toml::Table = include_str!("../../Cargo.toml")
+        .parse()
+        .expect("package manifest");
+    [
+        ("konoma-code", konoma_code::code_manifest().version),
+        (
+            "konoma-markdown",
+            konoma_markdown::markdown_manifest().version,
+        ),
+        ("konoma-math", konoma_math::math_manifest().version),
+        ("konoma-media", konoma_media::image_manifest().version),
+        ("konoma-mermaid", konoma_mermaid::mermaid_manifest().version),
+        (
+            "konoma-office",
+            konoma_office::spreadsheet_manifest().version,
+        ),
+        ("konoma-table", konoma_table::csv_manifest().version),
+    ]
+    .into_iter()
+    .filter_map(|(name, version)| {
+        Some((
+            name.into(),
+            (
+                Version::parse(&version).ok()?,
+                VersionReq::parse(manifest["dependencies"][name]["version"].as_str()?).ok()?,
+            ),
+        ))
+    })
+    .collect()
 }
 
 // Both the clock and thread launcher are injected: tests can prove that a check is never even
@@ -259,37 +290,85 @@ fn start_with(
     if !enabled {
         return None;
     }
-    let list = PluginList::load(&config_dir.join("plugins.toml")).ok()?;
-    let locked = project::locked_versions(
-        &std::fs::read_to_string(data_dir.join("Cargo.lock")).unwrap_or_default(),
-    );
-    let targets: BTreeMap<_, _> = list
-        .plugins
-        .iter()
-        .filter(|(_, src)| src.has_update_check())
-        .filter_map(|(name, _)| Some((name.clone(), Version::parse(locked.get(name)?).ok()?)))
-        .collect();
-    if targets.is_empty() {
-        return None;
-    }
+    let config_dir = config_dir.to_path_buf();
     let (tx, rx) = mpsc::channel();
-    if let Some(mut cached) =
-        Snapshot::load(&data_dir).filter(|s| now().saturating_sub(s.checked_at) < 86400)
-    {
-        cached.plugins.retain(|name, o| {
-            cached.host_version == host.to_string()
-                && targets
-                    .get(name)
-                    .is_some_and(|v| v.to_string() == o.installed)
-        });
-        let _ = tx.send(cached);
-        return Some(rx);
-    }
     spawn(Box::new(move || {
+        // A separate, stable lock file protects the attempt claim across concurrent starts.
+        // Release it before HTTP: the timestamp, including failures, enforces the daily limit.
+        if std::fs::create_dir_all(&data_dir).is_err() {
+            return;
+        }
+        let Ok(claim) = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(data_dir.join("plugin-updates.lock"))
+        else {
+            return;
+        };
+        if claim.try_lock().is_err() {
+            return;
+        }
+        let checked_at = now();
+        if let Some(saved) =
+            Snapshot::load(&data_dir).filter(|s| checked_at.saturating_sub(s.checked_at) < 86400)
+        {
+            let _ = tx.send(saved);
+            return;
+        }
+        let Ok(list) = PluginList::load(&config_dir.join("plugins.toml")) else {
+            return;
+        };
+        let lock_text = std::fs::read_to_string(data_dir.join("Cargo.lock"));
+        if lock_text
+            .as_ref()
+            .is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+        {
+            return;
+        }
+        let locked = project::locked_versions(lock_text.as_deref().unwrap_or_default());
+        let mut targets: BTreeMap<_, _> = list
+            .plugins
+            .iter()
+            .filter_map(|(name, source)| {
+                let super::list_file::Source::Crates { version } = source else {
+                    return None;
+                };
+                Some((
+                    name.clone(),
+                    (
+                        Version::parse(locked.get(name)?).ok()?,
+                        VersionReq::parse(version).ok()?,
+                    ),
+                ))
+            })
+            .collect();
+        for (name, (compiled, req)) in standard_targets() {
+            let installed = if lock_text.is_ok() {
+                locked.get(&name).and_then(|v| Version::parse(v).ok())
+            } else {
+                Some(compiled)
+            };
+            if let Some(installed) = installed {
+                targets.insert(name, (installed, req));
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let Ok(text) = toml::to_string(&CheckTime { checked_at }) else {
+            return;
+        };
+        if super::list_file::write_atomic(&data_dir.join("plugin-updates.toml"), text.as_bytes())
+            .is_err()
+        {
+            return;
+        }
+        drop(claim);
         let mut plugins = BTreeMap::new();
-        for (name, installed) in targets {
-            if let Some(updates) =
-                fetch(&index_url(&name)).and_then(|body| inspect_index(&body, &installed, &host))
+        for (name, (installed, requirement)) in targets {
+            if let Some(updates) = fetch(&index_url(&name))
+                .and_then(|body| inspect_index_in_range(&body, &installed, &host, &requirement))
             {
                 plugins.insert(
                     name,
@@ -300,21 +379,14 @@ fn start_with(
                 );
             }
         }
-        // A failed check must not consume the daily attempt, nor redisplay an old observation.
         if plugins.is_empty() {
             return;
         }
         let snapshot = Snapshot {
-            checked_at: now(),
+            checked_at,
             host_version: host.to_string(),
             plugins,
         };
-        if let Ok(text) = toml::to_string(&snapshot) {
-            let _ = super::list_file::write_atomic(
-                &data_dir.join("plugin-updates.toml"),
-                text.as_bytes(),
-            );
-        }
         let _ = tx.send(snapshot);
     }))
     .then_some(rx)
@@ -352,7 +424,17 @@ struct Dependency {
     req: String,
 }
 
+#[cfg(test)]
 fn inspect_index(body: &str, installed: &Version, host: &Version) -> Option<Updates> {
+    inspect_index_in_range(body, installed, host, &VersionReq::STAR)
+}
+
+fn inspect_index_in_range(
+    body: &str,
+    installed: &Version,
+    host: &Version,
+    requirement: &VersionReq,
+) -> Option<Updates> {
     let mut valid = false;
     let mut compatible: Option<Version> = None;
     let mut needs_host: Option<Version> = None;
@@ -373,7 +455,11 @@ fn inspect_index(body: &str, installed: &Version, host: &Version) -> Option<Upda
             continue;
         };
         valid = true;
-        if row.yanked || !version.pre.is_empty() || version <= *installed {
+        if row.yanked
+            || !version.pre.is_empty()
+            || version <= *installed
+            || !requirement.matches(&version)
+        {
             continue;
         }
         let best = if requirements.iter().all(|r| r.matches(host)) {
@@ -621,6 +707,161 @@ mod tests {
         Version::parse("0.1.0").unwrap()
     }
 
+    #[test]
+    fn update_standard_build_without_a_list_checks_standard_crates() {
+        let d = fixture();
+        std::fs::remove_file(d.join("config/plugins.toml")).unwrap();
+        std::fs::remove_file(d.join("data/Cargo.lock")).unwrap();
+        let snapshot = check(&d, 100, |url| {
+            url.ends_with("/konoma-office")
+                .then(|| row("0.1.1", Some("^0.1"), false))
+        })
+        .expect("the standard build has updatable plugins");
+        assert_eq!(
+            snapshot.plugins["konoma-office"]
+                .updates
+                .compatible
+                .as_deref(),
+            Some("0.1.1")
+        );
+    }
+
+    #[test]
+    fn update_file_reads_are_deferred_to_the_worker() {
+        let d = fixture();
+        let path = d.join("config/plugins.toml");
+        std::fs::remove_file(&path).unwrap();
+        let cpath = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: this test owns the FIFO and the string is NUL-terminated.
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let config = d.join("config");
+        let data = d.join("data");
+        let (tx, rx) = mpsc::channel();
+        let launcher = std::thread::spawn(move || {
+            let mut queued = None;
+            let result = start_with(
+                true,
+                &config,
+                data,
+                host(),
+                || 100,
+                |_| None,
+                |job| {
+                    queued = Some(job);
+                    true
+                },
+            );
+            tx.send((result.is_some(), queued)).unwrap();
+        });
+        let returned = rx.recv_timeout(Duration::from_secs(2));
+        // Release an old implementation blocked on the caller; the watchdog cannot leak it.
+        if returned.is_err() {
+            std::fs::write(&path, "").unwrap();
+        }
+        launcher.join().unwrap();
+        assert!(
+            returned
+                .expect("startup must return before any file read")
+                .0
+        );
+    }
+
+    #[test]
+    fn update_respects_the_configured_semver_range() {
+        for requirement in ["=0.3.0", "^0.3"] {
+            let d = fixture();
+            std::fs::write(
+                d.join("config/plugins.toml"),
+                format!("[plugins.foo]\nversion = {requirement:?}\n"),
+            )
+            .unwrap();
+            let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+            assert_eq!(
+                snapshot.plugins["foo"].updates.counts(),
+                (0, 0),
+                "{requirement}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_failed_attempt_consumes_the_daily_limit() {
+        let d = fixture();
+        assert!(check(&d, 100, |_| None).is_none());
+        let snapshot = check(&d, 101, |_| panic!("a failed attempt still counts"));
+        assert!(snapshot.is_none_or(|s| s.plugins.is_empty()));
+    }
+
+    #[test]
+    fn update_concurrent_starts_share_one_attempt() {
+        let d = fixture();
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let first = start_with(
+            true,
+            &d.join("config"),
+            d.join("data"),
+            host(),
+            || 100,
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                None
+            },
+            spawn_worker,
+        )
+        .unwrap();
+        entering.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check(&d, 100, |_| {
+                panic!("another startup already claimed today's attempt")
+            })
+        }));
+        release.send(()).unwrap();
+        assert!(first.recv_timeout(Duration::from_secs(5)).is_err());
+        assert!(second.unwrap().is_none_or(|s| s.plugins.is_empty()));
+    }
+
+    #[test]
+    fn update_saves_only_the_attempt_timestamp() {
+        let d = fixture();
+        check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        let saved: toml::Table = std::fs::read_to_string(d.join("data/plugin-updates.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(saved["checked_at"].as_integer(), Some(100));
+    }
+
+    #[test]
+    fn update_claim_is_exclusive_before_reading_the_clock() {
+        let d = fixture();
+        let held = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(d.join("data/plugin-updates.lock"))
+            .unwrap();
+        held.lock().unwrap();
+        let rx = start_with(
+            true,
+            &d.join("config"),
+            d.join("data"),
+            host(),
+            || panic!("another startup owns the attempt claim"),
+            |_| panic!("no HTTP"),
+            |job| {
+                job();
+                true
+            },
+        )
+        .unwrap();
+        assert!(rx.recv().is_err());
+        drop(held);
+        assert!(check(&d, 100, |_| Some(row("0.4.0", None, false))).is_some());
+    }
+
     fn check(
         d: &Path,
         now: u64,
@@ -660,23 +901,34 @@ mod tests {
             host(),
             || 100 + 86400 - 1,
             |_| panic!("no HTTP before 24h"),
-            |_| panic!("no thread before 24h"),
+            |job| {
+                job();
+                true
+            },
         )
         .unwrap()
         .recv()
         .unwrap();
-        assert_eq!(cached, snapshot);
+        assert_eq!(cached.checked_at, snapshot.checked_at);
+        assert!(
+            cached.plugins.is_empty(),
+            "observations are never persisted"
+        );
         let fresh = check(&d, 100 + 86400, |_| Some(row("0.5.0", None, false))).unwrap();
         assert_eq!(fresh.checked_at, 100 + 86400);
         assert_eq!(
             fresh.plugins["foo"].updates.compatible.as_deref(),
             Some("0.5.0")
         );
-        assert_eq!(Snapshot::load(&d.join("data")), Some(fresh));
+        assert_eq!(
+            Snapshot::load(&d.join("data")).unwrap().checked_at,
+            fresh.checked_at
+        );
+        assert!(Snapshot::load(&d.join("data")).unwrap().plugins.is_empty());
     }
 
     #[test]
-    fn update_disabled_empty_missing_unbuilt_never_spawn_or_fetch() {
+    fn update_disabled_never_spawns_and_unbuilt_targets_never_fetch() {
         let d = fixture();
         assert!(start_with(
             false,
@@ -706,29 +958,40 @@ mod tests {
                 host(),
                 || 0,
                 |_| panic!("no HTTP"),
-                |_| panic!("no thread")
+                |job| {
+                    job();
+                    true
+                }
             )
-            .is_none());
+            .unwrap()
+            .recv()
+            .is_err());
         }
     }
 
     #[test]
-    fn update_failures_and_corrupt_cache_are_silent_and_retryable() {
-        let d = fixture();
-        let old = check(&d, 100, |_| Some(row("0.3.0", None, false))).unwrap();
+    fn update_failures_are_silent_and_corrupt_timestamps_are_replaced() {
         for response in [None, Some("HTTP 503"), Some("broken index"), Some("")] {
+            let d = fixture();
             assert!(check(&d, 90000, move |_| response.map(str::to_owned)).is_none());
-            assert_eq!(Snapshot::load(&d.join("data")), Some(old.clone()));
+            let saved = Snapshot::load(&d.join("data")).unwrap();
+            assert_eq!(saved.checked_at, 90000);
+            assert!(saved.plugins.is_empty());
+            assert!(check(&d, 90001, |_| panic!("failed attempts count"))
+                .unwrap()
+                .plugins
+                .is_empty());
         }
+        let d = fixture();
         std::fs::write(d.join("data/plugin-updates.toml"), "broken = [").unwrap();
         assert!(Snapshot::load(&d.join("data")).is_none());
         assert!(check(&d, 101, |_| None).is_none());
-        assert!(Snapshot::load(&d.join("data")).is_none());
+        assert_eq!(Snapshot::load(&d.join("data")).unwrap().checked_at, 101);
         assert_eq!(
             check(&d, 102, |_| Some(row("0.3.0", None, false)))
                 .unwrap()
                 .checked_at,
-            102
+            101
         );
     }
 
@@ -754,7 +1017,10 @@ mod tests {
             Version::parse("1.0.0").unwrap(),
             || 101,
             |_| panic!("daily limit"),
-            |_| panic!("daily limit"),
+            |job| {
+                job();
+                true
+            },
         )
         .unwrap()
         .recv()

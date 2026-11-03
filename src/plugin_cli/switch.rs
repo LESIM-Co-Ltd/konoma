@@ -9,6 +9,7 @@
 //! carries the version of the konoma that handed over, so the rebuilt program can tell it is older
 //! than the konoma the user installed.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -44,15 +45,14 @@ pub fn take_original_exe() -> Option<PathBuf> {
 ///
 /// Must run while the process is still single-threaded: changing the environment while another
 /// thread reads it is a data race (`remove_var` is `unsafe` from edition 2024 for that reason).
-/// `run_application` calls it before anything is started.
+/// `Host::builder` calls it before any plugin factories or manifests run.
 pub fn take_switched_from() -> Option<std::ffi::OsString> {
     let value = std::env::var_os(SWITCHED_ENV);
     if value.is_some() {
-        // The generated `main` of a rebuilt program creates the plugins before this runs, so a
-        // plugin that starts a thread while being created would break the promise above.
+        // The generated main creates its builder before evaluating any plugin factory.
         debug_assert!(
             thread_count().is_none_or(|n| n == 1),
-            "a thread was started before the environment was changed ({:?} threads); plugins() must not start threads",
+            "a thread was started before the environment was changed ({:?} threads); create the Host builder before starting threads",
             thread_count()
         );
         std::env::remove_var(SWITCHED_ENV);
@@ -106,8 +106,8 @@ pub fn record_path(data_dir: &Path) -> PathBuf {
 pub struct Record {
     /// The konoma version the program was built from.
     pub konoma_version: String,
-    /// The plugin crates in it (the standard plugins are not listed).
-    pub plugins: Vec<String>,
+    /// Resolved versions of the plugin crates, including the standard plugins.
+    pub plugins: BTreeMap<String, String>,
 }
 
 impl Record {
@@ -116,7 +116,12 @@ impl Record {
         t.insert("konoma_version".into(), self.konoma_version.clone().into());
         t.insert(
             "plugins".into(),
-            toml::Value::Array(self.plugins.iter().map(|p| p.clone().into()).collect()),
+            toml::Value::Table(
+                self.plugins
+                    .iter()
+                    .map(|(n, v)| (n.clone(), v.clone().into()))
+                    .collect(),
+            ),
         );
         toml::to_string(&t).unwrap_or_default()
     }
@@ -126,10 +131,10 @@ impl Record {
         let konoma_version = t.get("konoma_version")?.as_str()?.to_string();
         let plugins = t
             .get("plugins")?
-            .as_array()?
+            .as_table()?
             .iter()
-            .map(|v| v.as_str().map(str::to_string))
-            .collect::<Option<Vec<_>>>()?;
+            .map(|(n, v)| v.as_str().map(|v| (n.clone(), v.to_owned())))
+            .collect::<Option<BTreeMap<_, _>>>()?;
         Some(Record {
             konoma_version,
             plugins,
@@ -147,6 +152,18 @@ pub fn read_record(data_dir: &Path) -> Option<Record> {
         return None;
     }
     Record::parse(&std::fs::read_to_string(record_path(data_dir)).ok()?)
+}
+
+pub fn legacy_notice(data_dir: &Path, lang: crate::i18n::Lang) -> Option<String> {
+    if !binary_path(data_dir).is_file() {
+        return None;
+    }
+    let record: toml::Table = std::fs::read_to_string(record_path(data_dir))
+        .ok()?
+        .parse()
+        .ok()?;
+    record.get("plugins")?.as_array()?;
+    Some(crate::i18n::tr(lang, crate::i18n::Msg::PluginBuildLegacy).to_owned())
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -235,7 +252,10 @@ pub fn version_line(own: &str, current_exe: Option<&Path>, data_dir: Option<&Pat
     };
     match rebuilt {
         Some(r) if !r.plugins.is_empty() => {
-            format!("konoma {own} (plugins: {})\n", r.plugins.join(", "))
+            format!(
+                "konoma {own} (plugins: {})\n",
+                r.plugins.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
         }
         Some(_) => format!("konoma {own} (rebuilt)\n"),
         None => format!("konoma {own}\n"),
@@ -326,7 +346,7 @@ mod tests {
         if record {
             Record {
                 konoma_version: "0.31.2".into(),
-                plugins: vec!["konoma-foo".into()],
+                plugins: [("konoma-foo".into(), "0.3.2".into())].into(),
             }
             .save(&d)
             .unwrap();
@@ -485,15 +505,31 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_record_is_obsolete_without_panicking() {
+        let d = data(true, false);
+        std::fs::write(
+            record_path(&d),
+            "konoma_version = \"0.31.2\"\nplugins = [\"old-plugin\"]\n",
+        )
+        .unwrap();
+        assert!(read_record(&d).is_none());
+        for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+            assert!(legacy_notice(&d, lang)
+                .unwrap()
+                .contains("konoma plugin update"));
+        }
+    }
+
+    #[test]
     fn the_record_round_trips() {
         let r = Record {
             konoma_version: "0.31.2".into(),
-            plugins: vec!["a".into(), "b-c".into()],
+            plugins: [("a".into(), "0.1.0".into()), ("b-c".into(), "0.2.0".into())].into(),
         };
         assert_eq!(Record::parse(&r.to_toml()), Some(r));
         let empty = Record {
             konoma_version: "1.0.0".into(),
-            plugins: vec![],
+            plugins: BTreeMap::new(),
         };
         assert_eq!(Record::parse(&empty.to_toml()), Some(empty));
         assert_eq!(

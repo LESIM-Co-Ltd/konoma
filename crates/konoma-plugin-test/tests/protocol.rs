@@ -324,6 +324,72 @@ fn cli() {
         .contains("0 failed, 0 skipped"));
 }
 
+fn cli_signals_stop_the_plugin_group() {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::process::Stdio;
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        let (mut ready, child_ready) = UnixStream::pair().unwrap();
+        ready
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let fd = child_ready.as_raw_fd();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_konoma-plugin-test"));
+        command
+            .arg(std::env::current_exe().unwrap())
+            .args(["--", "--fixture", "signal"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: dup2 and fcntl are async-signal-safe; fd is held until spawn returns.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(fd, 3) == -1 || libc::fcntl(3, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut cli = command.spawn().unwrap();
+        drop(child_ready);
+        let mut bytes = [0; 4];
+        ready.read_exact(&mut bytes).unwrap();
+        let pgid = i32::from_ne_bytes(bytes);
+        let mut member = Command::new("/bin/cat")
+            .process_group(pgid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let input = member.stdin.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            tx.send(member.wait()).unwrap();
+        });
+        // SAFETY: these pids identify only processes created by this test.
+        unsafe {
+            libc::kill(cli.id() as i32, signal);
+        }
+        let _ = cli.wait().unwrap();
+        let ended = rx.recv_timeout(Duration::from_secs(3));
+        if ended.is_err() {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+        waiter.join().unwrap();
+        drop(input);
+        assert_eq!(
+            ended
+                .expect("CLI must stop the plugin's entire group before exiting")
+                .unwrap()
+                .signal(),
+            Some(libc::SIGKILL)
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--fixture") {
@@ -364,6 +430,10 @@ fn main() -> ExitCode {
         ("multi_plugin", multi_plugin),
         ("clock", clock),
         ("cli", cli),
+        (
+            "cli_signals_stop_the_plugin_group",
+            cli_signals_stop_the_plugin_group,
+        ),
         ("cli_short_deadline", cli_short_deadline),
     ];
     if args.iter().any(|a| a == "--list") {

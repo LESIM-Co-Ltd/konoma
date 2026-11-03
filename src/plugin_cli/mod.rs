@@ -163,9 +163,7 @@ fn parse_install(rest: &[String]) -> Result<Cmd, String> {
     Ok(Cmd::Install { name, source, yes })
 }
 
-/// A `--path` given on the command line may be relative; the file only holds absolute paths.
-/// `p` with `.` and `..` components resolved by name (the path need not exist, and links are not
-/// followed), so `./rel/dir` is written as `<cwd>/rel/dir`.
+/// Normalize an installation-method hint by name, without probing the filesystem.
 fn lexical_normal(p: &Path) -> std::path::PathBuf {
     use std::path::Component;
     let mut out = std::path::PathBuf::new();
@@ -183,14 +181,20 @@ fn lexical_normal(p: &Path) -> std::path::PathBuf {
     out
 }
 
-fn absolutize(source: Source, cwd: &Path) -> Source {
+/// Persist a real absolute path, following links before resolving parent components.
+fn absolutize(source: Source, cwd: &Path, home: Option<&Path>) -> Result<Source> {
     match source {
-        Source::Path { path } if !list_file::path_form_ok(&path) => Source::Path {
-            path: lexical_normal(&cwd.join(path))
-                .to_string_lossy()
-                .into_owned(),
-        },
-        s => s,
+        Source::Path { path } => {
+            let expanded = list_file::expand_tilde(&path, home)?;
+            let resolved = cwd.join(expanded).canonicalize().with_context(|| {
+                crate::i18n::tr(crate::i18n::Lang::En, crate::i18n::Msg::PluginPathResolve)
+                    .replace("{path}", &path)
+            })?;
+            Ok(Source::Path {
+                path: resolved.to_string_lossy().into_owned(),
+            })
+        }
+        s => Ok(s),
     }
 }
 
@@ -278,17 +282,44 @@ fn cmd_list(env: &Env) -> Result<()> {
 
 fn cmd_install(env: &Env, name: String, source: Source, yes: bool, cwd: &Path) -> Result<()> {
     // Read once before asking anything, so that a broken file is reported first.
-    PluginList::load(&env.plugins_toml())?;
+    let mut candidate = PluginList::load(&env.plugins_toml())?;
     if project::STANDARD_CRATES.contains(&name.as_str()) {
         bail!("`{name}` is part of the standard build already; nothing to install");
     }
-    let source = absolutize(source, cwd);
+    let source = absolutize(source, cwd, env.home.as_deref())?;
     if let Source::Path { path } = &source {
         if !list_file::path_form_ok(path) {
             bail!("`{path}` is not an absolute path");
         }
     }
     let stdin = std::io::stdin();
+    if !yes && !env.stdin_is_tty {
+        return confirm_install(
+            &name,
+            &source,
+            false,
+            false,
+            &mut stdin.lock(),
+            &mut std::io::stdout(),
+        )
+        .map(|_| ());
+    }
+    candidate.plugins.insert(name.clone(), source.clone());
+    let authors = build::authors(env, &candidate, &name)?;
+    let lang = std::fs::read_to_string(env.config_dir.join("config.toml"))
+        .ok()
+        .and_then(|s| toml::from_str::<crate::config::Config>(&s).ok())
+        .map(|c| crate::i18n::resolve_lang(&c.ui.lang))
+        .unwrap_or(crate::i18n::Lang::En);
+    let authors = if authors.is_empty() {
+        crate::i18n::tr(lang, crate::i18n::Msg::PluginAuthorsMissing).to_owned()
+    } else {
+        authors.join(", ")
+    };
+    println!(
+        "{}",
+        crate::i18n::tr(lang, crate::i18n::Msg::PluginAuthors).replace("{authors}", &authors)
+    );
     if !confirm_install(
         &name,
         &source,
@@ -316,13 +347,13 @@ fn write_lock(env: &Env) -> Result<lock::PluginLock> {
 fn cmd_update(env: &Env, which: Option<String>) -> Result<()> {
     let _lock = write_lock(env)?;
     let list = PluginList::load(&env.plugins_toml())?;
-    if list.plugins.is_empty() {
-        println!("No plugin crates are installed; there is nothing to rebuild.");
-        return Ok(());
-    }
     let update = match which {
         None => Update::All,
-        Some(n) if list.plugins.contains_key(&n) => Update::One(n),
+        Some(n)
+            if list.plugins.contains_key(&n) || project::STANDARD_CRATES.contains(&n.as_str()) =>
+        {
+            Update::One(n)
+        }
         Some(n) => bail!("`{n}` is not installed (see `konoma plugin list`)"),
     };
     build::rebuild(env, &list, update, false)
@@ -563,30 +594,20 @@ mod tests {
     }
 
     #[test]
-    fn relative_paths_become_absolute_and_others_stay() {
-        let cwd = Path::new("/work");
-        assert_eq!(
-            absolutize(Source::Path { path: "p/q".into() }, cwd),
-            Source::Path {
-                path: "/work/p/q".into()
-            }
-        );
-        for (given, want) in [
-            ("./p", "/work/p"),
-            ("./p/./q/", "/work/p/q"),
-            ("p/../q", "/work/q"),
-            ("../sib/p", "/sib/p"),
+    fn relative_absolute_and_tilde_paths_resolve() {
+        let d = konoma_test_support::unique_tmp("plugin-path-forms");
+        std::fs::create_dir_all(d.join("p/q")).unwrap();
+        let expected = d.join("p/q").canonicalize().unwrap();
+        for path in [
+            "./p/./q/".to_string(),
+            "~/p/q".to_string(),
+            expected.to_string_lossy().into_owned(),
         ] {
             assert_eq!(
-                absolutize(Source::Path { path: given.into() }, cwd),
-                Source::Path { path: want.into() },
-                "{given}"
-            );
-        }
-        for p in ["/abs", "~/x", "~"] {
-            assert_eq!(
-                absolutize(Source::Path { path: p.into() }, cwd),
-                Source::Path { path: p.into() }
+                absolutize(Source::Path { path }, &d, Some(&d)).unwrap(),
+                Source::Path {
+                    path: expected.to_string_lossy().into_owned()
+                }
             );
         }
     }

@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -16,6 +16,73 @@ use konoma_plugin::{Input, Manifest, ViewReq};
 use crate::{Limits, Options};
 
 type WriteJob = (Vec<u8>, mpsc::SyncSender<Result<(), String>>);
+
+static SIGNAL_CLEANUP: AtomicBool = AtomicBool::new(false);
+static ACTIVE_GROUP: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn stop_on_signal(signal: libc::c_int) {
+    let pid = ACTIVE_GROUP.load(Ordering::SeqCst);
+    // SAFETY: only async-signal-safe syscalls; the published pid names the CLI's owned group.
+    unsafe {
+        if pid > 0 {
+            libc::kill(-pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+        libc::_exit(128 + signal);
+    }
+}
+
+/// Installed only by the executable, leaving embedding applications' signal policy alone.
+pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: zeroed sigaction is initialized before installation; the handler is static.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = stop_on_signal as *const () as usize;
+            libc::sigemptyset(&mut action.sa_mask);
+            if libc::sigaction(signal, &action, std::ptr::null_mut()) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    SIGNAL_CLEANUP.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+struct BlockSignals(Option<libc::sigset_t>);
+
+impl BlockSignals {
+    fn new() -> std::io::Result<Self> {
+        if !SIGNAL_CLEANUP.load(Ordering::SeqCst) {
+            return Ok(Self(None));
+        }
+        // The CLI has joined the preceding connection's threads before spawning another child.
+        // Block delivery until the new group is published, closing the spawn/registration gap.
+        unsafe {
+            let mut set = std::mem::zeroed();
+            let mut old = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            let error = libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+            if error != 0 {
+                return Err(std::io::Error::from_raw_os_error(error));
+            }
+            Ok(Self(Some(old)))
+        }
+    }
+}
+
+impl Drop for BlockSignals {
+    fn drop(&mut self) {
+        if let Some(old) = &self.0 {
+            // SAFETY: restore this thread's saved mask after the group was published.
+            unsafe {
+                libc::pthread_sigmask(libc::SIG_SETMASK, old, std::ptr::null_mut());
+            }
+        }
+    }
+}
 
 pub(crate) struct Connection {
     pub side: wire::Side,
@@ -30,6 +97,8 @@ pub(crate) struct Connection {
 
 impl Connection {
     pub fn spawn(options: &Options, limits: &Limits) -> Result<Self, String> {
+        let blocked = BlockSignals::new().map_err(|e| e.to_string())?;
+        let child_mask = blocked.0;
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "konoma-plugin-test-{}-{}",
@@ -54,7 +123,12 @@ impl Connection {
             .process_group(0);
         // SAFETY: setrlimit is async-signal-safe between fork and exec.
         unsafe {
-            cmd.pre_exec(|| {
+            cmd.pre_exec(move || {
+                if let Some(mask) = &child_mask {
+                    if libc::sigprocmask(libc::SIG_SETMASK, mask, std::ptr::null_mut()) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 let none = libc::rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
@@ -73,6 +147,10 @@ impl Connection {
             }
         };
         let pid = child.id() as i32;
+        if SIGNAL_CLEANUP.load(Ordering::SeqCst) {
+            ACTIVE_GROUP.store(pid, Ordering::SeqCst);
+        }
+        drop(blocked);
         let mut stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
@@ -291,6 +369,7 @@ impl Connection {
             for thread in self.threads.drain(..) {
                 let _ = thread.join();
             }
+            let _ = ACTIVE_GROUP.compare_exchange(self.pid, 0, Ordering::SeqCst, Ordering::SeqCst);
             let _ = std::fs::remove_dir_all(self.side.dir());
         }
         let bytes: Vec<u8> = self

@@ -210,7 +210,11 @@ fn stop_group(child: &mut std::process::Child) {
     signal_group(pgid, libc::SIGTERM);
     let start = Instant::now();
     while start.elapsed() < STOP_GRACE {
-        if matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.try_wait();
+        // SAFETY: signal 0 queries this owned process group, including surviving descendants.
+        if unsafe { libc::kill(-(pgid as libc::pid_t), 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -264,6 +268,16 @@ fn run_cargo(
 
 /// Run the new program with `--plugins`; an error carries what it printed.
 fn verify(bin: &Path, own: &str, interrupted: &AtomicBool) -> Result<()> {
+    verify_with_timeout(bin, own, interrupted, VERIFY_TIMEOUT)
+}
+
+fn verify_with_timeout(
+    bin: &Path,
+    own: &str,
+    interrupted: &AtomicBool,
+    timeout: Duration,
+) -> Result<()> {
+    let started = Instant::now();
     let mut child = in_own_group(&mut Command::new(bin))
         .arg("--plugins")
         // So the new program does not hand over to the one installed now.
@@ -284,17 +298,41 @@ fn verify(bin: &Path, own: &str, interrupted: &AtomicBool) -> Result<()> {
     let err = drain(Box::new(child.stderr.take().expect("piped")));
     // An interruption is passed on as it is: `run` tells it apart by type, and its own text says
     // that the previous konoma is unchanged, which a wrapping context would hide.
-    let st = wait_for(&mut child, interrupted, Some(VERIFY_TIMEOUT)).map_err(|e| {
+    let result = (|| -> Result<ExitStatus> {
+        let mut status = None;
+        loop {
+            if interrupted.load(Ordering::SeqCst) {
+                return Err(Interrupted.into());
+            }
+            if started.elapsed() >= timeout {
+                bail!("timed out");
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if let Some(st) = status {
+                if out.is_finished() && err.is_finished() {
+                    return Ok(st);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    if result.is_err() {
+        stop_group(&mut child);
+    }
+    // The pipes have reached EOF, or every process that could hold them has been stopped.
+    let (out, err) = (
+        out.join().unwrap_or_default(),
+        err.join().unwrap_or_default(),
+    );
+    let st = result.map_err(|e| {
         if e.is::<Interrupted>() {
             e
         } else {
             e.context("the new build did not finish `--plugins`")
         }
     })?;
-    let (out, err) = (
-        out.join().unwrap_or_default(),
-        err.join().unwrap_or_default(),
-    );
     if !st.success() {
         let why = if err.trim().is_empty() { out } else { err };
         bail!(
@@ -303,6 +341,53 @@ fn verify(bin: &Path, own: &str, interrupted: &AtomicBool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Restore the saved lock; only a missing file permits fresh dependency resolution.
+fn restore_lock(env: &Env, lock_in: &Path) -> Result<()> {
+    match std::fs::copy(env.lock_path(), lock_in) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::remove_file(lock_in) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        },
+        Err(e) => {
+            return Err(e).context(crate::i18n::tr(
+                crate::i18n::Lang::En,
+                crate::i18n::Msg::PluginLockRestore,
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Resolve metadata without executing build scripts, before asking whether to trust a crate.
+pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<String>> {
+    let cargo = find_cargo(env.cargo_env.as_deref(), env.path_env.as_deref())
+        .ok_or_else(|| anyhow!(no_cargo_message()))?;
+    let project = generate(list, &env.konoma_version, env.home.as_deref())?;
+    let work = WorkDir::create(&env.data_dir, false)?;
+    std::fs::write(work.path.join("Cargo.toml"), project.cargo_toml)?;
+    std::fs::write(work.path.join("src/main.rs"), project.main_rs)?;
+    restore_lock(env, &work.path.join("Cargo.lock"))?;
+    let output = Command::new(cargo)
+        .args(["metadata", "--format-version", "1"])
+        .current_dir(&work.path)
+        .env("CARGO_TARGET_DIR", work.path.join("target"))
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "{}: {}",
+            crate::i18n::tr(
+                crate::i18n::Lang::En,
+                crate::i18n::Msg::PluginMetadataFailed
+            ),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    super::project::metadata_authors(&String::from_utf8(output.stdout)?, name)
 }
 
 /// Build konoma with the plugins in `list` and replace the installed program with it.
@@ -318,12 +403,7 @@ pub fn rebuild(env: &Env, list: &PluginList, update: Update, write_list: bool) -
     // The saved lock decides the versions; without one the work directory starts clean (a kept
     // build cache may hold the lock of an earlier, since removed, build).
     let lock_in = work.path.join("Cargo.lock");
-    match std::fs::copy(env.lock_path(), &lock_in) {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = std::fs::remove_file(&lock_in);
-        }
-    }
+    restore_lock(env, &lock_in)?;
     let target = work.path.join("target");
     let flag = env.interrupted.as_ref();
 
@@ -347,13 +427,22 @@ pub fn rebuild(env: &Env, list: &PluginList, update: Update, write_list: bool) -
     verify(&built, &env.konoma_version, flag)?;
 
     let lock_text = std::fs::read_to_string(&lock_in).unwrap_or_default();
-    let konoma_version = locked_versions(&lock_text)
+    let versions = locked_versions(&lock_text);
+    let konoma_version = versions
         .get("konoma")
         .cloned()
         .unwrap_or_else(|| env.konoma_version.clone());
     let record = Record {
         konoma_version,
-        plugins: list.plugins.keys().cloned().collect(),
+        plugins: versions
+            .into_iter()
+            .filter(|(n, _)| {
+                list.plugins.contains_key(n)
+                    || (super::project::STANDARD_CRATES.contains(&n.as_str())
+                        && n != "konoma"
+                        && n != "konoma-plugin")
+            })
+            .collect(),
     };
     // From here on the signals are only noticed, not obeyed: stopping half way through the
     // replacement is the one thing that would leave the pieces out of step.
@@ -566,6 +655,139 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    fn inherited_pipes(interrupt: bool) {
+        use std::io::BufRead;
+        let d = tmp("verify-inherited-pipes");
+        let ready = d.join("ready");
+        let hold = d.join("hold");
+        for path in [&ready, &hold] {
+            let path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            // SAFETY: the C string is valid, and the FIFO is private to this test.
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        let bin = d.join("verify");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ncat '{}' &\nprintf '%s\\n' \"$$\" > '{}'\nexit 0\n",
+                hold.display(),
+                ready.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let worker_flag = flag.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = verify_with_timeout(
+                &bin,
+                "0.0.0",
+                &worker_flag,
+                if interrupt {
+                    Duration::from_secs(60)
+                } else {
+                    Duration::from_millis(100)
+                },
+            );
+            tx.send(result).unwrap();
+        });
+        let mut line = String::new();
+        std::io::BufReader::new(std::fs::File::open(ready).unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let pgid: u32 = line.trim().parse().unwrap();
+        // Observe the direct child's exit without reaping it. ECHILD means the verifier has
+        // already reaped it. Either way, interruption below happens after that exit, while the
+        // grandchild still holds both output pipes.
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        // SAFETY: pgid identifies our child; waitid initializes info and WNOWAIT preserves status.
+        let observed = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pgid as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert!(
+            observed == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+        );
+        if interrupt {
+            flag.store(true, Ordering::SeqCst);
+        }
+        let result = rx.recv_timeout(Duration::from_secs(6));
+        if result.is_err() {
+            signal_group(pgid, libc::SIGKILL);
+        }
+        worker.join().unwrap();
+        let error = result
+            .expect("verification must bound inherited pipe reads")
+            .unwrap_err();
+        if interrupt {
+            assert!(error.is::<Interrupted>(), "{error:#}");
+        } else {
+            assert!(format!("{error:#}").contains("timed out"));
+        }
+    }
+
+    #[test]
+    fn verification_deadline_includes_inherited_pipes() {
+        inherited_pipes(false);
+    }
+
+    #[test]
+    fn verification_interruption_includes_inherited_pipes() {
+        inherited_pipes(true);
+    }
+
+    #[test]
+    fn stopping_waits_for_a_member_after_the_leader_exits() {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+        let mut leader = in_own_group(&mut Command::new("/bin/cat"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pgid = leader.id();
+        let mut member = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap 'echo term; read line; echo graceful; exit 0' TERM; echo ready; read line",
+            ])
+            .process_group(pgid as i32)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(member.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line, "ready\n");
+        drop(leader.stdin.take());
+        leader.wait().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stopper = std::thread::spawn(move || {
+            stop_group(&mut leader);
+            tx.send(()).unwrap();
+        });
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        // The handler must be given time to finish, even though the leader has already exited.
+        use std::io::Write;
+        let write = member.stdin.as_mut().unwrap().write_all(b"done\n");
+        let status = member.wait().unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        stopper.join().unwrap();
+        assert_eq!(line, "term\n");
+        write.unwrap();
+        assert!(
+            status.success(),
+            "the member was killed before completing its TERM handler: {status}"
+        );
+    }
+
     fn tmp(p: &str) -> TmpDir {
         let d = unique_tmp(p);
         std::fs::create_dir_all(&d).unwrap();
@@ -655,7 +877,7 @@ mod tests {
         exe(&switch::binary_path(&d));
         Record {
             konoma_version: "1.0.0".into(),
-            plugins: vec![],
+            plugins: std::collections::BTreeMap::new(),
         }
         .save(&d)
         .unwrap();

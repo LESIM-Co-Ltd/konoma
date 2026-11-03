@@ -65,6 +65,14 @@ fn park() -> ! {
 }
 
 pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
+    if mode == "signal" {
+        use std::os::fd::FromRawFd;
+        // SAFETY: the test launcher reserves fd 3 for this readiness handshake.
+        let mut ready = unsafe { std::fs::File::from_raw_fd(3) };
+        ready.write_all(&std::process::id().to_ne_bytes()).unwrap();
+        drop(ready);
+        park();
+    }
     if mode == "multi" {
         // Same SDK entry used by export!(A, B), retaining the real --plugin selector.
         return konoma_plugin::proc::cli_main_many(vec![

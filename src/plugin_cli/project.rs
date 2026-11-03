@@ -37,6 +37,44 @@ pub fn lib_name(crate_name: &str) -> String {
     crate_name.replace('-', "_")
 }
 
+/// Read authors from the resolved direct dependency, never a same-named transitive package.
+pub fn metadata_authors(text: &str, name: &str) -> Result<Vec<String>> {
+    let metadata: serde_json::Value = serde_json::from_str(text)?;
+    let resolved = &metadata["resolve"];
+    let root = resolved["root"].as_str().context("metadata has no root")?;
+    let node = resolved["nodes"]
+        .as_array()
+        .context("metadata has no nodes")?
+        .iter()
+        .find(|n| n["id"].as_str() == Some(root))
+        .context("metadata root is missing")?;
+    let direct = node["deps"]
+        .as_array()
+        .context("metadata has no direct dependencies")?;
+    let package = metadata["packages"]
+        .as_array()
+        .context("metadata has no packages")?
+        .iter()
+        .find(|p| p["name"].as_str() == Some(name) && direct.iter().any(|d| d["pkg"] == p["id"]))
+        .context("metadata does not contain the requested direct dependency")?;
+    Ok(package["authors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a.as_str())
+        .map(|a| {
+            a.split('<')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .filter(|word| !word.contains('@'))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|a| !a.is_empty())
+        .collect())
+}
+
 fn dependency(src: &Source, home: Option<&Path>) -> Result<toml::Value> {
     let mut t = toml::Table::new();
     match src {
@@ -121,20 +159,69 @@ pub fn generate(list: &PluginList, konoma_version: &str, home: Option<&Path>) ->
     })
 }
 
-/// The versions in a `Cargo.lock`: package name -> version. (Several versions of one crate keep
-/// the last; a plugin crate is the one the project depends on directly.)
+/// Resolve the generated package's direct dependencies and konoma's standard plugin edges.
 pub fn locked_versions(lock_text: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Ok(t) = lock_text.parse::<toml::Table>() else {
         return out;
     };
-    if let Some(toml::Value::Array(pkgs)) = t.get("package") {
+    let Some(pkgs) = t.get("package").and_then(|p| p.as_array()) else {
+        return out;
+    };
+    let field = |p: &toml::Value, key: &str| p.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let find = |edge: &str| {
+        let mut parts = edge.split_whitespace();
+        let name = parts.next()?;
+        let version = parts.next();
+        let source = parts.next().map(|s| s.trim_matches(['(', ')']));
+        let mut matches = pkgs.iter().filter(|p| {
+            field(p, "name").as_deref() == Some(name)
+                && version.is_none_or(|v| field(p, "version").as_deref() == Some(v))
+                && source.is_none_or(|s| field(p, "source").as_deref() == Some(s))
+        });
+        let p = matches.next()?;
+        matches.next().is_none().then_some(p)
+    };
+    let edges = |p: &toml::Value| -> Vec<String> {
+        p.get("dependencies")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect()
+    };
+    if let Some(root) = find(PACKAGE).or_else(|| find("konoma")) {
+        let mut selected = edges(root);
+        if let Some(konoma) = selected
+            .iter()
+            .find_map(|e| find(e).filter(|p| field(p, "name").as_deref() == Some("konoma")))
+        {
+            selected.extend(
+                edges(konoma).into_iter().filter(|e| {
+                    STANDARD_CRATES.contains(&e.split_whitespace().next().unwrap_or(""))
+                }),
+            );
+        }
+        for edge in selected {
+            if let Some(p) = find(&edge) {
+                if let (Some(n), Some(v)) = (field(p, "name"), field(p, "version")) {
+                    out.insert(n, v);
+                }
+            }
+        }
+        // The library workspace's own lock has konoma as its root.
+        if field(root, "name").as_deref() == Some("konoma") {
+            if let Some(v) = field(root, "version") {
+                out.insert("konoma".into(), v);
+            }
+        }
+    } else {
+        // Older incomplete records can only identify packages with an unambiguous name.
         for p in pkgs {
-            if let (Some(n), Some(v)) = (
-                p.get("name").and_then(|v| v.as_str()),
-                p.get("version").and_then(|v| v.as_str()),
-            ) {
-                out.insert(n.to_string(), v.to_string());
+            if let Some(n) = field(p, "name") {
+                if let Some(v) = find(&n).and_then(|p| field(p, "version")) {
+                    out.insert(n, v);
+                }
             }
         }
     }
@@ -259,6 +346,51 @@ rev = "abc"
     fn lib_names_replace_dashes() {
         assert_eq!(lib_name("konoma-foo-bar"), "konoma_foo_bar");
         assert_eq!(lib_name("plain"), "plain");
+    }
+
+    #[test]
+    fn metadata_authors_follow_the_direct_package_identity() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "direct", "name": "foo", "authors": ["Fixture author"]},
+                {"id": "transitive", "name": "foo", "authors": ["Another author"]}
+            ],
+            "resolve": {"root": "root", "nodes": [{"id": "root", "deps": [{"pkg": "direct"}]}]}
+        });
+        assert_eq!(
+            metadata_authors(&metadata.to_string(), "foo").unwrap(),
+            ["Fixture author"]
+        );
+        assert!(metadata_authors(&metadata.to_string(), "absent").is_err());
+    }
+
+    #[test]
+    fn locked_versions_follow_direct_edges_instead_of_the_last_package() {
+        let lock = r#"
+[[package]]
+name = "konoma-with-plugins"
+version = "0.0.0"
+dependencies = ["konoma", "foo 0.3.0"]
+[[package]]
+name = "konoma"
+version = "0.31.2"
+dependencies = ["konoma-office 0.1.0"]
+[[package]]
+name = "foo"
+version = "0.3.0"
+[[package]]
+name = "foo"
+version = "0.9.0"
+[[package]]
+name = "konoma-office"
+version = "0.1.0"
+[[package]]
+name = "konoma-office"
+version = "0.2.0"
+"#;
+        let versions = locked_versions(lock);
+        assert_eq!(versions["foo"], "0.3.0");
+        assert_eq!(versions["konoma-office"], "0.1.0");
     }
 
     #[test]

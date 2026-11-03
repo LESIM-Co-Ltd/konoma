@@ -270,7 +270,7 @@ static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
 
 /// The application, started by [`Host::run`] (which has already declared this process to be the
 /// application: `mark_app_main`).
-fn run_application() -> Result<()> {
+fn run_application(startup: host::Startup) -> Result<()> {
     // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
     // from a file, so that whatever such a file does cannot take the program down. It must run
     // before anything else is touched (arguments, configuration, the terminal), and it is not an
@@ -282,11 +282,12 @@ fn run_application() -> Result<()> {
         let rest: Vec<_> = std::env::args_os().skip(2).collect();
         std::process::exit(preview::svg_proc::child_main(&rest));
     }
-    // Before anything else is started: no thread exists yet (the environment may only be changed
-    // while there is just one), and no child process can inherit the variable. Still after the
-    // drawing child's branch above, which runs nothing else.
-    let original_exe = plugin_cli::switch::take_original_exe();
-    let switched_from = plugin_cli::switch::take_switched_from();
+    // The builder consumed the handover markers before any plugin code could start threads or
+    // children. Use those captured values without changing the environment here.
+    let host::Startup {
+        original_exe,
+        switched_from,
+    } = startup;
     let args: Vec<String> = std::env::args().collect();
     // `konoma plugin ...` is a command of its own (never handed over, so that it can repair a
     // rebuilt konoma that does not start). A folder named `plugin` opens as `konoma ./plugin`.
@@ -485,7 +486,10 @@ fn run_application() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         switched_from.as_deref(),
         app.lang,
-    ) {
+    )
+    .or_else(|| {
+        konoma_base::xdg::data_dir().and_then(|d| plugin_cli::switch::legacy_notice(&d, app.lang))
+    }) {
         Some(note) => Some(match cfg_err {
             Some(e) => format!("{note} / {e}"),
             None => note,
@@ -3000,7 +3004,7 @@ mod tests {
             .find("konoma_base::process::mark_app_main();")
             .expect("run must call mark_app_main");
         let start = run
-            .find("crate::run_application()")
+            .find("crate::run_application(startup)")
             .expect("run must start the application");
         assert!(
             resolve < mark && mark < start,
@@ -3009,9 +3013,10 @@ mod tests {
         // The drawing child is the first thing the application does: nothing precedes it.
         let src = include_str!("lib.rs");
         let main_start = src
-            .find("\nfn run_application() -> Result<()> {")
+            .find("\nfn run_application(startup: host::Startup) -> Result<()> {")
             .expect("fn run_application not found");
-        let body = &src[main_start + "\nfn run_application() -> Result<()> {".len()..];
+        let body = &src
+            [main_start + "\nfn run_application(startup: host::Startup) -> Result<()> {".len()..];
         let child = body
             .find("preview::svg_proc::CHILD_FLAG")
             .expect("the application must branch to the drawing child");
@@ -3061,7 +3066,7 @@ mod tests {
     fn resolve_startup_runs_before_terminal_init_in_main() {
         let src = include_str!("lib.rs");
         let main_start = src
-            .find("\nfn run_application() -> Result<()> {")
+            .find("\nfn run_application(startup: host::Startup) -> Result<()> {")
             .expect("fn main が見つからない(自己スキャンが壊れている)");
         // Bounded to `fn main`'s own body (up to the next top-level `fn`, `resize_worker`) so a
         // mention of either name in a comment/doc *after* main() (e.g. in the test below, or in a
