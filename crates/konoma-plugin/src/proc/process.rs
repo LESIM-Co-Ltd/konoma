@@ -19,6 +19,10 @@ pub(crate) fn signal_group(pid: u32, signal: libc::c_int) {
 
 /// Observe an exit without reaping: the leader must reserve its pid until group cleanup.
 pub fn poll_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
+    poll_exit_pid(child.id())
+}
+
+fn poll_exit_pid(pid: u32) -> io::Result<Option<ExitStatus>> {
     use std::os::unix::process::ExitStatusExt;
     loop {
         // SAFETY: waitid writes one initialized siginfo; WNOWAIT never reaps this owned child.
@@ -26,7 +30,7 @@ pub fn poll_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
         let result = unsafe {
             libc::waitid(
                 libc::P_PID,
-                child.id() as libc::id_t,
+                pid as libc::id_t,
                 &mut info,
                 libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
             )
@@ -57,7 +61,138 @@ pub fn stop_group(child: &mut Child, grace: Duration) {
     stop_group_with(child, grace, signal_group);
 }
 
-fn stop_group_with(child: &mut Child, grace: Duration, mut signal: impl FnMut(u32, libc::c_int)) {
+fn stop_group_with(child: &mut Child, grace: Duration, signal: impl FnMut(u32, libc::c_int)) {
+    stop_group_observing(child, grace, signal, group_has_live_members, || {});
+}
+
+#[cfg(target_os = "macos")]
+fn group_has_live_members(group: u32) -> io::Result<bool> {
+    // libc's proc_listpgrppids wraps PROC_PGRP_ONLY and returns a count, not bytes.
+    // XNU enumerates both allproc and zombproc; TBSDINFO's arg=1 includes zombies too.
+    // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c
+    // https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c
+    for attempt in 0..8 {
+        let mut pids: Vec<libc::pid_t> = vec![0; 64 << attempt];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as i32;
+        // SAFETY: the buffer has space for `bytes` bytes; our unreaped child reserves the group.
+        let count = unsafe {
+            libc::proc_listpgrppids(group as libc::pid_t, pids.as_mut_ptr().cast(), bytes)
+        };
+        if count <= 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count as usize >= pids.len() {
+            continue;
+        }
+        pids.truncate(count as usize);
+        if !pids.contains(&(group as libc::pid_t)) {
+            return Err(io::Error::other(
+                "group enumeration omitted the reserved leader",
+            ));
+        }
+        for pid in pids {
+            // SAFETY: proc_pidinfo initializes this buffer on a full-sized successful result.
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of_val(&info) as i32;
+            let read = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    1,
+                    (&mut info as *mut libc::proc_bsdinfo).cast(),
+                    size,
+                )
+            };
+            if read <= 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    continue;
+                }
+                return Err(error);
+            }
+            if read != size {
+                return Err(io::Error::other("short process-status result"));
+            }
+            if info.pbi_pgid == group && info.pbi_status != libc::SZOMB {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    // A full buffer may have omitted a live member. Never infer quiescence from a partial list.
+    Err(io::Error::other(
+        "process group kept outgrowing its enumeration buffer",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn group_has_live_members(group: u32) -> io::Result<bool> {
+    linux_group_has_live_members(std::path::Path::new("/proc"), group)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn group_has_live_members(_: u32) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "process-group enumeration unavailable",
+    ))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_group_has_live_members(root: &std::path::Path, group: u32) -> io::Result<bool> {
+    // /proc/<pid>/stat includes zombies as state Z (and dead tasks as X/x). Its pgrp is field 5.
+    // https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html
+    let mut saw_leader = false;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let stat = match std::fs::read(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue
+            }
+            Err(e) => return Err(e),
+        };
+        let (state, pgrp) = linux_stat_group(&stat)?;
+        saw_leader |= pid == group && pgrp == group;
+        if pgrp == group && !matches!(state, b'Z' | b'X' | b'x') {
+            return Ok(true);
+        }
+    }
+    if !saw_leader {
+        return Err(io::Error::other("procfs omitted the reserved leader"));
+    }
+    Ok(false)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_stat_group(stat: &[u8]) -> io::Result<(u8, u32)> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid process stat");
+    // comm can contain spaces, parentheses and non-UTF-8 bytes. Only the suffix is numeric.
+    let end = stat.iter().rposition(|b| *b == b')').ok_or_else(invalid)?;
+    let mut fields = stat[end + 1..]
+        .split(u8::is_ascii_whitespace)
+        .filter(|f| !f.is_empty());
+    let state = fields.next().filter(|s| s.len() == 1).ok_or_else(invalid)?[0];
+    fields.next().ok_or_else(invalid)?; // ppid, field 4
+    let group = std::str::from_utf8(fields.next().ok_or_else(invalid)?)
+        .map_err(|_| invalid())?
+        .parse()
+        .map_err(|_| invalid())?;
+    Ok((state, group))
+}
+
+fn stop_group_observing(
+    child: &mut Child,
+    grace: Duration,
+    mut signal: impl FnMut(u32, libc::c_int),
+    mut live_members: impl FnMut(u32) -> io::Result<bool>,
+    mut waiting: impl FnMut(),
+) {
     // WNOWAIT keeps the leader alive or a zombie until the final group signal. An earlier
     // Child::wait/try_wait forfeits that reservation, so never signal such a Child.
     let exited = match poll_exit(child) {
@@ -74,12 +209,11 @@ fn stop_group_with(child: &mut Child, grace: Duration, mut signal: impl FnMut(u3
         signal(pid, libc::SIGTERM);
         let until = Instant::now() + grace;
         while Instant::now() < until {
-            // SAFETY: signal zero only queries the owned group, including its remaining members.
-            if unsafe { libc::kill(-(pid as libc::pid_t), 0) } == -1
-                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-            {
+            // Failed or incomplete enumeration is not evidence that the group has finished.
+            if !live_members(pid).unwrap_or(true) {
                 break;
             }
+            waiting();
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -339,6 +473,225 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
     use std::process::Command;
+
+    struct TestChild(Child);
+
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn live_leader() -> TestChild {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        TestChild(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_live_leader_that_exits_on_term_finishes_without_the_full_grace() {
+        let mut child = live_leader();
+        assert!(poll_exit(&child.0).unwrap().is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            stop_group(&mut child.0, Duration::from_secs(30));
+            assert_eq!(
+                poll_exit(&child.0).unwrap_err().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            tx.send(()).unwrap();
+        });
+        let completed = rx.recv_timeout(Duration::from_secs(10));
+        worker.join().unwrap();
+        completed.expect("TERM ended the leader; its zombie must not consume the grace");
+    }
+
+    #[test]
+    fn a_live_member_holds_the_grace_until_released_then_finishes_promptly() {
+        use std::io::{BufRead, BufReader};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut leader = live_leader();
+        let pid = leader.0.id();
+        let (output, child_output) = UnixStream::pair().unwrap();
+        output
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let script =
+            "trap 'echo term; IFS= read -r release; exit 0' TERM; echo ready; IFS= read -r initial";
+        let mut member = TestChild(
+            Command::new("/bin/sh")
+                .args(["-c", script])
+                .process_group(pid as i32)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(OwnedFd::from(child_output)))
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = BufReader::new(output);
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line, "ready\n");
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+        let (permit_tx, permit_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut waits = 0;
+            stop_group_observing(
+                &mut leader.0,
+                Duration::from_secs(30),
+                signal_group,
+                group_has_live_members,
+                || {
+                    if waits < 2 {
+                        waits += 1;
+                        waiting_tx.send(()).unwrap();
+                        permit_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+                    }
+                },
+            );
+            assert_eq!(
+                poll_exit(&leader.0).unwrap_err().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            done_tx.send(()).unwrap();
+        });
+        line.clear();
+        let term_read = output.read_line(&mut line);
+        let waiting = waiting_rx.recv_timeout(Duration::from_secs(10));
+        // The observer is reached only after the loop has decided that it must keep waiting.
+        // Keep it latched while the member is alive and the leader is observed as a zombie.
+        if waiting.is_ok() {
+            let until = Instant::now() + Duration::from_secs(10);
+            while matches!(poll_exit_pid(pid), Ok(None)) && Instant::now() < until {
+                std::thread::yield_now();
+            }
+        }
+        let leader_exited = matches!(poll_exit_pid(pid), Ok(Some(_)));
+        // Inspect again after observing the leader's exit, while the member is still latched.
+        // Otherwise the first inspection could have seen only the still-live leader.
+        let _ = permit_tx.send(());
+        let waiting_with_zombie_leader = waiting_rx.recv_timeout(Duration::from_secs(10));
+        let member_alive = member.0.try_wait().unwrap().is_none();
+        let before_release = done_rx.try_recv();
+        let released = member.0.stdin.as_mut().unwrap().write_all(b"release\n");
+        let until = Instant::now() + Duration::from_secs(10);
+        while matches!(poll_exit(&member.0), Ok(None)) && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        // Retain this member as a zombie too: it must not consume the grace after release.
+        let member_exited = matches!(poll_exit(&member.0), Ok(Some(_)));
+        let _ = permit_tx.send(());
+        let completed = done_rx.recv_timeout(Duration::from_secs(10));
+        worker.join().unwrap();
+        let member_status = member.0.wait().unwrap();
+        term_read.unwrap();
+        assert_eq!(line, "term\n");
+        waiting.expect("the live member must keep the grace loop waiting");
+        waiting_with_zombie_leader
+            .expect("the member must also keep waiting after its leader exits");
+        assert!(leader_exited && member_alive);
+        assert!(matches!(
+            before_release,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        released.unwrap();
+        assert!(member_exited);
+        assert!(
+            member_status.success(),
+            "the member must finish after its release, not be killed"
+        );
+        completed.expect("the grace must end promptly after the last live member exits");
+    }
+
+    #[test]
+    fn an_enumeration_failure_keeps_the_grace_waiting() {
+        let mut child = live_leader();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+        let (permit_tx, permit_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut fail_next = true;
+            let mut first_wait = true;
+            stop_group_observing(
+                &mut child.0,
+                Duration::from_secs(30),
+                signal_group,
+                |pid| {
+                    if std::mem::take(&mut fail_next) {
+                        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                    } else {
+                        group_has_live_members(pid)
+                    }
+                },
+                || {
+                    if first_wait {
+                        first_wait = false;
+                        waiting_tx.send(()).unwrap();
+                        permit_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+                    }
+                },
+            );
+            done_tx.send(()).unwrap();
+        });
+        let waiting = waiting_rx.recv_timeout(Duration::from_secs(10));
+        let before_retry = done_rx.try_recv();
+        let _ = permit_tx.send(());
+        let completed = done_rx.recv_timeout(Duration::from_secs(10));
+        worker.join().unwrap();
+        waiting.expect("an enumeration error must reach the waiting branch");
+        assert!(matches!(
+            before_retry,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        completed.expect("a successful retry may observe that the group has finished");
+    }
+
+    fn proc_stat(root: &std::path::Path, pid: u32, stat: &[u8]) {
+        let dir = root.join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stat"), stat).unwrap();
+    }
+
+    #[test]
+    fn linux_group_members_ignore_zombies_and_other_groups() {
+        let root = konoma_test_support::unique_tmp("proc-group-status");
+        proc_stat(&root, 700, b"700 (leader) Z 1 700 0 0");
+        proc_stat(&root, 800, b"800 (other) R 1 800 0 0");
+        assert!(!linux_group_has_live_members(&root, 700).unwrap());
+        proc_stat(&root, 701, b"701 (name ) with \xff) S 1 700 0 0");
+        assert!(linux_group_has_live_members(&root, 700).unwrap());
+        proc_stat(&root, 701, b"701 (name ) with \xff) Z 1 700 0 0");
+        assert!(!linux_group_has_live_members(&root, 700).unwrap());
+        proc_stat(&root, 701, b"701 (dead) X 1 700 0 0");
+        assert!(!linux_group_has_live_members(&root, 700).unwrap());
+    }
+
+    #[test]
+    fn linux_group_enumeration_errors_are_not_empty_groups() {
+        let root = konoma_test_support::unique_tmp("proc-group-errors");
+        assert!(linux_group_has_live_members(&root, 700).is_err());
+        proc_stat(&root, 700, b"700 (leader) Z 1 700 0 0");
+        proc_stat(&root, 701, b"not a valid stat record");
+        assert_eq!(
+            linux_group_has_live_members(&root, 700).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        std::fs::remove_file(root.join("701/stat")).unwrap();
+        std::fs::create_dir(root.join("701/stat")).unwrap();
+        assert!(linux_group_has_live_members(&root, 700).is_err());
+    }
 
     fn stop_an_observed_exit(with_member: bool) {
         use std::os::unix::process::{CommandExt, ExitStatusExt};
