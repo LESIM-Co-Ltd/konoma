@@ -23,12 +23,21 @@ jobs:
     # One leg per feature set. The two sets build and test separately anyway, and a single job
     # running both took 12-19 minutes and hit the 20-minute limit whenever runners were busy
     # (three cancelled runs on 2026-10-21). Each leg does about half; the limit stays at 20.
-    name: fmt / clippy / test (macOS Apple Silicon, ${{ matrix.features }})
+    #
+    # Each feature set is then split three ways by nextest's `--partition count:<part>/3`: every
+    # part builds the same test binaries and runs a third of the tests, so every test still runs
+    # exactly once per feature set. The suite outgrew one job per feature set (the plugin parity
+    # tests took a no-default-features leg past 20 minutes, 90% through, while `main` took about
+    # 8). The checks that do not depend on the partition (fmt, clippy, doctests, the SDK-only
+    # checks) run in part 1 only.
+    name: test (macOS Apple Silicon, ${{ matrix.features }}, part ${{ matrix.part }}/3)
     runs-on: macos-14
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        features: [default features, no default features]
+        part: [1, 2, 3]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -64,11 +73,12 @@ jobs:
 
       # Formatting does not depend on features; one leg checks it.
       - name: Format
-        if: matrix.flags == ''
+        if: matrix.flags == '' && matrix.part == 1
         run: cargo fmt --all --check
 
       # Default features include `git`. Warnings are denied (the project's DoD is zero warnings).
       - name: Clippy (${{ matrix.features }})
+        if: matrix.part == 1
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
       # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
@@ -76,10 +86,11 @@ jobs:
       - name: Build the demo plugin program
         run: cargo build -p konoma-demo-clock
 
-      - name: Test (${{ matrix.features }})
-        run: cargo nextest run --workspace ${{ matrix.flags }}
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
 
       - name: Doctests (${{ matrix.features }})
+        if: matrix.part == 1
         run: cargo test --workspace --doc ${{ matrix.flags }}
 
       # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
@@ -87,7 +98,7 @@ jobs:
       # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
       # refused when the app is not compiled in).
       - name: Plugin SDK without the standalone app
-        if: matrix.flags == ''
+        if: matrix.flags == '' && matrix.part == 1
         run: |
           cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
           cargo nextest run -p konoma-plugin
@@ -96,13 +107,16 @@ jobs:
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
   # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
   check-linux:
-    # Split by feature set like the macOS job: one job running both took 16-19 minutes.
-    name: clippy / test (Linux x86_64, ${{ matrix.features }})
+    # Split by feature set and into three partitions like the macOS job: one job running both
+    # feature sets took 16-19 minutes, and one job per feature set later took up to 20.
+    name: test (Linux x86_64, ${{ matrix.features }}, part ${{ matrix.part }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        features: [default features, no default features]
+        part: [1, 2, 3]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -198,7 +212,7 @@ jobs:
       # Each crate under `crates/` must build on its own (not only as part of the whole workspace,
       # where another member's features can switch on what this one forgot to declare).
       - name: Each crate builds on its own
-        if: matrix.flags != ''
+        if: matrix.flags != '' && matrix.part == 1
         run: |
           for d in crates/*/; do
             cargo check -p "$(basename "$d")" || exit 1
@@ -209,6 +223,7 @@ jobs:
           cargo check -p konoma-plugin-ratatui
 
       - name: Clippy (${{ matrix.features }})
+        if: matrix.part == 1
         run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
       # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
@@ -216,10 +231,11 @@ jobs:
       - name: Build the demo plugin program
         run: cargo build -p konoma-demo-clock
 
-      - name: Test (${{ matrix.features }})
-        run: cargo nextest run --workspace ${{ matrix.flags }}
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
 
       - name: Doctests (${{ matrix.features }})
+        if: matrix.part == 1
         run: cargo test --workspace --doc ${{ matrix.flags }}
 
       # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
@@ -227,7 +243,7 @@ jobs:
       # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
       # refused when the app is not compiled in).
       - name: Plugin SDK without the standalone app
-        if: matrix.flags == ''
+        if: matrix.flags == '' && matrix.part == 1
         run: |
           cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
           cargo nextest run -p konoma-plugin
@@ -240,7 +256,7 @@ jobs:
       # here it is run by name, on a host whose fonts we just chose. It reuses the binary the step
       # above built, so it costs seconds.
       - name: Check the runner really has a usable sans-serif
-        if: matrix.flags == ''
+        if: matrix.flags == '' && matrix.part == 1
         run: cargo nextest run -p konoma-svg --run-ignored only -E 'test(=svg::tests::the_system_resolves_sans_serif_without_the_fallback)'
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
