@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use konoma_plugin::Plugin;
 
 use crate::plugins::{self, statics::StaticSet};
@@ -57,6 +57,20 @@ impl Default for HostBuilder {
 }
 
 impl HostBuilder {
+    fn checked_id(plugin: &Arc<dyn Plugin>) -> Result<String> {
+        // Registration is the source of truth for all manifest refusals, including invalid globs.
+        // A fresh registry checks one declaration; resolve handles the assembled set's taken ids.
+        let mut validation = konoma_plugin::registry::Registry::new();
+        let id = plugin.manifest().id;
+        validation
+            .register(
+                Arc::clone(plugin),
+                konoma_plugin::registry::PluginOrigin::User,
+            )
+            .with_context(|| format!("{id:?}"))?;
+        Ok(validation.ids()[0].to_owned())
+    }
+
     /// Include the standard plugins (markdown, image, pdf, ...). Without this call only the
     /// plugins given to [`plugin`](Self::plugin) are linked in.
     pub fn standard_plugins(mut self) -> Self {
@@ -122,14 +136,14 @@ impl HostBuilder {
             }
             // The replacement leaves the id it stands for; its own id must be free.
             taken.remove(target);
-            let id = plugin.manifest().id;
+            let id = Self::checked_id(plugin)?;
             if !taken.insert(id.clone()) {
                 bail!("plugin id `{id}` is already taken");
             }
             replaced.insert(target.clone(), Arc::clone(plugin));
         }
         for plugin in &self.added {
-            let id = plugin.manifest().id;
+            let id = Self::checked_id(plugin)?;
             if !taken.insert(id.clone()) {
                 bail!("plugin id `{id}` is already taken");
             }
@@ -183,6 +197,35 @@ mod tests {
             Ok(_) => panic!("expected an error"),
             Err(e) => e.to_string(),
         }
+    }
+
+    #[test]
+    fn malformed_added_plugin_is_refused_before_startup() {
+        let error = err(Host::builder().plugin(Fake("Bad ID")));
+        assert!(error.contains("Bad ID"), "{error}");
+    }
+
+    #[test]
+    fn malformed_replacement_is_refused_before_startup() {
+        let error = err(Host::builder()
+            .standard_plugins()
+            .replace("markdown", Fake("Bad ID")));
+        assert!(error.contains("Bad ID"), "{error}");
+    }
+
+    #[test]
+    fn linked_plugin_uses_the_registry_glob_validation_too() {
+        struct BadGlob;
+        impl Plugin for BadGlob {
+            fn manifest(&self) -> Manifest {
+                Manifest::new("bad-glob", "0.1.0").bind(Bind::files(["["]))
+            }
+            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+                Err(Failure::unsupported("fixture"))
+            }
+        }
+        let error = err(Host::builder().plugin(BadGlob));
+        assert!(error.contains("bad-glob"), "{error}");
     }
 
     #[test]

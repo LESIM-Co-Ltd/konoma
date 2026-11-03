@@ -182,13 +182,17 @@ fn lexical_normal(p: &Path) -> std::path::PathBuf {
 }
 
 /// Persist a real absolute path, following links before resolving parent components.
-fn absolutize(source: Source, cwd: &Path, home: Option<&Path>) -> Result<Source> {
+fn absolutize(
+    source: Source,
+    cwd: &Path,
+    home: Option<&Path>,
+    lang: crate::i18n::Lang,
+) -> Result<Source> {
     match source {
         Source::Path { path } => {
             let expanded = list_file::expand_tilde(&path, home)?;
             let resolved = cwd.join(expanded).canonicalize().with_context(|| {
-                crate::i18n::tr(crate::i18n::Lang::En, crate::i18n::Msg::PluginPathResolve)
-                    .replace("{path}", &path)
+                crate::i18n::tr(lang, crate::i18n::Msg::PluginPathResolve).replace("{path}", &path)
             })?;
             Ok(Source::Path {
                 path: resolved.to_string_lossy().into_owned(),
@@ -286,7 +290,8 @@ fn cmd_install(env: &Env, name: String, source: Source, yes: bool, cwd: &Path) -
     if project::STANDARD_CRATES.contains(&name.as_str()) {
         bail!("`{name}` is part of the standard build already; nothing to install");
     }
-    let source = absolutize(source, cwd, env.home.as_deref())?;
+    let lang = env.lang;
+    let source = absolutize(source, cwd, env.home.as_deref(), lang)?;
     if let Source::Path { path } = &source {
         if !list_file::path_form_ok(path) {
             bail!("`{path}` is not an absolute path");
@@ -306,11 +311,6 @@ fn cmd_install(env: &Env, name: String, source: Source, yes: bool, cwd: &Path) -
     }
     candidate.plugins.insert(name.clone(), source.clone());
     let authors = build::authors(env, &candidate, &name)?;
-    let lang = std::fs::read_to_string(env.config_dir.join("config.toml"))
-        .ok()
-        .and_then(|s| toml::from_str::<crate::config::Config>(&s).ok())
-        .map(|c| crate::i18n::resolve_lang(&c.ui.lang))
-        .unwrap_or(crate::i18n::Lang::En);
     let authors = if authors.is_empty() {
         crate::i18n::tr(lang, crate::i18n::Msg::PluginAuthorsMissing).to_owned()
     } else {
@@ -391,13 +391,9 @@ fn cmd_remove(env: &Env, name: String) -> Result<()> {
 }
 
 fn cmd_clean(env: &Env) -> Result<()> {
-    // Not for a data directory that is not there; and under the lock, since a run in progress
-    // would lose its work directory.
-    let _lock = if env.data_dir.is_dir() {
-        Some(write_lock(env)?)
-    } else {
-        None
-    };
+    // Always serialize, even on the first run: a directory-existence check before acquiring the
+    // lock could race with metadata creating its first work directory.
+    let _lock = write_lock(env)?;
     let removed = build::clean(&env.data_dir)?;
     if removed.is_empty() {
         println!("No build cache to remove.");
@@ -415,7 +411,13 @@ fn production_env(interrupted: Arc<AtomicBool>) -> Result<Env> {
         .context("cannot find the config directory (HOME is not set)")?;
     let data_dir =
         konoma_base::xdg::data_dir().context("cannot find the data directory (HOME is not set)")?;
+    let lang = std::fs::read_to_string(config_dir.join("config.toml"))
+        .ok()
+        .and_then(|s| toml::from_str::<crate::config::Config>(&s).ok())
+        .map(|c| crate::i18n::resolve_lang(&c.ui.lang))
+        .unwrap_or(crate::i18n::Lang::En);
     Ok(Env {
+        lang,
         config_dir,
         data_dir,
         home: std::env::var_os("HOME").map(Into::into),
@@ -604,7 +606,7 @@ mod tests {
             expected.to_string_lossy().into_owned(),
         ] {
             assert_eq!(
-                absolutize(Source::Path { path }, &d, Some(&d)).unwrap(),
+                absolutize(Source::Path { path }, &d, Some(&d), crate::i18n::Lang::En).unwrap(),
                 Source::Path {
                     path: expected.to_string_lossy().into_owned()
                 }
@@ -736,6 +738,7 @@ mod tests {
             cargo_env: None,
             path_env: None,
             konoma_version: "0.0.0".into(),
+            lang: crate::i18n::Lang::En,
             stdin_is_tty: false,
             interrupted: Arc::new(AtomicBool::new(false)),
         };

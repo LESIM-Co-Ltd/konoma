@@ -727,6 +727,31 @@ mod tests {
     }
 
     #[test]
+    fn update_standard_crate_offers_only_versions_in_konomas_range() {
+        for (versions, expected) in [
+            (vec!["0.1.1", "0.2.0"], Some("0.1.1")),
+            (vec!["0.2.0"], None),
+        ] {
+            let d = fixture();
+            std::fs::remove_file(d.join("config/plugins.toml")).unwrap();
+            std::fs::remove_file(d.join("data/Cargo.lock")).unwrap();
+            let snapshot = check(&d, 100, move |url| {
+                url.ends_with("/konoma-office").then(|| {
+                    versions
+                        .iter()
+                        .map(|v| row(v, Some("^0.1"), false))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            })
+            .unwrap();
+            let updates = &snapshot.plugins["konoma-office"].updates;
+            assert_eq!(updates.compatible.as_deref(), expected);
+            assert!(updates.needs_host.is_none());
+        }
+    }
+
+    #[test]
     fn update_file_reads_are_deferred_to_the_worker() {
         let d = fixture();
         let path = d.join("config/plugins.toml");

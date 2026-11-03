@@ -18,6 +18,13 @@ const FAKE_CARGO: &str = r##"#!/bin/sh
 echo "$*" >> "$FAKE_DIR/cargo.log"
 case "$1" in
 metadata)
+  if [ -n "$FAKE_METADATA_READY" ]; then
+    sleep 300 &
+    printf '%s %s\n' "$$" "$!" > "$FAKE_METADATA_READY"
+    IFS= read -r continue_metadata < "$FAKE_METADATA_RELEASE"
+    test -f Cargo.toml || exit 71
+  fi
+  if [ -n "$FAKE_METADATA_FAIL" ]; then echo 'fixture metadata failure' >&2; exit 72; fi
   authors='["Fixture author"]'
   if [ "$FAKE_METADATA_NAME" = konoma-bar ]; then authors='[]'; fi
   printf '{"packages":[{"id":"fixture","name":"%s","authors":%s}],"resolve":{"root":"root","nodes":[{"id":"root","deps":[{"pkg":"fixture"}]}]}}\n' "$FAKE_METADATA_NAME" "$authors"
@@ -193,6 +200,206 @@ fn code(o: &Output) -> i32 {
     o.status.code().unwrap_or(-1)
 }
 
+struct MetadataGate {
+    ready: File,
+    release: File,
+    ready_path: PathBuf,
+    release_path: PathBuf,
+}
+
+impl MetadataGate {
+    fn new(s: &Sandbox) -> Self {
+        use std::os::unix::fs::OpenOptionsExt;
+        let ready_path = s.root.join("metadata-ready");
+        let release_path = s.root.join("metadata-release");
+        let open = |path: &Path| {
+            let cpath = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            // SAFETY: the FIFO belongs to this test and the C string is valid.
+            assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+            File::options()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)
+                .unwrap()
+        };
+        Self {
+            ready: open(&ready_path),
+            release: open(&release_path),
+            ready_path,
+            release_path,
+        }
+    }
+
+    fn configure(&self, command: &mut Command) {
+        command
+            .env("FAKE_METADATA_READY", &self.ready_path)
+            .env("FAKE_METADATA_RELEASE", &self.release_path);
+    }
+
+    fn entered(&mut self) -> (u32, u32) {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut line = Vec::new();
+        loop {
+            assert!(Instant::now() < deadline, "metadata readiness deadline");
+            let mut event = libc::pollfd {
+                fd: self.ready.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll receives a valid single descriptor record and a bounded watchdog.
+            assert!(unsafe { libc::poll(&mut event, 1, 100) } >= 0);
+            let mut buf = [0; 128];
+            match self.ready.read(&mut buf) {
+                Ok(n) => line.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("{e}"),
+            }
+            if line.contains(&b'\n') {
+                let text = String::from_utf8(line).unwrap();
+                let mut pids = text.split_whitespace().map(|s| s.parse().unwrap());
+                return (pids.next().unwrap(), pids.next().unwrap());
+            }
+        }
+    }
+
+    fn release(&mut self) {
+        use std::io::Write;
+        self.release.write_all(b"continue\n").unwrap();
+    }
+}
+
+fn metadata_signal_stops_cargo(sig: i32) {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::CommandExt;
+    let s = Sandbox::new("metadata-signal");
+    let mut gate = MetadataGate::new(&s);
+    let (mut lifetime, child_lifetime) = UnixStream::pair().unwrap();
+    lifetime
+        .set_read_timeout(Some(Duration::from_secs(6)))
+        .unwrap();
+    let fd = child_lifetime.as_raw_fd();
+    let mut command = s.command(&["plugin", "install", "konoma-foo", "--yes"]);
+    gate.configure(&mut command);
+    command
+        .process_group(0)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: these descriptor operations are async-signal-safe; fd stays live through spawn.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(fd, 3) == -1 || libc::fcntl(3, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut cli = command.spawn().unwrap();
+    let _cli_guard = KillOnDrop(cli.id());
+    drop(child_lifetime);
+    let (cargo, grandchild) = gate.entered();
+    let _cargo_guard = KillOnDrop(cargo);
+    let _grandchild_guard = KillOnDrop(grandchild);
+    // SAFETY: both pids were recorded by the fake cargo created by this test.
+    let group = unsafe { libc::getpgid(cargo as i32) };
+    assert!(group > 0);
+    unsafe {
+        assert_eq!(libc::kill(cli.id() as i32, sig), 0);
+    }
+    let status = wait_exit(&mut cli, 10, "metadata interruption");
+    let mut byte = [0];
+    let ended = lifetime.read(&mut byte);
+    if !matches!(ended, Ok(0)) {
+        // Stop the exact owned group on the old implementation before reporting failure.
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    }
+    assert!(
+        matches!(ended, Ok(0)),
+        "metadata must stop cargo and every child holding the lifetime pipe: {ended:?}"
+    );
+    assert_eq!(status.code(), Some(130));
+    assert!(
+        s.leftovers().is_empty(),
+        "metadata work directory must be removed"
+    );
+    assert!(!s.program().exists() && !s.plugins_toml().exists());
+    // A direct cargo child is reaped before konoma returns, rather than left as a zombie.
+    assert_eq!(unsafe { libc::kill(cargo as i32, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+}
+
+#[test]
+fn metadata_sigint_stops_cargo_and_its_children() {
+    metadata_signal_stops_cargo(libc::SIGINT);
+}
+
+#[test]
+fn metadata_sigterm_stops_cargo_and_its_children() {
+    metadata_signal_stops_cargo(libc::SIGTERM);
+}
+
+#[test]
+fn clean_waits_for_an_in_use_metadata_directory() {
+    use std::io::BufRead;
+    let s = Sandbox::new("metadata-clean-lock");
+    let mut gate = MetadataGate::new(&s);
+    let mut command = s.command(&["plugin", "install", "konoma-foo", "--yes"]);
+    gate.configure(&mut command);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut install = command.spawn().unwrap();
+    let _install_guard = KillOnDrop(install.id());
+    let (cargo, grandchild) = gate.entered();
+    let _cargo_guard = KillOnDrop(cargo);
+    let _grandchild_guard = KillOnDrop(grandchild);
+    let work = s.data().join(format!("build-{}", install.id()));
+    assert!(work.join("Cargo.toml").is_file());
+    let mut clean = s
+        .command(&["plugin", "clean"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _clean_guard = KillOnDrop(clean.id());
+    let stderr = clean.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        std::io::BufReader::new(stderr)
+            .read_line(&mut line)
+            .unwrap();
+        tx.send(line).unwrap();
+    });
+    let attempted = rx.recv_timeout(Duration::from_secs(6));
+    let survived = work.join("Cargo.toml").is_file();
+    let waiting = clean.try_wait().unwrap().is_none();
+    gate.release();
+    // The fake cargo's child is only needed by the signal checks; end it before waiting on output.
+    unsafe {
+        libc::kill(grandchild as i32, libc::SIGKILL);
+    }
+    let install_status = wait_exit(&mut install, 15, "install after metadata release");
+    let clean_status = wait_exit(&mut clean, 15, "clean after metadata release");
+    reader.join().unwrap();
+    assert!(
+        attempted.unwrap().contains("waiting"),
+        "clean must attempt the shared lock"
+    );
+    assert!(
+        survived && waiting,
+        "clean deleted an active metadata work directory"
+    );
+    assert!(install_status.success() && clean_status.success());
+}
+
 #[test]
 fn install_path_resolves_symlinks_before_parent_components() {
     let s = Sandbox::new("plugin-path-links");
@@ -227,6 +434,67 @@ fn install_path_must_exist_before_cargo_runs() {
     assert_eq!(code(&o), 1, "{}", out(&o));
     assert!(s.cargo_log().is_empty());
     assert!(!s.plugins_toml().exists());
+}
+
+#[test]
+fn japanese_missing_path_uses_the_cli_language() {
+    let s = Sandbox::new("plugin-japanese-path");
+    std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
+    std::fs::write(
+        s.config().join("konoma/config.toml"),
+        "[ui]\nlang = \"ja\"\n",
+    )
+    .unwrap();
+    let o = s.run(&[
+        "plugin",
+        "install",
+        "konoma-foo",
+        "--path",
+        "missing",
+        "--yes",
+    ]);
+    assert_eq!(code(&o), 1);
+    assert!(err(&o).contains("実体を解決できません"), "{}", err(&o));
+}
+
+#[test]
+fn japanese_lock_restore_error_uses_the_cli_language() {
+    let s = Sandbox::new("plugin-japanese-lock");
+    std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
+    std::fs::write(
+        s.config().join("konoma/config.toml"),
+        "[ui]\nlang = \"ja\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(s.lock()).unwrap();
+    let o = s.run(&["plugin", "install", "konoma-foo", "--yes"]);
+    assert_eq!(code(&o), 1);
+    assert!(
+        err(&o).contains("保存した Cargo.lock を復元できません"),
+        "{}",
+        err(&o)
+    );
+}
+
+#[test]
+fn japanese_metadata_error_uses_the_cli_language() {
+    let s = Sandbox::new("plugin-japanese-metadata");
+    std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
+    std::fs::write(
+        s.config().join("konoma/config.toml"),
+        "[ui]\nlang = \"ja\"\n",
+    )
+    .unwrap();
+    let o = s.run_env(
+        &["plugin", "install", "konoma-foo", "--yes"],
+        &[("FAKE_METADATA_FAIL", "1")],
+    );
+    assert_eq!(code(&o), 1);
+    assert!(
+        err(&o).contains("プラグインのメタデータを読めませんでした"),
+        "{}",
+        err(&o)
+    );
 }
 
 #[test]
