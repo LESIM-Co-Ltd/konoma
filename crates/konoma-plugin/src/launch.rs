@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::manifest::{Launcher, VerbDecl};
+use crate::manifest::{Launcher, Verb, VerbDecl};
 
 /// Which Office application family a document belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +183,121 @@ pub fn attempts_for_verb(
     out
 }
 
+/// What the user's settings say about a launch (`[editor]` and `[external]`), as plain flags so the
+/// shared decision does not depend on either host's config type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchPolicy {
+    /// `[editor] ext` has a non-blank entry for this file's extension. It always wins for `e`.
+    pub editor_ext_explicit: bool,
+    /// `[external] office_apps`: Office documents may be handed to an application.
+    pub office_apps: bool,
+    /// `[external] open_links`: other files may be handed to the OS default application.
+    pub open_links: bool,
+}
+
+/// Why a launch is switched off (the host words it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disabled {
+    /// `[external] office_apps = false`.
+    OfficeApps,
+    /// `[external] open_links = false`.
+    OpenLinks,
+}
+
+/// Where a launch verb goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Launch {
+    /// The user's editor (`[editor]` / `$VISUAL` / `$EDITOR`); `line` = open it at the position on
+    /// screen.
+    Editor { line: bool },
+    /// Walk these attempts as GUI programs from a worker (the UI never blocks).
+    Gui(Vec<Attempt>),
+    /// Hand the terminal over and walk these attempts (a program that draws on the terminal).
+    Terminal(Vec<Attempt>),
+    /// Switched off by the settings.
+    Disabled(Disabled),
+}
+
+/// Whether the settings switch a GUI launch of `path` off: an Office document needs
+/// `office_apps`; for `o` anything else needs `open_links`. Cheap (the extension only), so the
+/// footer can ask every frame.
+pub fn disabled_by(verb: Verb, path: &Path, policy: &LaunchPolicy) -> Option<Disabled> {
+    if office_kind(path).is_some() {
+        (!policy.office_apps).then_some(Disabled::OfficeApps)
+    } else if verb == Verb::Open {
+        (!policy.open_links).then_some(Disabled::OpenLinks)
+    } else {
+        None
+    }
+}
+
+/// Decide where `verb` goes for `path`: the one decision konoma and the standalone app share.
+/// `decl` is the verb as the plugin that shows the file declares it (`None` = no plugin, or one that
+/// declares none).
+///
+/// - `e` (`Verb::Edit`): an explicit `[editor] ext` entry wins over everything. Otherwise the
+///   declared chain: one that starts with the editor (or is empty, or names nothing this platform
+///   can start) opens the editor; one of GUI programs is walked from a worker (gated by
+///   [`disabled_by`]); one in terminal mode takes the terminal over. With no declaration: the editor.
+/// - `o` (`Verb::Open`): `[editor] ext` does not reach it. The declared chain, or the OS default
+///   when there is none or it names nothing this platform can start.
+///
+/// A declaration in terminal mode ([`LaunchMode::Terminal`]) is not gated by [`disabled_by`], on
+/// purpose: `[external]` switches off GUI applications (`office_apps`) and the OS default handler
+/// (`open_links`), and a program that runs in the terminal is the `$EDITOR` case, which neither
+/// covers. A chain that names nothing on this OS falls to the OS default, which is a GUI launch
+/// and so is gated.
+///
+/// `path` should be absolute: it is the argument of every attempt.
+pub fn resolve_launch(
+    verb: Verb,
+    os: OfficeOs,
+    decl: Option<&VerbDecl>,
+    path: &Path,
+    policy: &LaunchPolicy,
+) -> Launch {
+    use crate::manifest::LaunchMode;
+    if verb == Verb::Edit && policy.editor_ext_explicit {
+        return Launch::Editor { line: true };
+    }
+    let kind = office_kind(path);
+    let declared = match decl {
+        Some(d) if verb == Verb::Edit && starts_with_editor(d) => {
+            return Launch::Editor { line: d.line_token };
+        }
+        Some(d) => attempts_for_verb(os, d, kind, path),
+        None if verb == Verb::Edit => return Launch::Editor { line: true },
+        None => Vec::new(),
+    };
+    let (attempts, mode) = if !declared.is_empty() {
+        (declared, decl.map_or(LaunchMode::Gui, |d| d.mode))
+    } else if verb == Verb::Edit {
+        // An edit that names nothing this platform can start is the editor's.
+        return Launch::Editor {
+            line: decl.is_some_and(|d| d.line_token),
+        };
+    } else {
+        // An open that names nothing: the OS default.
+        let fallback = VerbDecl::new(Verb::Open).launcher(Launcher::OsDefault);
+        (
+            attempts_for_verb(os, &fallback, kind, path),
+            LaunchMode::Gui,
+        )
+    };
+    match mode {
+        LaunchMode::Terminal => Launch::Terminal(attempts),
+        LaunchMode::Gui => match disabled_by(verb, path, policy) {
+            Some(why) => Launch::Disabled(why),
+            None => Launch::Gui(attempts),
+        },
+    }
+}
+
+/// Whether the chain's first launcher is the user's editor (or there is no launcher at all).
+fn starts_with_editor(d: &VerbDecl) -> bool {
+    matches!(d.chain.first(), None | Some(Launcher::Editor))
+}
+
 /// How a launch went: `Ok(Some(code))` = the process exited with `code`; `Ok(None)` = still running
 /// after the wait budget (a GUI app that stays attached = launched); `Err` = could not start.
 pub type Runner = Arc<dyn Fn(&Attempt) -> io::Result<Option<i32>> + Send + Sync>;
@@ -193,6 +308,15 @@ pub fn run_chain(
     attempts: &[Attempt],
     runner: &(dyn Fn(&Attempt) -> io::Result<Option<i32>> + Send + Sync),
 ) -> Result<Opener, String> {
+    walk_chain(attempts, &mut |a| runner(a))
+}
+
+/// [`run_chain`] with a runner that may borrow mutably: the terminal chain hands the terminal over
+/// for every attempt, and the hand-over needs the host's terminal. The rule is the same one.
+pub fn walk_chain(
+    attempts: &[Attempt],
+    runner: &mut dyn FnMut(&Attempt) -> io::Result<Option<i32>>,
+) -> Result<Opener, String> {
     let mut last = String::from("no application to try");
     for a in attempts {
         match runner(a) {
@@ -202,6 +326,21 @@ pub fn run_chain(
         }
     }
     Err(last)
+}
+
+/// The attempts of a terminal chain with the `{line}` token of every argument filled in: `line` is
+/// the answer of [`crate::host::launch::edit_line`] (`1` when there is none, like the editor's own
+/// argv). Arguments without the token are left as they are.
+pub fn with_line(attempts: &[Attempt], line: Option<usize>) -> Vec<Attempt> {
+    let n = line.unwrap_or(1).to_string();
+    attempts
+        .iter()
+        .map(|a| Attempt {
+            opener: a.opener,
+            prog: a.prog.clone(),
+            args: a.args.iter().map(|x| x.replace("{line}", &n)).collect(),
+        })
+        .collect()
 }
 
 /// The exit code of a process that has finished. One killed by a signal has no code
@@ -367,6 +506,44 @@ mod tests {
 
     fn mac_chain() -> Vec<Attempt> {
         plan(OfficeOs::MacOs, OfficeKind::Excel, &p("b.xlsx"))
+    }
+
+    #[test]
+    fn walk_chain_takes_a_mutable_runner_and_follows_the_same_rule() {
+        let mut seen: Vec<String> = Vec::new();
+        let chain = mac_chain();
+        let out = walk_chain(&chain, &mut |a| {
+            seen.push(a.args.join(" "));
+            if a.opener == Opener::SystemDefault {
+                Ok(Some(0))
+            } else {
+                Ok(Some(1))
+            }
+        });
+        assert_eq!(out, Ok(Opener::SystemDefault));
+        assert_eq!(seen.len(), 3, "walked in order until one won");
+        let none = walk_chain(&[], &mut |_| Ok(Some(0)));
+        assert_eq!(none, Err("no application to try".to_string()));
+    }
+
+    #[test]
+    fn with_line_fills_the_token_in_every_argument_and_defaults_to_one() {
+        let a = vec![
+            Attempt {
+                opener: Opener::Declared,
+                prog: "v".into(),
+                args: vec!["+{line}".into(), "{line}:{line}".into(), "/p".into()],
+            },
+            Attempt {
+                opener: Opener::Declared,
+                prog: "w".into(),
+                args: vec!["/p".into()],
+            },
+        ];
+        let got = with_line(&a, Some(42));
+        assert_eq!(got[0].args, ["+42", "42:42", "/p"]);
+        assert_eq!(got[1], a[1]);
+        assert_eq!(with_line(&a, None)[0].args, ["+1", "1:1", "/p"]);
     }
 
     #[test]
@@ -602,5 +779,386 @@ mod tests {
             (o[0].prog.as_str(), o[0].opener),
             ("xdg-open", Opener::SystemDefault)
         );
+    }
+
+    // ---- resolve_launch: the matrix, derived from the verbs' contract ----
+
+    use crate::manifest::{LaunchMode, Verb};
+
+    fn policy(ext: bool, office: bool, links: bool) -> LaunchPolicy {
+        LaunchPolicy {
+            editor_ext_explicit: ext,
+            office_apps: office,
+            open_links: links,
+        }
+    }
+
+    const ALL_ON: LaunchPolicy = LaunchPolicy {
+        editor_ext_explicit: false,
+        office_apps: true,
+        open_links: true,
+    };
+
+    fn editor_decl() -> VerbDecl {
+        VerbDecl::new(Verb::Edit)
+            .launcher(Launcher::Editor)
+            .line_token()
+    }
+
+    fn office_decl(verb: Verb) -> VerbDecl {
+        office_decl_for(verb, "com.microsoft.Excel")
+    }
+
+    fn office_decl_for(verb: Verb, microsoft: &str) -> VerbDecl {
+        VerbDecl::new(verb)
+            .launcher(mac(microsoft))
+            .launcher(mac(LIBREOFFICE_BUNDLE_ID))
+            .launcher(cmd(&["libreoffice"]))
+            .launcher(cmd(&["soffice"]))
+            .launcher(Launcher::OsDefault)
+            .mode(LaunchMode::Gui)
+    }
+
+    #[test]
+    fn edit_without_a_declaration_is_the_editor_at_the_line() {
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            for name in ["a.rs", "a.xlsx", "noext"] {
+                assert_eq!(
+                    resolve_launch(Verb::Edit, os, None, &p(name), &ALL_ON),
+                    Launch::Editor { line: true },
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edit_declared_as_the_editor_follows_its_line_token() {
+        let with = editor_decl();
+        let mut without = editor_decl();
+        without.line_token = false;
+        assert_eq!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::MacOs,
+                Some(&with),
+                &p("a.rs"),
+                &ALL_ON
+            ),
+            Launch::Editor { line: true }
+        );
+        assert_eq!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::MacOs,
+                Some(&without),
+                &p("a.rs"),
+                &ALL_ON
+            ),
+            Launch::Editor { line: false }
+        );
+        // An empty chain is the editor too.
+        assert_eq!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::Other,
+                Some(&VerbDecl::new(Verb::Edit)),
+                &p("a.rs"),
+                &ALL_ON
+            ),
+            Launch::Editor { line: false }
+        );
+    }
+
+    #[test]
+    fn an_explicit_editor_ext_beats_every_declaration_for_edit_only() {
+        let on = policy(true, true, true);
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            // `e`: the editor, whatever the plugin declares and whatever is switched off.
+            for d in [Some(office_decl(Verb::Edit)), Some(editor_decl()), None] {
+                assert_eq!(
+                    resolve_launch(Verb::Edit, os, d.as_ref(), &p("b.xlsx"), &on),
+                    Launch::Editor { line: true }
+                );
+                assert_eq!(
+                    resolve_launch(
+                        Verb::Edit,
+                        os,
+                        d.as_ref(),
+                        &p("b.xlsx"),
+                        &policy(true, false, false)
+                    ),
+                    Launch::Editor { line: true },
+                    "an explicit entry wins over office_apps = false"
+                );
+            }
+            // `o`: `[editor] ext` does not reach it.
+            let o = office_decl(Verb::Open);
+            assert_eq!(
+                resolve_launch(Verb::Open, os, Some(&o), &p("b.xlsx"), &on),
+                Launch::Gui(attempts_for_verb(
+                    os,
+                    &o,
+                    Some(OfficeKind::Excel),
+                    &p("b.xlsx")
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn edit_declared_as_gui_apps_is_walked_and_gated_by_office_apps() {
+        let d = office_decl(Verb::Edit);
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            // Office document: the chain, or off when office_apps = false (open_links is not its).
+            assert_eq!(
+                resolve_launch(
+                    Verb::Edit,
+                    os,
+                    Some(&d),
+                    &p("b.xlsx"),
+                    &policy(false, true, false)
+                ),
+                Launch::Gui(plan(os, OfficeKind::Excel, &p("b.xlsx")))
+            );
+            assert_eq!(
+                resolve_launch(
+                    Verb::Edit,
+                    os,
+                    Some(&d),
+                    &p("b.xlsx"),
+                    &policy(false, false, true)
+                ),
+                Launch::Disabled(Disabled::OfficeApps)
+            );
+        }
+        // A GUI edit of a file that is not an Office document is not gated by either switch.
+        let g = VerbDecl::new(Verb::Edit)
+            .launcher(Launcher::OsDefault)
+            .mode(LaunchMode::Gui);
+        assert!(matches!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::Other,
+                Some(&g),
+                &p("a.bin"),
+                &policy(false, false, false)
+            ),
+            Launch::Gui(_)
+        ));
+    }
+
+    #[test]
+    fn edit_declared_for_another_platform_only_falls_back_to_the_editor() {
+        let mac_only = VerbDecl::new(Verb::Edit)
+            .launcher(mac("com.example.Ed"))
+            .mode(LaunchMode::Gui);
+        assert_eq!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::Other,
+                Some(&mac_only),
+                &p("a.x"),
+                &ALL_ON
+            ),
+            Launch::Editor { line: false }
+        );
+        assert!(matches!(
+            resolve_launch(
+                Verb::Edit,
+                OfficeOs::MacOs,
+                Some(&mac_only),
+                &p("a.x"),
+                &ALL_ON
+            ),
+            Launch::Gui(_)
+        ));
+    }
+
+    #[test]
+    fn edit_in_terminal_mode_hands_the_terminal_over_ungated() {
+        let d = VerbDecl::new(Verb::Edit)
+            .launcher(cmd(&["tui-ed", "-n"]))
+            .mode(LaunchMode::Terminal);
+        for pol in [ALL_ON, policy(false, false, false)] {
+            let got = resolve_launch(Verb::Edit, OfficeOs::Other, Some(&d), &p("a.x"), &pol);
+            let Launch::Terminal(a) = got else {
+                panic!("{got:?}")
+            };
+            assert_eq!(a.len(), 1);
+            assert_eq!(a[0].prog, "tui-ed");
+            assert_eq!(a[0].args, ["-n", "/tmp/x/a.x"]);
+        }
+    }
+
+    #[test]
+    fn a_terminal_declaration_is_not_stopped_by_either_external_switch() {
+        // `office_apps` stops GUI Office applications and `open_links` the OS default handler; a
+        // program that runs in the terminal is the `$EDITOR` case and meets neither. Both verbs,
+        // an Office file and another, both switches off.
+        let off = policy(false, false, false);
+        for verb in [Verb::Edit, Verb::Open] {
+            let d = VerbDecl::new(verb)
+                .launcher(cmd(&["tui-prog", "-n"]))
+                .mode(LaunchMode::Terminal);
+            for name in ["a.docx", "a.xlsx", "a.txt"] {
+                for os in [OfficeOs::MacOs, OfficeOs::Other] {
+                    let got = resolve_launch(verb, os, Some(&d), &p(name), &off);
+                    let Launch::Terminal(a) = got else {
+                        panic!("{verb:?} {name}: {got:?}")
+                    };
+                    assert_eq!(a.len(), 1, "{verb:?} {name}");
+                    assert_eq!(a[0].prog, "tui-prog");
+                    assert_eq!(a[0].args, ["-n", &format!("/tmp/x/{name}")]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_open_chain_that_names_nothing_here_falls_to_the_os_default_which_is_stopped() {
+        // The chain names a macOS bundle only, so on another OS it names nothing and `o` opens
+        // with the OS default. That is a GUI launch whatever mode was declared, so the switches
+        // stop it: `open_links` for a plain file, `office_apps` for an Office document.
+        for mode in [LaunchMode::Terminal, LaunchMode::Gui] {
+            let d = VerbDecl::new(Verb::Open)
+                .launcher(mac("com.example.Viewer"))
+                .mode(mode);
+            let off = policy(false, false, false);
+            assert_eq!(
+                resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.txt"), &off),
+                Launch::Disabled(Disabled::OpenLinks),
+                "{mode:?}"
+            );
+            assert_eq!(
+                resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.docx"), &off),
+                Launch::Disabled(Disabled::OfficeApps),
+                "{mode:?}"
+            );
+            // With the switches on it is the OS default as a GUI launch, not a terminal one.
+            let got = resolve_launch(Verb::Open, OfficeOs::Other, Some(&d), &p("a.txt"), &ALL_ON);
+            let Launch::Gui(a) = got else {
+                panic!("{mode:?}: {got:?}")
+            };
+            assert_eq!(a[0].prog, "xdg-open");
+        }
+    }
+
+    #[test]
+    fn open_without_a_declaration_is_the_os_default_gated_by_open_links() {
+        assert_eq!(
+            resolve_launch(Verb::Open, OfficeOs::MacOs, None, &p("a.txt"), &ALL_ON),
+            Launch::Gui(vec![Attempt {
+                opener: Opener::SystemDefault,
+                prog: "open".into(),
+                args: vec!["/tmp/x/a.txt".into()],
+            }])
+        );
+        assert_eq!(
+            resolve_launch(Verb::Open, OfficeOs::Other, None, &p("a.txt"), &ALL_ON),
+            Launch::Gui(vec![Attempt {
+                opener: Opener::SystemDefault,
+                prog: "xdg-open".into(),
+                args: vec!["/tmp/x/a.txt".into()],
+            }])
+        );
+        assert_eq!(
+            resolve_launch(
+                Verb::Open,
+                OfficeOs::Other,
+                None,
+                &p("a.txt"),
+                &policy(false, true, false)
+            ),
+            Launch::Disabled(Disabled::OpenLinks)
+        );
+        // office_apps is for Office documents only.
+        assert!(matches!(
+            resolve_launch(
+                Verb::Open,
+                OfficeOs::Other,
+                None,
+                &p("a.txt"),
+                &policy(false, false, true)
+            ),
+            Launch::Gui(_)
+        ));
+    }
+
+    #[test]
+    fn open_of_an_office_document_is_gated_by_office_apps_not_open_links() {
+        let d = office_decl_for(Verb::Open, "com.microsoft.Word");
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            assert_eq!(
+                resolve_launch(
+                    Verb::Open,
+                    os,
+                    Some(&d),
+                    &p("a.docx"),
+                    &policy(false, true, false)
+                ),
+                Launch::Gui(plan(os, OfficeKind::Word, &p("a.docx")))
+            );
+            assert_eq!(
+                resolve_launch(
+                    Verb::Open,
+                    os,
+                    Some(&d),
+                    &p("a.docx"),
+                    &policy(false, false, true)
+                ),
+                Launch::Disabled(Disabled::OfficeApps)
+            );
+        }
+    }
+
+    #[test]
+    fn open_that_names_nothing_for_this_platform_is_the_os_default() {
+        let mac_only = VerbDecl::new(Verb::Open)
+            .launcher(mac("com.example.Viewer"))
+            .mode(LaunchMode::Gui);
+        let got = resolve_launch(
+            Verb::Open,
+            OfficeOs::Other,
+            Some(&mac_only),
+            &p("a.x"),
+            &ALL_ON,
+        );
+        let Launch::Gui(a) = got else {
+            panic!("{got:?}")
+        };
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].prog, "xdg-open");
+        // An empty declaration too.
+        let got = resolve_launch(
+            Verb::Open,
+            OfficeOs::MacOs,
+            Some(&VerbDecl::new(Verb::Open)),
+            &p("a.x"),
+            &ALL_ON,
+        );
+        let Launch::Gui(a) = got else {
+            panic!("{got:?}")
+        };
+        assert_eq!(a[0].prog, "open");
+    }
+
+    #[test]
+    fn disabled_by_asks_the_extension_only() {
+        let off = policy(false, false, false);
+        assert_eq!(
+            disabled_by(Verb::Open, &p("a.pptx"), &off),
+            Some(Disabled::OfficeApps)
+        );
+        assert_eq!(
+            disabled_by(Verb::Edit, &p("a.PPTX"), &off),
+            Some(Disabled::OfficeApps)
+        );
+        assert_eq!(
+            disabled_by(Verb::Open, &p("a.txt"), &off),
+            Some(Disabled::OpenLinks)
+        );
+        assert_eq!(disabled_by(Verb::Edit, &p("a.txt"), &off), None);
+        assert_eq!(disabled_by(Verb::Open, &p("a.txt"), &ALL_ON), None);
     }
 }

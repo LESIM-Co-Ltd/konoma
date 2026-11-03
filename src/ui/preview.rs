@@ -266,22 +266,20 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
                 crate::i18n::Lang::Jp => "ja",
                 crate::i18n::Lang::En => "en",
             };
-            let failure = app.document_error();
-            let mut body = failure.map_or_else(
-                || "[can not preview]".to_string(),
-                |f| f.message.get(lang).to_string(),
-            );
             // "Press `e` to open it in an Office app" only while `e` really does that
             // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
             // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
-            if failure.is_some_and(|f| f.kind == konoma_plugin::FailureKind::Unsupported)
-                && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
-                    == Some(crate::i18n::Msg::HintOpen)
-            {
-                body.push('\n');
-                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
-            }
-            (format!("{body}\n{}", path.display()), false)
+            let opens_app = app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+                == Some(crate::i18n::Msg::HintOpen);
+            (
+                konoma_plugin::canvas_pictures::document_failure_text(
+                    app.document_error(),
+                    (lang, app.lang),
+                    opens_app,
+                    path,
+                ),
+                false,
+            )
         }
         // A plugin the host has no screen of its own for (one the user registered) that answered
         // with a text view: its lines, drawn as plain scrolling text.
@@ -334,18 +332,18 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area); // the display area with the frame excluded
 
+    // Total display row count: the shared count of the text alone (not a block-carrying paragraph's
+    // `line_count`, which adds the frame's two border rows), otherwise the logical line count.
+    let total_rows = if wrap {
+        konoma_widgets::text::wrapped_row_count(body.as_str(), inner.width)
+    } else {
+        logical_lines
+    };
     let mut para = Paragraph::new(body).block(block);
     if wrap {
         // trim:false preserves leading whitespace (does not break code/text indentation).
         para = para.wrap(Wrap { trim: false });
     }
-
-    // Total display row count: let ratatui compute it while wrapping, otherwise use the logical line count.
-    let total_rows = if wrap {
-        para.line_count(inner.width)
-    } else {
-        logical_lines
-    };
 
     // Clamp so it never scrolls past the end (at least 1 line remains).
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
@@ -1392,22 +1390,11 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     // convention as the table). The caret column is derived from the rendered line's REVERSED span
     // start position (= the display column, gutter included).
     if !wrap {
-        if let Some((caret_disp, caret_row)) = caret_display_col(&lines) {
-            let w = inner.width as usize;
-            let line_w = lines[caret_row].width();
-            if line_w <= w {
-                // If the caret line fits within the screen width, display it from the start (does not isolate a character on a short line).
-                app.tab.preview_hscroll = 0;
-            } else {
-                // A long line that doesn't fit follows with minimal movement (places the caret at the edge).
-                let h = app.tab.preview_hscroll as usize;
-                if caret_disp < h {
-                    app.tab.preview_hscroll = caret_disp as u16;
-                } else if caret_disp >= h + w {
-                    app.tab.preview_hscroll = (caret_disp + 1 - w) as u16;
-                }
-            }
-        }
+        app.tab.preview_hscroll = konoma_widgets::caret::follow_hscroll(
+            &lines,
+            inner.width as usize,
+            app.tab.preview_hscroll,
+        );
     }
     let mut para = Paragraph::new(Text::from(lines)).block(block);
     if wrap {
@@ -1426,23 +1413,6 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(e) = extent {
         render_scrollbar(frame, area, e);
     }
-}
-
-/// The `(display_column, row_index)` of the 2D caret in the rendered windowed lines, or None if it isn't drawn
-/// (e.g. an empty line). The caret is the single span carrying the REVERSED modifier, so its start column is the
-/// sum of the widths of the spans before it (gutter included). Used for non-wrap horizontal follow.
-fn caret_display_col(lines: &[ratatui::text::Line<'static>]) -> Option<(usize, usize)> {
-    use ratatui::style::Modifier;
-    for (row, line) in lines.iter().enumerate() {
-        let mut disp = 0usize;
-        for span in &line.spans {
-            if span.style.add_modifier.contains(Modifier::REVERSED) {
-                return Some((disp, row));
-            }
-            disp += span.width();
-        }
-    }
-    None
 }
 
 /// Shared component for a loading display that draws one line of "spinner  message" centered inside the frame.
@@ -1652,6 +1622,57 @@ mod scroll_indicator_tests {
             }
         }
         (track, thumb)
+    }
+
+    /// A plain (non-windowed) text body drawn wrapped, scrolled as far as it goes: the last wrapped
+    /// row of the text is the last row inside the frame, with no blank rows under it. The height
+    /// the scroll is clamped against is the inside of the frame; a count that includes the frame's
+    /// two border rows let the scroll run two rows past the text.
+    #[test]
+    fn wrapped_plain_text_scrolled_to_the_end_ends_on_its_last_row() {
+        // Lines of different wrapped lengths (one to four rows at the width below).
+        let body: String = (0..30)
+            .map(|i| format!("l{i:02} {}\n", "word ".repeat(1 + (i * 7) % 16)))
+            .collect();
+        let dir = unique_tmp("konoma_ui_wrap_end");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.dat");
+        std::fs::write(&file, &body).unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        assert!(app.cfg.ui.wrap);
+        app.tab.preview_kind = Some(PreviewKind::Text(file.clone()));
+        app.tab.preview_path = Some(file);
+        app.tab.mode = crate::app::Mode::Preview;
+        let (w, h) = (30u16, 16u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        draw(&mut term, &mut app);
+        // Far past the end: the draw settles it.
+        app.tab.preview_scroll = u16::MAX;
+        draw(&mut term, &mut app);
+        let r = rows(&term);
+        // The frame's bottom border row, and the rows inside it above.
+        let bottom = r.iter().rposition(|l| l.starts_with('└')).expect("frame");
+        let inner: Vec<String> = r[1..bottom]
+            .iter()
+            .map(|l| l.trim_matches(|c| c == '│' || c == ' ').to_string())
+            .collect();
+        // The text's total wrapped rows, counted without the frame.
+        let total = Paragraph::new(body.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(w - 2);
+        assert_eq!(
+            usize::from(app.tab.preview_scroll),
+            total - usize::from(app.tab.preview_viewport),
+            "the scroll stops where the last row is the last row inside the frame"
+        );
+        assert!(
+            inner
+                .last()
+                .is_some_and(|l| l.starts_with("l29") || l.starts_with("word")),
+            "the last inside row shows the text, not blank:\n{}",
+            r.join("\n")
+        );
     }
 
     /// vim's `%P` semantics, in both languages: `All` when nothing is off-screen, `Top`/`Bot` at

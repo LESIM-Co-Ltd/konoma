@@ -205,6 +205,7 @@ fn job(plugin: Arc<dyn Plugin>, id: &str) -> PluginWork {
     let path = PathBuf::from("/x/file.bin");
     PluginWork {
         id: id.to_string(),
+        session_id: id.to_string(),
         gen: 0,
         job: PluginJob::Open {
             plugin,
@@ -487,6 +488,40 @@ fn the_view_and_the_decode_run_in_one_go_on_the_worker_and_one_result_comes_back
         app.plugin.as_ref().is_some_and(|p| p.session.is_some()),
         "the session is kept for the next page"
     );
+}
+
+/// A picture plugin's `Outcome::Reload` reads the file again (the way a changed file does): the new
+/// picture lands from the worker, the page and zoom stay, and the old session is not reused.
+#[test]
+fn a_reload_a_picture_plugin_asks_for_reads_the_file_again_and_keeps_the_view() {
+    let dir = unique_tmp("konoma_media_reload");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("a.png");
+    png(&p, 30, 20);
+    let mut app = app_in(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_media_loader(tx);
+    show(&mut app, PreviewKind::image(p.clone()), &p);
+    let r = recv(&mut app, &rx);
+    assert!(app.apply_media(r));
+    let src = app.image_src.as_ref().expect("the picture landed");
+    assert_eq!((src.width(), src.height()), (30, 20));
+    app.tab.image_view.zoom = 2.5;
+    // The file changes, then the plugin asks for a reload (no file event is involved).
+    png(&p, 50, 40);
+    app.reload_plugin();
+    // The decode stays on the worker: nothing new is on screen until its result lands.
+    assert!(app.is_media_loading());
+    let r = recv(&mut app, &rx);
+    assert!(app.apply_media(r));
+    let src = app.image_src.as_ref().expect("the new picture landed");
+    assert_eq!((src.width(), src.height()), (50, 40));
+    assert_eq!(app.tab.image_view.zoom, 2.5, "the zoom is kept");
+    assert!(
+        app.plugin.as_ref().is_some_and(|p| p.session.is_some()),
+        "the new session is kept for the next page"
+    );
+    assert!(rx.try_recv().is_err(), "no second result follows");
 }
 
 #[test]

@@ -1723,7 +1723,6 @@ name = "konoma"
 version = "0.31.2"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.23.1",
  "cfb 0.15.0",
  "crossterm",
@@ -1816,9 +1815,12 @@ dependencies = [
 name = "konoma-host-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arboard",
  "crossterm",
  "infer",
  "konoma-base",
+ "konoma-host-core",
  "konoma-test-support",
  "serde",
  "signal-hook 0.4.5",
@@ -2163,9 +2165,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libz-sys"
-version = "1.1.29"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "libc",

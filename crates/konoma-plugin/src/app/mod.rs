@@ -14,12 +14,17 @@
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
+mod acts;
+mod copy;
 mod display;
 mod doc_pictures;
 mod document;
 mod draw;
+mod edit_line;
+mod launch;
 mod looping;
 mod pictures;
+mod space;
 mod still;
 mod term;
 mod window;
@@ -31,10 +36,13 @@ use std::sync::Arc;
 use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
 use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
-use crate::{Input, Settings};
+use crate::{Input, Manifest, Settings};
 
+pub use acts::AppActs;
 pub use display::Display;
 pub use doc_pictures::DocEnv;
+pub use edit_line::edit_line;
+pub use launch::{HandOff, LaunchCx, LaunchFacts};
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
@@ -46,14 +54,54 @@ pub use term::{install_panic_hook_with, key_from_crossterm};
 /// the settings it is opened with. **The one place the app looks a content type up**: it is built
 /// from the registry of the program ([`ReopenSource::from_registry`]).
 #[derive(Clone)]
-pub struct ReopenSource(Arc<ContentLookup>);
+pub struct ReopenSource(
+    Arc<ContentLookup>,
+    Option<Arc<FileOpener>>,
+    Option<Arc<ActsLookup>>,
+);
 
 type ContentLookup = dyn Fn(&str) -> Option<ContentTarget>;
+
+/// The declared actions of a destination plugin, given its manifest.
+type ActsLookup = dyn Fn(&Manifest) -> AppActs;
+
+/// Opens the file the program shows with its plugin again (what an `Outcome::Reload` asks for),
+/// given the language and the terminal.
+type FileOpener = dyn Fn(&str, TermCaps) -> Result<Box<dyn Session>, Failure>;
 
 impl ReopenSource {
     /// A source from any lookup.
     pub fn new(lookup: impl Fn(&str) -> Option<ContentTarget> + 'static) -> ReopenSource {
-        ReopenSource(Arc::new(lookup))
+        ReopenSource(Arc::new(lookup), None, None)
+    }
+
+    /// This source, which also reopens the file shown: `plugin` is opened on `input` with
+    /// `settings` (konoma's `reload_plugin` does the same: the file is read again and a new
+    /// session replaces the old one).
+    pub fn with_file(mut self, plugin: Arc<dyn Plugin>, input: Input, settings: Settings) -> Self {
+        self.1 = Some(Arc::new(move |lang, term| {
+            plugin.open(input.clone(), &OpenCx::new(&settings, lang).with_term(term))
+        }));
+        self
+    }
+
+    /// This source, which also says the declared actions (with the user's keys) of a destination
+    /// plugin: after a `Reopen` they are the ones the keys, the footer and the help use.
+    pub fn with_acts(mut self, acts_of: impl Fn(&Manifest) -> AppActs + 'static) -> Self {
+        self.2 = Some(Arc::new(acts_of));
+        self
+    }
+
+    /// The declared actions of the destination plugin `manifest`; none when the source was not
+    /// given [`ReopenSource::with_acts`].
+    pub fn acts_for(&self, manifest: &Manifest) -> AppActs {
+        self.2.as_ref().map(|f| f(manifest)).unwrap_or_default()
+    }
+
+    /// Open the file again with its plugin. `None`: this source does not know the file (the
+    /// reload is then a plain redraw).
+    pub fn reload(&self, lang: &str, term: TermCaps) -> Option<Result<Box<dyn Session>, Failure>> {
+        self.1.as_ref().map(|open| open(lang, term))
     }
 
     /// The plugin `registry` names for a content type ([`Registry::resolve_content`]: the rule
@@ -245,10 +293,15 @@ pub struct Opened {
     pub plugin_id: String,
     /// The absolute path of the file (where a picture's relative references resolve from).
     pub path: PathBuf,
+    /// The note of the binding that picked the plugin (a CSV opened as `tsv`, say): it reaches the
+    /// copy menu as it reached the plugin.
+    pub hint: Option<String>,
     /// What the plugin declared it shows when it shows nothing ([`Manifest::unavailable`]).
     pub unavailable: crate::manifest::Unavailable,
     /// The display types the plugin declared ([`Manifest::shows`]).
     pub shows: Vec<crate::manifest::ViewKind>,
+    /// The manifest of the plugin (its declared actions).
+    pub manifest: crate::manifest::Manifest,
     /// The plugins of the program (who draws the mermaid and math a document embeds).
     pub registry: Arc<Registry>,
 }
@@ -312,13 +365,17 @@ pub fn open_file_bundled(
     let shows = registry
         .manifest(&id)
         .map_or_else(|| plugin.manifest().shows, |m| m.shows.clone());
+    let manifest = registry
+        .manifest(&id)
+        .cloned()
+        .unwrap_or_else(|| plugin.manifest());
     let settings = settings_of(&id);
     let cx = OpenCx::new(&settings, lang).with_term(term);
     let session = plugin
         .open(
             Input::File {
                 path: path.clone(),
-                hint,
+                hint: hint.clone(),
             },
             &cx,
         )
@@ -332,8 +389,10 @@ pub fn open_file_bundled(
         title,
         plugin_id: id,
         path,
+        hint,
         unavailable,
         shows,
+        manifest,
         registry: Arc::new(registry),
     })
 }
@@ -351,6 +410,11 @@ pub struct Prepared {
     pub reopen: ReopenSource,
     /// How the text and the documents look (put it in [`AppCx::display`]).
     pub display: Display,
+    /// The actions the plugin declared, with the user's keys (put it in [`AppCx::acts`]).
+    pub acts: AppActs,
+    /// How `e` and `o` run (the program puts [`LaunchCx::live`] of it in [`AppCx::launch`]; a test
+    /// puts a recording runner there instead).
+    pub launch: LaunchCx,
     /// The config load error, still to be reported ([`write_load_error`]).
     pub load_error: Option<String>,
 }
@@ -397,6 +461,8 @@ pub fn prepare_bundled(
     let remote_images = loaded.0.external.remote_images;
     let display = Display::of(&loaded.0);
     let (plugin_tables, moved_ui) = (loaded.0.plugins.clone(), loaded.0.ui.moved());
+    let user_keys = loaded.0.keys.clone();
+    let launch_settings = (loaded.0.editor.clone(), loaded.0.external.clone());
     let (keys, load_error) = keys_from_load(loaded);
     let lang = match keys.lang() {
         konoma_host_core::lang::Lang::Jp => "ja",
@@ -413,9 +479,38 @@ pub fn prepare_bundled(
                 Box::new(move |id| crate::config::plugin_settings(&tables, &moved, id)),
                 remote_images,
             ),
-            reopen: ReopenSource::from_registry(
-                Arc::clone(&opened.registry),
-                Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
+            reopen: {
+                let source = ReopenSource::from_registry(
+                    Arc::clone(&opened.registry),
+                    Box::new(move |id| crate::config::plugin_settings(&tables2, &moved2, id)),
+                );
+                // The destination of a `Reopen` brings its own declared actions and `[keys.<id>]`.
+                let (acts_keys, acts_tables) = (user_keys.clone(), plugin_tables.clone());
+                let source = source
+                    .with_acts(move |m| AppActs::from_config(&m.id, m, &acts_keys, &acts_tables).0);
+                match opened.registry.plugin(&opened.plugin_id) {
+                    Some(plugin) => source.with_file(
+                        plugin,
+                        Input::File {
+                            path: opened.path.clone(),
+                            hint: opened.hint.clone(),
+                        },
+                        settings_of(&opened.plugin_id),
+                    ),
+                    None => source,
+                }
+            },
+            acts: AppActs::from_config(
+                &opened.plugin_id,
+                &opened.manifest,
+                &user_keys,
+                &plugin_tables,
+            )
+            .0,
+            launch: LaunchCx::new(
+                launch_settings.0,
+                &launch_settings.1,
+                opened.manifest.verbs.clone(),
             ),
             opened,
             keys,
@@ -465,6 +560,8 @@ pub fn run_bundled(
         doc_env,
         reopen,
         display,
+        acts,
+        launch,
         load_error,
     } = match prepared {
         Ok(p) => p,
@@ -484,11 +581,18 @@ pub fn run_bundled(
         unavailable: opened.unavailable.clone(),
         plugin_id: opened.plugin_id.clone(),
         path: opened.path.clone(),
+        hint: opened.hint.clone(),
         shows: opened.shows.clone(),
         reopen: Some(reopen),
         display,
         open_dir: std::env::current_dir().ok(),
+        acts,
+        launch: Some(launch.live()),
+        converts: opened.manifest.converts,
     };
+    // Before the terminal is taken: a signal from here on restores it (see the function).
+    // Before the terminal is taken: a signal from here on restores it (see the function).
+    term::install_exit_signals();
     let mut guard = term::TerminalGuard::enter()?;
     // The terminal is asked what it can show once, on the alternate screen and before events are
     // read (konoma does the same); what was typed meanwhile is replayed, and a late reply is

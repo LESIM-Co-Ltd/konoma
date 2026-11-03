@@ -74,7 +74,7 @@ fn plan_actions(plan: &[Foot]) -> Vec<Action> {
                     .into_iter()
                     .filter_map(crate::ops::core_help::action_of),
             ),
-            Foot::Leader(..) | Foot::Dyn(_) => {}
+            Foot::Leader(..) | Foot::Dyn(_) | Foot::HelpOverlay => {}
         }
     }
     v

@@ -23495,6 +23495,74 @@ fn entering_preview_on_a_regular_file_still_works() {
     assert_eq!(app.tab.mode, Mode::Preview);
 }
 
+/// A FIFO under the tree cursor: the footer (every frame), `e` and `o` ask which plugin takes the
+/// file, which sniffs its content; they must stop at the preview's own gate instead of opening a
+/// pipe nobody writes to (which blocks the key thread for good).
+#[cfg(unix)]
+#[test]
+fn a_fifo_under_the_tree_cursor_does_not_hang_the_footer_e_or_o() {
+    use crate::keymap::{Action, Context};
+    let dir = unique_tmp("konoma_fifo_verbs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo コマンドを起動できない");
+    assert!(status.success(), "mkfifo に失敗");
+
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    // No program is ever started: the launcher is a recorder.
+    app.set_office_runner(std::sync::Arc::new(|_| Ok(Some(0))));
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == fifo)
+        .expect("the pipe is listed");
+    let app = run_with_hang_guard(app, std::time::Duration::from_secs(5), move |a| {
+        let _ = crate::ops::footer::tokens(a, Context::Tree);
+        assert_eq!(a.verb_plugin_id(&fifo), None);
+        let _ = crate::ops::action_enabled(a, Context::Tree, Action::RequestEdit);
+        let _ = crate::ops::action_enabled(a, Context::Tree, Action::OpenExternal);
+        a.request_edit();
+        a.open_in_other_app();
+    });
+    assert!(app.pending_edit.is_some(), "e falls back to the editor");
+}
+
+/// The file on screen is not read again to learn which plugin takes it (its preview already
+/// resolved that); another file is read once and then remembered.
+#[test]
+fn the_previewed_file_is_not_read_again_for_the_verbs() {
+    let dir = unique_tmp("konoma_verb_no_reread");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("a.md");
+    std::fs::write(&md, "# t\n").unwrap();
+    let other = dir.join("b.md");
+    std::fs::write(&other, "# u\n").unwrap();
+
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.enter_preview(&md);
+    let want = match &app.tab.preview_kind {
+        Some(PreviewKind::Plugin { id, .. }) => id.clone(),
+        k => panic!("a Markdown file previews through a plugin: {k:?}"),
+    };
+    let (id, reads) = crate::test_support::count_plugin_id_reads(|| {
+        (0..3).map(|_| app.verb_plugin_id(&md)).last().unwrap()
+    });
+    assert_eq!(id.as_deref(), Some(want.as_str()));
+    assert_eq!(reads, 0, "the previewed file is not read");
+
+    let (id, reads) = crate::test_support::count_plugin_id_reads(|| {
+        (0..3).map(|_| app.verb_plugin_id(&other)).last().unwrap()
+    });
+    assert_eq!(id.as_deref(), Some(want.as_str()));
+    assert_eq!(reads, 1, "another file is read once, then remembered");
+}
+
 /// Non-regression: a symlink to a regular file still previews the link target's content, exactly
 /// as before (the guard follows symlinks rather than rejecting them outright).
 #[cfg(unix)]

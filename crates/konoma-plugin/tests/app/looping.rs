@@ -111,6 +111,22 @@ fn first_body(term: &Terminal<TestBackend>) -> String {
     inner(term)[0].clone()
 }
 
+/// The text of the inner row that carries the caret (the reversed character): the line `j` and
+/// `k` moved to, where the window may not have scrolled at all.
+fn caret_body(term: &Terminal<TestBackend>) -> String {
+    let buf = term.backend().buffer();
+    let y = (1..buf.area.height - 1)
+        .find(|&y| {
+            (1..buf.area.width - 1).any(|x| {
+                buf[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+        })
+        .expect("a row carries the caret");
+    inner(term)[usize::from(y) - 1].clone()
+}
+
 #[test]
 fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     let (_d, p) = file("app_text", "a.t", &lines20());
@@ -127,20 +143,19 @@ fn a_text_file_is_drawn_from_its_first_line_with_a_footer_on_the_last_row() {
     // The host's footer has no room left for the title at 60 columns: the hints are cut instead.
     assert!(r[7].starts_with("j/k:scroll  q:quit  ?:help"), "{r:?}");
     assert!(!r[6].contains("q:quit"));
-    // The footer row is reversed.
+    // The footer row is the host's: dim hints, not reversed.
     let buf = term.backend().buffer();
-    assert!(buf[(0, 7)]
+    assert!(buf[(0, 7)].modifier.contains(ratatui::style::Modifier::DIM));
+    assert!(!buf[(0, 7)]
         .modifier
         .contains(ratatui::style::Modifier::REVERSED));
-    assert!(!buf[(0, 0)]
-        .modifier
-        .contains(ratatui::style::Modifier::REVERSED));
+    assert!(!buf[(0, 0)].modifier.contains(ratatui::style::Modifier::DIM));
 }
 
 #[test]
-fn j_and_k_and_the_arrows_scroll_by_one_line() {
+fn j_and_k_and_the_arrows_move_the_caret_by_one_line() {
     let (_d, p) = file("app_scroll", "a.t", &lines20());
-    let at = |ev: Vec<AppEvent>| first_body(&run_events(TestPlugin::all(), &p, (24, 8), ev).0);
+    let at = |ev: Vec<AppEvent>| caret_body(&run_events(TestPlugin::all(), &p, (24, 8), ev).0);
     assert_eq!(at(vec![key('j')]), "line 01");
     assert_eq!(at(vec![key('j'), key('j'), key('j')]), "line 03");
     assert_eq!(
@@ -151,6 +166,12 @@ fn j_and_k_and_the_arrows_scroll_by_one_line() {
     assert_eq!(at(vec![key('j'), key('j'), code(KeyCode::Up)]), "line 01");
     // At the top, `k` stays at the top.
     assert_eq!(at(vec![key('k'), key('k')]), "line 00");
+    // The window stays while the caret is inside it (5 rows) and follows it past the last row.
+    let top =
+        |n: usize| first_body(&run_events(TestPlugin::all(), &p, (24, 8), vec![key('j'); n]).0);
+    assert_eq!(top(4), "line 00");
+    assert_eq!(top(5), "line 01");
+    assert_eq!(top(9), "line 05");
 }
 
 #[test]
@@ -196,7 +217,7 @@ fn q_ends_the_loop_and_later_keys_are_not_read() {
         vec![key('j'), key('q'), key('j'), key('j')],
     );
     assert_eq!(left, 2, "the keys after q stay unread");
-    assert_eq!(first_body(&term), "line 01");
+    assert_eq!(caret_body(&term), "line 01");
 }
 
 #[test]
@@ -223,7 +244,7 @@ fn a_modified_q_does_not_end_the_loop_and_does_not_scroll() {
         vec![alt_q, ctrl_j, key('j')],
     );
     assert_eq!(left, 0);
-    assert_eq!(first_body(&term), "line 01");
+    assert_eq!(caret_body(&term), "line 01");
 }
 
 #[test]
@@ -237,9 +258,9 @@ fn the_loop_ends_when_the_events_end() {
 fn an_owned_string_scrolls_the_same_way() {
     let (_d, p) = file("app_owned", "a.o", &lines20());
     let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j'), key('j')]);
+    assert_eq!(caret_body(&term), "line 02");
     let r = inner(&term);
-    assert_eq!(r[0], "line 02");
-    assert_eq!(r[4], "line 06");
+    assert_eq!(r[0], "line 00");
     let many: Vec<AppEvent> = (0..40).map(|_| key('j')).collect();
     let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), many);
     assert_eq!(first_body(&term), "line 15");
@@ -253,6 +274,10 @@ fn styled_lines_keep_their_style_and_scroll() {
     assert_eq!(buf[(1, 1)].fg, RColor::Red);
     assert_eq!(buf[(1, 2)].fg, RColor::Reset);
     let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j')]);
+    assert_eq!(caret_body(&term), "line 01");
+    assert_eq!(term.backend().buffer()[(1, 1)].fg, RColor::Red);
+    // Past the window the first row is another line, and not the red one.
+    let (term, _) = run_events(TestPlugin::all(), &p, (24, 8), vec![key('j'); 5]);
     assert_eq!(first_body(&term), "line 01");
     assert_eq!(term.backend().buffer()[(1, 1)].fg, RColor::Reset);
     let many: Vec<AppEvent> = (0..40).map(|_| key('j')).collect();
@@ -564,20 +589,24 @@ fn run_shown(
 }
 
 #[test]
-fn a_text_that_does_not_wrap_scrolls_sideways_by_four_and_to_both_ends() {
+fn a_text_that_does_not_wrap_follows_the_caret_sideways_and_to_both_ends() {
     let (_d, p) = file("app_hscroll", "a.t", "abcdefghijklmnopqrstuvwxyz\nshort\n");
     let at = |ev: Vec<AppEvent>| first_body(&run_shown(&p, (12, 6), ev, no_wrap()).0);
     assert_eq!(at(vec![]), "abcdefghij");
-    assert_eq!(at(vec![key('l')]), "efghijklmn");
-    assert_eq!(at(vec![key('l'), key('l')]), "ijklmnopqr");
-    assert_eq!(at(vec![code(KeyCode::Right)]), "efghijklmn");
+    // `l` moves the caret along the line; the text scrolls only once the caret is past the edge
+    // (the window is 10 cells), by the least that shows it.
+    assert_eq!(at(vec![key('l')]), "abcdefghij");
+    assert_eq!(at(vec![code(KeyCode::Right)]), "abcdefghij");
+    assert_eq!(at(vec![key('l'); 9]), "abcdefghij");
+    assert_eq!(at(vec![key('l'); 10]), "bcdefghijk");
+    assert_eq!(at(vec![key('l'); 12]), "defghijklm");
     assert_eq!(at(vec![key('l'), key('h')]), "abcdefghij");
     assert_eq!(at(vec![key('h')]), "abcdefghij");
-    // The ends: `$` stops at the widest line's overhang (26 - 10), `0` is the start.
+    // The ends: `$` puts the caret on the last character, `0` on the first.
     assert_eq!(at(vec![key('$')]), "qrstuvwxyz");
     assert_eq!(at(vec![key('$'), key('0')]), "abcdefghij");
-    // Past the end is held at the end.
-    let many = vec![key('l'); 20];
+    // Past the end is held at the last character.
+    let many = vec![key('l'); 40];
     assert_eq!(at(many), "qrstuvwxyz");
 }
 

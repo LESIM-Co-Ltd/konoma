@@ -10811,6 +10811,156 @@ fn e2e_table_copy_full_path_value() {
     assert_eq!(s.app.pending_leader, None);
 }
 
+// ---- Path copy (y→n/r/f/p/@): the clipboard's content and the notice, per preview kind ----
+
+/// What `y` + `sub` must leave on the (test) clipboard, with the notice that follows.
+#[track_caller]
+fn assert_path_copy(s: &mut Sim, sub: char, want: &str) {
+    crate::test_support::clear_test_clipboard();
+    s.app.flash = None;
+    s.key('y');
+    s.key(sub);
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some(want),
+        "y{sub}: clipboard"
+    );
+    assert_eq!(
+        s.app.flash.as_deref(),
+        Some(
+            format!(
+                "{}{want}",
+                konoma_host_core::help_msg::CoreMsg::CopiedPrefix.tr(s.app.lang)
+            )
+            .as_str()
+        ),
+        "y{sub}: notice"
+    );
+}
+
+/// All five kinds on a text file under a sub directory, with a full-width name, from the preview
+/// and from the tree (both copy the same file).
+#[test]
+fn e2e_path_copy_text_all_five_kinds_preview_and_tree() {
+    let dir = sandbox("path_copy_text");
+    let root = canon(&dir);
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("メモ.txt"), "hello\n").unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let file = root.join("sub").join("メモ.txt");
+    let mut s = Sim::new(&root);
+    s.keys("l"); // open sub/ in the tree (enter would also do); then select the file
+    s.select("メモ.txt");
+    let cases = [
+        ('n', "メモ.txt".to_string()),
+        ('r', format!("{top}/sub/メモ.txt")),
+        ('f', file.display().to_string()),
+        ('p', root.join("sub").display().to_string()),
+        ('@', "@sub/メモ.txt".to_string()),
+    ];
+    for (sub, want) in &cases {
+        assert_path_copy(&mut s, *sub, want); // from the tree
+    }
+    s.enter();
+    s.see("hello");
+    for (sub, want) in &cases {
+        assert_path_copy(&mut s, *sub, want); // from the preview
+    }
+}
+
+/// A file directly under the root: Relative keeps the root's name, AtRef does not.
+#[test]
+fn e2e_path_copy_text_root_level_relative_vs_at_ref() {
+    let dir = sandbox("path_copy_root_level");
+    let root = canon(&dir);
+    std::fs::write(root.join("a.txt"), "x\n").unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut s = Sim::new(&root);
+    s.select("a.txt");
+    s.enter();
+    assert_path_copy(&mut s, 'r', &format!("{top}/a.txt"));
+    assert_path_copy(&mut s, '@', "@a.txt");
+    assert_path_copy(&mut s, 'p', &root.display().to_string());
+}
+
+/// A directory selected in the tree copies like a file: its own name, path and parent.
+#[test]
+fn e2e_path_copy_directory_in_tree() {
+    let dir = sandbox("path_copy_dir");
+    let root = canon(&dir);
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut s = Sim::new(&root);
+    s.select("docs");
+    assert_path_copy(&mut s, 'n', "docs");
+    assert_path_copy(&mut s, 'r', &format!("{top}/docs"));
+    assert_path_copy(&mut s, '@', "@docs");
+    assert_path_copy(&mut s, 'p', &root.display().to_string());
+    assert_path_copy(&mut s, 'f', &root.join("docs").display().to_string());
+}
+
+/// The document, image, table and canvas previews copy the previewed file's path too (at least
+/// one kind each; Full and AtRef here so both the absolute and the relative form are covered).
+#[test]
+fn e2e_path_copy_from_document_image_table_canvas_previews() {
+    let dir = sandbox("path_copy_kinds");
+    let root = canon(&dir);
+    std::fs::write(root.join("doc.md"), "# Title\n\ntext\n").unwrap();
+    write_solid_png(&root.join("pic.png"), 8, 8, [10, 200, 10]);
+    std::fs::write(root.join("data.csv"), "a,b\n1,2\n").unwrap();
+    std::fs::write(root.join("g.mmd"), "flowchart TD\nA-->B\n").unwrap();
+    for (name, kind) in [
+        ("doc.md", "document"),
+        ("pic.png", "image"),
+        ("data.csv", "table"),
+        ("g.mmd", "canvas"),
+    ] {
+        let mut s = Sim::new(&root);
+        s.select(name);
+        s.enter();
+        assert!(s.app.tab.preview_path.is_some(), "{kind}: previewing");
+        assert_path_copy(&mut s, 'f', &root.join(name).display().to_string());
+        if kind == "table" {
+            // The table's `y` menu is the cell/row/column one (`f` = the file's full path).
+            continue;
+        }
+        assert_path_copy(&mut s, '@', &format!("@{name}"));
+        assert_path_copy(&mut s, 'n', name);
+    }
+}
+
+/// The table's cell / row / column copy reaches the clipboard, with an empty cell and a ragged
+/// row (the row stops at its last cell), for a CSV (comma) and a TSV (tab).
+#[test]
+fn e2e_table_copy_clipboard_content_csv_and_tsv() {
+    let dir = sandbox("table_copy_clip");
+    let root = canon(&dir);
+    std::fs::write(root.join("d.csv"), "n,q,z\napple,,x\nkiwi,7\n").unwrap();
+    std::fs::write(root.join("d.tsv"), "n\tq\napple\t3\n").unwrap();
+    let mut s = Sim::new(&root);
+    s.select("d.csv");
+    s.enter();
+    s.see("TABLE");
+    let copied = |s: &mut Sim, sub: char| {
+        crate::test_support::clear_test_clipboard();
+        s.key('y');
+        s.key(sub);
+        crate::test_support::get_test_clipboard()
+    };
+    assert_eq!(copied(&mut s, 'c').as_deref(), Some("apple"));
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("apple,,x"));
+    assert_eq!(copied(&mut s, 'C').as_deref(), Some("n\napple\nkiwi"));
+    s.keys("jl"); // kiwi,7 (a ragged row)
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("kiwi,7"));
+    s.keys("l"); // the third column of the ragged row: no cell
+    assert_eq!(copied(&mut s, 'c').as_deref(), Some(""));
+    s.esc();
+    s.select("d.tsv");
+    s.enter();
+    s.see("TABLE");
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("apple\t3"));
+}
+
 // ---- Bookmarking from the preview (m / ') ----
 
 #[test]
@@ -21053,9 +21203,16 @@ mod help_footer_snapshot;
 #[cfg(test)]
 mod render_snapshot;
 
+mod canvas_keys_parity;
+mod copy_parity;
 mod document_parity;
 mod image_gif_parity;
 mod image_pages_parity;
 mod image_parity;
+mod launch_parity;
+mod options_parity;
+mod plugin_act_parity;
+mod preview_plan_parity;
+mod space_menu_parity;
 mod table_parity;
 mod text_parity;

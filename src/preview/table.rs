@@ -111,6 +111,24 @@ impl konoma_widgets::table::TableSource for Grid<'_> {
 #[cfg(test)]
 pub use konoma_widgets::table::{cell_address, column_letters};
 
+impl konoma_host_core::copy::CopyGrid for Grid<'_> {
+    fn nrows(&self) -> usize {
+        Grid::nrows(self)
+    }
+    fn ncols(&self) -> usize {
+        Grid::ncols(self)
+    }
+    fn header(&self, col: usize) -> Cow<'_, str> {
+        Grid::header(self, col)
+    }
+    fn row_len(&self, row: usize) -> usize {
+        Grid::row_len(self, row)
+    }
+    fn cell(&self, row: usize, col: usize) -> Cow<'_, str> {
+        Grid::cell(self, row, col)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

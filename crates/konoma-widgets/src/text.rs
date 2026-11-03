@@ -15,6 +15,17 @@ pub use konoma_code_core::expand_tabs;
 use std::io::Read;
 use std::path::Path;
 
+/// The rows `text` takes when wrapped at `width` cells (ratatui's word wrap, leading whitespace
+/// kept): the one count the host's plain text and the standalone app's failed page clamp their
+/// vertical scroll against. It is the count of the text alone: `width` and the returned rows are
+/// those inside any frame (a `Paragraph` that carries a block adds the block's border rows to its
+/// own count, so a caller counting on one clamps two rows too far).
+pub fn wrapped_row_count<'a>(text: impl Into<ratatui::text::Text<'a>>, width: u16) -> usize {
+    ratatui::widgets::Paragraph::new(text)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .line_count(width)
+}
+
 /// Number of bytes read at once for detection and incremental reading.
 const SNIFF_BYTES: usize = 8 * 1024;
 /// Maximum bytes read for preview (to guard against huge files). `pub(crate)` so
@@ -168,6 +179,18 @@ mod tests {
     #[test]
     fn is_probably_text_bytes_nul_byte_is_binary() {
         assert!(!is_probably_text_bytes(b"hello\0world"));
+    }
+
+    #[test]
+    fn wrapped_row_count_is_the_text_alone() {
+        // 3 lines; the middle one wraps to 3 rows at width 10.
+        let body = "short\naaaa bbbb cccc dddd eeee\nend";
+        assert_eq!(wrapped_row_count(body, 10), 5);
+        // As lines, the same.
+        let lines: Vec<ratatui::text::Line> = body.lines().map(ratatui::text::Line::raw).collect();
+        assert_eq!(wrapped_row_count(lines, 10), 5);
+        // Wide enough: the logical lines.
+        assert_eq!(wrapped_row_count(body, 80), 3);
     }
 
     #[test]

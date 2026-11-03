@@ -124,20 +124,18 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     out
 }
 
+/// The `verb` declared by the plugin `id` (`None` = it declares none, or is unknown).
+pub(crate) fn declared_verb_of(disabled: &[String], id: &str, verb: Verb) -> Option<VerbDecl> {
+    with_registry(disabled, |r| {
+        r.manifest(id)
+            .and_then(|m| m.verbs.iter().find(|v| v.verb == verb).cloned())
+    })
+}
+
 /// The `open` verb of the plugin that shows `path`: the chain `o` walks. A file no plugin takes
 /// (plain text, an unknown type) or a plugin that declares none opens with the OS default.
-pub(crate) fn open_verb(
-    rules: &[crate::config::Rule],
-    disabled: &[String],
-    path: &std::path::Path,
-) -> VerbDecl {
-    plugin_id_of(rules, disabled, path)
-        .and_then(|id| {
-            with_registry(disabled, |r| {
-                r.manifest(&id)
-                    .and_then(|m| m.verbs.iter().find(|v| v.verb == Verb::Open).cloned())
-            })
-        })
+pub(crate) fn open_verb_of(disabled: &[String], id: Option<&str>) -> VerbDecl {
+    id.and_then(|id| declared_verb_of(disabled, id, Verb::Open))
         .unwrap_or_else(|| {
             VerbDecl::new(Verb::Open)
                 .launcher(Launcher::OsDefault)

@@ -23,6 +23,18 @@ unicode-width.workspace = true
 infer.workspace = true
 # Whether a formula color shows (the same parser the rasterizer uses).
 svgtypes.workspace = true
+# The system clipboard (`clipboard`). `wayland-data-control` is enabled in the workspace entry.
+arboard = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+# Turns the `clipboard` feature on for this crate's own tests, so `cargo nextest run -p konoma-host-core` builds it.
+konoma-host-core = { path = ".", features = ["clipboard"] }
+
+[features]
+# The clipboard module (write, read, and the Linux holder thread).
+clipboard = ["dep:arboard", "dep:anyhow"]
+# Keeps the `cfg(test)` seams active when another package's tests call into this crate (a
+# `cfg(test)` is only true while this crate's own tests build): the clipboard's in-memory stand-in.
+test-hooks = []

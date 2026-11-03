@@ -144,7 +144,8 @@ impl Drop for LongFirstFrame {
 
 /// How many declared-action presses wait for the session of a canvas at most; past it the press
 /// is refused with a message (never reordered, never dropped silently).
-pub(crate) const MAX_QUEUED_ACTS: usize = 256;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::typing::MAX_QUEUED_ACTS;
 
 /// How much `App::plugin_session_returned` does in one call: this many rounds, or this long.
 /// The rest waits for the next turn of the run loop.
@@ -235,32 +236,44 @@ pub(crate) struct ShowFlow {
     /// taken out of reach, and the `Open` in flight brings the new one. What the user presses
     /// meanwhile (`R`, a declared action) waits for it instead of being ignored.
     pub reopening: bool,
+    /// The plugin a `Reopen` handed the file to (its manifest id), while its session is the
+    /// one the show holds. `None`: the session is the show's own plugin's. **Whose declared
+    /// actions are offered and run is the session's plugin's** ([`PluginShow::acting`]): the
+    /// keys, the footer, the help, the `Space` menu, `[keys.<id>]` and `read_only` all follow it.
+    pub reopened_as: Option<String>,
     /// Declared actions pressed while a job held the session of a canvas, in the order pressed;
     /// each runs, one job at a time, when the session returns. Never dropped, never reordered --
     /// and never reordered against the queued keys either ([`QueuedAct::after_keys`]).
     pub acts: Vec<QueuedAct>,
 }
 
-/// A declared action waiting for the session, with its place among the queued keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QueuedAct {
-    /// The action id.
-    pub action: String,
-    /// How many queued keys were pressed before this action and are still waiting: they go first
-    /// (the keys and the actions are one line, in the order pressed).
-    pub after_keys: usize,
-}
+impl PluginShow {
+    /// The id of the plugin whose session the show holds: the destination after a `Reopen`, else
+    /// the show's own. The declared actions are looked up by this id, never by [`PluginShow::id`]
+    /// (which names the plugin the file was given to and the jobs and answers of the show).
+    pub(crate) fn acting(&self) -> &str {
+        self.flow.reopened_as.as_deref().unwrap_or(&self.id)
+    }
 
-impl QueuedAct {
-    /// An action with no key queued ahead of it.
-    #[cfg(test)]
-    pub(crate) fn now(action: &str) -> QueuedAct {
-        QueuedAct {
-            action: action.to_string(),
-            after_keys: 0,
-        }
+    /// A new session arrives that belongs to `owner` (the plugin a `Reopen` handed the file to;
+    /// `None`: the show's own plugin). What waited for it goes to it only if its plugin declared
+    /// the action: the press was made for the keys of the plugin that was on screen, and a
+    /// session is never sent an action it does not know.
+    pub(crate) fn take_session_of(
+        &mut self,
+        owner: Option<String>,
+        keys: &crate::plugins::PluginKeys,
+    ) {
+        self.flow.reopened_as = owner;
+        let declared = keys.acts_of(self.acting());
+        konoma_plugin::host::typing::retain_declared(&mut self.flow.acts, |action| {
+            declared.iter().any(|b| b.act.act() == action)
+        });
     }
 }
+
+/// A declared action waiting for the session, with its place among the queued keys (shared).
+pub(crate) use konoma_plugin::host::typing::QueuedAct;
 
 /// The view itself, or the failure that says the plugin returned a display type it did not declare
 /// in `Manifest::shows` (so the host has no screen of that type for it): the message names the
@@ -403,7 +416,14 @@ pub(crate) struct GroupSlot {
 
 /// One job with everything it needs, owned (it moves to a thread).
 pub(crate) struct PluginWork {
+    /// The plugin the file was given to: the show's, the one the result comes back under (the
+    /// generation check and who owns the screen go by it).
     pub(super) id: String,
+    /// The plugin whose **session** the job runs on: `id`, except after a `Reopen`, where it is the
+    /// destination. Everything that belongs to the plugin the session is (its settings, read scope,
+    /// declared `shows`, trust, external programs) is decided from this one, set once in
+    /// [`App::plugin_work`]; nothing of the plugin the file was given to carries over.
+    pub(super) session_id: String,
     pub(super) gen: u64,
     pub(super) job: PluginJob,
     pub(super) req: ViewReq,
@@ -591,6 +611,8 @@ pub struct PluginResult {
     pub(super) enabled: Vec<(String, bool)>,
     /// The text of a text view, written to a temp file on the worker (`write_made_text`).
     pub(super) made_text: Option<std::io::Result<MadeText>>,
+    /// The plugin a `Reopen` in this job handed the file to (the session returned is its).
+    pub(super) reopened_as: Option<String>,
     /// The keys of a canvas asked for a redraw **and** said something (`outcome` is then the
     /// message): the message is the outcome, the redraw is carried here, so that a result that is
     /// stale and drops its view still has the view drawn again.
@@ -642,6 +664,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            reopened_as: None,
             redraw: false,
         }
     }
@@ -673,6 +696,7 @@ impl PluginResult {
             group: None,
             enabled: Vec::new(),
             made_text: None,
+            reopened_as: None,
             redraw: false,
         }
     }
@@ -767,6 +791,7 @@ impl PluginWork {
     fn run_inner(self, cancel: Cancel) -> PluginResult {
         let PluginWork {
             id,
+            session_id,
             gen,
             job,
             req,
@@ -786,7 +811,7 @@ impl PluginWork {
             canvas_known,
             read_scope,
         } = self;
-        let enabled_of = |session: &dyn Session| -> Vec<(String, bool)> {
+        let enabled_of = |session: &dyn Session, act_ids: &[String]| -> Vec<(String, bool)> {
             act_ids
                 .iter()
                 .map(|id| (id.clone(), session.enabled(id)))
@@ -795,9 +820,10 @@ impl PluginWork {
         let term = TermCaps::new().pixels(pixels).colors(colors);
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
-        let profile = crate::plugins::profile_of(&id);
+        let profile = crate::plugins::profile_of(&session_id);
         let trust_own_svg = profile.own_svg;
-        let (declared_shows, unscreened) = (crate::plugins::shows_of(&id), profile.unscreened);
+        let (declared_shows, unscreened) =
+            (crate::plugins::shows_of(&session_id), profile.unscreened);
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
             let cx = ViewCx::new(&settings, &lang)
                 .with_cancel(cancel.clone())
@@ -807,9 +833,13 @@ impl PluginWork {
             let mut picture = Picture::None;
             let mut document = None;
             let mut made_text = None;
+            // After a `Reopen` the session is the destination's: what works is asked of it for the
+            // actions it declared, not the ones of the plugin the file was given to.
+            let mut reopened_as = None;
+            let mut session_acts: Option<Vec<String>> = None;
             let viewed = session
                 .view(&req, &cx)
-                .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, &req, v));
+                .and_then(|v| undeclared_view(&session_id, &declared_shows, unscreened, &req, v));
             let (view, failure) = match viewed {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(
@@ -833,6 +863,11 @@ impl PluginWork {
                     let target = document_job.as_ref().and_then(|j| j.reopen.as_ref());
                     match reopen_document(target, r, &lang, &cancel, term) {
                         Ok((opened, doc)) => {
+                            let m = target.map(|t| t.plugin.manifest());
+                            session_acts = m
+                                .as_ref()
+                                .map(|m| m.actions.iter().map(|a| a.id.clone()).collect());
+                            reopened_as = m.map(|m| m.id);
                             session = opened;
                             document = Some(doc);
                             (None, None)
@@ -862,7 +897,11 @@ impl PluginWork {
                         .cancelled(&cancelled)
                         .trust_own_svg(trust_own_svg);
                         Box::new(super::canvas_images::decode_canvas(
-                            &id, &c, known, &path, &policy,
+                            &session_id,
+                            &c,
+                            known,
+                            &path,
+                            &policy,
                         ))
                     }));
                     (Some(View::Canvas(c)), None)
@@ -874,9 +913,9 @@ impl PluginWork {
                         ja: "プラグインが画像を返しませんでした",
                     ))),
                 ),
-                Ok(mut v) => match gate_text_file(&mut v, &id, &path, &read_scope) {
+                Ok(mut v) => match gate_text_file(&mut v, &session_id, &path, &read_scope) {
                     Ok(()) => {
-                        made_text = write_made_text(&mut v, &id);
+                        made_text = write_made_text(&mut v, &session_id);
                         (Some(v), None)
                     }
                     Err(f) => (None, Some(f)),
@@ -885,7 +924,10 @@ impl PluginWork {
             };
             // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
             let layout = session.layout();
-            let enabled = enabled_of(session.as_ref());
+            let enabled = enabled_of(
+                session.as_ref(),
+                session_acts.as_deref().unwrap_or(&act_ids),
+            );
             PluginResult {
                 gen,
                 id: id.clone(),
@@ -901,6 +943,7 @@ impl PluginWork {
                 group: None,
                 enabled,
                 made_text,
+                reopened_as,
                 redraw: false,
             }
         };
@@ -939,7 +982,7 @@ impl PluginWork {
                 };
                 // Asked **after** the action: it may have changed what works (`w` toggles, a
                 // reload makes a key valid).
-                let enabled = enabled_of(session.as_ref());
+                let enabled = enabled_of(session.as_ref(), &act_ids);
                 PluginResult {
                     gen,
                     id,
@@ -955,6 +998,7 @@ impl PluginWork {
                     group: None,
                     enabled,
                     made_text: None,
+                    reopened_as: None,
                     redraw: false,
                 }
             }
@@ -994,7 +1038,7 @@ impl PluginWork {
                 } else {
                     flash.map_or(Outcome::Unhandled, Outcome::Flash)
                 };
-                let enabled = enabled_of(session.as_ref());
+                let enabled = enabled_of(session.as_ref(), &act_ids);
                 PluginResult {
                     gen,
                     id,
@@ -1010,6 +1054,7 @@ impl PluginWork {
                     group: None,
                     enabled,
                     made_text: None,
+                    reopened_as: None,
                     redraw: false,
                 }
             }
@@ -1299,14 +1344,17 @@ impl App {
             return;
         };
         // The picture plugins (a mermaid file among them) are started with the media load
-        // (`start_media_load`), which comes first and owns their show; this is not the place to
-        // touch it.
-        if self
+        // (`start_media_load`), which owns their show: a file to read again goes through it too,
+        // the way a changed file does (zoom, centre and page kept; the decode stays on the worker).
+        if let Some(kind) = self
             .tab
             .preview_kind
-            .as_ref()
-            .is_some_and(PreviewKind::is_media_plugin)
+            .clone()
+            .filter(PreviewKind::is_media_plugin)
         {
+            if keep_previous && self.kind_loads_media(&kind) {
+                self.restart_media_load_keeping_view(&kind, &path);
+            }
             return;
         }
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
@@ -1373,6 +1421,25 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_plugin_colors_for_test(&mut self, colors: ColorDepth) {
         self.plugin_colors = colors;
+    }
+
+    /// Test-only: hand the show a new session of `owner` (the plugin a `Reopen` handed the file
+    /// to) while `waiting` actions wait for it; returns the ones that were kept, and the id of the
+    /// plugin whose actions the show then offers.
+    #[cfg(test)]
+    pub(crate) fn hand_session_over_for_test(
+        &mut self,
+        waiting: &[&str],
+        owner: Option<String>,
+    ) -> (String, Vec<String>, String) {
+        let show = self.plugin.as_mut().expect("a plugin show");
+        show.flow.acts = waiting.iter().copied().map(QueuedAct::now).collect();
+        show.take_session_of(owner, &self.plugin_keys);
+        (
+            show.id.clone(),
+            show.flow.acts.iter().map(|q| q.action.clone()).collect(),
+            show.acting().to_string(),
+        )
     }
 
     /// The size of one terminal cell in pixels, for the plugins that draw pictures; `None` when
@@ -1477,36 +1544,48 @@ impl App {
         job: PluginJob,
         req: ViewReq,
     ) -> PluginWork {
-        let external = match id.as_str() {
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        // Whose session the job runs on, decided once. An `Open` brings a session of the plugin
+        // the file was given to (it may reopen it again); every other job runs on the show's
+        // current session, which after a `Reopen` is the destination's. What belongs to the
+        // plugin the session is -- settings, read scope, shows, trust, the actions it declares,
+        // external programs -- is read for this id, never for the one the file was given to.
+        let session_id = match (&job, self.plugin.as_ref()) {
+            (PluginJob::Open { .. }, _) => id.clone(),
+            (_, Some(p)) if p.id == id => p.acting().to_string(),
+            _ => id.clone(),
+        };
+        let external = match session_id.as_str() {
             konoma_media::PDF_ID => self.cfg.external.pdf,
             konoma_media::VIDEO_ID => self.cfg.external.video,
             _ => false,
         };
-        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
-        let manifest = registry.manifest(&id);
-        let group = manifest.and_then(|m| m.work_group.clone());
-        let act_ids = manifest
+        // The work group is the file's plugin's (it is the one whose job runs).
+        let group = registry.manifest(&id).and_then(|m| m.work_group.clone());
+        let act_ids = registry
+            .manifest(&session_id)
             .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
             .unwrap_or_default();
         // Standard plugins read freely (no scope IO). A user plugin's scope is memoised on the
         // app, so a key press or a timed redraw does not walk the disk again.
-        let read_scope = if crate::plugins::read_scope::is_host_owned(&registry, &id) {
+        let read_scope = if crate::plugins::read_scope::is_host_owned(&registry, &session_id) {
             konoma_plugin::ReadScope::unrestricted()
         } else {
-            self.scope_memo_for(&id, &path, |m| m.scope.clone())
+            self.scope_memo_for(&session_id, &path, |m| m.scope.clone())
         };
         let scope_fp = read_scope.fingerprint();
         PluginWork {
             group,
             act_ids,
             read_scope,
-            settings: crate::plugins::effective_settings(&self.cfg, &id),
+            settings: crate::plugins::effective_settings(&self.cfg, &session_id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
             colors: self.plugin_colors,
             expects_picture: crate::preview::PreviewKind::is_media_plugin_id(&id),
             document: self.document_job(&id),
             id,
+            session_id,
             path,
             external,
             default_raster_px: self.cfg.ui.svg_max_px,
@@ -1986,17 +2065,12 @@ impl App {
         }
     }
 
-    /// Run the oldest queued action (the session is free and no queued key goes before it:
-    /// `flush_plugin_keys` decides). One at a time: each answer may change what works, and the
-    /// next press then goes in its turn.
-    pub(super) fn send_first_queued_act(&mut self) {
+    /// Run a queued action (the oldest: `typing::next_job` decided, the session is free). One
+    /// at a time: each answer may change what works, and the next press then goes in its turn.
+    pub(super) fn send_queued_act(&mut self, action: String) {
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
-        if show.flow.acts.is_empty() {
-            return;
-        }
-        let action = show.flow.acts.remove(0).action;
         let Some(session) = show.session.take() else {
             return;
         };
@@ -2012,9 +2086,11 @@ impl App {
     /// doing" goes with it -- a later answer to something else (a file reloaded) must not be taken
     /// for the answer to the action and take the typing back.
     pub(super) fn discard_stale_answer(&mut self, gen: u64) {
-        if self.plugin_user_act && gen >= self.plugin_user_act_gen {
-            self.plugin_user_act = false;
-        }
+        konoma_plugin::host::typing::discard_stale(
+            &mut self.plugin_user_act,
+            self.plugin_user_act_gen,
+            gen,
+        );
     }
 
     /// Whether the show has its session at hand and nothing keeps a job from being sent now: the
@@ -2140,24 +2216,14 @@ impl App {
                     || !self.plugin_session_is_free()))
         {
             let queued_keys = self.plugin_key_queue.len();
-            let full = self
-                .plugin
-                .as_ref()
-                .is_some_and(|p| p.flow.acts.len() >= MAX_QUEUED_ACTS);
-            if full {
-                self.flash =
-                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::PluginInputFull).to_string());
+            let Some(show) = self.plugin.as_mut() else {
                 return false;
-            }
-            if let Some(show) = self.plugin.as_mut() {
-                show.flow.acts.push(QueuedAct {
-                    action: action.to_string(),
-                    after_keys: queued_keys,
-                });
-            }
+            };
+            let admitted =
+                konoma_plugin::host::typing::admit_act(&mut show.flow.acts, queued_keys, action);
             // The session may be at hand (the presses before this one were waiting for a group).
-            self.flush_plugin_keys();
-            return true;
+            self.after_admit(admitted);
+            return admitted.queued;
         }
         let Some(show) = self.plugin.as_mut() else {
             return false;
@@ -2257,7 +2323,12 @@ impl App {
         // freed off the UI thread.
         let session_back = res.session.is_some();
         // The `Open` of a read again has answered (a session, or a failure): nothing waits for it.
-        show.flow.reopening = false;
+        let was_reopening = std::mem::replace(&mut show.flow.reopening, false);
+        // Whose session this is: the destination of a `Reopen` the job made, else (when the job
+        // was an `Open`) the plugin's own again. An action's or a key's result keeps what was.
+        if res.reopened_as.is_some() || was_reopening {
+            show.take_session_of(res.reopened_as.clone(), &self.plugin_keys);
+        }
         if let Some(old) = std::mem::replace(&mut show.session, res.session) {
             super::table_actions::discard_in_background(old);
         }
@@ -2420,13 +2491,11 @@ impl App {
     /// carries a view takes the mark; one that does not (the action's own result) keeps it only
     /// when it asked for a redraw or a reload, whose answer follows.
     pub(super) fn settle_user_act(&mut self, carried_view: bool, outcome: Option<Outcome>) -> bool {
-        if carried_view {
-            return std::mem::take(&mut self.plugin_user_act);
-        }
-        if !matches!(outcome, Some(Outcome::Redraw | Outcome::Reload)) {
-            self.plugin_user_act = false;
-        }
-        false
+        konoma_plugin::host::typing::settle_user_act(
+            &mut self.plugin_user_act,
+            carried_view,
+            matches!(outcome, Some(Outcome::Redraw | Outcome::Reload)),
+        )
     }
 
     /// The id of the plugin whose view is on screen, if any.

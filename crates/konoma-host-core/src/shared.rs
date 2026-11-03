@@ -202,6 +202,8 @@ pub struct SharedUi {
     pub svg_max_px: u32,
     /// Wrapping in text previews and documents (konoma's `ui.wrap`): `false` scrolls sideways.
     pub wrap: bool,
+    /// How a path is written in a title: "relative" | "home" | "full" (konoma's `ui.path_style`).
+    pub path_style: String,
     /// Icon glyphs in a document (konoma's `ui.icons`).
     pub icons: bool,
     /// The tab stop of code blocks in a document (konoma's `ui.tab_width`).
@@ -232,6 +234,7 @@ impl Default for SharedUi {
             keys: "vim".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
             wrap: true,
+            path_style: "relative".into(),
             icons: true,
             tab_width: 4,
             theme: SharedTheme::default(),

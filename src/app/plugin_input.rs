@@ -35,29 +35,17 @@
 
 use std::time::{Duration, Instant};
 
-use konoma_plugin::key::{KeyCode as PKey, KeyMods};
-use konoma_plugin::Key;
+use konoma_plugin::host::typing::{self, Admitted, NextJob, Notice};
 
 use super::*;
 use crate::i18n::{tr, Msg};
 
-/// The shortest time between two timer redraws. A plugin may ask for less (even zero); the host
-/// draws at most about 30 frames per second.
-pub const MIN_REDRAW_AFTER: Duration = Duration::from_millis(33);
+// The redraw timer's bounds are the shared ones (`konoma_plugin::host::typing`).
+pub use typing::{MAX_REDRAW_AFTER, MIN_REDRAW_AFTER};
 
-/// The longest time a plugin can ask to wait between two redraws; a longer (or overflowing) one is
-/// this. Keeps `Instant + Duration` from overflowing on a value a plugin chose.
-pub const MAX_REDRAW_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// How many keys wait for a session that a job holds, at most.
-pub const MAX_QUEUED_KEYS: usize = 4096;
-
-/// The longest paste handed to a plugin, in bytes; a longer one is cut (at a character boundary).
-pub const MAX_PASTE_BYTES: usize = 1 << 20;
-
-/// The most bytes of pasted text that wait in the queue together (while a job holds the session):
-/// the sum over the pastes, besides the cut of each one.
-pub const MAX_QUEUED_PASTE_BYTES: usize = 4 << 20;
+// The bounds of the queue are the shared ones (`konoma_plugin::host::typing`).
+#[cfg(test)]
+pub use typing::{MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_QUEUED_PASTE_BYTES};
 
 /// When a plugin that asked for `d` is asked again: `d` kept within the bounds, from now.
 fn redraw_deadline(d: Duration) -> Instant {
@@ -71,54 +59,19 @@ fn redraw_deadline(d: Duration) -> Instant {
 /// the like are still picked up on time).
 const IDLE_WAIT: Duration = Duration::from_millis(100);
 
-/// A terminal key as the plugin receives it. `None` for the keys a plugin has no name for (the
-/// media keys, `Insert`, the lock keys); those are ignored while the plugin takes the typing.
-pub(crate) fn plugin_key_of(key: &crossterm::event::KeyEvent) -> Option<Key> {
-    use crossterm::event::{KeyCode as C, KeyModifiers as M};
-    let code = match key.code {
-        C::Char(c) => PKey::Char(c),
-        C::Enter => PKey::Enter,
-        C::Backspace => PKey::Backspace,
-        C::Delete => PKey::Delete,
-        C::Tab => PKey::Tab,
-        C::BackTab => PKey::BackTab,
-        C::Left => PKey::Left,
-        C::Right => PKey::Right,
-        C::Up => PKey::Up,
-        C::Down => PKey::Down,
-        C::Home => PKey::Home,
-        C::End => PKey::End,
-        C::PageUp => PKey::PageUp,
-        C::PageDown => PKey::PageDown,
-        C::Esc => PKey::Esc,
-        C::F(n) => PKey::F(n),
-        _ => return None,
-    };
-    let mut mods = KeyMods::NONE;
-    if key.modifiers.contains(M::CONTROL) {
-        mods |= KeyMods::CTRL;
-    }
-    if key.modifiers.contains(M::ALT) {
-        mods |= KeyMods::ALT;
-    }
-    // Shift is in the character itself (`'A'`) and in the key (`BackTab`): terminals differ in
-    // whether they also report the bit, so the plugin never sees it with these two.
-    if key.modifiers.contains(M::SHIFT) && !matches!(code, PKey::Char(_) | PKey::BackTab) {
-        mods |= KeyMods::SHIFT;
-    }
-    let mut key = Key::new(code);
-    key.mods = mods;
-    Some(key)
-}
+/// A terminal key as the plugin receives it (the shared conversion).
+pub(crate) use typing::key_of as plugin_key_of;
 
 impl App {
     /// Whether the host is taking the typing for the plugin: the canvas on screen (preview mode)
     /// asked for text input and `Esc` has not left it since. This is the `UiLayer::PluginInput`
     /// condition; it sits just above the base screen, so every dialog and overlay is in front.
     pub fn is_plugin_input(&self) -> bool {
-        !self.plugin_input_left
-            && matches!(self.tab.mode, Mode::Preview)
-            && self.canvas_view().is_some_and(|c| c.text_input)
+        typing::is_capturing(
+            self.plugin_input_left,
+            matches!(self.tab.mode, Mode::Preview),
+            self.canvas_view().is_some_and(|c| c.text_input),
+        )
     }
 
     /// A key pressed while the plugin takes the typing. `Esc` leaves the state (and is told to the
@@ -131,64 +84,36 @@ impl App {
         };
         // Leaving is the host's, whatever is waiting: the latch is set even when the queue is
         // full, and the plugin is told: the last place of the queue is kept for `Esc`.
-        let esc = key.code == PKey::Esc;
-        if esc {
-            self.plugin_input_left = true;
-        }
-        if self.plugin_queue_is_full(esc) {
-            return;
-        }
-        self.plugin_key_queue.push(key);
-        self.flush_plugin_keys();
+        let admitted =
+            typing::admit_key(&mut self.plugin_key_queue, &mut self.plugin_input_left, key);
+        self.after_admit(admitted);
     }
 
     /// A paste while the plugin takes the typing: one key holding all the text, cut at
     /// [`MAX_PASTE_BYTES`] and at what is left of [`MAX_QUEUED_PASTE_BYTES`] (with a message).
-    pub fn plugin_input_paste(&mut self, mut text: String) {
+    pub fn plugin_input_paste(&mut self, text: String) {
         self.pending_leader = None;
-        if self.plugin_queue_is_full(false) {
-            return;
-        }
-        let queued: usize = self
-            .plugin_key_queue
-            .iter()
-            .map(|k| match &k.code {
-                PKey::Paste(t) => t.len(),
-                _ => 0,
-            })
-            .sum();
-        let room = MAX_QUEUED_PASTE_BYTES.saturating_sub(queued);
-        if room == 0 {
-            self.flash = Some(tr(self.lang, Msg::PluginInputFull).to_string());
-            return;
-        }
-        let limit = MAX_PASTE_BYTES.min(room);
-        if text.len() > limit {
-            let mut end = limit;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            self.flash = Some(tr(self.lang, Msg::PluginPasteCut).to_string());
-        }
-        self.plugin_key_queue.push(Key::paste(text));
-        self.flush_plugin_keys();
+        let admitted = typing::admit_paste(&mut self.plugin_key_queue, text);
+        self.after_admit(admitted);
     }
 
-    /// Whether no more input is taken for the plugin: [`MAX_QUEUED_KEYS`] wait for a session that
-    /// does not come back. The new input is refused with a message (the older is kept, in order).
-    /// The last place is for `Esc` (`esc`): the user's way out is always told to the plugin.
-    fn plugin_queue_is_full(&mut self, esc: bool) -> bool {
-        let limit = if esc {
-            MAX_QUEUED_KEYS
-        } else {
-            MAX_QUEUED_KEYS - 1
-        };
-        if self.plugin_key_queue.len() < limit {
-            return false;
+    /// Say what the shared queue said, and send what is queued.
+    pub(super) fn after_admit(&mut self, admitted: Admitted) {
+        if let Some(n) = admitted.notice {
+            self.flash = Some(self.plugin_notice(n));
         }
-        self.flash = Some(tr(self.lang, Msg::PluginInputFull).to_string());
-        true
+        if admitted.queued {
+            self.flush_plugin_keys();
+        }
+    }
+
+    /// The words of a notice of the shared queue.
+    pub(super) fn plugin_notice(&self, n: Notice) -> String {
+        let msg = match n {
+            Notice::InputFull => Msg::PluginInputFull,
+            Notice::PasteCut => Msg::PluginPasteCut,
+        };
+        tr(self.lang, msg).to_string()
     }
 
     /// Hand what waits for the session to the plugin, **in the order it was pressed**: the queued
@@ -203,29 +128,17 @@ impl App {
         if !self.plugin_session_is_free() {
             return;
         }
-        let queued = self.plugin_key_queue.len();
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
-        // How many keys were queued ahead of the oldest action. The count was made when the action
-        // was pressed; keys cleared since (the queue is forgotten with the show) cannot be waited
-        // for, hence the clamp.
-        let ahead = show.flow.acts.first().map(|a| a.after_keys.min(queued));
-        match ahead {
-            Some(0) => {
-                self.send_first_queued_act();
-            }
-            _ if queued == 0 => {}
-            _ => {
-                let n = ahead.unwrap_or(queued);
-                for a in show.flow.acts.iter_mut() {
-                    a.after_keys = a.after_keys.saturating_sub(n);
-                }
+        match typing::next_job(&mut self.plugin_key_queue, &mut show.flow.acts) {
+            None => {}
+            Some(NextJob::Act(action)) => self.send_queued_act(action),
+            Some(NextJob::Keys(keys)) => {
                 let Some(session) = show.session.take() else {
                     return;
                 };
                 let (id, path, req) = (show.id.clone(), show.path.clone(), show.req.clone());
-                let keys: Vec<Key> = self.plugin_key_queue.drain(..n).collect();
                 let work = self.plugin_work(
                     id,
                     path,
@@ -239,9 +152,11 @@ impl App {
 
     /// Forget the keys waiting, the `Esc` latch and the redraw deadline (the show is going).
     pub(super) fn forget_canvas_state(&mut self) {
-        self.plugin_key_queue.clear();
-        self.plugin_input_left = false;
-        self.plugin_user_act = false;
+        typing::forget(
+            &mut self.plugin_key_queue,
+            &mut self.plugin_input_left,
+            &mut self.plugin_user_act,
+        );
         self.canvas_redraw_at = None;
         self.canvas_more_at = None;
     }
@@ -260,9 +175,7 @@ impl App {
                 // `Esc` left the typing: a canvas that asks for it again does not take it back by
                 // itself (the plugin flapping `text_input` must not trap the user); the user does,
                 // by an action of theirs the plugin answers with such a canvas.
-                if text_input && by_user {
-                    self.plugin_input_left = false;
-                }
+                typing::retake(&mut self.plugin_input_left, text_input, by_user);
                 self.canvas_redraw_at = redraw_after.map(redraw_deadline);
             }
             // A view that is not a canvas (a message, a failure) does not clear the latch either:
@@ -398,13 +311,7 @@ impl App {
     /// Test-only: the bytes of pasted text waiting for a free session.
     #[cfg(test)]
     pub(crate) fn plugin_queued_paste_bytes_for_test(&self) -> usize {
-        self.plugin_key_queue
-            .iter()
-            .map(|k| match &k.code {
-                PKey::Paste(t) => t.len(),
-                _ => 0,
-            })
-            .sum()
+        typing::queued_paste_bytes(&self.plugin_key_queue)
     }
 
     /// Test-only: whether a view is wanted as soon as the session is at hand (the follow-up ask

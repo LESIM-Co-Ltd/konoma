@@ -24,6 +24,7 @@ pub mod gate;
 pub mod help;
 pub mod keys;
 pub mod menu;
+pub mod preview_plan;
 
 #[cfg(test)]
 mod tests;
