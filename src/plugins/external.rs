@@ -1009,8 +1009,8 @@ pub(crate) fn reap_if_due(now: Instant) -> Option<std::thread::JoinHandle<()>> {
 pub(crate) fn reap_if_due_with_for_test(
     now: Instant,
     work: impl FnOnce() + Send + 'static,
-) -> bool {
-    reap_if_due_with(now, work).is_some()
+) -> Option<std::thread::JoinHandle<()>> {
+    reap_if_due_with(now, work)
 }
 
 /// The throttle of [`reap_if_due`], with the work given: the thread `work` runs on, if it was
