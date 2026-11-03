@@ -30,6 +30,52 @@ use konoma_test_support::TermScreen;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(super) mod batch;
+
+/// `run_with` clones these before applying display or menu changes. Only immutable defaults
+/// are shared; sessions, configured keys and the run loop's mutable state remain independent.
+pub(super) fn app_default_keys() -> &'static konoma_plugin::app::AppKeys {
+    static KEYS: std::sync::OnceLock<konoma_plugin::app::AppKeys> = std::sync::OnceLock::new();
+    KEYS.get_or_init(konoma_plugin::app::AppKeys::defaults)
+}
+
+/// A media override belongs to this thread and this scope, including when an assertion panics.
+pub(super) struct MediaPluginGuard(Option<Arc<dyn Plugin>>);
+
+impl MediaPluginGuard {
+    pub(super) fn set(plugin: Arc<dyn Plugin>) -> Self {
+        Self(crate::app::media_plugin::STAND_IN.with(|p| p.replace(Some(plugin))))
+    }
+}
+
+impl Drop for MediaPluginGuard {
+    fn drop(&mut self) {
+        crate::app::media_plugin::STAND_IN.with(|p| p.replace(self.0.take()));
+    }
+}
+
+#[test]
+fn media_plugin_override_restores_its_scope_after_unwinding() {
+    use crate::app::media_plugin::STAND_IN;
+    assert!(STAND_IN.with(|p| p.borrow().is_none()));
+    let plugin: Arc<dyn Plugin> = Arc::new(Acty {
+        id: new_id(),
+        opt: Opt::new(Kind::Text),
+        log: Log::default(),
+        opens: Arc::default(),
+    });
+    {
+        let _outer = MediaPluginGuard::set(plugin.clone());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = MediaPluginGuard::set(Arc::new(konoma_media::PdfPlugin));
+            panic!("exercise scope unwinding");
+        }));
+        assert!(result.is_err());
+        assert!(STAND_IN.with(|p| Arc::ptr_eq(p.borrow().as_ref().unwrap(), &plugin)));
+    }
+    assert!(STAND_IN.with(|p| p.borrow().is_none()));
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Canvas,
@@ -50,7 +96,7 @@ pub(super) const KINDS: [Kind; 5] = [
     Kind::Image,
 ];
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Opt {
     kind: Kind,
     /// The canvas asks for the typing.
@@ -484,6 +530,23 @@ fn host_sim(root: &std::path::Path, o: &Opt) -> (Sim, Log, Arc<AtomicUsize>) {
     host_sim_sized(root, o, HOST_H)
 }
 
+#[test]
+fn shared_default_keys_are_unchanged_when_a_run_customizes_its_copy() {
+    let words = |keys: &konoma_plugin::app::AppKeys| {
+        keys.footer_hints(true)
+            .into_iter()
+            .map(|t| t.text)
+            .collect::<Vec<_>>()
+    };
+    let fresh = words(&konoma_plugin::app::AppKeys::defaults());
+    let changed = app_default_keys()
+        .clone()
+        .with_lang(konoma_host_core::lang::Lang::Jp)
+        .with_wrap(false);
+    assert_ne!(words(&changed), fresh);
+    assert_eq!(words(app_default_keys()), fresh);
+}
+
 pub(super) fn host_sim_sized(
     root: &std::path::Path,
     o: &Opt,
@@ -526,6 +589,83 @@ pub(super) fn host_sim_sized(
     (s, log, opens)
 }
 
+/// One matrix cell changes only keys. Keep the immutable file/session/registry, but compile
+/// every configuration through the same key builders as `App::new`. The independent-run test
+/// in `space_menu_parity` checks this seam against the complete startup path.
+pub(super) struct KeyedHost {
+    sim: Sim,
+    tab: crate::app::PerTab,
+    opt: Opt,
+    non_keys: toml::Table,
+    id: String,
+    log: Log,
+    opens: Arc<AtomicUsize>,
+}
+
+impl KeyedHost {
+    pub(super) fn new(root: &std::path::Path, opt: &Opt, h: u16) -> Self {
+        let (sim, log, opens) = host_sim_sized(root, opt, h);
+        let ctx = sim.app.key_context().expect("a preview context");
+        let id = sim.app.plugin_acts_in(ctx)[0].act.plugin().to_string();
+        let mut non_keys: toml::Table = config_text(opt, &id).parse().unwrap();
+        non_keys.remove("keys");
+        let mut invariant = opt.clone();
+        invariant.toml.clear();
+        Self {
+            tab: sim.app.tab.clone(),
+            sim,
+            opt: invariant,
+            non_keys,
+            id,
+            log,
+            opens,
+        }
+    }
+
+    pub(super) fn with_options<T>(&mut self, opt: &Opt, f: impl FnOnce(&mut Sim) -> T) -> T {
+        let mut invariant = opt.clone();
+        invariant.toml.clear();
+        assert!(
+            invariant == self.opt,
+            "only key overrides may change in a matrix cell"
+        );
+        let text = config_text(opt, &self.id);
+        let mut non_keys: toml::Table = text.parse().unwrap();
+        non_keys.remove("keys");
+        assert_eq!(non_keys, self.non_keys, "only the keys table may change");
+        let mut cfg: crate::config::Config = toml::from_str(&text).unwrap();
+        cfg.plugins = self.sim.app.cfg.plugins.clone();
+        let mut keys = cfg.keys.to_keymap_config();
+        self.sim.app.plugin_keys = crate::plugins::PluginKeys::build(
+            &crate::plugins::shared_registry(&cfg.plugin_disabled()),
+            &mut keys.surfaces,
+        );
+        self.sim.app.keymaps =
+            crate::keymap::KeyMap::from_config(crate::keymap::scheme_from_str(&cfg.ui.keys), &keys);
+        self.sim.app.cfg = cfg;
+        self.sim.app.tab = self.tab.clone();
+        self.sim.app.show_help = false;
+        self.sim.app.help_scroll = 0;
+        self.sim.app.pending_leader = None;
+        self.sim.app.flash = None;
+        self.sim.app.last_dispatched = None;
+        self.sim.quit = false;
+        self.sim.term.clear().unwrap();
+        self.sim.draw();
+        let result = f(&mut self.sim);
+        assert!(
+            self.log.lock().unwrap().is_empty(),
+            "menu/help keys must not mutate the session"
+        );
+        assert_eq!(
+            self.opens.load(Ordering::SeqCst),
+            1,
+            "the matrix must not reopen its fixture"
+        );
+        result
+    }
+}
+
 pub(super) fn host(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step]) -> Run {
     let (mut s, log, opens) = host_sim_sized(root, o, h);
     for st in steps {
@@ -565,7 +705,7 @@ pub(super) fn app(root: &std::path::Path, o: &Opt, h: u16, steps: &[Step], senti
 }
 
 /// The screen the app's loop draws on, shared with its event source (see [`Watched`]).
-struct SharedScreen(Arc<Mutex<TermScreen>>);
+pub(super) struct SharedScreen(pub(super) Arc<Mutex<TermScreen>>);
 
 impl ratatui::backend::Backend for SharedScreen {
     type Error = std::convert::Infallible;
@@ -642,13 +782,7 @@ impl EventSource for Watched {
 
 /// The rows of a screen the app drew (the cells as a terminal shows them).
 fn app_rows(buf: &ratatui::buffer::Buffer) -> Vec<String> {
-    let mut shown = Terminal::new(ratatui::backend::TestBackend::new(
-        buf.area.width,
-        buf.area.height,
-    ))
-    .unwrap();
-    shown.draw(|f| *f.buffer_mut() = buf.clone()).expect("draw");
-    rows_of(&shown)
+    super::table_parity::buffer_rows(buf)
 }
 
 /// [`app`], and, with `snap_after` = n, also what a run of the first n `steps` alone (no sentinel)

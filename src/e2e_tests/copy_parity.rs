@@ -11,9 +11,7 @@ use super::image_parity::{host_sim_at, open_nested, PngPlugin, WhenIdle};
 use super::table_parity::{panel_lines, presses, rows_of, APP_H, HOST_H, W};
 use super::*;
 use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
-use konoma_plugin::app::{
-    key_from_crossterm, run_with_pictures, AppCx, AppEvent, AppKeys, Display,
-};
+use konoma_plugin::app::{key_from_crossterm, run_with_pictures, AppCx, AppEvent, Display};
 use konoma_plugin::{Plugin, TermCaps};
 use konoma_test_support::TermScreen;
 use ratatui::buffer::Buffer;
@@ -141,7 +139,7 @@ pub(super) fn app_run_with(
         &mut *o.session,
         &mut events,
         &cx,
-        &AppKeys::defaults(),
+        super::plugin_act_parity::app_default_keys(),
         pics,
     )
     .unwrap();
@@ -374,6 +372,7 @@ fn the_copy_menu_the_clipboard_and_the_notice_agree_with_the_host() {
             }
         }
     }
+    assert_eq!(runs, 149, "every original combination is compared");
     assert!(runs >= 4 * 9, "{runs}");
     assert!(t.compared > 3000, "{}", t.compared);
     assert!(t.clipboards >= 60, "{}", t.clipboards);
