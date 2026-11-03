@@ -56,8 +56,8 @@ impl Worker {
         Self { rx, method }
     }
 
-    /// Called only on the UI thread; preserves the current flash and appends guidance after it.
-    pub(crate) fn apply(&mut self, flash: &mut Option<String>, lang: Lang) -> bool {
+    /// Called only on the UI thread; uses the footer width cached by startup or the last draw.
+    pub(crate) fn apply(&mut self, app: &mut crate::App) -> bool {
         let Some(rx) = self.rx.as_ref() else {
             return false;
         };
@@ -75,13 +75,10 @@ impl Worker {
             .values()
             .map(|o| o.updates.counts())
             .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
-        let Some(note) = notice(compatible, needs_host, lang, self.method) else {
+        let Some(note) = notice(compatible, needs_host, app.lang, self.method) else {
             return false;
         };
-        *flash = Some(match flash.take() {
-            Some(current) => format!("{current} / {note}"),
-            None => note,
-        });
+        app.append_flash_notice(note);
         true
     }
 }
@@ -412,6 +409,205 @@ mod tests {
     use super::*;
     use konoma_test_support::{unique_tmp, TmpDir};
 
+    fn flash_app(d: &Path, lang: Lang) -> crate::App {
+        let cfg =
+            toml::from_str("[external]\ngit = false\n[plugins.markdown]\nunknown = 1\n").unwrap();
+        let bookmarks = crate::bookmarks::Bookmarks::with_base(d.join("bookmarks"), d);
+        let mut app = crate::App::new_with_bookmarks(d.to_path_buf(), cfg, bookmarks).unwrap();
+        app.lang = lang;
+        app
+    }
+
+    fn deliver_latched(app: &mut crate::App, snapshot: Snapshot, width: usize) {
+        app.refit_notice_flash(width);
+        let (release, wait) = mpsc::channel();
+        let (done, received) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            wait.recv().unwrap();
+            tx.send(snapshot).unwrap();
+            done.send(()).unwrap();
+        });
+        let mut worker = Worker {
+            rx: Some(rx),
+            method: InstallMethod::Other,
+        };
+        let before = app.flash.clone();
+        assert!(!worker.apply(app));
+        assert_eq!(app.flash, before);
+        release.send(()).unwrap();
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        sender.join().unwrap();
+        assert!(worker.apply(app));
+    }
+
+    #[test]
+    fn update_late_flash_refits_folded_startup_counts_and_current_width() {
+        use unicode_width::UnicodeWidthStr;
+        let d = fixture();
+        let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        for lang in [Lang::En, Lang::Jp] {
+            for (initial, current) in [(45, 45), (45, 4000), (4000, 45)] {
+                let mut app = flash_app(&d, lang);
+                let error = if lang == Lang::En {
+                    "config error"
+                } else {
+                    "設定エラー"
+                };
+                let mut all = vec![error.to_string()];
+                all.extend(app.cfg.plugin_report(lang));
+                app.set_startup_flash(Some(error.into()), initial);
+                if initial == 45 {
+                    assert!(app
+                        .flash
+                        .as_ref()
+                        .unwrap()
+                        .contains(&tr(lang, Msg::KeymapMore).replace("{n}", "1")));
+                }
+                all.push(notice(1, 0, lang, InstallMethod::Other).unwrap());
+                deliver_latched(&mut app, snapshot.clone(), current);
+                let expected = if current == 45 {
+                    format!("{error} {}", tr(lang, Msg::KeymapMore).replace("{n}", "2"))
+                } else {
+                    all.join(" / ")
+                };
+                assert_eq!(app.flash.as_deref(), Some(expected.as_str()));
+                assert!(app.flash.as_ref().unwrap().width() <= current);
+                assert!(app.flash.as_ref().unwrap().starts_with(error));
+            }
+        }
+    }
+
+    #[test]
+    fn update_late_flash_without_startup_is_bounded_in_both_languages() {
+        use unicode_width::UnicodeWidthStr;
+        let d = fixture();
+        let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        for lang in [Lang::En, Lang::Jp] {
+            for width in [0, 1, 2, 12, 45, 4000] {
+                let mut app = flash_app(&d, lang);
+                app.set_startup_flash(Some("obsolete startup error".into()), 4000);
+                app.flash = None;
+                deliver_latched(&mut app, snapshot.clone(), width);
+                let flash = app.flash.as_ref().unwrap();
+                assert!(flash.width() <= width, "{width}: {flash}");
+                assert!(!flash.contains("obsolete"));
+                assert_eq!(
+                    flash,
+                    &crate::ui::status::truncate_display(
+                        &notice(1, 0, lang, InstallMethod::Other).unwrap(),
+                        width
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn update_late_flash_preserves_replacement_without_reviving_startup() {
+        use unicode_width::UnicodeWidthStr;
+        let d = fixture();
+        let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        for lang in [Lang::En, Lang::Jp] {
+            let mut app = flash_app(&d, lang);
+            app.set_startup_flash(Some("obsolete startup error".into()), 45);
+            let current = if lang == Lang::En {
+                "copy failed"
+            } else {
+                "コピー失敗"
+            };
+            app.flash = Some(current.into());
+            deliver_latched(&mut app, snapshot.clone(), 45);
+            assert_eq!(
+                app.flash,
+                Some(format!(
+                    "{current} {}",
+                    tr(lang, Msg::KeymapMore).replace("{n}", "1")
+                ))
+            );
+            let flash = app.flash.as_ref().unwrap();
+            assert!(flash.width() <= 45);
+            assert!(flash.starts_with(current));
+            assert!(!flash.contains("obsolete"));
+        }
+    }
+
+    #[test]
+    fn update_late_flash_uses_current_footer_area_across_resizes() {
+        use unicode_width::UnicodeWidthStr;
+        let d = fixture();
+        let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        for lang in [Lang::En, Lang::Jp] {
+            for layout in ["split", "bottom"] {
+                let mut app = flash_app(&d, lang);
+                app.cfg.ui.statusbar = layout.into();
+                let mut all = vec!["config error".to_string()];
+                all.extend(app.cfg.plugin_report(lang));
+                let narrow = (all.join(" / ").width()
+                    + 1
+                    + tr(lang, Msg::KeymapMore).replace("{n}", "1").width()
+                    + 2) as u16;
+                all.push(notice(1, 0, lang, InstallMethod::Other).unwrap());
+                app.set_startup_flash(Some("config error".into()), 400);
+                deliver_latched(&mut app, snapshot.clone(), 400);
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(400, 12)).unwrap();
+                for cols in [narrow, 400] {
+                    terminal.backend_mut().resize(cols, 12);
+                    terminal
+                        .draw(|frame| crate::ui::render(frame, &mut app))
+                        .unwrap();
+                    let available = if layout == "split" {
+                        cols
+                    } else {
+                        cols.saturating_sub(crate::ui::status::context_width(&app) + 2)
+                    };
+                    let expected = if cols == 400 {
+                        all.join(" / ")
+                    } else if layout == "split" {
+                        format!(
+                            "{} {}",
+                            all[..2].join(" / "),
+                            tr(lang, Msg::KeymapMore).replace("{n}", "1")
+                        )
+                    } else {
+                        format!(
+                            "config error {}",
+                            tr(lang, Msg::KeymapMore).replace("{n}", "2")
+                        )
+                    };
+                    assert_eq!(
+                        app.flash.as_deref(),
+                        Some(expected.as_str()),
+                        "{layout}, {cols}"
+                    );
+                    assert!(app.flash.as_ref().unwrap().width() <= usize::from(available));
+                }
+                app.flash = None;
+                terminal
+                    .draw(|frame| crate::ui::render(frame, &mut app))
+                    .unwrap();
+                assert!(app.flash.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn update_late_flash_long_current_keeps_count_inside_width() {
+        use unicode_width::UnicodeWidthStr;
+        let d = fixture();
+        let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
+        for lang in [Lang::En, Lang::Jp] {
+            let mut app = flash_app(&d, lang);
+            app.flash = Some(format!("error: {}", "長い説明".repeat(30)));
+            deliver_latched(&mut app, snapshot.clone(), 45);
+            let flash = app.flash.as_ref().unwrap();
+            assert!(flash.width() <= 45);
+            assert!(flash.starts_with("error: "));
+            assert!(flash.ends_with(&tr(lang, Msg::KeymapMore).replace("{n}", "1")));
+        }
+    }
+
     fn fixture() -> TmpDir {
         let d = unique_tmp("plugin-updates");
         std::fs::create_dir_all(d.join("config")).unwrap();
@@ -696,7 +892,8 @@ mod tests {
         );
         let mut worker = Worker::start(false, None);
         assert!(worker.rx.is_none());
-        assert!(!worker.apply(&mut None, Lang::En));
+        let d = fixture();
+        assert!(!worker.apply(&mut flash_app(&d, Lang::En)));
     }
 
     #[test]
@@ -744,9 +941,9 @@ mod tests {
             app.lang,
         )
         .unwrap();
-        app.flash = app.startup_flash(Some(format!("config error / {stale}")), 4000);
+        app.set_startup_flash(Some(format!("config error / {stale}")), 4000);
         let before = app.flash.clone().unwrap();
-        assert!(!updates.apply(&mut app.flash, app.lang));
+        assert!(!updates.apply(&mut app));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 25)).unwrap();
         terminal
@@ -774,20 +971,21 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         tx.send(snapshot).unwrap();
         updates.rx = Some(rx);
+        app.refit_notice_flash(4000);
         app.flash = Some(before.clone());
-        assert!(updates.apply(&mut app.flash, app.lang));
+        assert!(updates.apply(&mut app));
         assert_eq!(
             app.flash.as_deref(),
             Some(format!("{before} / 1 plugin update available (`konoma plugin update`)").as_str())
         );
-        assert!(!updates.apply(&mut app.flash, app.lang));
+        assert!(!updates.apply(&mut app));
         assert!(app.flash.unwrap().contains(&stale));
     }
 
     #[test]
     fn update_worker_emits_to_empty_flash_but_says_nothing_for_zero() {
         let d = fixture();
-        let mut flash = None;
+        let mut app = flash_app(&d, Lang::En);
         for (version, expected) in [("0.3.0", false), ("0.4.0", true)] {
             let snapshot = check(&d, 100000, move |_| Some(row(version, None, false))).unwrap();
             let (tx, rx) = mpsc::channel();
@@ -796,8 +994,8 @@ mod tests {
                 rx: Some(rx),
                 method: InstallMethod::Other,
             };
-            assert_eq!(worker.apply(&mut flash, Lang::En), expected);
-            assert_eq!(flash.is_some(), expected);
+            assert_eq!(worker.apply(&mut app), expected);
+            assert_eq!(app.flash.is_some(), expected);
             std::fs::remove_file(d.join("data/plugin-updates.toml")).unwrap();
         }
     }

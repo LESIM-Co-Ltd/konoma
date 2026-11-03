@@ -720,8 +720,8 @@ pub fn sizeof_app() -> usize {
 }
 
 /// Join the startup `notices` (most important first) with " / " so that they fit `width` columns:
-/// as many as fit from the front, then a "(+n more)" for the rest. The first notice is always
-/// shown (the footer clips it at the edge); the count goes right after the last one that fits.
+/// as many as fit from the front, then a "(+n more)" for the rest. Keep the first notice as the
+/// priority anchor; `fit_flash_notices` bounds it with an ellipsis while reserving the count.
 pub(crate) fn fit_notices(
     notices: Vec<String>,
     width: usize,
@@ -743,6 +743,40 @@ pub(crate) fn fit_notices(
         }
     }
     None
+}
+
+/// Keep the original notices alongside their rendered form, so later guidance and resizes can
+/// refit the entire list. A direct replacement of `App::flash` invalidates this provenance.
+struct NoticeFlash {
+    notices: Vec<String>,
+    rendered: String,
+    width: usize,
+}
+
+fn fit_flash_notices(notices: &[String], width: usize, lang: crate::i18n::Lang) -> Option<String> {
+    use unicode_width::UnicodeWidthStr;
+    let text = fit_notices(notices.to_vec(), width, lang)?;
+    if text.width() <= width {
+        return Some(text);
+    }
+    // fit_notices deliberately keeps an overlong first notice. Bound that one here while
+    // reserving the existing localized count, rather than letting the footer cut the count off.
+    let suffix = if notices.len() > 1 {
+        format!(
+            " {}",
+            tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", &(notices.len() - 1).to_string())
+        )
+    } else {
+        String::new()
+    };
+    Some(if suffix.width() < width {
+        format!(
+            "{}{suffix}",
+            crate::ui::status::truncate_display(&notices[0], width - suffix.width())
+        )
+    } else {
+        crate::ui::status::truncate_display(&text, width)
+    })
 }
 
 /// Size of one `PerTab` in bytes. `PerTab` is cloned per tab (snapshot / restore), so a regression
@@ -1812,6 +1846,9 @@ pub struct App {
 
     /// A transient message (copy result, etc.). Cleared on the next key input. Shown in the status line.
     pub flash: Option<String>,
+    notice_flash: Option<Box<NoticeFlash>>,
+    /// Last drawn footer width, or the startup width before any frame has been drawn.
+    notice_flash_width: usize,
 
     /// Visibility state and scroll position of the `?` help (full key list) overlay.
     pub show_help: bool,
@@ -2882,6 +2919,8 @@ impl App {
             #[cfg(test)]
             last_dispatched: None,
             flash: None,
+            notice_flash: None,
+            notice_flash_width: 80,
             show_help: false,
             show_info: false,
             help_scroll: 0,
@@ -2967,7 +3006,7 @@ impl App {
     /// the startup flash; i18n). Conflicts have already safely fallen back to defaults (#17/FR-8).
     /// Each kind gets its count and its first instance (so the flash says *which* key or table, not
     /// just how many), followed by "(+n more)". None if there is nothing. The footer's own message
-    /// is [`App::startup_flash`], which orders and fits the pieces; this is the whole in one line.
+    /// is [`App::set_startup_flash`], which orders and fits the pieces; this is the whole in one line.
     #[cfg(test)]
     pub fn keymap_report(&self) -> Option<String> {
         let (problems, guidance) = self.keymap_report_parts();
@@ -3056,8 +3095,58 @@ impl App {
     /// a config that could not be read (`cfg_err`), key conflicts and ignored key settings,
     /// `[plugins.*]` mistakes, then the guidance about old names (keys and settings). What is
     /// wrong comes first and the guidance last; when they do not all fit `width` columns, what
-    /// does not fit is counted ("(+n more)") instead of being cut off mid-word.
-    pub fn startup_flash(&self, cfg_err: Option<String>, width: usize) -> Option<String> {
+    /// does not fit is counted ("(+n more)"). An overlong first notice is shortened with an
+    /// ellipsis while reserving room for the count.
+    /// Install the startup message together with its unabridged, priority-ordered notices.
+    pub(crate) fn set_startup_flash(&mut self, cfg_err: Option<String>, width: usize) {
+        self.notice_flash_width = width;
+        self.set_notice_flash(self.startup_notices(cfg_err), width);
+    }
+
+    fn set_notice_flash(&mut self, notices: Vec<String>, width: usize) {
+        self.flash = fit_flash_notices(&notices, width, self.lang);
+        self.notice_flash = self.flash.as_ref().map(|rendered| {
+            Box::new(NoticeFlash {
+                rendered: rendered.clone(),
+                notices,
+                width,
+            })
+        });
+    }
+
+    /// Guidance follows all existing notices. Never revive startup notices after another action
+    /// replaced or dismissed their flash, and never parse a previously rendered hidden count.
+    pub(crate) fn append_flash_notice(&mut self, note: String) {
+        let mut notices = self
+            .notice_flash
+            .take()
+            .filter(|s| self.flash.as_ref() == Some(&s.rendered))
+            .map(|s| s.notices)
+            .unwrap_or_else(|| self.flash.take().into_iter().collect());
+        notices.push(note);
+        self.set_notice_flash(notices, self.notice_flash_width);
+    }
+
+    /// Use the actual footer area on each draw, including a resize after the result arrived.
+    pub(crate) fn refit_notice_flash(&mut self, width: usize) {
+        self.notice_flash_width = width;
+        if self
+            .notice_flash
+            .as_ref()
+            .is_some_and(|s| s.width == width && self.flash.as_ref() == Some(&s.rendered))
+        {
+            return;
+        }
+        if let Some(state) = self
+            .notice_flash
+            .take()
+            .filter(|s| self.flash.as_ref() == Some(&s.rendered))
+        {
+            self.set_notice_flash(state.notices, width);
+        }
+    }
+
+    fn startup_notices(&self, cfg_err: Option<String>) -> Vec<String> {
         use crate::i18n::Msg;
         let (key_problems, key_guidance) = self.keymap_report_parts();
         let head = tr(self.lang, Msg::Keymap);
@@ -3076,7 +3165,7 @@ impl App {
             notices.push(format!("{head}: {}", key_guidance.join(" / ")));
         }
         notices.extend(self.settings_guidance());
-        fit_notices(notices, width, self.lang)
+        notices
     }
 
     /// Starting from directly under root, recursively expand the expanded directories and flatten them.

@@ -125,6 +125,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
     // Bottom row: split=key hints only / bottom=context + hints combined.
+    let footer_width = if split {
+        bottom.width
+    } else {
+        status::combined_footer_width(app, bottom.width)
+    };
+    app.refit_notice_flash(usize::from(footer_width));
     if split {
         status::render_footer(frame, app, bottom);
     } else {

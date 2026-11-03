@@ -475,7 +475,7 @@ fn run_application() -> Result<()> {
     // Report a config load error, keymap conflicts/ignored settings, `[plugins.*]` mistakes and
     // old names via a startup message (silently falling back to the default would go unnoticed).
     // What is wrong comes first, the guidance about old names last, and what does not fit the
-    // footer is counted instead of cut off (`App::startup_flash`).
+    // footer is counted instead of cut off (`App::set_startup_flash`).
     let footer_width = crossterm::terminal::size()
         .map(|(cols, _)| usize::from(cols))
         .unwrap_or(80)
@@ -492,7 +492,7 @@ fn run_application() -> Result<()> {
         }),
         None => cfg_err,
     };
-    app.flash = app.startup_flash(cfg_err, footer_width);
+    app.set_startup_flash(cfg_err, footer_width);
     let plugin_updates = plugin_cli::update_check::Worker::start(
         app.cfg.external.update_check,
         original_exe.as_deref(),
@@ -940,7 +940,7 @@ fn run(
     // the first frame is on screen.
     let mut startup_keys = startup_keys;
     loop {
-        needs_redraw |= rx.plugin_updates.apply(&mut app.flash, app.lang);
+        needs_redraw |= rx.plugin_updates.apply(app);
         if needs_redraw {
             // The right to write to the terminal for the whole frame (a signal's exit cleanup
             // waits for it, so its escapes never land between the chunks of a transmit).

@@ -1,4 +1,4 @@
-//! The message on the footer at start (`App::startup_flash`): the old `[ui]` names that moved to
+//! The message on the footer at start (`App::set_startup_flash`): the old `[ui]` names that moved to
 //! `[plugins.<id>]` (named once, and not when the new name is used), the keys a `[plugins.<id>]`
 //! table may not carry, and the order and the fit of everything the footer says when konoma
 //! starts (what is wrong first, the guidance last, the rest counted).
@@ -17,9 +17,108 @@ fn cfg_from(text: &str) -> Config {
 fn app_with(cfg: Config, lang: Lang) -> (crate::test_support::TmpDir, App) {
     let dir = unique_tmp("konoma_startup_notice");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    let bookmarks = crate::bookmarks::Bookmarks::with_base(dir.join("bookmarks"), &dir);
+    let mut app = App::new_with_bookmarks(dir.to_path_buf(), cfg, bookmarks).unwrap();
     app.lang = lang;
     (dir, app)
+}
+
+#[test]
+fn startup_flash_long_single_notice_is_bounded_and_ends_in_ellipsis() {
+    use unicode_width::UnicodeWidthStr;
+    for lang in [Lang::En, Lang::Jp] {
+        let (_d, mut app) = app_with(Config::default(), lang);
+        let long = if lang == Lang::En {
+            "a long configuration error ".repeat(12)
+        } else {
+            "長い設定エラー".repeat(24)
+        };
+        app.set_startup_flash(Some(long), 40);
+        let flash = app.flash.as_ref().unwrap();
+        assert!(flash.width() <= 40, "{flash}");
+        assert!(flash.ends_with('…'), "{flash}");
+        assert!(!flash.contains(
+            tr(lang, crate::i18n::Msg::KeymapMore)
+                .split("{n}")
+                .next()
+                .unwrap()
+        ));
+    }
+}
+
+#[test]
+fn startup_flash_long_first_notice_keeps_localized_hidden_count() {
+    use unicode_width::UnicodeWidthStr;
+    for lang in [Lang::En, Lang::Jp] {
+        let (_d, mut app) = app_with(cfg_from("[plugins.markdown]\nunknown = 1\n"), lang);
+        let long = if lang == Lang::En {
+            "long error ".repeat(30)
+        } else {
+            "設定の長い説明".repeat(30)
+        };
+        app.set_startup_flash(Some(long), 40);
+        let flash = app.flash.as_ref().unwrap();
+        let count = tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", "1");
+        assert!(flash.width() <= 40, "{flash}");
+        assert!(flash.ends_with(&format!("… {count}")), "{flash}");
+    }
+}
+
+#[test]
+fn startup_flash_width_narrower_than_hidden_count_stays_bounded() {
+    use unicode_width::UnicodeWidthStr;
+    for lang in [Lang::En, Lang::Jp] {
+        let (_d, mut app) = app_with(cfg_from("[plugins.markdown]\nunknown = 1\n"), lang);
+        let count = tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", "1");
+        for width in [0, 1, 2, count.width() - 1] {
+            app.set_startup_flash(Some("長いエラーの説明".repeat(30)), width);
+            let flash = app.flash.as_ref().unwrap();
+            assert!(flash.width() <= width, "{width}: {flash}");
+            if width == 0 {
+                assert!(flash.is_empty());
+            } else {
+                assert!(flash.ends_with('…'));
+            }
+        }
+    }
+}
+
+#[test]
+fn startup_flash_at_40_columns_shortens_error_and_preserves_all_four_hidden_notices() {
+    use unicode_width::UnicodeWidthStr;
+    let (_d, mut app) = everything();
+    app.set_startup_flash(Some("config error (using defaults): demo".into()), 40);
+    let flash = app.flash.as_ref().unwrap();
+    assert!(flash.width() <= 40, "{flash}");
+    assert!(flash.starts_with("config error"), "{flash}");
+    assert!(flash.ends_with("… (+4 more)"), "{flash}");
+}
+
+#[test]
+fn startup_flash_uses_initial_width_until_the_first_draw() {
+    use unicode_width::UnicodeWidthStr;
+    let (_d, mut app) = app_with(Config::default(), Lang::Jp);
+    app.set_startup_flash(None, 23);
+    assert!(app.flash.is_none());
+    app.append_flash_notice("更新についての長い案内".repeat(10));
+    let flash = app.flash.as_ref().unwrap();
+    assert!(flash.width() <= 23, "{flash}");
+    assert!(flash.ends_with('…'));
+}
+
+#[test]
+fn startup_flash_remembers_draw_width_without_an_active_flash() {
+    use unicode_width::UnicodeWidthStr;
+    for width in [0, 9, 31] {
+        let (_d, mut app) = app_with(Config::default(), Lang::Jp);
+        app.set_startup_flash(Some("initial".into()), 100);
+        app.flash = None;
+        app.refit_notice_flash(width);
+        assert!(app.flash.is_none());
+        app.append_flash_notice("長い更新の案内".repeat(20));
+        assert!(app.flash.as_ref().unwrap().width() <= width);
+        assert!(!app.flash.as_ref().unwrap().contains("initial"));
+    }
 }
 
 // ---- the old names ---------------------------------------------------------------------------
@@ -151,30 +250,29 @@ fn the_list_is_the_one_the_design_names() {
 #[test]
 fn the_startup_message_names_the_old_names_once() {
     let text = "[ui]\nmd_alerts = false\nmd_emoji = false\n";
-    let (_d, app) = app_with(cfg_from(text), Lang::En);
-    let flash = app.startup_flash(None, 400).expect("a note");
+    let (_d, mut app) = app_with(cfg_from(text), Lang::En);
+    app.set_startup_flash(None, 400);
+    let flash = app.flash.as_ref().expect("a note");
     assert_eq!(
         flash,
         "config: [ui] md_alerts is an old name — write [plugins.markdown] alerts instead (+1 more)"
     );
     assert_eq!(flash.matches("old name").count(), 1);
-    let (_d, app) = app_with(cfg_from(text), Lang::Jp);
-    let flash = app.startup_flash(None, 400).unwrap();
+    let (_d, mut app) = app_with(cfg_from(text), Lang::Jp);
+    app.set_startup_flash(None, 400);
+    let flash = app.flash.as_ref().unwrap();
     assert!(
         flash.starts_with("設定: [ui] md_alerts は古い名前です"),
         "{flash}"
     );
     assert!(flash.contains("[plugins.markdown] alerts"), "{flash}");
     assert!(flash.ends_with("(ほか 1 件)"), "{flash}");
-    let (_d, app) = app_with(
+    let (_d, mut app) = app_with(
         cfg_from("[plugins.markdown]\nalerts = false\nemoji = false\n"),
         Lang::En,
     );
-    assert_eq!(
-        app.startup_flash(None, 400),
-        None,
-        "the new names are quiet"
-    );
+    app.set_startup_flash(None, 400);
+    assert_eq!(app.flash, None, "the new names are quiet");
 }
 
 // ---- the keys a plugin table may not carry ------------------------------------------------------
@@ -191,8 +289,9 @@ fn an_undeclared_plugin_setting_is_warned_about() {
     let ja = cfg.plugin_report(Lang::Jp).unwrap();
     assert_eq!(ja, "plugins: [plugins.markdown] の未知の設定 `foo`(無視)");
     // The warning is among the things the startup message leads with.
-    let (_d, app) = app_with(cfg, Lang::En);
-    let flash = app.startup_flash(None, 400).unwrap();
+    let (_d, mut app) = app_with(cfg, Lang::En);
+    app.set_startup_flash(None, 400);
+    let flash = app.flash.as_ref().unwrap();
     assert!(flash.contains("unknown setting `foo`"), "{flash}");
 }
 
@@ -282,10 +381,9 @@ fn everything() -> (crate::test_support::TmpDir, App) {
 /// config that could not be read leads.
 #[test]
 fn what_is_wrong_comes_first_and_the_guidance_last() {
-    let (_d, app) = everything();
-    let flash = app
-        .startup_flash(Some("config error (using defaults): demo".into()), 4000)
-        .unwrap();
+    let (_d, mut app) = everything();
+    app.set_startup_flash(Some("config error (using defaults): demo".into()), 4000);
+    let flash = app.flash.as_ref().unwrap();
     let at = |needle: &str| {
         flash
             .find(needle)
@@ -319,12 +417,20 @@ fn what_is_wrong_comes_first_and_the_guidance_last() {
 #[test]
 fn what_does_not_fit_is_counted_not_cut() {
     use unicode_width::UnicodeWidthStr;
-    let (_d, app) = everything();
+    let (_d, mut app) = everything();
     let err = "config error (using defaults): demo";
     let total = 5; // the config error, the key problems, the plugin warning, two pieces of guidance
     let mut last_hidden = 0;
-    for width in [4000, 400, 300, 200, 150, 100, 40] {
-        let flash = app.startup_flash(Some(err.into()), width).unwrap();
+    // Derive the minimum width for the complete error and count. The 40-column truncation is
+    // tested separately above, keeping this ordering test's complete-error expectation intact.
+    let minimum_width = err.width()
+        + 1
+        + tr(Lang::En, crate::i18n::Msg::KeymapMore)
+            .replace("{n}", "4")
+            .width();
+    for width in [4000, 400, 300, 200, 150, 100, minimum_width] {
+        app.set_startup_flash(Some(err.into()), width);
+        let flash = app.flash.as_ref().unwrap();
         assert!(
             flash.starts_with(err),
             "the config error always leads: {flash}"
@@ -359,12 +465,13 @@ fn what_does_not_fit_is_counted_not_cut() {
 fn the_count_of_what_is_left_out_is_in_the_users_language() {
     let (_d, mut app) = everything();
     app.lang = Lang::Jp;
-    let narrow = app.startup_flash(None, 60).unwrap();
+    app.set_startup_flash(None, 60);
+    let narrow = app.flash.as_ref().unwrap();
     assert!(narrow.contains("(ほか "), "{narrow}");
 }
 
-/// One notice wider than the footer is still shown (the footer clips it); a message that fits is
-/// whole; nothing to say is nothing.
+/// The pure selection step retains the first notice; the live flash bounds it separately.
+/// A message that fits is whole; nothing to say is nothing.
 #[test]
 fn the_edges_of_fitting_the_message() {
     use crate::app::fit_notices;
@@ -410,8 +517,9 @@ fn a_setting_of_the_wrong_type_is_named_and_the_default_is_said_to_stay() {
     );
     // The plugin does not read it: the default is what it gets.
     assert!(effective_settings(&cfg, "csv").bool("rainbow", true));
-    let (_d, app) = app_with(cfg, Lang::En);
-    let flash = app.startup_flash(None, 400).unwrap();
+    let (_d, mut app) = app_with(cfg, Lang::En);
+    app.set_startup_flash(None, 400);
+    let flash = app.flash.as_ref().unwrap();
     assert!(
         flash.contains("[plugins.csv] rainbow must be true or false"),
         "{flash}"

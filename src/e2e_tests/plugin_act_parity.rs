@@ -1356,7 +1356,7 @@ fn host_with_notes(root: &std::path::Path, o: &Opt) -> Run {
     cfg.plugins.insert(marker, t);
     let mut s = Sim::with_config_sized(root, cfg, W, HOST_H);
     open_nested(&mut s, "a.pnt");
-    s.app.flash = s.app.startup_flash(None, usize::from(W));
+    s.app.set_startup_flash(None, usize::from(W));
     s.term.clear().expect("clear");
     s.draw();
     let rows = rows_of(&s.term);
