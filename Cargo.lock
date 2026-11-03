@@ -2003,6 +2003,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-plugin-test"
+version = "0.1.0"
+dependencies = [
+ "konoma-demo-clock",
+ "konoma-plugin",
+ "libc",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
