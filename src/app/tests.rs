@@ -5,6 +5,101 @@ use crate::config::Config;
 use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git};
 use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 
+#[cfg(feature = "git")]
+#[test]
+fn git_watch_cache_tracks_roots_and_tabs_without_tick_discovery() {
+    if !crate::vcs::Git::git_binary_available() {
+        eprintln!("skipping: git unavailable");
+        return;
+    }
+    let first = unique_tmp("git_watch_cache_first");
+    let second = unique_tmp("git_watch_cache_second");
+    let plain = unique_tmp("git_watch_cache_plain");
+    for dir in [&first, &second] {
+        init_git_repo(dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+    }
+    std::fs::create_dir_all(&plain).unwrap();
+    let fresh = |app: &App| {
+        let root = app.tab.root.canonicalize().unwrap();
+        crate::vcs::watch_dir(&app.tab.root).filter(|p| !p.starts_with(&root))
+    };
+    let (mut app, calls) = crate::vcs::count_watch_dir_calls(|| {
+        App::new(first.to_path_buf(), Config::default()).unwrap()
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        for _ in 0..20 {
+            app.git_dir_watch();
+        }
+        app.rebuild_tree().unwrap();
+    });
+    assert_eq!(
+        calls, 0,
+        "ticks and same-root rebuilds do not rediscover the watch"
+    );
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(first.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_some());
+    let first_watch = app.git_dir_watch();
+    app.tab_new().unwrap();
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(second.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let second_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.tab_goto(0);
+        assert_eq!(app.git_dir_watch(), first_watch);
+        app.tab_goto(1);
+        assert_eq!(app.git_dir_watch(), second_watch);
+    });
+    assert_eq!(calls, 0, "each tab keeps its own watch value");
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(plain.to_path_buf()));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_none());
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn jj_watch_cache_updates_when_the_chosen_backend_changes() {
+    if !crate::vcs::Git::git_binary_available() || !crate::vcs::jj::available() {
+        eprintln!("skipping: git and jj required");
+        return;
+    }
+    let dir = unique_tmp("jj_watch_backend_change");
+    init_git_repo(&dir);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["git", "init", "--colocate", "."]
+    ));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Auto));
+    let mut app = App::new(dir.join("src"), Config::default()).unwrap();
+    let git_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.apply_statuses(StatusResult {
+            gen: app.git_status_gen,
+            statuses: Default::default(),
+            branch: None,
+            worktree_origin: None,
+            vcs: crate::vcs::VcsKind::Jj,
+            workdir: Some(dir.to_path_buf()),
+        });
+    });
+    assert_eq!(calls, 1);
+    assert_ne!(app.git_dir_watch(), git_watch);
+    assert_eq!(
+        app.git_dir_watch(),
+        crate::vcs::Vcs::watch_dir(&crate::vcs::Jj, &dir)
+    );
+    crate::vcs::set_preference_for_test(None);
+}
+
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
     match &it.kind {

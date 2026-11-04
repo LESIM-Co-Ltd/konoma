@@ -447,6 +447,8 @@ fn run_application(startup: host::Startup) -> Result<()> {
     // repo it's ~5ms, and on a large repo it can take hundreds of ms, stalling the UI on every tab
     // switch/directory move.
     let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
+    #[cfg(feature = "git")]
+    let (follow_tx, follow_rx) = std::sync::mpsc::channel::<app::FollowResult>();
     // Markdown block-diff computation (`docs/STATUS.md` ★未修正 item 4: the ordinary preview's own
     // change gutter and the diff's `Rendered` presentation both need "old/new text, preprocessed,
     // `diff_align`'d" — I/O + a real CPU cost on a large document — also goes to a separate thread.
@@ -478,6 +480,8 @@ fn run_application(startup: host::Startup) -> Result<()> {
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
+    #[cfg(feature = "git")]
+    app.attach_follow_loader(follow_tx);
     app.attach_md_diff_loader(md_diff_tx);
     app.attach_media_diff_loader(media_diff_tx);
     app.attach_fileop_runner(fileop_tx);
@@ -549,6 +553,8 @@ fn run_application(startup: host::Startup) -> Result<()> {
             md_enc: md_enc_res_rx,
             ignored: ignored_rx,
             status: status_rx,
+            #[cfg(feature = "git")]
+            follow: follow_rx,
             md_diff: md_diff_rx,
             media_diff: media_diff_rx,
             fileop: fileop_rx,
@@ -788,6 +794,8 @@ struct WorkerRx {
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
     status: std::sync::mpsc::Receiver<StatusResult>,
+    #[cfg(feature = "git")]
+    follow: std::sync::mpsc::Receiver<app::FollowResult>,
     md_diff: std::sync::mpsc::Receiver<MdDiffResult>,
     media_diff: std::sync::mpsc::Receiver<MediaDiffResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
@@ -810,6 +818,10 @@ struct WorkerRx {
 /// Otherwise: by the next GIF frame's deadline if one is playing (whichever of the full-screen and
 /// the Markdown-inline animations is sooner), and by a plain idle timeout when nothing is going on.
 fn poll_timeout(app: &App) -> Duration {
+    #[cfg(feature = "git")]
+    if app.follow_work_pending() {
+        return Duration::from_millis(16);
+    }
     if app.is_media_loading()
         || app.md_pixels_pending()
         || app.kitty_build_pending()
@@ -1173,6 +1185,12 @@ fn run(
         // change gutter or replaces the `Rendered` presentation's "computing…" placeholder.
         while let Ok(result) = rx.md_diff.try_recv() {
             if app.apply_md_diff(result) {
+                needs_redraw = true;
+            }
+        }
+        #[cfg(feature = "git")]
+        while let Ok(result) = rx.follow.try_recv() {
+            if app.apply_follow(result) {
                 needs_redraw = true;
             }
         }

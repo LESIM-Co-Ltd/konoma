@@ -769,6 +769,10 @@ impl App {
         let Some(PreviewKind::GitDiff(p)) = self.tab.preview_kind.clone() else {
             return Vec::new();
         };
+        #[cfg(feature = "git")]
+        if self.diff_follow_scope && !self.follow_diff_full && self.jj_follow_workers() {
+            self.request_follow_path(&p);
+        }
         let hit = matches!(&self.diff_cache, Some(c) if c.path == p);
         if !hit {
             // If follow-originated (diff_follow_scope), the since-start baseline diff; otherwise the full diff.

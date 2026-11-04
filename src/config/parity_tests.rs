@@ -44,15 +44,23 @@ fn config_project_vcs_precedence_and_legacy_notice() {
     }
 }
 
-/// Production host code may use shared git data types, but all repository calls belong to Vcs
-/// or the Git backend's screen-only boundary. Test fixture helpers are deliberately excluded.
+/// Quick source scan for qualified `git::fn(` calls and direct function imports. This is a
+/// trip-wire, not a Rust name resolver: `src/git.rs` enforces the boundary at compile time by
+/// exporting only types in production and keeping the legacy function exports under `cfg(test)`.
 #[test]
-fn vcs_host_has_no_direct_git_calls() {
+fn vcs_host_quick_scan_of_qualified_git_calls_and_function_imports() {
     fn scan(dir: &Path, violations: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
-                scan(&path, violations);
+                if !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("tests")
+                {
+                    scan(&path, violations);
+                }
                 continue;
             }
             let name = path.file_name().unwrap().to_string_lossy();
@@ -63,28 +71,9 @@ fn vcs_host_has_no_direct_git_calls() {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            // Inline fixture modules follow production code, like the other source parity tests.
             let production = source.split("\nmod tests {").next().unwrap();
-            let code: String = production
-                .lines()
-                .map(|l| l.split("//").next().unwrap())
-                .collect();
-            let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-            for (_, tail) in compact
-                .match_indices("git::")
-                .map(|(at, _)| (at, &compact[at + 5..]))
-            {
-                let n = tail
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .count();
-                let function = &tail[..n];
-                if !function.starts_with(|c: char| c.is_ascii_lowercase())
-                    || !tail[n..].starts_with('(')
-                {
-                    continue;
-                }
-                // These are the host's local UI renderers, not repository operations.
+            for function in vcs_quick_git_scan(production) {
+                // These are the host's local renderers, not repository operations.
                 if path.ends_with("ui/mod.rs")
                     && [
                         "render_detail",
@@ -95,7 +84,7 @@ fn vcs_host_has_no_direct_git_calls() {
                         "render_worktrees",
                         "render_changes",
                     ]
-                    .contains(&function)
+                    .contains(&function.as_str())
                 {
                     continue;
                 }
@@ -115,8 +104,143 @@ fn vcs_host_has_no_direct_git_calls() {
     );
     assert!(
         violations.is_empty(),
-        "host bypasses Vcs/Git backend: {violations:#?}"
+        "qualified Git call or function import: {violations:#?}"
     );
+}
+
+fn vcs_quick_git_scan(source: &str) -> Vec<String> {
+    let code = vcs_code_without_comments_and_literals(source);
+    let mut tokens = Vec::new();
+    let mut chars = code.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        let mut end = start + c.len_utf8();
+        if c.is_ascii_alphanumeric() || c == '_' {
+            while let Some(&(at, next)) = chars.peek() {
+                if !(next.is_ascii_alphanumeric() || next == '_') {
+                    break;
+                }
+                end = at + next.len_utf8();
+                chars.next();
+            }
+        }
+        tokens.push(&code[start..end]);
+    }
+    let mut found = Vec::new();
+    for i in 0..tokens.len().saturating_sub(3) {
+        if tokens[i..i + 3] != ["git", ":", ":"] {
+            continue;
+        }
+        let function = tokens[i + 3];
+        let start = tokens[..i]
+            .iter()
+            .rposition(|t| [";", "{", "}"].contains(t))
+            .map_or(0, |n| n + 1);
+        let imported = tokens[start..i].contains(&"use");
+        if function.starts_with(|c: char| c.is_ascii_lowercase())
+            && (tokens.get(i + 4) == Some(&"(") || imported)
+        {
+            found.push(function.to_string());
+        }
+    }
+    found
+}
+
+/// Mask literals and comments without losing code after URLs, escaped quotes or raw strings.
+fn vcs_code_without_comments_and_literals(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        if bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            let mut depth = 1;
+            while i < bytes.len() && depth != 0 {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            let mut quote = i;
+            if bytes[i] == b'r' {
+                quote += 1;
+                while quote < bytes.len() && bytes[quote] == b'#' {
+                    quote += 1;
+                }
+            }
+            if bytes[i] == b'r' && quote < bytes.len() && bytes[quote] == b'"' {
+                let hashes = quote - i - 1;
+                i = quote + 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"'
+                        && bytes
+                            .get(i + 1..i + 1 + hashes)
+                            .is_some_and(|s| s.iter().all(|b| *b == b'#'))
+                    {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else if bytes[i] == b'"' {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else if bytes[i] == b'\''
+                && source[i + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| bytes.get(i + 1 + c.len_utf8()) == Some(&b'\''))
+            {
+                i += 2 + source[i + 1..].chars().next().unwrap().len_utf8();
+            } else {
+                i += 1;
+                continue;
+            }
+        }
+        for b in &mut code[start..i] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    String::from_utf8(code).unwrap()
+}
+
+#[test]
+fn vcs_quick_scan_detects_direct_function_imports() {
+    assert_eq!(vcs_quick_git_scan("use crate::git::stage; use crate::git::blob_at as read; use crate::git::DiffLine; stage(root, path);"), ["stage", "blob_at"]);
+}
+
+#[test]
+fn vcs_quick_scan_preserves_calls_after_url_and_raw_string_literals() {
+    let source = r##"
+        let url = "http://localhost/escaped\"//value"; crate::git::stage(root, path); // git::ignored(root)
+        let raw = r#"http://example/"// git::ignored(root)"#; crate::git::blob_at(root, point, path);
+        let quote = '"'; crate::git::unstage(root, path);
+    "##;
+    assert_eq!(vcs_quick_git_scan(source), ["stage", "blob_at", "unstage"]);
 }
 
 /// Local copy of the `mod tests` temp-file helper (that one is private to the other module).

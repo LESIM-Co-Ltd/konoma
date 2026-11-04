@@ -15,6 +15,26 @@ use crate::git::{BranchInfo, ChangeEntry, CommitInfo, CommitMeta, DiffLine, File
 
 mod git_screen;
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static WATCH_DIR_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static POINT_READ_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn count_point_read_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = POINT_READ_CALLS.with(|c| c.get());
+    let result = f();
+    (result, POINT_READ_CALLS.with(|c| c.get()) - before)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn count_watch_dir_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = WATCH_DIR_CALLS.with(|c| c.get());
+    let result = f();
+    (result, WATCH_DIR_CALLS.with(|c| c.get()) - before)
+}
+
 #[cfg(feature = "git")]
 pub mod jj;
 
@@ -157,6 +177,8 @@ impl Vcs for Git {
     }
 
     fn current_point(&self, root: &Path) -> Option<String> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
         #[cfg(feature = "git")]
         {
             crate::git::head_commit_id(root)
@@ -169,6 +191,8 @@ impl Vcs for Git {
     }
 
     fn contents_at(&self, root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
         #[cfg(feature = "git")]
         {
             crate::git::blob_at(root, point, file)
@@ -181,6 +205,8 @@ impl Vcs for Git {
     }
 
     fn watch_dir(&self, root: &Path) -> Option<PathBuf> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        WATCH_DIR_CALLS.with(|c| c.set(c.get() + 1));
         crate::git::git_dir(root)
     }
 
@@ -380,15 +406,21 @@ impl Vcs for Jj {
     }
 
     fn current_point(&self, root: &Path) -> Option<String> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
         jj::current_point(root)
     }
 
     fn contents_at(&self, root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
         jj::contents_at(root, point, file)
     }
 
     fn watch_dir(&self, root: &Path) -> Option<PathBuf> {
-        jj::workspace_root(root).map(|ws| ws.join(".jj"))
+        #[cfg(any(test, feature = "test-hooks"))]
+        WATCH_DIR_CALLS.with(|c| c.set(c.get() + 1));
+        jj::watch_dir(root)
     }
 
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
@@ -605,10 +637,15 @@ mod tests {
         let root = dir.canonicalize().unwrap();
         let repo = git2::Repository::init(&root).unwrap();
         let file = root.join("a.txt");
+        let names = ["a.txt", "a [literal].txt", "資料 一覧.txt"];
         let commit = |contents: &[u8]| {
-            std::fs::write(&file, contents).unwrap();
+            for name in names {
+                std::fs::write(root.join(name), contents).unwrap();
+            }
             let mut index = repo.index().unwrap();
-            index.add_path(Path::new("a.txt")).unwrap();
+            for name in names {
+                index.add_path(Path::new(name)).unwrap();
+            }
             let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
             let sig =
                 git2::Signature::new("fixture", "fixture@example.invalid", &git2::Time::new(0, 0))
@@ -630,7 +667,13 @@ mod tests {
         assert_eq!(point, first.to_string());
         commit(b"after\n");
         assert_ne!(Git.current_point(&root).unwrap(), point);
-        assert_eq!(Git.contents_at(&root, &point, &file).unwrap(), b"before\n");
+        for name in names {
+            assert_eq!(
+                Git.contents_at(&root, &point, &root.join(name)).unwrap(),
+                b"before\n",
+                "{name}"
+            );
+        }
         assert!(Git
             .contents_at(&root, &point, &root.join("new.txt"))
             .is_none());

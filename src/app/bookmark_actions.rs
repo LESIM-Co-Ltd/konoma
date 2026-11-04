@@ -1221,6 +1221,7 @@ impl App {
             // is a filesystem lookup plus a cached probe, so settle it here rather than describing
             // the previous repository until the scan lands.
             self.git_vcs = crate::vcs::detect(&self.tab.root);
+            self.refresh_vcs_watch(self.git_vcs);
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
         self.git_status_pending = Some(self.tab.root.clone());
@@ -1342,6 +1343,7 @@ impl App {
         self.git_status = res.statuses;
         self.git_branch = res.branch;
         self.git_vcs = res.vcs;
+        self.refresh_vcs_watch(res.vcs);
         self.git_worktree_origin = res.worktree_origin;
         self.git_status_workdir = res.workdir;
         // A matching generation = this result belongs to the current workdir. The root at the time
@@ -1661,6 +1663,8 @@ impl App {
         changed: &[std::path::PathBuf],
         reload_preview: bool,
     ) -> Result<()> {
+        #[cfg(feature = "git")]
+        self.follow_worker.invalidate_reads();
         let anchors = self.capture_view_anchors();
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render

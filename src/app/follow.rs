@@ -47,6 +47,11 @@ impl App {
     /// `None` so their follow diff falls back to the full git diff. `F` is a command → sync status first.
     #[cfg(feature = "git")]
     fn capture_follow_baseline(&mut self) {
+        if self.jj_follow_workers() {
+            self.start_follow_capture();
+            return;
+        }
+        self.follow_worker.cancel();
         self.ensure_git_status_now();
         let head = crate::vcs::current_point(&self.tab.root);
         let mut dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>> =
@@ -111,6 +116,9 @@ impl App {
                 // No point to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
                 // defers to `file_diff`, which is empty outside a repo → `follow_jump` shows the file preview.
                 let h = base.head.as_deref()?;
+                if self.jj_follow_workers() {
+                    return self.follow_worker.contents(path);
+                }
                 Some(crate::vcs::contents_at(&self.tab.root, h, path).unwrap_or_default())
             }
         }
@@ -188,19 +196,10 @@ impl App {
     /// auto-reload handles content changes of the current file). No-op outside Tree/Preview surfaces
     /// (dialogs and git views are never hijacked; follow is simply paused there and resumes on return).
     pub fn follow_jump(&mut self, path: &Path) {
-        use crate::keymap::Surface;
         if !self.follow_mode {
             return;
         }
-        // Keep following into the next file even from the diff view (PreviewGitDiff) that follow itself opened.
-        // Other git views/dialogs are never hijacked (normally a keypress breaks follow before they're reached).
-        let surface_ok = matches!(
-            self.surface(),
-            Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable
-        );
-        #[cfg(feature = "git")]
-        let surface_ok = surface_ok || matches!(self.surface(), Surface::PreviewGitDiff);
-        if !surface_ok {
+        if !self.follow_surface_available() {
             return;
         }
         if self.tab.preview_path.as_deref() == Some(path) {
@@ -209,6 +208,23 @@ impl App {
         if !self.follow_target_ok(path) {
             return;
         }
+        self.follow_jump_ready(path);
+    }
+
+    pub(super) fn follow_surface_available(&self) -> bool {
+        use crate::keymap::Surface;
+        // Keep following into the next file even from the diff view (PreviewGitDiff) that follow itself opened.
+        // Other git views/dialogs are never hijacked (normally a keypress breaks follow before they're reached).
+        let surface_ok = matches!(
+            self.surface(),
+            Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable
+        );
+        #[cfg(feature = "git")]
+        let surface_ok = surface_ok || matches!(self.surface(), Surface::PreviewGitDiff);
+        surface_ok
+    }
+
+    fn follow_jump_ready(&mut self, path: &Path) {
         // The moment following moves the view, clear the old flash (e.g. "follow: on") so the footer is
         // handed over to that surface's operation hints (flash normally clears on a keypress, but following proceeds without one).
         self.flash = None;
@@ -235,6 +251,19 @@ impl App {
         // deleted/identical, so `media_side_by_side` below bypasses the empty-diff check for them.
         let media_side_by_side = self.diff_media_capable(path);
         if self.cfg.ui.follow_view != "file" && !self.follow_previews_instead_of_diff(path) {
+            #[cfg(feature = "git")]
+            if self.jj_follow_workers()
+                && !self.follow_diff_full
+                && self.follow_worker.lines(path).is_none()
+            {
+                // Keep the ordinary preview until the since-start diff arrives.
+                let view = (self.is_git_diff_preview() || self.tab.preview_from_diff)
+                    .then_some(self.tab.diff_view_choice);
+                self.enter_preview(path);
+                self.request_follow_path(path);
+                self.follow_worker.view = view;
+                return;
+            }
             // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);
             if !diff.is_empty() || media_side_by_side {
