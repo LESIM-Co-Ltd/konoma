@@ -4,6 +4,11 @@ use konoma_plugin::registry::{ManifestReason, PluginOrigin, Registry, RegistryEr
 use konoma_plugin::*;
 use std::sync::Arc;
 
+#[path = "project/host_api.rs"]
+mod host_api;
+#[path = "project/review.rs"]
+mod review;
+
 struct Decl(Manifest);
 impl Plugin for Decl {
     fn manifest(&self) -> Manifest {
@@ -17,7 +22,7 @@ impl Plugin for Decl {
 fn project() -> ProjectDecl {
     ProjectDecl::new()
         .marker(DetectionMarker::new(".git", MarkerKind::Any))
-        .screen(ProjectScreen::new("log", "Log").key('l').row_kind("commit"))
+        .screen(ProjectScreen::new("log", "Log").key('z').row_kind("commit"))
         .screen(
             ProjectScreen::new("branches", "Branches")
                 .key('b')
@@ -91,10 +96,10 @@ fn project_duplicate_screen_is_refused() {
 
 #[test]
 fn project_duplicate_screen_key_is_refused() {
-    let p = project().screen(ProjectScreen::new("other", "Other").key('l'));
+    let p = project().screen(ProjectScreen::new("other", "Other").key('z'));
     assert_eq!(
         reason(Manifest::new("p", "1").project(p)),
-        ManifestReason::DuplicateScreenKey { key: "l".into() }
+        ManifestReason::DuplicateScreenKey { key: "z".into() }
     );
     check(manifest()).ok().unwrap();
 }

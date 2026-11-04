@@ -84,19 +84,13 @@ fn only_a_glob_a_name_or_a_mime_assigns_files() {
             Target::Embed("math".into()),
             file_target.clone(),
         ]);
-        let m = Manifest {
-            binds: vec![mixed],
-            ..bare()
-        };
+        let m = bare().bind(mixed);
         assert!(m.assigns_files_without_shows(), "{file_target:?} last");
         let first = bind(vec![
             file_target.clone(),
             Target::Content("markdown".into()),
         ]);
-        let m = Manifest {
-            binds: vec![first],
-            ..bare()
-        };
+        let m = bare().bind(first);
         assert!(m.assigns_files_without_shows(), "{file_target:?} first");
     }
     // Declaring what it shows clears it, whatever the binding.

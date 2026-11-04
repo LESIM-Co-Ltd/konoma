@@ -137,8 +137,21 @@ where
         Some(h) => h,
         None => return Ok(()),
     };
-    let manifest = catch_unwind(AssertUnwindSafe(|| plugin.manifest()))
-        .map_err(|_| std::io::Error::other("the plugin panicked in manifest()"))?;
+    let manifest = match catch_unwind(AssertUnwindSafe(|| plugin.manifest())) {
+        Ok(manifest) => manifest,
+        Err(panic) => {
+            let failure = panic_failure("manifest", panic);
+            frame::send(
+                &mut output,
+                &HelloReply::Refused {
+                    supported: Vec::new(),
+                    reason: failure.message.get("en").to_string(),
+                },
+            )
+            .map_err(io_err)?;
+            return Ok(());
+        }
+    };
     let wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
     let supported: Vec<u32> = (wire::manifest_protocol(&wm)..=PROTOCOL_VERSION).collect();
     let selected = supported
@@ -148,11 +161,11 @@ where
         .copied();
     let Some(version) = selected else {
         let reply = HelloReply::Refused {
-            supported,
             reason: format!(
-                "the host speaks protocol versions {:?}, this plugin speaks {PROTOCOL_VERSION}",
+                "the host speaks protocol versions {:?}, this plugin speaks protocol versions {supported:?}",
                 hello.versions
             ),
+            supported,
         };
         frame::send(&mut output, &reply).map_err(io_err)?;
         return Ok(());
@@ -434,7 +447,10 @@ impl Worker {
     }
 
     fn call_inner(&mut self, msg: ToChild, flag: &Arc<AtomicBool>) -> Result<Reply, Failure> {
-        let cx_of = |c| -> Result<CxData, Failure> { Ok(cx_from_wire(c)?) };
+        let cx_of = |c: wire::WCx| -> Result<CxData, Failure> {
+            wire::require_protocol(self.version, wire::cx_protocol(&c))?;
+            Ok(cx_from_wire(c)?)
+        };
         match msg {
             ToChild::Open { sid, input, cx, .. } => {
                 wire::require_protocol(self.version, wire::input_protocol(&input))?;
@@ -467,6 +483,7 @@ impl Worker {
                 Ok(Reply::Opened { state })
             }
             ToChild::View { sid, req, cx, .. } => {
+                wire::require_protocol(self.version, wire::req_protocol(&req))?;
                 let cx = cx_of(cx)?;
                 let req = req_from_wire(req)?;
                 let vcx = ViewCx::new(&cx.settings, &cx.lang)
@@ -518,11 +535,12 @@ impl Worker {
                 sid, action, cx, ..
             } => {
                 let cx = cx_of(cx)?;
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)
@@ -544,11 +562,12 @@ impl Worker {
             ToChild::Key { sid, key, cx, .. } => {
                 let cx = cx_of(cx)?;
                 let key = key_from_wire(key);
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)

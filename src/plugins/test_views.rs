@@ -23,6 +23,10 @@ fn read(input: &Input) -> Result<(String, Option<PathBuf>), Failure> {
             en: "this preview plugin does not open projects",
             ja: "このプレビュープラグインはプロジェクトを開きません",
         ))),
+        _ => Err(Failure::unsupported(t!(
+            en: "this preview plugin does not support this input",
+            ja: "このプレビュープラグインはこの入力に対応していません",
+        ))),
     }
 }
 

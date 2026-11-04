@@ -23,7 +23,7 @@ JSON の manifest 出力では整数の配列になります。
 プロジェクトのための新しい受け渡し方式はありません。
 
 現在の版は **2**、ホストは `[1, 2]` を提示します。SDK は共通の版の最大を選びます。
-プロジェクトか入力ダイアログを宣言するプラグインは版2だけに対応します。
+プロジェクト・入力ダイアログ・読み取り専用・再取得対象を宣言するプラグインは版2だけに対応します。
 それ以外は版1と2に対応するため、版1だけのホストでも従来のファイルプラグインを
 使えます。プロジェクトプラグインはそのホストに `Refused` を返します。
 版2のホストは版1の子も受け付けます。
@@ -34,6 +34,8 @@ JSON の manifest 出力では整数の配列になります。
 省略します。省略時の既定値もそれぞれ未指定と false です。従来のメッセージの
 版1のバイト表現を保ちます。SDK の両端と検査ツールは、版1の接続に
 プロジェクトデータが流れることを拒否します。
+画面要求・操作情報の新フィールドと空でない行の値も版2が必要です。
+同じ変更内の未公開の版2を拡張するため、版3には上げません。
 
 ## 呼び出しと応答
 
@@ -48,6 +50,31 @@ JSON の manifest 出力では整数の配列になります。
 
 翻訳文は `Tr = { en: string, others: [[language, string], …] }`。
 英語が必須で、翻訳のない言語は英語を使います。
+
+### プロジェクトの画面要求と操作（版2）
+
+`View.req.project` はファイルプレビューでは省略します。プロジェクトでは
+`{ screen: string, selection: string | null }` です。`selection` は `PushScreen` の
+不透明な値です。同じプロジェクトセッション内で画面が変わるため、入力ではなく
+画面要求に載せます。SDKでは `ViewReq::new(cols, rows).project(ProjectView::new(screen).selection(value))` と組み立てます。
+
+`Act.cx.project`・`Key.cx.project` はプロジェクト操作以外では省略し、次の形を取ります。
+
+```text
+ProjectAct {
+  screen: string | null,
+  selected: { kind: string, value: string } | null,
+  marked: [{ kind: string, value: string }],
+  confirmation: string | null,
+  text: string | null,
+  choice: string | null
+}
+```
+
+ツリー・diffへの操作では画面IDを省略できます。選択行と印付き行は、表示セルや
+行番号ではなく、一覧で宣言した `ListRow.kind`・`ListRow.value` をそのまま渡します。
+確認と一覧選択の回答は宣言された `Choice.value`、文字入力の回答は入力した文字列です。
+空文字の回答と未回答は区別します。SDKでは `ActCx::with_project(ProjectAct::new()...)` を使います。
 
 ## プロジェクト宣言（版2）
 
@@ -77,6 +104,10 @@ chip はツリーの題の短い要約、監視パスはプロジェクトの根
 たとえば `*.xcworkspace` ではなく `MyApp.xcworkspace` です。
 ファイルのバイト列を読む入力ではありません。
 
+`Manifest.read_only` は静的な真偽値の宣言です。既定はfalseで、falseなら送信時に省略します。
+ホストは `[plugins.<id>] read_only` とのOR条件で `writes` 操作を止めます。
+このAPIには実行中の読み取り専用状態を上書きする仕組みを設けません。
+
 ## 操作とダイアログ（版2）
 
 既存の `id`、`key`、`label`、`help`、`footer`、`screen`、`writes`、`destructive` の
@@ -89,6 +120,7 @@ project_context:
 confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
 text_input: { label: Tr, initial: string } | null
 choice_input: { label: Tr, choices: Choice[] } | null
+refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
 ```
 
@@ -97,11 +129,25 @@ Choice = { value: string, label: Tr }
 通常の操作と同じ宣言・検査の経路を通り、行の種類が異なれば別の Enter 操作を持てます。
 確認の選択肢は `y` → `-d`、`!` → `-D` のように値を分けられます。
 
+`RefreshTarget` は `"CurrentScreen"`・`{"Screen":{"screen":string}}`・`"AllScreens"`・
+`"TreeStatus"`・`"Chip"` のいずれかです。操作の `refresh` は既定で空、空なら送信時に
+省略します。実行後は結果を通知し、宣言した対象を取り直します。指定する画面名は
+同じプラグインのプロジェクト宣言に存在する必要があり、再取得対象は操作ごとに最大64件です。
+
 登録時には、空でない確認の選択肢を持たない破壊的操作、画面 id の重複（従来の
 画面名との衝突を含む）、画面キーの重複、新しい型付き文脈の未宣言の画面・行の種類、
 検出目印のないプロジェクトを拒否します。従来の `screen` キー文脈は従来どおりです。
 SDK の型付き理由をホストが英語・日本語に翻訳します。名前と宣言数の上限は、
 プロジェクトの画面・行の名前、目印と行の種類の数にも適用します。
+
+監視パスは空でない相対パスで、親・ルート・接頭辞の要素を含めず、最大512件です。
+検出目印は `.`・`..` 以外の空でない単一のファイル名要素で、最大1024バイトです。
+画面キーには既存の一覧用予約表を使います。確認キーにはそのGlobal層と `q`・Escを
+予約し、`y`・`!` は使えます。両方とも制御文字と同じ集合内の重複キーを拒否します。
+確認の選択肢は1〜64件、一覧入力の選択肢も最大64件です。選択肢の値は最大1024バイト、
+ラベルは翻訳ごとに最大512文字です。画面IDが `tree` などでも、キー文脈は専用の名前空間です。
+単体アプリがプロジェクト遷移に対応するまでは、5種類の結果に未対応の通知を表示します。
+版の不一致ではmanifestから決まる実際の対応版を返し、manifest取得中のpanicも拒否応答にします。
 
 この段階は宣言と通信までです。ホストのダイアログ、入力の回答、画面の描画、
 書き込みの一元ガードは後の変更で接続します。
@@ -110,6 +156,8 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 
 一覧は従来どおり `{"List":[row, …]}` です。各行は `cells: Line[]`、`kind: string`、
 `target: Path | null`、`checked: boolean | null` と、新しい `marked: boolean` を持ちます。
+不透明な行の値 `value: string` も持ち、SDKの `ListRow::value` で指定します。
+既定の空文字は送信時に省略し、従来の行のバイト表現を保ちます。
 従来の行の種類・行き先・プラグインのチェック状態の意味を保ち、`marked` は独立した
 ホストの複数選択の印です。セルは既に
 `Line { spans: [[text, Style], …], style: Style }` で、グラフの罫線もこの span で表せます。
@@ -131,5 +179,5 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 **`q` で画面を1つ戻すのはホストの動作**です。新しい結果やガードを迂回する操作には
 しません。この変更では宣言と通信を追加し、ホストの動作は次の段階で接続します。
 
-検査する例は `crates/konoma-plugin-test/tests/vectors/project-v2.json` と
+検査する例は `crates/konoma-plugin-test/tests/vectors/project-v2.json`・`project-calls-v2.msgpack.hex` と
 `tests/project_vectors.rs`、各新型と各結果の往復テストは SDK にあります。

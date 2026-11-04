@@ -4,6 +4,112 @@ use std::path::PathBuf;
 
 use crate::text::Tr;
 
+/// The project screen and opaque selection to draw in this view request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProjectView {
+    pub screen: String,
+    pub selection: Option<String>,
+}
+
+impl ProjectView {
+    pub fn new(screen: impl Into<String>) -> Self {
+        Self {
+            screen: screen.into(),
+            selection: None,
+        }
+    }
+    pub fn selection(mut self, selection: impl Into<String>) -> Self {
+        self.selection = Some(selection.into());
+        self
+    }
+}
+
+/// A row's declared kind and opaque stable value, without its display cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProjectRow {
+    pub kind: String,
+    pub value: String,
+}
+
+impl ProjectRow {
+    pub fn new(kind: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            value: value.into(),
+        }
+    }
+}
+
+impl From<&crate::view::ListRow> for ProjectRow {
+    fn from(row: &crate::view::ListRow) -> Self {
+        Self::new(&row.kind, &row.value)
+    }
+}
+
+/// Project-only action data. A tree or diff action may have no project screen.
+/// Answers contain the declared choice values, never labels or pressed keys.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProjectAct {
+    pub screen: Option<String>,
+    pub selected: Option<ProjectRow>,
+    pub marked: Vec<ProjectRow>,
+    pub confirmation: Option<String>,
+    pub text: Option<String>,
+    pub choice: Option<String>,
+}
+
+impl ProjectAct {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn screen(mut self, screen: impl Into<String>) -> Self {
+        self.screen = Some(screen.into());
+        self
+    }
+    pub fn selected(mut self, row: ProjectRow) -> Self {
+        self.selected = Some(row);
+        self
+    }
+    pub fn marked(mut self, rows: impl IntoIterator<Item = ProjectRow>) -> Self {
+        self.marked = rows.into_iter().collect();
+        self
+    }
+    pub fn confirmation(mut self, value: impl Into<String>) -> Self {
+        self.confirmation = Some(value.into());
+        self
+    }
+    pub fn text(mut self, value: impl Into<String>) -> Self {
+        self.text = Some(value.into());
+        self
+    }
+    pub fn choice(mut self, value: impl Into<String>) -> Self {
+        self.choice = Some(value.into());
+        self
+    }
+}
+
+/// What the host refreshes after the action completes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefreshTarget {
+    CurrentScreen,
+    Screen { screen: String },
+    AllScreens,
+    TreeStatus,
+    Chip,
+}
+
+impl RefreshTarget {
+    pub fn screen(screen: impl Into<String>) -> Self {
+        Self::Screen {
+            screen: screen.into(),
+        }
+    }
+}
+
 /// Which directory entry a detection marker matches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
