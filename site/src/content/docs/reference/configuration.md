@@ -267,7 +267,7 @@ rainbow = false      # monochrome CSV / TSV columns
   below and the plugin's own key is not set, the footer says `config: [ui] md_alerts is an old name — write
   [plugins.markdown] alerts instead` (and `(+n more)` for the rest). The old name keeps working; the message goes
   away when you move the value. What is wrong (an unreadable config, key conflicts, a bad `[plugins.*]` table) is
-  listed first and these hints last; if they do not all fit the width of the terminal, the footer ends with
+  listed first and these announcements last; if they do not all fit the width of the terminal, the footer ends with
   `(+n more)` instead of cutting a message off.
 
 | Plugin | Setting | Default | Replaces |

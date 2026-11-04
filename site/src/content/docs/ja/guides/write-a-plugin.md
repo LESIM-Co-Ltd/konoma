@@ -16,7 +16,7 @@ cargo generate --path templates/konoma-plugin --name my-hexdump
 cd my-hexdump
 ```
 
-テンプレートは crates.io での発見用に `keywords = ["konoma-plugin"]`、SDK に版指定の `konoma-plugin = "0.1.0"` 依存、独立した端末表示と通信を含む `app` feature を設定します。**SDK の crate はまだ公開されていません。** このテンプレートは公開済み SDK が必要です。今すぐ開発する場合は下のワークスペースサンプルを使うか、`[patch.crates-io]` で `konoma-plugin` をcheckout の `crates/konoma-plugin` に向けてください。
+テンプレートは crates.io での発見用に `keywords = ["konoma-plugin"]`、SDK に版指定の `konoma-plugin = "0.1.0"` 依存、独立した端末表示と通信を含む `app` feature を設定します。**SDK の crate はまだ公開されていません**。このテンプレートは公開済み SDK が必要です。今すぐ開発する場合は下のワークスペースサンプルを使うか、`[patch.crates-io]` で `konoma-plugin` を checkout の `crates/konoma-plugin` に向けてください。
 
 SDK が利用可能になったら（またはローカルで上書きしたら）、生成したプロジェクト内で：
 
@@ -246,7 +246,7 @@ cargo nextest run -p konoma-sample-hexdump
 cargo run -p konoma-plugin-test -- --file a.bin "$CARGO_TARGET_DIR/debug/konoma-sample-hexdump"
 ```
 
-`konoma-plugin-test` は konoma の通常の期限を適用し、プログラムの `--serve` モードで子プロセス通信を検査します。ファイルも渡して `open`/`view`・操作・ヒント・中断を確認します。ファイルなしではそれらは SKIP です。ライブラリの入口は `run(&Options, Limits::default())` で、サンプルの実行ファイルテストでも使います。詳細な検査とデータ形式は[プロトコル仕様](../../reference/plugin-protocol/)を参照してください。
+`konoma-plugin-test` は konoma の通常の期限を適用し、プログラムの `--serve` モードで子プロセス通信を検査します。ファイルも渡して入力を開く処理・表示・操作・操作ラベルとヘルプ・中断を確認します。ファイルなしではそれらは SKIP です。ライブラリの入口は `run(&Options, Limits::default())` で、サンプルの実行ファイルテストでも使います。詳細な検査とデータ形式は[プロトコル仕様](../../reference/plugin-protocol/)を参照してください。
 
 ## インストールと共有
 
@@ -285,6 +285,6 @@ read_dirs = ["/absolute/path/to/assets"]
 
 これは `id` が `hex` のプラグインを選び、追加の asset ディレクトリを許可します。子は専用ディレクトリで動くため、`args` のスクリプト・ファイルは絶対パスにします。読み取り範囲はホストがプラグインのために読む対象の制限で、プラグイン自身のファイル操作を sandbox 化しません。置き換えのために標準の `id` を再利用しないでください。
 
-Rust は必須ではありません。他言語のテキスト専用プログラムは、ホストの `Hello` と自分の `Ack`/manifest から始め、`Open`・`View`・`Shutdown` を処理します。未対応の `Act`/`Key` にも応答し、`Close`/`Cancel` を処理して、要求を黙って捨てないでください。EOF・不正フレームも含む[実装者向けの最小ループ](../../reference/plugin-protocol/#minimal-loop)に従います。manifest に必要なのは `id`・`version`・`api`・`name`・`binds`・`actions`・`verbs`・`settings`・`screens`・`shows`・`converts`・`file_text`・`sized`・`unavailable` で、`work_group` は nullable。使わない宣言配列は空にでき、file binding と `shows:["Text"]` で最小ファイルビューアを作れます。`konoma-plugin-test` で検査し、`--plugin` または `[plugins.<id>] command` で読み込みます。Rust の `plugins()` を使うインストール入口は Rust crate 向けです。
+Rust は必須ではありません。他言語のテキスト専用プログラムは、ホストの `Hello` を受け、manifest を含む `Ack` を返すところから始め、`Open`・`View`・`Shutdown` を処理します。未対応の `Act`/`Key` にも応答し、`Close`/`Cancel` を処理して、要求を黙って捨てないでください。EOF・不正フレームも含む[実装者向けの最小ループ](../../reference/plugin-protocol/#minimal-loop)に従います。manifest に必要なのは `id`・`version`・`api`・`name`・`binds`・`actions`・`verbs`・`settings`・`screens`・`shows`・`converts`・`file_text`・`sized`・`unavailable` で、`work_group` は nullable。使わない宣言配列は空にでき、file binding と `shows:["Text"]` で最小ファイルビューアを作れます。`konoma-plugin-test` で検査し、`--plugin` または `[plugins.<id>] command` で読み込みます。Rust の `plugins()` を使うインストール入口は Rust crate 向けです。
 
 Rust を読まずサンプルの出力を再現するには、最初は1行16バイト、<kbd>w</kbd> で8と16を切り替えます。各行は小文字16進数のバイトオフセット（最低8桁、0埋め）、空白2個、空白1個区切りの小文字2桁16進数バイト、16進数列全体が `width*3-1` 文字になるまでの末尾空白、さらに空白2個、最後に縦棒で囲む ASCII 列です。`0x21`〜`0x7e` と空白バイト `0x20` はそのまま残し、その他はすべて `.` にします。最後の短い行も16進数列を同じ幅に埋め、ASCII の縦棒の内側は埋めません。空ファイルは0行です。平文の各行は `Lines` 内の1項目になり、1つの span と行それぞれに既定の style を持ちます。プロトコル通信例にその形があります。
