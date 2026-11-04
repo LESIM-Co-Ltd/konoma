@@ -40,8 +40,8 @@ pub use project_context::*;
 use crate::input::{Input, Origin, Resource, Resources};
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::{
-    Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
-    Unavailable, Verb, VerbDecl, ViewKind,
+    Act, ApiVersion, Bind, HintGroup, LaunchMode, Launcher, Manifest, Priority, SettingDecl,
+    Target, Unavailable, Verb, VerbDecl, ViewKind,
 };
 use crate::scope::ReadScope;
 use crate::session::{ColorDepth, Failure, FailureKind, Outcome, TermCaps};
@@ -2393,6 +2393,8 @@ pub struct WBind {
 /// ```
 #[non_exhaustive]
 pub struct WAct {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint_group: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refresh: Vec<WRefreshTarget>,
     pub id: String,
@@ -2411,6 +2413,15 @@ pub struct WAct {
     pub text_input: Option<WTextInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice_input: Option<WChoiceInput>,
+}
+
+/// A footer/help group. Absent in manifests from older children.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WHintGroup {
+    pub id: String,
+    pub label: WTr,
+    pub help: WTr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2468,6 +2479,8 @@ pub enum WUnavailable {
 /// ```
 #[non_exhaustive]
 pub struct WManifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hint_groups: Vec<WHintGroup>,
     /// Protocol 2 session watch calls; absent in older children.
     #[serde(default, skip_serializing_if = "is_false")]
     pub session_watch: bool,
@@ -2498,6 +2511,15 @@ pub struct WManifest {
 
 pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
     Ok(WManifest {
+        hint_groups: m
+            .hint_groups
+            .iter()
+            .map(|g| WHintGroup {
+                id: g.id.clone(),
+                label: tr_to_wire(&g.label),
+                help: tr_to_wire(&g.help),
+            })
+            .collect(),
         session_watch: false,
         session_chip: false,
         read_only: m.read_only,
@@ -2528,6 +2550,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
             .actions
             .iter()
             .map(|a| WAct {
+                hint_group: a.hint_group.clone(),
                 refresh: a.refresh.iter().map(refresh_target_to_wire).collect(),
                 id: a.id.clone(),
                 key: a.key.clone(),
@@ -2609,6 +2632,11 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
 /// themselves (keys, globs, ids) are validated by the registry as for any plugin, not here.
 pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
     let mut out = Manifest::new(m.id, m.version);
+    out.hint_groups = m
+        .hint_groups
+        .into_iter()
+        .map(|g| HintGroup::new(g.id, tr_from_wire(g.label)).help(tr_from_wire(g.help)))
+        .collect();
     out.read_only = m.read_only;
     out.project = m.project.map(project_from_wire).transpose()?;
     out.api = ApiVersion {
@@ -2642,6 +2670,7 @@ pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
         .actions
         .into_iter()
         .map(|a| Act {
+            hint_group: a.hint_group,
             refresh: a
                 .refresh
                 .into_iter()

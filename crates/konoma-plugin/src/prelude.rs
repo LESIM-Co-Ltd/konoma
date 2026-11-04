@@ -12,4 +12,4 @@ pub use crate::t;
 pub use crate::text::Tr;
 pub use crate::view::{CanvasCell, CanvasImage, CanvasView, CellRect, ImageData};
 pub use crate::view::{Layout, ReprDecl, View, ViewReq};
-pub use crate::{Act, Bind, Input, Manifest, SettingDecl};
+pub use crate::{Act, Bind, HintGroup, Input, Manifest, SettingDecl};

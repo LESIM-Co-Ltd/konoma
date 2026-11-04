@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Plugin actions can declare hint groups to share one footer token and help row, with enabled, rebound keys and independent `Space` menu entries.
+
 - Project actions can opt into `TextInput::keep_on_failure()` to reopen a failed action's text prompt with its submitted text and original context when focus permits a retry.
 
 - Project confirmations can include the invoked row's short `ListRow::name` through `{row}`, and non-destructive confirmations can use `Confirmation::setting` to respect a boolean plugin preference.

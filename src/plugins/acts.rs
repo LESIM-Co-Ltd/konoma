@@ -290,6 +290,16 @@ impl PluginKeys {
     pub fn notes(&self) -> &[PluginNote] {
         &self.notes
     }
+
+    /// Inject a collision after validation to exercise the host's hint rendering.
+    #[cfg(test)]
+    pub(crate) fn share_key_for_test(&mut self, source: PluginAct, target: PluginAct) {
+        assert_eq!(source.plugin(), target.plugin());
+        let acts = &mut self.by_plugin.get_mut(source.plugin()).unwrap().acts;
+        let key = acts.iter().find(|b| b.act == source).unwrap().key;
+        assert!(key.is_some());
+        acts.iter_mut().find(|b| b.act == target).unwrap().key = key;
+    }
 }
 
 #[cfg(test)]

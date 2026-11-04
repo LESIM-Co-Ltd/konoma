@@ -172,6 +172,37 @@ than `*.xcworkspace`). It is not a file byte input.
 when false. The host combines it with `[plugins.<id>] read_only` using OR before
 running a `writes` action. No runtime read-only override is defined by this API.
 
+## Hint groups
+
+`Manifest::hint_group(HintGroup::new(id, label).help(description))` declares one
+footer/help hint for several actions. `Act::hint_group(id)` joins it. `label` and
+`description` are `Tr`; an empty help text uses the label in the selected language.
+The optional wire fields are:
+
+```text
+Manifest.hint_groups: [{ id: string, label: Tr, help: Tr }]
+Act.hint_group: string | null
+```
+
+Both fields default to absent (an empty list / no membership) for older children
+and are omitted when empty. JSON and MessagePack carry the same declarations.
+Group ids are local to the plugin. Unknown membership, duplicate group ids,
+members with different `screen`/`context` values, and members on different project
+screens are separate registration errors naming the group and affected actions
+(an empty duplicate group has no action to name). Different row kinds on the same
+project screen are allowed, as are groups without members.
+
+The footer replaces the members with one token at the position of the member
+with the smallest footer priority, keeping the existing declaration order for
+ties. Members without a footer priority do not contribute. Only enabled members'
+keys appear, in action declaration order, with user rebinding applied, using the
+host's usual notation (`s/S:stage(all)`). No enabled keyed member means no token.
+Help similarly places one row at the first member in the existing help order,
+including enabled members even without a footer priority, and writes its keys
+as the host writes a multi-action row (`s / S`). The row uses the group's help
+text and disappears when no enabled member has a key. This matches the legacy
+hub's enabled-member rule. The `Space` menu keeps each action's entry and label.
+
 ## Actions and dialogs (version 2)
 
 Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `writes`,

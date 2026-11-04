@@ -19,6 +19,8 @@ pub const VIEW_CONTEXTS: [&str; 5] = ["text", "document", "table", "image", "can
 /// (konoma: a `Copy` pair of interned ids; the standalone app: whatever names it).
 #[derive(Debug, Clone)]
 pub struct ActBinding<H> {
+    /// The declaring plugin and its group; ids are local to one plugin.
+    pub hint_group: Option<(String, crate::HintGroup)>,
     pub act: H,
     /// The key it runs on in the plugin's layer; `None` = reachable from the `Space` menu only.
     pub key: Option<KeyPress>,
@@ -61,6 +63,86 @@ pub fn footer_order<'a, H>(acts: &[&'a ActBinding<H>]) -> Vec<&'a ActBinding<H>>
     v.into_iter().map(|(_, b)| b).collect()
 }
 
+/// One footer token or help row. Members retain declaration order.
+pub struct Hint<'a, H> {
+    pub members: Vec<&'a ActBinding<H>>,
+}
+
+impl<'a, H> Hint<'a, H> {
+    pub fn label(&self, lang: &str) -> &'a str {
+        let first = self.members[0];
+        first
+            .hint_group
+            .as_ref()
+            .map_or(&first.label, |(_, g)| &g.label)
+            .get(lang)
+    }
+
+    pub fn help(&self, lang: &str) -> &'a str {
+        let first = self.members[0];
+        let help = first
+            .hint_group
+            .as_ref()
+            .map_or(&first.help, |(_, g)| &g.help)
+            .get(lang);
+        if help.is_empty() {
+            self.label(lang)
+        } else {
+            help
+        }
+    }
+
+    /// Only keys whose actions act now, de-duplicated as in the host's operation groups.
+    pub fn keys(&self, enabled: impl Fn(&ActBinding<H>) -> bool) -> Vec<KeyPress> {
+        let mut keys = Vec::new();
+        for b in &self.members {
+            if let Some(key) = b.key.filter(|_| enabled(b)) {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
+    }
+}
+
+fn hints<'a, H>(acts: &[&'a ActBinding<H>]) -> Vec<Hint<'a, H>> {
+    let mut out: Vec<Hint<'a, H>> = Vec::new();
+    for b in acts {
+        let group = b.hint_group.as_ref();
+        if let Some(hint) = out.iter_mut().find(|h| {
+            group.is_some_and(|(plugin, group)| {
+                h.members[0]
+                    .hint_group
+                    .as_ref()
+                    .is_some_and(|(p, g)| p == plugin && g.id == group.id)
+            })
+        }) {
+            hint.members.push(b);
+        } else {
+            out.push(Hint { members: vec![b] });
+        }
+    }
+    out
+}
+
+/// Footer groups at their smallest priority, with only footer-declaring members contributing.
+pub fn footer_hints<'a, H>(acts: &[&'a ActBinding<H>]) -> Vec<Hint<'a, H>> {
+    let eligible: Vec<_> = acts
+        .iter()
+        .copied()
+        .filter(|b| b.footer.is_some())
+        .collect();
+    let mut out = hints(&eligible);
+    let ordered = footer_order(&eligible);
+    out.sort_by_key(|h| {
+        ordered
+            .iter()
+            .position(|b| h.members.iter().any(|m| std::ptr::eq(*m, *b)))
+    });
+    out
+}
+
 /// The footer token of an action: `<keys>:<label>`. `None` when the action has no key or does not
 /// act now (`enabled`), so a hint is shown exactly while its key acts. `show_key` writes the key
 /// the way the host writes keys.
@@ -78,25 +160,24 @@ pub fn footer_token<H>(
 }
 
 /// The rows of the plugin's section of the `?` help: the keyed actions that act now (`enabled`),
-/// each as its key and its description (the help text, else the label). The plugin's display name
-/// is the section's title and comes from the host's manifest cache.
+/// grouped at the first member in declaration order, each with its enabled keys and description
+/// (the group's help text, else its label). Ungrouped actions use their own help/label. The plugin's
+/// display name is the section's title and comes from the host's manifest cache.
 pub fn help_rows<'a, H>(
     acts: &[&'a ActBinding<H>],
     lang: &str,
     enabled: impl Fn(&ActBinding<H>) -> bool,
-) -> Vec<(KeyPress, &'a str, &'a ActBinding<H>)> {
-    acts.iter()
-        .copied()
-        .filter_map(|b| {
-            let key = b.key?;
-            if !enabled(b) {
+) -> Vec<(Vec<KeyPress>, &'a str, &'a ActBinding<H>)> {
+    hints(acts)
+        .into_iter()
+        .filter_map(|h| {
+            let keys = h.keys(&enabled);
+            if keys.is_empty() {
                 return None;
             }
-            let desc = match b.help.get(lang) {
-                "" => b.label.get(lang),
-                h => h,
-            };
-            Some((key, desc, b))
+            let b = h.members[0];
+            let desc = h.help(lang);
+            Some((keys, desc, b))
         })
         .collect()
 }
@@ -190,6 +271,7 @@ mod tests {
         footer: Option<u8>,
     ) -> ActBinding<&'static str> {
         ActBinding {
+            hint_group: None,
             act,
             key,
             context: context.map(str::to_string),
@@ -293,12 +375,12 @@ mod tests {
         all[0].help = Tr::new("Change the width").with("ja", "幅を変える");
         let v = acts_in(&all, "table");
         let rows = help_rows(&v, "en", |b| b.act != "again");
-        let got: Vec<_> = rows.iter().map(|(k, d, _)| (k.label(), *d)).collect();
+        let got: Vec<_> = rows.iter().map(|(keys, d, _)| (keys.clone(), *d)).collect();
         assert_eq!(
             got,
             [
-                ("w".to_string(), "Change the width"),
-                ("r".to_string(), "rows")
+                (vec![KeyPress::ch('w')], "Change the width"),
+                (vec![KeyPress::ch('r')], "rows")
             ],
             "the keyless one and the disabled one are left out"
         );
