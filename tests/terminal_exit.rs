@@ -108,8 +108,7 @@ fn every_exit_stops_running_capture_commands() {
         } else {
             terminal.write_all(b"Qy").unwrap();
         }
-        let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(100));
-        let status = wait_exit(&mut p.child);
+        let (status, _) = wait_exit(&mut p.child, p.master.as_ref(), signal);
         let ended = matches!(lifetime.read(&mut [0]), Ok(0));
         if !ended {
             unsafe {
@@ -133,41 +132,13 @@ fn spawn_konoma_configured(
     setup: impl FnOnce(&std::path::Path),
     configure: impl FnOnce(&mut Command),
 ) -> Pty {
-    let mut master = 0;
-    let mut slave = 0;
-    let ws = libc::winsize {
-        ws_row: 30,
-        ws_col: 100,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: out-pointers are valid; the termios pointer is null and the winsize is a valid
-    // initialized struct (`openpty` takes it by `*const` on both platforms' libc bindings).
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &ws as *const libc::winsize as *mut libc::winsize,
-        )
-    };
-    assert_eq!(rc, 0, "openpty failed");
-    // SAFETY: both fds were just returned by openpty and are owned by us.
-    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let (master, slave) = open_pty();
 
     let env = environment::Environment::new(tag);
     let work = env.path("work");
     std::fs::create_dir_all(&work).unwrap();
     setup(&work);
 
-    // Close-on-exec on both ends: a sibling test's child must not inherit this master (it would
-    // keep the terminal open and the hangup would never be delivered). The child gets its own
-    // copies as stdio below.
-    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
-        // SAFETY: plain fcntl on an fd we own.
-        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    }
     let slave_fd = slave.as_raw_fd();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_konoma"));
     env.configure(&mut cmd);
@@ -192,6 +163,72 @@ fn spawn_konoma_configured(
         child,
         _env: env,
     }
+}
+
+fn open_pty() -> (OwnedFd, OwnedFd) {
+    let mut master = 0;
+    let mut slave = 0;
+    let ws = libc::winsize {
+        ws_row: 30,
+        ws_col: 100,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: out-pointers are valid; the termios pointer is null and the winsize is a valid
+    // initialized struct (`openpty` takes it by `*const` on both platforms' libc bindings).
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &ws as *const libc::winsize as *mut libc::winsize,
+        )
+    };
+    assert_eq!(rc, 0, "openpty failed");
+    // SAFETY: both fds were just returned by openpty and are owned by us.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+
+    // Close-on-exec on both ends: a sibling test's child must not inherit this master (it would
+    // keep the terminal open and the hangup would never be delivered). The child gets its own
+    // copies as stdio below.
+    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+        // SAFETY: plain fcntl on an fd we own.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    (master, slave)
+}
+
+#[test]
+fn wait_exit_drains_output_until_the_child_exits() {
+    use std::io::Write;
+    const ENV: &str = "KONOMA_TEST_EXIT_PTY_WRITER";
+    const BYTES: usize = 1024 * 1024;
+    if std::env::var_os(ENV).is_some() {
+        // More than the PTY can buffer. No startup read or timing window: completion requires
+        // the parent to drain while waiting, just as a real terminal does during exit.
+        std::io::stdout().write_all(&vec![0; BYTES]).unwrap();
+        std::process::exit(0);
+    }
+    let (master, slave) = open_pty();
+    let mut child = konoma_plugin::proc::process::ChildGuard::new(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "wait_exit_drains_output_until_the_child_exits",
+                "--nocapture",
+            ])
+            .env(ENV, "1")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(slave))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (status, out) = wait_exit(&mut child, Some(&master), "PTY writer");
+    assert!(status.success());
+    assert_eq!(out.iter().filter(|&&byte| byte == 0).count(), BYTES);
 }
 
 /// Reads until the child has switched to the alternate screen (the signal handlers are installed
@@ -235,17 +272,60 @@ fn read_for(fd: &OwnedFd, wait: Duration) -> Vec<u8> {
     out
 }
 
-fn wait_exit(child: &mut Child) -> std::process::ExitStatus {
-    let until = Instant::now() + Duration::from_secs(15);
+/// Read one available batch. A closed slave gives EOF (macOS) or EIO (Linux).
+fn read_pty(fd: &OwnedFd, wait_ms: i32, out: &mut Vec<u8>) -> bool {
+    let mut p = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `p` is a valid pollfd and the count is 1.
+    if unsafe { libc::poll(&mut p, 1, wait_ms) } <= 0 {
+        return false;
+    }
+    let mut buf = [0u8; 65536];
+    // SAFETY: `buf` is valid for `buf.len()` bytes; this is the master's only reader.
+    let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+    if n <= 0 {
+        return false;
+    }
+    out.extend_from_slice(&buf[..n as usize]);
+    true
+}
+
+/// A real terminal keeps consuming output through exit. Stopping after a fixed startup/exit
+/// read can block a redraw or terminal restoration on a full PTY, preventing the child exiting.
+fn wait_exit(
+    child: &mut Child,
+    master: Option<&OwnedFd>,
+    case: impl std::fmt::Debug,
+) -> (std::process::ExitStatus, Vec<u8>) {
+    let started = Instant::now();
+    let limit = Duration::from_secs(15);
+    let mut out = Vec::new();
     loop {
-        if let Some(st) = child.try_wait().unwrap() {
-            return st;
+        let status = child.try_wait().unwrap();
+        let read = if let Some(master) = master {
+            // Once reaped, consume the remaining queued bytes without waiting for more.
+            read_pty(master, if status.is_some() { 0 } else { 50 }, &mut out)
+        } else {
+            false
+        };
+        if let Some(status) = status {
+            if !read {
+                return (status, out);
+            }
         }
-        if Instant::now() > until {
+        if started.elapsed() > limit {
             let _ = child.kill();
-            panic!("konoma did not exit");
+            panic!(
+                "konoma did not exit for {case:?} after {:?} (limit {limit:?})",
+                started.elapsed()
+            );
         }
-        std::thread::sleep(Duration::from_millis(50));
+        if master.is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -255,7 +335,7 @@ fn hangup_exits_129_not_abort() {
     // Let it start and draw its first frames, then hang the terminal up.
     let _ = wait_for_alt_screen(p.master.as_ref().unwrap());
     drop(p.master.take());
-    let st = wait_exit(&mut p.child);
+    let (st, _) = wait_exit(&mut p.child, p.master.as_ref(), Some(libc::SIGHUP));
     assert_eq!(
         st.signal(),
         None,
@@ -271,8 +351,7 @@ fn sigterm_exits_143_and_restores_the_terminal() {
     let _ = wait_for_alt_screen(p.master.as_ref().unwrap());
     // SAFETY: plain kill(2) on our own child.
     unsafe { libc::kill(p.child.id() as i32, libc::SIGTERM) };
-    let out = read_for(p.master.as_ref().unwrap(), Duration::from_millis(1500));
-    let st = wait_exit(&mut p.child);
+    let (st, out) = wait_exit(&mut p.child, p.master.as_ref(), Some(libc::SIGTERM));
     assert_eq!(st.signal(), None);
     assert_eq!(st.code(), Some(128 + libc::SIGTERM));
     let text = String::from_utf8_lossy(&out);
@@ -367,10 +446,7 @@ fn sigterm_stops_the_svg_drawing_process() {
     let (mut p, child) = konoma_with_a_drawing_process("svgterm");
     // SAFETY: plain kill(2) on our own child.
     unsafe { libc::kill(p.child.id() as i32, libc::SIGTERM) };
-    // Keep reading: a konoma that has drawn a picture has output queued for the terminal, and a
-    // process cannot finish exiting while its tty still holds unread output.
-    let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(1500));
-    let st = wait_exit(&mut p.child);
+    let (st, _) = wait_exit(&mut p.child, p.master.as_ref(), Some(libc::SIGTERM));
     assert_eq!(st.code(), Some(128 + libc::SIGTERM));
     assert_gone(child);
 }
@@ -379,7 +455,7 @@ fn sigterm_stops_the_svg_drawing_process() {
 fn hangup_stops_the_svg_drawing_process() {
     let (mut p, child) = konoma_with_a_drawing_process("svghup");
     drop(p.master.take());
-    let st = wait_exit(&mut p.child);
+    let (st, _) = wait_exit(&mut p.child, p.master.as_ref(), Some(libc::SIGHUP));
     assert_eq!(st.code(), Some(128 + libc::SIGHUP));
     assert_gone(child);
 }
