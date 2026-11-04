@@ -5946,9 +5946,14 @@ fn e2e_jj_follow_diff_since_start_survives_a_commit() {
         (&fresh, None, "new-after"),
     ] {
         assert!(s.app.follow_note_change(path));
+        // The real event loop refreshes the listing before jumping to the pending follow target.
+        s.app
+            .refresh_fs_changed(false, std::slice::from_ref(path))
+            .unwrap();
         s.app.follow_jump(path);
         s.draw();
         assert!(s.app.is_git_diff_preview());
+        assert_eq!(s.app.tab.preview_path.as_deref(), Some(path.as_path()));
         let lines = s.app.git_diff_lines();
         let removed: Vec<_> = lines
             .iter()
@@ -5990,6 +5995,8 @@ fn e2e_project_vcs_colocated_git_off_chip_matches_worker() {
             let (tx, rx) = std::sync::mpsc::channel();
             s.app.attach_status_loader(tx);
             s.app.refresh().unwrap();
+            // Refresh invalidates status; rendering dispatches the pending worker request.
+            s.draw();
             let res = rx.recv_timeout(DRAIN_WAIT).expect("status worker result");
             assert!(s.app.apply_statuses(res));
             assert_eq!(s.app.git_vcs, expected, "worker: {pref}");
