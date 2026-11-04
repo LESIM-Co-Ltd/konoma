@@ -535,6 +535,8 @@ pub struct ListView {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
+    /// Short name used in action prompts, falling back to the opaque value when absent.
+    pub name: Option<String>,
     /// False for a message or heading: the host never selects, marks or acts on this row.
     pub selectable: bool,
     /// Opaque stable identity for action selection. Empty for legacy rows.
@@ -551,6 +553,10 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;
         self
@@ -576,6 +582,7 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
+            name: None,
             selectable: true,
             cells,
             value: String::new(),

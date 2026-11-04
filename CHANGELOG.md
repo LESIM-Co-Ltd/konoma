@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Project confirmations can include the invoked row's short `ListRow::name` through `{row}`, and non-destructive confirmations can use `Confirmation::setting` to respect a boolean plugin preference.
+
 - Internal: begin moving Git and jj changes screens into `konoma-vcs`, exercised alongside the legacy hub in tests; there is no user-visible change.
 
 ### Added

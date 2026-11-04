@@ -63,8 +63,8 @@ JSON の manifest 出力では整数の配列になります。
 ```text
 ProjectAct {
   screen: string | null,
-  selected: { kind: string, value: string } | null,
-  marked: [{ kind: string, value: string }],
+  selected: { kind: string, value: string, name?: string } | null,
+  marked: [{ kind: string, value: string, name?: string }],
   confirmation: string | null,
   text: string | null,
   choice: string | null
@@ -170,7 +170,7 @@ chip はツリーの題の短い要約、監視パスはプロジェクトの根
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
 text_input: { label: Tr, initial: string } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -181,6 +181,20 @@ Choice = { value: string, label: Tr }
 `Enter` は `key: "Enter"` と、行の種類を1つ以上指定した画面の文脈で宣言します。
 通常の操作と同じ宣言・検査の経路を通り、行の種類が異なれば別の Enter 操作を持てます。
 確認の選択肢は `y` → `-d`、`!` → `-D` のように値を分けられます。
+
+ホストは言語を選んだ後、確認文のすべての `{row}` を、操作を呼び出した行の
+`name`（未指定なら `value`）に置き換えます。選択行がなければ空文字です。
+呼び出し時の行を保持するため、ダイアログを開いている間にカーソルが動いたり
+一覧が更新されたりしても、確認文の行名は変わりません。他の置換記法や
+エスケープはなく、`{row}` のない文はそのまま表示します。
+
+`Confirmation::setting(key)` は `[plugins.<id>]` の真偽値設定で確認の有無を
+切り替えます。`cx.settings` と同じ設定を使い、未指定なら宣言された既定値を使います。
+`false` の場合だけ確認を省略し、有効な値が見つからない場合や真偽値以外では確認します。
+後続の文字入力・一覧選択は表示し、操作は通常どおり実行します。`setting` の既定は
+`None` で送信時に省略するため、古い子プロセスの確認は常に表示します。
+破壊的操作の確認への設定指定と、真偽値の既定値を持つ `SettingDecl` がないキーは
+登録時に拒否し、それぞれのエラーに操作名とキーを含めます。破壊的操作の確認は必須です。
 
 `RefreshTarget` は `"CurrentScreen"`・`{"Screen":{"screen":string}}`・`"AllScreens"`・
 `"TreeStatus"`・`"Chip"` のいずれかです。操作の `refresh` は既定で空、空なら送信時に
@@ -211,6 +225,10 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 `target: Path | null`、`checked: boolean | null` と、新しい `marked: boolean` を持ちます。
 不透明な行の値 `value: string` も持ち、SDKの `ListRow::value` で指定します。
 既定の空文字は送信時に省略し、従来の行のバイト表現を保ちます。
+`ListRow::name(impl Into<String>)` は確認用の短い名前を任意で指定します
+（`Option<String>`、既定は `None`）。未指定の線上フィールドは省略し、古い子プロセス
+では `None`、古いホストでは無視されます。選択行と印付き行の `ProjectRow` にも渡り、
+`ProjectRow::new(kind, value).name(name)` で直接設定できます。
 従来の行の種類・行き先・プラグインのチェック状態の意味を保ち、`marked` は独立した
 ホストの複数選択の印です。セルは既に
 `Line { spans: [[text, Style], …], style: Style }` で、グラフの罫線もこの span で表せます。

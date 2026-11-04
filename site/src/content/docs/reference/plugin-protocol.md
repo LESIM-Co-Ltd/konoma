@@ -69,8 +69,8 @@ within one open project session. The SDK builds it with
 ```text
 ProjectAct {
   screen: string | null,
-  selected: { kind: string, value: string } | null,
-  marked: [{ kind: string, value: string }],
+  selected: { kind: string, value: string, name?: string } | null,
+  marked: [{ kind: string, value: string, name?: string }],
   confirmation: string | null,
   text: string | null,
   choice: string | null
@@ -181,7 +181,7 @@ Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `write
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
 text_input: { label: Tr, initial: string } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -193,6 +193,21 @@ are menu-only. `Enter` is declared with `key: "Enter"` and a screen context with
 one or more row kinds, through the same declaration and validation path as any
 other action. Distinct row kinds may have distinct Enter actions. Confirmation
 choices can distinguish `y` → `-d` and `!` → `-D`.
+
+After selecting the language, the host replaces every literal `{row}` in confirmation
+text with the invoked row's `name`, falling back to its `value`. Without a selected
+row it uses an empty string. The invocation captures the row, so moving the cursor
+or refreshing the list while the dialog is open does not change the prompt's name.
+There are no other placeholders or escaping; text without `{row}` is unchanged.
+
+`Confirmation::setting(key)` makes the confirmation conditional on a boolean setting
+in `[plugins.<id>]`, using the same settings as `cx.settings` and the declared default
+when absent. Only `false` skips the confirmation; a missing effective value or a
+non-boolean value asks. Later text and choice prompts still appear, and the action
+runs normally. `setting` defaults to `None` and is omitted on the wire; older children
+therefore always ask. The registry rejects a setting on a destructive confirmation,
+and a key without a `SettingDecl` with a boolean default, with separate errors naming
+the action and key. Destructive actions always require confirmation.
 
 `RefreshTarget` is one of `"CurrentScreen"`, `{"Screen":{"screen":string}}`,
 `"AllScreens"`, `"TreeStatus"`, or `"Chip"`. An action's `refresh` list defaults
@@ -229,6 +244,10 @@ A list remains `{"List":[row, …]}`. Each row has `cells: Line[]`, `kind: strin
 `target: Path | null`, `checked: boolean | null`, and the new `marked: boolean`.
 It also has an opaque `value: string`, built with `ListRow::value`. Its default is
 the empty string, omitted on the wire, so legacy rows keep their bytes.
+`ListRow::name(impl Into<String>)` adds an optional short prompt name (`Option<String>`,
+default `None`). The optional wire field is omitted when absent: older children
+produce `None` and older hosts ignore it. It also reaches selected and marked
+`ProjectRow`s; `ProjectRow::new(kind, value).name(name)` sets it directly.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
 is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same

@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub row_name: Option<String>,
+    pub prompt_default: Option<bool>,
+    pub prompt_value: Option<toml::Value>,
+    pub prompt_settings: Vec<bool>,
     pub watch_paths: Option<Vec<std::path::PathBuf>>,
     pub watch_threads: Vec<std::thread::ThreadId>,
     pub chip: Option<Chip>,
@@ -91,6 +95,38 @@ impl Plugin for Screens {
             .shows(ViewKind::Text)
             .shows(ViewKind::Diff)
             .shows(ViewKind::Document)
+            .setting(SettingDecl::new(
+                "confirm_sync",
+                Value::Bool(self.log.lock().unwrap().prompt_default.unwrap_or(true)),
+                "Ask before sync",
+            ))
+            .action(
+                action("row-prompt", "ctrl-F2", any()).confirmation(Confirmation::new(
+                    Tr::new("Discard {row}? Again {row}; {other}").with("ja", "JA {row} / {row}"),
+                    vec![ConfirmChoice::new('y', "yes", "Yes")],
+                )),
+            )
+            .action(
+                action("conditional", "ctrl-F3", on()).confirmation(
+                    Confirmation::new("Sync project?", vec![ConfirmChoice::new('y', "yes", "Yes")])
+                        .setting("confirm_sync"),
+                ),
+            )
+            .action(
+                action("conditional-input", "ctrl-F4", on())
+                    .confirmation(
+                        Confirmation::new(
+                            "Sync project?",
+                            vec![ConfirmChoice::new('y', "yes", "Yes")],
+                        )
+                        .setting("confirm_sync"),
+                    )
+                    .text_input(TextInput::new("Sync message", "seed"))
+                    .choice_input(ChoiceInput::new(
+                        "Sync target",
+                        vec![Choice::new("all", "All")],
+                    )),
+            )
             .action(action("push", "Enter", on()))
             .action(action("capture", "x", on()))
             .action(action("screen", "a", any()))
@@ -276,6 +312,7 @@ impl Session for ScreenSession {
         };
         let reverse = log.reverse_rows;
         let omit = log.omit_row.clone();
+        let row_name = log.row_name.clone();
         drop(log);
         if let Some(hold) = &hold {
             hold.entered.open();
@@ -338,6 +375,9 @@ impl Session for ScreenSession {
             }),
             _ => return Err(Failure::unsupported("unknown project screen")),
         };
+        if let View::List(list) = &mut view {
+            list.rows[0].name = row_name;
+        }
         if reverse {
             if let View::List(list) = &mut view {
                 list.rows.reverse();
@@ -355,6 +395,11 @@ impl Session for ScreenSession {
             .as_ref()
             .ok_or_else(|| Failure::unsupported("missing project act"))?;
         let mut log = self.log.lock().unwrap();
+        let default = Value::Bool(log.prompt_default.unwrap_or(true));
+        log.prompt_settings.push(!matches!(
+            cx.settings.get("confirm_sync").unwrap_or(&default),
+            Value::Bool(false)
+        ));
         log.acts.push((action.into(), context.clone()));
         log.threads.push(std::thread::current().id());
         drop(log);

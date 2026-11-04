@@ -125,6 +125,8 @@ pub struct WConfirmChoice {
 pub struct WConfirmation {
     pub text: WTr,
     pub choices: Vec<WConfirmChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setting: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,12 +275,14 @@ pub fn confirm_choice_from_wire(choice: WConfirmChoice) -> ConfirmChoice {
 
 pub fn confirmation_to_wire(c: &Confirmation) -> WConfirmation {
     WConfirmation {
+        setting: c.setting.clone(),
         text: tr_to_wire(&c.text),
         choices: c.choices.iter().map(confirm_choice_to_wire).collect(),
     }
 }
 pub fn confirmation_from_wire(c: WConfirmation) -> Confirmation {
     Confirmation {
+        setting: c.setting,
         text: tr_from_wire(c.text),
         choices: c
             .choices

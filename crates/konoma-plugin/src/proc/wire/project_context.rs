@@ -36,12 +36,15 @@ impl WProjectView {
 pub struct WProjectRow {
     pub kind: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 impl WProjectRow {
     pub fn new(kind: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             kind: kind.into(),
             value: value.into(),
+            name: None,
         }
     }
 }
@@ -132,12 +135,14 @@ pub fn project_view_from_wire(p: WProjectView) -> Result<ProjectView, WireError>
 }
 pub fn project_row_to_wire(p: &ProjectRow) -> WProjectRow {
     WProjectRow {
+        name: p.name.clone(),
         kind: p.kind.clone(),
         value: p.value.clone(),
     }
 }
 pub fn project_row_from_wire(p: WProjectRow) -> ProjectRow {
     ProjectRow {
+        name: p.name,
         kind: p.kind,
         value: p.value,
     }
