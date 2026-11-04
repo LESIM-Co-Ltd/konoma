@@ -52,6 +52,10 @@ struct Shared {
     open_gate: Latch,
     /// How many sessions were dropped (freed).
     drops: AtomicUsize,
+    /// Hold the first session's destruction so display completion and destruction can be ordered.
+    hold_drop: AtomicBool,
+    drop_started: Latch,
+    drop_gate: Latch,
     /// Whether the session declares two representations (`one`, `two`).
     reprs: AtomicBool,
     /// The representation each `view` was asked for, and the thread it ran on.
@@ -95,6 +99,9 @@ impl Shared {
             hold_opens: AtomicBool::new(false),
             open_gate: Latch::default(),
             drops: AtomicUsize::new(0),
+            hold_drop: AtomicBool::new(false),
+            drop_started: Latch::default(),
+            drop_gate: Latch::default(),
             reprs: AtomicBool::new(false),
             asked: Mutex::default(),
             acts: Mutex::default(),
@@ -199,6 +206,10 @@ struct TypistSession {
 
 impl Drop for TypistSession {
     fn drop(&mut self) {
+        if self.seq == 1 && self.sh.hold_drop.load(Ordering::SeqCst) {
+            self.sh.drop_started.open();
+            self.sh.drop_gate.wait();
+        }
         self.sh.drops.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -1367,6 +1378,7 @@ fn e2e_canvas_reload_the_old_session_is_out_of_reach_while_the_file_is_read_agai
         o.s.app.plugin_session_is_out_for_test(),
         "the old session is out of reach"
     );
+    crate::app::flush_discards();
     assert_eq!(o.sh.drops(), 1, "and it is freed (off the UI thread)");
     o.s.see("sess=1"); // the old view is still what is drawn
                        // The timer is due: nobody to ask.
@@ -1465,6 +1477,7 @@ fn e2e_canvas_reload_answered_to_a_key_with_more_keys_waiting_goes_to_the_new_se
         2,
         "the file was read again"
     );
+    crate::app::flush_discards();
     assert_eq!(o.sh.drops(), 1, "the old session is gone");
     // The new session is what is shown, and it got `b` and `c`.
     o.s.see("sess=2");
@@ -1918,9 +1931,56 @@ fn e2e_canvas_a_batch_that_asks_for_a_reload_and_a_redraw_reads_the_file_again()
             2,
             "order {i}: the file was read again"
         );
+        // The new view's answer does not acknowledge destruction on the separate reaper.
+        crate::app::flush_discards();
         assert_eq!(o.sh.drops(), 1, "order {i}: and the old session is gone");
         o.s.see("sess=2");
     }
+}
+
+#[test]
+fn e2e_canvas_a_batch_can_settle_before_the_old_session_is_destroyed() {
+    // Always release the reaper, including if an assertion fails.
+    struct ReleaseDrop(Arc<Shared>);
+    impl Drop for ReleaseDrop {
+        fn drop(&mut self) {
+            self.0.drop_gate.open();
+        }
+    }
+
+    let mut o = open_with("cb_drop_order", "en", true, |setup| {
+        setup.hold_drop.store(true, Ordering::SeqCst);
+        *setup.script.lock().unwrap() = vec![Reply::Unhandled, Reply::Reload, Reply::Redraw].into();
+    });
+    // Use the same queue and completion path as one_batch, with the reaper held in Drop.
+    let release_session = ReleaseDrop(o.sh.clone());
+    konoma_base::discard::clear_discarded();
+    o.sh.hold_keys.store(true, Ordering::SeqCst);
+    o.s.key('a');
+    o.s.key('b');
+    o.s.key('c');
+    o.sh.hold_keys.store(false, Ordering::SeqCst);
+    o.sh.latch.open();
+    settle(&mut o.s);
+    assert!(
+        konoma_base::discard::discarded_types()
+            .contains(&std::any::type_name::<Box<dyn Session>>()),
+        "the old session was handed to the reaper"
+    );
+    o.sh.drop_started.wait();
+    assert!(
+        o.sh.drop_started.is_open(),
+        "the reaper started destruction"
+    );
+    o.s.see("sess=2");
+    assert_eq!(
+        o.sh.drops(),
+        0,
+        "settle did not wait for the held destruction"
+    );
+    drop(release_session);
+    crate::app::flush_discards();
+    assert_eq!(o.sh.drops(), 1, "the reaper finished destruction");
 }
 
 #[test]
