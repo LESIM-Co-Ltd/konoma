@@ -2633,7 +2633,8 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
                 }
                 Ok(Outcome::Redraw) => again = true,
                 Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
-                Ok(Outcome::Unhandled) => {}
+                // Project navigation is attached by a later host change.
+                Ok(_) => {}
                 Err(f) => flash = Some(f.message.get(&cx.lang).to_string()),
             }
         }

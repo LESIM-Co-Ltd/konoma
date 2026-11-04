@@ -90,14 +90,26 @@ fn is_unclean(c: char) -> bool {
 /// The declaration whose name is invalid. No unsanitized identifier is carried here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ManifestName { PluginId, ActionId, ActionScreen, SettingName, ScreenName, WorkGroup }
+pub enum ManifestName {
+    PluginId,
+    ActionId,
+    ActionScreen,
+    SettingName,
+    ScreenName,
+    WorkGroup,
+    RowKind,
+}
 
 impl ManifestName {
     fn english(self) -> &'static str {
         match self {
-            Self::PluginId => "the plugin id", Self::ActionId => "an action id",
-            Self::ActionScreen => "an action's screen", Self::SettingName => "a setting name",
-            Self::ScreenName => "a screen name", Self::WorkGroup => "the work group",
+            Self::PluginId => "the plugin id",
+            Self::ActionId => "an action id",
+            Self::ActionScreen => "an action's screen",
+            Self::SettingName => "a setting name",
+            Self::ScreenName => "a screen name",
+            Self::WorkGroup => "the work group",
+            Self::RowKind => "a row kind",
         }
     }
 }
@@ -105,13 +117,26 @@ impl ManifestName {
 /// The declaration count that exceeded its limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ManifestCount { Actions, Settings, Binds, Screens, Targets }
+pub enum ManifestCount {
+    Actions,
+    Settings,
+    Binds,
+    Screens,
+    Targets,
+    Markers,
+    RowKinds,
+}
 
 impl ManifestCount {
     fn english(self) -> &'static str {
         match self {
-            Self::Actions => "actions", Self::Settings => "settings", Self::Binds => "binds",
-            Self::Screens => "screens", Self::Targets => "targets in a bind",
+            Self::Actions => "actions",
+            Self::Settings => "settings",
+            Self::Binds => "binds",
+            Self::Screens => "screens",
+            Self::Targets => "targets in a bind",
+            Self::Markers => "project detection markers",
+            Self::RowKinds => "row kinds in a screen",
         }
     }
 }
@@ -121,19 +146,66 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
-    InvalidName { kind: ManifestName, name: String, limit: usize },
-    TooMany { kind: ManifestCount, count: usize, limit: usize },
-    TargetTooLong { bind: usize, bytes: usize, limit: usize },
-    TargetUnclean { bind: usize },
-    DefaultTooMany { limit: usize },
-    DefaultKeyTooLong { limit: usize },
-    DefaultKeyUnclean { limit: usize },
-    DefaultTooDeep { limit: usize },
+    DestructiveWithoutConfirmation {
+        action: String,
+    },
+    DuplicateScreen {
+        screen: String,
+    },
+    DuplicateScreenKey {
+        key: String,
+    },
+    UnknownScreen {
+        action: String,
+        screen: String,
+    },
+    UnknownRowKind {
+        action: String,
+        screen: String,
+        kind: String,
+    },
+    NoDetectionMarkers,
+    InvalidName {
+        kind: ManifestName,
+        name: String,
+        limit: usize,
+    },
+    TooMany {
+        kind: ManifestCount,
+        count: usize,
+        limit: usize,
+    },
+    TargetTooLong {
+        bind: usize,
+        bytes: usize,
+        limit: usize,
+    },
+    TargetUnclean {
+        bind: usize,
+    },
+    DefaultTooMany {
+        limit: usize,
+    },
+    DefaultKeyTooLong {
+        limit: usize,
+    },
+    DefaultKeyUnclean {
+        limit: usize,
+    },
+    DefaultTooDeep {
+        limit: usize,
+    },
 }
 
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DestructiveWithoutConfirmation { action } => write!(f, "action `{action}` is destructive but has no confirmation choices"),
+            Self::DuplicateScreen { screen } => write!(f, "screen `{screen}` is declared twice"),
+            Self::DuplicateScreenKey { key } => write!(f, "screen key `{key}` is declared twice"),
+            Self::UnknownScreen { action, screen } => write!(f, "action `{action}` names unknown screen `{screen}`"),
+            Self::UnknownRowKind { action, screen, kind } => write!(f, "action `{action}` names unknown row kind `{kind}` in screen `{screen}`"),
+            Self::NoDetectionMarkers => write!(f, "a project must declare at least one detection marker"),
             Self::InvalidName { kind, name, limit } => write!(f, "{} `{name}` is not a name ([a-z0-9._-], 1 to {limit} characters)", kind.english()),
             Self::TooMany { kind, count, limit } => write!(f, "{count} {} (at most {limit})", kind.english()),
             Self::TargetTooLong { bind, bytes, limit } => write!(f, "bind {bind} has a target that is too long ({bytes} bytes, at most {limit})"),
@@ -148,33 +220,56 @@ impl fmt::Display for ManifestReason {
 
 /// Never carry a target's text in a refusal: it may contain terminal control characters.
 fn target_problem(bind: usize, t: &Target) -> Option<ManifestReason> {
-    let (Target::Glob(s) | Target::FileName(s) | Target::Mime(s) | Target::Content(s) | Target::Embed(s)) = t;
+    let (Target::Glob(s)
+    | Target::FileName(s)
+    | Target::Mime(s)
+    | Target::Content(s)
+    | Target::Embed(s)) = t;
     if s.len() > MAX_TARGET_BYTES {
-        return Some(ManifestReason::TargetTooLong { bind, bytes: s.len(), limit: MAX_TARGET_BYTES });
+        return Some(ManifestReason::TargetTooLong {
+            bind,
+            bytes: s.len(),
+            limit: MAX_TARGET_BYTES,
+        });
     }
-    s.chars().any(is_unclean).then_some(ManifestReason::TargetUnclean { bind })
+    s.chars()
+        .any(is_unclean)
+        .then_some(ManifestReason::TargetUnclean { bind })
 }
 
 fn default_problem(v: &Value) -> Option<ManifestReason> {
     fn walk(v: &Value, depth: usize, nodes: &mut usize) -> Option<ManifestReason> {
         *nodes += 1;
         if *nodes > MAX_DEFAULT_NODES {
-            return Some(ManifestReason::DefaultTooMany { limit: MAX_DEFAULT_NODES });
+            return Some(ManifestReason::DefaultTooMany {
+                limit: MAX_DEFAULT_NODES,
+            });
         }
         let children: Box<dyn Iterator<Item = &Value>> = match v {
             Value::List(l) => Box::new(l.iter()),
             Value::Table(t) => {
-                if let Some(k) = t.keys().find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean)) {
+                if let Some(k) = t
+                    .keys()
+                    .find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean))
+                {
                     return Some(if k.len() > MAX_DEFAULT_KEY_BYTES {
-                        ManifestReason::DefaultKeyTooLong { limit: MAX_DEFAULT_KEY_BYTES }
-                    } else { ManifestReason::DefaultKeyUnclean { limit: MAX_DEFAULT_KEY_BYTES } });
+                        ManifestReason::DefaultKeyTooLong {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    } else {
+                        ManifestReason::DefaultKeyUnclean {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    });
                 }
                 Box::new(t.values())
             }
             _ => return None,
         };
         if depth > MAX_DEFAULT_DEPTH {
-            return Some(ManifestReason::DefaultTooDeep { limit: MAX_DEFAULT_DEPTH });
+            return Some(ManifestReason::DefaultTooDeep {
+                limit: MAX_DEFAULT_DEPTH,
+            });
         }
         children.into_iter().find_map(|c| walk(c, depth + 1, nodes))
     }
@@ -184,7 +279,11 @@ fn default_problem(v: &Value) -> Option<ManifestReason> {
 /// The single validation used by the registry and every host/checker that registers a manifest.
 fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
     let name = |kind: ManifestName, s: &str| {
-        (!is_valid_name(s)).then(|| ManifestReason::InvalidName { kind, name: display_name(s), limit: MAX_NAME_CHARS })
+        (!is_valid_name(s)).then(|| ManifestReason::InvalidName {
+            kind,
+            name: display_name(s),
+            limit: MAX_NAME_CHARS,
+        })
     };
     let count = |kind, count, limit| {
         (count > limit).then_some(ManifestReason::TooMany { kind, count, limit })
@@ -194,17 +293,137 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
         .or_else(|| count(ManifestCount::Settings, m.settings.len(), MAX_SETTINGS))
         .or_else(|| count(ManifestCount::Binds, m.binds.len(), MAX_BINDS))
         .or_else(|| count(ManifestCount::Screens, m.screens.len(), MAX_SCREENS))
-        .or_else(|| m.binds.iter().enumerate().find_map(|(i, b)| {
-            count(ManifestCount::Targets, b.targets.len(), MAX_TARGETS_PER_BIND)
+        .or_else(|| {
+            m.binds.iter().enumerate().find_map(|(i, b)| {
+                count(
+                    ManifestCount::Targets,
+                    b.targets.len(),
+                    MAX_TARGETS_PER_BIND,
+                )
                 .or_else(|| b.targets.iter().find_map(|t| target_problem(i, t)))
-        }))
+            })
+        })
         .or_else(|| m.settings.iter().find_map(|s| default_problem(&s.default)))
-        .or_else(|| m.actions.iter().find_map(|a| {
-            name(ManifestName::ActionId, &a.id).or_else(|| a.screen.as_deref().and_then(|s| name(ManifestName::ActionScreen, s)))
-        }))
-        .or_else(|| m.settings.iter().find_map(|s| name(ManifestName::SettingName, &s.name)))
-        .or_else(|| m.screens.iter().find_map(|s| name(ManifestName::ScreenName, s)))
-        .or_else(|| m.work_group.as_deref().and_then(|g| name(ManifestName::WorkGroup, g)))
+        .or_else(|| {
+            m.actions.iter().find_map(|a| {
+                name(ManifestName::ActionId, &a.id).or_else(|| {
+                    a.screen
+                        .as_deref()
+                        .and_then(|s| name(ManifestName::ActionScreen, s))
+                })
+            })
+        })
+        .or_else(|| {
+            m.settings
+                .iter()
+                .find_map(|s| name(ManifestName::SettingName, &s.name))
+        })
+        .or_else(|| {
+            m.screens
+                .iter()
+                .find_map(|s| name(ManifestName::ScreenName, s))
+        })
+        .or_else(|| {
+            m.work_group
+                .as_deref()
+                .and_then(|g| name(ManifestName::WorkGroup, g))
+        })
+        .or_else(|| project_problem(m))
+}
+
+fn project_problem(m: &Manifest) -> Option<ManifestReason> {
+    use crate::project::ActContext;
+    let project = m.project.as_ref();
+    if let Some(p) = project {
+        if p.markers.is_empty() {
+            return Some(ManifestReason::NoDetectionMarkers);
+        }
+        for (kind, count, limit) in [
+            (
+                ManifestCount::Screens,
+                m.screens.len() + p.screens.len(),
+                MAX_SCREENS,
+            ),
+            (
+                ManifestCount::Markers,
+                p.markers.len(),
+                MAX_TARGETS_PER_BIND,
+            ),
+        ] {
+            if count > limit {
+                return Some(ManifestReason::TooMany { kind, count, limit });
+            }
+        }
+        for s in &p.screens {
+            for (kind, name) in std::iter::once((ManifestName::ScreenName, &s.id))
+                .chain(s.row_kinds.iter().map(|r| (ManifestName::RowKind, r)))
+            {
+                if !is_valid_name(name) {
+                    return Some(ManifestReason::InvalidName {
+                        kind,
+                        name: display_name(name),
+                        limit: MAX_NAME_CHARS,
+                    });
+                }
+            }
+            if s.row_kinds.len() > MAX_TARGETS_PER_BIND {
+                return Some(ManifestReason::TooMany {
+                    kind: ManifestCount::RowKinds,
+                    count: s.row_kinds.len(),
+                    limit: MAX_TARGETS_PER_BIND,
+                });
+            }
+        }
+    }
+    let mut screens = std::collections::HashSet::new();
+    let mut keys = std::collections::HashSet::new();
+    for id in m.screens.iter().chain(
+        project
+            .into_iter()
+            .flat_map(|p| p.screens.iter().map(|s| &s.id)),
+    ) {
+        if !screens.insert(id) {
+            return Some(ManifestReason::DuplicateScreen {
+                screen: display_name(id),
+            });
+        }
+    }
+    for s in project.into_iter().flat_map(|p| &p.screens) {
+        if let Some(key) = s.key {
+            if !keys.insert(key) {
+                return Some(ManifestReason::DuplicateScreenKey {
+                    key: key.escape_default().to_string(),
+                });
+            }
+        }
+    }
+    for a in &m.actions {
+        if a.destructive && a.confirmation.as_ref().is_none_or(|c| c.choices.is_empty()) {
+            return Some(ManifestReason::DestructiveWithoutConfirmation {
+                action: display_name(&a.id),
+            });
+        }
+        // The legacy key context remains permissive. Only the new typed context names projects.
+        if let Some(ActContext::Screen { screen, row_kinds }) = &a.project_context {
+            let declared = project.and_then(|p| p.screens.iter().find(|s| &s.id == screen));
+            let Some(declared) = declared else {
+                return Some(ManifestReason::UnknownScreen {
+                    action: display_name(&a.id),
+                    screen: display_name(screen),
+                });
+            };
+            for kind in row_kinds {
+                if !declared.row_kinds.contains(kind) {
+                    return Some(ManifestReason::UnknownRowKind {
+                        action: display_name(&a.id),
+                        screen: display_name(screen),
+                        kind: display_name(kind),
+                    });
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Why a registration was refused.
@@ -213,7 +432,11 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
 pub enum RegistryError {
     /// The manifest declares a name that is not usable or more than the host takes (see
     /// [`is_valid_name`], [`MAX_ACTIONS`]...). `id` is safe to print.
-    InvalidManifest { id: String, why: String, reason: ManifestReason },
+    InvalidManifest {
+        id: String,
+        why: String,
+        reason: ManifestReason,
+    },
     /// A plugin with this id is already registered; the later one is refused.
     DuplicateId(String),
     /// A glob in the manifest does not compile.

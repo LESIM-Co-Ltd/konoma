@@ -11,6 +11,8 @@ use crate::view::ImageData;
 /// The thing to open.
 #[derive(Clone, Debug)]
 pub enum Input {
+    /// A detected project root and the actual matched entry name (not its glob).
+    Project { root: PathBuf, marker: String },
     /// A file on disk. `hint` is a note from the binding rule (for example `"tsv"` from an old
     /// `builtin = "tsv"`, or a command template).
     File { path: PathBuf, hint: Option<String> },

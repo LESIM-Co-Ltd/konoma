@@ -209,12 +209,38 @@ impl HostBuilder {
 fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
     use konoma_plugin::registry::{ManifestReason as R, ManifestName as N, ManifestCount as C};
     match reason {
+        R::DestructiveWithoutConfirmation { action } => {
+            tr_format(lang, Msg::PluginReasonDestructive, &[("action", action)])
+        }
+        R::DuplicateScreen { screen } => tr_format(
+            lang,
+            Msg::PluginReasonDuplicateScreen,
+            &[("screen", screen)],
+        ),
+        R::DuplicateScreenKey { key } => {
+            tr_format(lang, Msg::PluginReasonDuplicateScreenKey, &[("key", key)])
+        }
+        R::UnknownScreen { action, screen } => tr_format(
+            lang,
+            Msg::PluginReasonUnknownScreen,
+            &[("action", action), ("screen", screen)],
+        ),
+        R::UnknownRowKind {
+            action,
+            screen,
+            kind,
+        } => tr_format(
+            lang,
+            Msg::PluginReasonUnknownRowKind,
+            &[("action", action), ("screen", screen), ("kind", kind)],
+        ),
+        R::NoDetectionMarkers => tr(lang, Msg::PluginReasonNoMarkers).into(),
         R::InvalidName { kind, name, limit } => {
-            let kind = tr(lang, match kind { N::PluginId => Msg::PluginNameId, N::ActionId => Msg::PluginNameAction, N::ActionScreen => Msg::PluginNameActionScreen, N::SettingName => Msg::PluginNameSetting, N::ScreenName => Msg::PluginNameScreen, N::WorkGroup => Msg::PluginNameWorkGroup, _ => Msg::PluginNameUnknown });
+            let kind = tr(lang, match kind { N::PluginId => Msg::PluginNameId, N::ActionId => Msg::PluginNameAction, N::ActionScreen => Msg::PluginNameActionScreen, N::SettingName => Msg::PluginNameSetting, N::ScreenName => Msg::PluginNameScreen, N::WorkGroup => Msg::PluginNameWorkGroup, N::RowKind => Msg::PluginNameRowKind, _ => Msg::PluginNameUnknown });
             tr_format(lang, Msg::PluginReasonName, &[("kind", kind), ("name", name), ("max", &limit.to_string())])
         }
         R::TooMany { kind, count, limit } => {
-            let kind = tr(lang, match kind { C::Actions => Msg::PluginCountActions, C::Settings => Msg::PluginCountSettings, C::Binds => Msg::PluginCountBinds, C::Screens => Msg::PluginCountScreens, C::Targets => Msg::PluginCountTargets, _ => Msg::PluginCountUnknown });
+            let kind = tr(lang, match kind { C::Actions => Msg::PluginCountActions, C::Settings => Msg::PluginCountSettings, C::Binds => Msg::PluginCountBinds, C::Screens => Msg::PluginCountScreens, C::Targets => Msg::PluginCountTargets, C::Markers => Msg::PluginCountMarkers, C::RowKinds => Msg::PluginCountRowKinds, _ => Msg::PluginCountUnknown });
             tr_format(lang, Msg::PluginReasonCount, &[("kind", kind), ("n", &count.to_string()), ("max", &limit.to_string())])
         }
         R::TargetTooLong { bind, bytes, limit } => tr_format(lang, Msg::PluginReasonTargetLong, &[("bind", &bind.to_string()), ("bytes", &bytes.to_string()), ("max", &limit.to_string())]),
@@ -321,6 +347,122 @@ mod tests {
     }
 
     struct Fake(&'static str);
+
+    #[test]
+    fn project_manifest_reasons_are_translated_in_both_languages() {
+        use konoma_plugin::registry::{PluginOrigin, Registry, RegistryError};
+        struct Decl(Manifest);
+        impl Plugin for Decl {
+            fn manifest(&self) -> Manifest {
+                self.0.clone()
+            }
+            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+                Err(Failure::unsupported("fixture"))
+            }
+        }
+        let project = || {
+            ProjectDecl::new()
+                .marker(DetectionMarker::new(".git", MarkerKind::Any))
+                .screen(ProjectScreen::new("log", "Log").key('l').row_kind("commit"))
+        };
+        let m = || Manifest::new("p", "1").project(project());
+        let cases = [
+            (
+                m().action(Act::new("delete").destructive()),
+                "操作 `delete` は破壊的ですが確認の選択肢がありません",
+            ),
+            (
+                m().action(
+                    Act::new("delete")
+                        .destructive()
+                        .confirmation(Confirmation::new("Delete?", vec![])),
+                ),
+                "操作 `delete` は破壊的ですが確認の選択肢がありません",
+            ),
+            (m().screen("log"), "画面 `log` が重複しています"),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("log", "Other log"))),
+                "画面 `log` が重複しています",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("other", "Other").key('l'))),
+                "画面のキー `l` が重複しています",
+            ),
+            (
+                m().action(
+                    Act::new("go").project_context(ActContext::screen("absent", ["commit"])),
+                ),
+                "操作 `go` が未宣言の画面 `absent` を指定しています",
+            ),
+            (
+                Manifest::new("p", "1").action(
+                    Act::new("go").project_context(ActContext::screen("log", ["commit"])),
+                ),
+                "操作 `go` が未宣言の画面 `log` を指定しています",
+            ),
+            (
+                m().action(Act::new("go").project_context(ActContext::screen("log", ["file"]))),
+                "操作 `go` が画面 `log` の未宣言の行の種類 `file` を指定しています",
+            ),
+            (
+                Manifest::new("p", "1").project(ProjectDecl::new()),
+                "プロジェクトには検出目印を1つ以上宣言してください",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("bad", "Bad").row_kind("Bad ID"))),
+                "行の種類 `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("Bad ID", "Bad screen"))),
+                "画面名 `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.screens = (0..64)
+                        .map(|i| ProjectScreen::new(format!("s{i}"), "Screen"))
+                        .collect();
+                    Manifest::new("p", "1").screen("legacy").project(p)
+                },
+                "画面が 65 件あります（最大 64 件）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.markers = vec![DetectionMarker::new(".git", MarkerKind::Any); 513];
+                    Manifest::new("p", "1").project(p)
+                },
+                "プロジェクトの検出目印が 513 件あります（最大 512 件）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.screens[0].row_kinds = vec!["commit".into(); 513];
+                    Manifest::new("p", "1").project(p)
+                },
+                "画面内の行の種類が 513 件あります（最大 512 件）",
+            ),
+        ];
+        for (manifest, japanese) in cases {
+            let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
+            let RegistryError::InvalidManifest { reason, why, .. } = Registry::new()
+                .register(plugin.clone(), PluginOrigin::User)
+                .unwrap_err()
+            else {
+                panic!("expected refusal")
+            };
+            assert_eq!(manifest_reason_text(&reason, Lang::En), why);
+            assert_eq!(manifest_reason_text(&reason, Lang::Jp), japanese);
+            for (lang, expected) in [(Lang::En, why.as_str()), (Lang::Jp, japanese)] {
+                let error = format!("{:#}", HostBuilder::checked_id(&plugin, lang).unwrap_err());
+                assert!(error.ends_with(expected), "{error}");
+            }
+        }
+    }
 
     impl Plugin for Fake {
         fn manifest(&self) -> Manifest {

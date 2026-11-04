@@ -47,6 +47,12 @@ fn manifest(mode: &str) -> Manifest {
             m.actions[0].help = "".into();
             m.actions[0].label = "".into();
         }
+        "manifest-destructive" => m.actions[0].destructive = true,
+        "project-markers" => m.project = Some(ProjectDecl::new()),
+        "project-v1" => {
+            m.project =
+                Some(ProjectDecl::new().marker(DetectionMarker::new(".git", MarkerKind::Any)))
+        }
         _ => {}
     }
     m
@@ -134,6 +140,8 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
         &HelloReply::Ack {
             version: if mode == "handshake-version" {
                 u32::MAX
+            } else if mode == "project-v1" || mode == "outcome-v1" {
+                1
             } else {
                 PROTOCOL_VERSION
             },
@@ -258,7 +266,31 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
                         err()
                     } else {
                         Answer::Ok(Reply::Acted {
-                            outcome: WOutcome::Unhandled,
+                            outcome: match mode {
+                                "outcome-push" => outcome_to_wire(&Outcome::PushScreen {
+                                    screen: "detail".into(),
+                                    selection: Some("row".into()),
+                                }),
+                                "outcome-file" => outcome_to_wire(&Outcome::OpenFile {
+                                    path: "/project/file".into(),
+                                    line: Some(3),
+                                }),
+                                "outcome-diff" => outcome_to_wire(&Outcome::OpenDiff {
+                                    path: "/project/file".into(),
+                                }),
+                                "outcome-root" => outcome_to_wire(&Outcome::SwitchRoot {
+                                    root: "/project".into(),
+                                }),
+                                "outcome-tab" | "outcome-v1" => {
+                                    outcome_to_wire(&Outcome::OpenTab {
+                                        path: "/project".into(),
+                                    })
+                                }
+                                "outcome-relative" => outcome_to_wire(&Outcome::OpenTab {
+                                    path: "relative".into(),
+                                }),
+                                _ => WOutcome::Unhandled,
+                            },
                             state: state(mode),
                         })
                     },

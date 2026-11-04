@@ -1,5 +1,6 @@
 //! The declarations of a plugin: a (display bindings), b (launch verbs), c (actions and help).
 
+pub use crate::project::{ActContext, ChoiceInput, Confirmation, ProjectDecl, TextInput};
 use crate::settings::Value;
 use crate::text::Tr;
 
@@ -98,9 +99,11 @@ pub enum Unavailable {
 }
 
 /// Everything a plugin declares. The host reads it once at startup; the implementation is not
-/// called until a file is opened.
+/// called until an input is opened.
 #[derive(Clone, Debug)]
 pub struct Manifest {
+    /// Optional project declarations, independent of file bindings and legacy screen names.
+    pub project: Option<ProjectDecl>,
     pub id: String,
     pub version: String,
     pub api: ApiVersion,
@@ -133,6 +136,7 @@ impl Manifest {
     pub fn new(id: impl Into<String>, version: impl Into<String>) -> Manifest {
         let id = id.into();
         Manifest {
+            project: None,
             name: Tr::new(id.clone()),
             id,
             version: version.into(),
@@ -153,6 +157,12 @@ impl Manifest {
 
     pub fn name(mut self, name: impl Into<Tr>) -> Manifest {
         self.name = name.into();
+        self
+    }
+
+    /// Offer a project alongside the existing file bindings and legacy key contexts.
+    pub fn project(mut self, project: ProjectDecl) -> Manifest {
+        self.project = Some(project);
         self
     }
 
@@ -367,9 +377,16 @@ pub struct Act {
     pub screen: Option<String>,
     /// Whether the action writes files.
     pub writes: bool,
-    /// Whether the action destroys data (needs a confirmation declaration, which this API version
-    /// does not have yet).
+    /// Whether the action destroys data (requires a nonempty confirmation declaration).
     pub destructive: bool,
+    /// A typed project scope, independent of the legacy `screen` key context.
+    pub project_context: Option<ActContext>,
+    /// The host's confirmation prompt. Destructive actions require at least one choice.
+    pub confirmation: Option<Confirmation>,
+    /// A text prompt declared for the host to show before the action.
+    pub text_input: Option<TextInput>,
+    /// A list prompt declared for the host to show before the action.
+    pub choice_input: Option<ChoiceInput>,
 }
 
 impl Act {
@@ -384,6 +401,10 @@ impl Act {
             screen: None,
             writes: false,
             destructive: false,
+            project_context: None,
+            confirmation: None,
+            text_input: None,
+            choice_input: None,
         }
     }
 
@@ -425,6 +446,23 @@ impl Act {
 
     pub fn writes(mut self) -> Act {
         self.writes = true;
+        self
+    }
+
+    pub fn project_context(mut self, context: ActContext) -> Self {
+        self.project_context = Some(context);
+        self
+    }
+    pub fn confirmation(mut self, confirmation: Confirmation) -> Self {
+        self.confirmation = Some(confirmation);
+        self
+    }
+    pub fn text_input(mut self, input: TextInput) -> Self {
+        self.text_input = Some(input);
+        self
+    }
+    pub fn choice_input(mut self, input: ChoiceInput) -> Self {
+        self.choice_input = Some(input);
         self
     }
 

@@ -50,6 +50,7 @@ pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
 }
 
 pub(crate) struct Connection {
+    version: std::cell::Cell<u32>,
     pub side: wire::Side,
     pid: i32,
     writer: Option<mpsc::SyncSender<WriteJob>>,
@@ -136,6 +137,7 @@ impl Connection {
         // Establish ownership before pipes or workers can fail. Drop cancels and joins every
         // worker already started, stops the child and removes the handoff directory.
         let mut connection = Self {
+            version: std::cell::Cell::new(1),
             side: wire::Side::new(dir, 'h'),
             pid,
             writer: Some(writer),
@@ -273,6 +275,9 @@ impl Connection {
                 if !versions.contains(&version) {
                     return Err(format!("Ack version {version}, offered {versions:?}"));
                 }
+                wire::require_protocol(version, wire::manifest_protocol(&manifest))
+                    .map_err(|e| e.to_string())?;
+                self.version.set(version);
                 let manifest = wire::manifest_from_wire(manifest)
                     .map_err(|e| format!("unreadable manifest: {e}"))?;
                 if selected.is_some_and(|id| id != manifest.id) {
@@ -298,6 +303,18 @@ impl Connection {
         let answer: FromChild = frame::decode(&self.receive(until)?).map_err(|e| e.to_string())?;
         if answer.rid != rid {
             return Err(format!("answer rid {}, requested {rid}", answer.rid));
+        }
+        match &answer.answer {
+            Answer::Ok(Reply::Acted { outcome, .. }) => {
+                wire::require_protocol(self.version.get(), wire::outcome_protocol(outcome))
+                    .map_err(|e| e.to_string())?;
+                wire::outcome_from_wire_checked(outcome.clone()).map_err(|e| e.to_string())?;
+            }
+            Answer::Ok(Reply::Viewed { view, .. }) => {
+                wire::require_protocol(self.version.get(), wire::view_protocol(view))
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => {}
         }
         Ok(answer.answer)
     }
