@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::wire::{
-    WCx, WFailure, WInput, WKey, WLayout, WManifest, WOutcome, WPath, WView, WViewReq,
+    WChip, WCx, WFailure, WInput, WKey, WLayout, WManifest, WOutcome, WPath, WView, WViewReq,
 };
 
 /// The protocol version this build speaks. Versions start at 1; a change that an older end cannot
@@ -54,6 +54,8 @@ pub struct WState {
 /// id (chosen by the host, unique over the connection).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToChild {
+    /// Protocol 2, only after the child's manifest advertised `session_chip`.
+    Chip { sid: u64, rid: u64, cx: WCx },
     Open {
         sid: u64,
         rid: u64,
@@ -88,6 +90,10 @@ pub enum ToChild {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
+    Chip {
+        chip: Option<WChip>,
+        state: WState,
+    },
     Opened {
         state: WState,
     },

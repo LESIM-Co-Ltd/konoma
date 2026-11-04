@@ -280,6 +280,7 @@ struct SessionState {
 }
 
 enum Done {
+    Chip(Option<crate::Chip>, SessionState),
     Opened(SessionState),
     Viewed(View, SessionState),
     Acted(Outcome, SessionState),
@@ -317,6 +318,7 @@ impl State {
 
 struct Shared {
     version: AtomicU32,
+    session_chip: AtomicBool,
     limits: Limits,
     side: Side,
     side_dir: PathBuf,
@@ -715,6 +717,13 @@ fn read_loop(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
 fn convert(shared: &Shared, answer: Answer) -> CallResult {
     let mut dec = Dec::with_total_max(&shared.side, wire::SIDE_TOTAL_MAX_FROM_CHILD);
     match answer {
+        Answer::Ok(Reply::Chip { chip, state }) => {
+            wire::require_protocol(shared.version.load(Ordering::Acquire), 2)?;
+            Ok(Done::Chip(
+                chip.map(wire::chip_from_wire),
+                state_from_wire(state),
+            ))
+        }
         Answer::Err(f) => Err(failure_from_wire(f)),
         Answer::Ok(Reply::Opened { state }) => Ok(Done::Opened(state_from_wire(state))),
         Answer::Ok(Reply::Viewed { view, state }) => {
@@ -969,6 +978,7 @@ fn connect(
     let (wtx, wrx) = mpsc::channel::<Vec<u8>>();
     let shared = Arc::new(Shared {
         version: AtomicU32::new(1),
+        session_chip: AtomicBool::new(false),
         limits: cfg.limits.clone(),
         side: Side::new(&side_dir, 'h'),
         side_dir: side_dir.clone(),
@@ -1101,6 +1111,9 @@ fn connect(
                 return Err(abort("its manifest protocol", e.to_string()));
             }
             shared.version.store(version, Ordering::Release);
+            shared
+                .session_chip
+                .store(supports_session_chip(version, &manifest), Ordering::Release);
             match manifest_from_wire(manifest) {
                 Ok(m) => m,
                 Err(e) => return Err(abort("its manifest", e.to_string())),
@@ -1427,6 +1440,10 @@ fn manifest_differs(a: &Manifest, b: &Manifest) -> bool {
     }
 }
 
+fn supports_session_chip(version: u32, manifest: &wire::WManifest) -> bool {
+    version >= 2 && manifest.session_chip && manifest.project.is_some()
+}
+
 impl Drop for ProcPlugin {
     fn drop(&mut self) {
         self.stop();
@@ -1439,6 +1456,7 @@ impl Plugin for ProcPlugin {
     }
 
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let project = matches!(&input, Input::Project { .. });
         let shared = self.connection()?;
         let sid = self.next_sid.fetch_add(1, Ordering::Relaxed);
         let result = shared.call(
@@ -1479,7 +1497,12 @@ impl Plugin for ProcPlugin {
             &cx.cancel,
         );
         match result {
-            Ok(Done::Opened(state)) => Ok(Box::new(ProcSession { shared, sid, state })),
+            Ok(Done::Opened(state)) => Ok(Box::new(ProcSession {
+                shared,
+                sid,
+                state,
+                project,
+            })),
             Ok(_) => {
                 shared.live.fetch_sub(1, Ordering::SeqCst);
                 Err(shared.died("the plugin answered an open with another kind of answer"))
@@ -1520,6 +1543,7 @@ struct ProcSession {
     shared: Arc<Shared>,
     sid: u64,
     state: SessionState,
+    project: bool,
 }
 
 impl ProcSession {
@@ -1530,6 +1554,32 @@ impl ProcSession {
 }
 
 impl Session for ProcSession {
+    fn chip(&mut self, cx: &ViewCx) -> Result<Option<crate::Chip>, Failure> {
+        if !self.project || !self.shared.session_chip.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let done = self.shared.call(
+            |rid| {
+                Ok((
+                    ToChild::Chip {
+                        sid: self.sid,
+                        rid,
+                        cx: cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?,
+                    },
+                    Vec::new(),
+                ))
+            },
+            self.shared.limits.open_view,
+            &cx.cancel,
+        )?;
+        match done {
+            Done::Chip(chip, state) => {
+                self.state = state;
+                Ok(chip)
+            }
+            _ => Err(self.wrong()),
+        }
+    }
     fn layout(&self) -> Layout {
         self.state.layout.clone()
     }
@@ -1629,5 +1679,25 @@ impl Drop for ProcSession {
         let _ = self.shared.send_frame(&ToChild::Close { sid: self.sid });
         self.shared.live.fetch_sub(1, Ordering::SeqCst);
         *lock(&self.shared.last_used) = Instant::now();
+    }
+}
+
+#[cfg(test)]
+mod chip_tests {
+    use super::*;
+
+    #[test]
+    fn chip_capability_requires_protocol_two_even_when_advertised() {
+        let mut manifest =
+            wire::manifest_to_wire(&Manifest::new("p", "1").project(crate::ProjectDecl::new()))
+                .unwrap();
+        manifest.session_chip = true;
+        assert!(!supports_session_chip(1, &manifest));
+        assert!(supports_session_chip(2, &manifest));
+        manifest.session_chip = false;
+        assert!(!supports_session_chip(2, &manifest));
+        manifest.session_chip = true;
+        manifest.project = None;
+        assert!(!supports_session_chip(2, &manifest));
     }
 }

@@ -4,6 +4,54 @@ use std::path::PathBuf;
 
 use crate::text::Tr;
 
+/// The current short summary beside a project's tree title, using the same styled spans as
+/// a list row. An empty chip hides the summary; `Session::chip` returning `None` uses the
+/// declaration instead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Chip {
+    pub text: crate::style::Line,
+}
+
+/// The most spans kept in a short project summary, including empty spans.
+pub const MAX_CHIP_SPANS: usize = 64;
+
+impl Chip {
+    pub fn new(text: impl Into<crate::style::Line>) -> Self {
+        Self { text: text.into() }
+    }
+
+    /// The summary as the host keeps it: at most [`MAX_CHIP_SPANS`] spans and
+    /// [`crate::text::MAX_TEXT_CHARS`] characters in total, with `…` replacing the last
+    /// character when text is cut. All control characters (including tabs and newlines) and
+    /// the terminal's reserved image placeholder are removed. Styles are preserved.
+    pub fn clipped(&self) -> Self {
+        let mut text = crate::style::Line {
+            style: self.text.style,
+            ..Default::default()
+        };
+        let mut left = crate::text::MAX_TEXT_CHARS;
+        for span in self.text.spans.iter().take(MAX_CHIP_SPANS) {
+            let mut chars = span
+                .text
+                .chars()
+                .filter(|c| !c.is_control() && *c != '\u{10eeee}');
+            let kept: String = chars.by_ref().take(left).collect();
+            left -= kept.chars().count();
+            text.spans
+                .push(crate::style::Span::styled(kept, span.style));
+            if chars.next().is_some() {
+                if let Some(last) = text.spans.iter_mut().rev().find(|s| !s.text.is_empty()) {
+                    last.text.pop();
+                    last.text.push('…');
+                }
+                break;
+            }
+        }
+        Self { text }
+    }
+}
+
 /// The project screen and opaque selection to draw in this view request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -175,7 +223,7 @@ impl ProjectScreen {
 pub struct ProjectDecl {
     pub markers: Vec<DetectionMarker>,
     pub screens: Vec<ProjectScreen>,
-    /// The short summary displayed beside the tree title.
+    /// The static fallback beside the tree title. [`crate::Session::chip`] may override it.
     pub chip: Option<Tr>,
     /// Paths relative to the project root. A change invalidates the project's data.
     pub watch_paths: Vec<PathBuf>,
