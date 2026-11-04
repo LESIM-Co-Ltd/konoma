@@ -1592,27 +1592,17 @@ fn a_deeply_nested_setting_is_refused() {
     for _ in 0..100 {
         w = WValue::List(vec![w]);
     }
-    let wcx = WCx {
-        settings: vec![("deep".into(), w)],
-        lang: "en".into(),
-        pixels: false,
-        colors: 0,
-        external: false,
-        read_dirs: None,
-    };
+    let mut wcx = WCx::new("en");
+    wcx.settings = vec![("deep".into(), w)];
     assert!(matches!(cx_from_wire(wcx), Err(WireError::TooLarge(_))));
 }
 
 #[test]
 fn unknown_color_depth_reads_as_the_lowest() {
-    let wcx = WCx {
-        settings: vec![],
-        lang: "en".into(),
-        pixels: true,
-        colors: 77,
-        external: false,
-        read_dirs: Some(vec![path_to_wire(Path::new("/definitely/not/there"))]),
-    };
+    let mut wcx = WCx::new("en");
+    wcx.pixels = true;
+    wcx.colors = 77;
+    wcx.read_dirs = Some(vec![path_to_wire(Path::new("/definitely/not/there"))]);
     let c = cx_from_wire(wcx).unwrap();
     assert_eq!(c.term.colors, ColorDepth::Ansi16);
     // A scope whose directories do not exist allows nothing, but is still restricted.

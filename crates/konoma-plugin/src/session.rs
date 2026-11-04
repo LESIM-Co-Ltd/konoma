@@ -166,10 +166,11 @@ impl fmt::Debug for Cancel {
 }
 
 macro_rules! context {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($(#[$doc:meta])* $name:ident $(, $project:ident)?) => {
         $(#[$doc])*
         #[derive(Clone, Debug)]
         pub struct $name<'a> {
+            $(pub $project: Option<crate::project::ProjectAct>,)?
             /// The plugin's `[plugins.<id>]` settings.
             pub settings: &'a Settings,
             /// The user's language (`"en"`, `"ja"`).
@@ -190,6 +191,7 @@ macro_rules! context {
         impl<'a> $name<'a> {
             pub fn new(settings: &'a Settings, lang: &'a str) -> $name<'a> {
                 $name {
+                    $($project: None,)?
                     settings,
                     lang,
                     cancel: Cancel::never(),
@@ -236,9 +238,18 @@ context!(
     ViewCx
 );
 context!(
+    #[non_exhaustive]
     /// What `Session::act` receives besides the action id.
-    ActCx
+    ActCx,
+    project
 );
+
+impl ActCx<'_> {
+    pub fn with_project(mut self, project: crate::project::ProjectAct) -> Self {
+        self.project = Some(project);
+        self
+    }
+}
 
 /// The result of an action ([`Session::act`]) or of a key ([`Session::key`]).
 ///

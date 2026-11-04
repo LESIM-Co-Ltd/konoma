@@ -65,6 +65,8 @@ pub const MAX_MARKER_BYTES: usize = 1024;
 pub const MAX_CHOICES: usize = 64;
 /// The longest value returned by a choice, in bytes.
 pub const MAX_CHOICE_VALUE_BYTES: usize = 1024;
+/// The most refresh targets an action may declare.
+pub const MAX_REFRESH_TARGETS: usize = 64;
 
 /// Whether `s` is a usable name: 1 to [`MAX_NAME_CHARS`] characters of `[a-z0-9._-]`. A name is
 /// printed by the host (`konoma --plugins`, the startup message) and used in config tables and
@@ -137,6 +139,7 @@ pub enum ManifestCount {
     RowKinds,
     WatchPaths,
     Choices,
+    RefreshTargets,
 }
 
 impl ManifestCount {
@@ -151,6 +154,7 @@ impl ManifestCount {
             Self::RowKinds => "row kinds in a screen",
             Self::WatchPaths => "project watch paths",
             Self::Choices => "choices in a prompt",
+            Self::RefreshTargets => "refresh targets in an action",
         }
     }
 }
@@ -160,6 +164,10 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    UnknownRefreshScreen {
+        action: String,
+        screen: String,
+    },
     InvalidWatchPath {
         index: usize,
     },
@@ -243,6 +251,7 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownRefreshScreen { action, screen } => write!(f, "action `{action}` refreshes unknown screen `{screen}`"),
             Self::InvalidWatchPath { index } => write!(f, "project watch path {index} must be nonempty and relative without parent components"),
             Self::InvalidMarker { index, limit } => write!(f, "project detection marker {index} must be one nonempty file name other than . or .. (at most {limit} bytes)"),
             Self::InvalidScreenKey { key } => write!(f, "screen key `{key}` is a control character or reserved by the host"),

@@ -292,11 +292,21 @@ impl Connection {
         }
     }
 
+    fn request_packet(version: u32, msg: &ToChild) -> Result<Vec<u8>, String> {
+        let required = match msg {
+            ToChild::Open { input, cx, .. } => {
+                wire::input_protocol(input).max(wire::cx_protocol(cx))
+            }
+            ToChild::View { req, cx, .. } => wire::req_protocol(req).max(wire::cx_protocol(cx)),
+            ToChild::Act { cx, .. } | ToChild::Key { cx, .. } => wire::cx_protocol(cx),
+            _ => 1,
+        };
+        wire::require_protocol(version, required).map_err(|e| e.to_string())?;
+        Ok(Self::packet(frame::encode(msg).map_err(|e| e.to_string())?))
+    }
+
     pub fn send(&self, msg: &ToChild, until: Instant) -> Result<(), String> {
-        self.write(
-            Self::packet(frame::encode(msg).map_err(|e| e.to_string())?),
-            until,
-        )
+        self.write(Self::request_packet(self.version.get(), msg)?, until)
     }
 
     pub fn answer(&self, rid: u64, until: Instant) -> Result<Answer, String> {
@@ -423,19 +433,43 @@ impl Drop for Connection {
 }
 
 pub(crate) fn cx() -> wire::WCx {
-    wire::WCx {
-        settings: Vec::new(),
-        lang: "en".into(),
-        pixels: false,
-        colors: 0,
-        external: false,
-        read_dirs: None,
-    }
+    wire::WCx::new("en")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_request_packets_are_never_encoded_for_version_one() {
+        let cx = wire::WCx::new("en").project(wire::WProjectAct::new());
+        for msg in [
+            ToChild::View {
+                sid: 1,
+                rid: 1,
+                req: wire::WViewReq::new(80, 24).project(wire::WProjectView::new("log")),
+                cx: wire::WCx::new("en"),
+            },
+            ToChild::Act {
+                sid: 1,
+                rid: 2,
+                action: "write".into(),
+                cx: cx.clone(),
+            },
+            ToChild::Key {
+                sid: 1,
+                rid: 3,
+                key: wire::key_to_wire(&konoma_plugin::Key::char('x')),
+                cx,
+            },
+        ] {
+            assert_eq!(
+                Connection::request_packet(1, &msg).unwrap_err(),
+                "project data requires protocol 2, negotiated 1"
+            );
+            let packet = Connection::request_packet(2, &msg).unwrap();
+            assert_eq!(frame::decode::<ToChild>(&packet[4..]).unwrap(), msg);
+        }
+    }
     use std::os::unix::process::ExitStatusExt;
 
     #[test]

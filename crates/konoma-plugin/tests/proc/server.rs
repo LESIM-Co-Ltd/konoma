@@ -100,13 +100,8 @@ impl Host {
 
     fn view_req(&mut self, sid: u64, repr: &str) -> u64 {
         let rid = self.rid();
-        let req = WViewReq {
-            repr: Some(repr.into()),
-            page: None,
-            cols: 10,
-            rows: 4,
-            cell_px: None,
-        };
+        let mut req = WViewReq::new(10, 4);
+        req.repr = Some(repr.into());
         self.send(&ToChild::View {
             sid,
             rid,
@@ -450,13 +445,9 @@ fn hostile_requests_fail_the_call_and_not_the_child() {
     // A view request with a zero-size window and one with a huge page.
     assert!(matches!(h.open(1, "/a.t").answer, Answer::Ok(_)));
     let rid = h.rid();
-    let req = WViewReq {
-        repr: None,
-        page: Some(u64::MAX),
-        cols: 0,
-        rows: 0,
-        cell_px: Some((0, 0)),
-    };
+    let mut req = WViewReq::new(0, 0);
+    req.page = Some(u64::MAX);
+    req.cell_px = Some((0, 0));
     h.send(&ToChild::View {
         sid: 1,
         rid,

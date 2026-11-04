@@ -128,7 +128,7 @@ pub use manifest::{
 };
 pub use project::{
     ActContext, Choice, ChoiceInput, ConfirmChoice, Confirmation, DetectionMarker, MarkerKind,
-    ProjectDecl, ProjectScreen, TextInput,
+    ProjectAct, ProjectDecl, ProjectRow, ProjectScreen, ProjectView, RefreshTarget, TextInput,
 };
 pub use scope::{ReadScope, ScopeError};
 pub use session::{

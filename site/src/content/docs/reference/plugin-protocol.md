@@ -109,7 +109,7 @@ HelloReply = Ack {version:u32, manifest:Manifest}
 ```
 
 `versions` currently contains `[1, 2]`: the host offers the current transport version and its
-predecessor. A plugin that declares a project or a prompt supports only 2. `host_version` is an informational
+predecessor. A plugin that declares a project, a prompt, read-only or refresh targets supports only 2. The new request/context fields and nonempty row values also require version 2; this extends the unpublished version 2 and does not introduce version 3. `host_version` is an informational
 program version, not the protocol version. `side_dir` is the absolute handoff directory.
 `lang` is the initial language; each later call carries its own language too.
 
@@ -402,6 +402,33 @@ the handoff directory. These files carry byte resources, pictures and canvas sty
 large text/table strings do not automatically become side files. An answer still over the frame
 limit becomes `Err(TooLarge)` in the reference server.
 
+### Project view and action calls (version 2)
+
+`View.req.project` is absent for file previews. For a project it is
+`{ screen: string, selection: string | null }`. `selection` is the opaque value
+from `PushScreen`; it is kept in the view request because screens can change
+within one open project session. The SDK builds it with
+`ViewReq::new(cols, rows).project(ProjectView::new(screen).selection(value))`.
+
+`Act.cx.project` and `Key.cx.project` are absent outside project actions. Their shape is:
+
+```text
+ProjectAct {
+  screen: string | null,
+  selected: { kind: string, value: string } | null,
+  marked: [{ kind: string, value: string }],
+  confirmation: string | null,
+  text: string | null,
+  choice: string | null
+}
+```
+
+A tree/diff action can omit the project screen. Selected and marked rows carry
+the exact `ListRow.kind` and `ListRow.value`, not rendered cells or row indices.
+The confirmation and list answers are the declared `Choice.value`; text is the
+entered string. Empty strings are answers, distinct from absent answers.
+Use `ActCx::with_project(ProjectAct::new()...)` to attach this data.
+
 ## Project declaration (version 2)
 
 `Manifest.project` is optional and independent of file bindings and the existing
@@ -430,6 +457,10 @@ The input is `{"Project":{"root":Path,"marker":string}}`: an absolute detected
 root and the actual matched entry name (for example `MyApp.xcworkspace`, rather
 than `*.xcworkspace`). It is not a file byte input.
 
+`Manifest.read_only` is a static boolean declaration, default false and omitted
+when false. The host combines it with `[plugins.<id>] read_only` using OR before
+running a `writes` action. No runtime read-only override is defined by this API.
+
 ## Actions and dialogs (version 2)
 
 Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `writes`,
@@ -442,6 +473,7 @@ project_context:
 confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
 text_input: { label: Tr, initial: string } | null
 choice_input: { label: Tr, choices: Choice[] } | null
+refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
 ```
 
@@ -450,6 +482,12 @@ are menu-only. `Enter` is declared with `key: "Enter"` and a screen context with
 one or more row kinds, through the same declaration and validation path as any
 other action. Distinct row kinds may have distinct Enter actions. Confirmation
 choices can distinguish `y` → `-d` and `!` → `-D`.
+
+`RefreshTarget` is one of `"CurrentScreen"`, `{"Screen":{"screen":string}}`,
+`"AllScreens"`, `"TreeStatus"`, or `"Chip"`. An action's `refresh` list defaults
+to empty and is then omitted. After execution, the host displays the result and
+refreshes the declared targets. Named screens must exist in this plugin's project
+declaration; at most 64 targets may be declared per action.
 
 The registry refuses a destructive action without nonempty confirmation choices,
 duplicate screen ids (including collisions with legacy screen names), duplicate
@@ -475,6 +513,8 @@ versions; a panic while reading the manifest produces a refusal instead of an ab
 
 A list remains `{"List":[row, …]}`. Each row has `cells: Line[]`, `kind: string`,
 `target: Path | null`, `checked: boolean | null`, and the new `marked: boolean`.
+It also has an opaque `value: string`, built with `ListRow::value`. Its default is
+the empty string, omitted on the wire, so legacy rows keep their bytes.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
 is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same
@@ -498,7 +538,7 @@ limit. The host's **`q` pops one screen**; it is host behavior, not another plug
 outcome or an action that bypasses the guard.
 
 The checked examples live in
-`crates/konoma-plugin-test/tests/vectors/project-v2.json` and
+`crates/konoma-plugin-test/tests/vectors/project-v2.json`, `project-calls-v2.msgpack.hex` and
 `tests/project_vectors.rs`; the SDK tests cover each new type and outcome.
 
 ## Deadlines and failures

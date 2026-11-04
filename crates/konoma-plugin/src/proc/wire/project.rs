@@ -5,9 +5,11 @@ use crate::project::*;
 
 /// The minimum protocol needed to preserve this declaration's meaning.
 pub fn manifest_protocol(m: &WManifest) -> u32 {
-    if m.project.is_some()
+    if m.read_only
+        || m.project.is_some()
         || m.actions.iter().any(|a| {
-            a.project_context.is_some()
+            !a.refresh.is_empty()
+                || a.project_context.is_some()
                 || a.confirmation.is_some()
                 || a.text_input.is_some()
                 || a.choice_input.is_some()
@@ -37,7 +39,7 @@ pub fn outcome_protocol(o: &WOutcome) -> u32 {
     }
 }
 pub fn view_protocol(v: &WView) -> u32 {
-    if matches!(v, WView::List(rows) if rows.iter().any(|r| r.marked)) {
+    if matches!(v, WView::List(rows) if rows.iter().any(|r| r.marked || !r.value.is_empty())) {
         2
     } else {
         1

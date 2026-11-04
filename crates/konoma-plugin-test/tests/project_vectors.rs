@@ -16,6 +16,17 @@ fn project_v2_manifest_vector() {
     assert_eq!(project.markers.len(), 3);
     assert_eq!(project.screens[0].title.get("ja"), "ブランチ");
     assert!(project.version_control);
+    assert!(back.read_only);
+    assert_eq!(
+        back.actions[0].refresh,
+        vec![
+            RefreshTarget::CurrentScreen,
+            RefreshTarget::screen("branches"),
+            RefreshTarget::AllScreens,
+            RefreshTarget::TreeStatus,
+            RefreshTarget::Chip
+        ]
+    );
     assert_eq!(
         back.actions[0].confirmation.as_ref().unwrap().choices[1]
             .choice
@@ -95,4 +106,64 @@ fn project_v2_input_outcomes_and_list_vectors() {
     )
     .unwrap();
     assert!(matches!(back, View::List(l) if l == expected));
+}
+
+#[test]
+fn project_v2_request_context_and_row_vectors() {
+    let record = |name| {
+        let hex = include_str!("vectors/project-calls-v2.msgpack.hex")
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .find(|(key, _)| *key == name)
+            .unwrap()
+            .1;
+        assert_eq!(hex.len() % 2, 0);
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let req: WViewReq = frame::decode(&record("req")).unwrap();
+    let cx: WCx = frame::decode(&record("cx")).unwrap();
+    let view: WView = frame::decode(&record("view")).unwrap();
+    assert_eq!(frame::encode(&req).unwrap(), record("req"));
+    assert_eq!(frame::encode(&cx).unwrap(), record("cx"));
+    assert_eq!(frame::encode(&view).unwrap(), record("view"));
+    for required in [req_protocol(&req), cx_protocol(&cx), view_protocol(&view)] {
+        assert_eq!(required, 2);
+        assert!(require_protocol(1, required).is_err());
+    }
+    let req = req_from_wire(frame::decode(&frame::encode(&req).unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        req.project,
+        Some(ProjectView::new("branches").selection("branch-2"))
+    );
+    let cx = cx_from_wire(frame::decode(&frame::encode(&cx).unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        cx.project,
+        Some(
+            ProjectAct::new()
+                .screen("branches")
+                .selected(ProjectRow::new("branch", "branch-2"))
+                .marked([
+                    ProjectRow::new("branch", "branch-1"),
+                    ProjectRow::new("branch", "branch-2")
+                ])
+                .confirmation("-D")
+                .text("renamed")
+                .choice("main")
+        )
+    );
+    let side = Side::new(std::path::Path::new("/unused-project-calls-vector"), 'h');
+    let View::List(list) = view_from_wire(
+        frame::decode(&frame::encode(&view).unwrap()).unwrap(),
+        &mut Dec::new(&side),
+    )
+    .unwrap() else {
+        panic!("list")
+    };
+    assert_eq!(
+        ProjectRow::from(&list.rows[0]),
+        ProjectRow::new("branch", "branch-2")
+    );
 }

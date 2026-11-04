@@ -4,6 +4,8 @@ use konoma_plugin::registry::{ManifestReason, PluginOrigin, Registry, RegistryEr
 use konoma_plugin::*;
 use std::sync::Arc;
 
+#[path = "project/host_api.rs"]
+mod host_api;
 #[path = "project/review.rs"]
 mod review;
 
