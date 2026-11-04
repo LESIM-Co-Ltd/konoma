@@ -46,9 +46,9 @@ fn static_declarations(
         .into_iter()
         .filter(|id| {
             registry.is_enabled(id)
-                && registry.plugin(id).is_some_and(|plugin| {
-                    external.iter().all(|p| !Arc::ptr_eq(p, &plugin))
-                })
+                && registry
+                    .plugin(id)
+                    .is_some_and(|plugin| external.iter().all(|p| !Arc::ptr_eq(p, &plugin)))
         })
         .filter_map(|id| {
             Some(Declaration {
@@ -150,10 +150,7 @@ fn watch_directory(path: &Path) -> Option<PathBuf> {
 }
 
 fn watch_targets(root: &Path, projects: &[MatchedProject]) -> BTreeSet<(PathBuf, bool)> {
-    let mut out: BTreeSet<_> = root
-        .ancestors()
-        .map(|p| (p.to_path_buf(), false))
-        .collect();
+    let mut out: BTreeSet<_> = root.ancestors().map(|p| (p.to_path_buf(), false)).collect();
     for project in projects {
         for path in &project.declaration.watch_paths {
             if let Some(dir) = watch_directory(&project.root.join(path)) {
@@ -231,12 +228,7 @@ fn enqueue_event(
     }
 }
 
-fn run(
-    root: PathBuf,
-    declarations: Vec<Declaration>,
-    slot: Arc<Slot>,
-    cancelled: Arc<AtomicBool>,
-) {
+fn run(root: PathBuf, declarations: Vec<Declaration>, slot: Arc<Slot>, cancelled: Arc<AtomicBool>) {
     let (tx, rx) = mpsc::sync_channel(1);
     let overflow = Arc::new(AtomicBool::new(false));
     let watch_failed = Arc::new(AtomicBool::new(false));
@@ -406,7 +398,11 @@ mod tests {
             plugin: id.into(),
             project: ProjectDecl::new()
                 .marker(DetectionMarker::new(marker, kind))
-                .screen(ProjectScreen::new("items", "Items").key('i').row_kind("item")),
+                .screen(
+                    ProjectScreen::new("items", "Items")
+                        .key('i')
+                        .row_kind("item"),
+                ),
         }
     }
 
@@ -482,7 +478,11 @@ mod tests {
             plugin: decl.plugin.clone(),
             root: PathBuf::from("/fixture/tree"),
             marker: "one.project".into(),
-            declaration: decl.project.clone().watch("metadata/index").watch("settings"),
+            declaration: decl
+                .project
+                .clone()
+                .watch("metadata/index")
+                .watch("settings"),
         };
         for path in [
             "/fixture/tree/metadata/index",
@@ -529,7 +529,10 @@ mod tests {
             plugin: decl.plugin,
             root: dir.to_path_buf(),
             marker: "project.marker".into(),
-            declaration: decl.project.watch("metadata/index").watch("future/nested/file"),
+            declaration: decl
+                .project
+                .watch("metadata/index")
+                .watch("future/nested/file"),
         };
         let targets = watch_targets(&dir, &[project]);
         assert!(targets.contains(&(dir.join("metadata"), true)));
@@ -568,7 +571,9 @@ mod tests {
         let linked = plugin();
         let refused = plugin();
         let mut registry = konoma_plugin::registry::Registry::new();
-        registry.register(linked.clone(), konoma_plugin::registry::PluginOrigin::User).unwrap();
+        registry
+            .register(linked.clone(), konoma_plugin::registry::PluginOrigin::User)
+            .unwrap();
         assert_eq!(static_declarations(&registry, &[refused]).len(), 1);
         assert!(static_declarations(&registry, &[linked]).is_empty());
     }
@@ -618,15 +623,24 @@ mod tests {
                 Ok(notify::Event::new(notify::EventKind::Any).add_path(name.into())),
             );
         }
-        assert!(overflow.load(Ordering::Relaxed), "a lost path requires a full scan");
+        assert!(
+            overflow.load(Ordering::Relaxed),
+            "a lost path requires a full scan"
+        );
         enqueue_event(
             &tx,
             &overflow,
             &failed,
             Err(notify::Error::generic("fixture watch failure")),
         );
-        assert!(failed.load(Ordering::Relaxed), "a full queue cannot hide watch failures");
-        assert_eq!(rx.try_recv().unwrap().unwrap().paths, [PathBuf::from("unrelated")]);
+        assert!(
+            failed.load(Ordering::Relaxed),
+            "a full queue cannot hide watch failures"
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().paths,
+            [PathBuf::from("unrelated")]
+        );
         assert!(rx.try_recv().is_err());
     }
 }

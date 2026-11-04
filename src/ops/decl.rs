@@ -163,7 +163,9 @@ pub fn decl(a: Action) -> Decl {
         #[cfg(feature = "git")]
         A::GitStage | A::GitStageAll => d(Some(M::FtStage), Some(M::StageHint)).writes("git"),
         #[cfg(feature = "git")]
-        A::GitUnstage | A::GitUnstageAll => d(Some(M::FtUnstage), Some(M::UnstageHint)).writes("git"),
+        A::GitUnstage | A::GitUnstageAll => {
+            d(Some(M::FtUnstage), Some(M::UnstageHint)).writes("git")
+        }
         #[cfg(feature = "git")]
         A::GitDiscard => d(Some(M::FtDiscard), Some(M::GitDiscardFile)).writes("git"),
         #[cfg(feature = "git")]

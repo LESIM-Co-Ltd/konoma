@@ -38,7 +38,10 @@ fn project_guard_rechecks_immediate_and_queued_acts_without_taking_the_session()
     app.send_queued_act("write".into());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert!(app.plugin.as_ref().unwrap().session.is_some());
-    assert_eq!(app.flash.as_deref(), Some(tr(app.lang, Msg::PluginReadOnly)));
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, Msg::PluginReadOnly))
+    );
     app.cfg.plugins.remove("project-guard-executor");
     assert!(app.plugin_act("write"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -80,7 +83,10 @@ fn guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repositor
             }),
             "{kind:?}"
         );
-        assert_eq!(app.flash.as_deref(), Some(tr(app.lang, Msg::PluginReadOnly)));
+        assert_eq!(
+            app.flash.as_deref(),
+            Some(tr(app.lang, Msg::PluginReadOnly))
+        );
         assert!(!app.git_op_running());
     }
     assert!(!dir.join("untouched").exists());
@@ -105,9 +111,56 @@ fn dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message() {
         toml::Table::from_iter([("read_only".into(), true.into())]),
     );
     app.dialog_submit().unwrap();
-    assert_eq!(app.flash.as_deref(), Some(tr(app.lang, Msg::PluginReadOnly)));
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, Msg::PluginReadOnly))
+    );
     assert!(!app.git_op_running());
     assert!(
         matches!(app.dialog, Some(Dialog { kind: DialogKind::Input { ref buffer, .. }, .. }) if buffer == "keep this message")
+    );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn guard_refuses_jj_sync_before_a_dialog_or_backend_detection() {
+    let dir = unique_tmp("konoma_guard_jj_sync_start");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.plugins.insert(
+        "jj".into(),
+        toml::Table::from_iter([("read_only".into(), true.into())]),
+    );
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    app.jj_start_sync();
+    assert!(app.dialog.is_none());
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, Msg::PluginReadOnly))
+    );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn guard_rechecks_jj_sync_after_confirmation() {
+    let dir = unique_tmp("konoma_guard_jj_sync_confirm");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.dialog = Some(Dialog {
+        op: PendingOp::JjSync,
+        kind: DialogKind::Confirm {
+            message: tr(app.lang, Msg::JjSyncConfirm).into(),
+            allow_permanent: false,
+        },
+    });
+    app.cfg.plugins.insert(
+        "jj".into(),
+        toml::Table::from_iter([("read_only".into(), true.into())]),
+    );
+    app.dialog_confirm(true).unwrap();
+    assert!(app.dialog.is_none());
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, Msg::PluginReadOnly))
     );
 }
