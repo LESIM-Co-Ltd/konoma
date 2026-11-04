@@ -181,21 +181,21 @@ impl Watched {
 }
 
 fn read_report(reader: impl Read, lang: Lang) -> Result<ExitStatus> {
-        let mut report = Vec::new();
-        reader
-            .take(MAX_REPORT + 1)
-            .read_to_end(&mut report)
-            .context(tr(lang, Msg::PluginWatcherRead))?;
-        match report.first() {
-            Some(0) if report.len() == 5 => Ok(ExitStatus::from_raw(i32::from_le_bytes(
-                report[1..].try_into().unwrap(),
-            ))),
-            Some(1) if report.len() <= MAX_REPORT as usize => {
-                bail!(tr(lang, Msg::PluginWatcherError)
-                    .replace("{detail}", &String::from_utf8_lossy(&report[1..])))
-            }
-            _ => bail!(tr(lang, Msg::PluginWatcherNoResult)),
+    let mut report = Vec::new();
+    reader
+        .take(MAX_REPORT + 1)
+        .read_to_end(&mut report)
+        .context(tr(lang, Msg::PluginWatcherRead))?;
+    match report.first() {
+        Some(0) if report.len() == 5 => Ok(ExitStatus::from_raw(i32::from_le_bytes(
+            report[1..].try_into().unwrap(),
+        ))),
+        Some(1) if report.len() <= MAX_REPORT as usize => {
+            bail!(tr(lang, Msg::PluginWatcherError)
+                .replace("{detail}", &String::from_utf8_lossy(&report[1..])))
         }
+        _ => bail!(tr(lang, Msg::PluginWatcherNoResult)),
+    }
 }
 
 impl Drop for Watched {
@@ -340,9 +340,17 @@ mod tests {
     #[test]
     fn language_walk_timeout_inputs_are_injected() {
         let source = include_str!("watcher.rs");
-        let start = source.find("\n    fn watcher_error_language_walk() {").unwrap();
-        let end = source[start..].find("\n    fn child_receives_inherited_blocked_signal").unwrap() + start;
-        assert!(!source[start..end].contains("Duration::from_millis"), "language checking must not race a short real deadline");
+        let start = source
+            .find("\n    fn watcher_error_language_walk() {")
+            .unwrap();
+        let end = source[start..]
+            .find("\n    fn child_receives_inherited_blocked_signal")
+            .unwrap()
+            + start;
+        assert!(
+            !source[start..end].contains("Duration::from_millis"),
+            "language checking must not race a short real deadline"
+        );
     }
 
     #[test]
@@ -460,21 +468,38 @@ mod tests {
                 errors.push(format!(
                     "{:#}",
                     job.finish_output(Err(io::Error::new(
-                        if interrupt { io::ErrorKind::Interrupted } else { io::ErrorKind::TimedOut },
-                        if interrupt { "interrupted" } else { "timed out" },
-                    ))).unwrap_err()
+                        if interrupt {
+                            io::ErrorKind::Interrupted
+                        } else {
+                            io::ErrorKind::TimedOut
+                        },
+                        if interrupt {
+                            "interrupted"
+                        } else {
+                            "timed out"
+                        },
+                    )))
+                    .unwrap_err()
                 ));
                 drop(job);
                 assert!(fixture.gone());
             }
             if lang == Lang::Jp {
                 for error in errors {
-                    crate::test_support::plugin_language::assert_japanese_plugin_prose("watcher", &error);
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "watcher", &error,
+                    );
                 }
             } else {
                 let expected = [
-                    format!("cannot start the plugin job watcher ({})", missing.display()),
-                    format!("plugin job watcher: cannot start watched program {}", missing.display()),
+                    format!(
+                        "cannot start the plugin job watcher ({})",
+                        missing.display()
+                    ),
+                    format!(
+                        "plugin job watcher: cannot start watched program {}",
+                        missing.display()
+                    ),
                     "plugin job watcher ended without a valid child result".into(),
                     "plugin job watcher failed (exit status: 42)".into(),
                     "plugin job watcher failed (signal: 9 (SIGKILL))".into(),
@@ -489,7 +514,9 @@ mod tests {
                 ];
                 assert_eq!(errors.len(), expected.len());
                 for (error, expected) in errors.iter().zip(expected) {
-                    crate::test_support::plugin_english_lower::assert_english_context("watcher", error, &expected);
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "watcher", error, &expected,
+                    );
                 }
             }
         }

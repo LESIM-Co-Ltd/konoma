@@ -236,6 +236,7 @@ fn the_options_menu_agrees_with_the_host() {
             }
         }
     }
+    assert_eq!(t.runs, 165, "every original combination is compared");
     let files: usize = cases().iter().map(|c| c.files.len()).sum();
     assert_eq!(t.runs, files * SPECS.len(), "every run was compared");
     assert!(t.cells > 20000, "{}", t.cells);

@@ -34,7 +34,10 @@ fn project_input_is_unsupported_in_both_languages() {
     })
     .unwrap_err();
     assert_eq!(failure.kind, konoma_plugin::FailureKind::Unsupported);
-    assert_eq!(failure.message.get("en"), "this preview plugin does not open projects");
+    assert_eq!(
+        failure.message.get("en"),
+        "this preview plugin does not open projects"
+    );
     assert_eq!(
         failure.message.get("ja"),
         "このプレビュープラグインはプロジェクトを開きません"

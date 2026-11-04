@@ -633,7 +633,12 @@ const GREEN: [u8; 3] = [0, 255, 0];
 
 /// What the host shows after `J` on page 1 (the animation, standing on its first frame).
 fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
-    use crate::app::media_plugin::STAND_IN;
+    let s = host_turn_sim(root, plugin);
+    HOST_EDIT_LINE.with(|l| l.set(Some(s.app.preview_edit_line_for_test())));
+    super::image_parity::shot(&s.term)
+}
+
+fn host_turn_sim(root: &std::path::Path, plugin: TurnPlugin) -> Sim {
     let (file, first_fails, before, then) =
         (plugin.file, plugin.first_fails, plugin.before, plugin.then);
     let end_on = plugin.end_on;
@@ -641,7 +646,7 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
     // when it turns the page.
     let pages: usize = if plugin.paged { 2 } else { 1 };
     let mut at: usize = if first_fails { 0 } else { 1.min(pages - 1) };
-    STAND_IN.with(|s| *s.borrow_mut() = Some(Arc::new(plugin)));
+    let _media = super::plugin_act_parity::MediaPluginGuard::set(Arc::new(plugin));
     let mut cfg = cfg_en();
     cfg.ui.wrap = TURN_WRAP.with(|w| w.get());
     let mut s = Sim::with_config_sized(root, cfg, W, HOST_H)
@@ -673,7 +678,7 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
         s.drain_media();
     }
     let settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
-        s.draw();
+        // The key/result has drawn already; only completed resizes require another draw.
         while let Ok(req) = req_rx.try_recv() {
             let req: ratatui_image::thread::ResizeRequest = req;
             s.app.apply_image_resize(req.resize_encode());
@@ -709,12 +714,9 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
             // A page turn starts one.
             s.drain_media();
         }
-        s.draw();
         settle(&mut s, &mut req_rx);
     }
-    STAND_IN.with(|s| *s.borrow_mut() = None);
-    HOST_EDIT_LINE.with(|l| l.set(Some(s.app.preview_edit_line_for_test())));
-    super::image_parity::shot(&s.term)
+    s
 }
 
 thread_local! {
@@ -2243,20 +2245,48 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
     TURN_WRAP.with(|w| w.set(wrap));
     let mut checked = 0;
     let mut moved = 0;
+    let mk = || {
+        let mut p = TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
+        p.first_fails = true;
+        p
+    };
+    let hosts = super::plugin_act_parity::batch::host_cases(host_turn_sim(&root, mk()), specs);
+    let mut opened = open_file(
+        vec![Arc::new(mk())],
+        &root.join("turn.svg"),
+        "en",
+        TermCaps::new(),
+    )
+    .unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "t".into(),
+        unavailable: mk().unavailable,
+        plugin_id: "svg".into(),
+        path: opened.path.clone(),
+        shows: opened.shows.clone(),
+        display: konoma_plugin::app::Display {
+            wrap,
+            ..Default::default()
+        },
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
+        ..Default::default()
+    };
+    let apps = super::plugin_act_parity::batch::app_cases(
+        &mut *opened.session,
+        &cx,
+        &AppKeys::defaults(),
+        (W, APP_H),
+        specs,
+        Some("turn-parity"),
+    );
     for spec in specs {
-        let keys: &'static str = Box::leak(spec.clone().into_boxed_str());
-        let mk = || {
-            let mut p = TurnPlugin::new(root.join("a0.gif"), None).of_kind("svg", "turn.svg");
-            p.first_fails = true;
-            p.then = keys;
-            p
-        };
         let what = format!("wrap={wrap} [{spec}]");
-        let h = host_turn_shot(&root, mk());
-        let host_edit = HOST_EDIT_LINE
-            .with(|l| l.take())
-            .expect("host_turn_shot ran");
-        let a = app_turn_shot(&root.join("turn.svg"), mk(), Until::Nothing);
+        let h = super::image_parity::shot(&hosts[spec].term);
+        let host_edit = hosts[spec].edit;
+        let a = super::image_parity::shot(&apps[spec].term);
         let rows_of = |s: &Shot| -> Vec<String> {
             let top = s
                 .rows
@@ -2285,8 +2315,7 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
         );
         assert_eq!(host_edit, None, "{what}: the host opens the file at a line");
         assert_eq!(
-            konoma_plugin::app::edit_line(),
-            None,
+            apps[spec].edit, None,
             "{what}: the app opens the file at a line"
         );
         // The top border names the path alone: no position label.
@@ -2297,6 +2326,7 @@ fn failed_text_keys_agree(svg: &str, wrap: bool, specs: &[String]) -> usize {
         checked += 1;
         moved += usize::from(!rows_of(&h).iter().any(|r| r.contains("[svg] not drawn")));
     }
+    assert_eq!(checked, 262, "every original combination is compared");
     TURN_WRAP.with(|w| w.set(true));
     // Some of the sequences scroll the first lines away (the windows differ if they did not).
     assert!(moved >= specs.len() / 4, "scrolled shots: {moved}");

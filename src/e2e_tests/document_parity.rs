@@ -59,7 +59,7 @@ pub(super) fn app_term_plugins(
         &mut *opened.session,
         &mut it,
         &cx,
-        &AppKeys::defaults(),
+        super::plugin_act_parity::app_default_keys(),
     )
     .unwrap();
     assert_eq!(
@@ -335,15 +335,24 @@ fn the_line_e_opens_in_a_document_agrees_with_the_host() {
     let (mut checked, mut some, mut nonzero) = (0usize, 0usize, 0usize);
     let mut at = std::collections::BTreeSet::new();
     for (name, _) in edit_fixtures() {
+        let hosts = super::plugin_act_parity::batch::host_cases(
+            host_term(&root, &name, 60, 12, ""),
+            &specs,
+        );
+        let apps = super::text_parity::app_text_cases_by(
+            Arc::new(konoma_markdown::MarkdownPlugin),
+            &root.join(&name),
+            true,
+            4,
+            (60, 11),
+            &specs,
+        );
         for spec in &specs {
             let what = format!("{name} [{spec}]");
             // A small terminal: the documents are taller than the window.
-            let h = host_term(&root, &name, 60, 12, spec);
-            let _a = app_term(&root.join(&name), 60, 11, spec);
-            let (he, ae) = (
-                h.app.preview_edit_line_for_test(),
-                konoma_plugin::app::edit_line(),
-            );
+            let h = &hosts[spec];
+            let a = &apps[spec];
+            let (he, ae) = (h.edit, a.edit);
             assert_eq!(he, ae, "{what}: the line `e` opens differs");
             checked += 1;
             if let Some(l) = he {
@@ -353,6 +362,7 @@ fn the_line_e_opens_in_a_document_agrees_with_the_host() {
             }
         }
     }
+    assert_eq!(checked, 903, "every original combination is compared");
     assert!(checked >= 800, "{checked}");
     assert!(some >= 700, "documents with a line: {some}");
     assert!(nonzero >= 300, "lines past the first: {nonzero}");
