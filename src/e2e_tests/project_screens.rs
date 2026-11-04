@@ -1,5 +1,8 @@
 //! Project behavior through the same key dispatch and drawing entry points as the host.
 
+#[path = "project_scroll.rs"]
+mod scroll;
+
 use super::*;
 use crate::plugins::test_plugins::{self, Latch};
 use crate::plugins::test_projects::{ProjectLog, Screens, ViewHold};
