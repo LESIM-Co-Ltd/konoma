@@ -23,8 +23,7 @@ The template sets `keywords = ["konoma-plugin"]` for discovery on crates.io, a v
 on `konoma-plugin = "0.1.0"`, and the SDK's `app` feature (standalone terminal plus protocol).
 **The SDK crates are not published yet.** The version-based template needs the published SDK;
 for development now, use the workspace sample below, or override `konoma-plugin` with a local
-`[patch.crates-io]` pointing to the checkout's `crates/konoma-plugin`. The template test does
-that offline, using the workspace's dependency lock and local mermaid patch.
+`[patch.crates-io]` pointing to the checkout's `crates/konoma-plugin`.
 
 Once the SDK is available (or locally overridden), inside the generated project:
 
@@ -175,7 +174,8 @@ The sample's `tests/hexdump.rs` is copied below. `open_bytes` creates an isolate
 `open_file` exercises open on its path. `view_text` extracts the displayed lines. `send_keys`
 calls raw `Session::key` directly: it does **not** resolve manifest bindings. This text plugin
 leaves raw keys unhandled, so the declared-key test resolves the declaration and calls `act`.
-`check_manifest` checks keys and missing `shows`; `check_hints` checks the host's derived hints.
+`check_manifest` checks keys and missing `shows`; `check_hints` checks declared keys and the
+action labels/help that the host derives from declarations and current availability.
 
 ```rust
 use konoma_plugin::prelude::*;
@@ -278,9 +278,9 @@ cargo nextest run -p konoma-sample-hexdump
 cargo run -p konoma-plugin-test -- --file a.bin "$CARGO_TARGET_DIR/debug/konoma-sample-hexdump"
 ```
 
-`konoma-plugin-test` speaks the child protocol and uses konoma's normal deadlines. It probes
-`--serve`; it is not a JSON manifest linter. Pass a file to exercise open/view/actions/hints/
-cancellation too; without a file those checks are marked SKIP. Its library entry is
+`konoma-plugin-test` speaks the child protocol with konoma's normal deadlines, probing your
+program in `--serve` mode. Pass a file to exercise opening, views, actions,
+action labels/help and cancellation too; without a file those checks are marked SKIP. Its library entry is
 `run(&Options, Limits::default())`, used by the sample's real-program test. See the
 [protocol specification](../../reference/plugin-protocol/) for exact checks and wire formats.
 
@@ -310,7 +310,6 @@ After publishing your own crate, users can install it by crate name (optionally 
 Keep the `konoma-plugin` crates.io keyword. `konoma plugin update my-hexdump` rebuilds with a
 newer compatible release; `konoma plugin remove my-hexdump` removes it and rebuilds;
 `konoma plugin clean` deletes the retained build cache. `list` shows installed crates and sources.
-These are author/user instructions; the tests do not install into your real configuration.
 
 To replace a standard viewer, give your own plugin a distinct id and suitable binding/display
 declarations, then turn off the standard plugin in your config. For example, a replacement

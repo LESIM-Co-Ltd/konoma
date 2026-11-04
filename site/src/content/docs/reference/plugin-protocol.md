@@ -42,8 +42,7 @@ of `--plugin <id>` when you offer multiple plugins) for those consumers.
 ## Protect the protocol pipes
 
 The requirement is to keep the original stdin/stdout exclusively for protocol bytes. The host
-does not require or inspect particular descriptor syscalls. The SDK's recommended Unix recipe,
-implemented in `proc/server.rs::take_protocol_fds` (not `process.rs`), is:
+does not require or inspect particular descriptor syscalls. The SDK uses this Unix recipe:
 
 1. Duplicate original fd 1, then fd 0, with `fcntl(fd, F_DUPFD_CLOEXEC, 3)`. Keep these new
    descriptors for protocol output/input; the minimum fd 3 avoids overwriting 0, 1 or 2.
@@ -122,7 +121,8 @@ The checker accepts successful exit or a process still alive after refusal, but 
 it does not require a second handshake on that connection. `Hello.host_version` and `Hello.lang`
 are not validated by the SDK server. The API compatibility check is separate: major versions
 must match; at major 0, minors must match exactly; otherwise the plugin minor must be no newer
-than the host minor. The registry performs that check, not `manifest_from_wire`.
+than the host minor. Konoma checks this when registering the plugin; an incompatible API
+declaration disables the plugin and is reported at startup.
 
 The SDK decodes the first value directly as `Hello`, without a separate message discriminator.
 If decoding fails (for example, the first value is `"Shutdown"`, or a required field is absent
@@ -131,7 +131,7 @@ diagnostic to stderr and exits 1. A schema-compatible map with extra fields can 
 as `Hello`; it is not rejected simply because its sender intended a different message.
 Clean EOF before that first frame returns successfully without sending anything.
 
-## Calls, replies and hints
+## Calls and replies
 
 After `Ack`, the host sends these enum values. `sid` is the host's session id; `rid` is a host
 request id unique within this connection. The SDK host starts both counters at 1. Work is serial
@@ -185,8 +185,12 @@ first/whole. The wire conversion checks that a page fits the receiving machine's
 it does not validate it against the declared page count. `cols/rows` may be zero. `cell_px` is
 cell width/height in pixels when known. `layout` and `enabled` are snapshots, refreshed with each
 successful reply. An omitted action in `enabled` defaults to true; duplicate ids use the last
-value. There is **no hints request or hints reply**: the host derives its footer/help/menu from
-manifest actions and enabled state. `Unhandled` leaves an action/key unused; `Redraw` requests a
+value. `Manifest.actions` supplies each action's key, label and help, while `State.enabled`
+reports its current availability. Konoma uses these to show available actions in the footer,
+help and menu. Supply nonempty English labels and help for enabled actions. The check named
+`hints` opens the input, requests a view, and checks the declared keys and the labels/help that
+the host would display from the returned state. It uses the `Viewed` state, or keeps the
+`Opened` state after a valid `View` error. `Unhandled` leaves an action/key unused; `Redraw` requests a
 new view; `Flash` shows a translated message; `Reload` asks the host to reopen the input.
 Raw key modifiers are bit flags Ctrl=1, Alt=2, Shift=4; unknown bits are truncated. The converter
 does not restrict the function-key number. Layouts are clipped to 64 representations and 100,000
@@ -228,7 +232,8 @@ recipe; another language must supply equivalent wire behavior itself. In particu
 EOF it cancels work immediately and forces exit 1 after 2 seconds if work remains stuck. That
 SDK escape path is distinct from its normal successful EOF exit. The host treats unexpected
 child EOF as connection failure regardless of exit status; the checker requires exit 0 for
-`Shutdown`. There is no independent hints message to implement.
+`Shutdown`. For a plugin with actions, send their declarations in the manifest and current
+availability in each state snapshot; the host builds the action labels and help from them.
 
 ## Input, context and manifest
 
@@ -285,8 +290,8 @@ chains: `open=true` means Open, false Edit; `gui` chooses GUI vs terminal; `line
 the editor line token. Settings declare defaults and help. `work_group` names an exclusive job
 group; `converts` marks converted content, `file_text` identifies text of the original file,
 `sized` marks size-dependent views; `unavailable` selects host failure presentation.
-The wire converter clips translations and converts values, but does not validate ids, globs or
-keys; the registry and key validator do that. Use the checker below to exercise those rules.
+When konoma registers a plugin, it validates ids, globs and action keys as well as reading these
+fields. Use the checker below to exercise those rules.
 
 At registration, ids, action ids, setting names, screens (including action contexts) and work
 groups must be 1..64 ASCII characters from `[a-z0-9._-]`. Limits are 256 actions, 256 settings,
@@ -483,13 +488,12 @@ body length 9, MessagePack fixstr length 8 (`a8`), UTF-8 `Shutdown`. No newline 
 
 ## Reference test vectors
 
-These are complete frames, including their 4-byte length prefixes, generated with
-`frame::send` by `tests/protocol_vectors.rs` in `konoma-sample-hexdump`. They encode the `Hello`
+These are complete frames, including their 4-byte length prefixes, produced by the reference
+encoder. They encode the `Hello`
 and `Ack` above, using the minimal `M` (not the sample's richer action manifest). Offsets are
 hexadecimal byte offsets from the start of each frame. The Hello body is 67 bytes (`0x43`),
 and the Ack body is 218 bytes (`0xda`). Named-map field order below is the reference encoder's
-order; a receiver must use the map keys rather than depend on this order. The test checks both
-language pages against freshly encoded frames and the worked view against the real sample.
+order; a receiver must use the map keys rather than depend on this order.
 
 Hello:
 <!-- vector:hello -->
@@ -546,9 +550,11 @@ absolute script path in `args`, e.g. `args = ["/absolute/path/plugin.py"]`. Argu
 passed unchanged, not rejected just for being relative. See [configuration](../configuration/).
 
 The checker appends `--plugin <id>` when selected, then `--serve`; it probes the framed
-handshake, not `--manifest`. It checks manifest/registry validation, version refusal, open/view,
-hints, initially enabled actions and their raw keys, unknown sessions, cancellation, shutdown,
-malformed MessagePack and oversized headers. It uses fresh process groups and private handoff
+handshake, not `--manifest`. It validates the manifest and declared action keys, and checks
+version refusal, opening and views. Its `hints` check builds the action labels/help from the
+manifest actions and returned enabled state, requiring nonempty English label/help text for
+enabled actions. It also probes initially enabled actions and their raw keys, unknown sessions,
+cancellation, shutdown, malformed MessagePack and oversized headers. It uses fresh process groups and private handoff
 directories for independent probes. File-dependent checks without `--file` are **SKIP**, not
 passes; action/key `Err` responses are valid if the connection survives. Cancellation accepts
 a view already completed. Exit codes: 0=no failures, 1=conformance failures, 2=invalid usage.

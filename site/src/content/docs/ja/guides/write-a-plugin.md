@@ -5,10 +5,7 @@ sidebar:
   order: 6
 ---
 
-プラグインは開く対象を宣言して表示データを返し、konoma が描画します。このガイドは実在する
-`crates/konoma-sample-hexdump` を使います。`*.bin` を offset・16進数・ASCII の列で表示し、
-<kbd>w</kbd> で1行16/8バイトを切り替えます。全ファイルをメモリに読み、view ごとに全行を整形する、
-小さなファイル向けの教材です。
+プラグインは開く対象を宣言して表示データを返し、konoma が描画します。このガイドは実在する `crates/konoma-sample-hexdump` を使います。`*.bin` を offset・16進数・ASCII の列で表示し、<kbd>w</kbd> で1行16/8バイトを切り替えます。全ファイルをメモリに読み、`view` ごとに全行を整形する、小さなファイル向けの教材です。
 
 ## テンプレートから始める
 
@@ -19,12 +16,7 @@ cargo generate --path templates/konoma-plugin --name my-hexdump
 cd my-hexdump
 ```
 
-テンプレートは crates.io での発見用に `keywords = ["konoma-plugin"]`、SDK に版指定の
-`konoma-plugin = "0.1.0"` 依存、独立した端末表示と通信を含む `app` feature を設定します。
-**SDK の crate はまだ公開されていません。** このテンプレートは公開済み SDK が必要です。
-今すぐ開発する場合は下のワークスペースサンプルを使うか、`[patch.crates-io]` で konoma-plugin を
-checkout の `crates/konoma-plugin` に向けてください。テンプレートテストはワークスペースの依存 lock
-とローカルの mermaid patch も使ってオフラインで検証します。
+テンプレートは crates.io での発見用に `keywords = ["konoma-plugin"]`、SDK に版指定の `konoma-plugin = "0.1.0"` 依存、独立した端末表示と通信を含む `app` feature を設定します。**SDK の crate はまだ公開されていません。** このテンプレートは公開済み SDK が必要です。今すぐ開発する場合は下のワークスペースサンプルを使うか、`[patch.crates-io]` で `konoma-plugin` をcheckout の `crates/konoma-plugin` に向けてください。
 
 SDK が利用可能になったら（またはローカルで上書きしたら）、生成したプロジェクト内で：
 
@@ -34,16 +26,11 @@ cargo build
 konoma --plugin ./target/debug/my-hexdump a.bin
 ```
 
-既存の `.bin` ファイルを使います。これは既定の `target` ディレクトリの例です。
-`CARGO_TARGET_DIR` を設定している場合は、その実行ファイルのパスに替えてください。
-`cargo run -- a.bin` は SDK の独立した端末を開きます。konoma 内ではプラグインがテキストを返し、
-スクロール・検索・選択・コピーはホストが提供します。<kbd>w</kbd> は宣言済み `width` 操作を実行し、
-<kbd>?</kbd> でそのヘルプを表示します。
+既存の `.bin` ファイルを使います。これは既定の `target` ディレクトリの例です。`CARGO_TARGET_DIR` を設定している場合は、その実行ファイルのパスに替えてください。`cargo run -- a.bin` は SDK の独立した端末を開きます。konoma 内ではプラグインがテキストを返し、スクロール・検索・選択・コピーはホストが提供します。<kbd>w</kbd> は宣言済み `width` 操作を実行し、<kbd>?</kbd> でそのヘルプを表示します。
 
-## Manifest・open・セッション
+## `Manifest`・`open`・セッション
 
-以下はサンプルの `src/lib.rs` 全体をそのままコピーしたものです。生成するライブラリも同じコードで
-始まり、id・version は自分の Cargo package から取るため、生成後の id は `my-hexdump` です。
+以下はサンプルの `src/lib.rs` 全体をそのままコピーしたものです。生成するライブラリも同じコードで始まり、`id`・`version` は自分の Cargo package から取るため、生成後の `id` は `my-hexdump` です。
 
 ```rust
 use konoma_plugin::prelude::*;
@@ -129,17 +116,9 @@ pub fn plugins() -> Vec<Box<dyn Plugin>> {
 }
 ```
 
-`Manifest::bind` が対象ファイル、`shows` が表示型とホストの予約キーを宣言します。両方必要です。
-`Act` は操作 id・既定キー・短いラベル・ヘルプ・フッター優先度を宣言します。`t!` は英日文言を持ち、
-翻訳がなければ英語に戻ります。ホストは同じ宣言からキー・フッター・ヘルプ・<kbd>Space</kbd> メニュー
-を作ります。`Session::enabled` の既定は true。操作が一時的に使えなければ override して、キーと
-ヒントの状態を揃えます。
+`Manifest::bind` が対象ファイル、`shows` が表示型とホストの予約キーを宣言します。両方必要です。`Act` は操作 `id`・既定キー・短いラベル・ヘルプ・フッター優先度を宣言します。`t!` は英日文言を持ち、翻訳がなければ英語に戻ります。ホストは同じ宣言からキー・フッター・ヘルプ・<kbd>Space</kbd> メニューを作ります。`Session::enabled` の既定は `true`。操作が一時的に使えなければ override して、キーとヒントの状態を揃えます。
 
-`open` はファイル以外を拒否し、セッションを準備します。セッションはバイト列と行幅を所有します。
-`view` は状態を進めず読みます。resize・redraw などでいつでも呼ばれ得るためです。`View::text` は
-整形済み行を返し、描画はホストに任せます。最後の短い行も ASCII 列を揃え、非表示バイトは `.`、空ファイル
-は0行になります。`act` は状態変更後に Redraw、未知 id には Unhandled を返します。このサンプルは生キー
-入力を要求せず、konoma が <kbd>w</kbd> を `act("width", ...)` に変換します。
+`open` はファイル以外を拒否し、セッションを準備します。セッションはバイト列と行幅を所有します。`view` は状態を進めず読みます。resize・redraw などでいつでも呼ばれ得るためです。`View::text` は整形済み行を返し、描画はホストに任せます。最後の短い行も ASCII 列を揃え、非表示バイトは `.`、空ファイルは0行になります。`act` は状態変更後に `Redraw`、未知 `id` には `Unhandled` を返します。このサンプルは生キー入力を要求せず、konoma が <kbd>w</kbd> を `act("width", ...)` に変換します。
 
 ## 2つの入口
 
@@ -149,13 +128,7 @@ pub fn plugins() -> Vec<Box<dyn Plugin>> {
 konoma_plugin::export!(@program konoma_sample_hexdump::plugins());
 ```
 
-生成後は代わりに `my_hexdump::plugins()` を使います。export! は --serve・--manifest・--version・
---help と、app feature がある場合の単独端末用ファイル引数を実装します。通信の stdout にはフレーム以外を
-書かないでください。SDK は serving 中の通常の print を stderr に向けます。
-公開ライブラリ関数 `plugins() -> Vec<Box<dyn Plugin>>` は別の利用者のためです。
-`konoma plugin install` が生成するホストは `<crate>::plugins()` を呼びます。プログラムの入口と
-ライブラリの入口の両方を残してください。Rust crate のインストールは再ビルドしたホストへのリンク、
---plugin による実行ファイルの読み込みは子プロセス通信です。
+生成後は代わりに `my_hexdump::plugins()` を使います。`export!` は `--serve`・`--manifest`・`--version`・`--help` と、`app` feature がある場合の単独端末用ファイル引数を実装します。通信の stdout にはフレーム以外を書かないでください。SDK は serving 中の通常の print を stderr に向けます。公開ライブラリ関数 `plugins() -> Vec<Box<dyn Plugin>>` は別の利用者のためです。`konoma plugin install` が生成するホストは `<crate>::plugins()` を呼びます。プログラムの入口とライブラリの入口の両方を残してください。Rust crate のインストールは再ビルドしたホストへのリンク、`--plugin` による実行ファイルの読み込みは子プロセス通信です。
 
 checkout で実際のサンプルを動かす場合、選んだビルドディレクトリを使って：
 
@@ -166,16 +139,11 @@ konoma --plugin "$CARGO_TARGET_DIR/debug/konoma-sample-hexdump" a.bin
 cargo run -p konoma-sample-hexdump -- --manifest
 ```
 
-パスの例では CARGO_TARGET_DIR をビルドディレクトリに設定してください（未設定なら target）。
-開発用 --plugin は複数指定でき、その konoma の実行だけに有効です。
+パスの例では `CARGO_TARGET_DIR` をビルドディレクトリに設定してください（未設定なら `target`）。開発用 `--plugin` は複数指定でき、その konoma の実行だけに有効です。
 
 ## 端末なしでテストする
 
-以下はサンプルの `tests/hexdump.rs` のコピーです。open_bytes は隔離した一時ファイルを作り、open_file
-はそのパスで open を実行します。view_text は表示行を取り出します。send_keys は生の Session::key を
-直接呼び、manifest のキー割り当ては**解決しません**。このテキストプラグインは生キーを Unhandled に
-するため、宣言キーのテストは宣言を調べて act を呼びます。check_manifest はキーと shows の欠落、
-check_hints はホストが導出するヒントを検査します。
+以下はサンプルの `tests/hexdump.rs` のコピーです。`open_bytes` は隔離した一時ファイルを作り、`open_file` はそのパスで `open` を実行します。`view_text` は表示行を取り出します。`send_keys` は生の `Session::key` を直接呼び、manifest のキー割り当ては**解決しません**。このテキストプラグインは生キーを `Unhandled` にするため、宣言キーのテストは宣言を調べて `act` を呼びます。`check_manifest` はキーと `shows` の欠落、`check_hints` は宣言キーと、操作宣言・現在の使用可否からホストが表示する操作ラベル・ヘルプを検査します。
 
 ```rust
 use konoma_plugin::prelude::*;
@@ -278,11 +246,7 @@ cargo nextest run -p konoma-sample-hexdump
 cargo run -p konoma-plugin-test -- --file a.bin "$CARGO_TARGET_DIR/debug/konoma-sample-hexdump"
 ```
 
-konoma-plugin-test は子の通信を使い、konoma の通常の期限を適用します。--serve の検査であり、
-JSON manifest だけの検査ではありません。ファイルも渡して open/view・操作・ヒント・中断を確認します。
-ファイルなしではそれらは SKIP です。ライブラリの入口は `run(&Options, Limits::default())` で、
-サンプルの実行ファイルテストでも使います。詳細な検査とデータ形式は
-[プロトコル仕様](../../reference/plugin-protocol/)を参照してください。
+`konoma-plugin-test` は konoma の通常の期限を適用し、プログラムの `--serve` モードで子プロセス通信を検査します。ファイルも渡して `open`/`view`・操作・ヒント・中断を確認します。ファイルなしではそれらは SKIP です。ライブラリの入口は `run(&Options, Limits::default())` で、サンプルの実行ファイルテストでも使います。詳細な検査とデータ形式は[プロトコル仕様](../../reference/plugin-protocol/)を参照してください。
 
 ## インストールと共有
 
@@ -299,28 +263,18 @@ konoma plugin list
 konoma plugin install konoma-sample-hexdump --path ./crates/konoma-sample-hexdump
 ```
 
-CLI は --path があっても crate 名が必要です。ソースと作者を表示し、`Install it? [y/N]` と尋ねます。
-再ビルド中の build script は利用者のマシンで実行され、プラグインはリンク・子プロセスのどちらでも
-利用者の権限で、**サンドボックスなし**で動きます。信頼できるコードだけをインストールしてください。
---yes は確認を省略し、端末がない場合は必須です。対応する konoma ライブラリと SDK の依存先も利用可能
-である必要があり、ローカルのプラグインパスを指定するだけでそれらが公開されるわけではありません。
+CLI は `--path` があっても crate 名が必要です。ソースと作者を表示し、`Install it? [y/N]` と尋ねます。再ビルド中の build script は利用者のマシンで実行され、プラグインはリンク・子プロセスのどちらでも利用者の権限で、**サンドボックスなし**で動きます。信頼できるコードだけをインストールしてください。`--yes` は確認を省略し、端末がない場合は必須です。対応する konoma ライブラリと SDK の依存先も利用可能である必要があり、ローカルのプラグインパスを指定するだけでそれらが公開されるわけではありません。
 
-自作 crate を公開したら、利用者は crate 名（任意で @version）でインストールできます。
-crates.io keyword の konoma-plugin を残してください。`konoma plugin update my-hexdump` は
-互換な新版で再ビルド、`konoma plugin remove my-hexdump` は削除して再ビルド、
-`konoma plugin clean` は保持したビルドキャッシュの削除、list は crate と取得元の表示です。
-これは作者・利用者向けの操作案内で、テストは実際の設定にインストールしません。
+自作 crate を公開したら、利用者は crate 名（任意で `@version`）でインストールできます。crates.io keyword の `konoma-plugin` を残してください。`konoma plugin update my-hexdump` は互換な新版で再ビルド、`konoma plugin remove my-hexdump` は削除して再ビルド、`konoma plugin clean` は保持したビルドキャッシュの削除、`list` は crate と取得元の表示です。
 
-標準ビューアを置き換えるなら、独自の id と適切な binding・表示宣言を与え、設定で標準プラグインを
-無効にします。例えば CSV ビューアの置き換えでは csv を無効にします。
+標準ビューアを置き換えるなら、独自の `id` と適切な binding・表示宣言を与え、設定で標準プラグインを無効にします。例えば CSV ビューアの置き換えでは `csv` を無効にします。
 
 ```toml
 [plugins.csv]
 enabled = false
 ```
 
-[設定リファレンス](../../reference/configuration/)に `[plugins.<id>]`、read_only・プラグイン設定・
-キー上書きがあります。実行ファイルを直接設定する場合の例：
+[設定リファレンス](../../reference/configuration/)に `[plugins.<id>]`、`read_only`・プラグイン設定・キー上書きがあります。実行ファイルを直接設定する場合の例：
 
 ```toml
 [plugins.hex]
@@ -329,23 +283,8 @@ args = ["--plugin", "hex"]
 read_dirs = ["/absolute/path/to/assets"]
 ```
 
-これはプログラムの id hex を選び、追加の asset ディレクトリを許可します。子は専用ディレクトリで
-動くため、args のスクリプト・ファイルは絶対パスにします。読み取り範囲はホストがプラグインのために読む対象の
-制限で、プラグイン自身のファイル操作を sandbox 化しません。置き換えのために標準の id を再利用しないで
-ください。
+これは `id` が `hex` のプラグインを選び、追加の asset ディレクトリを許可します。子は専用ディレクトリで動くため、`args` のスクリプト・ファイルは絶対パスにします。読み取り範囲はホストがプラグインのために読む対象の制限で、プラグイン自身のファイル操作を sandbox 化しません。置き換えのために標準の `id` を再利用しないでください。
 
-Rust は必須ではありません。他言語のテキスト専用プログラムは、ホストの Hello と自分の Ack/manifest から
-始め、Open・View・Shutdown を処理します。未対応の Act/Key にも応答し、Close/Cancel を処理して、要求を
-黙って捨てないでください。EOF・不正フレームも含む
-[実装者向けの最小ループ](../../reference/plugin-protocol/#minimal-loop)に従います。manifest に必要なのは
-id・version・api・name・binds・actions・verbs・settings・screens・shows・converts・file_text・sized・unavailable
-で、work_group は nullable。使わない宣言配列は空にでき、file binding と `shows:["Text"]` で最小ファイル
-ビューアを作れます。konoma-plugin-test で検査し、--plugin または `[plugins.<id>] command` で読み込みます。
-Rust の plugins() を使うインストール入口は Rust crate 向けです。
+Rust は必須ではありません。他言語のテキスト専用プログラムは、ホストの `Hello` と自分の `Ack`/manifest から始め、`Open`・`View`・`Shutdown` を処理します。未対応の `Act`/`Key` にも応答し、`Close`/`Cancel` を処理して、要求を黙って捨てないでください。EOF・不正フレームも含む[実装者向けの最小ループ](../../reference/plugin-protocol/#minimal-loop)に従います。manifest に必要なのは `id`・`version`・`api`・`name`・`binds`・`actions`・`verbs`・`settings`・`screens`・`shows`・`converts`・`file_text`・`sized`・`unavailable` で、`work_group` は nullable。使わない宣言配列は空にでき、file binding と `shows:["Text"]` で最小ファイルビューアを作れます。`konoma-plugin-test` で検査し、`--plugin` または `[plugins.<id>] command` で読み込みます。Rust の `plugins()` を使うインストール入口は Rust crate 向けです。
 
-Rust を読まずサンプルの出力を再現するには、最初は1行16バイト、<kbd>w</kbd> で8と16を切り替えます。
-各行は小文字hexのバイトoffset（最低8桁、0埋め）、空白2個、空白1個区切りの小文字2桁hexバイト、
-hex列全体が `width*3-1` 文字になるまでの末尾空白、さらに空白2個、最後に縦棒で囲むASCII列です。
-0x21〜0x7eと空白バイト0x20はそのまま残し、その他はすべて . にします。最後の短い行もhex列を同じ幅に
-埋め、ASCIIの縦棒の内側は埋めません。空ファイルは0行です。平文の行はspan 1つとspan/行の既定styleを持つ
-Lines sourceになり、プロトコル通信例にその形があります。
+Rust を読まずサンプルの出力を再現するには、最初は1行16バイト、<kbd>w</kbd> で8と16を切り替えます。各行は小文字16進数のバイトオフセット（最低8桁、0埋め）、空白2個、空白1個区切りの小文字2桁16進数バイト、16進数列全体が `width*3-1` 文字になるまでの末尾空白、さらに空白2個、最後に縦棒で囲む ASCII 列です。`0x21`〜`0x7e` と空白バイト `0x20` はそのまま残し、その他はすべて `.` にします。最後の短い行も16進数列を同じ幅に埋め、ASCII の縦棒の内側は埋めません。空ファイルは0行です。平文の各行は `Lines` 内の1項目になり、1つの span と行それぞれに既定の style を持ちます。プロトコル通信例にその形があります。
