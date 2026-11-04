@@ -11,7 +11,21 @@ impl App {
 
     pub(crate) fn poll_projects(&mut self) -> bool {
         self.ensure_project_detection();
-        match self.tab.projects.poll() {
+        let previously_ready = !self.tab.projects.pending();
+        let detection = self.tab.projects.poll();
+        if previously_ready && detection == Some(false) {
+            for project in &self.tab.projects.projects {
+                if let Some(runtime) = self
+                    .project_runtimes
+                    .get_mut(&super::project_screens::ProjectKey::from(project))
+                {
+                    runtime.dirty.extend(runtime.views.keys().cloned());
+                    runtime.error = None;
+                    runtime.invalidated |= runtime.busy;
+                }
+            }
+        }
+        let changed = match detection {
             Some(false) => true,
             Some(true) => {
                 self.flash = Some(
@@ -20,6 +34,8 @@ impl App {
                 true
             }
             None => false,
-        }
+        };
+        let changed = self.poll_project_jobs() || changed;
+        self.replay_project_keys() || changed
     }
 }

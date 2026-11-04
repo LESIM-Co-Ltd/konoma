@@ -1,4 +1,4 @@
-//! The parts of project hosting available without inventing missing SDK request fields.
+//! Project discovery and legacy file-provider paths share the host's navigation and write policy.
 
 use super::*;
 use crate::i18n::Msg;
@@ -49,6 +49,7 @@ fn navigation_config(
 
 fn land_projects(s: &mut Sim) {
     s.app.tab.projects.wait_for_result();
+    assert!(s.app.tab.projects.uses_injected_events());
     assert!(s.app.poll_projects());
     assert!(!s.app.tab.projects.projects.is_empty(), "{:?}", s.app.flash);
     s.draw();
@@ -98,6 +99,8 @@ fn e2e_project_plugin_write_uses_the_guard_and_hides_its_hint() {
         std::fs::write(dir.join("view.project-test"), "project").unwrap();
         let (cfg, calls) = config(name, read_only);
         let mut s = Sim::with_config(&canon(&dir), cfg);
+        s.app.tab.projects.wait_for_result();
+        assert!(s.app.tab.projects.uses_injected_events());
         s.select("view.project-test");
         s.enter();
         if read_only {
@@ -170,6 +173,8 @@ fn navigation_session(
     let target = canon(&dir).join("destination/file.txt");
     let (cfg, _) = navigation_config(&name, false, Some(outcome(&target)));
     let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.app.tab.projects.wait_for_result();
+    assert!(s.app.tab.projects.uses_injected_events());
     if asynchronous {
         s = s.with_async_plugins();
     }

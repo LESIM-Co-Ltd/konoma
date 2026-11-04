@@ -12,10 +12,17 @@ pub fn write_guard(app: &App, plugin: &str, writes: bool, repository: bool) -> G
     if !writes {
         return Gate::On;
     }
-    if matches!(
-        app.cfg.plugins.get(plugin).and_then(|t| t.get("read_only")),
-        Some(toml::Value::Boolean(true))
-    ) {
+    let declared = crate::plugins::with_registry(&app.cfg.plugin_disabled(), |registry| {
+        registry
+            .manifest(plugin)
+            .is_some_and(|manifest| manifest.read_only)
+    });
+    if declared
+        || matches!(
+            app.cfg.plugins.get(plugin).and_then(|t| t.get("read_only")),
+            Some(toml::Value::Boolean(true))
+        )
+    {
         return Gate::Off(Some(Msg::PluginReadOnly));
     }
     #[cfg(feature = "git")]

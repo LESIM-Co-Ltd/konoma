@@ -18,6 +18,7 @@ impl App {
 
     /// Save the current working state to the active tab.
     pub(super) fn save_active(&mut self) {
+        self.cancel_project_input();
         // This tab's media is about to be discarded by clear_image. Stash the one slot so that
         // when we return, decoding/rasterizing/launching external tools doesn't need to be redone.
         self.stash_media_cache();
@@ -319,6 +320,12 @@ impl App {
         // A new tab needs its own watcher/result slot even when its root is the same. Sharing
         // the snapshot's worker would let one tab consume or cancel another tab's discoveries.
         self.tab.projects = crate::plugins::projects::ProjectDetection::default();
+        self.tab.project_navigation = None;
+        self.tab.project_pending_acts.clear();
+        self.tab.project_return = None;
+        self.tab.project_effects.clear();
+        self.tab.project_enter_pending = false;
+        self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;
         self.tab.selected = 0;
@@ -443,6 +450,12 @@ impl App {
     /// current tab untouched. A file opens as a preview; a directory becomes the new tab's root
     /// (mirroring `l`). No-op when the tree is empty.
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
+        if self.project_active() {
+            if let Some(path) = self.project_row_target() {
+                return self.tab_new_from_path(path, false);
+            }
+            return Ok(());
+        }
         let Some(entry) = self.tab.entries.get(self.tab.selected).cloned() else {
             return Ok(());
         };

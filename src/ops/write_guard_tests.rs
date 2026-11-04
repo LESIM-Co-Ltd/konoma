@@ -48,6 +48,49 @@ fn guard_checks_the_writing_plugins_table_in_both_languages() {
     }
 }
 
+#[test]
+fn guard_plugin_declaration_cannot_be_overridden_by_configuration() {
+    use crate::plugins::test_plugins;
+    use crate::plugins::test_projects::{ProjectLog, Screens};
+    use std::sync::{Arc, Mutex};
+    let dir = unique_tmp("project_declared_read_only_guard");
+    std::fs::create_dir_all(&dir).unwrap();
+    for read_only in [false, true] {
+        let marker = test_plugins::register(
+            if read_only {
+                "guard-declared-read-only"
+            } else {
+                "guard-declared-writable"
+            },
+            Arc::new(Screens {
+                log: Arc::new(Mutex::new(ProjectLog::default())),
+                read_only,
+                hold: None,
+                started: None,
+                outcome: None,
+            }),
+        );
+        for configured in [false, true] {
+            let mut cfg = test_plugins::marker_config(&marker);
+            cfg.external.git = false;
+            cfg.plugins.insert(
+                "project-screens".into(),
+                toml::Table::from_iter([("read_only".into(), configured.into())]),
+            );
+            let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+            assert_eq!(
+                write_guard(&app, "project-screens", true, false).is_on(),
+                !(read_only || configured)
+            );
+            assert_eq!(write_guard(&app, "project-screens", false, false), Gate::On);
+            assert_eq!(
+                app.allow_write("project-screens", true, false),
+                !(read_only || configured)
+            );
+        }
+    }
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn guard_legacy_git_and_jj_read_only_settings_are_accepted_and_type_checked() {
@@ -118,6 +161,28 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
     let body = method(policy, "allow_plugin_write");
     assert!(body.contains("b.act.act() == action && b.writes"));
     assert!(body.contains("self.allow_write(&id, writes, false)"));
+    let project = include_str!("../app/project_screens.rs");
+    let execute = method(project, "execute_project_act");
+    assert!(execute.contains("invocation.declaration.writes"));
+    assert!(execute.find("allow_write(").unwrap() < execute.find("ProjectJob::Act {").unwrap());
+    assert!(method(project, "request_project_act").contains("allow_write("));
+    assert_eq!(
+        project.matches("ProjectJob::Act {").count(),
+        1,
+        "one guarded project action dispatcher"
+    );
+    let worker = include_str!("../app/project_worker.rs");
+    assert_eq!(
+        worker.matches("ProjectJob::Act {").count(),
+        1,
+        "only the serial owner consumes project actions"
+    );
+    assert_eq!(worker.matches("plugin_host::act_session(").count(), 1);
+    assert_eq!(
+        plugin.matches("act_session(").count(),
+        2,
+        "definition and legacy guarded dispatcher"
+    );
 }
 
 fn sources(directory: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -200,5 +265,8 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
     );
     assert!(jj_calls >= 1, "the jj snapshot write must be scanned");
     assert!(plugin_calls >= 1, "the plugin act executor must be scanned");
-    eprintln!("guarded write paths: git={git_calls}, jj={jj_calls}, plugin={plugin_calls}; lower bound=12");
+    let project = include_str!("../app/project_screens.rs");
+    assert_eq!(project.matches("ProjectJob::Act {").count(), 1);
+    assert!(method(project, "execute_project_act").contains("allow_write("));
+    eprintln!("guarded write paths: git={git_calls}, jj={jj_calls}, plugin={plugin_calls}, project=1; lower bound=13");
 }

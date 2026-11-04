@@ -21214,6 +21214,8 @@ mod options_parity;
 mod plugin_act_parity;
 mod preview_plan_parity;
 mod project_host;
+#[path = "e2e_tests/project_screens.rs"]
+mod project_screens;
 mod space_menu_parity;
 mod table_parity;
 mod text_parity;

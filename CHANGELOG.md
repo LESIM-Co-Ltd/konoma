@@ -8,6 +8,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ### Added
 
+- Project input received during a view fetch is retained for the current screen and dispatched
+  after its reply, including dialogs and navigation. Refreshes preserve row identities, queued
+  actions recheck their guards, and screen-jump collisions only suppress keys in project screens.
+- Project providers now open from `p`, with declared screen tabs, row actions and pushed screens.
+  The host renders their lists, diffs, text and documents, supplies selection and prompt answers,
+  runs one worker per project and refreshes only the action's declared targets. The shared write
+  policy also respects a plugin's own read-only declaration.
 - Static project marker discovery runs on a worker and keeps its results with each host tab.
   Project watch paths and ancestor marker changes trigger discovery again.
 - Plugin navigation outcomes open files at a line, full-screen diffs, worktree roots and new tabs

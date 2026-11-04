@@ -14,6 +14,8 @@ pub(crate) mod external;
 #[cfg(test)]
 pub(crate) mod external_testkit;
 mod listing;
+#[cfg(test)]
+mod notify_tests;
 mod profile;
 #[cfg(test)]
 mod program_parity_tests;
@@ -27,6 +29,8 @@ pub(crate) mod statics;
 mod survivor_tests;
 #[cfg(test)]
 pub(crate) mod test_plugins;
+#[cfg(test)]
+pub(crate) mod test_projects;
 #[cfg(test)]
 pub(crate) mod test_views;
 #[cfg(test)]

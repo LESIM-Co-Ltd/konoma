@@ -3,10 +3,10 @@
 //! reversed. A plain letter jumps straight to that bookmark; `↵` = jump to selection /
 //! `Ctrl-e` = edit / `Ctrl-d` = delete / `'`/`q`/`Esc` = close. Follows the help popup.
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Block;
 use ratatui::Frame;
 
 use crate::app::list_filter::ListId;
@@ -90,11 +90,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .title(title)
         .border_style(Style::new().fg(Color::Cyan));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .alignment(Alignment::Left);
-
     konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
-    frame.render_widget(para, popup);
+    super::list::render(frame, popup, lines, scroll, block);
 }

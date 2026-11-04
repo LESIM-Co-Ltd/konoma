@@ -1,0 +1,1406 @@
+//! Project navigation, action contexts and the shared prompts. Session ownership is on workers.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use konoma_plugin::project::{
+    ActContext, ChoiceInput, Confirmation, ProjectAct, ProjectRow, RefreshTarget, TextInput,
+};
+use konoma_plugin::{Act, Outcome};
+use ratatui::text::Line;
+
+use super::project_worker::ProjectJob;
+use super::*;
+use crate::i18n::Msg;
+use crate::keymap::Context;
+use crate::plugins::{ActBinding, PluginAct};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ProjectKey {
+    pub plugin: String,
+    pub root: PathBuf,
+    pub marker: String,
+}
+
+impl From<&crate::plugins::projects::MatchedProject> for ProjectKey {
+    fn from(p: &crate::plugins::projects::MatchedProject) -> Self {
+        Self {
+            plugin: p.plugin.clone(),
+            root: p.root.clone(),
+            marker: p.marker.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ScreenKey {
+    pub screen: String,
+    pub selection: Option<String>,
+}
+
+impl ScreenKey {
+    fn new(screen: impl Into<String>) -> Self {
+        Self {
+            screen: screen.into(),
+            selection: None,
+        }
+    }
+}
+
+pub(crate) enum ProjectContent {
+    List(konoma_plugin::view::ListView),
+    Lines(Vec<Line<'static>>),
+    Diff(Vec<Line<'static>>),
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectFrame {
+    pub key: ScreenKey,
+    pub cursor: usize,
+    pub scroll: usize,
+    pub marked: BTreeSet<usize>,
+    pub query: String,
+    pub filtering: bool,
+    initialized: bool,
+    pending: std::collections::VecDeque<ProjectInput>,
+}
+
+#[derive(Clone)]
+enum ProjectInput {
+    Key(KeyEvent),
+    Act(Box<ProjectInvocation>),
+}
+
+impl ProjectFrame {
+    fn new(key: ScreenKey) -> Self {
+        Self {
+            key,
+            cursor: 0,
+            scroll: 0,
+            marked: BTreeSet::new(),
+            query: String::new(),
+            filtering: false,
+            initialized: false,
+            pending: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectNavigation {
+    pub project: ProjectKey,
+    pub stack: Vec<ProjectFrame>,
+    origin_mode: Mode,
+    origin_path: Option<PathBuf>,
+    origin_kind: Option<PreviewKind>,
+    origin_scroll: u16,
+    origin_hscroll: u16,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectEffect {
+    pub project: ProjectKey,
+    pub tab: u64,
+    pub tree_root: PathBuf,
+    pub view: Option<ScreenKey>,
+    pub outcome: Option<Outcome>,
+    pub tree_status: bool,
+    pub label: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectInvocation {
+    project: ProjectKey,
+    action: PluginAct,
+    declaration: Act,
+    pub(super) context: ProjectAct,
+    effect: ProjectEffect,
+    origin_mode: Mode,
+    origin_path: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+pub(crate) enum ProjectPrompt {
+    Confirmation(Confirmation),
+    Text(TextInput),
+    Choice(ChoiceInput),
+}
+
+pub(crate) enum ProjectDialog {
+    Projects {
+        projects: Vec<ProjectKey>,
+        selected: usize,
+    },
+    Act {
+        invocation: Box<ProjectInvocation>,
+        prompts: Vec<ProjectPrompt>,
+        stage: usize,
+        buffer: String,
+        cursor: usize,
+        selected: usize,
+    },
+}
+
+/// Refreshes keep the identity the user selected, even when the provider reorders its rows.
+fn remap_project_rows(
+    tab: &mut PerTab,
+    project: &ProjectKey,
+    screen: &ScreenKey,
+    old: Option<&ProjectContent>,
+    new: &ProjectContent,
+) {
+    let (Some(ProjectContent::List(old)), ProjectContent::List(new)) = (old, new) else {
+        return;
+    };
+    for nav in [&mut tab.project_navigation, &mut tab.project_return]
+        .into_iter()
+        .flatten()
+        .filter(|nav| &nav.project == project)
+    {
+        for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
+            let visible = |row: &konoma_plugin::view::ListRow| {
+                frame.query.is_empty()
+                    || row
+                        .cells
+                        .iter()
+                        .map(konoma_plugin::style::Line::plain)
+                        .collect::<String>()
+                        .to_lowercase()
+                        .contains(&frame.query.to_lowercase())
+            };
+            let selected = old
+                .rows
+                .iter()
+                .filter(|row| visible(row))
+                .nth(frame.cursor)
+                .map(ProjectRow::from);
+            let marked: Vec<_> = frame
+                .marked
+                .iter()
+                .filter_map(|index| old.rows.get(*index))
+                .map(ProjectRow::from)
+                .collect();
+            if let Some(selected) = selected {
+                if let Some(cursor) = new
+                    .rows
+                    .iter()
+                    .filter(|row| visible(row))
+                    .position(|row| ProjectRow::from(row) == selected)
+                {
+                    frame.cursor = cursor;
+                } else {
+                    frame.cursor = 0;
+                    frame
+                        .pending
+                        .retain(|input| matches!(input, ProjectInput::Act(_)));
+                }
+            }
+            frame.marked = new
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| marked.contains(&ProjectRow::from(*row)))
+                .map(|(index, _)| index)
+                .collect();
+        }
+    }
+}
+
+impl App {
+    pub(crate) fn project_active(&self) -> bool {
+        self.tab.project_navigation.is_some()
+    }
+
+    fn project_waiting_for_view(&self) -> bool {
+        let Some(nav) = &self.tab.project_navigation else {
+            return false;
+        };
+        let Some(frame) = nav.stack.last() else {
+            return false;
+        };
+        self.project_runtimes
+            .get(&nav.project)
+            .is_some_and(|runtime| {
+                !runtime.acting
+                    && runtime.error.is_none()
+                    && (!runtime.ready
+                        || runtime.busy
+                        || !runtime.views.contains_key(&frame.key)
+                        || runtime.dirty.contains(&frame.key))
+            })
+    }
+
+    fn queue_project_input(&mut self, input: ProjectInput) {
+        if !self.project_active() {
+            if let ProjectInput::Act(invocation) = input {
+                if self.tab.project_pending_acts.len() < 4096 {
+                    self.tab.project_pending_acts.push_back(*invocation);
+                } else {
+                    self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
+                }
+            }
+            return;
+        }
+        if let Some(frame) = self
+            .tab
+            .project_navigation
+            .as_mut()
+            .and_then(|nav| nav.stack.last_mut())
+        {
+            if frame.pending.len() < 4096 {
+                if self.project_replaying {
+                    frame.pending.push_front(input);
+                } else {
+                    frame.pending.push_back(input);
+                }
+            } else {
+                self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
+            }
+        }
+    }
+
+    pub(crate) fn project_input_replaying(&self) -> bool {
+        self.project_replaying
+    }
+
+    pub(super) fn cancel_project_input(&mut self) {
+        self.tab.project_pending_acts.clear();
+        if let Some(nav) = &mut self.tab.project_navigation {
+            for frame in &mut nav.stack {
+                frame.pending.clear();
+            }
+        }
+    }
+
+    fn project_pending_interaction(&self) -> bool {
+        let Some(nav) = &self.tab.project_navigation else {
+            return false;
+        };
+        let Some(frame) = nav.stack.last() else {
+            return false;
+        };
+        let Some(ProjectInput::Key(key)) = frame.pending.front() else {
+            return false;
+        };
+        if key.code == KeyCode::Char(' ') {
+            return true;
+        }
+        self.plugin_keys
+            .acts_of(&nav.project.plugin)
+            .iter()
+            .any(|binding| {
+                binding.key == Some(crate::keymap::KeyPress::norm(key))
+                    && self
+                        .plugin_keys
+                        .declaration(binding.act)
+                        .is_some_and(|decl| {
+                            decl.confirmation.is_some()
+                                || decl.text_input.is_some()
+                                || decl.choice_input.is_some()
+                        })
+            })
+    }
+
+    /// Loading never consumes an operation key. Replay through the ordinary dispatcher so the
+    /// current view, context and write guard are consulted after the reply, including dialogs.
+    pub(super) fn replay_project_keys(&mut self) -> bool {
+        if self.project_replaying {
+            return false;
+        }
+        self.project_replaying = true;
+        let mut changed = false;
+        for _ in 0..64 {
+            if self.project_waiting_for_view() {
+                break;
+            }
+            let input = self
+                .tab
+                .project_navigation
+                .as_mut()
+                .and_then(|nav| nav.stack.last_mut())
+                .and_then(|frame| frame.pending.pop_front());
+            let input = input.or_else(|| {
+                let invocation = self.tab.project_pending_acts.front()?;
+                if self
+                    .project_runtimes
+                    .get(&invocation.project)
+                    .is_some_and(|runtime| runtime.busy)
+                {
+                    return None;
+                }
+                self.tab
+                    .project_pending_acts
+                    .pop_front()
+                    .map(|invocation| ProjectInput::Act(Box::new(invocation)))
+            });
+            let Some(input) = input else {
+                break;
+            };
+            changed = true;
+            match input {
+                ProjectInput::Key(key) => {
+                    let result = crate::handle_key(self, key);
+                    crate::resolve_key_result(self, result);
+                }
+                ProjectInput::Act(invocation) => self.execute_project_act(*invocation),
+            }
+        }
+        self.project_replaying = false;
+        changed
+    }
+
+    pub(crate) fn project_frame(&self) -> Option<&ProjectFrame> {
+        self.tab.project_navigation.as_ref()?.stack.last()
+    }
+
+    pub(crate) fn project_content(&self) -> Option<Arc<ProjectContent>> {
+        let nav = self.tab.project_navigation.as_ref()?;
+        self.project_runtimes
+            .get(&nav.project)?
+            .views
+            .get(&nav.stack.last()?.key)
+            .cloned()
+    }
+
+    pub(crate) fn project_visible_rows(&self) -> Vec<usize> {
+        let Some(frame) = self.project_frame() else {
+            return Vec::new();
+        };
+        let Some(content) = self.project_content() else {
+            return Vec::new();
+        };
+        match content.as_ref() {
+            ProjectContent::List(list) => list
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    frame.query.is_empty()
+                        || row
+                            .cells
+                            .iter()
+                            .flat_map(|c| &c.spans)
+                            .map(|s| s.text.as_str())
+                            .collect::<String>()
+                            .to_lowercase()
+                            .contains(&frame.query.to_lowercase())
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            ProjectContent::Lines(lines) | ProjectContent::Diff(lines) => {
+                (0..lines.len()).collect()
+            }
+        }
+    }
+
+    fn project_selected_index(&self) -> Option<usize> {
+        self.project_visible_rows()
+            .get(self.project_frame()?.cursor)
+            .copied()
+    }
+
+    pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
+        let index = self.project_selected_index()?;
+        match self.project_content()?.as_ref() {
+            ProjectContent::List(list) => list.rows.get(index)?.target.clone(),
+            _ => None,
+        }
+    }
+
+    fn action_project(&self, p: PluginAct) -> Option<&ProjectKey> {
+        if let Some(nav) = &self.tab.project_navigation {
+            return (nav.project.plugin == p.plugin()).then_some(&nav.project);
+        }
+        if let Some(nav) = &self.tab.project_return {
+            if nav.project.plugin == p.plugin() {
+                return Some(&nav.project);
+            }
+        }
+        self.tab
+            .projects
+            .projects
+            .iter()
+            .filter(|project| project.plugin == p.plugin())
+            .find_map(|project| {
+                self.project_runtimes
+                    .get_key_value(&ProjectKey::from(project))
+                    .map(|(key, _)| key)
+            })
+    }
+
+    pub(crate) fn project_act_context(&self) -> ProjectAct {
+        if let Some(frame) = self.project_frame() {
+            let mut context = ProjectAct::new().screen(&frame.key.screen);
+            if let Some(content) = self.project_content() {
+                if let ProjectContent::List(list) = content.as_ref() {
+                    if let Some(row) = self.project_selected_index().and_then(|i| list.rows.get(i))
+                    {
+                        context = context.selected(ProjectRow::from(row));
+                    }
+                    context = context.marked(
+                        frame
+                            .marked
+                            .iter()
+                            .filter_map(|i| list.rows.get(*i))
+                            .map(ProjectRow::from),
+                    );
+                }
+            }
+            return context;
+        }
+        if self.is_git_diff_preview() {
+            return self
+                .tab
+                .preview_path
+                .as_ref()
+                .map(|p| ProjectAct::new().selected(ProjectRow::new("file", p.to_string_lossy())))
+                .unwrap_or_default();
+        }
+        let row = |path: &PathBuf| {
+            let kind = if self.tab.entries.iter().any(|e| &e.path == path && e.is_dir) {
+                "directory"
+            } else {
+                "file"
+            };
+            ProjectRow::new(kind, path.to_string_lossy())
+        };
+        let mut context = ProjectAct::new().marked(self.tab.selection.iter().map(row));
+        if let Some(entry) = self.tab.entries.get(self.tab.selected) {
+            context = context.selected(row(&entry.path));
+        }
+        context
+    }
+
+    pub(crate) fn project_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
+        #[cfg(feature = "git")]
+        let host_diff = ctx == Context::Diff;
+        #[cfg(not(feature = "git"))]
+        let host_diff = false;
+        let context_matches = if self.project_active() {
+            ctx == Context::Canvas
+        } else {
+            matches!(ctx, Context::Tree | Context::TreeVisual) || host_diff
+        };
+        if !context_matches {
+            return Vec::new();
+        }
+        let context = self.project_act_context();
+        let ids: BTreeSet<_> = if let Some(nav) = &self.tab.project_navigation {
+            [nav.project.plugin.as_str()].into_iter().collect()
+        } else if matches!(ctx, Context::Tree | Context::TreeVisual) || self.is_git_diff_preview() {
+            self.tab
+                .projects
+                .projects
+                .iter()
+                .map(|p| p.plugin.as_str())
+                .collect()
+        } else {
+            return Vec::new();
+        };
+        ids.into_iter()
+            .flat_map(|id| self.plugin_keys.acts_of(id))
+            .filter(|binding| {
+                let Some(decl) = self.plugin_keys.declaration(binding.act) else {
+                    return false;
+                };
+                match &decl.project_context {
+                    Some(ActContext::Screen { screen, row_kinds }) => {
+                        self.project_active()
+                            && context.screen.as_ref() == Some(screen)
+                            && (row_kinds.is_empty()
+                                || context
+                                    .selected
+                                    .as_ref()
+                                    .is_some_and(|row| row_kinds.contains(&row.kind)))
+                    }
+                    Some(ActContext::TreeSelection) => {
+                        !self.project_active()
+                            && matches!(ctx, Context::Tree | Context::TreeVisual)
+                            && context.selected.is_some()
+                    }
+                    Some(ActContext::Diff) => {
+                        if self.project_active() {
+                            self.project_content().is_some_and(|view| {
+                                matches!(view.as_ref(), ProjectContent::Diff(_))
+                            })
+                        } else {
+                            self.is_git_diff_preview()
+                        }
+                    }
+                    _ => false,
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn project_act_enabled(&self, p: PluginAct) -> Option<bool> {
+        self.plugin_keys.declaration(p)?.project_context.as_ref()?;
+        let key = self.action_project(p)?;
+        Some(self.project_runtimes.get(key).is_some_and(|r| {
+            r.ready && !r.acting && r.enabled.get(p.act()).copied().unwrap_or(false)
+        }))
+    }
+
+    /// `p` already belongs to OpenGitView. The legacy hub remains the fallback.
+    pub(crate) fn enter_project(&mut self) -> bool {
+        self.ensure_project_detection();
+        if self.tab.projects.pending() {
+            self.tab.project_enter_pending = true;
+            return true;
+        }
+        let projects: Vec<_> = self
+            .tab
+            .projects
+            .projects
+            .iter()
+            .filter(|p| !p.declaration.screens.is_empty())
+            .map(ProjectKey::from)
+            .collect();
+        match projects.as_slice() {
+            [] => false,
+            [project] => {
+                self.open_project(project.clone());
+                true
+            }
+            _ => {
+                self.project_dialog = Some(ProjectDialog::Projects {
+                    projects,
+                    selected: 0,
+                });
+                true
+            }
+        }
+    }
+
+    pub(super) fn open_project(&mut self, key: ProjectKey) {
+        if let Some(project) = self
+            .tab
+            .projects
+            .projects
+            .iter()
+            .find(|p| ProjectKey::from(*p) == key)
+            .cloned()
+        {
+            self.start_project_runtime(project);
+        }
+        let Some(runtime) = self.project_runtimes.get(&key) else {
+            return;
+        };
+        let Some(screen) = runtime.project.declaration.screens.first() else {
+            return;
+        };
+        let screen = ScreenKey::new(&screen.id);
+        self.show_project_screen(key, screen);
+    }
+
+    fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
+        self.tab.project_navigation = Some(ProjectNavigation {
+            project: key,
+            stack: vec![ProjectFrame::new(screen)],
+            origin_mode: self.tab.mode,
+            origin_path: self.tab.preview_path.clone(),
+            origin_kind: self.tab.preview_kind.clone(),
+            origin_scroll: self.tab.preview_scroll,
+            origin_hscroll: self.tab.preview_hscroll,
+        });
+        self.ensure_project_view();
+    }
+
+    fn ensure_project_view(&mut self) {
+        self.initialize_project_frame();
+        let Some(nav) = &self.tab.project_navigation else {
+            return;
+        };
+        let Some(frame) = nav.stack.last() else {
+            return;
+        };
+        let req = self.project_request(&frame.key);
+        let Some(runtime) = self.project_runtimes.get_mut(&nav.project) else {
+            return;
+        };
+        if runtime.busy
+            || !runtime.ready
+            || runtime.error.is_some()
+            || (runtime.views.contains_key(&frame.key) && !runtime.dirty.contains(&frame.key))
+        {
+            return;
+        }
+        if runtime
+            .tx
+            .try_send(ProjectJob::View {
+                key: frame.key.clone(),
+                req,
+            })
+            .is_ok()
+        {
+            runtime.busy = true;
+            #[cfg(test)]
+            {
+                runtime.view_request = Some(frame.key.clone());
+            }
+        }
+    }
+
+    fn project_back(&mut self) {
+        let Some(mut nav) = self.tab.project_navigation.take() else {
+            return;
+        };
+        if nav.stack.len() > 1 {
+            nav.stack.pop();
+            self.tab.project_navigation = Some(nav);
+            self.ensure_project_view();
+            return;
+        }
+        match (nav.origin_mode, nav.origin_path) {
+            (Mode::Preview, Some(path)) => {
+                if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
+                    self.open_git_diff(&path);
+                } else {
+                    self.enter_preview(&path);
+                }
+                self.tab.preview_scroll = nav.origin_scroll;
+                self.tab.preview_hscroll = nav.origin_hscroll;
+            }
+            _ => self.back_to_tree(),
+        }
+    }
+
+    pub(crate) fn handle_project_key(&mut self, key: KeyEvent) -> bool {
+        if self.project_dialog.is_some() {
+            self.project_dialog_key(key);
+            return true;
+        }
+        if !self.project_active()
+            || self.show_help
+            || self.dialog.is_some()
+            || self.is_tab_list()
+            || self.is_bookmark_list()
+            || self.is_info()
+        {
+            return false;
+        }
+        let interaction = self.project_pending_interaction();
+        let navigation = !interaction
+            && (self.pending_leader.is_none()
+                && matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Tab | KeyCode::BackTab
+                )
+                || self.pending_leader.is_none()
+                    && self.tab.project_navigation.as_ref().is_some_and(|nav| {
+                        self.project_runtimes
+                            .get(&nav.project)
+                            .is_some_and(|runtime| {
+                                runtime.project.declaration.screens.iter().any(|screen| {
+                                    screen.key.is_some_and(|c| key.code == KeyCode::Char(c))
+                                })
+                            })
+                    }));
+        let global = !interaction
+            && (key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                || self
+                    .keymaps
+                    .layer_of_key(Context::Canvas, crate::keymap::KeyPress::norm(&key))
+                    == Some(crate::keymap::KeyLayer::Global));
+        let local_movement = !interaction
+            && self.pending_leader.is_none()
+            && self.project_content().is_some()
+            && matches!(
+                key.code,
+                KeyCode::Char('j' | 'k' | 'g' | 'G' | 'V' | '/')
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+            );
+        if !navigation
+            && !global
+            && !local_movement
+            && (self.project_waiting_for_view()
+                || !self.project_replaying
+                    && self
+                        .project_frame()
+                        .is_some_and(|frame| !frame.pending.is_empty()))
+        {
+            if let Some(crate::keymap::Action::Plugin(action)) =
+                self.plugin_action_for_key(Context::Canvas, crate::keymap::KeyPress::norm(&key))
+            {
+                let writes = self
+                    .plugin_keys
+                    .declaration(action)
+                    .is_some_and(|decl| decl.writes);
+                if !self.allow_write(action.plugin(), writes, false) {
+                    return true;
+                }
+            }
+            self.queue_project_input(ProjectInput::Key(key));
+            return true;
+        }
+        if global {
+            if let Some(frame) = self
+                .tab
+                .project_navigation
+                .as_mut()
+                .and_then(|nav| nav.stack.last_mut())
+            {
+                frame.pending.clear();
+            }
+        }
+        if self.pending_leader.is_some() {
+            return false;
+        }
+        if self.project_frame().is_some_and(|f| f.filtering) {
+            let frame = self
+                .tab
+                .project_navigation
+                .as_mut()
+                .unwrap()
+                .stack
+                .last_mut()
+                .unwrap();
+            match key.code {
+                KeyCode::Esc => {
+                    frame.query.clear();
+                    frame.filtering = false;
+                }
+                KeyCode::Enter => frame.filtering = false,
+                KeyCode::Backspace => {
+                    frame.query.pop();
+                    frame.cursor = 0;
+                }
+                KeyCode::Char(c) => {
+                    frame.query.push(c);
+                    frame.cursor = 0;
+                }
+                _ => {}
+            }
+            return true;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.project_back();
+                return true;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                let nav = self.tab.project_navigation.as_mut().unwrap();
+                let screens = &self.project_runtimes[&nav.project]
+                    .project
+                    .declaration
+                    .screens;
+                let frame = nav.stack.last_mut().unwrap();
+                let at = screens
+                    .iter()
+                    .position(|s| s.id == frame.key.screen)
+                    .unwrap_or(0);
+                let next = if key.code == KeyCode::BackTab {
+                    (at + screens.len() - 1) % screens.len()
+                } else {
+                    (at + 1) % screens.len()
+                };
+                *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id));
+                self.ensure_project_view();
+                return true;
+            }
+            KeyCode::Char('/')
+                if self
+                    .project_content()
+                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
+            {
+                self.tab
+                    .project_navigation
+                    .as_mut()
+                    .unwrap()
+                    .stack
+                    .last_mut()
+                    .unwrap()
+                    .filtering = true;
+                return true;
+            }
+            KeyCode::Char('V')
+                if self
+                    .project_content()
+                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
+            {
+                if let Some(index) = self.project_selected_index() {
+                    let marks = &mut self
+                        .tab
+                        .project_navigation
+                        .as_mut()
+                        .unwrap()
+                        .stack
+                        .last_mut()
+                        .unwrap()
+                        .marked;
+                    if !marks.remove(&index) {
+                        marks.insert(index);
+                    }
+                }
+                return true;
+            }
+            KeyCode::Char('j')
+            | KeyCode::Down
+            | KeyCode::Char('k')
+            | KeyCode::Up
+            | KeyCode::Char('g')
+            | KeyCode::Home
+            | KeyCode::Char('G')
+            | KeyCode::End
+            | KeyCode::PageDown
+            | KeyCode::PageUp => {
+                let len = self.project_visible_rows().len();
+                let frame = self
+                    .tab
+                    .project_navigation
+                    .as_mut()
+                    .unwrap()
+                    .stack
+                    .last_mut()
+                    .unwrap();
+                frame.cursor = match key.code {
+                    KeyCode::Char('g') | KeyCode::Home => 0,
+                    KeyCode::Char('G') | KeyCode::End => len.saturating_sub(1),
+                    KeyCode::Char('k') | KeyCode::Up => frame.cursor.saturating_sub(1),
+                    KeyCode::PageUp => frame.cursor.saturating_sub(10),
+                    KeyCode::PageDown => frame.cursor.saturating_add(10).min(len.saturating_sub(1)),
+                    _ => frame.cursor.saturating_add(1).min(len.saturating_sub(1)),
+                };
+                return true;
+            }
+            KeyCode::Char(c) => {
+                let nav = self.tab.project_navigation.as_mut().unwrap();
+                if let Some(screen) = self.project_runtimes[&nav.project]
+                    .project
+                    .declaration
+                    .screens
+                    .iter()
+                    .find(|s| s.key == Some(c))
+                {
+                    *nav.stack.last_mut().unwrap() = ProjectFrame::new(ScreenKey::new(&screen.id));
+                    self.ensure_project_view();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    pub(crate) fn request_project_act(&mut self, action: PluginAct) -> bool {
+        let Some(decl) = self.plugin_keys.declaration(action).cloned() else {
+            return false;
+        };
+        if decl.project_context.is_none() {
+            return false;
+        }
+        let Some(project) = self.action_project(action).cloned() else {
+            return true;
+        };
+        if !self.allow_write(action.plugin(), decl.writes, false) {
+            return true;
+        }
+        if !self.project_act_enabled(action).unwrap_or(false) {
+            return true;
+        }
+        let context = self.project_act_context();
+        let effect = ProjectEffect {
+            project: project.clone(),
+            tab: self.tab.id,
+            tree_root: self.tab.root.clone(),
+            view: self.project_frame().map(|f| f.key.clone()),
+            outcome: None,
+            tree_status: false,
+            label: decl.label.get(self.plugin_lang()).into(),
+        };
+        let mut prompts = Vec::new();
+        if let Some(prompt) = &decl.confirmation {
+            prompts.push(ProjectPrompt::Confirmation(prompt.clone()));
+        }
+        if let Some(prompt) = &decl.text_input {
+            prompts.push(ProjectPrompt::Text(prompt.clone()));
+        }
+        if let Some(prompt) = &decl.choice_input {
+            prompts.push(ProjectPrompt::Choice(prompt.clone()));
+        }
+        let invocation = ProjectInvocation {
+            project,
+            action,
+            declaration: decl,
+            context,
+            effect,
+            origin_mode: self.tab.mode,
+            origin_path: self.tab.preview_path.clone(),
+        };
+        if prompts.is_empty() {
+            self.execute_project_act(invocation);
+        } else {
+            let buffer = match &prompts[0] {
+                ProjectPrompt::Text(input) => input.initial.clone(),
+                _ => String::new(),
+            };
+            let cursor = buffer.chars().count();
+            self.project_dialog = Some(ProjectDialog::Act {
+                invocation: Box::new(invocation),
+                prompts,
+                stage: 0,
+                buffer,
+                cursor,
+                selected: 0,
+            });
+        }
+        true
+    }
+
+    pub(super) fn execute_project_act(&mut self, mut invocation: ProjectInvocation) {
+        if invocation.effect.tree_root != self.tab.root
+            || invocation.origin_mode != self.tab.mode
+            || invocation.origin_path != self.tab.preview_path
+            || invocation.effect.view.as_ref() != self.project_frame().map(|frame| &frame.key)
+        {
+            return;
+        }
+        if !self.allow_write(
+            invocation.action.plugin(),
+            invocation.declaration.writes,
+            false,
+        ) {
+            return;
+        }
+        let Some(runtime) = self.project_runtimes.get(&invocation.project) else {
+            return;
+        };
+        if runtime.busy && !runtime.acting {
+            self.queue_project_input(ProjectInput::Act(Box::new(invocation)));
+            return;
+        }
+        if runtime.busy || !runtime.ready {
+            self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
+            return;
+        }
+        if !runtime
+            .enabled
+            .get(invocation.action.act())
+            .copied()
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if invocation.context.screen.is_some() && invocation.context.selected.as_ref().is_some_and(|selected| self.project_content().is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(list) if !list.rows.iter().any(|row| &ProjectRow::from(row) == selected)))) {
+            self.flash = Some(tr(self.lang, Msg::ProjectSelectionChanged).into());
+            return;
+        }
+        if self
+            .plugin_binding_in(
+                self.key_context().unwrap_or_else(|| self.base_context()),
+                invocation.action,
+            )
+            .is_none()
+        {
+            return;
+        }
+        let mut targets = BTreeSet::new();
+        let mut chip = false;
+        for target in &invocation.declaration.refresh {
+            match target {
+                RefreshTarget::CurrentScreen => {
+                    if let Some(key) = &invocation.effect.view {
+                        targets.insert(key.clone());
+                    }
+                }
+                RefreshTarget::Screen { screen } => {
+                    let cached: Vec<_> = runtime
+                        .views
+                        .keys()
+                        .filter(|key| &key.screen == screen)
+                        .cloned()
+                        .collect();
+                    if cached.is_empty() {
+                        targets.insert(ScreenKey::new(screen));
+                    } else {
+                        targets.extend(cached);
+                    }
+                }
+                RefreshTarget::AllScreens => {
+                    targets.extend(runtime.views.keys().cloned());
+                    for screen in &runtime.project.declaration.screens {
+                        if !targets.iter().any(|key| key.screen == screen.id) {
+                            targets.insert(ScreenKey::new(&screen.id));
+                        }
+                    }
+                }
+                RefreshTarget::TreeStatus => invocation.effect.tree_status = true,
+                RefreshTarget::Chip => chip = true,
+                _ => {}
+            }
+        }
+        let refresh = targets
+            .into_iter()
+            .map(|key| {
+                let req = self.project_request(&key);
+                (key, req)
+            })
+            .collect();
+        let runtime = self.project_runtimes.get_mut(&invocation.project).unwrap();
+        let job = ProjectJob::Act {
+            action: invocation.action.act().into(),
+            context: invocation.context,
+            refresh,
+            chip,
+            effect: Box::new(invocation.effect),
+        };
+        if runtime.tx.try_send(job).is_ok() {
+            runtime.busy = true;
+            runtime.acting = true;
+            if let Some(frame) = self
+                .tab
+                .project_navigation
+                .as_mut()
+                .and_then(|nav| nav.stack.last_mut())
+            {
+                frame.pending.clear();
+            }
+        }
+    }
+
+    pub(crate) fn poll_project_jobs(&mut self) -> bool {
+        let retained: std::collections::HashSet<_> = std::iter::once(&self.tab)
+            .chain(self.tabs.iter())
+            .flat_map(|tab| tab.projects.projects.iter().map(ProjectKey::from))
+            .collect();
+        self.project_runtimes
+            .retain(|key, _| retained.contains(key));
+        for project in self.tab.projects.projects.clone() {
+            self.start_project_runtime(project);
+        }
+        let mut changed = false;
+        let mut effects = Vec::new();
+        for (key, runtime) in &mut self.project_runtimes {
+            while let Some(reply) = runtime
+                .pending
+                .take()
+                .or_else(|| runtime.rx.try_recv().ok())
+            {
+                changed = true;
+                runtime.busy = false;
+                runtime.acting = false;
+                #[cfg(test)]
+                {
+                    runtime.view_request = None;
+                }
+                runtime.ready |= reply.error.is_none();
+                runtime.error = reply.error;
+                if !reply.enabled.is_empty() {
+                    runtime.enabled = reply.enabled;
+                }
+                if !runtime.invalidated {
+                    for (screen, view) in reply.views {
+                        let old = runtime.views.get(&screen).map(Arc::as_ref);
+                        remap_project_rows(&mut self.tab, key, &screen, old, &view);
+                        for tab in &mut self.tabs {
+                            remap_project_rows(tab, key, &screen, old, &view);
+                        }
+                        runtime.dirty.remove(&screen);
+                        runtime.views.insert(screen, view);
+                    }
+                }
+                if let Some(chip) = reply.chip {
+                    runtime.chip = chip;
+                }
+                if runtime.invalidated {
+                    runtime.dirty.extend(runtime.views.keys().cloned());
+                    runtime.invalidated = false;
+                }
+                if let Some(effect) = reply.effect {
+                    effects.push(effect);
+                }
+                if let Some(error) = &runtime.error {
+                    if self
+                        .tab
+                        .project_navigation
+                        .as_ref()
+                        .is_some_and(|nav| &nav.project == key)
+                    {
+                        self.flash = Some(
+                            error
+                                .message
+                                .get(match self.lang {
+                                    crate::i18n::Lang::Jp => "ja",
+                                    _ => "en",
+                                })
+                                .into(),
+                        );
+                    }
+                }
+            }
+        }
+        for effect in effects {
+            if effect.tree_status && self.tab.root.starts_with(&effect.project.root) {
+                self.git_status_dirty = true;
+            }
+            if effect.tab == self.tab.id {
+                self.apply_project_effect(effect);
+            } else if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == effect.tab) {
+                tab.project_effects.push(effect);
+            }
+        }
+        for effect in std::mem::take(&mut self.tab.project_effects) {
+            self.apply_project_effect(effect);
+            changed = true;
+        }
+        if self.tab.project_enter_pending && !self.tab.projects.pending() {
+            self.tab.project_enter_pending = false;
+            if !self.enter_project() {
+                self.open_git_view();
+            }
+            changed = true;
+        }
+        self.ensure_project_view();
+        changed
+    }
+
+    fn initialize_project_frame(&mut self) {
+        if let Some(nav) = self.tab.project_navigation.as_mut() {
+            if let Some(frame) = nav.stack.last_mut() {
+                if !frame.initialized {
+                    if let Some(view) = self
+                        .project_runtimes
+                        .get(&nav.project)
+                        .and_then(|r| r.views.get(&frame.key))
+                    {
+                        if let ProjectContent::List(list) = view.as_ref() {
+                            frame.marked.extend(
+                                list.rows
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, row)| row.marked)
+                                    .map(|(i, _)| i),
+                            );
+                        }
+                        frame.initialized = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_project_effect(&mut self, effect: ProjectEffect) {
+        if self.tab.root != effect.tree_root {
+            return;
+        }
+        if effect.tree_status {
+            self.git_status_dirty = true;
+        }
+        self.flash = Some(effect.label);
+        if matches!(
+            &effect.outcome,
+            Some(
+                Outcome::PushScreen { .. }
+                    | Outcome::OpenFile { .. }
+                    | Outcome::OpenDiff { .. }
+                    | Outcome::SwitchRoot { .. }
+                    | Outcome::OpenTab { .. }
+            )
+        ) && effect.view.is_some()
+            && !self.tab.project_navigation.as_ref().is_some_and(|nav| {
+                nav.project == effect.project
+                    && nav.stack.last().map(|frame| &frame.key) == effect.view.as_ref()
+            })
+        {
+            return;
+        }
+        match effect.outcome {
+            Some(Outcome::Flash(message)) => {
+                self.flash = Some(message.get(self.plugin_lang()).into())
+            }
+            Some(Outcome::PushScreen { screen, selection }) => {
+                if !self
+                    .project_runtimes
+                    .get(&effect.project)
+                    .is_some_and(|runtime| {
+                        runtime
+                            .project
+                            .declaration
+                            .screens
+                            .iter()
+                            .any(|s| s.id == screen)
+                    })
+                {
+                    self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into());
+                    return;
+                }
+                let target = ScreenKey { screen, selection };
+                if self.tab.project_navigation.is_none() && effect.view.is_none() {
+                    self.show_project_screen(effect.project, target);
+                    return;
+                }
+                let Some(nav) = self.tab.project_navigation.as_mut().filter(|nav| {
+                    nav.project == effect.project
+                        && nav.stack.last().map(|f| &f.key) == effect.view.as_ref()
+                }) else {
+                    return;
+                };
+                nav.stack.push(ProjectFrame::new(target));
+            }
+            Some(outcome @ (Outcome::OpenFile { .. } | Outcome::OpenDiff { .. })) => {
+                self.tab.project_return = self.tab.project_navigation.take();
+                let result = self.apply_plugin_navigation(outcome);
+                crate::resolve_key_result(self, result.map(|()| false));
+            }
+            Some(outcome @ Outcome::SwitchRoot { .. }) => {
+                self.tab.project_navigation = None;
+                let result = self.apply_plugin_navigation(outcome);
+                crate::resolve_key_result(self, result.map(|()| false));
+            }
+            Some(outcome @ Outcome::OpenTab { .. }) => {
+                let result = self.apply_plugin_navigation(outcome);
+                crate::resolve_key_result(self, result.map(|()| false));
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn project_controls(&self) -> Option<String> {
+        self.project_active().then(|| {
+            let mut controls = tr(
+                self.lang,
+                if self
+                    .project_content()
+                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)))
+                {
+                    Msg::ProjectControls
+                } else {
+                    Msg::ProjectTextControls
+                },
+            )
+            .to_string();
+            if self.project_acts_in(Context::Canvas).iter().any(|binding| {
+                crate::ops::action_enabled(
+                    self,
+                    Context::Canvas,
+                    crate::keymap::Action::Plugin(binding.act),
+                )
+            }) {
+                controls.push_str(&format!(
+                    "  Space:{}",
+                    tr(self.lang, Msg::WkActionsTitle).trim()
+                ));
+            }
+            controls
+        })
+    }
+
+    pub(crate) fn project_chips(&self) -> Vec<&str> {
+        self.tab
+            .projects
+            .projects
+            .iter()
+            .filter_map(|project| {
+                self.project_runtimes
+                    .get(&ProjectKey::from(project))
+                    .and_then(|runtime| runtime.chip.as_ref())
+                    .map(|chip| chip.get(self.plugin_lang()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn return_to_project(&mut self) -> bool {
+        let Some(nav) = self.tab.project_return.take() else {
+            return false;
+        };
+        self.tab.project_navigation = Some(nav);
+        self.ensure_project_view();
+        true
+    }
+
+    pub(crate) fn resize_project(&mut self, cols: u16, rows: u16) {
+        if self.tab.preview_cols != cols || self.tab.preview_viewport != rows {
+            self.tab.preview_cols = cols;
+            self.tab.preview_viewport = rows;
+            if let Some(nav) = &self.tab.project_navigation {
+                if let Some(runtime) = self.project_runtimes.get_mut(&nav.project) {
+                    runtime.dirty.extend(runtime.views.keys().cloned());
+                    runtime.invalidated |= runtime.busy;
+                }
+            }
+        }
+        self.ensure_project_view();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_jobs_pending(&self) -> bool {
+        self.project_runtimes.values().any(|r| r.busy)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_tree_dirty(&self) -> bool {
+        self.git_status_dirty
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_project_tree_dirty(&mut self) {
+        self.git_status_dirty = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_project_view_request(&mut self, screen: &str) {
+        for _ in 0..32 {
+            let nav = self
+                .tab
+                .project_navigation
+                .as_ref()
+                .expect("project navigation");
+            let runtime = self
+                .project_runtimes
+                .get(&nav.project)
+                .expect("project runtime");
+            if runtime
+                .view_request
+                .as_ref()
+                .is_some_and(|key| key.screen == screen)
+            {
+                return;
+            }
+            assert!(
+                runtime.busy && !runtime.acting,
+                "the requested view must be scheduled"
+            );
+            self.wait_project_job();
+        }
+        panic!("project view was not requested");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_project_view(&mut self) {
+        for _ in 0..32 {
+            if !self.project_waiting_for_view() {
+                return;
+            }
+            self.wait_project_job();
+        }
+        panic!("project view did not complete");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_project_job(&mut self) {
+        // Tests wait for a concrete result, never a sleep or a timing assertion.
+        if let Some(runtime) = self.project_runtimes.values_mut().find(|r| r.busy) {
+            let reply = runtime
+                .rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .expect("project worker result");
+            runtime.pending = Some(reply);
+            self.poll_projects();
+        }
+    }
+}
