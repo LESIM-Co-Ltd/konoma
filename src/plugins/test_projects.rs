@@ -5,6 +5,62 @@ use konoma_plugin::view::{DiffHunk, DiffKind, DiffLine, DiffView, ListRow, ListV
 use konoma_plugin::{Origin, Resources};
 use std::sync::{Arc, Mutex};
 
+/// Observes the real VCS session without substituting its data or action implementation.
+#[derive(Default)]
+pub(crate) struct VcsCalls {
+    pub acts: Vec<String>,
+    pub views: usize,
+    pub chips: usize,
+}
+
+pub(crate) struct ObservedVcs {
+    pub plugin: Arc<dyn Plugin>,
+    pub calls: Arc<Mutex<VcsCalls>>,
+}
+
+impl Plugin for ObservedVcs {
+    fn manifest(&self) -> Manifest {
+        self.plugin.manifest()
+    }
+
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(ObservedVcsSession {
+            session: self.plugin.open(input, cx)?,
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+struct ObservedVcsSession {
+    session: Box<dyn Session>,
+    calls: Arc<Mutex<VcsCalls>>,
+}
+
+impl Session for ObservedVcsSession {
+    fn enabled(&self, action: &str) -> bool {
+        self.session.enabled(action)
+    }
+
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        self.calls.lock().unwrap().views += 1;
+        self.session.view(req, cx)
+    }
+
+    fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        self.calls.lock().unwrap().acts.push(action.into());
+        self.session.act(action, cx)
+    }
+
+    fn chip(&mut self, cx: &ViewCx) -> Result<Option<Chip>, Failure> {
+        self.calls.lock().unwrap().chips += 1;
+        self.session.chip(cx)
+    }
+
+    fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        self.session.watch_paths(cx)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ProjectLog {
     pub hint_groups: bool,
