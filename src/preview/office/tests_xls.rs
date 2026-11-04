@@ -684,6 +684,96 @@ fn biff5_strings_are_single_byte() {
 }
 
 #[test]
+fn calamine_038_biff5_cjk_labels_keep_their_encoded_bytes() {
+    use calamine::{Data, Reader};
+
+    let dir = tmp("xls_biff5_cjk038");
+    for (cp, bytes, want) in [
+        (932u16, [0x93, 0xfa, 0x96, 0x7b], "\u{65e5}\u{672c}"),
+        (936, [0xd6, 0xd0, 0xce, 0xc4], "\u{4e2d}\u{6587}"),
+        (950, [0xa4, 0xa4, 0xa4, 0xe5], "\u{4e2d}\u{6587}"),
+    ] {
+        let mut stream = bof(0x0500, 5);
+        stream.extend(rec(0x0042, &cp.to_le_bytes()));
+        stream.extend(xf_rec(0));
+        let at_bs = stream.len();
+        let mut bs = vec![0; 6];
+        bs.extend([1, b'S']);
+        stream.extend(rec(0x0085, &bs));
+        stream.extend(eof());
+        let sheet_at = stream.len();
+        stream.extend(bof(0x0500, 0x10));
+        let mut label = pos(0, 0, 0);
+        label.extend((bytes.len() as u16).to_le_bytes());
+        label.extend(bytes);
+        stream.extend(rec(0x0204, &label));
+        stream.extend(eof());
+        stream[at_bs + 4..at_bs + 8].copy_from_slice(&(sheet_at as u32).to_le_bytes());
+        let p = dir.join("s.xls");
+        write_cfb(&p, &[("/Book", &stream)]);
+        let mut reader: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        assert_eq!(
+            reader.worksheet_range("S").unwrap().get_value((0, 0)),
+            Some(&Data::String(want.into())),
+            "codepage {cp}"
+        );
+        let wb = load(&p).unwrap();
+        assert_eq!(wb.sheets[0].display(0, 0), want, "codepage {cp}");
+        assert_eq!(wb.sheets[0].cell(0, 0).unwrap().cell_type(), CellType::Text);
+    }
+}
+
+#[test]
+fn calamine_038_xls_workbook_and_book_stream_names_ignore_ascii_case() {
+    use calamine::Reader;
+
+    let stream = Book {
+        globals: globals(&[], &[0, 4]),
+        sheets: vec![sheet("S", vec![number(0, 0, 4, 1234.5)])],
+    }
+    .stream();
+    let dir = tmp("xls_stream_case038");
+    for name in ["/Workbook", "/Book", "/wOrKbOoK", "/bOoK"] {
+        let p = dir.join("s.xls");
+        write_cfb(&p, &[(name, &stream)]);
+        let mut reader: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        assert_eq!(
+            reader.worksheet_range("S").unwrap().get_value((0, 0)),
+            Some(&calamine::Data::Float(1234.5))
+        );
+        // cfb already resolves names without case; konoma still checks and repacks the stream.
+        let wb = load(&p).unwrap();
+        assert_eq!(wb.sheets[0].display(0, 0), "1,234.50");
+    }
+}
+
+#[test]
+fn calamine_038_rustsec_2026_0436_short_cfb_directory_is_an_error_without_panic() {
+    use calamine::Reader;
+
+    // A complete header and FAT, followed by just one byte of a directory sector.
+    // 0.37 passed that short entry to Directory::from_slice and panicked on buf[..64].
+    let container = fmt_xls::clean_container(&[]).unwrap();
+    let mut bytes = container.into_inner();
+    let dir_sector = u32::from_le_bytes(bytes[48..52].try_into().unwrap()) as usize;
+    bytes.truncate((dir_sector + 1) * 512 + 1);
+    let direct = std::panic::catch_unwind(|| calamine::Xls::new(std::io::Cursor::new(&bytes)));
+    assert!(
+        direct.is_ok(),
+        "calamine must reject the short directory without panicking"
+    );
+    assert!(direct.unwrap().is_err());
+    let dir = tmp("xls_rustsec0436");
+    let p = super::tests::write(&dir, "short.xls", &bytes);
+    // Bypass konoma's outer panic net: the ordinary error path itself must be safe.
+    let result = super::workbook::load_workbook_unguarded(&p, &LoadOptions::default());
+    assert!(
+        matches!(result, Err(OfficeError::Corrupt(ref text)) if !text.contains("crashed")),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn every_prefix_of_a_synthetic_workbook_stream_is_handled() {
     let book = Book {
         globals: globals(&[(164, "0.0%")], &[4, 164]),
@@ -1305,7 +1395,7 @@ fn the_loader_refuses_the_shared_sheet_file_before_calamine_sees_it() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// nested substreams (embedded charts): `calamine` 0.37 skips them and ends the sheet at its own EOF
+// nested substreams (embedded charts): `calamine` 0.38 skips them and ends the sheet at its own EOF
 // ---------------------------------------------------------------------------------------------
 
 /// An embedded chart: a nested `BOF`..`EOF` substream holding `inside`.

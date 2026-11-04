@@ -1,4 +1,4 @@
-//! What `calamine` 0.37 will do with the formulas of an xls file, worked out before it does it.
+//! What `calamine` 0.38 will do with the formulas of an xls file, worked out before it does it.
 //!
 //! `calamine` turns **every** `FORMULA` record (and the first token of every defined name) into a
 //! `String` while it opens the file, and it cannot be stopped or limited. Its `parse_formula` is
@@ -20,7 +20,7 @@
 //! token `0x16`, for which `calamine` prints nothing) in the stream it hands `calamine`: the cell
 //! keeps its cached value, only the formula text of the cell detail is lost.
 //!
-//! The table of argument counts is `FTAB_ARGC` of `calamine` 0.37 (MIT, Copyright 2016-2026
+//! The table of argument counts is `FTAB_ARGC` of `calamine` 0.38 (MIT, Copyright 2016-2026
 //! Johann Tuffe), which is not public.
 
 use super::fmt_xls::{u16_at, u32_at};
@@ -42,7 +42,7 @@ pub(crate) struct Cost {
 /// The lookups `parse_formula` makes, as upper bounds on the UTF-8 size of each answer.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Env {
-    /// BIFF2-5 (any version but BIFF8): references are laid out differently.
+    /// BIFF2-5 (any version but BIFF8): references and string literals have older layouts.
     pub pre_biff8: bool,
     /// Per `BOUNDSHEET`, in record order: size of the sheet's name.
     pub sheets: Vec<u64>,
@@ -82,10 +82,10 @@ pub(crate) const FN_NAME: u64 = 24;
 const NO_SHEET: u64 = 4;
 
 /// What one character of a string costs, whatever the code page. `calamine` decodes a string
-/// with the encoding of the workbook's `CODEPAGE` record: a compressed (8-bit) character is
-/// widened to two bytes (`b, 0`) and a 16-bit one is two bytes, and `encoding_rs` turns each
-/// input byte into at most one `U+FFFD` (3 bytes of UTF-8), e.g. any byte of an ISO-2022-JP
-/// stream in the wrong state. So a character is at most 6 bytes of output, an ASCII one too.
+/// with the encoding of the workbook's `CODEPAGE` record: Unicode flags can widen an 8-bit
+/// character to two bytes (`b, 0`), while legacy BIFF5 multibyte strings keep their bytes.
+/// `encoding_rs` turns each input byte into at most one `U+FFFD` (3 bytes of UTF-8), e.g. any
+/// byte of an ISO-2022-JP stream in the wrong state. Six bytes per character bounds both paths.
 /// A surrogate pair is two characters (12 bytes).
 pub(crate) const CHAR_MAX: u64 = 6;
 
@@ -113,7 +113,7 @@ pub(crate) fn name_sheet_ixti(rgce: &[u8], biff8: bool) -> Option<u16> {
     }
 }
 
-/// `FTAB_ARGC` of `calamine` 0.37: the number of arguments of each fixed-arity function.
+/// `FTAB_ARGC` of `calamine` 0.38: the number of arguments of each fixed-arity function.
 const FTAB_ARGC: [u8; 485] = [
     255, 3, 1, 1, 255, 255, 255, 255, 1, 1, 0, 254, 255, 2, 3, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1,
     2, 3, 4, 2, 3, 1, 1, 0, 0, 255, 255, 1, 2, 3, 3, 3, 3, 3, 3, 255, 3, 2, 4, 4, 4, 4, 1, 1, 1, 5,
@@ -238,10 +238,15 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                 stack.push(len);
                 let Some(&cch) = rgce.first() else { fail!() };
                 let cch = usize::from(cch);
-                let Some(&flags) = rgce.get(1) else { fail!() };
-                let consumed = 1 + if flags & 1 != 0 { 2 * cch } else { cch };
+                let consumed = if env.pre_biff8 {
+                    // ShortByteString: cch bytes immediately after the count, no flags.
+                    cch
+                } else {
+                    let Some(&flags) = rgce.get(1) else { fail!() };
+                    1 + if flags & 1 != 0 { 2 * cch } else { cch }
+                };
                 push_text!(2 + CHAR_MAX * cch as u64);
-                // (`cch`, then the flags and the characters: a string cut short is a failure.)
+                // Count byte, then the version-specific body; a short string is a failure.
                 adv!(1 + consumed);
             }
             0x18 => adv!(5),

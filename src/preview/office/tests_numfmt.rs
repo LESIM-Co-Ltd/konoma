@@ -30,6 +30,43 @@ fn ser(s: &str) -> f64 {
 /// 2026-10-02 is a Friday.
 const FRI: f64 = 46297.0;
 
+#[test]
+fn calamine_038_midnight_rounding_agrees_with_konomas_serial_formatter() {
+    for (serial, date1904, ymd, text) in [
+        (
+            44926.9999999999,
+            false,
+            (2023, 1, 1),
+            "2023-01-01 00:00:00.000",
+        ),
+        (
+            43464.9999999999,
+            true,
+            (2023, 1, 1),
+            "2023-01-01 00:00:00.000",
+        ),
+        (
+            60.9999999999,
+            false,
+            (1900, 3, 1),
+            "1900-03-01 00:00:00.000",
+        ),
+    ] {
+        let dt =
+            calamine::ExcelDateTime::new(serial, calamine::ExcelDateTimeType::DateTime, date1904);
+        assert_eq!(dt.to_ymd_hms_milli(), (ymd.0, ymd.1, ymd.2, 0, 0, 0, 0));
+        // The loader uses as_f64(), so upstream's calendar conversion cannot change the grid.
+        let opts = Options {
+            date1904,
+            ..Options::default()
+        };
+        assert_eq!(
+            format_value("yyyy-mm-dd hh:mm:ss.000", Value::Number(dt.as_f64()), &opts),
+            text
+        );
+    }
+}
+
 // ---- sections and conditions -------------------------------------------------------------
 
 #[test]

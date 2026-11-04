@@ -18,7 +18,7 @@
 //!   and the name (`ShortXLUnicodeString`).
 //!
 //! Each sheet substream, up to its own `EOF` (nested `BOF`..`EOF` substreams such as embedded
-//! charts are skipped, as `calamine` 0.37 does): `NUMBER` 0x0203,
+//! charts are skipped, as `calamine` 0.38 does): `NUMBER` 0x0203,
 //! `LABEL` 0x0204, `RSTRING` 0x00D6, `BOOLERR` 0x0205, `LABELSST` 0x00FD, `RK` 0x027E and
 //! `FORMULA` 0x0006 all start `row: u16, col: u16, ixfe: u16`; `STRING` 0x0207 (the text result of
 //! the formula just before it) has no position of its own and `calamine` puts it at the last
@@ -800,7 +800,7 @@ fn parse_sheet_span(
     let mut records = Records { stream };
     let mut seen = 0u32;
     let mut ended = false;
-    // Walk the sheet exactly as `calamine` 0.37 does: the first BOF is the sheet's own, every
+    // Walk the sheet exactly as `calamine` 0.38 does: the first BOF is the sheet's own, every
     // later BOF opens a nested substream (an embedded chart, a macro sheet) whose records are
     // skipped up to its matching EOF, and the sheet ends at its own depth-0 EOF.
     let mut seen_sheet_bof = false;

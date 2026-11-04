@@ -682,7 +682,7 @@ fn gen_cell(rng: &mut Rng, r: &str, s: &str, n_strings: usize) -> String {
         }
         12 => format!(
             r#"<c{r}{s} t="b"><v>{}</v></c>"#,
-            // No "2": calamine 0.37 rejects it (konoma reads it as true; pinned in the cell-kinds test).
+            // No "2": calamine 0.38 rejects it (both readers pinned in the lenient-cell test).
             rng.pick(&["0", "1", "true"])
         ),
         13 => format!(
@@ -992,7 +992,8 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
     // 2. A number cell whose text is not a number (explicit `t="n"`).
     // 3. A shared string index past the table.
     // 4. An unknown cell type.
-    let cases: [(&str, &str, Option<V>); 4] = [
+    // 5. A boolean other than 0 or 1 (konoma accepts any nonzero number as true).
+    let cases: [(&str, &str, Option<V>); 5] = [
         (
             "unknown child",
             r#"<c r="A1"><v>1</v><x14ac:foo xmlns:x14ac="u"><b/></x14ac:foo></c>"#,
@@ -1012,6 +1013,11 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
             "unknown type",
             r#"<c r="A1" t="zz"><v>x</v></c>"#,
             Some(V::Text("x".into())),
+        ),
+        (
+            "boolean two",
+            r#"<c r="A1" t="b"><v>2</v></c>"#,
+            Some(V::Bool(true)),
         ),
     ];
     for (i, (what, cell, want)) in cases.into_iter().enumerate() {
@@ -1065,8 +1071,8 @@ fn a_shared_formula_is_expanded_from_its_anchor_cell() {
 
 #[test]
 fn text_escapes_beyond_the_ascii_range_are_decoded_here() {
-    // `_x4E2D_` is U+4E2D: Excel writes `_xHHHH_` for any character it escapes; calamine decodes
-    // only the `_x00HH_` ones.
+    // `_x4E2D_` is U+4E2D: Excel writes `_xHHHH_` for any character it escapes;
+    // calamine 0.38 now decodes the full range, like konoma.
     let dir = tmp("xlsx_x4e2d");
     let p = Pkg::new()
         .sheet(
@@ -1080,7 +1086,7 @@ fn text_escapes_beyond_the_ascii_range_are_decoded_here() {
     let ours = read_ours(&p).reads.remove(0).unwrap();
     assert_eq!(ours.values[&(0, 0)], V::Text("a中bAc".into()));
     let theirs = read_oracle(&p).reads.remove(0).unwrap();
-    assert_eq!(theirs.values[&(0, 0)], V::Text("a_x4E2D_bAc".into()));
+    assert_eq!(theirs.values[&(0, 0)], ours.values[&(0, 0)]);
 }
 
 #[test]

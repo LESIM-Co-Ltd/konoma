@@ -357,6 +357,38 @@ fn the_1904_flag_changes_the_date() {
 }
 
 #[test]
+fn calamine_038_xlsb_rk_dates_have_the_same_value_and_display_as_real_dates() {
+    use calamine::{Data, Reader};
+
+    let dir = tmp("xlsb_rk_dates038");
+    for date1904 in [false, true] {
+        let mut pkg = one_sheet(
+            Some(styles_bin(&[], &[0, 14])),
+            &[(
+                0,
+                vec![rk_int(0, 1, 61), real(1, 1, 61.0), rk_int(2, 0, 61)],
+            )],
+        );
+        pkg.date1904 = date1904;
+        let p = pkg.write(&dir, "s.xlsb");
+        let mut reader: calamine::Xlsb<_> = calamine::open_workbook(&p).unwrap();
+        let data = reader.worksheet_range("S").unwrap();
+        assert_eq!(data.get_value((0, 0)), data.get_value((0, 1)));
+        assert!(matches!(data.get_value((0, 0)), Some(Data::DateTime(dt)) if dt.as_f64() == 61.0));
+        assert!(matches!(data.get_value((0, 2)), Some(Data::Int(61))));
+        let wb = load(&p).unwrap();
+        let s = &wb.sheets[0];
+        assert_eq!(
+            s.display(0, 0),
+            if date1904 { "3/2/1904" } else { "3/1/1900" }
+        );
+        assert_eq!(s.cell(0, 0).unwrap().cell_type(), CellType::DateTime);
+        assert_eq!(s.cell(0, 0).unwrap().value, s.cell(0, 1).unwrap().value);
+        assert_eq!(s.cell(0, 2).unwrap().cell_type(), CellType::Number);
+    }
+}
+
+#[test]
 fn style_ref_is_a_24_bit_field_and_unknown_refs_are_general() {
     let styles = styles_bin(&[], &[0, 4]);
     let pkg = one_sheet(

@@ -655,9 +655,10 @@ fn ods_read(
     fmt_ods::read_full(&p, limits)
 }
 
-fn ods_texts(tables: &str) -> Vec<fmt_ods::TextRun> {
-    let (_, extra) = ods_read("surv_texts", "", tables, &Limits::default()).unwrap();
-    extra.sheets["S"].texts.clone()
+fn ods_text(tables: &str) -> String {
+    let dir = tmp("surv_texts");
+    let p = ods_write(&dir, "t.ods", "", tables);
+    load(&p).unwrap().sheets[0].display(0, 0).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -671,54 +672,49 @@ fn an_ods_space_without_a_count_is_one_space() {
         "",
         r#"<text:p>a<text:s/>b<text:tab/>c</text:p>"#,
     ));
-    let texts = ods_texts(&ods_table("S", &rows));
-    assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text, "a b\tc");
+    assert_eq!(ods_text(&ods_table("S", &rows)), "a b\tc");
     // Through the whole loader.
     let dir = tmp("surv_ods_s");
     let p = ods_write(&dir, "s.ods", "", &ods_table("S", &rows));
     assert_eq!(load(&p).unwrap().sheets[0].display(0, 0), "a b\tc");
 }
 
-/// The repair buffer takes up to `MAX_FIX_TEXT` (1 MiB) bytes: a run of spaces that brings it to
-/// exactly that is kept, one more is "too long to repair".
+/// calamine keeps tabs on both sides of the former 1 MiB repair-buffer limit.
 #[test]
-fn a_space_run_that_fills_the_repair_buffer_exactly_is_repaired() {
+fn calamine_038_ods_space_runs_keep_tabs_at_the_former_repair_limit() {
     let max = 1usize << 20;
     let at = |n: usize| {
         let rows = ods_row(&ods_text_cell(
             "",
             &format!(r#"<text:p><text:tab/><text:s text:c="{n}"/></text:p>"#),
         ));
-        ods_texts(&ods_table("S", &rows))
+        ods_text(&ods_table("S", &rows))
     };
-    let texts = at(max - 1);
-    assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text.len(), max);
-    assert!(texts[0].text.starts_with("\t "));
-    assert!(
-        at(max).is_empty(),
-        "one byte over: left as calamine read it"
-    );
+    for n in [max - 1, max] {
+        assert!(
+            at(n) == format!("\t{}", " ".repeat(n)),
+            "{n} spaces after a tab"
+        );
+    }
 }
 
-/// The same edge for plain text: `MAX_FIX_TEXT - 1` characters and then a tab fill the buffer to
-/// exactly the limit (kept); one more byte and it is not repaired.
+/// Plain text also keeps the tab on both sides of the former repair-buffer limit.
 #[test]
-fn a_text_that_fills_the_repair_buffer_exactly_is_repaired() {
+fn calamine_038_ods_plain_text_keeps_tabs_at_the_former_repair_limit() {
     let max = 1usize << 20;
     let at = |n: usize| {
         let rows = ods_row(&ods_text_cell(
             "",
             &format!("<text:p>{}<text:tab/></text:p>", "x".repeat(n)),
         ));
-        ods_texts(&ods_table("S", &rows))
+        ods_text(&ods_table("S", &rows))
     };
-    let texts = at(max - 1);
-    assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text.len(), max);
-    assert!(texts[0].text.ends_with("x\t"));
-    assert!(at(max).is_empty());
+    for n in [max - 1, max] {
+        assert!(
+            at(n) == format!("{}\t", "x".repeat(n)),
+            "{n} characters before a tab"
+        );
+    }
 }
 
 /// LibreOffice's error codes and their spelling: `Err:503` is `#NUM!`, and the text of the cell
