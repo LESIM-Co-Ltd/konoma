@@ -2461,3 +2461,84 @@ fn an_old_style_encrypted_ods_keeps_its_content_part_and_is_encrypted() {
     );
     assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
 }
+
+#[test]
+fn calamine_038_ods_text_needs_no_repair() {
+    use calamine::{Data, Reader};
+
+    // Exercise the repair's special elements, paragraph/space handling, annotations,
+    // attribute precedence, empty text and repeats directly through calamine, before konoma.
+    let cells = [
+        ("", "<text:p>a<text:tab/>b</text:p>", "a\tb"),
+        ("", "<text:p>one<text:line-break/>two</text:p>", "one\ntwo"),
+        ("", "<text:p>x<text:s text:c=\"3\"/>y<text:tab/>z</text:p><text:p>second</text:p><text:p/><text:p>fourth</text:p>", "x   y\tz\nsecond\n\nfourth"),
+        ("", "<text:p><text:span>in <text:a>a link</text:a></text:span><text:tab/>end &amp; &lt;x&gt;</text:p>", "in a link\tend & <x>"),
+        ("", "<office:annotation><text:p>note<text:tab/>x</text:p></office:annotation><text:p>a<text:tab/>b</text:p>", "a\tb"),
+        (r#"office:string-value="from attribute""#, "<text:p>shown<text:tab/>text</text:p>", "from attribute"),
+        ("", "<text:p><text:tab/><text:line-break/></text:p>", "\t\n"),
+    ];
+    let body: String = cells
+        .iter()
+        .map(|(attrs, body, _)| text_cell(attrs, body))
+        .collect();
+    let rows = format!(
+        r#"<table:table-row table:number-rows-repeated="2">{body}{}</table:table-row>"#,
+        text_cell(
+            r#"table:number-columns-repeated="3""#,
+            "<text:p>a<text:s/>b<text:tab/>c</text:p>"
+        )
+    );
+    let bytes = ods_bytes(&content_xml("", &table("S", &rows)), None, None);
+    let mut wb = calamine::Ods::new(std::io::Cursor::new(&bytes)).unwrap();
+    let data = wb.worksheet_range("S").unwrap();
+    for r in 0..2 {
+        for (c, (_, _, want)) in cells.iter().enumerate() {
+            assert_eq!(
+                data.get_value((r, c as u32)),
+                Some(&Data::String((*want).into()))
+            );
+        }
+        for c in cells.len()..cells.len() + 3 {
+            assert_eq!(
+                data.get_value((r, c as u32)),
+                Some(&Data::String("a b\tc".into()))
+            );
+        }
+    }
+    let dir = tmp("ods_calamine038");
+    let p = write(&dir, "s.ods", &bytes);
+    let ours = load(&p).unwrap();
+    for (r, c, value) in data.used_cells() {
+        let Data::String(text) = value else {
+            panic!("expected text")
+        };
+        assert_eq!(sheet0(&ours).display(r, c), text);
+    }
+}
+
+#[test]
+fn calamine_038_ods_errors_keep_display_text_but_need_error_typing() {
+    use calamine::{Data, Reader};
+
+    let cells = [
+        ("#DIV/0!", "#DIV/0!"),
+        ("Err:502", "#VALUE!"),
+        ("Err:532", "#DIV/0!"),
+    ];
+    let body: String = cells.iter().map(|(text, _)| error_cell(text, "")).collect();
+    let bytes = ods_bytes(&content_xml("", &table("S", &row(&body))), None, None);
+    let mut wb = calamine::Ods::new(std::io::Cursor::new(&bytes)).unwrap();
+    let data = wb.worksheet_range("S").unwrap();
+    let dir = tmp("ods_calamine038_errors");
+    let p = write(&dir, "s.ods", &bytes);
+    let ours = load(&p).unwrap();
+    for (c, (text, code)) in cells.iter().enumerate() {
+        assert_eq!(
+            data.get_value((0, c as u32)),
+            Some(&Data::String((*text).into()))
+        );
+        let cell = sheet0(&ours).cell(0, c).unwrap();
+        assert_eq!(cell.display(), *code);
+        assert_eq!(cell.cell_type(), CellType::Error);
+    }
+}

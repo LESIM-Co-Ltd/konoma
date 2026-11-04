@@ -2318,3 +2318,28 @@ fn the_zero_stripping_never_eats_the_header_slots_even_at_exactly_109_entries() 
     assert_eq!(l.len(), 109);
     assert_eq!(l[108], 0);
 }
+
+#[test]
+fn calamine_038_biff5_formula_strings_have_no_unicode_flags() {
+    // PtgStr is cch + bytes before BIFF8, so neither an empty string nor its first byte
+    // may be mistaken for a Unicode flags byte. The cost must consume exactly the same bytes.
+    for (codepage, bytes, want) in [
+        (1252u16, b"abc".as_slice(), "\"abc\""),
+        (1252, b"".as_slice(), "\"\""),
+        (936, &[0xd6, 0xd0, 0xce, 0xc4][..], "\"\u{4e2d}\u{6587}\""),
+    ] {
+        let rgce = [vec![0x17, bytes.len() as u8], bytes.to_vec()].concat();
+        let mut raw = Raw::standard5(vec![rgce]);
+        raw.codepage = Some(codepage);
+        let result = run(&raw);
+        assert_eq!(result.real, [want]);
+        assert!(!result.cost[0].failed);
+        assert_eq!(result.cost[0].text, 2 + 6 * bytes.len() as u64);
+        assert_sound("BIFF5 PtgStr", &result.cost[0], &result.real[0]);
+    }
+    let mut raw = Raw::standard5(vec![vec![0x17, 3, b'a']]);
+    raw.codepage = Some(1252);
+    let result = run(&raw);
+    assert!(result.cost[0].failed, "a truncated literal must be refused");
+    assert_sound("truncated BIFF5 PtgStr", &result.cost[0], &result.real[0]);
+}

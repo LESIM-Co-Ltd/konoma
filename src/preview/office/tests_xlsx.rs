@@ -992,7 +992,8 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
     // 2. A number cell whose text is not a number (explicit `t="n"`).
     // 3. A shared string index past the table.
     // 4. An unknown cell type.
-    let cases: [(&str, &str, Option<V>); 4] = [
+    // 5. A boolean other than 0 or 1 (konoma accepts any nonzero number as true).
+    let cases: [(&str, &str, Option<V>); 5] = [
         (
             "unknown child",
             r#"<c r="A1"><v>1</v><x14ac:foo xmlns:x14ac="u"><b/></x14ac:foo></c>"#,
@@ -1012,6 +1013,11 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
             "unknown type",
             r#"<c r="A1" t="zz"><v>x</v></c>"#,
             Some(V::Text("x".into())),
+        ),
+        (
+            "boolean two",
+            r#"<c r="A1" t="b"><v>2</v></c>"#,
+            Some(V::Bool(true)),
         ),
     ];
     for (i, (what, cell, want)) in cases.into_iter().enumerate() {
