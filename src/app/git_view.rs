@@ -81,7 +81,7 @@ impl App {
         }
         #[cfg(feature = "git")]
         {
-            if backend_is_git && !crate::git::git_binary_available() {
+            if backend_is_git && !crate::vcs::Git::git_binary_available() {
                 // Config allows it but there's no git executable. We haven't determined whether this
                 // is a repo (discover goes through in-process libgit2), so we don't say "not a repo".
                 self.flash =
@@ -168,7 +168,7 @@ impl App {
             Some(ListId::Graph) => self.rebuild_git_graph_keep_sel(),
             Some(ListId::Branches) => self.git_branches_reload(),
             Some(ListId::Worktrees) => {
-                let list = crate::git::worktrees(&self.tab.root);
+                let list = crate::vcs::Git::worktrees(&self.tab.root);
                 if !list.is_empty() {
                     self.tab.git_worktrees = Some(list);
                     self.clamp_git_worktree_sel();
@@ -334,16 +334,16 @@ impl App {
             count,
         } = job;
         let outcome = match kind {
-            K::Stage => crate::git::stage(&root, &path),
-            K::Unstage => crate::git::unstage(&root, &path),
-            K::StageAll => crate::git::stage_all(&root),
-            K::UnstageAll => crate::git::unstage_all(&root),
-            K::Discard => crate::git::discard(&root, &path),
-            K::Commit => crate::git::commit(&root, &text),
-            K::Checkout => crate::git::checkout(&root, &text),
-            K::CreateBranch => crate::git::create_branch(&root, &text),
-            K::DeleteBranch => crate::git::delete_branch(&root, &text, flag),
-            K::WorktreeAdd => crate::git::worktree_add(&root, &path, &text, flag),
+            K::Stage => crate::vcs::Git::stage(&root, &path),
+            K::Unstage => crate::vcs::Git::unstage(&root, &path),
+            K::StageAll => crate::vcs::Git::stage_all(&root),
+            K::UnstageAll => crate::vcs::Git::unstage_all(&root),
+            K::Discard => crate::vcs::Git::discard(&root, &path),
+            K::Commit => crate::vcs::Git::commit(&root, &text),
+            K::Checkout => crate::vcs::Git::checkout(&root, &text),
+            K::CreateBranch => crate::vcs::Git::create_branch(&root, &text),
+            K::DeleteBranch => crate::vcs::Git::delete_branch(&root, &text, flag),
+            K::WorktreeAdd => crate::vcs::Git::worktree_add(&root, &path, &text, flag),
         };
         crate::app::GitOpResult {
             gen,
@@ -1157,7 +1157,7 @@ impl App {
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JjWorkspacesUnlisted).into());
             return;
         }
-        let list = crate::git::worktrees(&self.tab.root);
+        let list = crate::vcs::Git::worktrees(&self.tab.root);
         if list.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoWorktrees).into());
             return;
@@ -1263,7 +1263,7 @@ impl App {
     /// only appears once the list — built from that same call — is already showing).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(super) fn worktree_create_target(&self, branch: &str) -> PathBuf {
-        let main = crate::git::worktrees(&self.tab.root)
+        let main = crate::vcs::Git::worktrees(&self.tab.root)
             .into_iter()
             .find(|w| w.is_main)
             .map(|w| w.path)
@@ -1413,7 +1413,7 @@ impl App {
             if Some(name) == own_branch {
                 continue;
             }
-            let Some(t) = crate::git::merge_base_time(&w.path, name) else {
+            let Some(t) = crate::vcs::Git::merge_base_time(&w.path, name) else {
                 continue;
             };
             let better = match best {
@@ -1481,7 +1481,7 @@ impl App {
         let base = self.worktree_diff_base(&w);
         let since = base
             .as_deref()
-            .map(|b| crate::git::diff_since(&w.path, b))
+            .map(|b| crate::vcs::Git::diff_since(&w.path, b))
             .unwrap_or_default();
 
         let (lines, title) = if !since.is_empty() {
@@ -1489,7 +1489,7 @@ impl App {
             (since, format!("{branch_label} ← {base_name}  {path}"))
         } else {
             (
-                crate::git::worktree_diff(&w.path),
+                crate::vcs::Git::worktree_diff(&w.path),
                 format!(
                     "{branch_label}  {path}  ({})",
                     crate::i18n::tr(self.lang, crate::i18n::Msg::UncommittedChanges)
@@ -1589,7 +1589,7 @@ impl App {
     /// In later sessions, keep the reordering while dropping removed branches and appending new ones in recency order.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     fn ensure_graph_order(&mut self) {
-        let by_rec = crate::git::branches_by_recency(&self.tab.root); // (name, is_current, time), newest first
+        let by_rec = crate::vcs::Git::branches_by_recency(&self.tab.root); // (name, is_current, time), newest first
         let exists: std::collections::HashSet<&str> =
             by_rec.iter().map(|(n, _, _)| n.as_str()).collect();
         // Remove branches that vanished (keeping the reordering).
@@ -1649,7 +1649,7 @@ impl App {
         let cap = self.cfg.ui.graph_max_branches;
         let mut set = std::collections::HashSet::new();
         // HEAD is always included.
-        for (name, is_cur, _) in crate::git::branches_by_recency(&self.tab.root) {
+        for (name, is_cur, _) in crate::vcs::Git::branches_by_recency(&self.tab.root) {
             if is_cur {
                 set.insert(name);
             }
@@ -1676,7 +1676,7 @@ impl App {
         Vec<crate::git::LegendEntry>,
         usize,
     ) {
-        let total = crate::git::branches_by_recency(&self.tab.root).len();
+        let total = crate::vcs::Git::branches_by_recency(&self.tab.root).len();
         let visible: Vec<String> = self.tab.git_graph_visible.iter().cloned().collect();
         // Empty or covers all branches → --all (None). Otherwise, only the specified branches.
         let use_all = visible.is_empty() || visible.len() >= total;
@@ -1716,7 +1716,7 @@ impl App {
             }
         }
         let has_wt = rows.iter().any(|r| r.worktree);
-        let mut legend = crate::git::legend_from_rows(
+        let mut legend = crate::vcs::Git::legend_from_rows(
             &rows,
             &self.tab.root,
             self.tab.git_graph_base_label.as_deref(),
@@ -1902,7 +1902,7 @@ impl App {
     /// The current branch (HEAD) name.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     fn head_branch_name(&self) -> Option<String> {
-        crate::git::branches_by_recency(&self.tab.root)
+        crate::vcs::Git::branches_by_recency(&self.tab.root)
             .into_iter()
             .find(|(_, c, _)| *c)
             .map(|(n, _, _)| n)
@@ -2095,7 +2095,7 @@ impl App {
             return;
         };
         let (lines, meta) = if row.worktree {
-            (crate::git::worktree_diff(&self.tab.root), None)
+            (crate::vcs::Git::worktree_diff(&self.tab.root), None)
         } else if let Some(id) = row.commit {
             (
                 crate::vcs::commit_diff(&self.tab.root, &id),
@@ -2130,7 +2130,7 @@ impl App {
     /// Does nothing if there are no changes. Overlaid as a detail view (git_detail); `s` toggles unified/split, q/Esc returns to the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_worktree_detail(&mut self) {
-        let lines = crate::git::worktree_diff(&self.tab.root);
+        let lines = crate::vcs::Git::worktree_diff(&self.tab.root);
         if lines.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;

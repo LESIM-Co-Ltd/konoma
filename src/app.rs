@@ -1095,7 +1095,7 @@ pub(crate) enum MdDiffKind {
 /// Which "old version" bytes a block-diff request should read, resolved on the UI thread
 /// (`App::diff_baseline`) from already-in-memory state (a `HashMap` lookup, no disk/subprocess
 /// I/O) so the worker thread never needs `&App` at all — only this plain-data instruction plus the
-/// backend calls it names (`vcs::base_contents`/`git::blob_at`, which touch the filesystem/git
+/// backend calls it names (`vcs::base_contents`/`vcs::contents_at`, which touch the filesystem/git
 /// object store, never `App`).
 ///
 /// Every variant but `Vcs` is only ever constructed on a `git`-feature build (`App::diff_baseline`'s
@@ -1108,8 +1108,8 @@ pub(crate) enum DiffBaseline {
     /// A follow-session snapshot already held in memory at follow-start — no I/O needed.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     FollowSnapshot(Vec<u8>),
-    /// A follow-session baseline that is the pinned HEAD blob — the worker fetches it
-    /// (`git::blob_at`, a subprocess under jj).
+    /// A follow-session baseline at the backend's pinned point — the worker fetches it
+    /// (`vcs::contents_at`, a subprocess under jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     FollowHead { sha: String },
     /// No baseline at all (untracked / no repository / dirty-but-too-large-to-snapshot at
@@ -2222,7 +2222,7 @@ const FOLLOW_BASELINE_TOTAL_CAP: usize = 64 * 1024 * 1024;
 /// The follow-start snapshot. `dirty` holds the content of files that were already modified/untracked
 /// at follow-start (keyed by canonicalized path): `Some(bytes)` = snapshotted, `None` = skipped for
 /// size (falls back to full diff). Files NOT in `dirty` were clean at follow-start, so their baseline
-/// is the blob at `head`.
+/// is the content at `head` (an opaque backend point, not necessarily a Git SHA).
 #[cfg(feature = "git")]
 struct FollowBaseline {
     dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>>,
@@ -2987,8 +2987,8 @@ impl App {
         // git (rebuild_tree). It's thread-local, so it doesn't race with other tests (see git.rs's
         // EXTERNAL_GIT_ENABLED).
         #[cfg(feature = "git")]
-        crate::git::set_external_git_enabled(app.cfg.external.git);
-        crate::vcs::set_preference(crate::vcs::Preference::parse(&app.cfg.external.vcs));
+        crate::vcs::Git::set_external_git_enabled(app.cfg.external.git);
+        crate::vcs::set_preference(crate::vcs::Preference::parse(app.cfg.project_vcs()));
         app.rebuild_tree()?;
         // Register the current state as the first tab.
         app.tabs.push(app.snapshot_tab());
@@ -4563,7 +4563,7 @@ impl App {
     /// `root` (nothing extra to watch) or outside any repo. konoma's own reads are lock-free
     /// (`--no-optional-locks`), so this does not create a self-feedback loop.
     pub fn git_dir_watch(&self) -> Option<PathBuf> {
-        let gd = crate::git::git_dir(&self.tab.root)?;
+        let gd = crate::vcs::watch_dir(&self.tab.root)?;
         let root = self
             .tab
             .root

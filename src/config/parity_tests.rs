@@ -14,6 +14,111 @@ use konoma_widgets::colors::{
 use std::collections::HashMap;
 use std::io::Write as _;
 
+#[test]
+fn config_project_vcs_precedence_and_legacy_notice() {
+    assert_eq!(Config::default().project_vcs(), "auto");
+    for (text, expected, renamed) in [
+        ("[project]\nvcs = 'git'", "git", false),
+        ("[project]\nvcs = 'jj'", "jj", false),
+        ("[external]\nvcs = 'jj'", "jj", true),
+        (
+            "[external]\nvcs = 'jj'\n[project]\nvcs = 'git'",
+            "git",
+            true,
+        ),
+        ("[external]\nvcs = 'git'\n[project]\nvcs = 'jj'", "jj", true),
+        (
+            "[external]\nvcs = 'jj'\n[project]\nvcs = 'auto'",
+            "auto",
+            true,
+        ),
+        ("[external]\nvcs = 'jj'\n[project]", "jj", true),
+        ("[project]\nvcs = 'unknown'", "unknown", false),
+    ] {
+        let file = tmp("project_vcs.toml", text.as_bytes());
+        let (cfg, error) = Config::load_path_reporting(&file);
+        assert!(error.is_none(), "{text}: {error:?}");
+        assert_eq!(cfg.project_vcs(), expected, "{text}");
+        let notice = ("[external] vcs".into(), "[project] vcs".into());
+        assert_eq!(cfg.renamed_settings.contains(&notice), renamed, "{text}");
+    }
+}
+
+/// Production host code may use shared git data types, but all repository calls belong to Vcs
+/// or the Git backend's screen-only boundary. Test fixture helpers are deliberately excluded.
+#[test]
+fn vcs_host_has_no_direct_git_calls() {
+    fn scan(dir: &Path, violations: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, violations);
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            if path.extension().is_none_or(|e| e != "rs")
+                || name.contains("tests")
+                || name == "test_support.rs"
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            // Inline fixture modules follow production code, like the other source parity tests.
+            let production = source.split("\nmod tests {").next().unwrap();
+            let code: String = production
+                .lines()
+                .map(|l| l.split("//").next().unwrap())
+                .collect();
+            let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+            for (_, tail) in compact
+                .match_indices("git::")
+                .map(|(at, _)| (at, &compact[at + 5..]))
+            {
+                let n = tail
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .count();
+                let function = &tail[..n];
+                if !function.starts_with(|c: char| c.is_ascii_lowercase())
+                    || !tail[n..].starts_with('(')
+                {
+                    continue;
+                }
+                // These are the host's local UI renderers, not repository operations.
+                if path.ends_with("ui/mod.rs")
+                    && [
+                        "render_detail",
+                        "render_graph_picker",
+                        "render_graph",
+                        "render_log",
+                        "render_branches",
+                        "render_worktrees",
+                        "render_changes",
+                    ]
+                    .contains(&function)
+                {
+                    continue;
+                }
+                violations.push(format!(
+                    "{}: git::{function}",
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap()
+                        .display()
+                ));
+            }
+        }
+    }
+    let mut violations = Vec::new();
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut violations,
+    );
+    assert!(
+        violations.is_empty(),
+        "host bypasses Vcs/Git backend: {violations:#?}"
+    );
+}
+
 /// Local copy of the `mod tests` temp-file helper (that one is private to the other module).
 fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
     // Preserve `name`'s extension — see the identical comment on `config::tests::tmp`: these tests

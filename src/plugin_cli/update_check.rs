@@ -212,9 +212,15 @@ fn notice(
                 InstallMethod::Other => Msg::PluginUpdateOther,
             },
         );
-        notes.push(
-            tr_format(lang, if needs_host == 1 { Msg::PluginHostUpdateOne } else { Msg::PluginHostUpdates }, &[("n", &needs_host.to_string()), ("method", method)]),
-        );
+        notes.push(tr_format(
+            lang,
+            if needs_host == 1 {
+                Msg::PluginHostUpdateOne
+            } else {
+                Msg::PluginHostUpdates
+            },
+            &[("n", &needs_host.to_string()), ("method", method)],
+        ));
     }
     (!notes.is_empty()).then(|| notes.join(" / "))
 }
@@ -281,7 +287,11 @@ impl Snapshot {
         if let Some(v) = &observed.updates.needs_host {
             notes.push(tr(lang, Msg::PluginListNeedsHost).replace("{version}", v));
         }
-        Some(if notes.is_empty() { tr(lang, Msg::PluginListCurrent).into() } else { notes.join(" / ") })
+        Some(if notes.is_empty() {
+            tr(lang, Msg::PluginListCurrent).into()
+        } else {
+            notes.join(" / ")
+        })
     }
 
     pub(crate) fn load(data_dir: &Path) -> Option<Self> {
@@ -453,7 +463,15 @@ fn start_with(
     fetch: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
 ) -> Option<Receiver<Snapshot>> {
-    start_with_fetch(enabled, config_dir, data_dir, host, now, Fetch::injected(fetch), spawn)
+    start_with_fetch(
+        enabled,
+        config_dir,
+        data_dir,
+        host,
+        now,
+        Fetch::injected(fetch),
+        spawn,
+    )
 }
 
 pub(super) struct ListCheck {
@@ -464,9 +482,13 @@ pub(super) struct ListCheck {
 
 impl ListCheck {
     pub fn status_note(&self, lang: Lang) -> Option<String> {
-        if self.disabled { Some(tr(lang, Msg::PluginListCheckDisabled).into()) }
-        else if self.failed { Some(tr(lang, Msg::PluginListCheckFailed).into()) }
-        else { None }
+        if self.disabled {
+            Some(tr(lang, Msg::PluginListCheckDisabled).into())
+        } else if self.failed {
+            Some(tr(lang, Msg::PluginListCheckFailed).into())
+        } else {
+            None
+        }
     }
 }
 
@@ -478,13 +500,34 @@ fn query_list_fetch(
     enabled: bool,
     fetch: Fetch,
 ) -> ListCheck {
-    let targets = list.plugins.iter().filter_map(|(name, source)| {
-        let super::Source::Crates { version } = source else { return None };
-        Some((name.clone(), (Version::parse(locked.get(name)?).ok()?, VersionReq::parse(version).ok()?)))
-    }).collect();
-    let (plugins, failed) = if enabled { query_targets(targets, host, fetch) } else { (BTreeMap::new(), false) };
+    let targets = list
+        .plugins
+        .iter()
+        .filter_map(|(name, source)| {
+            let super::Source::Crates { version } = source else {
+                return None;
+            };
+            Some((
+                name.clone(),
+                (
+                    Version::parse(locked.get(name)?).ok()?,
+                    VersionReq::parse(version).ok()?,
+                ),
+            ))
+        })
+        .collect();
+    let (plugins, failed) = if enabled {
+        query_targets(targets, host, fetch)
+    } else {
+        (BTreeMap::new(), false)
+    };
     ListCheck {
-        snapshot: Snapshot { checked_at: 0, show_checked_time: false, host_version: host.to_string(), plugins },
+        snapshot: Snapshot {
+            checked_at: 0,
+            show_checked_time: false,
+            host_version: host.to_string(),
+            plugins,
+        },
         disabled: !enabled,
         failed,
     }
@@ -501,7 +544,12 @@ pub(super) fn query_list_with(
     query_list_fetch(list, locked, host, enabled, Fetch::injected(fetch))
 }
 
-pub(super) fn query_list(list: &PluginList, locked: &BTreeMap<String, String>, enabled: bool, fetch: Fetch) -> ListCheck {
+pub(super) fn query_list(
+    list: &PluginList,
+    locked: &BTreeMap<String, String>,
+    enabled: bool,
+    fetch: Fetch,
+) -> ListCheck {
     query_list_fetch(list, locked, &HOST_PLUGIN_VERSION, enabled, fetch)
 }
 
@@ -512,7 +560,9 @@ fn query_targets(
 ) -> (BTreeMap<String, Observation>, bool) {
     let started = Instant::now();
     let remaining: QueryClock = Arc::new(move || QUERY_TIMEOUT.saturating_sub(started.elapsed()));
-    query_targets_with(targets, host, fetch, remaining, |rx, budget| rx.recv_timeout(budget))
+    query_targets_with(targets, host, fetch, remaining, |rx, budget| {
+        rx.recv_timeout(budget)
+    })
 }
 
 // The receive decision and remaining budget are injected together so tests can expire a query
@@ -522,7 +572,10 @@ fn query_targets_with(
     host: &Version,
     fetch: Fetch,
     remaining: QueryClock,
-    mut receive: impl FnMut(&Receiver<QueryAnswer>, Duration) -> Result<QueryAnswer, mpsc::RecvTimeoutError>,
+    mut receive: impl FnMut(
+        &Receiver<QueryAnswer>,
+        Duration,
+    ) -> Result<QueryAnswer, mpsc::RecvTimeoutError>,
 ) -> (BTreeMap<String, Observation>, bool) {
     let expected = targets.len();
     if expected == 0 {
@@ -564,8 +617,9 @@ fn query_targets_with(
                 }
                 // Preserve injected fetch assertions: a panic is not an ordinary index failure.
                 let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let updates = (fetch.0)(&index_url(&name), budget)
-                        .and_then(|body| inspect_index_in_range(&body, &installed, &host, &requirement));
+                    let updates = (fetch.0)(&index_url(&name), budget).and_then(|body| {
+                        inspect_index_in_range(&body, &installed, &host, &requirement)
+                    });
                     let observation = updates.map(|updates| Observation {
                         installed: installed.to_string(),
                         updates,
@@ -603,12 +657,18 @@ fn query_targets_with(
     cancelled.store(true, Ordering::SeqCst);
     // Keep responses already delivered before expiry even if the caller was descheduled.
     answers.extend(rx.try_iter());
-    let answers: Vec<_> = answers.into_iter().map(|answer| match answer {
-        Ok(answer) => answer,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }).collect();
+    let answers: Vec<_> = answers
+        .into_iter()
+        .map(|answer| match answer {
+            Ok(answer) => answer,
+            Err(panic) => std::panic::resume_unwind(panic),
+        })
+        .collect();
     let failed = answers.len() < expected || answers.iter().any(|(_, answer)| answer.is_none());
-    let plugins = answers.into_iter().filter_map(|(name, answer)| answer.map(|answer| (name, answer))).collect();
+    let plugins = answers
+        .into_iter()
+        .filter_map(|(name, answer)| answer.map(|answer| (name, answer)))
+        .collect();
     (plugins, failed)
 }
 
@@ -620,7 +680,10 @@ pub(crate) struct Updates {
 
 impl Updates {
     fn counts(&self) -> (usize, usize) {
-        (usize::from(self.compatible.is_some()), usize::from(self.needs_host.is_some()))
+        (
+            usize::from(self.compatible.is_some()),
+            usize::from(self.needs_host.is_some()),
+        )
     }
 }
 
@@ -669,13 +732,11 @@ fn inspect_index_in_range(
             continue;
         };
         valid = true;
-        if row.yanked
-            || !version.pre.is_empty()
-            || version <= *installed
-        {
+        if row.yanked || !version.pre.is_empty() || version <= *installed {
             continue;
         }
-        let best = if requirement.matches(&version) && requirements.iter().all(|r| r.matches(host)) {
+        let best = if requirement.matches(&version) && requirements.iter().all(|r| r.matches(host))
+        {
             &mut compatible
         } else {
             &mut needs_host
@@ -724,19 +785,34 @@ mod tests {
                     } else {
                         let mut expected = Vec::new();
                         if counts.0 > 0 {
-                            expected.push(format!("{} plugin update{} available (`konoma plugin update`)", counts.0, if counts.0 == 1 { "" } else { "s" }));
+                            expected.push(format!(
+                                "{} plugin update{} available (`konoma plugin update`)",
+                                counts.0,
+                                if counts.0 == 1 { "" } else { "s" }
+                            ));
                         }
                         if counts.1 > 0 {
                             let method = match method {
                                 super::InstallMethod::Cargo => "`cargo install konoma`",
                                 super::InstallMethod::Brew => "`brew upgrade konoma`",
                                 super::InstallMethod::Apt => "`sudo apt upgrade konoma`",
-                                super::InstallMethod::Other => "update konoma using the method you installed it with",
+                                super::InstallMethod::Other => {
+                                    "update konoma using the method you installed it with"
+                                }
                             };
-                            expected.push(format!("{} newer plugin version{} {} a newer konoma ({method})", counts.1, if counts.1 == 1 { "" } else { "s" }, if counts.1 == 1 { "needs" } else { "need" }));
+                            expected.push(format!(
+                                "{} newer plugin version{} {} a newer konoma ({method})",
+                                counts.1,
+                                if counts.1 == 1 { "" } else { "s" },
+                                if counts.1 == 1 { "needs" } else { "need" }
+                            ));
                         }
                         assert_eq!(text, expected.join(" / "));
-                        crate::test_support::plugin_english_lower::assert_english_context("notice", &text, &expected.join(" / "));
+                        crate::test_support::plugin_english_lower::assert_english_context(
+                            "notice",
+                            &text,
+                            &expected.join(" / "),
+                        );
                     }
                 }
             }
@@ -772,12 +848,23 @@ mod tests {
     }
 
     fn query_fixture(names: &[&str]) -> BTreeMap<String, (Version, VersionReq)> {
-        names.iter().map(|name| ((*name).into(), (Version::parse("0.3.0").unwrap(), VersionReq::STAR))).collect()
+        names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).into(),
+                    (Version::parse("0.3.0").unwrap(), VersionReq::STAR),
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn query_overall_deadline_keeps_ready_answers_without_joining_blocked_fetches() {
-        use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
         let seconds = Arc::new(AtomicU64::new(10));
         let clock: QueryClock = {
             let seconds = seconds.clone();
@@ -799,7 +886,10 @@ mod tests {
         }));
         let mut waits = 0;
         let (plugins, failed) = query_targets_with(
-            query_fixture(&["fast", "slow"]), &host(), fetch, clock,
+            query_fixture(&["fast", "slow"]),
+            &host(),
+            fetch,
+            clock,
             |rx, budget| {
                 assert_eq!(budget, QUERY_TIMEOUT);
                 waits += 1;
@@ -812,7 +902,10 @@ mod tests {
                 }
             },
         );
-        assert!(failed, "the unanswered crate must be reported as uncheckable");
+        assert!(
+            failed,
+            "the unanswered crate must be reported as uncheckable"
+        );
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins["fast"].updates.compatible.as_deref(), Some("0.4.0"));
         // Release after return: joining the blocked fetch would prevent reaching this point.
@@ -822,7 +915,10 @@ mod tests {
 
     #[test]
     fn query_parallelism_is_bounded_and_queued_crates_stop_at_the_overall_deadline() {
-        use std::sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}};
+        use std::sync::{
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+            Arc,
+        };
         let seconds = Arc::new(AtomicU64::new(10));
         let clock: QueryClock = {
             let seconds = seconds.clone();
@@ -851,7 +947,10 @@ mod tests {
             }))
         };
         let (plugins, failed) = query_targets_with(
-            query_fixture(&["a", "b", "c", "d", "e", "f", "g", "h"]), &host(), fetch, clock,
+            query_fixture(&["a", "b", "c", "d", "e", "f", "g", "h"]),
+            &host(),
+            fetch,
+            clock,
             |_, budget| {
                 assert_eq!(budget, QUERY_TIMEOUT);
                 for _ in 0..QUERY_PARALLELISM {
@@ -879,7 +978,9 @@ mod tests {
             Some(row("0.4.0", None, false))
         }));
         let (plugins, failed) = query_targets_with(
-            query_fixture(&["foo"]), &host(), fetch,
+            query_fixture(&["foo"]),
+            &host(),
+            fetch,
             Arc::new(move || remaining),
             |rx, budget| {
                 assert_eq!(budget, remaining);
@@ -894,7 +995,9 @@ mod tests {
     fn injected_fetch_panics_are_not_silent_query_failures() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             query_targets_with(
-                query_fixture(&["foo"]), &host(), Fetch::injected(|_| panic!("fetch assertion")),
+                query_fixture(&["foo"]),
+                &host(),
+                Fetch::injected(|_| panic!("fetch assertion")),
                 Arc::new(|| QUERY_TIMEOUT),
                 |rx, _| rx.recv_timeout(Duration::from_secs(5)),
             )
@@ -905,7 +1008,8 @@ mod tests {
     #[test]
     fn an_expired_query_never_starts_a_fetch_or_waits() {
         let (plugins, failed) = query_targets_with(
-            query_fixture(&["foo"]), &host(),
+            query_fixture(&["foo"]),
+            &host(),
             Fetch::injected(|_| panic!("expired fetch")),
             std::sync::Arc::new(|| Duration::ZERO),
             |_, _| panic!("expired wait"),
@@ -931,32 +1035,64 @@ mod tests {
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert!(!result.disabled && !result.failed);
             for lang in [Lang::En, Lang::Jp] {
-                let note = result.snapshot.list_note_lang("foo", locked.get("foo"), lang).unwrap();
+                let note = result
+                    .snapshot
+                    .list_note_lang("foo", locked.get("foo"), lang)
+                    .unwrap();
                 assert!(note.contains("0.3.1") && note.contains("2.0.0"), "{note}");
-                if lang == Lang::Jp { crate::test_support::plugin_language::assert_japanese_plugin_prose("list updates", &note); }
-                else { assert_eq!(note, "update available: 0.3.1 / newer 2.0.0 needs a newer konoma"); }
+                if lang == Lang::Jp {
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "list updates",
+                        &note,
+                    );
+                } else {
+                    assert_eq!(
+                        note,
+                        "update available: 0.3.1 / newer 2.0.0 needs a newer konoma"
+                    );
+                }
             }
-            assert_eq!(std::fs::read(d.join("data/plugin-updates.toml")).unwrap(), before);
+            assert_eq!(
+                std::fs::read(d.join("data/plugin-updates.toml")).unwrap(),
+                before
+            );
             assert!(!d.join("data/plugin-updates.lock").exists());
         }
     }
 
     #[test]
     fn explicit_list_failures_and_disabled_checks_are_visible_in_both_languages() {
-        let list = PluginList::parse("[plugins.foo]\\nversion = '*'".replace("\\n", "\n").as_str()).unwrap();
+        let list = PluginList::parse(
+            "[plugins.foo]\\nversion = '*'"
+                .replace("\\n", "\n")
+                .as_str(),
+        )
+        .unwrap();
         let locked = BTreeMap::from([("foo".into(), "0.3.0".into())]);
         let failed = query_list_with(&list, &locked, &host(), true, |_| None);
         let disabled = query_list_with(&list, &locked, &host(), false, |_| panic!("disabled HTTP"));
         for (check, english, japanese) in [
-            (failed, "Could not check for plugin updates.", "プラグインの更新を確認できませんでした。"),
-            (disabled, "Plugin update checking is turned off.", "プラグインの更新確認は無効です。"),
+            (
+                failed,
+                "Could not check for plugin updates.",
+                "プラグインの更新を確認できませんでした。",
+            ),
+            (
+                disabled,
+                "Plugin update checking is turned off.",
+                "プラグインの更新確認は無効です。",
+            ),
         ] {
             assert_eq!(check.status_note(Lang::En).as_deref(), Some(english));
             assert_eq!(check.status_note(Lang::Jp).as_deref(), Some(japanese));
         }
         for source in ["path = '/fixture'", "git = 'url'"] {
-            let list = PluginList::parse(&format!("[plugins.local]\\n{source}").replace("\\n", "\n")).unwrap();
-            let result = query_list_with(&list, &BTreeMap::new(), &host(), true, |_| panic!("no registry target"));
+            let list =
+                PluginList::parse(&format!("[plugins.local]\\n{source}").replace("\\n", "\n"))
+                    .unwrap();
+            let result = query_list_with(&list, &BTreeMap::new(), &host(), true, |_| {
+                panic!("no registry target")
+            });
             assert!(!result.failed);
         }
     }
@@ -1640,7 +1776,12 @@ mod tests {
         };
         assert_eq!(value.as_str(), USER_AGENT);
         assert_eq!(cfg.timeouts().global, Some(Duration::from_secs(10)));
-        assert_eq!(http_config_with_timeout(Duration::from_secs(4)).timeouts().global, Some(Duration::from_secs(4)));
+        assert_eq!(
+            http_config_with_timeout(Duration::from_secs(4))
+                .timeouts()
+                .global,
+            Some(Duration::from_secs(4))
+        );
         assert_eq!(cfg.max_redirects(), 0);
         assert!(cfg.http_status_as_error());
     }

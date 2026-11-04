@@ -59,7 +59,14 @@ fn status_text(status: std::process::ExitStatus, lang: Lang) -> String {
     if let Some(code) = status.code() {
         tr(lang, Msg::PluginExitCode).replace("{code}", &code.to_string())
     } else {
-        tr_format(lang, Msg::PluginSignalStatus, &[("status", &status.to_string()), ("signal", &status.signal().unwrap_or_default().to_string())])
+        tr_format(
+            lang,
+            Msg::PluginSignalStatus,
+            &[
+                ("status", &status.to_string()),
+                ("signal", &status.signal().unwrap_or_default().to_string()),
+            ],
+        )
     }
 }
 
@@ -335,25 +342,52 @@ fn list_output_with(env: &Env, fetch: update_check::Fetch) -> Result<String> {
     let mut list = PluginList::load_lang(&env.plugins_toml(), env.lang)?;
     let empty = list.plugins.is_empty();
     let mut locked = std::fs::read_to_string(env.lock_path())
-        .map(|t| project::locked_versions(&t)).unwrap_or_default();
+        .map(|t| project::locked_versions(&t))
+        .unwrap_or_default();
     let record = switch::read_record(&env.data_dir);
     let bundled = !switch::binary_path(&env.data_dir).is_file();
-    if let Some(record) = record { locked.extend(record.plugins); }
-    for (name, (compiled, requirement)) in update_check::standard_targets() {
-        if bundled { locked.insert(name.clone(), compiled.to_string()); }
-        list.plugins.entry(name).or_insert_with(|| Source::Crates { version: requirement.to_string() });
+    if let Some(record) = record {
+        locked.extend(record.plugins);
     }
-    let (config, _) = crate::config::Config::load_path_reporting(&env.config_dir.join("config.toml"));
+    for (name, (compiled, requirement)) in update_check::standard_targets() {
+        if bundled {
+            locked.insert(name.clone(), compiled.to_string());
+        }
+        list.plugins.entry(name).or_insert_with(|| Source::Crates {
+            version: requirement.to_string(),
+        });
+    }
+    let (config, _) =
+        crate::config::Config::load_path_reporting(&env.config_dir.join("config.toml"));
     let mut check = update_check::query_list(&list, &locked, config.external.update_check, fetch);
     if let Some(saved) = update_check::Snapshot::load(&env.data_dir) {
         check.snapshot.checked_at = saved.checked_at;
         check.snapshot.show_checked_time = true;
     }
     let mut text = if bundled {
-        format!("{}\n", tr(env.lang, if empty { Msg::PluginListEmpty } else { Msg::PluginStandardBundled }))
-    } else { String::new() };
-    text.push_str(&list_text_with_updates(&list, &locked, Some(&check.snapshot), env.lang));
-    if let Some(note) = check.status_note(env.lang) { text.push_str(&format!("{note}\n")); }
+        format!(
+            "{}\n",
+            tr(
+                env.lang,
+                if empty {
+                    Msg::PluginListEmpty
+                } else {
+                    Msg::PluginStandardBundled
+                }
+            )
+        )
+    } else {
+        String::new()
+    };
+    text.push_str(&list_text_with_updates(
+        &list,
+        &locked,
+        Some(&check.snapshot),
+        env.lang,
+    ));
+    if let Some(note) = check.status_note(env.lang) {
+        text.push_str(&format!("{note}\n"));
+    }
     Ok(text)
 }
 
@@ -659,12 +693,30 @@ mod tests {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(config.join("plugins.toml"), "[plugins.konoma-foo]\nversion = '^0.3'\n[plugins.local]\npath = '/fixture'\n[plugins.git-plugin]\ngit = 'https://example.invalid/plugin'\n").unwrap();
-        std::fs::write(data.join("Cargo.lock"), "[[package]]\nname = 'konoma-foo'\nversion = '0.3.2'\n").unwrap();
+        std::fs::write(
+            data.join("Cargo.lock"),
+            "[[package]]\nname = 'konoma-foo'\nversion = '0.3.2'\n",
+        )
+        .unwrap();
         std::fs::write(data.join("plugin-updates.toml"), "checked_at = 100\n").unwrap();
         for lang in [Lang::En, Lang::Jp] {
-            let env = Env { lang, config_dir: config.clone(), data_dir: data.clone(), home: None, cargo_env: None, path_env: None, konoma_version: "0.31.2".into(), stdin_is_tty: false, interrupted: Arc::new(AtomicBool::new(false)) };
+            let env = Env {
+                lang,
+                config_dir: config.clone(),
+                data_dir: data.clone(),
+                home: None,
+                cargo_env: None,
+                path_env: None,
+                konoma_version: "0.31.2".into(),
+                stdin_is_tty: false,
+                interrupted: Arc::new(AtomicBool::new(false)),
+            };
             for (enabled, fails) in [(true, false), (true, true), (false, false)] {
-                std::fs::write(config.join("config.toml"), format!("[external]\nupdate_check = {enabled}\n")).unwrap();
+                std::fs::write(
+                    config.join("config.toml"),
+                    format!("[external]\nupdate_check = {enabled}\n"),
+                )
+                .unwrap();
                 let text = list_output_with(&env, update_check::Fetch::injected(move |url| {
                     assert!(enabled, "disabled fetch");
                     if fails { return None }
@@ -672,9 +724,17 @@ mod tests {
                     Some(rows.iter().map(|version| serde_json::json!({"vers": version, "yanked": false, "deps": []}).to_string()).collect::<Vec<_>>().join("\n"))
                 })).unwrap();
                 assert!(text.contains("konoma-office  0.1.0"), "{text}");
-                if lang == Lang::Jp { crate::test_support::plugin_language::assert_japanese_plugin_prose("list status", &text); }
-                else {
-                    crate::test_support::plugin_english_lower::assert_english_context("list bundled header", &text, "Standard plugins bundled with konoma are in use.");
+                if lang == Lang::Jp {
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "list status",
+                        &text,
+                    );
+                } else {
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "list bundled header",
+                        &text,
+                        "Standard plugins bundled with konoma are in use.",
+                    );
                     assert!(text.contains("    no update check\n"), "{text}");
                 }
                 let expected = match (lang, enabled, fails) {
@@ -682,14 +742,28 @@ mod tests {
                     (Lang::Jp, false, _) => "プラグインの更新確認は無効です。",
                     (Lang::En, true, true) => "Could not check for plugin updates.",
                     (Lang::Jp, true, true) => "プラグインの更新を確認できませんでした。",
-                    (Lang::En, true, false) => "update available: 0.3.3 / newer 1.0.0 needs a newer konoma",
-                    (Lang::Jp, true, false) => "更新あり: 0.3.3 / 新しい版 1.0.0 には konoma の更新が必要です",
+                    (Lang::En, true, false) => {
+                        "update available: 0.3.3 / newer 1.0.0 needs a newer konoma"
+                    }
+                    (Lang::Jp, true, false) => {
+                        "更新あり: 0.3.3 / 新しい版 1.0.0 には konoma の更新が必要です"
+                    }
                 };
                 assert!(text.contains(expected), "{text}");
                 if enabled && !fails {
-                    assert!(text.contains(if lang == Lang::En { "    up to date\n" } else { "    最新です\n" }), "{text}");
+                    assert!(
+                        text.contains(if lang == Lang::En {
+                            "    up to date\n"
+                        } else {
+                            "    最新です\n"
+                        }),
+                        "{text}"
+                    );
                 }
-                assert_eq!(std::fs::read_to_string(data.join("plugin-updates.toml")).unwrap(), "checked_at = 100\n");
+                assert_eq!(
+                    std::fs::read_to_string(data.join("plugin-updates.toml")).unwrap(),
+                    "checked_at = 100\n"
+                );
                 assert!(!data.join("plugin-updates.lock").exists());
             }
         }
@@ -720,8 +794,12 @@ mod tests {
                     Source::Crates { version } => format!("crates.io, version {version}"),
                     Source::Git { url, branch, rev } => {
                         let mut text = format!("git {url}");
-                        if let Some(branch) = branch { text.push_str(&format!(", branch {branch}")); }
-                        if let Some(rev) = rev { text.push_str(&format!(", rev {rev}")); }
+                        if let Some(branch) = branch {
+                            text.push_str(&format!(", branch {branch}"));
+                        }
+                        if let Some(rev) = rev {
+                            text.push_str(&format!(", rev {rev}"));
+                        }
                         text
                     }
                     Source::Path { path } => format!("path {path}"),
@@ -755,7 +833,9 @@ mod tests {
                 } else {
                     assert_eq!(output, format!("Plugin crate:  konoma-foo\nSource:        {english_source}\nA plugin runs with your permissions, and its build scripts run on this machine while konoma is rebuilt.\nInstall it? [y/N] "));
                     let mut expected_list = format!("(konoma is built from the source at /fixture)\nkonoma-foo  not built yet\n    {english_source}\n");
-                    if no_check { expected_list.push_str("    no update check\n"); }
+                    if no_check {
+                        expected_list.push_str("    no update check\n");
+                    }
                     assert_eq!(list, expected_list);
                     for text in [&output, &list] {
                         assert!(
@@ -842,10 +922,20 @@ mod tests {
                     );
                 }
             } else {
-                assert_eq!(error.to_string(), "cannot find the config directory (HOME is not set)");
-                assert_eq!(configured.to_string(), "cannot find the data directory (HOME is not set)");
+                assert_eq!(
+                    error.to_string(),
+                    "cannot find the config directory (HOME is not set)"
+                );
+                assert_eq!(
+                    configured.to_string(),
+                    "cannot find the data directory (HOME is not set)"
+                );
                 for error in [error, configured] {
-                    crate::test_support::plugin_english_lower::assert_english_context("bootstrap", &error.to_string(), &error.to_string());
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "bootstrap",
+                        &error.to_string(),
+                        &error.to_string(),
+                    );
                 }
             }
         }

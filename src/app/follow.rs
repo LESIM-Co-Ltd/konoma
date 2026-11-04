@@ -43,12 +43,12 @@ impl App {
     }
 
     /// Capture the follow-start snapshot: the content of every currently-dirty file (bounded by size),
-    /// plus the pinned HEAD sha for clean files. Dirty files too large to snapshot are recorded as
+    /// plus the backend's immutable point for clean files. Dirty files too large to snapshot are recorded as
     /// `None` so their follow diff falls back to the full git diff. `F` is a command → sync status first.
     #[cfg(feature = "git")]
     fn capture_follow_baseline(&mut self) {
         self.ensure_git_status_now();
-        let head = crate::git::head_commit_id(&self.tab.root);
+        let head = crate::vcs::current_point(&self.tab.root);
         let mut dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>> =
             std::collections::HashMap::new();
         let mut total = 0usize;
@@ -85,7 +85,7 @@ impl App {
     }
 
     /// The follow-start baseline content for `path`: the `dirty` snapshot taken at `F`-on, or (for a
-    /// file that was clean at follow-start) the pinned HEAD blob, or None. Pulled out of
+    /// file that was clean at follow-start) its bytes at the pinned point, or None. Pulled out of
     /// `follow_baseline_diff` as its own selection step — see `docs/FEATURE-MD-RENDERED-DIFF.md`
     /// §2, which needs these bytes directly (to run its own block-level Markdown diff) rather than
     /// an already-line-diffed result.
@@ -106,12 +106,12 @@ impl App {
             Some(Some(content)) => Some(content.clone()),
             Some(None) => None, // dirty at follow-start but too large → full diff
             None => {
-                // Clean at follow-start → HEAD blob; a file created after follow-start is absent from
+                // Clean at follow-start → pinned-point bytes; a file created after follow-start is absent from
                 // the pinned tree → empty baseline = all-added (correct: it is new since follow-start).
-                // No HEAD to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
+                // No point to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
                 // defers to `file_diff`, which is empty outside a repo → `follow_jump` shows the file preview.
                 let h = base.head.as_deref()?;
-                Some(crate::git::blob_at(&self.tab.root, h, path).unwrap_or_default())
+                Some(crate::vcs::contents_at(&self.tab.root, h, path).unwrap_or_default())
             }
         }
     }
@@ -134,7 +134,7 @@ impl App {
         }
         let old = String::from_utf8(baseline).ok()?;
         let new = String::from_utf8(current).ok()?;
-        Some(crate::git::diff_contents(&old, &new))
+        Some(crate::vcs::diff_contents(&old, &new))
     }
 
     /// `f` in a follow-opened diff: switch between the diff-since-follow-start (default) and the full
@@ -466,7 +466,7 @@ mod tests {
                 .follow_baseline_contents(&path)
                 .unwrap_or_else(|| panic!("{name}: follow_baseline_contents は Some のはず"));
             let current = std::fs::read(&path).unwrap();
-            let expected = crate::git::diff_contents(
+            let expected = crate::vcs::diff_contents(
                 &String::from_utf8(baseline).unwrap(),
                 &String::from_utf8(current).unwrap(),
             );

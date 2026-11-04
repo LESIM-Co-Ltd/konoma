@@ -1256,7 +1256,9 @@ impl App {
             self.apply_statuses(res);
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // If the worker panics, no result comes back and `git_status_pending` stays set forever,
             // spinning the spinner and freezing status. `compute_or_fallback` (principle #3)
             // guarantees a result either way — unlike the old `if let Some(res) = catch_silent(..) {
@@ -1381,7 +1383,9 @@ impl App {
             self.apply_ignored(IgnoredResult { gen, workdir, set });
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // Same `compute_or_fallback` safety net as `spawn_or_sync_statuses` (principle #3): the
             // `tx.send(..)` below is unconditional. If the scan panics, `git_ignored_pending` would
             // otherwise latch forever (a spinner that never stops, and the ignore set frozen at

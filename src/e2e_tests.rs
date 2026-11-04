@@ -5901,6 +5901,109 @@ fn e2e_jj_follow_opens_full_screen_diff() {
     );
 }
 
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_follow_diff_since_start_survives_a_commit() {
+    if !crate::vcs::jj::available() {
+        eprintln!("skipping: no working jj binary");
+        return;
+    }
+    let dir = jj_seed_repo("jj_follow_since_start").expect("jj fixture");
+    let root = canon(&dir);
+    let jj = |args: &[&str]| {
+        let out = std::process::Command::new("jj")
+            .current_dir(&root)
+            .env("JJ_CONFIG", "")
+            .env("JJ_USER", "fixture")
+            .env("JJ_EMAIL", "fixture@example.invalid")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "jj fixture command failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // a.txt is clean at F, so only the capability's pinned point can provide its baseline.
+    let a = root.join("a.txt");
+    std::fs::write(&a, "one\n").unwrap();
+    let dirty = root.join("dirty.txt");
+    std::fs::write(&dirty, "dirty-before\n").unwrap();
+    jj(&["status"]);
+    let mut s = Sim::new(&root);
+    s.key('F');
+    assert!(s.app.follow_enabled());
+    std::fs::write(&a, "committed-during-follow\n").unwrap();
+    jj(&["commit", "-m", "during follow"]);
+    std::fs::write(&a, "after\n").unwrap();
+    std::fs::write(&dirty, "dirty-after\n").unwrap();
+    let fresh = root.join("fresh.txt");
+    std::fs::write(&fresh, "new-after\n").unwrap();
+    for (path, before, after) in [
+        (&a, Some("one"), "after"),
+        (&dirty, Some("dirty-before"), "dirty-after"),
+        (&fresh, None, "new-after"),
+    ] {
+        assert!(s.app.follow_note_change(path));
+        s.app.follow_jump(path);
+        s.draw();
+        assert!(s.app.is_git_diff_preview());
+        let lines = s.app.git_diff_lines();
+        let removed: Vec<_> = lines
+            .iter()
+            .filter(|l| l.kind == crate::git::DiffLineKind::Removed)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(removed, before.into_iter().collect::<Vec<_>>());
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == crate::git::DiffLineKind::Added && l.text == after));
+        s.see(after);
+    }
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_vcs_colocated_git_off_chip_matches_worker() {
+    if !crate::vcs::jj::available() || !crate::vcs::Git::git_binary_available() {
+        eprintln!("skipping: git and jj binaries required");
+        return;
+    }
+    let dir = jj_colocated_seed_repo("project_vcs_git_off").expect("colocated fixture");
+    let root = canon(&dir);
+    for (pref, expected) in [
+        ("auto", crate::vcs::VcsKind::Jj),
+        ("jj", crate::vcs::VcsKind::Jj),
+        ("git", crate::vcs::VcsKind::Git),
+    ] {
+        let cfg: Config = toml::from_str(&format!(
+            "[external]\ngit = false\n[project]\nvcs = '{pref}'"
+        ))
+        .unwrap();
+        // Pin only this test's thread; the production worker must carry this setting itself.
+        crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::parse(pref)));
+        let mut s = Sim::with_config(&root, cfg);
+        assert_eq!(s.app.git_vcs, expected, "{pref}");
+        if expected == crate::vcs::VcsKind::Jj {
+            s.see("@ ");
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.app.attach_status_loader(tx);
+            s.app.refresh().unwrap();
+            let res = rx.recv_timeout(DRAIN_WAIT).expect("status worker result");
+            assert!(s.app.apply_statuses(res));
+            assert_eq!(s.app.git_vcs, expected, "worker: {pref}");
+            s.draw();
+            s.see("@ ");
+        } else {
+            assert!(s.app.git_branch().is_none(), "explicit Git stays disabled");
+            s.dont_see("@ ");
+        }
+    }
+    crate::vcs::set_preference_for_test(None);
+    crate::vcs::Git::set_external_git_enabled(true);
+}
+
 /// The full-screen diff's `Rendered` presentation on the jj backend (`docs/FEATURE-MD-RENDERED-DIFF.md`
 /// §2): `App::build_decorated`'s `DecoratedSource::Diff` arm and `App::diff_rendered_sources` both go
 /// through `crate::vcs::base_contents`, backend-agnostic by construction — this pins that a jj

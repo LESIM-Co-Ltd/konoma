@@ -3976,11 +3976,28 @@ mod tests {
     #[test]
     fn plugin_placeholders_never_reinterpret_inserted_values() {
         for lang in [Lang::En, Lang::Jp] {
-            let text = tr_format(lang, Msg::PluginUnknownKey, &[("context", "{key}"), ("key", "{allowed}"), ("allowed", "version, path")]);
+            let text = tr_format(
+                lang,
+                Msg::PluginUnknownKey,
+                &[
+                    ("context", "{key}"),
+                    ("key", "{allowed}"),
+                    ("allowed", "version, path"),
+                ],
+            );
             assert!(text.starts_with("{key}:"), "{text}");
             assert!(text.contains("`{allowed}`"), "{text}");
             assert!(text.contains("version, path"), "{text}");
-            let text = tr_format(lang, Msg::PluginReplacementPartial, &[("cause", "{new} {old} {repair}"), ("new", "new data"), ("old", "old data"), ("repair", "repair data")]);
+            let text = tr_format(
+                lang,
+                Msg::PluginReplacementPartial,
+                &[
+                    ("cause", "{new} {old} {repair}"),
+                    ("new", "new data"),
+                    ("old", "old data"),
+                    ("repair", "repair data"),
+                ],
+            );
             assert!(text.starts_with("{new} {old} {repair}\n"), "{text}");
         }
     }

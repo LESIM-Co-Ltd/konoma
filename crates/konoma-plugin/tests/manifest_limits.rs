@@ -26,7 +26,7 @@ impl Plugin for Stub {
 
 #[test]
 fn typed_manifest_reasons_keep_the_original_english_display() {
-    use konoma_plugin::registry::{ManifestReason as R, ManifestName as N, ManifestCount as C};
+    use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     let mut cases = vec![
         (R::TargetTooLong { bind: 2, bytes: 1025, limit: 1024 }, "bind 2 has a target that is too long (1025 bytes, at most 1024)".into()),
         (R::TargetUnclean { bind: 2 }, "bind 2 has a target that contains a control character".into()),
@@ -35,13 +35,42 @@ fn typed_manifest_reasons_keep_the_original_english_display() {
         (R::DefaultKeyUnclean { limit: 256 }, "a setting default has a key that is unclean (at most 256 bytes, no control character)".into()),
         (R::DefaultTooDeep { limit: 8 }, "a setting default nested deeper than 8".into()),
     ];
-    for (kind, label) in [(N::PluginId, "the plugin id"), (N::ActionId, "an action id"), (N::ActionScreen, "an action's screen"), (N::SettingName, "a setting name"), (N::ScreenName, "a screen name"), (N::WorkGroup, "the work group")] {
-        cases.push((R::InvalidName { kind, name: "?ad???".into(), limit: 64 }, format!("{label} `?ad???` is not a name ([a-z0-9._-], 1 to 64 characters)")));
+    for (kind, label) in [
+        (N::PluginId, "the plugin id"),
+        (N::ActionId, "an action id"),
+        (N::ActionScreen, "an action's screen"),
+        (N::SettingName, "a setting name"),
+        (N::ScreenName, "a screen name"),
+        (N::WorkGroup, "the work group"),
+    ] {
+        cases.push((
+            R::InvalidName {
+                kind,
+                name: "?ad???".into(),
+                limit: 64,
+            },
+            format!("{label} `?ad???` is not a name ([a-z0-9._-], 1 to 64 characters)"),
+        ));
     }
-    for (kind, label) in [(C::Actions, "actions"), (C::Settings, "settings"), (C::Binds, "binds"), (C::Screens, "screens"), (C::Targets, "targets in a bind")] {
-        cases.push((R::TooMany { kind, count: 5, limit: 4 }, format!("5 {label} (at most 4)")));
+    for (kind, label) in [
+        (C::Actions, "actions"),
+        (C::Settings, "settings"),
+        (C::Binds, "binds"),
+        (C::Screens, "screens"),
+        (C::Targets, "targets in a bind"),
+    ] {
+        cases.push((
+            R::TooMany {
+                kind,
+                count: 5,
+                limit: 4,
+            },
+            format!("5 {label} (at most 4)"),
+        ));
     }
-    for (reason, expected) in cases { assert_eq!(reason.to_string(), expected); }
+    for (reason, expected) in cases {
+        assert_eq!(reason.to_string(), expected);
+    }
 }
 
 fn register(m: Manifest) -> (Registry, Result<(), RegistryError>) {

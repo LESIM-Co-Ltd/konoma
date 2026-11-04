@@ -630,6 +630,20 @@ pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
     parent_bytes(&ws, &rel_str, m.parent.as_deref())
 }
 
+/// Pin the full commit ID of `@`, rather than its change ID (which survives rewrites).
+pub fn current_point(root: &Path) -> Option<String> {
+    let ws = workspace_root(root)?;
+    let id = run(&ws, &["log", "-r", "@", "--no-graph", "-T", "commit_id"])?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Read an immutable point through jj's normal read path, with no snapshot or storage inspection.
+pub fn contents_at(root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+    let (ws, _, rel) = resolve_ws_rel(root, file)?;
+    revision_bytes(&ws, point, &rel)
+}
+
 /// Resolves `file` to (workspace root, canonicalized absolute path, workspace-relative path
 /// string) — the path-handling `file_diff` and `base_contents` both need before they can ask jj
 /// anything. `None` when `root` is not inside a jj workspace, `file` is a symlink (declined rather
@@ -1073,6 +1087,82 @@ mod tests {
     // `crate::vcs::Jj::worktree_origin` — a trait method call requires the trait itself in scope,
     // even when the receiver's type is already spelled out in full.
     use crate::vcs::Vcs;
+
+    #[test]
+    fn vcs_jj_point_and_contents_are_pinned() {
+        if !available() {
+            eprintln!("skipping: no working jj binary");
+            return;
+        }
+        let dir = konoma_test_support::unique_tmp("vcs_jj_point");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let jj = |rest: &[&str]| {
+            let out = std::process::Command::new("jj")
+                .current_dir(&root)
+                .env("JJ_CONFIG", "")
+                .env("JJ_USER", "fixture")
+                .env("JJ_EMAIL", "fixture@example.invalid")
+                .args(rest)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "jj fixture command failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.stdout
+        };
+        jj(&["git", "init", "--no-colocate", "."]);
+        let file = root.join("a [literal].txt");
+        std::fs::write(&file, b"parent\n").unwrap();
+        jj(&["commit", "-m", "parent"]);
+        std::fs::write(&file, b"before\n\0\xff").unwrap();
+        jj(&["status"]);
+        let point = crate::vcs::Jj.current_point(&root).unwrap();
+        let operations = jj(&[
+            "op",
+            "log",
+            "--no-graph",
+            "-T",
+            "id",
+            "--ignore-working-copy",
+        ]);
+        std::fs::write(&file, b"unsnapshotted\n").unwrap();
+        assert_eq!(
+            crate::vcs::Jj.current_point(&root).as_deref(),
+            Some(point.as_str())
+        );
+        assert_eq!(
+            crate::vcs::Jj.contents_at(&root, &point, &file).unwrap(),
+            b"before\n\0\xff"
+        );
+        assert_eq!(
+            jj(&[
+                "op",
+                "log",
+                "--no-graph",
+                "-T",
+                "id",
+                "--ignore-working-copy"
+            ]),
+            operations,
+            "capability reads must not snapshot"
+        );
+        jj(&["status"]);
+        assert_ne!(crate::vcs::Jj.current_point(&root).unwrap(), point);
+        assert_eq!(
+            crate::vcs::Jj.contents_at(&root, &point, &file).unwrap(),
+            b"before\n\0\xff"
+        );
+        assert!(crate::vcs::Jj
+            .contents_at(&root, &point, &root.join("missing.txt"))
+            .is_none());
+        assert!(crate::vcs::Jj
+            .contents_at(&root, &point, Path::new("/outside.txt"))
+            .is_none());
+        assert_eq!(crate::vcs::Jj.watch_dir(&root), Some(root.join(".jj")));
+    }
 
     /// The one invariant that keeps konoma from writing to a jj repository. If a call is ever built
     /// without going through `args`, this test is the thing that should have caught it.

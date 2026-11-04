@@ -315,13 +315,25 @@ Mermaid と画像は常に先頭です。
 jj 自体が 1.0 前・月次で破壊的変更がある。konoma はバージョンを決め打ちせず、起動時に一度
 `jj` を試して、答えられなければ git に落ちる。
 
-git に対応するものが無い設定だけを置く。jj リポジトリの扱いはそれ以外すべて `[external] vcs` と
+git に対応するものが無い設定だけを置く。jj リポジトリの扱いはそれ以外すべて `[project] vcs` と
 jj 自身が決める。**konoma は jj リポジトリを読むだけ**で、全呼び出しに `--ignore-working-copy` が付くため
 作業コピーをスナップショットせず、書き込み系のキーは提示しない。
 
 | キー | 既定 | 説明 |
 |---|---|---|
 | `tool` | `"lazyjj"` | ハブで `!` を押したときに起動する外部 jj ツール(`[git] tool` の jj 版)。未導入なら起動できなかった旨を flash する。 |
+
+## `[project]` — プロジェクトの版管理
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `vcs` | `"auto"` | `"auto"` は git が答えられる場所では Git、それ以外では `.jj` と `jj` バイナリがあれば Jj を使います。`"git"` は常に Git。`"jj"` は colocated でも Jj を優先し、Jj が利用できなければ Git に戻ります。未知の値は `auto` です。 |
+
+旧名 `[external] vcs` も読み込み、起動時に改名を知らせます。両方あれば `[project] vcs` が優先します。
+`[external] git = false` のとき、colocated repo は `vcs = "auto"` または `"jj"` なら Jj、
+`"git"` なら Git が無効のままです。ツリーの題は有効な Git のブランチ記号、または Jj の `@` を表示します。
+Agent Watch は両方で開始時点からの差分を表示します。Jj の読み取りは常に `--ignore-working-copy` を使い、
+内部保存形式には触れません。明示的な sync だけが確認後にスナップショットを書き込みます。
 
 ## `[external]` — 外部プロセスの on/off スイッチ
 
@@ -331,9 +343,8 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 
 | キー | 既定 | 説明 |
 |---|---|---|
-| `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`p`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。なお**この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになります**(初回使用時に一度だけ判定)。その場合 `p` は「ディレクトリが repo でない」ではなく「git が見つかりません」と知らせます。 |
+| `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は Git を無効にします(Jj は `[project] vcs` に従います)(読み取りは全て空/`None`、書き込みは全てエラー)。`p`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。なお**この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになります**(初回使用時に一度だけ判定)。その場合 `p` は「ディレクトリが repo でない」ではなく「git が見つかりません」と知らせます。 |
 | `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
-| `vcs` | `"auto"` | どのバージョン管理システムが答えるか。**jj 対応はプレビュー版**([git スイートのガイド](/ja/guides/git/))。`"auto"` は git が答えられる場所を git のままにするので、今まで動いていたリポジトリの見え方は変わらない。jj が答えるのは git のリポジトリが無い場所だけ(`jj git init --no-colocate` で作ったもの・`jj workspace`)。`"git"` は常に git。`"jj"` は `.jj` があれば colocated でも jj——実際に jj で作業しているならこれ。`jj` バイナリが無い環境では git に落ちる。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
 | `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、これらのコンテナの H.264/HEVC のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
 | `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |

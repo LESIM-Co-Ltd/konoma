@@ -307,7 +307,10 @@ fn plugin_language_walk(language: &str) {
         &s.fake().join("fake-konoma"),
         &format!("#!/bin/sh\nunset KONOMA_PLUGIN_SWITCHED_FROM KONOMA_PLUGIN_SWITCHED_PATH\nexec '{}' --exact invalid_host_verification_child --nocapture\n", invalid.display()),
     );
-    let output = s.run_env(&["plugin", "install", "konoma-foo", "-y"], &[("KONOMA_TEST_INVALID_HOST_CHILD", "1")]);
+    let output = s.run_env(
+        &["plugin", "install", "konoma-foo", "-y"],
+        &[("KONOMA_TEST_INVALID_HOST_CHILD", "1")],
+    );
     assert_eq!(code(&output), 1);
     assert!(
         !s.program().exists(),
@@ -376,14 +379,20 @@ fn real_invalid_host() -> PathBuf {
 
 #[test]
 fn invalid_host_verification_child() {
-    if std::env::var_os("KONOMA_TEST_INVALID_HOST_CHILD").as_deref() != Some(std::ffi::OsStr::new("1")) {
+    if std::env::var_os("KONOMA_TEST_INVALID_HOST_CHILD").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
         return;
     }
     use konoma_plugin::prelude::*;
     struct Invalid;
     impl Plugin for Invalid {
-        fn manifest(&self) -> Manifest { Manifest::new("Bad ID", "0.1.0") }
-        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> { Err(Failure::unsupported("fixture")) }
+        fn manifest(&self) -> Manifest {
+            Manifest::new("Bad ID", "0.1.0")
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Err(Failure::unsupported("fixture"))
+        }
     }
     let error = konoma::Host::builder().plugin(Invalid).run().unwrap_err();
     eprintln!("{error:#}");
@@ -398,14 +407,28 @@ fn verification_helper_uses_the_cargo_built_binary_without_runtime_compilers() {
         return;
     }
     let sandbox = language_sandbox("en");
-    let output = sandbox.isolated_command(&std::env::current_exe().unwrap(), &["--exact", "verification_helper_uses_the_cargo_built_binary_without_runtime_compilers", "--nocapture"])
+    let output = sandbox
+        .isolated_command(
+            &std::env::current_exe().unwrap(),
+            &[
+                "--exact",
+                "verification_helper_uses_the_cargo_built_binary_without_runtime_compilers",
+                "--nocapture",
+            ],
+        )
         .env(MARKER, "1")
         .env("CARGO_HOME", sandbox.root.join("cargo-home"))
         .env("RUSTUP_HOME", sandbox.root.join("rustup-home"))
         .env("RUSTC_WRAPPER", "/nonexistent-konoma-wrapper")
         .env("RUSTC", "/nonexistent-konoma-rustc")
-        .supervised_output().unwrap();
-    assert!(output.status.success(), "{}\n{}", out(&output), err(&output));
+        .supervised_output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        out(&output),
+        err(&output)
+    );
 }
 
 #[path = "support/plugin_english.rs"]
@@ -452,12 +475,15 @@ fn updating_only_a_standard_plugin_lists_its_resolved_version() {
 #[test]
 fn usage_errors_precede_missing_environment_directories() {
     let sandbox = Sandbox::new("usage-without-home");
-    let output = sandbox.command(&["plugin", "unknown"])
+    let output = sandbox
+        .command(&["plugin", "unknown"])
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
-        .env("LC_ALL", "C").env("LANG", "C")
-        .supervised_output().unwrap();
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .supervised_output()
+        .unwrap();
     assert_eq!(code(&output), 2, "{}", err(&output));
     assert!(err(&output).contains("unknown"), "{}", err(&output));
     assert!(err(&output).contains("Usage:"), "{}", err(&output));
@@ -510,7 +536,11 @@ impl Sandbox {
         write_exe(&s.fake().join("cargo"), FAKE_CARGO);
         write_exe(&s.fake().join("fake-konoma"), FAKE_KONOMA);
         std::fs::create_dir_all(s.config().join("konoma")).unwrap();
-        std::fs::write(s.config().join("konoma/config.toml"), "[ui]\nlang = 'en'\n[external]\nupdate_check = false\n").unwrap();
+        std::fs::write(
+            s.config().join("konoma/config.toml"),
+            "[ui]\nlang = 'en'\n[external]\nupdate_check = false\n",
+        )
+        .unwrap();
         std::fs::write(
             s.fake().join("lock-initial"),
             format!(
@@ -1911,7 +1941,10 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     let s = Sandbox::new("plugin-cli-int-verify");
     assert_eq!(code(&s.run(&["plugin", "install", "konoma-foo", "-y"])), 0);
     let paths = [s.program(), s.record(), s.plugins_toml(), s.lock()];
-    let before: Vec<_> = paths.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    let before: Vec<_> = paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
     let mark = s.root.join("verify-started");
     let mut c = s.command(&["plugin", "install", "konoma-bar", "-y"]);
     c.env("FAKE_VERIFY_MARK", &mark)
@@ -1949,7 +1982,12 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     assert!(!o.1.contains("did not finish"), "{}", o.1);
     wait_until(10, "the new build to end", || !alive(verifier));
     for (path, previous) in paths.iter().zip(before) {
-        assert_eq!(std::fs::read(path).unwrap(), previous, "changed {}", path.display());
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            previous,
+            "changed {}",
+            path.display()
+        );
     }
     let previous = s.command(&["--version"]).supervised_output().unwrap();
     assert!(previous.status.success(), "{}", err(&previous));
@@ -2258,7 +2296,11 @@ pub fn plugins() -> Vec<Box<dyn Plugin>> {
         format!("[konoma]\npath = \"{}\"\n", root.display()),
     )
     .unwrap();
-    std::fs::write(cfg.join("konoma/config.toml"), "[external]\nupdate_check = false\n").unwrap();
+    std::fs::write(
+        cfg.join("konoma/config.toml"),
+        "[external]\nupdate_check = false\n",
+    )
+    .unwrap();
     // Offline, a fresh resolution would trip over yanked versions: start from this tree's lock
     // (`install` keeps the saved lock, as it does for the user).
     std::fs::create_dir_all(data.join("konoma")).unwrap();

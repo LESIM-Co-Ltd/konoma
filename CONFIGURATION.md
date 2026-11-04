@@ -27,6 +27,7 @@ Contents:
 - [`[plugins.<id>]` — plugin switches and settings](#pluginsid--plugin-switches-and-settings)
 - [`[editor]` — external editor](#editor--external-editor)
 - [`[git]` — git integration](#git--git-integration)
+- [`[project]` — project version control](#project--project-version-control)
 - [`[external]` — external process on/off switches](#external--external-process-onoff-switches)
 - [`[keys]` — keybindings](#keys--keybindings)
 - [Data files](#data-files)
@@ -335,11 +336,25 @@ every call carries `--ignore-working-copy`, so it never snapshots your working c
 would write are hidden rather than offered. The one exception is `s` on a jj changes screen, guarded by
 `[ui] confirm_jj_sync` above.
 
-Only what has no git counterpart lives here; which backend answers is `[external] vcs` below.
+Only what has no git counterpart lives here; which backend answers is `[project] vcs` below.
 
 | Key | Default | Description |
 |---|---|---|
 | `tool` | `"lazyjj"` | External jj tool launched with `!` inside the hub, the way `[git] tool` is for git. Command + args. A missing binary flashes what could not be launched. |
+
+## `[project]` — project version control
+
+| Key | Default | Description |
+|---|---|---|
+| `vcs` | `"auto"` | `"auto"` keeps Git wherever Git can answer; otherwise Jj answers when `.jj` and a working `jj` binary exist. `"git"` always selects Git. `"jj"` prefers Jj even in a colocated repository, falling back to Git if Jj is unavailable. Unknown values mean `auto`. Jj support is a preview. |
+
+The old name `[external] vcs` is still read and reported as renamed at startup. If both are set,
+`[project] vcs` wins, including an explicit `"auto"`.
+With `[external] git = false`, a colocated repository uses Jj only when `vcs` allows it (`"auto"`
+or `"jj"`); `"git"` leaves Git disabled. The tree title identifies the active backend with Git's
+branch marker or Jj's `@`. Agent Watch shows changes since follow-start on both backends.
+Jj reads always use `--ignore-working-copy` and never inspect its internal storage format.
+Only an explicitly confirmed sync writes a snapshot.
 
 ## `[external]` — external process on/off switches
 
@@ -348,9 +363,8 @@ so an absent `[external]` section (or an absent field within it) changes nothing
 
 | Key | Default | Description |
 |---|---|---|
-| `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `p` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `p` then says git is not installed rather than blaming the directory. |
+| `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` disables Git (Jj remains available according to `[project] vcs`) — every read returns empty/`None`, every write returns an error. `p` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `p` then says git is not installed rather than blaming the directory. |
 | `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
-| `vcs` | `"auto"` | Which version-control system answers for a directory. `"auto"` keeps git wherever git can answer, so a repository that already worked shows exactly what it showed before; jj answers only where there is no git repository to ask (one created with `jj git init --no-colocate`, or a `jj workspace`). `"git"` is always git, even where a `.jj` sits beside the `.git`. `"jj"` uses jj wherever a `.jj` exists, colocated or not — ask for this when jj is the system you actually work in. Anything unrecognised means `auto`. With no `jj` binary on the machine, konoma falls back to git. See `[jj]` above. |
 | `pdf` | `true` | The **external fallback** rasterizer — macOS's bundled `qlmanage`/`sips`, tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on page 1 of a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. **On every other platform this flag is effectively a no-op**: there is no external PDF tool to launch. |
 | `video` | `true` | The **external fallback** thumbnail extractors (`ffmpegthumbnailer`/`ffmpeg`), tried only when the built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e. anything that isn't H.264 or HEVC in `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`. `false` never launches them, but H.264 and HEVC thumbnails from those containers keep working. Same relationship `pdf` has with `hayro` above. |
 | `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown. Done in-process via `ureq` (rustls), not an external tool. |

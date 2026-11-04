@@ -244,9 +244,11 @@ pub fn stale_notice(own: &str, from: Option<&OsStr>, lang: crate::i18n::Lang) ->
     if !is_stale(own, from) {
         return None;
     }
-    Some(
-        crate::i18n::tr_format(lang, crate::i18n::Msg::PluginBuildStale, &[("embedded", own), ("base", from)]),
-    )
+    Some(crate::i18n::tr_format(
+        lang,
+        crate::i18n::Msg::PluginBuildStale,
+        &[("embedded", own), ("base", from)],
+    ))
 }
 
 /// The `--version` text: `konoma 0.31.2`, or `konoma 0.31.2 (plugins: konoma-foo, konoma-bar)`

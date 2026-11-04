@@ -62,13 +62,18 @@ pub fn assert_japanese_plugin_prose(label: &str, output: &str) {
                     "id" | "git" | "konoma" | "HOME" | "PATH" | "CARGO" | "JSON" | "TOML" | "UTC"
                 )
                 || ((word.contains('-') || word.contains('_'))
-                    && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
                 || word.chars().all(|c| c.is_ascii_digit() || c == '.')
             {
                 continue;
             }
             let mut found = false;
-            for _word in token.split(|c: char| !c.is_ascii_alphabetic()).filter(|s| !s.is_empty()) {
+            for _word in token
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .filter(|s| !s.is_empty())
+            {
                 found = true;
                 run += 1;
                 words += 1;
