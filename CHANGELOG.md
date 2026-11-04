@@ -194,6 +194,8 @@ All notable changes to konoma are documented in this file. The format is based o
   plugin factories, so a factory's stdout cannot corrupt their replies. Chained replacements resolve in either call order.
 - **Relative Cargo paths work for plugin installation and updates.** A relative `CARGO` value or `PATH` entry is
   resolved before Cargo runs in the generated build directory.
+- **Plugin builds stop when konoma is killed.** A separate watcher stops Cargo and its process group even after
+  SIGKILL or an out-of-memory kill, on both macOS and Linux. Metadata queries and new-build checks use the same supervision.
 - **External preview commands leave no background helpers.** A command that captures output stops its entire process
   group when it finishes, including successful exits, so helpers do not remain between previews. It also stops when
   either stdout or stderr exceeds the output limit. Running captures are also stopped when konoma exits, including

@@ -11,6 +11,7 @@ mod lock;
 mod project;
 pub(crate) mod switch;
 pub(crate) mod update_check;
+pub(crate) mod watcher;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};

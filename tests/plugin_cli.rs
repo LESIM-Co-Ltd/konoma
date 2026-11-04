@@ -40,10 +40,6 @@ build)
   cp Cargo.toml "$FAKE_DIR/last-Cargo.toml"
   cp src/main.rs "$FAKE_DIR/last-main.rs"
   if [ -n "$FAKE_GRANDCHILD" ]; then
-    # like a build tool that passes the signal on to the job it started
-    # (sent to the job's pid, not the group: `kill -- -$$` fails in dash)
-    gc=
-    if [ -n "$FAKE_TERM_KILLS_GROUP" ]; then trap 'trap "" TERM; [ -n "$gc" ] && kill -TERM "$gc"; exit 1' TERM; fi
     # a process of its own, as rustc is to cargo; its pid goes to the file
     if [ -n "$FAKE_GC_IGNORE_TERM" ]; then (trap '' TERM; exec sleep 300) & else sleep 300 & fi
     gc=$!
@@ -1565,32 +1561,116 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     assert!(s.leftovers().is_empty(), "{:?}", s.leftovers());
 }
 
-/// Linux only (it needs PR_SET_PDEATHSIG): when konoma is killed with SIGKILL, cargo is told to
-/// stop. The fake cargo passes the SIGTERM on to its group, as a build tool does for its jobs.
-/// Not run on macOS, where nothing like this exists.
-#[cfg(target_os = "linux")]
 #[test]
 fn killing_konoma_with_sigkill_still_ends_the_build() {
-    let s = Sandbox::new("plugin-cli-pdeathsig");
-    let mark = s.root.join("cargo-started");
-    let pidfile = s.root.join("grandchild.pid");
-    let mut c = s.command(&["plugin", "install", "konoma-foo", "-y"]);
-    c.env("FAKE_MARK", &mark)
-        .env("FAKE_GRANDCHILD", &pidfile)
-        .env("FAKE_TERM_KILLS_GROUP", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = GuardedChild::new(c.spawn().unwrap());
-    wait_until(30, "cargo to start its process", || mark.exists());
-    let gc: u32 = std::fs::read_to_string(&pidfile)
+    killed_parent_stops_phase("build");
+}
+
+#[test]
+fn killing_konoma_with_sigkill_still_ends_metadata() {
+    killed_parent_stops_phase("metadata");
+}
+
+#[test]
+fn killing_konoma_with_sigkill_still_ends_verification() {
+    killed_parent_stops_phase("verify");
+}
+
+mod program_fixture {
+    // This fixture lives in this crate; include only the process lifetime helper, not app state.
+    include!("support/program_fixture.rs");
+}
+
+fn killed_parent_stops_phase(phase: &str) {
+    use std::io::Read;
+    use std::os::{
+        fd::AsRawFd,
+        unix::{net::UnixStream, process::CommandExt},
+    };
+    let s = Sandbox::new("plugin-cli-parent-killed");
+    let make = |name: &str, body: &str| {
+        let dir = s.root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        program_fixture::ProgramFixture::new(&dir, body)
+    };
+    let mut normal = make("normal", "printf '%s\\n' \"$$\" >&3\nexec sleep 300");
+    let mut stubborn = make(
+        "stubborn",
+        "trap '' TERM\nprintf '%s\\n' \"$$\" >&3\nexec sleep 300",
+    );
+    let mut cargo = make(
+        "leader",
+        &format!(
+            "'{}' &\n'{}' &\nprintf '%s\\n' \"$PPID\" > '{}'\nprintf '%s\\n' \"$$\" >&3\nwait",
+            normal.program.display(),
+            stubborn.program.display(),
+            s.root.join("watcher.pid").display()
+        ),
+    );
+    let original = std::fs::read_to_string(s.fake().join("cargo")).unwrap();
+    write_exe(
+        &s.fake().join("cargo"),
+        &original.replacen(
+            "echo \"$*\"",
+            &format!(
+                "if [ \"$1\" = '{phase}' ]; then exec '{}'; fi\necho \"$*\"",
+                cargo.program.display()
+            ),
+            1,
+        ),
+    );
+    if phase == "verify" {
+        write_exe(
+            &s.fake().join("fake-konoma"),
+            &format!("#!/bin/sh\nexec '{}'\n", cargo.program.display()),
+        );
+    }
+    // All descendants, including the watcher, keep this writer. EOF proves their lifetimes
+    // have ended without ps, zombie polling, or signalling a pid after it may be reaped.
+    let (mut lifetime, sender) = UnixStream::pair().unwrap();
+    lifetime
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let fd = sender.as_raw_fd();
+    let mut command = s.command(&["plugin", "install", "konoma-foo", "-y"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut konoma = GuardedChild::new(command.spawn().unwrap());
+    drop(sender);
+    cargo.ready();
+    normal.ready();
+    stubborn.ready();
+    let watcher: u32 = std::fs::read_to_string(s.root.join("watcher.pid"))
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    assert!(alive(gc));
-    signal(child.id(), "-KILL");
-    let _ = wait_exit(&mut child, 20, "konoma to die");
-    wait_until(10, "the grandchild to end", || !alive(gc));
+    assert_ne!(watcher, konoma.id(), "the job must have a separate watcher");
+    unsafe {
+        assert_eq!(libc::kill(konoma.id() as i32, libc::SIGKILL), 0);
+    }
+    wait_exit(&mut konoma, 10, "killed konoma");
+    assert!(
+        normal.gone_with_timeout(Duration::from_secs(20)),
+        "normal grandchild survived {phase}"
+    );
+    assert!(
+        stubborn.gone_with_timeout(Duration::from_secs(20)),
+        "TERM-ignoring grandchild survived {phase}"
+    );
+    assert!(cargo.gone(), "direct child survived {phase}");
+    assert_eq!(
+        lifetime.read(&mut [0]).unwrap(),
+        0,
+        "watcher survived {phase}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

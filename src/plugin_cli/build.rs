@@ -4,14 +4,18 @@
 //! temporary one by default), restore the saved `Cargo.lock`, optionally `cargo update`, then
 //! `cargo build --release`. Only when that succeeds *and* the new program starts (`--plugins`: the
 //! id checks of `Host::run`) is anything replaced: the program, its record, the lock and, for
-//! install and remove, `plugins.toml`. Whatever happens -- success, failure, Ctrl-C -- the work
-//! directory is removed, unless `[plugins] keep_build_cache = true` asks to keep it.
+//! install and remove, `plugins.toml`. On success, failure or interruption the work directory is
+//! removed, unless `[plugins] keep_build_cache = true` asks to keep it. A separate re-exec watcher
+//! stops every job's process group even if konoma is killed without running cleanup; `plugin clean`
+//! removes any work directory left by such a kill.
 
 use std::ffi::{OsStr, OsString};
 #[cfg(test)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+#[cfg(test)]
+use std::process::{Command, Output};
+use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -182,7 +186,7 @@ pub(super) fn catch_interrupts(interrupted: &Arc<AtomicBool>) {
 }
 
 /// How long the processes of a stopped child get to end after SIGTERM before SIGKILL.
-const STOP_GRACE: Duration = Duration::from_secs(3);
+pub(super) const STOP_GRACE: Duration = Duration::from_secs(3);
 
 static METADATA_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -226,86 +230,12 @@ impl Drop for MetadataSignals {
     }
 }
 
-/// Start `cmd` as the leader of a process group of its own, so that everything it starts (cargo
-/// runs rustc and the build scripts) can be stopped together. The price: the terminal's Ctrl-C no
-/// longer reaches it, so [`wait_for`] passes on the signals this process catches.
-///
-/// On Linux the child also asks to get SIGTERM when this process dies without being able to
-/// stop it (SIGKILL, the OOM killer). macOS has no such facility, so there nothing is done: a
-/// killed konoma leaves its build running until it ends.
+/// Raw groups are used only by supervision fixtures. Runtime jobs use the same re-exec watcher
+/// on macOS and Linux, so the entire group is stopped even when konoma cannot run cleanup.
+#[cfg(test)]
 fn in_own_group(cmd: &mut Command) -> &mut Command {
     use std::os::unix::process::CommandExt;
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: the closure runs between fork and exec and calls only async-signal-safe
-        // functions (prctl, sigaction, sigprocmask, getppid, _exit); no allocation or locks.
-        let parent = std::process::id() as libc::pid_t;
-        unsafe {
-            cmd.pre_exec(move || {
-                reset_parent_death_signal()?;
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // The parent may have died before the request took effect (it then never
-                // fires): the child has been given to another parent by now.
-                ensure_parent(parent);
-                Ok(())
-            });
-        }
-    }
     cmd.process_group(0)
-}
-
-#[cfg(any(target_os = "linux", test))]
-unsafe fn ensure_parent(parent: libc::pid_t) {
-    if libc::getppid() != parent {
-        // A handler inherited across fork could catch raise before exec resets dispositions.
-        libc::_exit(128 + libc::SIGTERM);
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
-unsafe fn reset_parent_death_signal() -> std::io::Result<()> {
-    // Exec resets caught handlers, but preserves SIG_IGN and the blocked signal mask.
-    let mut action: libc::sigaction = std::mem::zeroed();
-    action.sa_sigaction = libc::SIG_DFL;
-    libc::sigemptyset(&mut action.sa_mask);
-    if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut term = std::mem::zeroed();
-    libc::sigemptyset(&mut term);
-    libc::sigaddset(&mut term, libc::SIGTERM);
-    if libc::sigprocmask(libc::SIG_UNBLOCK, &term, std::ptr::null_mut()) == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn stop_group(child: &mut std::process::Child) -> std::io::Result<ExitStatus> {
-    konoma_plugin::proc::process::stop_group(child, STOP_GRACE)
-}
-
-/// Wait for a child started with [`in_own_group`]. On interruption or timeout the whole process
-/// group is stopped, not just the child.
-fn wait_for(
-    child: &mut std::process::Child,
-    interrupted: &AtomicBool,
-    timeout: Option<Duration>,
-) -> Result<ExitStatus> {
-    let start = Instant::now();
-    loop {
-        if let Some(st) = konoma_plugin::proc::process::poll_exit(child)? {
-            return Ok(st);
-        }
-        if interrupted.load(Ordering::SeqCst) {
-            return Err(Interrupted.into());
-        }
-        if timeout.is_some_and(|t| start.elapsed() > t) {
-            bail!("timed out");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// Run cargo in `dir` with its output going to the terminal.
@@ -316,17 +246,14 @@ fn run_cargo(
     target: &Path,
     interrupted: &AtomicBool,
 ) -> Result<ExitStatus> {
-    let child = in_own_group(&mut Command::new(cargo))
+    let mut launch = super::watcher::Launch::new(cargo)?;
+    launch
+        .command()
         .args(args)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target)
-        .stdin(Stdio::null())
-        .spawn()
-        .with_context(|| format!("cannot run {}", cargo.display()))?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let result = wait_for(&mut child, interrupted, None);
-    stop_group(&mut child)?;
-    result
+        .stdin(Stdio::null());
+    launch.spawn()?.wait(interrupted)
 }
 
 /// Run the new program with `--plugins`; an error carries what it printed.
@@ -341,28 +268,25 @@ fn verify_with_timeout(
     timeout: Duration,
 ) -> Result<()> {
     let started = Instant::now();
-    let child = in_own_group(&mut Command::new(bin))
+    let mut launch = super::watcher::Launch::new(bin)?;
+    launch
+        .command()
         .arg("--plugins")
         // So the new program does not hand over to the one installed now.
         .env(SWITCHED_ENV, own)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("cannot start the new build ({})", bin.display()))?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let output = collect_output(
-        &mut child,
-        interrupted,
-        Some(timeout.saturating_sub(started.elapsed())),
-    )
-    .map_err(|e| {
-        if e.is::<Interrupted>() {
-            e
-        } else {
-            e.context("the new build did not finish `--plugins`")
-        }
-    })?;
+        .stderr(Stdio::piped());
+    let mut child = launch.spawn()?;
+    let output = child
+        .output(interrupted, Some(timeout.saturating_sub(started.elapsed())))
+        .map_err(|e| {
+            if e.is::<Interrupted>() {
+                e
+            } else {
+                e.context("the new build did not finish `--plugins`")
+            }
+        })?;
     if !output.status.success() {
         let out = String::from_utf8_lossy(&output.stdout);
         let err = String::from_utf8_lossy(&output.stderr);
@@ -375,6 +299,7 @@ fn verify_with_timeout(
     Ok(())
 }
 
+#[cfg(test)]
 fn collect_output(
     child: &mut std::process::Child,
     interrupted: &AtomicBool,
@@ -425,17 +350,16 @@ pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<St
     std::fs::write(work.path.join("Cargo.toml"), project.cargo_toml)?;
     std::fs::write(work.path.join("src/main.rs"), project.main_rs)?;
     restore_lock(env, &work.path.join("Cargo.lock"))?;
-    let mut command = Command::new(cargo);
-    let child = in_own_group(&mut command)
+    let mut launch = super::watcher::Launch::new(cargo)?;
+    launch
+        .command()
         .args(["metadata", "--format-version", "1"])
         .current_dir(&work.path)
         .env("CARGO_TARGET_DIR", work.path.join("target"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let output = collect_output(&mut child, &METADATA_INTERRUPTED, None)?;
+        .stderr(Stdio::piped());
+    let output = launch.spawn()?.output(&METADATA_INTERRUPTED, None)?;
     if !output.status.success() {
         bail!(
             "{}: {}",
@@ -744,48 +668,6 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with("build-")));
-    }
-    #[test]
-    fn parent_death_term_is_default_and_unblocked_after_exec() {
-        use crate::test_support::command::CommandOutput;
-        use std::os::unix::process::{CommandExt, ExitStatusExt};
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "kill -TERM $$; printf survived"]);
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                let mut blocked = std::mem::zeroed();
-                libc::sigemptyset(&mut blocked);
-                libc::sigaddset(&mut blocked, libc::SIGTERM);
-                libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
-                super::reset_parent_death_signal()
-            });
-        }
-        let output = command.supervised_output().unwrap();
-        assert_eq!(output.status.signal(), Some(libc::SIGTERM));
-        assert!(output.stdout.is_empty());
-    }
-    #[test]
-    fn a_missing_parent_cannot_be_ignored_before_exec() {
-        use crate::test_support::command::CommandOutput;
-        use std::os::unix::process::CommandExt;
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "printf executed"]);
-        // Only async-signal-safe calls run in the child. A controlled mismatch avoids a race
-        // against the real parent's death, and SIG_IGN survives exec unless we reset it.
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                super::ensure_parent(0);
-                Ok(())
-            });
-        }
-        let output = command.supervised_output().unwrap();
-        assert!(
-            !output.status.success(),
-            "a missing parent must end the child before exec"
-        );
-        assert!(output.stdout.is_empty());
     }
     #[test]
     fn partially_created_work_directory_is_removed() {
