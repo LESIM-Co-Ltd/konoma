@@ -140,14 +140,22 @@ pub fn run(options: &Options, limits: Limits) -> Report {
     );
     if let Some(m) = &manifest {
         let issues = testing::check_manifest(&Declarations(m.clone()));
-        let result = if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("manifest issues: {issues:?}"))
-        };
+        let result = konoma_plugin::registry::Registry::new()
+            .register(
+                std::sync::Arc::new(Declarations(m.clone())),
+                konoma_plugin::registry::PluginOrigin::User,
+            )
+            .map_err(|error| format!("{error:?}"))
+            .and_then(|()| {
+                if issues.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!("manifest issues: {issues:?}"))
+                }
+            });
         report.record(
             "manifest",
-            "no manifest issues (keys and shows)",
+            "host accepts the manifest, with no key or shows issues",
             result,
             handshake_tail,
         );
@@ -303,11 +311,12 @@ fn file_checks(report: &mut Report, options: &Options, limits: &Limits, file: &P
         |c| {
             let manifest = c.handshake(limits, options.plugin.as_deref())?;
             let mut state = c.open(file, limits)?;
-            // A successful view may change enabled state. A failed view leaves the open state usable.
-            if let Ok(Answer::Ok(Reply::Viewed { state: next, .. })) =
-                c.call(&Connection::view(1, 2), 2, limits.open_view)
-            {
-                state = next;
+            // Only a valid error reply leaves the open state usable. Transport/protocol failures
+            // cannot establish what state the peer now has.
+            match c.call(&Connection::view(1, 2), 2, limits.open_view)? {
+                Answer::Ok(Reply::Viewed { state: next, .. }) => state = next,
+                Answer::Err(_) => {}
+                other => return Err(format!("{other:?}")),
             }
             let hints = testing::check_hints(&Declarations(manifest), &Snapshot(state));
             if hints.is_clean() {

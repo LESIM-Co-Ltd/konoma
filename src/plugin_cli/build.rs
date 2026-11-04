@@ -88,15 +88,19 @@ impl Env {
 
 /// The cargo to run: `$CARGO` when set (it must exist), else `cargo` found in `$PATH`.
 pub fn find_cargo(cargo_env: Option<&OsStr>, path_env: Option<&OsStr>) -> Option<PathBuf> {
-    if let Some(c) = cargo_env.filter(|c| !c.is_empty()) {
+    let candidate = if let Some(c) = cargo_env.filter(|c| !c.is_empty()) {
         let p = PathBuf::from(c);
         // A bare name is looked up in PATH like any command.
         if p.components().count() > 1 || p.is_absolute() {
-            return p.is_file().then_some(p);
+            p.is_file().then_some(p)
+        } else {
+            find_in_path(c, path_env)
         }
-        return find_in_path(c, path_env);
-    }
-    find_in_path(OsStr::new("cargo"), path_env)
+    } else {
+        find_in_path(OsStr::new("cargo"), path_env)
+    }?;
+    // Cargo runs in the generated project, not in the directory where it was looked up.
+    std::path::absolute(candidate).ok()
 }
 
 fn find_in_path(name: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {

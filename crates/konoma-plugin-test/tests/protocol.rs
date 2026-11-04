@@ -19,7 +19,7 @@ fn failure_limits(mode: &str) -> Limits {
     let short = Duration::from_millis(250);
     match mode {
         "handshake" => limits.start_timeout = short,
-        "open" | "view-timeout" => limits.open_view = short,
+        "open" | "view-timeout" | "hints-timeout" => limits.open_view = short,
         "act-timeout" => limits.act_key = short,
         "cancel" => limits.cancel_grace = short,
         "shutdown" | "malformed" | "oversized" => limits.shutdown_grace = short,
@@ -86,6 +86,15 @@ fn manifest() {
 fn manifest_keys() {
     failed("manifest-keys", "manifest", "Reserved");
 }
+fn manifest_id() {
+    failed("manifest-id", "manifest", "the plugin id");
+}
+fn manifest_declaration() {
+    failed("manifest-declaration", "manifest", "an action id");
+}
+fn manifest_glob() {
+    failed("manifest-glob", "manifest", "InvalidGlob");
+}
 fn refusal() {
     failed("refusal", "version refusal", "Ack");
 }
@@ -114,6 +123,30 @@ fn view_timeout() {
 }
 fn hints() {
     failed("hints", "hints", "unlabelled");
+}
+fn hints_eof() {
+    failed("hints-eof", "hints", "EOF");
+}
+fn hints_timeout() {
+    failed("hints-timeout", "hints", "deadline");
+}
+fn hints_frame() {
+    failed("hints-frame", "hints", "malformed frame");
+}
+fn hints_wrong_reply() {
+    failed("hints-wrong-reply", "hints", "Opened");
+}
+fn hints_wrong_rid() {
+    failed("hints-wrong-rid", "hints", "answer rid");
+}
+fn hints_view_error() {
+    let report = run(&options("hints-view-error"), Limits::default());
+    let check = report
+        .checks
+        .iter()
+        .find(|c| c.name.starts_with("hints "))
+        .unwrap();
+    assert_eq!(check.status, Status::Pass, "{report:?}");
 }
 fn act() {
     failed("act", "act", "EOF");
@@ -229,28 +262,23 @@ fn multi_plugin() {
     }
 }
 fn clock() {
-    // Build the actual demo program offline, using the caller's target directory unchanged.
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--offline",
-            "-p",
-            "konoma-demo-clock",
-            "--bin",
-            "konoma-demo-clock",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .supervised_status()
-        .unwrap();
-    assert!(status.success());
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = std::path::absolute(
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| manifest.parent().unwrap().parent().unwrap().join("target")),
+    )
+    .unwrap();
+    let program = support::clock_build::build(
+        std::ffi::OsStr::new(env!("CARGO")),
+        manifest,
+        &std::env::current_exe().unwrap(),
+        &target,
+        |command| command.supervised_status(),
+    )
+    .unwrap();
     let mut o = options("good");
-    o.program = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("konoma-demo-clock");
+    o.program = program;
     o.args.clear();
     all_pass(run(&o, Limits::default()));
     let output = Command::new(env!("CARGO_BIN_EXE_konoma-plugin-test"))
@@ -440,6 +468,9 @@ fn main() -> ExitCode {
         ("handshake_manifest", handshake_manifest),
         ("manifest", manifest),
         ("manifest_keys", manifest_keys),
+        ("manifest_id", manifest_id),
+        ("manifest_declaration", manifest_declaration),
+        ("manifest_glob", manifest_glob),
         ("refusal", refusal),
         ("refusal_empty", refusal_empty),
         ("refusal_crash", refusal_crash),
@@ -447,6 +478,12 @@ fn main() -> ExitCode {
         ("view", view),
         ("view_timeout", view_timeout),
         ("hints", hints),
+        ("hints_eof", hints_eof),
+        ("hints_timeout", hints_timeout),
+        ("hints_frame", hints_frame),
+        ("hints_wrong_reply", hints_wrong_reply),
+        ("hints_wrong_rid", hints_wrong_rid),
+        ("hints_view_error", hints_view_error),
         ("act", act),
         ("key", key),
         ("act_exit_after_reply", act_exit_after_reply),

@@ -188,6 +188,12 @@ All notable changes to konoma are documented in this file. The format is based o
   keep the old effect for one kind, switch the standard plugin off with `[plugins.<id>] enabled = false`.
   `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
   by extension.
+- **Plugin checks follow the host's manifest rules.** The checker rejects invalid ids, declarations and globs,
+  and reports a failed hints check when the view connection breaks or sends an unexpected reply.
+- **Linked plugins keep SVG rendering independent of their startup code.** Internal drawing processes start before
+  plugin factories, so a factory's stdout cannot corrupt their replies. Chained replacements resolve in either call order.
+- **Relative Cargo paths work for plugin installation and updates.** A relative `CARGO` value or `PATH` entry is
+  resolved before Cargo runs in the generated build directory.
 - **External preview commands leave no background helpers.** A command that captures output stops its entire process
   group when it finishes, including successful exits, so helpers do not remain between previews. It also stops when
   either stdout or stderr exceeds the output limit. Running captures are also stopped when konoma exits, including

@@ -28,6 +28,20 @@ pub fn is_plugin_command(args: &[String]) -> bool {
     args.get(1).is_some_and(|a| a == "plugin")
 }
 
+#[cfg(test)]
+pub(crate) fn generated_main_for_startup_test() -> String {
+    let mut list = PluginList::default();
+    list.plugins.insert(
+        "noisy".into(),
+        Source::Crates {
+            version: "0.1".into(),
+        },
+    );
+    project::generate(&list, env!("CARGO_PKG_VERSION"), None)
+        .unwrap()
+        .main_rs
+}
+
 /// A parsed `konoma plugin ...` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {

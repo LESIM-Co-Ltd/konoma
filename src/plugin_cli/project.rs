@@ -230,6 +230,220 @@ pub fn locked_versions(lock_text: &str) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    mod environment {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/environment.rs"
+        ));
+    }
+
+    #[test]
+    fn generated_main_dispatches_svg_before_noisy_plugin_factories() {
+        use crate::test_support::command::CommandOutput;
+        use std::io::Write;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+        let env = environment::Environment::new("noisy-generated-main");
+        // Reuse the offline workspace build and its exact library artifacts. The linked binary
+        // lives beside those artifacts; only its small source and isolated app state use TmpDir.
+        let build = Command::new(env!("CARGO"))
+            .args([
+                "build",
+                "--offline",
+                "-p",
+                "konoma",
+                "--lib",
+                "--message-format=json",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .supervised_output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let artifact = |name: &str| {
+            String::from_utf8_lossy(&build.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|message| {
+                    message["reason"] == "compiler-artifact" && message["target"]["name"] == name
+                })
+                .flat_map(|message| message["filenames"].as_array().unwrap().clone())
+                .filter_map(|filename| filename.as_str().map(std::path::PathBuf::from))
+                .find(|filename| filename.extension().is_some_and(|ext| ext == "rlib"))
+                .unwrap()
+        };
+        let konoma = artifact("konoma");
+        let sdk = artifact("konoma_plugin");
+        let deps = sdk.parent().unwrap();
+        struct Binary(std::path::PathBuf);
+        impl Drop for Binary {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let binary = Binary(deps.join(env.root.file_name().unwrap()));
+        let mut plugins = super::PluginList::default();
+        plugins.plugins.insert(
+            "noisy".into(),
+            super::Source::Crates {
+                version: "0.1".into(),
+            },
+        );
+        let mut source = super::generate(&plugins, env!("CARGO_PKG_VERSION"), None)
+            .unwrap()
+            .main_rs;
+        source.push_str(
+            r#"
+mod noisy {
+    use konoma_plugin::prelude::*;
+    struct Noisy;
+    impl Plugin for Noisy {
+        fn manifest(&self) -> Manifest {
+            println!("manifest noise");
+            Manifest::new("noisy", "0.1.0")
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Err(Failure::unsupported("fixture"))
+        }
+    }
+    pub fn plugins() -> Vec<Box<dyn Plugin>> {
+        println!("factory noise");
+        vec![Box::new(Noisy)]
+    }
+}
+"#,
+        );
+        let path = env.root.join("main.rs");
+        std::fs::write(&path, source).unwrap();
+        let compile = Command::new("rustc")
+            .args(["--edition=2021", "--crate-name", "noisy_generated_main"])
+            .arg(&path)
+            .arg("-o")
+            .arg(&binary.0)
+            .arg("--extern")
+            .arg(format!("konoma={}", konoma.display()))
+            .arg("--extern")
+            .arg(format!("konoma_plugin={}", sdk.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", deps.display()))
+            .supervised_output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let mut control = Command::new(&binary.0);
+        env.configure(&mut control);
+        let control = control.arg("--plugins").supervised_output().unwrap();
+        assert!(control.status.success(), "{control:?}");
+        let control = String::from_utf8_lossy(&control.stdout);
+        assert!(control.contains("factory noise") && control.contains("manifest noise"));
+        let mut command = Command::new(&binary.0);
+        env.configure(&mut command);
+        let mut child = konoma_plugin::proc::process::ChildGuard::new(
+            command
+                .arg("--internal-svg-render")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#;
+        let mut request = b"KSV2".to_vec();
+        request.extend_from_slice(&8u32.to_le_bytes());
+        request.extend_from_slice(&0u32.to_le_bytes());
+        request.extend_from_slice(&u32::MAX.to_le_bytes());
+        request.extend_from_slice(&(svg.len() as u64).to_le_bytes());
+        request.extend_from_slice(svg);
+        child.stdin.take().unwrap().write_all(&request).unwrap();
+        let output = konoma_plugin::proc::process::collect_output(
+            &mut child,
+            || false,
+            Some(Duration::from_secs(30)),
+            1 << 20,
+            Duration::ZERO,
+        )
+        .unwrap()
+        .output;
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stdout.starts_with(b"KSRDYKSR1\0"),
+            "plugin output corrupted the drawing protocol: {:?}",
+            output.stdout
+        );
+        assert_eq!(output.stdout.len(), 5 + 13 + 8 * 8 * 4);
+    }
+    mod clock_build {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/konoma-plugin-test/tests/support/clock_build.rs"
+        ));
+    }
+
+    #[test]
+    fn clock_build_checks_the_new_binary_for_release_and_cross_profiles() {
+        use crate::test_support::command::CommandOutput;
+        let dir = crate::test_support::unique_tmp("clock-build-profile");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cargo = dir.join("cargo");
+        crate::test_support::write_executable(
+            &cargo,
+            r#"#!/bin/sh
+profile=dev
+target=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile) shift; profile=$1 ;;
+    --target) shift; target=$1 ;;
+  esac
+  shift
+done
+if [ "$profile" = dev ]; then profile=debug; fi
+dest="$FAKE_TARGET/$target/$profile"
+mkdir -p "$dest"
+printf '#!/bin/sh\nprintf fresh' > "$dest/konoma-demo-clock"
+chmod +x "$dest/konoma-demo-clock"
+"#,
+        );
+        let target_root = dir.join("target");
+        for (profile, target) in [("release", ""), ("ci", "aarch64-unknown-linux-gnu")] {
+            let profile_dir = target_root.join(target).join(profile);
+            std::fs::create_dir_all(profile_dir.join("deps")).unwrap();
+            crate::test_support::write_executable(
+                &profile_dir.join("konoma-demo-clock"),
+                "#!/bin/sh\nprintf stale\n",
+            );
+            let executable = clock_build::build(
+                cargo.as_os_str(),
+                &dir,
+                &profile_dir.join("deps/protocol"),
+                &target_root,
+                |command| {
+                    command
+                        .env_clear()
+                        .env("PATH", "/usr/bin:/bin")
+                        .env("FAKE_TARGET", &target_root)
+                        .supervised_status()
+                },
+            )
+            .unwrap();
+            let output = std::process::Command::new(executable)
+                .supervised_output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                output.stdout, b"fresh",
+                "profile {profile}, target {target}"
+            );
+        }
+    }
     use super::*;
 
     fn list(toml: &str) -> PluginList {
@@ -294,6 +508,10 @@ rev = "abc"
             );
         }
         assert_eq!(p.main_rs.matches(".plugins(").count(), 4);
+        let body = p.main_rs.split("fn main() {").nth(1).unwrap();
+        assert!(body
+            .trim_start()
+            .starts_with("let result = konoma::Host::builder()"));
     }
 
     #[test]

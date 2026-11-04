@@ -268,9 +268,8 @@ fn help_text() -> String {
 #[global_allocator]
 static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
 
-/// The application, started by [`Host::run`] (which has already declared this process to be the
-/// application: `mark_app_main`).
-fn run_application(startup: host::Startup) -> Result<()> {
+/// Internal modes must be dispatched when the builder is created, before plugin factories run.
+fn dispatch_internal_child() {
     // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
     // from a file, so that whatever such a file does cannot take the program down. It must run
     // before anything else is touched (arguments, configuration, the terminal), and it is not an
@@ -279,9 +278,14 @@ fn run_application(startup: host::Startup) -> Result<()> {
         .nth(1)
         .is_some_and(|a| a == preview::svg_proc::CHILD_FLAG)
     {
+        konoma_base::process::mark_app_main();
         let rest: Vec<_> = std::env::args_os().skip(2).collect();
         std::process::exit(preview::svg_proc::child_main(&rest));
     }
+}
+
+/// The normal application, after internal dispatch and Host::run's plugin validation.
+fn run_application(startup: host::Startup) -> Result<()> {
     // The builder consumed the handover markers before any plugin code could start threads or
     // children. Use those captured values without changing the environment here.
     let host::Startup {
@@ -3005,13 +3009,33 @@ mod tests {
             resolve < mark && mark < start,
             "check, then mark, then start"
         );
+        let default = &host[host.find("impl Default for HostBuilder").unwrap()..];
+        let default = &default[..default.find("\nimpl HostBuilder").unwrap()];
+        let dispatch = default
+            .find("crate::dispatch_internal_child();")
+            .expect("builder must dispatch internal modes before plugin factories can run");
+        let default_body =
+            default.find("fn default() -> Self {").unwrap() + "fn default() -> Self {".len();
+        assert!(
+            default[default_body..dispatch].lines().all(|line| {
+                let line = line.trim();
+                line.is_empty() || line.starts_with("//")
+            }),
+            "internal dispatch must be the builder's first operation"
+        );
+        assert!(dispatch < default.find("startup: Startup").unwrap());
+        let generated = plugin_cli::generated_main_for_startup_test();
+        let body = generated.split("fn main() {").nth(1).unwrap();
+        assert!(body
+            .trim_start()
+            .starts_with("let result = konoma::Host::builder()"));
+        assert!(body.find("Host::builder()").unwrap() < body.find("noisy::plugins()").unwrap());
         // The drawing child is the first thing the application does: nothing precedes it.
         let src = include_str!("lib.rs");
         let main_start = src
-            .find("\nfn run_application(startup: host::Startup) -> Result<()> {")
-            .expect("fn run_application not found");
-        let body = &src
-            [main_start + "\nfn run_application(startup: host::Startup) -> Result<()> {".len()..];
+            .find("\nfn dispatch_internal_child() {")
+            .expect("fn dispatch_internal_child not found");
+        let body = &src[main_start + "\nfn dispatch_internal_child() {".len()..];
         let child = body
             .find("preview::svg_proc::CHILD_FLAG")
             .expect("the application must branch to the drawing child");

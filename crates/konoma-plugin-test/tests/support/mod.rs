@@ -1,6 +1,8 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+pub mod clock_build;
+
 use konoma_plugin::prelude::*;
 use konoma_plugin::proc::{frame, proto::*, wire::*};
 
@@ -32,6 +34,9 @@ fn manifest(mode: &str) -> Manifest {
                 .help("Change the fixture"),
         );
     match mode {
+        "manifest-id" => m.id = "Bad ID".into(),
+        "manifest-declaration" => m.actions[0].id = "Bad Action".into(),
+        "manifest-glob" => m.binds = vec![Bind::files(["["])],
         "manifest" => m.shows.clear(),
         "manifest-keys" => {
             m.actions[0].key = Some("Q".into());
@@ -175,6 +180,44 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
                     // A call that does not answer even when the subsequent Cancel arrives.
                     continue;
                 } else {
+                    if rid == 2 {
+                        match mode {
+                            "hints-eof" => return ExitCode::FAILURE,
+                            "hints-timeout" => park(),
+                            "hints-frame" => {
+                                frame::write_frame(&mut output, &[0xc1]).unwrap();
+                                continue;
+                            }
+                            "hints-wrong-reply" => {
+                                frame::send(
+                                    &mut output,
+                                    &FromChild {
+                                        rid,
+                                        answer: Answer::Ok(Reply::Opened { state: state(mode) }),
+                                    },
+                                )
+                                .unwrap();
+                                continue;
+                            }
+                            "hints-wrong-rid" => {
+                                frame::send(
+                                    &mut output,
+                                    &FromChild {
+                                        rid: rid + 1,
+                                        answer: err(),
+                                    },
+                                )
+                                .unwrap();
+                                continue;
+                            }
+                            "hints-view-error" => {
+                                frame::send(&mut output, &FromChild { rid, answer: err() })
+                                    .unwrap();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     if mode == "view-timeout" {
                         park();
                     }

@@ -83,6 +83,35 @@ struct Sandbox {
     root: TmpDir,
 }
 
+#[test]
+fn relative_cargo_override_survives_the_build_working_directory() {
+    let s = Sandbox::new("relative-cargo");
+    let output = s
+        .command(&["plugin", "install", "konoma-foo", "--yes"])
+        .env("CARGO", "../fake/cargo")
+        .supervised_output()
+        .unwrap();
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    assert!(s.program().is_file());
+    assert!(s.cargo_log().contains("metadata"));
+    assert!(s.cargo_log().contains("build"));
+}
+
+#[test]
+fn relative_path_entry_survives_the_build_working_directory() {
+    let s = Sandbox::new("relative-cargo-path");
+    let output = s
+        .command(&["plugin", "install", "konoma-foo", "--yes"])
+        .env_remove("CARGO")
+        .env("PATH", "../fake:/usr/bin:/bin")
+        .supervised_output()
+        .unwrap();
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    assert!(s.program().is_file());
+    assert!(s.cargo_log().contains("metadata"));
+    assert!(s.cargo_log().contains("build"));
+}
+
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
         let root = unique_tmp(name);

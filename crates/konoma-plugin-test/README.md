@@ -20,6 +20,9 @@ the SDK's hint rules, every initially enabled declared action and its key, unkno
 cancellation, graceful shutdown, malformed MessagePack, and oversized frame headers. An action
 or key answering `Err` is valid; a dead connection, wrong reply, broken frame, or late answer fails.
 Cancellation sends a view and its Cancel together and accepts a view that already finished.
+Manifest checks reuse the host registry's validation of ids, declarations and globs, in addition
+to the SDK's key and `shows` checks. Hints use the state from `Viewed`, or keep the open state after
+a valid `Answer::Err`; EOF, a deadline, a broken frame or an unexpected reply fails the hints check.
 
 Each independent probe uses a fresh process group and a private handoff directory. The child's
 working directory is inherited so interpreter arguments such as `plugin.py` still resolve.
@@ -40,6 +43,7 @@ as is a peer that stays up after refusal. A crash following refusal fails.
 
 Tests use a program under `tests/` with explicit fixture modes and the real SDK multi-plugin entry,
 plus the real `konoma-demo-clock` executable. The clock test builds that executable offline with
-the caller's unchanged `CARGO_TARGET_DIR`. No fixture modes enter the product binary. Passing tests
+the profile and target of the test executable and the caller's unchanged `CARGO_TARGET_DIR`.
+No fixture modes enter the product binary. Passing tests
 use `Limits::default()`; only negative tests specifically exercising a deadline use shorter limits.
 Message ordering uses protocol messages and pipe barriers, never sleeps.

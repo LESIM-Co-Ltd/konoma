@@ -27,8 +27,8 @@ impl Host {
     }
 }
 
-/// The plugins a program links in. Nothing is checked until [`HostBuilder::run`], so the order of
-/// the calls does not matter.
+/// The plugins a program links in. Declarations are checked by [`HostBuilder::run`] after all
+/// builder calls, so their order does not matter. Create the builder before creating plugins.
 pub struct HostBuilder {
     startup: Startup,
     standard: bool,
@@ -43,6 +43,7 @@ pub(crate) struct Startup {
 
 impl Default for HostBuilder {
     fn default() -> Self {
+        crate::dispatch_internal_child();
         // Capture and remove handover markers before plugin factories or manifests can run.
         Self {
             startup: Startup {
@@ -81,8 +82,8 @@ impl HostBuilder {
     /// Add a plugin. Its id must not be one that is already taken (a standard plugin's, or one
     /// added before); `run` fails otherwise.
     ///
-    /// Create the builder before creating plugins: it consumes the startup environment while
-    /// the process is still single-threaded.
+    /// Create the builder before creating plugins: it dispatches internal child modes, then
+    /// consumes the startup environment while the process is still single-threaded.
     pub fn plugin(mut self, plugin: impl Plugin) -> Self {
         self.added.push(Arc::new(plugin));
         self
@@ -93,7 +94,7 @@ impl HostBuilder {
     /// [`plugin`](Self::plugin) (its id must be free; `run` fails otherwise).
     ///
     /// The generated `main` creates the builder before calling the crate's `plugins()`, so startup
-    /// environment changes have already finished before that plugin code runs.
+    /// internal child dispatch and environment changes finish before that plugin code runs.
     pub fn plugins(mut self, plugins: Vec<Box<dyn Plugin>>) -> Self {
         self.added.extend(plugins.into_iter().map(Arc::from));
         self
@@ -101,6 +102,8 @@ impl HostBuilder {
 
     /// Put `plugin` in the place of the standard plugin `id` (it keeps the place in the order that
     /// decides which plugin shows a file). `run` fails when there is no such plugin.
+    /// All replaced ids are freed before new ids are checked, so another replacement may reuse
+    /// one of them in either call order. Duplicate targets and conflicting new ids are errors.
     pub fn replace(mut self, id: &str, plugin: impl Plugin) -> Self {
         self.replaced.push((id.to_string(), Arc::new(plugin)));
         self
@@ -126,16 +129,20 @@ impl HostBuilder {
                 taken.insert(m.id);
             }
         }
-        let mut replaced = std::collections::BTreeMap::new();
-        for (target, plugin) in &self.replaced {
-            if replaced.contains_key(target) {
+        let mut targets = BTreeSet::new();
+        for (target, _) in &self.replaced {
+            if !targets.insert(target.clone()) {
                 bail!("the plugin `{target}` is replaced more than once");
             }
             if !standard_ids.contains(target) {
                 bail!("cannot replace `{target}`: there is no standard plugin with that id");
             }
-            // The replacement leaves the id it stands for; its own id must be free.
             taken.remove(target);
+        }
+        // All old ids leave together, before any new id is checked. A replacement may take
+        // another replaced slot's old id, regardless of the order the builder calls arrived.
+        let mut replaced = std::collections::BTreeMap::new();
+        for (target, plugin) in &self.replaced {
             let id = Self::checked_id(plugin)?;
             if !taken.insert(id.clone()) {
                 bail!("plugin id `{id}` is already taken");
@@ -249,6 +256,55 @@ mod tests {
     fn standard_only() {
         let s = Host::builder().standard_plugins().resolve().unwrap();
         assert!(s.standard && s.added.is_empty() && s.replaced.is_empty());
+    }
+
+    #[test]
+    fn replacement_chains_are_independent_of_call_order() {
+        let mut results = Vec::new();
+        for replacements in [
+            [("markdown", "my-markdown"), ("csv", "markdown")],
+            [("csv", "markdown"), ("markdown", "my-markdown")],
+        ] {
+            let mut builder = Host::builder().standard_plugins();
+            for (target, id) in replacements {
+                builder = builder.replace(target, Fake(id));
+            }
+            let set = builder.resolve().unwrap();
+            results.push(
+                set.replaced
+                    .iter()
+                    .map(|(target, plugin)| (target.clone(), plugin.manifest().id))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(
+            results[0],
+            [
+                ("csv".into(), "markdown".into()),
+                ("markdown".into(), "my-markdown".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn replacement_conflicts_are_rejected_in_both_orders() {
+        for mut replacements in [
+            [("markdown", "same"), ("csv", "same")],
+            [("markdown", "image"), ("csv", "other")],
+            [("markdown", "text"), ("csv", "other")],
+            [("markdown", "first"), ("markdown", "second")],
+            [("unknown", "first"), ("csv", "other")],
+        ] {
+            for _ in 0..2 {
+                let mut builder = Host::builder().standard_plugins();
+                for (target, id) in replacements {
+                    builder = builder.replace(target, Fake(id));
+                }
+                assert!(builder.resolve().is_err(), "accepted {replacements:?}");
+                replacements.reverse();
+            }
+        }
     }
 
     #[test]
