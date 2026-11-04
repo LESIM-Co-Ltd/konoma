@@ -787,7 +787,11 @@ mod tests {
                 )
                 .unwrap_err()
             ));
-            let cause = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES));
+            // Real replacement failures arrive from write_atomic_lang with an operation context.
+            let replacement_context =
+                tr(lang, Msg::PluginCannotReplace).replace("{path}", "`fixture`");
+            let cause = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
+                .context(replacement_context);
             for done in 0..4 {
                 errors.push(
                     unfinished_lang(
@@ -863,7 +867,10 @@ mod tests {
                     );
                 }
                 assert_eq!(errors[1], "cargo was not found (set $CARGO, or put cargo in PATH).\n`konoma plugin install` and `update` rebuild konoma with Cargo, so they need a Rust toolchain.\nWithout one, install the plugin as a standalone program (for example `konoma-office`) and let\nkonoma run it as a child process: in config.toml write\n\n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n");
-                let cause = std::io::Error::from_raw_os_error(libc::EACCES).to_string();
+                let cause = format!(
+                    "cannot replace `fixture`: {}",
+                    std::io::Error::from_raw_os_error(libc::EACCES)
+                );
                 let plan = [
                     "Cargo.lock",
                     "plugins.toml",
