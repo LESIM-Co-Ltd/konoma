@@ -21,8 +21,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use konoma_plugin::proc::process::{self, ChildGuard};
 
-pub(crate) const CHILD_FLAG: &str = "--internal-plugin-watch";
 use super::build::STOP_GRACE;
+
+pub(crate) const CHILD_FLAG: &str = "--internal-plugin-watch";
 // Allow the watcher its entire TERM grace and bounded reap before a last-resort stop of it.
 const WATCHER_STOP: Duration = Duration::from_secs(5);
 const MAX_REPORT: u64 = 64 * 1024;
@@ -298,6 +299,64 @@ mod tests {
     use super::*;
     use crate::test_support::{unique_tmp, ProgramFixture};
     use std::process::Stdio;
+
+    fn child_receives_inherited_blocked_signal(name: &str, signal: libc::c_int) {
+        let mut launch = Launch::new("/bin/sh").unwrap();
+        launch
+            .command()
+            .args(["-c", &format!("kill -{name} $$; printf survived")])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // SAFETY: configure only the forked watcher's dispositions and mask with
+        // async-signal-safe calls; the test process and its other threads stay unchanged.
+        unsafe {
+            launch.command().pre_exec(|| {
+                let mut ignored: libc::sigaction = std::mem::zeroed();
+                ignored.sa_sigaction = libc::SIG_IGN;
+                libc::sigemptyset(&mut ignored.sa_mask);
+                if libc::sigaction(libc::SIGINT, &ignored, std::ptr::null_mut()) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut blocked = std::mem::zeroed();
+                libc::sigemptyset(&mut blocked);
+                for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+                    libc::sigaddset(&mut blocked, signal);
+                }
+                if libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut()) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut job = launch.spawn().unwrap();
+        let output = job
+            .output(&AtomicBool::new(false), Some(Duration::from_secs(10)))
+            .unwrap();
+        assert_eq!(output.status.signal(), Some(signal), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(
+            job.child.try_wait().unwrap().is_some(),
+            "watcher must be reaped"
+        );
+    }
+
+    #[test]
+    fn watcher_unblocks_inherited_int_mask() {
+        child_receives_inherited_blocked_signal("INT", libc::SIGINT);
+    }
+
+    #[test]
+    fn watcher_unblocks_inherited_term_mask() {
+        child_receives_inherited_blocked_signal("TERM", libc::SIGTERM);
+    }
+
+    #[test]
+    fn watcher_unblocks_inherited_hangup_mask() {
+        child_receives_inherited_blocked_signal("HUP", libc::SIGHUP);
+    }
 
     #[test]
     fn watcher_forwards_exit_status_and_output() {
