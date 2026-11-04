@@ -56,6 +56,22 @@ pub trait Session: Send {
     }
     /// The current display.
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure>;
+    /// The current short summary beside the project's tree title.
+    ///
+    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and when a
+    /// declared [`crate::ProjectDecl::watch_paths`] path changes. The host calls this only for
+    /// a project session of a plugin with a project declaration; file-only plugins are never
+    /// called. Host scheduling is implemented separately from this SDK contract.
+    ///
+    /// `Ok(None)` (the default) uses [`crate::ProjectDecl::chip`] in the host's language, or
+    /// nothing if absent. `Some(Chip::default())` hides it explicitly. The host reports a
+    /// failure or panic as for other session calls and displays the declared chip or nothing.
+    /// It takes returned text through [`crate::Chip::clipped`] once, before keeping it.
+    /// A child without chip-call support also returns `Ok(None)` without sending a call.
+    fn chip(&mut self, cx: &ViewCx) -> Result<Option<crate::project::Chip>, Failure> {
+        let _ = cx;
+        Ok(None)
+    }
     /// A declared action. Return [`Outcome::Unhandled`] for ids you do not know.
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
         let _ = (action, cx);

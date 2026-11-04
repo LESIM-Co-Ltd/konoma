@@ -32,6 +32,14 @@ before an action reply is accepted. The project manifest JSON vector is
 navigation outcomes and independent list marks. `tests/vectors/project-calls-v2.msgpack.hex` fixes the
 view selection, row values, marked set and dialog answers. SDK tests also cover each project wire type.
 
+Project chip values can be fetched through the library's
+`project_chip(&options, root, marker, &view_context, limits)`. It opens a project in a fresh child,
+returns the current styled `Option<Chip>`, bounds the text/spans, and checks that the child remains
+alive. `None` uses the declared static chip. A child without a project declaration or the
+protocol-2 `session_chip` capability receives no chip call. Errors include the bounded stderr
+tail; wrong reply kinds/ids, malformed frames, EOF and deadlines fail just as for view/act.
+File probes do not call chip. Each project-chip fetch stops and reaps its child before returning.
+
 Each independent probe uses a fresh process group and a private handoff directory. The child's
 working directory is inherited so interpreter arguments such as `plugin.py` still resolve.
 Every path, including timeout and unwinding, kills that specific group, waits for the child, joins

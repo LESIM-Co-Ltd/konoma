@@ -17,9 +17,9 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 
-type Threads = Arc<Mutex<Vec<JoinHandle<io::Result<()>>>>>;
+pub(crate) type Threads = Arc<Mutex<Vec<JoinHandle<io::Result<()>>>>>;
 
-fn connect(
+pub(crate) fn connect(
     run: impl Fn(UnixStream) -> io::Result<()> + Send + Sync + 'static,
 ) -> (ProcPlugin, Threads, konoma_test_support::TmpDir) {
     let dir = konoma_test_support::unique_tmp("project_host_api");
@@ -55,7 +55,7 @@ fn connect(
     (plugin, threads, dir)
 }
 
-fn finish(plugin: ProcPlugin, threads: Threads) {
+pub(crate) fn finish(plugin: ProcPlugin, threads: Threads) {
     plugin.stop();
     drop(plugin);
     for thread in threads.lock().unwrap().drain(..) {

@@ -6,7 +6,7 @@ use konoma_plugin::view::ListView;
 
 #[cfg(feature = "proc")]
 #[path = "host_transport.rs"]
-mod transport;
+pub(super) mod transport;
 
 fn answers() -> ProjectAct {
     ProjectAct::new()

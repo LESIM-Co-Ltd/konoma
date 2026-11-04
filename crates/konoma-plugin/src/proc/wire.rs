@@ -2454,6 +2454,10 @@ pub enum WUnavailable {
 /// ```
 #[non_exhaustive]
 pub struct WManifest {
+    /// Session chip calls are supported. Advertised by the protocol-2 server only for projects.
+    /// Absent in older children: hosts must use the declared chip without sending a call.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_chip: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2477,6 +2481,7 @@ pub struct WManifest {
 
 pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
     Ok(WManifest {
+        session_chip: false,
         read_only: m.read_only,
         project: m.project.as_ref().map(project_to_wire),
         id: m.id.clone(),
