@@ -1,10 +1,11 @@
-//! Read-only Git and Jujutsu project screens.
+//! Git and Jujutsu project screens.
 
 use konoma_plugin::prelude::*;
 use konoma_plugin::view::{ListRow, ListView};
 use konoma_vcs_core::style::VcsColor;
 use konoma_vcs_core::vcs::Vcs;
 use std::path::PathBuf;
+mod actions;
 mod paths;
 
 pub struct Git;
@@ -14,7 +15,7 @@ macro_rules! plugin {
     ($plugin:ident, $id:literal, $marker:literal, $kind:expr, $name:literal) => {
         impl Plugin for $plugin {
             fn manifest(&self) -> Manifest {
-                Manifest::new($id, env!("CARGO_PKG_VERSION"))
+                let manifest = Manifest::new($id, env!("CARGO_PKG_VERSION"))
                     .name(t!(en: $name, ja: $name))
                     .project(
                         declaration($id)
@@ -25,11 +26,12 @@ macro_rules! plugin {
                     )
                     .shows(ViewKind::List)
                     .setting(SettingDecl::new("path_style", Value::Str("relative".into()),
-                        t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
+                        t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")));
+                actions::declare(manifest, $id == "git")
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
-                        .footer(1)
+                        .footer(4)
                         .project_context(ActContext::screen("changes", ["file"])))
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -92,7 +94,13 @@ impl Backend {
 struct Changes {
     root: PathBuf,
     backend: Backend,
-    files: Vec<PathBuf>,
+    files: Vec<DisplayedFile>,
+}
+
+struct DisplayedFile {
+    path: PathBuf,
+    label: String,
+    staged: bool,
 }
 
 impl Session for Changes {
@@ -125,7 +133,19 @@ impl Session for Changes {
             ));
         }
         let entries = self.backend.changed_files(&self.root);
-        self.files = entries.iter().map(|entry| entry.path.clone()).collect();
+        self.files = entries
+            .iter()
+            .map(|entry| DisplayedFile {
+                path: entry.path.clone(),
+                label: paths::display(
+                    &entry.path,
+                    &self.root,
+                    req.project.as_ref(),
+                    cx.settings.str("path_style", "relative"),
+                ),
+                staged: entry.staged,
+            })
+            .collect();
         if !entries.is_empty() {
             let rows = entries
                 .into_iter()
@@ -145,6 +165,13 @@ impl Session for Changes {
                         Span::raw(name),
                     ]);
                     ListRow::new("file", vec![line])
+                        .name(
+                            entry
+                                .path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("?"),
+                        )
                         .value(entry.path.to_string_lossy())
                         .target(entry.path)
                 })
@@ -166,7 +193,7 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
-        if action != "diff" {
+        if !self.enabled(action) {
             return Ok(Outcome::Unhandled);
         }
         let Some(context) = cx
@@ -176,17 +203,104 @@ impl Session for Changes {
         else {
             return Ok(Outcome::Unhandled);
         };
+        if action == "sync" {
+            #[cfg(feature = "git")]
+            let ok = konoma_vcs_core::vcs::jj::snapshot(&self.root);
+            #[cfg(not(feature = "git"))]
+            let ok = false;
+            return Ok(Outcome::Flash(if ok {
+                t!(en: "jj snapshotted the working copy", ja: "jj が作業コピーを取り込みました")
+            } else {
+                t!(en: "jj could not snapshot the working copy", ja: "jj が作業コピーを取り込めませんでした")
+            }));
+        }
+        if action == "stage_all" {
+            if self.files.is_empty() {
+                return Ok(Outcome::Flash(t!(en: "no changes", ja: "変更なし")));
+            }
+            konoma_vcs_core::git::stage_all(&self.root)
+                .map_err(|e| actions::failed(&e.to_string()))?;
+            return Ok(Outcome::Flash(
+                t!(en: format!("Staged all ({})", self.files.len()),
+                ja: format!("全てステージ ({})", self.files.len())),
+            ));
+        }
+        if action == "unstage_all" {
+            if !self.files.iter().any(|file| file.staged) {
+                return Ok(Outcome::Flash(t!(en: "nothing staged", ja: "ステージ無し")));
+            }
+            konoma_vcs_core::git::unstage_all(&self.root)
+                .map_err(|e| actions::failed(&e.to_string()))?;
+            return Ok(Outcome::Flash(
+                t!(en: "Unstaged all", ja: "全てアンステージ"),
+            ));
+        }
+        if action == "commit" {
+            let Some(message) = context.text.as_deref() else {
+                return Ok(Outcome::Unhandled);
+            };
+            let message = message.trim();
+            if message.is_empty() {
+                return Ok(Outcome::Flash(
+                    t!(en: "message is empty", ja: "メッセージが空です"),
+                ));
+            }
+            // The legacy commit handler flashes git's message without the `failed:` prefix.
+            konoma_vcs_core::git::commit(&self.root, message)
+                .map_err(|e| Failure::external(e.to_string()))?;
+            return Ok(Outcome::Flash(t!(en: "Committed", ja: "コミットしました")));
+        }
         let Some(row) = context.selected.as_ref().filter(|row| row.kind == "file") else {
             return Ok(Outcome::Unhandled);
         };
-        // The host owns the baseline: HEAD for git, the working-copy parent for jj.
-        // Staging is only a row indicator, just as in the legacy changes hub.
-        Ok(self
+        let Some(file) = self
             .files
             .iter()
-            .find(|path| path.to_string_lossy() == row.value)
-            .map(|path| Outcome::OpenDiff { path: path.clone() })
-            .unwrap_or(Outcome::Unhandled))
+            .find(|file| file.path.to_string_lossy() == row.value)
+        else {
+            return Ok(Outcome::Unhandled);
+        };
+        let (result, message) = match action {
+            // The host owns the baseline: HEAD for git, the working-copy parent for jj.
+            "diff" => {
+                return Ok(Outcome::OpenDiff {
+                    path: file.path.clone(),
+                })
+            }
+            "stage" => (
+                konoma_vcs_core::git::stage(&self.root, &file.path),
+                t!(en: "Staged", ja: "ステージ"),
+            ),
+            "unstage" => (
+                konoma_vcs_core::git::unstage(&self.root, &file.path),
+                t!(en: "Unstaged", ja: "アンステージ"),
+            ),
+            "discard" if context.confirmation.as_deref() == Some("yes") => (
+                konoma_vcs_core::git::discard(&self.root, &file.path),
+                t!(en: "Discarded", ja: "破棄"),
+            ),
+            _ => return Ok(Outcome::Unhandled),
+        };
+        result.map_err(|e| actions::failed(&e.to_string()))?;
+        Ok(Outcome::Flash(
+            t!(en: format!("{}: {}", message.get("en"), file.label),
+            ja: format!("{}: {}", message.get("ja"), file.label)),
+        ))
+    }
+
+    fn enabled(&self, action: &str) -> bool {
+        if !cfg!(feature = "git") {
+            return false;
+        }
+        match action {
+            "diff" => !self.files.is_empty(),
+            "stage" | "unstage" | "discard" => {
+                matches!(self.backend, Backend::Git) && !self.files.is_empty()
+            }
+            "stage_all" | "unstage_all" | "commit" => matches!(self.backend, Backend::Git),
+            "sync" => matches!(self.backend, Backend::Jj),
+            _ => false,
+        }
     }
 }
 

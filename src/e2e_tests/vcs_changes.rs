@@ -5,6 +5,9 @@ use crate::plugins::test_plugins;
 use konoma_plugin::Plugin;
 use std::sync::Arc;
 
+#[path = "vcs_writes.rs"]
+mod writes;
+
 fn drain(sim: &mut Sim) {
     for _ in 0..32 {
         sim.app.poll_projects();

@@ -220,7 +220,7 @@ fn vcs_changes_empty_uses_the_hub_message_in_both_languages() {
 }
 
 #[test]
-fn vcs_changes_declarations_are_read_only_and_match_existing_markers() {
+fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes() {
     for (plugin, id, marker, kind) in [
         (
             &konoma_vcs::Git as &dyn Plugin,
@@ -254,8 +254,8 @@ fn vcs_changes_declarations_are_read_only_and_match_existing_markers() {
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), 1);
-        let action = &manifest.actions[0];
+        assert_eq!(manifest.actions.len(), if id == "git" { 7 } else { 2 });
+        let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
             action.project_context,
@@ -263,5 +263,74 @@ fn vcs_changes_declarations_are_read_only_and_match_existing_markers() {
         );
         assert!(!action.writes);
         assert!(!action.destructive);
+    }
+}
+
+#[test]
+fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
+    let dir = konoma_test_support::unique_tmp("vcs_changes_enabled");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (plugin, git) in [
+        (&konoma_vcs::Git as &dyn Plugin, true),
+        (&konoma_vcs::Jj, false),
+    ] {
+        let manifest = plugin.manifest();
+        let mut session = plugin
+            .open(
+                Input::Project {
+                    root: dir.to_path_buf(),
+                    marker: String::new(),
+                },
+                &OpenCx::bare(),
+            )
+            .unwrap();
+        session
+            .view(
+                &ViewReq::new(80, 20).project(ProjectView::new("changes")),
+                &ViewCx::bare(),
+            )
+            .unwrap();
+        assert!(!session.enabled("unknown"));
+        assert!(!session.enabled("diff"));
+        for id in ["stage", "unstage", "discard"] {
+            assert!(!session.enabled(id));
+        }
+        for id in ["stage_all", "unstage_all", "commit"] {
+            assert_eq!(session.enabled(id), git && cfg!(feature = "git"));
+        }
+        assert_eq!(session.enabled("sync"), !git && cfg!(feature = "git"));
+        for a in manifest.actions.iter().filter(|a| a.id != "diff") {
+            assert!(a.writes);
+            assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
+            assert!(a.refresh.contains(&RefreshTarget::TreeStatus));
+            assert_eq!(a.destructive, a.id == "discard");
+            if a.id == "commit" || a.id == "sync" {
+                assert!(a.refresh.contains(&RefreshTarget::Chip));
+            }
+            if ["stage", "stage_all", "unstage", "unstage_all"].contains(&a.id.as_str()) {
+                assert!(a.hint_group.is_some());
+            }
+        }
+        if git {
+            let commit = manifest.actions.iter().find(|a| a.id == "commit").unwrap();
+            assert!(commit.text_input.as_ref().unwrap().keep_on_failure);
+            let discard = manifest.actions.iter().find(|a| a.id == "discard").unwrap();
+            let confirm = discard.confirmation.as_ref().unwrap();
+            assert_eq!(confirm.choices[0].key, 'y');
+            assert_eq!(confirm.text.get("en"), "Discard changes to {row} ?");
+            assert_eq!(confirm.text.get("ja"), "変更を破棄しますか: {row} ?");
+        } else {
+            let sync = manifest.actions.iter().find(|a| a.id == "sync").unwrap();
+            assert_eq!(
+                sync.confirmation.as_ref().unwrap().setting.as_deref(),
+                Some("confirm_sync")
+            );
+            let setting = manifest
+                .settings
+                .iter()
+                .find(|s| s.name == "confirm_sync")
+                .unwrap();
+            assert_eq!(setting.default, Value::Bool(true));
+        }
     }
 }
