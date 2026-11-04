@@ -118,6 +118,8 @@ pub enum PageLayout {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ViewReq {
+    /// Absent for a file preview; changes within the existing project session.
+    pub project: Option<crate::project::ProjectView>,
     /// The representation (`None` = the default).
     pub repr: Option<String>,
     /// The page, counted from 0 (`None` = the first or the whole). A page past the end is clamped
@@ -139,12 +141,18 @@ pub struct ViewReq {
 impl ViewReq {
     pub fn new(cols: u16, rows: u16) -> ViewReq {
         ViewReq {
+            project: None,
             repr: None,
             page: None,
             cols,
             rows,
             cell_px: None,
         }
+    }
+
+    pub fn project(mut self, project: crate::project::ProjectView) -> Self {
+        self.project = Some(project);
+        self
     }
 
     /// The same asking for the representation `repr`.
@@ -519,7 +527,16 @@ pub struct ListView {
 
 /// One row of a list.
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::view::ListRow;
+/// let _ = ListRow { ..ListRow::new("row", vec![]) };
+/// ```
+#[non_exhaustive]
 pub struct ListRow {
+    /// Opaque stable identity for action selection. Empty for legacy rows.
+    pub value: String,
     pub cells: Vec<Line>,
     /// The kind of row (decides which actions apply).
     pub kind: String,
@@ -527,6 +544,40 @@ pub struct ListRow {
     pub target: Option<PathBuf>,
     /// A check state, for rows that can be selected as staged and so on.
     pub checked: Option<bool>,
+    /// Host multi-selection, independent of the plugin-owned check state.
+    pub marked: bool,
+}
+
+impl ListRow {
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = value.into();
+        self
+    }
+    pub fn target(mut self, target: impl Into<PathBuf>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    pub fn marked(mut self, marked: bool) -> Self {
+        self.marked = marked;
+        self
+    }
+
+    pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
+        Self {
+            cells,
+            value: String::new(),
+            kind: kind.into(),
+            target: None,
+            checked: None,
+            marked: false,
+        }
+    }
 }
 
 /// A diff.

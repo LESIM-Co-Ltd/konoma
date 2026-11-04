@@ -137,25 +137,45 @@ where
         Some(h) => h,
         None => return Ok(()),
     };
-    if !hello.versions.contains(&PROTOCOL_VERSION) {
+    let manifest = match catch_unwind(AssertUnwindSafe(|| plugin.manifest())) {
+        Ok(manifest) => manifest,
+        Err(panic) => {
+            let failure = panic_failure("manifest", panic);
+            frame::send(
+                &mut output,
+                &HelloReply::Refused {
+                    supported: Vec::new(),
+                    reason: failure.message.get("en").to_string(),
+                },
+            )
+            .map_err(io_err)?;
+            return Ok(());
+        }
+    };
+    let mut wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let supported: Vec<u32> = (wire::manifest_protocol(&wm)..=PROTOCOL_VERSION).collect();
+    let selected = supported
+        .iter()
+        .rev()
+        .find(|v| hello.versions.contains(v))
+        .copied();
+    let Some(version) = selected else {
         let reply = HelloReply::Refused {
-            supported: vec![PROTOCOL_VERSION],
             reason: format!(
-                "the host speaks protocol versions {:?}, this plugin speaks {PROTOCOL_VERSION}",
+                "the host speaks protocol versions {:?}, this plugin speaks protocol versions {supported:?}",
                 hello.versions
             ),
+            supported,
         };
         frame::send(&mut output, &reply).map_err(io_err)?;
         return Ok(());
-    }
-    let manifest = catch_unwind(AssertUnwindSafe(|| plugin.manifest()))
-        .map_err(|_| std::io::Error::other("the plugin panicked in manifest()"))?;
+    };
     let action_ids: Vec<String> = manifest.actions.iter().map(|a| a.id.clone()).collect();
-    let wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
+    wm.session_chip = version >= 2 && manifest.project.is_some();
     frame::send(
         &mut output,
         &HelloReply::Ack {
-            version: PROTOCOL_VERSION,
+            version,
             manifest: wm,
         },
     )
@@ -223,6 +243,7 @@ where
         })?;
 
     let mut worker = Worker {
+        version,
         plugin: Arc::new(plugin),
         action_ids,
         sessions: HashMap::new(),
@@ -315,6 +336,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn call_rid(m: &ToChild) -> Option<u64> {
     match m {
         ToChild::Open { rid, .. }
+        | ToChild::Chip { rid, .. }
         | ToChild::View { rid, .. }
         | ToChild::Act { rid, .. }
         | ToChild::Key { rid, .. } => Some(*rid),
@@ -323,6 +345,7 @@ fn call_rid(m: &ToChild) -> Option<u64> {
 }
 
 struct Worker {
+    version: u32,
     plugin: Arc<dyn Plugin>,
     action_ids: Vec<String>,
     sessions: HashMap<u64, Box<dyn Session>>,
@@ -426,9 +449,37 @@ impl Worker {
     }
 
     fn call_inner(&mut self, msg: ToChild, flag: &Arc<AtomicBool>) -> Result<Reply, Failure> {
-        let cx_of = |c| -> Result<CxData, Failure> { Ok(cx_from_wire(c)?) };
+        let cx_of = |c: wire::WCx| -> Result<CxData, Failure> {
+            wire::require_protocol(self.version, wire::cx_protocol(&c))?;
+            Ok(cx_from_wire(c)?)
+        };
         match msg {
+            ToChild::Chip { sid, cx, .. } => {
+                wire::require_protocol(self.version, 2)?;
+                let cx = cx_of(cx)?;
+                let vcx = ViewCx::new(&cx.settings, &cx.lang)
+                    .with_cancel(cancel_of(flag))
+                    .with_term(cx.term)
+                    .with_external(cx.external)
+                    .with_read_scope(cx.read_scope.clone());
+                let session = self
+                    .sessions
+                    .get_mut(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                let chip = catch_unwind(AssertUnwindSafe(|| session.chip(&vcx)))
+                    .map_err(|p| panic_failure("chip", p))??;
+                let chip = chip.as_ref().map(wire::chip_to_wire);
+                let session = self
+                    .sessions
+                    .get(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                Ok(Reply::Chip {
+                    chip,
+                    state: self.state(&**session)?,
+                })
+            }
             ToChild::Open { sid, input, cx, .. } => {
+                wire::require_protocol(self.version, wire::input_protocol(&input))?;
                 if self.sessions.len() >= self.max_sessions && !self.sessions.contains_key(&sid) {
                     return Err(Failure::too_heavy(t!(
                         en: "the plugin has too many sessions open",
@@ -458,6 +509,7 @@ impl Worker {
                 Ok(Reply::Opened { state })
             }
             ToChild::View { sid, req, cx, .. } => {
+                wire::require_protocol(self.version, wire::req_protocol(&req))?;
                 let cx = cx_of(cx)?;
                 let req = req_from_wire(req)?;
                 let vcx = ViewCx::new(&cx.settings, &cx.lang)
@@ -486,6 +538,10 @@ impl Worker {
                         return Err(panic_failure("styler", p));
                     }
                 };
+                if let Err(e) = wire::require_protocol(self.version, wire::view_protocol(&wv)) {
+                    enc.discard();
+                    return Err(e.into());
+                }
                 if let WView::Text(t) = &wv {
                     if let Some(note) = &t.note {
                         eprintln!("konoma plugin: {note}");
@@ -505,46 +561,54 @@ impl Worker {
                 sid, action, cx, ..
             } => {
                 let cx = cx_of(cx)?;
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)
                     .ok_or_else(|| unknown_session(sid))?;
                 let outcome = catch_unwind(AssertUnwindSafe(|| session.act(&action, &acx)))
                     .map_err(|p| panic_failure("act", p))??;
+                let outcome = outcome_to_wire(&outcome);
+                wire::require_protocol(self.version, wire::outcome_protocol(&outcome))?;
+                wire::outcome_from_wire_checked(outcome.clone())?;
                 let session = self
                     .sessions
                     .get(&sid)
                     .ok_or_else(|| unknown_session(sid))?;
                 Ok(Reply::Acted {
-                    outcome: outcome_to_wire(&outcome),
+                    outcome,
                     state: self.state(&**session)?,
                 })
             }
             ToChild::Key { sid, key, cx, .. } => {
                 let cx = cx_of(cx)?;
                 let key = key_from_wire(key);
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)
                     .ok_or_else(|| unknown_session(sid))?;
                 let outcome = catch_unwind(AssertUnwindSafe(|| session.key(&key, &acx)))
                     .map_err(|p| panic_failure("key", p))??;
+                let outcome = outcome_to_wire(&outcome);
+                wire::require_protocol(self.version, wire::outcome_protocol(&outcome))?;
+                wire::outcome_from_wire_checked(outcome.clone())?;
                 let session = self
                     .sessions
                     .get(&sid)
                     .ok_or_else(|| unknown_session(sid))?;
                 Ok(Reply::Acted {
-                    outcome: outcome_to_wire(&outcome),
+                    outcome,
                     state: self.state(&**session)?,
                 })
             }

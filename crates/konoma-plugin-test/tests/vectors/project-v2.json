@@ -1,0 +1,154 @@
+{
+  "id": "project-fixture",
+  "read_only": true,
+  "version": "1",
+  "api": [
+    0,
+    1
+  ],
+  "name": {
+    "en": "Project fixture",
+    "others": []
+  },
+  "binds": [],
+  "verbs": [],
+  "settings": [],
+  "screens": [],
+  "shows": [
+    "List"
+  ],
+  "work_group": null,
+  "converts": false,
+  "file_text": false,
+  "sized": false,
+  "unavailable": "Message",
+  "project": {
+    "markers": [
+      {
+        "name": ".git",
+        "kind": "Any"
+      },
+      {
+        "name": "Package.swift",
+        "kind": "File"
+      },
+      {
+        "name": "*.xcworkspace",
+        "kind": "Directory"
+      }
+    ],
+    "screens": [
+      {
+        "id": "branches",
+        "title": {
+          "en": "Branches",
+          "others": [
+            [
+              "ja",
+              "ブランチ"
+            ]
+          ]
+        },
+        "key": "b",
+        "row_kinds": [
+          "branch"
+        ]
+      }
+    ],
+    "chip": {
+      "en": "main",
+      "others": []
+    },
+    "watch_paths": [
+      [
+        46,
+        103,
+        105,
+        116,
+        47,
+        72,
+        69,
+        65,
+        68
+      ]
+    ],
+    "version_control": true
+  },
+  "actions": [
+    {
+      "id": "delete",
+      "refresh": ["CurrentScreen", {"Screen": {"screen": "branches"}}, "AllScreens", "TreeStatus", "Chip"],
+      "key": "Enter",
+      "label": {
+        "en": "Delete",
+        "others": []
+      },
+      "help": {
+        "en": "Delete branch",
+        "others": []
+      },
+      "footer": 1,
+      "screen": null,
+      "writes": true,
+      "destructive": true,
+      "project_context": {
+        "Screen": {
+          "screen": "branches",
+          "row_kinds": [
+            "branch"
+          ]
+        }
+      },
+      "confirmation": {
+        "text": {
+          "en": "Delete?",
+          "others": []
+        },
+        "choices": [
+          {
+            "key": "y",
+            "choice": {
+              "value": "-d",
+              "label": {
+                "en": "Delete",
+                "others": []
+              }
+            }
+          },
+          {
+            "key": "!",
+            "choice": {
+              "value": "-D",
+              "label": {
+                "en": "Force",
+                "others": []
+              }
+            }
+          }
+        ]
+      },
+      "text_input": {
+        "label": {
+          "en": "Name",
+          "others": []
+        },
+        "initial": "main"
+      },
+      "choice_input": {
+        "label": {
+          "en": "Branch",
+          "others": []
+        },
+        "choices": [
+          {
+            "value": "main",
+            "label": {
+              "en": "Main",
+              "others": []
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

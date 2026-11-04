@@ -19,7 +19,33 @@ fn read(input: &Input) -> Result<(String, Option<PathBuf>), Failure> {
         Input::File { path, .. } => Ok((std::fs::read_to_string(path)?, Some(path.clone()))),
         Input::Content { text, .. } => Ok((text.clone(), None)),
         Input::Embed { source, .. } => Ok((source.clone(), None)),
+        Input::Project { .. } => Err(Failure::unsupported(t!(
+            en: "this preview plugin does not open projects",
+            ja: "このプレビュープラグインはプロジェクトを開きません",
+        ))),
+        _ => Err(Failure::unsupported(t!(
+            en: "this preview plugin does not support this input",
+            ja: "このプレビュープラグインはこの入力に対応していません",
+        ))),
     }
+}
+
+#[test]
+fn project_input_is_unsupported_in_both_languages() {
+    let failure = read(&Input::Project {
+        root: PathBuf::from("/project"),
+        marker: ".git".into(),
+    })
+    .unwrap_err();
+    assert_eq!(failure.kind, konoma_plugin::FailureKind::Unsupported);
+    assert_eq!(
+        failure.message.get("en"),
+        "this preview plugin does not open projects"
+    );
+    assert_eq!(
+        failure.message.get("ja"),
+        "このプレビュープラグインはプロジェクトを開きません"
+    );
 }
 
 fn manifest(id: &str, ext: &str, kind: ViewKind) -> Manifest {

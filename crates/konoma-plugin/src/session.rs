@@ -12,12 +12,12 @@ use crate::text::Tr;
 use crate::view::{Layout, View, ViewReq};
 
 /// The entry point of a plugin. The host reads `manifest` at startup and calls nothing else until
-/// a file is opened.
+/// an input is opened.
 pub trait Plugin: Send + Sync + 'static {
     /// The declarations a, b and c.
     fn manifest(&self) -> Manifest;
-    /// Open a file (or a content-type input). Heavy work is fine here: the host calls it from a
-    /// worker.
+    /// Open a file, content, embedded input or detected project. Heavy work is fine here:
+    /// the host calls it from a worker.
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure>;
 }
 
@@ -34,7 +34,7 @@ impl<P: Plugin + ?Sized> Plugin for Box<P> {
 
 /// One opened input.
 ///
-/// **A session lasts as long as the file it was opened on is unchanged.** The host opens the file
+/// **For file inputs, a session lasts as long as the file is unchanged.** The host opens the file
 /// again (a new session, the old one dropped) when the file's stamp (modification time, size,
 /// inode, change time) changed -- an edit, a rename over it -- and for a plugin without a work
 /// group that keeps no state (a table, a listing) also on an event of unknown cause. A plugin
@@ -56,6 +56,22 @@ pub trait Session: Send {
     }
     /// The current display.
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure>;
+    /// The current short summary beside the project's tree title.
+    ///
+    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and when a
+    /// declared [`crate::ProjectDecl::watch_paths`] path changes. The host calls this only for
+    /// a project session of a plugin with a project declaration; file-only plugins are never
+    /// called. Host scheduling is implemented separately from this SDK contract.
+    ///
+    /// `Ok(None)` (the default) uses [`crate::ProjectDecl::chip`] in the host's language, or
+    /// nothing if absent. `Some(Chip::default())` hides it explicitly. The host reports a
+    /// failure or panic as for other session calls and displays the declared chip or nothing.
+    /// It takes returned text through [`crate::Chip::clipped`] once, before keeping it.
+    /// A child without chip-call support also returns `Ok(None)` without sending a call.
+    fn chip(&mut self, cx: &ViewCx) -> Result<Option<crate::project::Chip>, Failure> {
+        let _ = cx;
+        Ok(None)
+    }
     /// A declared action. Return [`Outcome::Unhandled`] for ids you do not know.
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
         let _ = (action, cx);
@@ -166,10 +182,11 @@ impl fmt::Debug for Cancel {
 }
 
 macro_rules! context {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($(#[$doc:meta])* $name:ident $(, $project:ident)?) => {
         $(#[$doc])*
         #[derive(Clone, Debug)]
         pub struct $name<'a> {
+            $(pub $project: Option<crate::project::ProjectAct>,)?
             /// The plugin's `[plugins.<id>]` settings.
             pub settings: &'a Settings,
             /// The user's language (`"en"`, `"ja"`).
@@ -190,6 +207,7 @@ macro_rules! context {
         impl<'a> $name<'a> {
             pub fn new(settings: &'a Settings, lang: &'a str) -> $name<'a> {
                 $name {
+                    $($project: None,)?
                     settings,
                     lang,
                     cancel: Cancel::never(),
@@ -236,9 +254,18 @@ context!(
     ViewCx
 );
 context!(
+    #[non_exhaustive]
     /// What `Session::act` receives besides the action id.
-    ActCx
+    ActCx,
+    project
 );
+
+impl ActCx<'_> {
+    pub fn with_project(mut self, project: crate::project::ProjectAct) -> Self {
+        self.project = Some(project);
+        self
+    }
+}
 
 /// The result of an action ([`Session::act`]) or of a key ([`Session::key`]).
 ///
@@ -254,6 +281,26 @@ pub enum Outcome {
     Flash(Tr),
     /// Read the file again.
     Reload,
+    /// Push a screen of this plugin, carrying an opaque row identifier. The host's `q` pops it.
+    PushScreen {
+        screen: String,
+        selection: Option<String>,
+    },
+    /// Open a file in the host preview; line numbers are 1-based.
+    OpenFile {
+        path: std::path::PathBuf,
+        line: Option<usize>,
+    },
+    /// Open the host's full-screen diff for this file.
+    OpenDiff {
+        path: std::path::PathBuf,
+    },
+    SwitchRoot {
+        root: std::path::PathBuf,
+    },
+    OpenTab {
+        path: std::path::PathBuf,
+    },
 }
 
 /// Why something failed. The host decides what to do from the kind: for example a

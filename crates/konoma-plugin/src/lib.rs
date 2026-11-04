@@ -71,6 +71,7 @@
 //! - [`style`]: colors, modifiers, spans and lines
 //! - [`settings`]: the `[plugins.<id>]` values
 //! - [`manifest`]: declarations a (display bindings), b (launch verbs) and c (actions and help)
+//! - [`project`]: project detection, screens, action contexts and dialog declarations
 //! - [`input`]: what a plugin is asked to open
 //! - [`view`]: the display types a plugin returns: text, document, table, image, list, diff, and
 //!   the free-drawing [`CanvasView`](view::CanvasView) (cells and picture placements as plain data)
@@ -103,6 +104,7 @@ pub mod pages;
 pub mod prelude;
 #[cfg(feature = "proc")]
 pub mod proc;
+pub mod project;
 #[cfg(feature = "ratatui")]
 pub mod ratatui_draw;
 pub mod registry;
@@ -123,6 +125,11 @@ pub use key::{Key, KeyCode, KeyMods};
 pub use manifest::{
     Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
     Unavailable, Verb, VerbDecl, ViewKind,
+};
+pub use project::{
+    ActContext, Chip, Choice, ChoiceInput, ConfirmChoice, Confirmation, DetectionMarker,
+    MarkerKind, ProjectAct, ProjectDecl, ProjectRow, ProjectScreen, ProjectView, RefreshTarget,
+    TextInput,
 };
 pub use scope::{ReadScope, ScopeError};
 pub use session::{

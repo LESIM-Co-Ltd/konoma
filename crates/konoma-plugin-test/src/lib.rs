@@ -123,6 +123,35 @@ fn inspect<T>(
     }
 }
 
+/// Open a project in a fresh child and fetch its current styled chip, using the same deadlines,
+/// framing and reply checks as [`run`]. `root` is made absolute; it is not detected by the harness.
+/// `None` means use the declared static chip. A child without a project declaration or chip-call
+/// capability is not sent a chip call. Failures include the child's bounded stderr tail.
+/// The child is stopped and reaped before this returns, including on failure.
+pub fn project_chip(
+    options: &Options,
+    root: &Path,
+    marker: &str,
+    cx: &ViewCx<'_>,
+    limits: Limits,
+) -> Result<Option<konoma_plugin::Chip>, String> {
+    let (result, tail) = inspect(options, &limits, |c| {
+        c.handshake(&limits, options.plugin.as_deref())?;
+        if !c.chip_supported() {
+            return Ok(None);
+        }
+        c.open_project(root, marker, &limits)?;
+        let chip = match c.call(&Connection::chip(1, 2, cx)?, 2, limits.open_view)? {
+            Answer::Ok(Reply::Chip { chip, .. }) => chip.map(wire::chip_from_wire),
+            Answer::Err(failure) => return Err(wire::failure_from_wire(failure).to_string()),
+            other => return Err(format!("{other:?}")),
+        };
+        c.alive(&limits)?;
+        Ok(chip)
+    });
+    result.map_err(|error| format!("{}; stderr tail: {}", one_line(&error), one_line(&tail)))
+}
+
 /// Run all independent checks. Every probe owns a fresh process group, so one broken connection
 /// cannot hide later results. File-dependent checks are explicitly skipped without an input.
 /// `limits` are the product defaults in the CLI; callers may shorten them for their own tests.

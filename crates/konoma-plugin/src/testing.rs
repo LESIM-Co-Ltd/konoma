@@ -40,6 +40,13 @@ pub fn view_text(session: &mut dyn Session, req: &ViewReq) -> Result<Vec<String>
     }
 }
 
+/// Ask for the current project chip with an explicit host context, clipping the answer as the
+/// host does. `None` leaves the declaration's static chip to the host. Like the view helpers,
+/// this calls the session directly; host panic reporting is outside the test helper.
+pub fn chip_with(session: &mut dyn Session, cx: &ViewCx) -> Result<Option<crate::Chip>, Failure> {
+    session.chip(cx).map(|chip| chip.map(|c| c.clipped()))
+}
+
 /// One problem found in a manifest by [`check_manifest`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManifestIssue {

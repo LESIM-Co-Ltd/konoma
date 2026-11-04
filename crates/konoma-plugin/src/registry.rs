@@ -16,6 +16,8 @@ use crate::manifest::{ApiVersion, Manifest, Priority, Target};
 use crate::session::Plugin;
 use crate::settings::Value;
 
+mod project_values;
+
 /// Who registered a plugin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginOrigin {
@@ -55,6 +57,16 @@ pub const MAX_DEFAULT_KEY_BYTES: usize = 256;
 pub const MAX_DEFAULT_DEPTH: usize = 8;
 /// The longest version string kept (longer is cut).
 pub const MAX_VERSION_CHARS: usize = 64;
+/// The most paths a project may watch.
+pub const MAX_WATCH_PATHS: usize = 512;
+/// The longest detection marker, in bytes.
+pub const MAX_MARKER_BYTES: usize = 1024;
+/// The most choices in one prompt.
+pub const MAX_CHOICES: usize = 64;
+/// The longest value returned by a choice, in bytes.
+pub const MAX_CHOICE_VALUE_BYTES: usize = 1024;
+/// The most refresh targets an action may declare.
+pub const MAX_REFRESH_TARGETS: usize = 64;
 
 /// Whether `s` is a usable name: 1 to [`MAX_NAME_CHARS`] characters of `[a-z0-9._-]`. A name is
 /// printed by the host (`konoma --plugins`, the startup message) and used in config tables and
@@ -97,6 +109,7 @@ pub enum ManifestName {
     SettingName,
     ScreenName,
     WorkGroup,
+    RowKind,
 }
 
 impl ManifestName {
@@ -108,6 +121,7 @@ impl ManifestName {
             Self::SettingName => "a setting name",
             Self::ScreenName => "a screen name",
             Self::WorkGroup => "the work group",
+            Self::RowKind => "a row kind",
         }
     }
 }
@@ -121,6 +135,11 @@ pub enum ManifestCount {
     Binds,
     Screens,
     Targets,
+    Markers,
+    RowKinds,
+    WatchPaths,
+    Choices,
+    RefreshTargets,
 }
 
 impl ManifestCount {
@@ -131,6 +150,11 @@ impl ManifestCount {
             Self::Binds => "binds",
             Self::Screens => "screens",
             Self::Targets => "targets in a bind",
+            Self::Markers => "project detection markers",
+            Self::RowKinds => "row kinds in a screen",
+            Self::WatchPaths => "project watch paths",
+            Self::Choices => "choices in a prompt",
+            Self::RefreshTargets => "refresh targets in an action",
         }
     }
 }
@@ -140,6 +164,58 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    UnknownRefreshScreen {
+        action: String,
+        screen: String,
+    },
+    InvalidWatchPath {
+        index: usize,
+    },
+    InvalidMarker {
+        index: usize,
+        limit: usize,
+    },
+    InvalidScreenKey {
+        key: String,
+    },
+    InvalidConfirmationKey {
+        action: String,
+        key: String,
+    },
+    DuplicateConfirmationKey {
+        action: String,
+        key: String,
+    },
+    EmptyConfirmation {
+        action: String,
+    },
+    ChoiceValueTooLong {
+        action: String,
+        limit: usize,
+    },
+    ChoiceLabelTooLong {
+        action: String,
+        limit: usize,
+    },
+    DestructiveWithoutConfirmation {
+        action: String,
+    },
+    DuplicateScreen {
+        screen: String,
+    },
+    DuplicateScreenKey {
+        key: String,
+    },
+    UnknownScreen {
+        action: String,
+        screen: String,
+    },
+    UnknownRowKind {
+        action: String,
+        screen: String,
+        kind: String,
+    },
+    NoDetectionMarkers,
     InvalidName {
         kind: ManifestName,
         name: String,
@@ -175,6 +251,21 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownRefreshScreen { action, screen } => write!(f, "action `{action}` refreshes unknown screen `{screen}`"),
+            Self::InvalidWatchPath { index } => write!(f, "project watch path {index} must be nonempty and relative without parent components"),
+            Self::InvalidMarker { index, limit } => write!(f, "project detection marker {index} must be one nonempty file name other than . or .. (at most {limit} bytes)"),
+            Self::InvalidScreenKey { key } => write!(f, "screen key `{key}` is a control character or reserved by the host"),
+            Self::InvalidConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is a control character or reserved by the host"),
+            Self::DuplicateConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is declared twice"),
+            Self::EmptyConfirmation { action } => write!(f, "confirmation of action `{action}` must declare at least one choice"),
+            Self::ChoiceValueTooLong { action, limit } => write!(f, "a choice value of action `{action}` exceeds {limit} bytes"),
+            Self::ChoiceLabelTooLong { action, limit } => write!(f, "a choice label of action `{action}` exceeds {limit} characters"),
+            Self::DestructiveWithoutConfirmation { action } => write!(f, "action `{action}` is destructive but has no confirmation choices"),
+            Self::DuplicateScreen { screen } => write!(f, "screen `{screen}` is declared twice"),
+            Self::DuplicateScreenKey { key } => write!(f, "screen key `{key}` is declared twice"),
+            Self::UnknownScreen { action, screen } => write!(f, "action `{action}` names unknown screen `{screen}`"),
+            Self::UnknownRowKind { action, screen, kind } => write!(f, "action `{action}` names unknown row kind `{kind}` in screen `{screen}`"),
+            Self::NoDetectionMarkers => write!(f, "a project must declare at least one detection marker"),
             Self::InvalidName { kind, name, limit } => write!(f, "{} `{name}` is not a name ([a-z0-9._-], 1 to {limit} characters)", kind.english()),
             Self::TooMany { kind, count, limit } => write!(f, "{count} {} (at most {limit})", kind.english()),
             Self::TargetTooLong { bind, bytes, limit } => write!(f, "bind {bind} has a target that is too long ({bytes} bytes, at most {limit})"),
@@ -297,6 +388,102 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
                 .as_deref()
                 .and_then(|g| name(ManifestName::WorkGroup, g))
         })
+        .or_else(|| project_problem(m))
+}
+
+fn project_problem(m: &Manifest) -> Option<ManifestReason> {
+    use crate::project::ActContext;
+    let project = m.project.as_ref();
+    if let Some(p) = project {
+        if p.markers.is_empty() {
+            return Some(ManifestReason::NoDetectionMarkers);
+        }
+        for (kind, count, limit) in [
+            (
+                ManifestCount::Screens,
+                m.screens.len() + p.screens.len(),
+                MAX_SCREENS,
+            ),
+            (
+                ManifestCount::Markers,
+                p.markers.len(),
+                MAX_TARGETS_PER_BIND,
+            ),
+        ] {
+            if count > limit {
+                return Some(ManifestReason::TooMany { kind, count, limit });
+            }
+        }
+        for s in &p.screens {
+            for (kind, name) in std::iter::once((ManifestName::ScreenName, &s.id))
+                .chain(s.row_kinds.iter().map(|r| (ManifestName::RowKind, r)))
+            {
+                if !is_valid_name(name) {
+                    return Some(ManifestReason::InvalidName {
+                        kind,
+                        name: display_name(name),
+                        limit: MAX_NAME_CHARS,
+                    });
+                }
+            }
+            if s.row_kinds.len() > MAX_TARGETS_PER_BIND {
+                return Some(ManifestReason::TooMany {
+                    kind: ManifestCount::RowKinds,
+                    count: s.row_kinds.len(),
+                    limit: MAX_TARGETS_PER_BIND,
+                });
+            }
+        }
+    }
+    let mut screens = std::collections::HashSet::new();
+    let mut keys = std::collections::HashSet::new();
+    for id in m.screens.iter().chain(
+        project
+            .into_iter()
+            .flat_map(|p| p.screens.iter().map(|s| &s.id)),
+    ) {
+        if !screens.insert(id) {
+            return Some(ManifestReason::DuplicateScreen {
+                screen: display_name(id),
+            });
+        }
+    }
+    for s in project.into_iter().flat_map(|p| &p.screens) {
+        if let Some(key) = s.key {
+            if !keys.insert(key) {
+                return Some(ManifestReason::DuplicateScreenKey {
+                    key: key.escape_default().to_string(),
+                });
+            }
+        }
+    }
+    for a in &m.actions {
+        if a.destructive && a.confirmation.as_ref().is_none_or(|c| c.choices.is_empty()) {
+            return Some(ManifestReason::DestructiveWithoutConfirmation {
+                action: display_name(&a.id),
+            });
+        }
+        // The legacy key context remains permissive. Only the new typed context names projects.
+        if let Some(ActContext::Screen { screen, row_kinds }) = &a.project_context {
+            let declared = project.and_then(|p| p.screens.iter().find(|s| &s.id == screen));
+            let Some(declared) = declared else {
+                return Some(ManifestReason::UnknownScreen {
+                    action: display_name(&a.id),
+                    screen: display_name(screen),
+                });
+            };
+            for kind in row_kinds {
+                if !declared.row_kinds.contains(kind) {
+                    return Some(ManifestReason::UnknownRowKind {
+                        action: display_name(&a.id),
+                        screen: display_name(screen),
+                        kind: display_name(kind),
+                    });
+                }
+            }
+        }
+    }
+    project_values::problem(m)
 }
 
 /// Why a registration was refused.

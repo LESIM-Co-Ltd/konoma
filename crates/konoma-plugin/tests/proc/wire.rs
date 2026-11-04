@@ -238,12 +238,7 @@ fn every_other_path_a_child_sends_must_be_absolute_too() {
     }
     // A list row's target, and the origin of a document.
     let mut list = View::List(ListView {
-        rows: vec![ListRow {
-            cells: vec![],
-            kind: String::new(),
-            target: Some(PathBuf::from("rel/t")),
-            checked: None,
-        }],
+        rows: vec![ListRow::new("", vec![]).target("rel/t")],
     });
     let r = view_to_wire(&mut list, &mut Enc::new(&side));
     assert!(matches!(r, Err(WireError::Bad(_))), "list target: {r:?}");
@@ -686,18 +681,8 @@ fn rgba_with_a_wrong_pixel_count_is_refused() {
 fn list_diff_message_reopen_round_trip() {
     let list = View::List(ListView {
         rows: vec![
-            ListRow {
-                cells: lines(),
-                kind: "file".into(),
-                target: Some(PathBuf::from("/a/b")),
-                checked: Some(true),
-            },
-            ListRow {
-                cells: vec![],
-                kind: String::new(),
-                target: None,
-                checked: None,
-            },
+            ListRow::new("file", lines()).target("/a/b").checked(true),
+            ListRow::new("", vec![]),
         ],
     });
     let s = dbg(&list);
@@ -1607,27 +1592,17 @@ fn a_deeply_nested_setting_is_refused() {
     for _ in 0..100 {
         w = WValue::List(vec![w]);
     }
-    let wcx = WCx {
-        settings: vec![("deep".into(), w)],
-        lang: "en".into(),
-        pixels: false,
-        colors: 0,
-        external: false,
-        read_dirs: None,
-    };
+    let mut wcx = WCx::new("en");
+    wcx.settings = vec![("deep".into(), w)];
     assert!(matches!(cx_from_wire(wcx), Err(WireError::TooLarge(_))));
 }
 
 #[test]
 fn unknown_color_depth_reads_as_the_lowest() {
-    let wcx = WCx {
-        settings: vec![],
-        lang: "en".into(),
-        pixels: true,
-        colors: 77,
-        external: false,
-        read_dirs: Some(vec![path_to_wire(Path::new("/definitely/not/there"))]),
-    };
+    let mut wcx = WCx::new("en");
+    wcx.pixels = true;
+    wcx.colors = 77;
+    wcx.read_dirs = Some(vec![path_to_wire(Path::new("/definitely/not/there"))]);
     let c = cx_from_wire(wcx).unwrap();
     assert_eq!(c.term.colors, ColorDepth::Ansi16);
     // A scope whose directories do not exist allows nothing, but is still restricted.
