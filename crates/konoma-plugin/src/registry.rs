@@ -16,6 +16,8 @@ use crate::manifest::{ApiVersion, Manifest, Priority, Target};
 use crate::session::Plugin;
 use crate::settings::Value;
 
+mod project_values;
+
 /// Who registered a plugin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginOrigin {
@@ -55,6 +57,14 @@ pub const MAX_DEFAULT_KEY_BYTES: usize = 256;
 pub const MAX_DEFAULT_DEPTH: usize = 8;
 /// The longest version string kept (longer is cut).
 pub const MAX_VERSION_CHARS: usize = 64;
+/// The most paths a project may watch.
+pub const MAX_WATCH_PATHS: usize = 512;
+/// The longest detection marker, in bytes.
+pub const MAX_MARKER_BYTES: usize = 1024;
+/// The most choices in one prompt.
+pub const MAX_CHOICES: usize = 64;
+/// The longest value returned by a choice, in bytes.
+pub const MAX_CHOICE_VALUE_BYTES: usize = 1024;
 
 /// Whether `s` is a usable name: 1 to [`MAX_NAME_CHARS`] characters of `[a-z0-9._-]`. A name is
 /// printed by the host (`konoma --plugins`, the startup message) and used in config tables and
@@ -125,6 +135,8 @@ pub enum ManifestCount {
     Targets,
     Markers,
     RowKinds,
+    WatchPaths,
+    Choices,
 }
 
 impl ManifestCount {
@@ -137,6 +149,8 @@ impl ManifestCount {
             Self::Targets => "targets in a bind",
             Self::Markers => "project detection markers",
             Self::RowKinds => "row kinds in a screen",
+            Self::WatchPaths => "project watch paths",
+            Self::Choices => "choices in a prompt",
         }
     }
 }
@@ -146,6 +160,35 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    InvalidWatchPath {
+        index: usize,
+    },
+    InvalidMarker {
+        index: usize,
+        limit: usize,
+    },
+    InvalidScreenKey {
+        key: String,
+    },
+    InvalidConfirmationKey {
+        action: String,
+        key: String,
+    },
+    DuplicateConfirmationKey {
+        action: String,
+        key: String,
+    },
+    EmptyConfirmation {
+        action: String,
+    },
+    ChoiceValueTooLong {
+        action: String,
+        limit: usize,
+    },
+    ChoiceLabelTooLong {
+        action: String,
+        limit: usize,
+    },
     DestructiveWithoutConfirmation {
         action: String,
     },
@@ -200,6 +243,14 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidWatchPath { index } => write!(f, "project watch path {index} must be nonempty and relative without parent components"),
+            Self::InvalidMarker { index, limit } => write!(f, "project detection marker {index} must be one nonempty file name other than . or .. (at most {limit} bytes)"),
+            Self::InvalidScreenKey { key } => write!(f, "screen key `{key}` is a control character or reserved by the host"),
+            Self::InvalidConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is a control character or reserved by the host"),
+            Self::DuplicateConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is declared twice"),
+            Self::EmptyConfirmation { action } => write!(f, "confirmation of action `{action}` must declare at least one choice"),
+            Self::ChoiceValueTooLong { action, limit } => write!(f, "a choice value of action `{action}` exceeds {limit} bytes"),
+            Self::ChoiceLabelTooLong { action, limit } => write!(f, "a choice label of action `{action}` exceeds {limit} characters"),
             Self::DestructiveWithoutConfirmation { action } => write!(f, "action `{action}` is destructive but has no confirmation choices"),
             Self::DuplicateScreen { screen } => write!(f, "screen `{screen}` is declared twice"),
             Self::DuplicateScreenKey { key } => write!(f, "screen key `{key}` is declared twice"),
@@ -423,7 +474,7 @@ fn project_problem(m: &Manifest) -> Option<ManifestReason> {
             }
         }
     }
-    None
+    project_values::problem(m)
 }
 
 /// Why a registration was refused.

@@ -137,8 +137,21 @@ where
         Some(h) => h,
         None => return Ok(()),
     };
-    let manifest = catch_unwind(AssertUnwindSafe(|| plugin.manifest()))
-        .map_err(|_| std::io::Error::other("the plugin panicked in manifest()"))?;
+    let manifest = match catch_unwind(AssertUnwindSafe(|| plugin.manifest())) {
+        Ok(manifest) => manifest,
+        Err(panic) => {
+            let failure = panic_failure("manifest", panic);
+            frame::send(
+                &mut output,
+                &HelloReply::Refused {
+                    supported: Vec::new(),
+                    reason: failure.message.get("en").to_string(),
+                },
+            )
+            .map_err(io_err)?;
+            return Ok(());
+        }
+    };
     let wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
     let supported: Vec<u32> = (wire::manifest_protocol(&wm)..=PROTOCOL_VERSION).collect();
     let selected = supported
@@ -148,11 +161,11 @@ where
         .copied();
     let Some(version) = selected else {
         let reply = HelloReply::Refused {
-            supported,
             reason: format!(
-                "the host speaks protocol versions {:?}, this plugin speaks {PROTOCOL_VERSION}",
+                "the host speaks protocol versions {:?}, this plugin speaks protocol versions {supported:?}",
                 hello.versions
             ),
+            supported,
         };
         frame::send(&mut output, &reply).map_err(io_err)?;
         return Ok(());

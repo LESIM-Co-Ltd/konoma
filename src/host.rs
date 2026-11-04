@@ -220,6 +220,40 @@ impl HostBuilder {
 fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
     use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     match reason {
+        R::InvalidWatchPath { index } => tr_format(
+            lang,
+            Msg::PluginReasonWatchPath,
+            &[("index", &index.to_string())],
+        ),
+        R::InvalidMarker { index, limit } => tr_format(
+            lang,
+            Msg::PluginReasonMarker,
+            &[("index", &index.to_string()), ("max", &limit.to_string())],
+        ),
+        R::InvalidScreenKey { key } => tr_format(lang, Msg::PluginReasonScreenKey, &[("key", key)]),
+        R::InvalidConfirmationKey { action, key } => tr_format(
+            lang,
+            Msg::PluginReasonConfirmKey,
+            &[("action", action), ("key", key)],
+        ),
+        R::DuplicateConfirmationKey { action, key } => tr_format(
+            lang,
+            Msg::PluginReasonConfirmDuplicate,
+            &[("action", action), ("key", key)],
+        ),
+        R::EmptyConfirmation { action } => {
+            tr_format(lang, Msg::PluginReasonConfirmEmpty, &[("action", action)])
+        }
+        R::ChoiceValueTooLong { action, limit } => tr_format(
+            lang,
+            Msg::PluginReasonChoiceValue,
+            &[("action", action), ("max", &limit.to_string())],
+        ),
+        R::ChoiceLabelTooLong { action, limit } => tr_format(
+            lang,
+            Msg::PluginReasonChoiceLabel,
+            &[("action", action), ("max", &limit.to_string())],
+        ),
         R::DestructiveWithoutConfirmation { action } => {
             tr_format(lang, Msg::PluginReasonDestructive, &[("action", action)])
         }
@@ -277,6 +311,8 @@ fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: 
                     C::Targets => Msg::PluginCountTargets,
                     C::Markers => Msg::PluginCountMarkers,
                     C::RowKinds => Msg::PluginCountRowKinds,
+                    C::WatchPaths => Msg::PluginCountWatchPaths,
+                    C::Choices => Msg::PluginCountChoices,
                     _ => Msg::PluginCountUnknown,
                 },
             );
@@ -498,7 +534,7 @@ mod tests {
         let project = || {
             ProjectDecl::new()
                 .marker(DetectionMarker::new(".git", MarkerKind::Any))
-                .screen(ProjectScreen::new("log", "Log").key('l').row_kind("commit"))
+                .screen(ProjectScreen::new("log", "Log").key('z').row_kind("commit"))
         };
         let m = || Manifest::new("p", "1").project(project());
         let cases = [
@@ -522,8 +558,8 @@ mod tests {
             ),
             (
                 Manifest::new("p", "1")
-                    .project(project().screen(ProjectScreen::new("other", "Other").key('l'))),
-                "画面のキー `l` が重複しています",
+                    .project(project().screen(ProjectScreen::new("other", "Other").key('z'))),
+                "画面のキー `z` が重複しています",
             ),
             (
                 m().action(
@@ -592,6 +628,66 @@ mod tests {
             assert_eq!(manifest_reason_text(&reason, Lang::En), why);
             assert_eq!(manifest_reason_text(&reason, Lang::Jp), japanese);
             for (lang, expected) in [(Lang::En, why.as_str()), (Lang::Jp, japanese)] {
+                let error = format!("{:#}", HostBuilder::checked_id(&plugin, lang).unwrap_err());
+                assert!(error.ends_with(expected), "{error}");
+            }
+        }
+
+        let confirm = |choices| {
+            Manifest::new("p", "1")
+                .action(Act::new("go").confirmation(Confirmation::new("Go?", choices)))
+        };
+        let pick = |choice| {
+            Manifest::new("p", "1")
+                .action(Act::new("go").choice_input(ChoiceInput::new("Pick", vec![choice])))
+        };
+        let extra = [
+            (Manifest::new("p", "1").project(project().watch("../out")),
+             "project watch path 0 must be nonempty and relative without parent components",
+             "プロジェクトの監視パス 0 は空でなく、親要素を含まない相対パスにしてください"),
+            (Manifest::new("p", "1").project(ProjectDecl::new().marker(DetectionMarker::new("../out", MarkerKind::Any))),
+             "project detection marker 0 must be one nonempty file name other than . or .. (at most 1024 bytes)",
+             "プロジェクトの検出目印 0 は . と .. 以外の空でない単一のファイル名にしてください（最大 1024 バイト）"),
+            (Manifest::new("p", "1").project(project().screen(ProjectScreen::new("other", "Other").key('q'))),
+             "screen key `q` is a control character or reserved by the host",
+             "画面のキー `q` は制御文字かホストの予約キーです"),
+            (confirm(vec![ConfirmChoice::new('\n', "v", "V")]),
+             "confirmation key `\\n` of action `go` is a control character or reserved by the host",
+             "操作 `go` の確認キー `\\n` は制御文字かホストの予約キーです"),
+            (confirm(vec![ConfirmChoice::new('y', "a", "A"), ConfirmChoice::new('y', "b", "B")]),
+             "confirmation key `y` of action `go` is declared twice",
+             "操作 `go` の確認キー `y` が重複しています"),
+            (confirm(vec![]),
+             "confirmation of action `go` must declare at least one choice",
+             "操作 `go` の確認には選択肢を1つ以上宣言してください"),
+            (pick(Choice::new("x".repeat(1025), "V")),
+             "a choice value of action `go` exceeds 1024 bytes",
+             "操作 `go` の選択肢の値が 1024 バイトを超えています"),
+            (pick(Choice::new("v", Tr::new("V").ja("界".repeat(513)))),
+             "a choice label of action `go` exceeds 512 characters",
+             "操作 `go` の選択肢のラベルが 512 文字を超えています"),
+            ({
+                let mut p = project(); p.watch_paths = vec![".git/HEAD".into(); 513];
+                Manifest::new("p", "1").project(p)
+             },
+             "513 project watch paths (at most 512)",
+             "プロジェクトの監視パスが 513 件あります（最大 512 件）"),
+            (Manifest::new("p", "1").action(Act::new("go").choice_input(ChoiceInput::new("Pick", vec![Choice::new("v", "V"); 65]))),
+             "65 choices in a prompt (at most 64)",
+             "入力画面の選択肢が 65 件あります（最大 64 件）"),
+        ];
+        for (manifest, english, japanese) in extra {
+            let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
+            let RegistryError::InvalidManifest { reason, why, .. } = Registry::new()
+                .register(plugin.clone(), PluginOrigin::User)
+                .unwrap_err()
+            else {
+                panic!("expected refusal")
+            };
+            assert_eq!(why, english);
+            assert_eq!(manifest_reason_text(&reason, Lang::En), english);
+            assert_eq!(manifest_reason_text(&reason, Lang::Jp), japanese);
+            for (lang, expected) in [(Lang::En, english), (Lang::Jp, japanese)] {
                 let error = format!("{:#}", HostBuilder::checked_id(&plugin, lang).unwrap_err());
                 assert!(error.ends_with(expected), "{error}");
             }

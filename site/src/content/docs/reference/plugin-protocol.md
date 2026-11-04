@@ -110,6 +110,18 @@ existing behavior. Refusal reasons are typed in the SDK and translated by the
 host into English or Japanese. Names and declaration counts keep bounded
 validation, including project screen/row names and marker/row-kind counts.
 
+Watch paths must be nonempty relative paths without parent, root or prefix components
+(at most 512 paths). Markers must be a single nonempty file-name component other than
+`.` or `..`, at most 1024 bytes. Screen keys use the existing list reserved-key table;
+confirmation keys reserve its global layer plus `q` and `Esc`, while allowing `y` and `!`.
+Control characters and duplicate keys in either set are refused. A confirmation has
+1–64 choices; list prompts also have at most 64 choices. Choice values are at most
+1024 bytes and every translated choice label is at most 512 characters.
+Project screen key contexts have their own namespace, even for screen ids such as `tree`.
+Until project navigation is implemented in standalone apps, its five outcomes show an
+unsupported-action notice. A version refusal reports the manifest's actual supported
+versions; a panic while reading the manifest produces a refusal instead of an abrupt EOF.
+
 This stage declares dialogs only. Host dialogs, prompt answers, project screen
 rendering and the single write guard are attached in a later change.
 
