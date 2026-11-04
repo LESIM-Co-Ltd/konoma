@@ -67,6 +67,27 @@ fn all_pass(report: Report) {
     );
 }
 
+fn project_protocol() {
+    failed(
+        "manifest-destructive",
+        "manifest",
+        "DestructiveWithoutConfirmation",
+    );
+    failed("project-markers", "manifest", "NoDetectionMarkers");
+    failed("project-v1", "handshake", "requires protocol 2");
+    failed("outcome-v1", "act", "requires protocol 2");
+    failed("outcome-relative", "act", "not an absolute path");
+    for mode in [
+        "outcome-push",
+        "outcome-file",
+        "outcome-diff",
+        "outcome-root",
+        "outcome-tab",
+    ] {
+        all_pass(run(&options(mode), failure_limits(mode)));
+    }
+}
+
 fn handshake() {
     failed("handshake", "handshake", "deadline");
 }
@@ -459,6 +480,7 @@ fn main() -> ExitCode {
         return support::fixture(&args[1], &args[2..]);
     }
     let tests: &[(&str, fn())] = &[
+        ("project_protocol", project_protocol),
         ("handshake", handshake),
         ("handshake_version", handshake_version),
         ("handshake_manifest", handshake_manifest),

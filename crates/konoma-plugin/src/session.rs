@@ -12,12 +12,12 @@ use crate::text::Tr;
 use crate::view::{Layout, View, ViewReq};
 
 /// The entry point of a plugin. The host reads `manifest` at startup and calls nothing else until
-/// a file is opened.
+/// an input is opened.
 pub trait Plugin: Send + Sync + 'static {
     /// The declarations a, b and c.
     fn manifest(&self) -> Manifest;
-    /// Open a file (or a content-type input). Heavy work is fine here: the host calls it from a
-    /// worker.
+    /// Open a file, content, embedded input or detected project. Heavy work is fine here:
+    /// the host calls it from a worker.
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure>;
 }
 
@@ -34,7 +34,7 @@ impl<P: Plugin + ?Sized> Plugin for Box<P> {
 
 /// One opened input.
 ///
-/// **A session lasts as long as the file it was opened on is unchanged.** The host opens the file
+/// **For file inputs, a session lasts as long as the file is unchanged.** The host opens the file
 /// again (a new session, the old one dropped) when the file's stamp (modification time, size,
 /// inode, change time) changed -- an edit, a rename over it -- and for a plugin without a work
 /// group that keeps no state (a table, a listing) also on an event of unknown cause. A plugin
@@ -254,6 +254,26 @@ pub enum Outcome {
     Flash(Tr),
     /// Read the file again.
     Reload,
+    /// Push a screen of this plugin, carrying an opaque row identifier. The host's `q` pops it.
+    PushScreen {
+        screen: String,
+        selection: Option<String>,
+    },
+    /// Open a file in the host preview; line numbers are 1-based.
+    OpenFile {
+        path: std::path::PathBuf,
+        line: Option<usize>,
+    },
+    /// Open the host's full-screen diff for this file.
+    OpenDiff {
+        path: std::path::PathBuf,
+    },
+    SwitchRoot {
+        root: std::path::PathBuf,
+    },
+    OpenTab {
+        path: std::path::PathBuf,
+    },
 }
 
 /// Why something failed. The host decides what to do from the kind: for example a

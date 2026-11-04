@@ -28,6 +28,12 @@ impl Plugin for Stub {
 fn typed_manifest_reasons_keep_the_original_english_display() {
     use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     let mut cases = vec![
+        (R::DestructiveWithoutConfirmation { action: "delete".into() }, "action `delete` is destructive but has no confirmation choices".into()),
+        (R::DuplicateScreen { screen: "log".into() }, "screen `log` is declared twice".into()),
+        (R::DuplicateScreenKey { key: "l".into() }, "screen key `l` is declared twice".into()),
+        (R::UnknownScreen { action: "go".into(), screen: "absent".into() }, "action `go` names unknown screen `absent`".into()),
+        (R::UnknownRowKind { action: "go".into(), screen: "log".into(), kind: "branch".into() }, "action `go` names unknown row kind `branch` in screen `log`".into()),
+        (R::NoDetectionMarkers, "a project must declare at least one detection marker".into()),
         (R::TargetTooLong { bind: 2, bytes: 1025, limit: 1024 }, "bind 2 has a target that is too long (1025 bytes, at most 1024)".into()),
         (R::TargetUnclean { bind: 2 }, "bind 2 has a target that contains a control character".into()),
         (R::DefaultTooMany { limit: 1024 }, "a setting default of more than 1024 values".into()),
@@ -42,6 +48,7 @@ fn typed_manifest_reasons_keep_the_original_english_display() {
         (N::SettingName, "a setting name"),
         (N::ScreenName, "a screen name"),
         (N::WorkGroup, "the work group"),
+        (N::RowKind, "a row kind"),
     ] {
         cases.push((
             R::InvalidName {
@@ -58,6 +65,8 @@ fn typed_manifest_reasons_keep_the_original_english_display() {
         (C::Binds, "binds"),
         (C::Screens, "screens"),
         (C::Targets, "targets in a bind"),
+        (C::Markers, "project detection markers"),
+        (C::RowKinds, "row kinds in a screen"),
     ] {
         cases.push((
             R::TooMany {

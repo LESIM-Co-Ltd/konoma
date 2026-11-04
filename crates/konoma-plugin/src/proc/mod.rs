@@ -11,6 +11,11 @@
 //! - [`server`]: the child side ([`serve`], [`serve_io`], the `export!` macro, [`cli_main`]).
 //! - [`client`]: the host side ([`client::ProcPlugin`]).
 //!
+//! Protocol 2 carries project declarations, project inputs, dialog declarations, row marks and
+//! navigation outcomes. Ordinary file plugins can still negotiate protocol 1; project data is
+//! rejected on a version 1 connection. The version-control capability itself is static-link only:
+//! the manifest carries an advertisement, not a wire interface to the capability.
+//!
 //! # What does not cross
 //!
 //! - `Arc` sharing is lost: two `Arc`s of one buffer arrive as two buffers.
@@ -19,10 +24,11 @@
 //! - A table's per-cell `detail` and a text view's `styler` do not cross. The child sends the
 //!   table's cells (at most [`wire::TABLE_MAX_CELLS`]) and the text already styled (a file over
 //!   [`wire::STYLE_MAX_BYTES`] is sent as the file, unstyled).
-//! - Every path a child sends (a text file, a picture file, an SVG's base directory, the origin of
-//!   a document, a list row's target) must be absolute: the side that puts the view on the wire
+//! - Every host-opened path a child sends (a text file, a picture file, an SVG's base directory,
+//!   the origin of a document, a list row's target) must be absolute: the side that puts the view on the wire
 //!   refuses a relative one with a failure, because the child's working directory means nothing to
 //!   the host. (The host's own input is made absolute before it is sent.)
+//!   Project watch declarations instead describe paths relative to the detected project root.
 //! - An SVG from a child is never trusted (`trusted` is false on arrival, whatever the child said):
 //!   its external references are not read.
 //! - A canvas travels per row as style runs that refer to a table of styles by number (one table

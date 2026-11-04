@@ -8,9 +8,9 @@ use super::wire::{
 
 /// The protocol version this build speaks. Versions start at 1; a change that an older end cannot
 /// read bumps it.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
-/// The versions a host accepts: the current one and the one before (none before 1 yet).
+/// The versions a host accepts: the current one and the one before.
 pub fn host_versions() -> Vec<u32> {
     (PROTOCOL_VERSION.saturating_sub(1).max(1)..=PROTOCOL_VERSION).collect()
 }

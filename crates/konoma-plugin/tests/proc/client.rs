@@ -963,7 +963,7 @@ fn the_handshake_sends_the_versions_the_side_directory_and_the_language() {
     );
     let p = ProcPlugin::start(l, cfg_lang).unwrap();
     let h = seen.lock().unwrap().clone().unwrap();
-    assert_eq!(h.versions, vec![1]);
+    assert_eq!(h.versions, vec![1, 2]);
     assert_eq!(h.lang, "ja");
     assert_eq!(h.host_version, "0.0.0-test");
     let dir = path_from_wire(h.side_dir).unwrap();

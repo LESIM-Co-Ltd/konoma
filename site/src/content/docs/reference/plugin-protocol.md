@@ -108,8 +108,8 @@ HelloReply = Ack {version:u32, manifest:Manifest}
            | Refused {supported:[u32], reason:S}
 ```
 
-`versions` currently contains `[1]`; the host version policy accepts the current transport
-version and its predecessor (there is no version before 1). `host_version` is an informational
+`versions` currently contains `[1, 2]`: the host offers the current transport version and its
+predecessor. A plugin that declares a project or a prompt supports only 2. `host_version` is an informational
 program version, not the protocol version. `side_dir` is the absolute handoff directory.
 `lang` is the initial language; each later call carries its own language too.
 
@@ -401,6 +401,93 @@ entries when decoded. Files from a failed conversion are discarded; connection t
 the handoff directory. These files carry byte resources, pictures and canvas styles; arbitrary
 large text/table strings do not automatically become side files. An answer still over the frame
 limit becomes `Err(TooLarge)` in the reference server.
+
+## Project declaration (version 2)
+
+`Manifest.project` is optional and independent of file bindings and the existing
+`screens: string[]` key contexts. Its shape is:
+
+```text
+ProjectDecl {
+  markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[] }],
+  chip: Tr | null,
+  watch_paths: Path[],
+  version_control: boolean
+}
+```
+
+Markers are case-sensitive file-name globs, matched at the tree root and then
+each ancestor. Several markers and project plugins may match. A marker describes
+an entry name, rather than a path to traverse. `Any` supports `.git` as either a
+file or a directory. Screen order declares tab order; the optional key is one
+character. Row-kind names are local to a screen. The chip is a short tree-title
+summary. Watch paths are relative to the detected project root; a change
+invalidates the project's data. `version_control` advertises an optional
+capability; **the capability calls are static-link only** and have no wire RPC.
+
+The input is `{"Project":{"root":Path,"marker":string}}`: an absolute detected
+root and the actual matched entry name (for example `MyApp.xcworkspace`, rather
+than `*.xcworkspace`). It is not a file byte input.
+
+## Actions and dialogs (version 2)
+
+Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `writes`,
+`destructive`) keep their meaning. Four optional fields are added:
+
+```text
+project_context:
+  { "Screen": { screen: string, row_kinds: string[] } }
+  | "TreeSelection" | "Diff" | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
+text_input: { label: Tr, initial: string } | null
+choice_input: { label: Tr, choices: Choice[] } | null
+Choice = { value: string, label: Tr }
+```
+
+An empty `row_kinds` applies to the whole named screen. `TreeSelection` actions
+are menu-only. `Enter` is declared with `key: "Enter"` and a screen context with
+one or more row kinds, through the same declaration and validation path as any
+other action. Distinct row kinds may have distinct Enter actions. Confirmation
+choices can distinguish `y` → `-d` and `!` → `-D`.
+
+The registry refuses a destructive action without nonempty confirmation choices,
+duplicate screen ids (including collisions with legacy screen names), duplicate
+screen keys, unknown screens or row kinds in a typed project context, and a
+project with no detection markers. Legacy `screen` key contexts retain their
+existing behavior. Refusal reasons are typed in the SDK and translated by the
+host into English or Japanese. Names and declaration counts keep bounded
+validation, including project screen/row names and marker/row-kind counts.
+
+## Lists and navigation (version 2)
+
+A list remains `{"List":[row, …]}`. Each row has `cells: Line[]`, `kind: string`,
+`target: Path | null`, `checked: boolean | null`, and the new `marked: boolean`.
+`kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
+is independent host multi-selection. Cells already contain styled spans:
+`Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same
+spans. Each span is a two-element array on the wire. A `Style` has `fg`, `bg`,
+`add` and `sub` fields; the last two are modifier bit masks.
+Diff views retain their existing hunks and lines without a new encoding.
+
+`Acted.outcome` accepts the existing `Unhandled`, `Redraw`, `Flash(Tr)` and
+`Reload`, plus:
+
+| Variant | Payload | Host behavior |
+|---|---|---|
+| `PushScreen` | `{ screen, selection: string \| null }` | Push this plugin's screen with an opaque row identifier |
+| `OpenFile` | `{ path: Path, line: integer \| null }` | Open a preview; line is 1-based |
+| `OpenDiff` | `{ path: Path }` | Open the host's full-screen diff |
+| `SwitchRoot` | `{ root: Path }` | Change the tree root |
+| `OpenTab` | `{ path: Path }` | Open a new host tab |
+
+Navigation paths must be absolute, have no NUL bytes and fit the existing path
+limit. The host's **`q` pops one screen**; it is host behavior, not another plugin
+outcome or an action that bypasses the guard.
+
+The checked examples live in
+`crates/konoma-plugin-test/tests/vectors/project-v2.json` and
+`tests/project_vectors.rs`; the SDK tests cover each new type and outcome.
 
 ## Deadlines and failures
 

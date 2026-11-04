@@ -37,7 +37,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -48,8 +48,8 @@ use super::proto::{
 };
 use super::wire::{
     self, cx_to_wire, failure_from_wire, input_to_wire, key_to_wire, layout_from_wire,
-    manifest_from_wire, outcome_from_wire, path_to_wire, req_to_wire, view_from_wire, CxSource,
-    Dec, Enc, Side,
+    manifest_from_wire, outcome_from_wire_checked, path_to_wire, req_to_wire, view_from_wire,
+    CxSource, Dec, Enc, Side,
 };
 use crate::session::{ActCx, OpenCx, ViewCx};
 use crate::view::Layout;
@@ -316,6 +316,7 @@ impl State {
 }
 
 struct Shared {
+    version: AtomicU32,
     limits: Limits,
     side: Side,
     side_dir: PathBuf,
@@ -717,6 +718,10 @@ fn convert(shared: &Shared, answer: Answer) -> CallResult {
         Answer::Err(f) => Err(failure_from_wire(f)),
         Answer::Ok(Reply::Opened { state }) => Ok(Done::Opened(state_from_wire(state))),
         Answer::Ok(Reply::Viewed { view, state }) => {
+            wire::require_protocol(
+                shared.version.load(Ordering::Acquire),
+                wire::view_protocol(&view),
+            )?;
             // Whatever of this view is not read when the conversion fails is deleted.
             let names = wire::view_side_names(&view);
             match view_from_wire(view, &mut dec) {
@@ -727,10 +732,16 @@ fn convert(shared: &Shared, answer: Answer) -> CallResult {
                 }
             }
         }
-        Answer::Ok(Reply::Acted { outcome, state }) => Ok(Done::Acted(
-            outcome_from_wire(outcome),
-            state_from_wire(state),
-        )),
+        Answer::Ok(Reply::Acted { outcome, state }) => {
+            wire::require_protocol(
+                shared.version.load(Ordering::Acquire),
+                wire::outcome_protocol(&outcome),
+            )?;
+            Ok(Done::Acted(
+                outcome_from_wire_checked(outcome)?,
+                state_from_wire(state),
+            ))
+        }
     }
 }
 
@@ -957,6 +968,7 @@ fn connect(
     }
     let (wtx, wrx) = mpsc::channel::<Vec<u8>>();
     let shared = Arc::new(Shared {
+        version: AtomicU32::new(1),
         limits: cfg.limits.clone(),
         side: Side::new(&side_dir, 'h'),
         side_dir: side_dir.clone(),
@@ -1085,6 +1097,10 @@ fn connect(
                     ),
                 ));
             }
+            if let Err(e) = wire::require_protocol(version, wire::manifest_protocol(&manifest)) {
+                return Err(abort("its manifest protocol", e.to_string()));
+            }
+            shared.version.store(version, Ordering::Release);
             match manifest_from_wire(manifest) {
                 Ok(m) => m,
                 Err(e) => return Err(abort("its manifest", e.to_string())),
@@ -1431,6 +1447,10 @@ impl Plugin for ProcPlugin {
                 let built = input_to_wire(&input, &mut enc)
                     .map_err(Failure::from)
                     .and_then(|input| {
+                        wire::require_protocol(
+                            shared.version.load(Ordering::Acquire),
+                            wire::input_protocol(&input),
+                        )?;
                         let cx =
                             cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?;
                         Ok((input, cx))

@@ -527,6 +527,20 @@ pub struct ListRow {
     pub target: Option<PathBuf>,
     /// A check state, for rows that can be selected as staged and so on.
     pub checked: Option<bool>,
+    /// Host multi-selection, independent of the plugin-owned check state.
+    pub marked: bool,
+}
+
+impl ListRow {
+    pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
+        Self {
+            cells,
+            kind: kind.into(),
+            target: None,
+            checked: None,
+            marked: false,
+        }
+    }
 }
 
 /// A diff.

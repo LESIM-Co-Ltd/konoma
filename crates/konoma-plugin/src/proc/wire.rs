@@ -32,6 +32,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod project;
+pub use project::*;
+
 use crate::input::{Input, Origin, Resource, Resources};
 use crate::key::{Key, KeyCode, KeyMods};
 use crate::manifest::{
@@ -871,6 +874,10 @@ fn resources_from_wire(r: Vec<(String, WBin)>, dec: &mut Dec<'_>) -> Result<Reso
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WInput {
+    Project {
+        root: WPath,
+        marker: String,
+    },
     File {
         path: WPath,
         hint: Option<String>,
@@ -892,6 +899,10 @@ pub enum WInput {
 /// child's working directory is `/`.
 pub fn input_to_wire(i: &Input, enc: &mut Enc<'_>) -> Result<WInput, WireError> {
     Ok(match i {
+        Input::Project { root, marker } => WInput::Project {
+            root: path_made_absolute(root, "project root")?,
+            marker: marker.clone(),
+        },
         Input::File { path, hint } => WInput::File {
             path: path_made_absolute(path, "path")?,
             hint: hint.clone(),
@@ -921,6 +932,10 @@ pub fn input_to_wire(i: &Input, enc: &mut Enc<'_>) -> Result<WInput, WireError> 
 
 pub fn input_from_wire(i: WInput, dec: &mut Dec<'_>) -> Result<Input, WireError> {
     Ok(match i {
+        WInput::Project { root, marker } => Input::Project {
+            root: abs_path_from_wire(root, "project root")?,
+            marker,
+        },
         WInput::File { path, hint } => Input::File {
             path: abs_path_from_wire(path, "input file")?,
             hint,
@@ -1060,6 +1075,23 @@ pub enum WOutcome {
     Redraw,
     Flash(WTr),
     Reload,
+    PushScreen {
+        screen: String,
+        selection: Option<String>,
+    },
+    OpenFile {
+        path: WPath,
+        line: Option<u64>,
+    },
+    OpenDiff {
+        path: WPath,
+    },
+    SwitchRoot {
+        root: WPath,
+    },
+    OpenTab {
+        path: WPath,
+    },
 }
 
 pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
@@ -1068,16 +1100,61 @@ pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
         Outcome::Redraw => WOutcome::Redraw,
         Outcome::Flash(t) => WOutcome::Flash(tr_to_wire(t)),
         Outcome::Reload => WOutcome::Reload,
+        Outcome::PushScreen { screen, selection } => WOutcome::PushScreen {
+            screen: screen.clone(),
+            selection: selection.clone(),
+        },
+        Outcome::OpenFile { path, line } => WOutcome::OpenFile {
+            path: path_to_wire(path),
+            line: line.map(|n| n as u64),
+        },
+        Outcome::OpenDiff { path } => WOutcome::OpenDiff {
+            path: path_to_wire(path),
+        },
+        Outcome::SwitchRoot { root } => WOutcome::SwitchRoot {
+            root: path_to_wire(root),
+        },
+        Outcome::OpenTab { path } => WOutcome::OpenTab {
+            path: path_to_wire(path),
+        },
     }
 }
 
 pub fn outcome_from_wire(o: WOutcome) -> Outcome {
-    match o {
+    outcome_from_wire_checked(o).unwrap_or(Outcome::Unhandled)
+}
+
+/// Decode an untrusted outcome. Transport callers must use this checked form; the original
+/// infallible helper returns `Unhandled` for malformed navigation data.
+pub fn outcome_from_wire_checked(o: WOutcome) -> Result<Outcome, WireError> {
+    Ok(match o {
         WOutcome::Unhandled => Outcome::Unhandled,
         WOutcome::Redraw => Outcome::Redraw,
         WOutcome::Flash(t) => Outcome::Flash(tr_from_wire(t)),
         WOutcome::Reload => Outcome::Reload,
-    }
+        WOutcome::PushScreen { screen, selection } => Outcome::PushScreen { screen, selection },
+        WOutcome::OpenFile { path, line } => Outcome::OpenFile {
+            path: abs_path_from_wire(path, "preview path")?,
+            line: line
+                .map(|n| {
+                    if n == 0 {
+                        Err(WireError::bad("preview line must be 1-based"))
+                    } else {
+                        index_from_wire(n, "preview line")
+                    }
+                })
+                .transpose()?,
+        },
+        WOutcome::OpenDiff { path } => Outcome::OpenDiff {
+            path: abs_path_from_wire(path, "diff path")?,
+        },
+        WOutcome::SwitchRoot { root } => Outcome::SwitchRoot {
+            root: abs_path_from_wire(root, "new root")?,
+        },
+        WOutcome::OpenTab { path } => Outcome::OpenTab {
+            path: abs_path_from_wire(path, "tab path")?,
+        },
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1421,6 +1498,12 @@ pub struct WListRow {
     pub kind: String,
     pub target: Option<WPath>,
     pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub marked: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2011,6 +2094,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                             .map(|p| path_required_absolute(p, "list target"))
                             .transpose()?,
                         checked: r.checked,
+                        marked: r.marked,
                     })
                 })
                 .collect::<Result<_, WireError>>()?,
@@ -2147,6 +2231,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                         .map(|p| abs_path_from_wire(p, "list target"))
                         .transpose()?,
                     checked: r.checked,
+                    marked: r.marked,
                 });
             }
             View::List(ListView { rows: out })
@@ -2221,6 +2306,14 @@ pub struct WAct {
     pub screen: Option<String>,
     pub writes: bool,
     pub destructive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_context: Option<WActContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<WConfirmation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_input: Option<WTextInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_input: Option<WChoiceInput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2270,6 +2363,8 @@ pub enum WUnavailable {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<WProjectDecl>,
     pub id: String,
     pub version: String,
     pub api: (u16, u16),
@@ -2289,6 +2384,7 @@ pub struct WManifest {
 
 pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
     Ok(WManifest {
+        project: m.project.as_ref().map(project_to_wire),
         id: m.id.clone(),
         version: m.version.clone(),
         api: (m.api.major, m.api.minor),
@@ -2323,6 +2419,10 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
                 screen: a.screen.clone(),
                 writes: a.writes,
                 destructive: a.destructive,
+                project_context: a.project_context.as_ref().map(act_context_to_wire),
+                confirmation: a.confirmation.as_ref().map(confirmation_to_wire),
+                text_input: a.text_input.as_ref().map(text_input_to_wire),
+                choice_input: a.choice_input.as_ref().map(choice_input_to_wire),
             })
             .collect(),
         verbs: m
@@ -2391,6 +2491,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
 /// themselves (keys, globs, ids) are validated by the registry as for any plugin, not here.
 pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
     let mut out = Manifest::new(m.id, m.version);
+    out.project = m.project.map(project_from_wire).transpose()?;
     out.api = ApiVersion {
         major: m.api.0,
         minor: m.api.1,
@@ -2430,6 +2531,10 @@ pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
             screen: a.screen,
             writes: a.writes,
             destructive: a.destructive,
+            project_context: a.project_context.map(act_context_from_wire),
+            confirmation: a.confirmation.map(confirmation_from_wire),
+            text_input: a.text_input.map(text_input_from_wire),
+            choice_input: a.choice_input.map(choice_input_from_wire),
         })
         .collect();
     out.verbs = m

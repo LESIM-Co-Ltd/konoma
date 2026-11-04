@@ -243,6 +243,7 @@ fn every_other_path_a_child_sends_must_be_absolute_too() {
             kind: String::new(),
             target: Some(PathBuf::from("rel/t")),
             checked: None,
+            marked: false,
         }],
     });
     let r = view_to_wire(&mut list, &mut Enc::new(&side));
@@ -691,12 +692,14 @@ fn list_diff_message_reopen_round_trip() {
                 kind: "file".into(),
                 target: Some(PathBuf::from("/a/b")),
                 checked: Some(true),
+                marked: false,
             },
             ListRow {
                 cells: vec![],
                 kind: String::new(),
                 target: None,
                 checked: None,
+                marked: false,
             },
         ],
     });
