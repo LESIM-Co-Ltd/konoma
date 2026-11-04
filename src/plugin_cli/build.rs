@@ -127,14 +127,28 @@ struct WorkDir {
 
 impl WorkDir {
     fn create(data_dir: &Path, keep: bool) -> Result<WorkDir> {
+        Self::create_with(data_dir, keep, |path| std::fs::create_dir_all(path))
+    }
+
+    fn create_with(
+        data_dir: &Path,
+        keep: bool,
+        create: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<WorkDir> {
         let path = if keep {
             data_dir.join("build")
         } else {
             data_dir.join(format!("build-{}", std::process::id()))
         };
-        std::fs::create_dir_all(path.join("src"))
-            .with_context(|| format!("cannot create {}", path.display()))?;
-        Ok(WorkDir { path, keep })
+        let existed = path.exists();
+        let mut work = WorkDir {
+            path,
+            keep: keep && existed,
+        };
+        create(&work.path.join("src"))
+            .with_context(|| format!("cannot create {}", work.path.display()))?;
+        work.keep = keep;
+        Ok(work)
     }
 }
 
@@ -220,18 +234,17 @@ fn in_own_group(cmd: &mut Command) -> &mut Command {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: the closure runs between fork and exec and calls only async-signal-safe
-        // functions (prctl, getppid, raise); it allocates nothing and takes no lock.
+        // functions (prctl, sigaction, sigprocmask, getppid, _exit); no allocation or locks.
         let parent = std::process::id() as libc::pid_t;
         unsafe {
             cmd.pre_exec(move || {
+                reset_parent_death_signal()?;
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 // The parent may have died before the request took effect (it then never
                 // fires): the child has been given to another parent by now.
-                if libc::getppid() != parent {
-                    libc::raise(libc::SIGTERM);
-                }
+                ensure_parent(parent);
                 Ok(())
             });
         }
@@ -239,8 +252,34 @@ fn in_own_group(cmd: &mut Command) -> &mut Command {
     cmd.process_group(0)
 }
 
-fn stop_group(child: &mut std::process::Child) {
-    konoma_plugin::proc::process::stop_group(child, STOP_GRACE);
+#[cfg(any(target_os = "linux", test))]
+unsafe fn ensure_parent(parent: libc::pid_t) {
+    if libc::getppid() != parent {
+        // A handler inherited across fork could catch raise before exec resets dispositions.
+        libc::_exit(128 + libc::SIGTERM);
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+unsafe fn reset_parent_death_signal() -> std::io::Result<()> {
+    // Exec resets caught handlers, but preserves SIG_IGN and the blocked signal mask.
+    let mut action: libc::sigaction = std::mem::zeroed();
+    action.sa_sigaction = libc::SIG_DFL;
+    libc::sigemptyset(&mut action.sa_mask);
+    if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut term = std::mem::zeroed();
+    libc::sigemptyset(&mut term);
+    libc::sigaddset(&mut term, libc::SIGTERM);
+    if libc::sigprocmask(libc::SIG_UNBLOCK, &term, std::ptr::null_mut()) == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn stop_group(child: &mut std::process::Child) -> std::io::Result<ExitStatus> {
+    konoma_plugin::proc::process::stop_group(child, STOP_GRACE)
 }
 
 /// Wait for a child started with [`in_own_group`]. On interruption or timeout the whole process
@@ -273,15 +312,16 @@ fn run_cargo(
     target: &Path,
     interrupted: &AtomicBool,
 ) -> Result<ExitStatus> {
-    let mut child = in_own_group(&mut Command::new(cargo))
+    let child = in_own_group(&mut Command::new(cargo))
         .args(args)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target)
         .stdin(Stdio::null())
         .spawn()
         .with_context(|| format!("cannot run {}", cargo.display()))?;
+    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
     let result = wait_for(&mut child, interrupted, None);
-    stop_group(&mut child);
+    stop_group(&mut child)?;
     result
 }
 
@@ -297,7 +337,7 @@ fn verify_with_timeout(
     timeout: Duration,
 ) -> Result<()> {
     let started = Instant::now();
-    let mut child = in_own_group(&mut Command::new(bin))
+    let child = in_own_group(&mut Command::new(bin))
         .arg("--plugins")
         // So the new program does not hand over to the one installed now.
         .env(SWITCHED_ENV, own)
@@ -306,6 +346,7 @@ fn verify_with_timeout(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("cannot start the new build ({})", bin.display()))?;
+    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
     let output = collect_output(
         &mut child,
         interrupted,
@@ -381,7 +422,7 @@ pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<St
     std::fs::write(work.path.join("src/main.rs"), project.main_rs)?;
     restore_lock(env, &work.path.join("Cargo.lock"))?;
     let mut command = Command::new(cargo);
-    let mut child = in_own_group(&mut command)
+    let child = in_own_group(&mut command)
         .args(["metadata", "--format-version", "1"])
         .current_dir(&work.path)
         .env("CARGO_TARGET_DIR", work.path.join("target"))
@@ -389,6 +430,7 @@ pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<St
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
     let output = collect_output(&mut child, &METADATA_INTERRUPTED, None)?;
     if !output.status.success() {
         bail!(
@@ -665,6 +707,100 @@ pub fn clean(data_dir: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn metadata_exit_stops_helpers_holding_its_output_pipes() {
+        let dir = crate::test_support::unique_tmp("metadata-pipe-holder");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(&dir,
+            "/bin/sleep 300 &\nprintf '%s\\n' \"$!\" >&3\nprintf '%s' '{\"packages\":[{\"id\":\"fixture\",\"name\":\"konoma-foo\",\"authors\":[\"Fixture author\"]}],\"resolve\":{\"root\":\"root\",\"nodes\":[{\"id\":\"root\",\"deps\":[{\"pkg\":\"fixture\"}]}]}}'\nexit 0");
+        let mut env = env_in(&dir);
+        env.cargo_env = Some(fixture.program.clone().into_os_string());
+        let data = env.data_dir.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::authors(
+                &env,
+                &super::PluginList::default(),
+                "konoma-foo",
+            ))
+            .unwrap();
+        });
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        if result.is_err() {
+            fixture.stop();
+        }
+        worker.join().unwrap();
+        assert_eq!(
+            result.expect("metadata output watchdog").unwrap(),
+            ["Fixture author"]
+        );
+        assert!(fixture.gone());
+        assert!(!std::fs::read_dir(data).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("build-")));
+    }
+    #[test]
+    fn parent_death_term_is_default_and_unblocked_after_exec() {
+        use crate::test_support::command::CommandOutput;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "kill -TERM $$; printf survived"]);
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                let mut blocked = std::mem::zeroed();
+                libc::sigemptyset(&mut blocked);
+                libc::sigaddset(&mut blocked, libc::SIGTERM);
+                libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+                super::reset_parent_death_signal()
+            });
+        }
+        let output = command.supervised_output().unwrap();
+        assert_eq!(output.status.signal(), Some(libc::SIGTERM));
+        assert!(output.stdout.is_empty());
+    }
+    #[test]
+    fn a_missing_parent_cannot_be_ignored_before_exec() {
+        use crate::test_support::command::CommandOutput;
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf executed"]);
+        // Only async-signal-safe calls run in the child. A controlled mismatch avoids a race
+        // against the real parent's death, and SIG_IGN survives exec unless we reset it.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                super::ensure_parent(0);
+                Ok(())
+            });
+        }
+        let output = command.supervised_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "a missing parent must end the child before exec"
+        );
+        assert!(output.stdout.is_empty());
+    }
+    #[test]
+    fn partially_created_work_directory_is_removed() {
+        let dir = crate::test_support::unique_tmp("partial-work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut parent = None;
+        let result = super::WorkDir::create_with(&dir, false, |path| {
+            let path = path.parent().unwrap();
+            std::fs::create_dir_all(path)?;
+            parent = Some(path.to_owned());
+            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+        });
+        assert!(result.is_err());
+        assert!(
+            !parent.unwrap().exists(),
+            "failed creation left the run's directory"
+        );
+    }
+    #[test]
     fn successful_verification_entry_cleans_its_background_helper() {
         let dir = crate::test_support::unique_tmp("verify-entry-background");
         std::fs::create_dir_all(&dir).unwrap();
@@ -832,7 +968,16 @@ mod tests {
     ) {
         let mut command = Command::new("/bin/sh");
         command
-            .args(["-c", "exit 0"])
+            // A natural exit now kills same-group pipe holders immediately. Keep the producer
+            // alive here to exercise the run deadline; detached holders still test post-exit I/O.
+            .args([
+                "-c",
+                if detached {
+                    "exit 0"
+                } else {
+                    "exec /bin/sleep 300"
+                },
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         in_own_group(&mut command);
@@ -924,23 +1069,30 @@ mod tests {
     fn stopping_a_live_group_allows_its_term_handler_to_finish() {
         use std::io::BufRead;
         use std::os::unix::process::CommandExt;
-        let mut leader = in_own_group(&mut Command::new("/bin/cat"))
+        use std::os::{fd::OwnedFd, unix::net::UnixStream};
+        let leader = in_own_group(&mut Command::new("/bin/cat"))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
+        let mut leader = konoma_plugin::proc::process::ChildGuard::new(leader);
         let pgid = leader.id();
-        let mut member = Command::new("/bin/sh")
+        let (output, child_output) = UnixStream::pair().unwrap();
+        output
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let member = Command::new("/bin/sh")
             .args([
                 "-c",
                 "trap 'echo term; read line; echo graceful; exit 0' TERM; echo ready; read line",
             ])
             .process_group(pgid as i32)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(OwnedFd::from(child_output)))
             .spawn()
             .unwrap();
-        let mut output = std::io::BufReader::new(member.stdout.take().unwrap());
+        let mut member = konoma_plugin::proc::process::ChildGuard::new(member);
+        let mut output = std::io::BufReader::new(output);
         let mut line = String::new();
         output.read_line(&mut line).unwrap();
         assert_eq!(line, "ready\n");
@@ -949,18 +1101,36 @@ mod tests {
             .unwrap()
             .is_none());
         let (tx, rx) = std::sync::mpsc::channel();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel::<()>();
+        let (permit_tx, permit_rx) = std::sync::mpsc::channel();
         let stopper = std::thread::spawn(move || {
-            stop_group(&mut leader);
+            let mut first = true;
+            konoma_plugin::proc::process::stop_group_with_wait_hook(
+                &mut leader,
+                Duration::MAX,
+                || {
+                    if first {
+                        first = false;
+                        waiting_tx.send(()).unwrap();
+                        permit_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+                    }
+                },
+            )
+            .unwrap();
             tx.send(()).unwrap();
         });
         line.clear();
         output.read_line(&mut line).unwrap();
         // A member of the live group must be given time to finish its TERM handler.
+        let waiting = waiting_rx.recv_timeout(Duration::from_secs(5));
         use std::io::Write;
         let write = member.stdin.as_mut().unwrap().write_all(b"done\n");
-        let status = member.wait().unwrap();
+        let status =
+            konoma_plugin::proc::process::wait(&mut member, Duration::from_secs(10)).unwrap();
+        let _ = permit_tx.send(());
         rx.recv_timeout(Duration::from_secs(5)).unwrap();
         stopper.join().unwrap();
+        waiting.expect("the fixture must hold the live-member grace before releasing the handler");
         assert_eq!(line, "term\n");
         write.unwrap();
         assert!(

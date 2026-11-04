@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -114,6 +114,11 @@ pub fn remove_private_temp_dir() {
 /// panic, and from the signal thread.
 pub fn exit_cleanup() {
     if dry_run() {
+        note_exit_step(ExitStep::StopCaptureProcesses);
+    } else {
+        CAPTURES.shutdown();
+    }
+    if dry_run() {
         note_exit_step(ExitStep::StopSvgProcesses);
     } else {
         super::svg_proc::shutdown();
@@ -135,6 +140,7 @@ pub fn exit_cleanup() {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExitStep {
+    StopCaptureProcesses,
     StopSvgProcesses,
     StopPluginProcesses,
     RemoveTempDir,
@@ -146,6 +152,7 @@ pub(crate) enum ExitStep {
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
 enum ExitStep {
+    StopCaptureProcesses,
     StopSvgProcesses,
     StopPluginProcesses,
     RemoveTempDir,
@@ -354,6 +361,7 @@ pub fn run_detached(argv: &[String]) -> Result<()> {
         .spawn()
         .with_context(|| format!("failed to launch `{prog}`"))?;
     // The player owns its lifetime; a waiter still reaps it without holding up the caller.
+    let child = konoma_plugin::proc::process::ChildGuard::new(child);
     let pending = Arc::new(Mutex::new(Some(child)));
     let waiter = pending.clone();
     if let Err(error) = std::thread::Builder::new()
@@ -365,8 +373,7 @@ pub fn run_detached(argv: &[String]) -> Result<()> {
         })
     {
         if let Some(mut child) = pending.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
         }
         return Err(error).context("failed to start command waiter");
     }
@@ -412,6 +419,66 @@ pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBu
 /// only to turn "never returns" into "eventually gives up," not to police normal runtimes.
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
+type CapturedChild = Arc<Mutex<konoma_plugin::proc::process::ChildGuard>>;
+
+struct Captures {
+    exiting: AtomicBool,
+    children: Mutex<Vec<CapturedChild>>,
+}
+
+static CAPTURES: Captures = Captures {
+    exiting: AtomicBool::new(false),
+    children: Mutex::new(Vec::new()),
+};
+
+impl Captures {
+    fn start(
+        &self,
+        spawn: impl FnOnce() -> Result<std::process::Child>,
+    ) -> Result<CaptureRegistration<'_>> {
+        // Serialize the shutdown decision and spawn together: no child can appear after the
+        // exit path has taken ownership of all running captures.
+        let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
+        }
+        let child = Arc::new(Mutex::new(konoma_plugin::proc::process::ChildGuard::new(
+            spawn()?,
+        )));
+        children.push(child.clone());
+        Ok(CaptureRegistration { owner: self, child })
+    }
+
+    fn shutdown(&self) {
+        // Publish cancellation before waiting for an in-flight spawn's registration lock.
+        self.exiting.store(true, Ordering::SeqCst);
+        let children = {
+            let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *children)
+        };
+        for child in children {
+            // Cancellation releases collect_output's child lock before bounded cleanup here.
+            let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+        }
+    }
+}
+
+struct CaptureRegistration<'a> {
+    owner: &'a Captures,
+    child: CapturedChild,
+}
+
+impl Drop for CaptureRegistration<'_> {
+    fn drop(&mut self) {
+        self.owner
+            .children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|child| !Arc::ptr_eq(child, &self.child));
+    }
+}
+
 /// `run_capture`'s real body, parameterized on the timeout purely for testability: `run_capture`
 /// itself always passes the real, generous `RUN_TIMEOUT`; tests pass something short so a
 /// deliberately-hanging fixture command doesn't make the test suite itself slow (see
@@ -436,17 +503,20 @@ fn run_capture_configured(
     let mut command = Command::new(prog);
     use std::os::unix::process::CommandExt;
     command.args(rest).process_group(0);
-    configure(&mut command);
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to launch `{prog}`"))?;
+    let registration = CAPTURES.start(|| {
+        configure(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to launch `{prog}`"))
+    })?;
 
+    let mut child = registration.child.lock().unwrap_or_else(|e| e.into_inner());
     let capture = konoma_plugin::proc::process::collect_output(
         &mut child,
-        || false,
+        || CAPTURES.exiting.load(Ordering::SeqCst),
         Some(timeout),
         crate::preview::text::MAX_BYTES,
         Duration::ZERO,
@@ -542,6 +612,70 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_cleanup_stops_running_captures_and_refuses_new_spawns() {
+        use crate::test_support::command::CommandOutput;
+        const ENV: &str = "KONOMA_TEST_CAPTURE_EXIT";
+        if std::env::var_os(ENV).is_none() {
+            let dir = crate::test_support::unique_tmp("capture-exit-env");
+            std::fs::create_dir_all(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["preview::command::tests::exit_cleanup_stops_running_captures_and_refuses_new_spawns", "--exact", "--nocapture"])
+                .env(ENV, "1").env("TMPDIR", dir.as_os_str()).supervised_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = crate::test_support::unique_tmp("capture-exit-active");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "printf '%s\\n' \"$$\" >&3\nexec /bin/sleep 300",
+        );
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("out");
+        let worker_out = out.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture_impl(
+                &[program],
+                &worker_out,
+                false,
+                std::time::Duration::MAX,
+            ))
+            .unwrap();
+        });
+        fixture.ready();
+        super::exit_cleanup();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        if result.is_err() {
+            fixture.stop();
+        }
+        worker.join().unwrap();
+        assert!(result
+            .expect("exit cleanup must stop and reap captures")
+            .is_err());
+        assert!(fixture.gone());
+        let spawned = std::cell::Cell::new(false);
+        let result = super::run_capture_configured(
+            &["/bin/true".into()],
+            &out,
+            false,
+            std::time::Duration::MAX,
+            |_| {
+                spawned.set(true);
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            !spawned.get(),
+            "exit has started: do not configure or spawn a new capture"
+        );
+    }
     #[test]
     fn capture_success_leaves_no_background_helper() {
         let dir = crate::test_support::unique_tmp("capture-background");
@@ -1124,6 +1258,7 @@ mod tests {
         assert_eq!(
             steps,
             vec![
+                ExitStep::StopCaptureProcesses,
                 ExitStep::StopSvgProcesses,
                 ExitStep::StopPluginProcesses,
                 ExitStep::RemoveTempDir
@@ -1226,6 +1361,7 @@ mod tests {
     fn every_way_out_runs_the_whole_exit_cleanup() {
         let _serial = serialize_terminal_tests();
         let all = vec![
+            ExitStep::StopCaptureProcesses,
             ExitStep::StopSvgProcesses,
             ExitStep::StopPluginProcesses,
             ExitStep::RemoveTempDir,

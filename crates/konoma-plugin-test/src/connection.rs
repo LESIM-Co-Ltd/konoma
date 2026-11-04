@@ -10,7 +10,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use konoma_plugin::proc::process::{CancellablePipe, Cancellation};
+use konoma_plugin::proc::process::{CancellablePipe, Cancellation, ChildGuard};
 use konoma_plugin::proc::{frame, proto::*, wire};
 use konoma_plugin::{Input, Manifest, ViewReq};
 
@@ -35,7 +35,7 @@ pub(crate) fn signal_exit_code() -> Option<u8> {
 
 /// Installed only by the executable; embedding applications retain their signal policy.
 pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
-    for signal in [libc::SIGINT, libc::SIGTERM] {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the action is initialized, and the handler only records an atomic value.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
@@ -59,7 +59,7 @@ pub(crate) struct Connection {
     threads: Vec<JoinHandle<()>>,
     stopped: bool,
     cancel: Cancellation,
-    child: Arc<Mutex<std::process::Child>>,
+    child: Arc<Mutex<ChildGuard>>,
 }
 
 impl Connection {
@@ -71,6 +71,15 @@ impl Connection {
         options: &Options,
         limits: &Limits,
         configure: impl FnOnce(&mut Command),
+    ) -> Result<Self, String> {
+        Self::spawn_with_worker_hook(options, limits, configure, |_, _, _| Ok(()))
+    }
+
+    fn spawn_with_worker_hook(
+        options: &Options,
+        limits: &Limits,
+        configure: impl FnOnce(&mut Command),
+        mut worker_hook: impl FnMut(usize, i32, &std::path::Path) -> std::io::Result<()>,
     ) -> Result<Self, String> {
         if interrupted() {
             return Err("interrupted".into());
@@ -111,16 +120,34 @@ impl Connection {
             });
         }
         configure(&mut cmd);
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
+        let child = match cmd.spawn() {
+            Ok(child) => ChildGuard::new(child),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
                 return Err(e.to_string());
             }
         };
         let pid = child.id() as i32;
-
         let cancel = Cancellation::with_external(interrupted);
+        let (exit_tx, exit) = mpsc::sync_channel(1);
+        let (frame_tx, frames) = mpsc::sync_channel(1);
+        let (writer, jobs) = mpsc::sync_channel::<WriteJob>(1);
+        let tail = Arc::new(Mutex::new(VecDeque::new()));
+        // Establish ownership before pipes or workers can fail. Drop cancels and joins every
+        // worker already started, stops the child and removes the handoff directory.
+        let mut connection = Self {
+            side: wire::Side::new(dir, 'h'),
+            pid,
+            writer: Some(writer),
+            frames,
+            exit,
+            tail: tail.clone(),
+            threads: Vec::new(),
+            stopped: false,
+            child: Arc::new(Mutex::new(child)),
+            cancel: cancel.clone(),
+        };
+        let mut child = connection.child.lock().unwrap();
         let pipes = (|| -> std::io::Result<_> {
             Ok((
                 CancellablePipe::new(child.stdin.take().expect("piped stdin"), cancel.clone())?,
@@ -128,19 +155,20 @@ impl Connection {
                 CancellablePipe::new(child.stderr.take().expect("piped stderr"), cancel.clone())?,
             ))
         })();
-        let (mut stdin, mut stdout, mut stderr) = match pipes {
-            Ok(pipes) => pipes,
-            Err(error) => {
-                konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(error.to_string());
-            }
-        };
-        let (exit_tx, exit) = mpsc::sync_channel(1);
-        let child = Arc::new(Mutex::new(child));
-        let watched = child.clone();
+        drop(child);
+        let (mut stdin, mut stdout, mut stderr) = pipes.map_err(|e| e.to_string())?;
+        let watched = connection.child.clone();
         let ending = cancel.clone();
-        let waiter = std::thread::spawn(move || {
+        macro_rules! start_worker {
+            ($index:expr, $work:expr) => {{
+                worker_hook($index, pid, connection.side.dir()).map_err(|e| e.to_string())?;
+                let thread = std::thread::Builder::new()
+                    .spawn($work)
+                    .map_err(|e| e.to_string())?;
+                connection.threads.push(thread);
+            }};
+        }
+        start_worker!(0, move || {
             while !ending.is_cancelled() {
                 let status = konoma_plugin::proc::process::poll_exit(&watched.lock().unwrap());
                 match status {
@@ -152,8 +180,7 @@ impl Connection {
                 }
             }
         });
-        let (frame_tx, frames) = mpsc::sync_channel(1);
-        let reader = std::thread::spawn(move || loop {
+        start_worker!(1, move || loop {
             let result = match frame::read_frame(&mut stdout) {
                 Ok(Some(body)) => Ok(body),
                 Ok(None) => Err("EOF (the child closed stdout)".into()),
@@ -164,8 +191,7 @@ impl Connection {
                 break;
             }
         });
-        let (writer, jobs) = mpsc::sync_channel::<WriteJob>(1);
-        let sender = std::thread::spawn(move || {
+        start_worker!(2, move || {
             while let Ok((bytes, done)) = jobs.recv() {
                 let result = stdin
                     .write_all(&bytes)
@@ -178,10 +204,9 @@ impl Connection {
                 }
             }
         });
-        let tail = Arc::new(Mutex::new(VecDeque::new()));
         let sink = Arc::clone(&tail);
         let max_tail = limits.stderr_tail;
-        let logger = std::thread::spawn(move || {
+        start_worker!(3, move || {
             let mut buf = [0; 4096];
             loop {
                 match stderr.read(&mut buf) {
@@ -197,18 +222,7 @@ impl Connection {
                 }
             }
         });
-        Ok(Self {
-            side: wire::Side::new(dir, 'h'),
-            pid,
-            writer: Some(writer),
-            frames,
-            exit,
-            tail,
-            threads: vec![waiter, reader, sender, logger],
-            stopped: false,
-            child,
-            cancel,
-        })
+        Ok(connection)
     }
 
     pub fn packet(body: Vec<u8>) -> Vec<u8> {
@@ -357,7 +371,7 @@ impl Connection {
             self.cancel.cancel();
             let mut child = self.child.lock().unwrap();
             debug_assert_eq!(child.id(), self.pid as u32);
-            konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+            let cleanup = konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
             drop(child);
             self.writer.take();
             // Release a reader that may be waiting to hand off unsolicited frames.
@@ -367,6 +381,12 @@ impl Connection {
                 let _ = thread.join();
             }
             let _ = std::fs::remove_dir_all(self.side.dir());
+            if let Err(error) = cleanup {
+                self.tail
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(error.to_string().bytes());
+            }
         }
         let bytes: Vec<u8> = self
             .tail
@@ -401,6 +421,51 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
 
+    #[test]
+    fn worker_creation_failure_cleans_the_child_and_directory() {
+        let options = Options {
+            program: "/bin/cat".into(),
+            args: vec![],
+            plugin: None,
+            files: vec![],
+        };
+        for failed_worker in 0..4 {
+            let mut observed = None;
+            let result = Connection::spawn_with_worker_hook(
+                &options,
+                &Limits::default(),
+                |_| {},
+                |worker, pid, dir| {
+                    observed = Some((pid, dir.to_owned()));
+                    if worker == failed_worker {
+                        Err(std::io::Error::from_raw_os_error(libc::EAGAIN))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(result.is_err());
+            let (pid, dir) = observed.unwrap();
+            let mut status = 0;
+            // This wait also cleans up the old implementation's unreaped direct child on failure.
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            let reaped = waited == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
+            if waited == 0 {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, &mut status, 0);
+                }
+            }
+            let removed = !dir.exists();
+            if !removed {
+                std::fs::remove_dir_all(&dir).unwrap();
+            }
+            assert!(reaped, "worker failure left its direct child unreaped");
+            assert!(removed, "worker failure left its handoff directory");
+        }
+    }
+
     mod process_fixture {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -426,7 +491,7 @@ mod tests {
         })
         .unwrap();
         let mut helper = pending.unwrap().ready();
-        let pid = connection.pid;
+        let owned = connection.child.clone();
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let result = connection.handshake(&limits, None);
@@ -436,9 +501,10 @@ mod tests {
         let result = rx.recv_timeout(Duration::from_secs(6));
         if result.is_err() {
             helper.stop();
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
+            let _ = konoma_plugin::proc::process::stop_group(
+                &mut owned.lock().unwrap(),
+                Duration::ZERO,
+            );
         }
         worker.join().unwrap();
         let error = result
@@ -475,7 +541,7 @@ mod tests {
             ..Limits::default()
         };
         let connection = Connection::spawn(&options, &limits).unwrap();
-        let pid = connection.pid;
+        let owned = connection.child.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
             let result = check(&connection, &limits);
@@ -487,10 +553,10 @@ mod tests {
         // then join the worker before failing. No mutated test can leave its child running.
         let result = rx.recv_timeout(Limits::default().shutdown_grace);
         if result.is_err() {
-            // SAFETY: pid belongs to the connection's own process group.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
+            let _ = konoma_plugin::proc::process::stop_group(
+                &mut owned.lock().unwrap(),
+                Duration::ZERO,
+            );
         }
         worker.join().unwrap();
         let error = result
@@ -576,22 +642,19 @@ mod tests {
             .process_group(c.pid)
             .spawn()
             .unwrap();
-        let member_pid = member.id() as i32;
         // Child::wait closes its stdin handle. Hold it here so EOF cannot let cat exit before
         // the group kill; the assertion must not depend on which thread gets scheduled first.
         let member_input = member.stdin.take().unwrap();
         let (tx, rx) = mpsc::sync_channel(1);
         let waiter = std::thread::spawn(move || {
-            let _ = tx.send(member.wait());
+            let mut member = ChildGuard::new(member);
+            let _ = tx.send(konoma_plugin::proc::process::wait(
+                &mut member,
+                Limits::default().shutdown_grace,
+            ));
         });
         drop(c);
-        let status = rx.recv_timeout(Limits::default().shutdown_grace);
-        if status.is_err() {
-            // On failure still clean up this exact owned process before reporting it.
-            unsafe {
-                libc::kill(member_pid, libc::SIGKILL);
-            }
-        }
+        let status = rx.recv_timeout(Limits::default().shutdown_grace + Duration::from_secs(2));
         waiter.join().unwrap();
         drop(member_input);
         assert_eq!(status.unwrap().unwrap().signal(), Some(libc::SIGKILL));

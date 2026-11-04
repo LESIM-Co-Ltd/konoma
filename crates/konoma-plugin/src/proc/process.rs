@@ -6,7 +6,7 @@ use std::os::fd::AsRawFd;
 use std::process::{Child, ExitStatus, Output};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 
@@ -57,12 +57,115 @@ fn poll_exit_pid(pid: u32) -> io::Result<Option<ExitStatus>> {
 }
 
 /// Stop the owned group and reap its direct child, including after a natural leader exit.
-pub fn stop_group(child: &mut Child, grace: Duration) {
-    stop_group_with(child, grace, signal_group);
+/// After SIGKILL, allow at most 500 ms for reaping; return TimedOut if the child is still alive.
+/// Runtime callers retain it in ChildGuard, which transfers failed cleanup to a nonblocking reaper.
+pub fn stop_group(child: &mut Child, grace: Duration) -> io::Result<ExitStatus> {
+    stop_group_with(child, grace, signal_group)
 }
 
-fn stop_group_with(child: &mut Child, grace: Duration, signal: impl FnMut(u32, libc::c_int)) {
-    stop_group_observing(child, grace, signal, group_has_live_members, || {});
+/// Internal test seam: hold the grace loop at a known live-member observation.
+pub fn stop_group_with_wait_hook(
+    child: &mut Child,
+    grace: Duration,
+    waiting: impl FnMut(),
+) -> io::Result<ExitStatus> {
+    stop_group_observing(child, grace, signal_group, group_has_live_members, waiting)
+}
+
+fn stop_group_with(
+    child: &mut Child,
+    grace: Duration,
+    signal: impl FnMut(u32, libc::c_int),
+) -> io::Result<ExitStatus> {
+    stop_group_observing(child, grace, signal, group_has_live_members, || {})
+}
+
+const REAP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Own a child through all early returns and unwinding, including failed bounded cleanup.
+pub struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    pub fn new(child: Child) -> Self {
+        start_reaper();
+        Self(Some(child))
+    }
+}
+
+impl std::ops::Deref for ChildGuard {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        self.0.as_ref().expect("owned child")
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Child {
+        self.0.as_mut().expect("owned child")
+    }
+}
+
+static PENDING_REAP: Mutex<Vec<Child>> = Mutex::new(Vec::new());
+static REAPER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+fn start_reaper() {
+    let pending = PENDING_REAP.lock().unwrap_or_else(|e| e.into_inner());
+    if pending.is_empty() || REAPER_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    drop(pending);
+    if std::thread::Builder::new()
+        .name("child-reaper".into())
+        .spawn(|| loop {
+            let mut pending = PENDING_REAP.lock().unwrap_or_else(|e| e.into_inner());
+            pending.retain_mut(|child| match child.try_wait() {
+                Ok(Some(_)) => false,
+                Err(e) if e.raw_os_error() == Some(libc::ECHILD) => false,
+                _ => true,
+            });
+            if pending.is_empty() {
+                REAPER_RUNNING.store(false, Ordering::SeqCst);
+                break;
+            }
+            drop(pending);
+            std::thread::sleep(Duration::from_millis(50));
+        })
+        .is_err()
+    {
+        // Keep ownership in the queue if threads are exhausted; the next child retries startup.
+        REAPER_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            if stop_group(&mut child, Duration::ZERO).is_err() {
+                PENDING_REAP
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(child);
+                start_reaper();
+            }
+        }
+    }
+}
+
+fn kill_and_reap(
+    child: &mut Child,
+    timeout: Duration,
+    kill: impl FnOnce(&mut Child) -> io::Result<()>,
+) -> io::Result<ExitStatus> {
+    kill(child)?;
+    let until = Instant::now() + timeout;
+    loop {
+        match poll_exit(child) {
+            Ok(Some(_)) => return child.wait(),
+            Err(e) => return Err(e),
+            Ok(None) if Instant::now() >= until => return Err(io::ErrorKind::TimedOut.into()),
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -192,14 +295,18 @@ fn stop_group_observing(
     mut signal: impl FnMut(u32, libc::c_int),
     mut live_members: impl FnMut(u32) -> io::Result<bool>,
     mut waiting: impl FnMut(),
-) {
+) -> io::Result<ExitStatus> {
     // WNOWAIT keeps the leader alive or a zombie until the final group signal. An earlier
     // Child::wait/try_wait forfeits that reservation, so never signal such a Child.
     let exited = match poll_exit(child) {
         Ok(status) => status.is_some(),
-        Err(_) => {
-            let _ = child.wait();
-            return;
+        Err(error) => {
+            // Child caches its status after wait/try_wait. ECHILD here never authorizes a signal.
+            match child.try_wait()? {
+                Some(status) => return Ok(status),
+                None if error.raw_os_error() == Some(libc::ECHILD) => return Err(error),
+                None => false,
+            }
         }
     };
     let pid = child.id();
@@ -207,8 +314,8 @@ fn stop_group_observing(
     // macOS and succeeds on Linux, so neither result tells us whether live members remain.
     if !exited && !grace.is_zero() {
         signal(pid, libc::SIGTERM);
-        let until = Instant::now() + grace;
-        while Instant::now() < until {
+        let started = Instant::now();
+        while started.elapsed() < grace {
             // Failed or incomplete enumeration is not evidence that the group has finished.
             if !live_members(pid).unwrap_or(true) {
                 break;
@@ -218,7 +325,8 @@ fn stop_group_observing(
         }
     }
     signal(pid, libc::SIGKILL);
-    let _ = child.wait();
+    // A direct child may have moved to a different group. Its unreaped pid is still reserved.
+    kill_and_reap(child, REAP_TIMEOUT, Child::kill)
 }
 
 /// Wait without collecting pipes. The caller must consume or redirect any piped streams.
@@ -237,7 +345,7 @@ pub fn wait(child: &mut Child, timeout: Duration) -> io::Result<ExitStatus> {
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
         }
     };
-    stop_group(child, Duration::ZERO);
+    stop_group(child, Duration::ZERO)?;
     result
 }
 
@@ -415,6 +523,7 @@ pub fn collect_output(
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         let (mut out_done, mut err_done) = (false, false);
         let mut status = None;
+        let mut drain_started = None;
         loop {
             if cancelled() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
@@ -424,6 +533,19 @@ pub fn collect_output(
             }
             if status.is_none() {
                 status = poll_exit(child)?;
+                if status.is_some() {
+                    stop_group(child, Duration::ZERO)?;
+                    stopped = true;
+                    drain_started = Some(Instant::now());
+                }
+            }
+            // A helper may have escaped the group while retaining either pipe. Natural exit
+            // ends its producer's lifetime; allow only a bounded drain, even without a run limit.
+            if drain_started.is_some_and(|started: Instant| started.elapsed() >= REAP_TIMEOUT) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "output pipes remained open after child exit",
+                ));
             }
             let mut stdout_truncated = false;
             let mut stderr_truncated = false;
@@ -434,11 +556,11 @@ pub fn collect_output(
                 (err_done, stderr_truncated) = read_batch(&mut err, &mut stderr, cap)?;
             }
             if stdout_truncated || stderr_truncated {
-                stop_group(child, Duration::ZERO);
+                let status = stop_group(child, Duration::ZERO)?;
                 stopped = true;
                 return Ok(Capture {
                     output: Output {
-                        status: child.wait()?,
+                        status,
                         stdout,
                         stderr,
                     },
@@ -463,7 +585,7 @@ pub fn collect_output(
         }
     })();
     if !stopped {
-        stop_group(child, grace);
+        stop_group(child, grace)?;
     }
     result
 }
@@ -473,6 +595,109 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
     use std::process::Command;
+
+    #[test]
+    fn failed_reaping_returns_a_timeout_without_waiting_unboundedly() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut child = ChildGuard::new(
+            Command::new("/bin/cat")
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let input = child.stdin.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // Simulate a SIGKILL that has not yet made the child reapable.
+            let result = kill_and_reap(&mut child, Duration::ZERO, |_| Ok(()));
+            tx.send(result).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        drop(input); // Release the old unbounded wait on a failed mutation, before joining it.
+        worker.join().unwrap();
+        assert_eq!(
+            result.expect("bounded reap watchdog").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    mod process_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/process_fixture.rs"
+        ));
+    }
+
+    #[test]
+    fn an_exited_child_cannot_leave_unbounded_output_collection() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let pending = process_fixture::PendingHelper::attach(&mut command, false, false);
+        let mut child = ChildGuard::new(command.spawn().unwrap());
+        let mut helper = pending.ready();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(
+                collect_output(&mut child, || false, None, usize::MAX, Duration::ZERO)
+                    .map(|c| c.output),
+            )
+            .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        if result.is_err() {
+            helper.stop();
+        }
+        worker.join().unwrap();
+        assert!(result
+            .expect("exit must bound output collection")
+            .unwrap()
+            .status
+            .success());
+        assert!(helper.gone());
+    }
+
+    #[test]
+    fn escaped_pipe_holder_has_a_post_exit_deadline_without_a_run_timeout() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let pending = process_fixture::PendingHelper::attach(&mut command, true, false);
+        let mut child = ChildGuard::new(command.spawn().unwrap());
+        let mut helper = pending.ready();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(
+                collect_output(&mut child, || false, None, usize::MAX, Duration::ZERO)
+                    .map(|c| c.output),
+            )
+            .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        helper.stop();
+        worker.join().unwrap();
+        assert!(helper.gone());
+        assert_eq!(
+            result
+                .expect("post-exit drain watchdog")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
 
     struct TestChild(Child);
 
@@ -498,12 +723,58 @@ mod tests {
     }
 
     #[test]
+    fn stopping_reaps_a_direct_child_that_moved_out_of_its_group() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let (mut lifetime, inherited) = UnixStream::pair().unwrap();
+        lifetime.set_nonblocking(true).unwrap();
+        let fd = inherited.as_raw_fd();
+        // SAFETY: getpgrp has no preconditions; the child will join this same-session group.
+        let parent_group = unsafe { libc::getpgrp() };
+        let mut command = Command::new("/bin/cat");
+        command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: only async-signal-safe descriptor and process-group operations before exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, parent_group) == -1
+                    || libc::dup2(fd, 3) == -1
+                    || libc::fcntl(3, libc::F_SETFD, 0) == -1
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let input = child.stdin.take().unwrap();
+        let pid = child.id();
+        drop(inherited);
+        assert_eq!(unsafe { libc::getpgid(pid as i32) }, parent_group);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = stop_group(&mut child, Duration::ZERO);
+            tx.send(()).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        // EOF releases even the old unbounded wait without ever signalling a recorded pid.
+        drop(input);
+        worker.join().unwrap();
+        result.expect("stopping must not wait forever for an escaped direct child");
+        assert!(matches!(lifetime.read(&mut [0]), Ok(0)));
+    }
+
+    #[test]
     fn a_live_leader_that_exits_on_term_finishes_without_the_full_grace() {
         let mut child = live_leader();
         assert!(poll_exit(&child.0).unwrap().is_none());
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            stop_group(&mut child.0, Duration::from_secs(30));
+            stop_group(&mut child.0, Duration::from_secs(30)).unwrap();
             assert_eq!(
                 poll_exit(&child.0).unwrap_err().raw_os_error(),
                 Some(libc::ECHILD)
@@ -548,7 +819,7 @@ mod tests {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let mut waits = 0;
-            stop_group_observing(
+            let _ = stop_group_observing(
                 &mut leader.0,
                 Duration::from_secs(30),
                 signal_group,
@@ -624,7 +895,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut fail_next = true;
             let mut first_wait = true;
-            stop_group_observing(
+            let _ = stop_group_observing(
                 &mut child.0,
                 Duration::from_secs(30),
                 signal_group,
@@ -711,14 +982,14 @@ mod tests {
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
-            let pid = member.id();
             // Keep stdin open until after cleanup, so EOF cannot end the member by itself.
             let input = member.stdin.take().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             let waiter = std::thread::spawn(move || {
-                tx.send(member.wait()).unwrap();
+                let mut member = ChildGuard::new(member);
+                tx.send(wait(&mut member, Duration::from_secs(40))).unwrap();
             });
-            (pid, input, rx, waiter)
+            (input, rx, waiter)
         });
         drop(leader.stdin.take());
         let until = Instant::now() + Duration::from_secs(10);
@@ -728,7 +999,7 @@ mod tests {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            stop_group(&mut leader, Duration::from_secs(30));
+            stop_group(&mut leader, Duration::from_secs(30)).unwrap();
             assert_eq!(
                 poll_exit(&leader).unwrap_err().raw_os_error(),
                 Some(libc::ECHILD)
@@ -738,14 +1009,8 @@ mod tests {
         let completed = rx.recv_timeout(Duration::from_secs(10));
         // Also join on the old implementation: its finite grace ends and reaps the leader.
         worker.join().unwrap();
-        if let Some((pid, input, exited, waiter)) = member {
-            let status = exited.recv_timeout(Duration::from_secs(5));
-            if status.is_err() {
-                // SAFETY: this is the exact member pid recorded at spawn, never a name match.
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-            }
+        if let Some((input, exited, waiter)) = member {
+            let status = exited.recv_timeout(Duration::from_secs(42));
             waiter.join().unwrap();
             drop(input);
             assert_eq!(
@@ -779,7 +1044,7 @@ mod tests {
             .unwrap();
         child.wait().unwrap();
         let mut signals = Vec::new();
-        stop_group_with(&mut child, Duration::ZERO, |pid, signal| {
+        let _ = stop_group_with(&mut child, Duration::ZERO, |pid, signal| {
             signals.push((pid, signal))
         });
         assert!(

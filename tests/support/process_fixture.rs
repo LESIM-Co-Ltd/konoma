@@ -14,6 +14,7 @@ pub struct PendingHelper {
 
 pub struct Helper {
     pub pid: libc::pid_t,
+    armed: std::cell::Cell<bool>,
     lifetime: UnixStream,
 }
 
@@ -80,6 +81,7 @@ impl PendingHelper {
         ready.read_exact(&mut bytes).unwrap();
         let mut helper = Helper {
             pid: libc::pid_t::from_ne_bytes(bytes),
+            armed: std::cell::Cell::new(true),
             lifetime: ready,
         };
         helper.lifetime.read_exact(&mut bytes).unwrap();
@@ -94,14 +96,65 @@ impl PendingHelper {
 impl Helper {
     pub fn gone(&mut self) -> bool {
         // The readiness socket already has a watchdog; keep it when the peer has closed.
-        matches!(self.lifetime.read(&mut [0]), Ok(0))
+        let gone = matches!(self.lifetime.read(&mut [0]), Ok(0));
+        if gone {
+            self.armed.set(false);
+        }
+        gone
     }
     pub fn stop(&self) {
+        self.stop_with(|pid| unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        });
+    }
+    fn stop_with(&self, mut signal: impl FnMut(libc::pid_t)) {
+        let mut event = libc::pollfd {
+            fd: self.lifetime.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP,
+            revents: 0,
+        };
+        // Do not kill an old recorded pid even if the caller has not yet called gone().
+        if unsafe { libc::poll(&mut event, 1, 0) } > 0 {
+            let mut pipe = &self.lifetime;
+            if matches!(pipe.read(&mut [0]), Ok(0)) {
+                self.armed.set(false);
+            }
+        }
         // SAFETY: this exact pid was recorded by our fixture, never found by name.
-        unsafe {
-            libc::kill(self.pid, libc::SIGKILL);
+        if !self.armed.get() {
+            return;
+        }
+        signal(self.pid);
+    }
+}
+
+#[test]
+fn a_gone_helper_never_signals_its_recorded_pid_again() {
+    use std::process::Stdio;
+    let mut command = Command::new("/bin/cat");
+    command
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let pending = PendingHelper::attach(&mut command, false, true);
+    struct Leader(std::process::Child);
+    impl Drop for Leader {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
         }
     }
+    let _leader = Leader(command.spawn().unwrap());
+    let mut helper = pending.ready();
+    helper.stop();
+    assert!(helper.gone());
+    let mut signals = Vec::new();
+    helper.stop_with(|pid| signals.push(pid));
+    assert!(
+        signals.is_empty(),
+        "EOF must disarm pid cleanup: {signals:?}"
+    );
 }
 
 impl Drop for Helper {

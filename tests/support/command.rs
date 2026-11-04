@@ -14,12 +14,13 @@ pub(crate) trait CommandOutput {
 impl CommandOutput for Command {
     fn supervised_output(&mut self) -> io::Result<Output> {
         use std::os::unix::process::CommandExt;
-        let mut child = self
+        let child = self
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
         konoma_plugin::proc::process::collect_output(
             &mut child,
             || false,
@@ -31,7 +32,8 @@ impl CommandOutput for Command {
     }
     fn supervised_status(&mut self) -> io::Result<ExitStatus> {
         use std::os::unix::process::CommandExt;
-        let mut child = self.process_group(0).spawn()?;
+        let mut child =
+            konoma_plugin::proc::process::ChildGuard::new(self.process_group(0).spawn()?);
         konoma_plugin::proc::process::wait(&mut child, Duration::from_secs(600))
     }
 }

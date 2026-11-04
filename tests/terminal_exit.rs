@@ -19,14 +19,13 @@ mod environment {
 
 struct Pty {
     master: Option<OwnedFd>,
-    child: Child,
+    child: konoma_plugin::proc::process::ChildGuard,
     _env: environment::Environment,
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = konoma_plugin::proc::process::stop_group(&mut self.child, Duration::ZERO);
     }
 }
 
@@ -36,8 +35,104 @@ fn spawn_konoma(tag: &str) -> Pty {
     })
 }
 
+#[test]
+fn every_exit_stops_running_capture_commands() {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    for signal in [Some(libc::SIGTERM), Some(libc::SIGHUP), None] {
+        let mut lifetime = None;
+        let mut p = spawn_konoma_with("capture-exit", |work| {
+            // Keep the FIFO outside the browsed directory: sniffing a FIFO as a file blocks.
+            let fifo = work.parent().unwrap().join("lifetime");
+            let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            lifetime = Some(
+                std::fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                    .unwrap(),
+            );
+            let program = work.parent().unwrap().join("capture");
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\nexec 3>'{}'\nprintf '%s\\n' \"$$\" >&3\nexec /bin/sleep 300\n",
+                    fifo.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let config = work.parent().unwrap().join("config/konoma");
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(
+                config.join("config.toml"),
+                format!(
+                    "[[preview.rules]]\nglob = '*.capture'\ncommand = '{}'\n",
+                    program.display()
+                ),
+            )
+            .unwrap();
+            std::fs::write(work.join("a.capture"), "fixture").unwrap();
+        });
+        let mut lifetime = lifetime.unwrap();
+        let _ = wait_for_alt_screen(p.master.as_ref().unwrap());
+        let mut terminal = std::fs::File::from(p.master.as_ref().unwrap().try_clone().unwrap());
+        terminal.write_all(b"\r").unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut record = Vec::new();
+        while !record.contains(&b'\n') {
+            let mut byte = [0];
+            match lifetime.read(&mut byte) {
+                Ok(1) => record.push(byte[0]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                other => panic!("capture readiness: {other:?}"),
+            }
+            assert!(Instant::now() < until, "capture readiness watchdog");
+            let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(10));
+        }
+        let pid: i32 = String::from_utf8(record).unwrap().trim().parse().unwrap();
+        lifetime = std::fs::File::options()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(p._env.path("lifetime"))
+            .unwrap();
+        if let Some(signal) = signal {
+            assert_eq!(
+                unsafe { libc::kill(p.child.id() as i32, signal) },
+                0,
+                "signal: {}",
+                std::io::Error::last_os_error()
+            );
+        } else {
+            terminal.write_all(b"Qy").unwrap();
+        }
+        let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(100));
+        let status = wait_exit(&mut p.child);
+        let ended = matches!(lifetime.read(&mut [0]), Ok(0));
+        if !ended {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        assert!(ended, "capture outlived exit {signal:?}");
+        if let Some(signal) = signal {
+            assert_eq!(status.code(), Some(128 + signal));
+        }
+    }
+}
+
 /// `spawn_konoma` with the files of the directory it opens chosen by `setup`.
 fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
+    spawn_konoma_configured(tag, setup, |_| {})
+}
+
+fn spawn_konoma_configured(
+    tag: &str,
+    setup: impl FnOnce(&std::path::Path),
+    configure: impl FnOnce(&mut Command),
+) -> Pty {
     let mut master = 0;
     let mut slave = 0;
     let ws = libc::winsize {
@@ -89,7 +184,8 @@ fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
             Ok(())
         });
     }
-    let child = cmd.spawn().expect("spawn konoma");
+    configure(&mut cmd);
+    let child = konoma_plugin::proc::process::ChildGuard::new(cmd.spawn().expect("spawn konoma"));
     drop(slave);
     Pty {
         master: Some(master),

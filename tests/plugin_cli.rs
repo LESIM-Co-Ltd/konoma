@@ -354,15 +354,23 @@ fn metadata_signal_stops_cargo(sig: i32) {
             Ok(())
         });
     }
-    let mut cli = command.spawn().unwrap();
-    let _cli_guard = KillOnDrop(cli.id());
+    let mut cli = GuardedChild::new(command.spawn().unwrap());
     drop(child_lifetime);
-    let (cargo, grandchild) = gate.entered();
-    let _cargo_guard = KillOnDrop(cargo);
-    let _grandchild_guard = KillOnDrop(grandchild);
+    let (cargo, _grandchild) = gate.entered();
     // SAFETY: both pids were recorded by the fake cargo created by this test.
     let group = unsafe { libc::getpgid(cargo as i32) };
     assert!(group > 0);
+    // Keep an owned, unreaped member to reserve the pgid through watchdog cleanup, even
+    // after the CLI reaps cargo. It inherits neither end of the lifetime descriptor.
+    let mut sentinel = konoma_plugin::proc::process::ChildGuard::new(
+        Command::new("/bin/cat")
+            .process_group(group)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     unsafe {
         assert_eq!(libc::kill(cli.id() as i32, sig), 0);
     }
@@ -375,6 +383,7 @@ fn metadata_signal_stops_cargo(sig: i32) {
             libc::kill(-group, libc::SIGKILL);
         }
     }
+    konoma_plugin::proc::process::stop_group(&mut sentinel, Duration::ZERO).unwrap();
     assert!(
         matches!(ended, Ok(0)),
         "metadata must stop cargo and every child holding the lifetime pipe: {ended:?}"
@@ -411,20 +420,17 @@ fn clean_waits_for_an_in_use_metadata_directory() {
     let mut command = s.command(&["plugin", "install", "konoma-foo", "--yes"]);
     gate.configure(&mut command);
     command.stdout(Stdio::null()).stderr(Stdio::null());
-    let mut install = command.spawn().unwrap();
-    let _install_guard = KillOnDrop(install.id());
-    let (cargo, grandchild) = gate.entered();
-    let _cargo_guard = KillOnDrop(cargo);
-    let _grandchild_guard = KillOnDrop(grandchild);
+    let mut install = GuardedChild::new(command.spawn().unwrap());
+    let _pids = gate.entered();
     let work = s.data().join(format!("build-{}", install.id()));
     assert!(work.join("Cargo.toml").is_file());
-    let mut clean = s
+    let clean = s
         .command(&["plugin", "clean"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let _clean_guard = KillOnDrop(clean.id());
+    let mut clean = GuardedChild::new(clean);
     let stderr = clean.stderr.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -438,10 +444,6 @@ fn clean_waits_for_an_in_use_metadata_directory() {
     let survived = work.join("Cargo.toml").is_file();
     let waiting = clean.try_wait().unwrap().is_none();
     gate.release();
-    // The fake cargo's child is only needed by the signal checks; end it before waiting on output.
-    unsafe {
-        libc::kill(grandchild as i32, libc::SIGKILL);
-    }
     let install_status = wait_exit(&mut install, 15, "install after metadata release");
     let clean_status = wait_exit(&mut clean, 15, "clean after metadata release");
     reader.join().unwrap();
@@ -1137,15 +1139,33 @@ fn ctrl_c_stops_cargo_and_deletes_the_build_cache() {
 // ---------------------------------------------------------------------------------------------
 // helpers for the tests below
 
-/// Stops a process by its pid when dropped (a test that fails half way must not leave it).
-struct KillOnDrop(u32);
-
-impl Drop for KillOnDrop {
+/// Retain Child's cached status, so a reaped test process can never be signalled again.
+struct GuardedChild(konoma_plugin::proc::process::ChildGuard);
+impl GuardedChild {
+    fn new(child: std::process::Child) -> Self {
+        Self(konoma_plugin::proc::process::ChildGuard::new(child))
+    }
+}
+impl std::ops::Deref for GuardedChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for GuardedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for GuardedChild {
     fn drop(&mut self) {
-        let _ = Command::new("kill")
-            .args(["-KILL", &self.0.to_string()])
-            .stderr(Stdio::null())
-            .supervised_status();
+        if konoma_plugin::proc::process::poll_exit(&self.0).is_ok_and(|s| s.is_none()) {
+            // Let the CLI's normal signal cleanup stop its cargo/verifier groups first.
+            unsafe {
+                libc::kill(self.0.id() as i32, libc::SIGTERM);
+            }
+            let _ = konoma_plugin::proc::process::wait(&mut self.0, Duration::from_secs(5));
+        }
     }
 }
 
@@ -1187,8 +1207,7 @@ fn wait_exit(child: &mut std::process::Child, secs: u64, what: &str) -> std::pro
             return st;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = konoma_plugin::proc::process::stop_group(child, Duration::ZERO);
             panic!("timed out: {what}");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -1226,8 +1245,7 @@ fn ctrl_c_at_the_question_ends_the_command() {
     c.stdin(Stdio::from(slave))
         .stdout(File::create(&said).unwrap())
         .stderr(Stdio::piped());
-    let mut child = c.spawn().unwrap();
-    let _guard = KillOnDrop(child.id());
+    let mut child = GuardedChild::new(c.spawn().unwrap());
     wait_until(30, "the question", || {
         std::fs::read_to_string(&said).is_ok_and(|t| t.contains("[y/N]"))
     });
@@ -1384,8 +1402,7 @@ fn a_second_plugin_command_waits_for_the_lock_and_list_does_not() {
     let said = s.root.join("stderr.txt");
     let mut c = s.command(&["plugin", "install", "konoma-foo", "-y"]);
     c.stdout(Stdio::null()).stderr(File::create(&said).unwrap());
-    let mut child = c.spawn().unwrap();
-    let _guard = KillOnDrop(child.id());
+    let mut child = GuardedChild::new(c.spawn().unwrap());
     wait_until(30, "the notice that it waits", || {
         std::fs::read_to_string(&said).is_ok_and(|t| t.contains("waiting"))
     });
@@ -1419,8 +1436,7 @@ fn every_command_that_changes_things_takes_the_lock() {
         let said = s.root.join("stderr-all.txt");
         let mut c = s.command(args);
         c.stdout(Stdio::null()).stderr(File::create(&said).unwrap());
-        let mut child = c.spawn().unwrap();
-        let _guard = KillOnDrop(child.id());
+        let mut child = GuardedChild::new(c.spawn().unwrap());
         wait_until(30, &format!("{args:?} to wait"), || {
             std::fs::read_to_string(&said).is_ok_and(|t| t.contains("waiting"))
         });
@@ -1445,15 +1461,13 @@ fn stops_the_whole_group(name: &str, sig: &str, ignore_term: bool, want_code: i3
     if ignore_term {
         c.env("FAKE_GC_IGNORE_TERM", "1");
     }
-    let mut child = c.spawn().unwrap();
-    let _guard = KillOnDrop(child.id());
+    let mut child = GuardedChild::new(c.spawn().unwrap());
     wait_until(30, "cargo to start its process", || mark.exists());
     let gc: u32 = std::fs::read_to_string(&pidfile)
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    let _gc_guard = KillOnDrop(gc);
     assert!(alive(gc), "the grandchild runs while cargo waits");
     signal(child.id(), sig);
     let st = wait_exit(&mut child, 20, "konoma to stop");
@@ -1487,8 +1501,7 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     c.env("FAKE_VERIFY_MARK", &mark)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut child = c.spawn().unwrap();
-    let _guard = KillOnDrop(child.id());
+    let mut child = GuardedChild::new(c.spawn().unwrap());
     wait_until(30, "the new build to be asked for --plugins", || {
         mark.exists()
     });
@@ -1497,7 +1510,6 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
         .trim()
         .parse()
         .unwrap();
-    let _v_guard = KillOnDrop(verifier);
     assert!(alive(verifier));
     signal(child.id(), "-INT");
     let o = {
@@ -1539,15 +1551,13 @@ fn killing_konoma_with_sigkill_still_ends_the_build() {
         .env("FAKE_TERM_KILLS_GROUP", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = c.spawn().unwrap();
-    let _guard = KillOnDrop(child.id());
+    let mut child = GuardedChild::new(c.spawn().unwrap());
     wait_until(30, "cargo to start its process", || mark.exists());
     let gc: u32 = std::fs::read_to_string(&pidfile)
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    let _gc_guard = KillOnDrop(gc);
     assert!(alive(gc));
     signal(child.id(), "-KILL");
     let _ = wait_exit(&mut child, 20, "konoma to die");

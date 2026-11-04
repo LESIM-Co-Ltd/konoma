@@ -97,6 +97,11 @@ impl ProgramFixture {
 
     pub fn stop(&self) {
         if let Some(pid) = self.pid {
+            use std::io::Read;
+            let mut pipe = &self.pipe;
+            if matches!(pipe.read(&mut [0]), Ok(0)) {
+                return;
+            }
             // SAFETY: this exact fixture pid was published through its private pipe.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);

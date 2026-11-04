@@ -190,7 +190,8 @@ All notable changes to konoma are documented in this file. The format is based o
   by extension.
 - **External preview commands leave no background helpers.** A command that captures output stops its entire process
   group when it finishes, including successful exits, so helpers do not remain between previews. It also stops when
-  either stdout or stderr exceeds the output limit.
+  either stdout or stderr exceeds the output limit. Running captures are also stopped when konoma exits, including
+  terminal hangup and SIGTERM; no new capture is started once exit cleanup begins.
 - A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn, so `J` / `K` work from the
   first frame.
 - **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates

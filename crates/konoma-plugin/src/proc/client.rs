@@ -36,7 +36,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -217,7 +217,7 @@ impl Launch for CommandLaunch {
                 Ok(())
             });
         }
-        let mut child = cmd.spawn()?;
+        let mut child = super::process::ChildGuard::new(cmd.spawn()?);
         let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -257,11 +257,11 @@ impl Launch for CommandLaunch {
 
 /// Kill the child's process group, then reap the child. The pid is only used while the child is
 /// still unreaped (a zombie keeps its pid), so it cannot name another process.
-fn kill_group(child: &Mutex<Option<Child>>, pid: u32) {
+fn kill_group(child: &Mutex<Option<super::process::ChildGuard>>, pid: u32) {
     let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut c) = guard.take() {
         debug_assert_eq!(c.id(), pid);
-        super::process::stop_group(&mut c, Duration::ZERO);
+        let _ = super::process::stop_group(&mut c, Duration::ZERO);
     }
 }
 

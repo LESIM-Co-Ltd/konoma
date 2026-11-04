@@ -337,7 +337,7 @@ fn cli_signals_stop_the_plugin_group() {
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::Stdio;
-    for signal in [libc::SIGINT, libc::SIGTERM] {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         let (mut ready, child_ready) = UnixStream::pair().unwrap();
         ready
             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -359,7 +359,7 @@ fn cli_signals_stop_the_plugin_group() {
                 Ok(())
             });
         }
-        let mut cli = command.spawn().unwrap();
+        let mut cli = konoma_plugin::proc::process::ChildGuard::new(command.spawn().unwrap());
         drop(child_ready);
         let mut bytes = [0; 4];
         ready.read_exact(&mut bytes).unwrap();
@@ -379,7 +379,19 @@ fn cli_signals_stop_the_plugin_group() {
         let input = member.stdin.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
-            tx.send(member.wait()).unwrap();
+            let start = std::time::Instant::now();
+            loop {
+                let result = konoma_plugin::proc::process::poll_exit(&member);
+                if !matches!(result, Ok(None)) {
+                    tx.send(result.map(Option::unwrap)).unwrap();
+                    break;
+                }
+                if start.elapsed() >= Duration::from_secs(3) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            member
         });
         // SAFETY: these pids identify only processes created by this test.
         unsafe {
@@ -392,12 +404,15 @@ fn cli_signals_stop_the_plugin_group() {
             std::fs::remove_dir_all(&handoff).unwrap();
         }
         let ended = rx.recv_timeout(Duration::from_secs(3));
+        let mut member = waiter.join().unwrap();
         if ended.is_err() {
+            // The unreaped cat (alive or zombie) still reserves this group, even if the
+            // checker already reaped its leader. Reap it only after the final group signal.
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);
             }
         }
-        waiter.join().unwrap();
+        konoma_plugin::proc::process::stop_group(&mut member, Duration::ZERO).unwrap();
         drop(input);
         assert_eq!(
             ended
