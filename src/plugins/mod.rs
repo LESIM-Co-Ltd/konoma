@@ -17,6 +17,7 @@ mod listing;
 mod profile;
 #[cfg(test)]
 mod program_parity_tests;
+pub(crate) mod projects;
 pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]
@@ -493,7 +494,12 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
             }
             continue;
         }
-        if !ids.contains(&id.as_str()) {
+        // Until PR 4 moves their screens into plugins, git/jj still have host executors.
+        // Accept their shared write-policy setting without pretending they declare viewers.
+        let legacy_write_policy = cfg!(feature = "git")
+            && matches!(id.as_str(), "git" | "jj")
+            && table.keys().all(|key| key == "read_only");
+        if !ids.contains(&id.as_str()) && !legacy_write_policy {
             out.push(match lang {
                 Lang::Jp => format!("未知のプラグイン `{id}`(無視)"),
                 Lang::En => format!("unknown plugin `{id}` (ignored)"),

@@ -94,7 +94,9 @@ mod plugin_host;
 #[cfg(test)]
 pub(crate) use plugin_host::InlineAnswers;
 mod plugin_input;
+mod plugin_outcomes;
 mod preview_visual;
+mod project_detection;
 mod repr_cycle;
 mod search;
 mod session_actions;
@@ -2463,6 +2465,7 @@ pub(crate) struct PerTab {
     pub(crate) root: PathBuf,
     /// Extra repository watch, resolved once for this root/backend and carried across tab switches.
     vcs_watch: Option<VcsWatchCache>,
+    pub(crate) projects: crate::plugins::projects::ProjectDetection,
     /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
     pub(crate) open_dir: PathBuf,
     /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
@@ -2690,6 +2693,7 @@ impl Default for PerTab {
             root: PathBuf::new(),
             vcs_watch: None,
             open_dir: PathBuf::new(),
+            projects: crate::plugins::projects::ProjectDetection::default(),
             entries: Vec::new(),
             selected: 0,
             show_hidden: false,
@@ -3200,6 +3204,7 @@ impl App {
             self.git_vcs = crate::vcs::detect(&self.tab.root);
             self.refresh_vcs_watch(self.git_vcs);
         }
+        self.ensure_project_detection();
         let mut out = Vec::new();
         // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
         let expanded_dirs: std::collections::HashSet<PathBuf> = self
@@ -6490,6 +6495,9 @@ mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+#[cfg(test)]
+mod write_guard_tests;
 
 // The read scope of the pictures in a document a plugin the user added returned.
 #[cfg(test)]

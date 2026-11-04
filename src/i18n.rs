@@ -643,6 +643,8 @@ pub enum Msg {
     VcsReadOnly,
     /// Flash when a plugin's writing action is asked of a plugin set to `read_only = true`.
     PluginReadOnly,
+    /// A project discovery or declared watch could not be established on the worker.
+    ProjectDetectionFailed,
     PluginsHead,
     PluginKeyUnknownAction,
     PluginKeyBad,
@@ -1681,6 +1683,7 @@ fn en(msg: Msg) -> &'static str {
         StFilter => "FILTER",
         VcsReadOnly => "konoma only reads a jj repository — use jj itself to change it",
         PluginReadOnly => CoreMsg::PluginReadOnly.en(),
+        ProjectDetectionFailed => "could not detect or watch projects",
         PluginsHead => CoreMsg::PluginsHead.en(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.en(),
         PluginKeyBad => CoreMsg::PluginKeyBad.en(),
@@ -2522,6 +2525,7 @@ fn jp(msg: Msg) -> &'static str {
         StFilter => "絞り込み",
         VcsReadOnly => "konoma は jj リポジトリを読むだけです — 変更は jj で行ってください",
         PluginReadOnly => CoreMsg::PluginReadOnly.ja(),
+        ProjectDetectionFailed => "プロジェクトの検出または監視に失敗しました",
         PluginsHead => CoreMsg::PluginsHead.ja(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.ja(),
         PluginKeyBad => CoreMsg::PluginKeyBad.ja(),
@@ -3713,6 +3717,7 @@ mod tests {
         Msg::StBookmark,
         Msg::VcsReadOnly,
         Msg::PluginReadOnly,
+        Msg::ProjectDetectionFailed,
         Msg::PluginsHead,
         Msg::PluginKeyUnknownAction,
         Msg::PluginKeyBad,

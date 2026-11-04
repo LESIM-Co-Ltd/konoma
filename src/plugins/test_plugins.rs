@@ -50,6 +50,86 @@ pub(crate) fn marker_config(marker: &str) -> crate::config::Config {
     cfg
 }
 
+/// A static project provider. Its file view also exercises the common write boundary while
+/// the SDK has no request fields for project screens or action arguments yet.
+pub(crate) struct ProjectFixture {
+    pub id: &'static str,
+    pub project: konoma_plugin::project::ProjectDecl,
+    pub calls: Arc<AtomicUsize>,
+    pub navigation: Option<Outcome>,
+}
+
+impl Plugin for ProjectFixture {
+    fn manifest(&self) -> Manifest {
+        let mut manifest = Manifest::new(self.id, "0.1.0")
+            .project(self.project.clone())
+            .bind(Bind::files(["*.project-test"]))
+            .shows(ViewKind::Text)
+            .shows(ViewKind::List)
+            .action(
+                Act::new("write")
+                    .key("w")
+                    .label(t!(en: "save project", ja: "プロジェクトを保存"))
+                    .help(t!(en: "Save the project", ja: "プロジェクトを保存する"))
+                    .footer(1)
+                    .writes(),
+            );
+        if self.navigation.is_some() {
+            manifest = manifest.action(
+                Act::new("navigate")
+                    .key("x")
+                    .label(t!(en: "navigate", ja: "移動"))
+                    .footer(2),
+            );
+        }
+        manifest
+    }
+
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(ProjectFixtureSession {
+            project: matches!(input, Input::Project { .. }),
+            calls: self.calls.clone(),
+            navigation: self.navigation.clone(),
+        }))
+    }
+}
+
+struct ProjectFixtureSession {
+    project: bool,
+    calls: Arc<AtomicUsize>,
+    navigation: Option<Outcome>,
+}
+
+impl Session for ProjectFixtureSession {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        if self.project {
+            Ok(View::List(konoma_plugin::view::ListView {
+                rows: vec![konoma_plugin::view::ListRow::new(
+                    "item",
+                    vec![konoma_plugin::style::Line::raw("project item")],
+                )],
+            }))
+        } else {
+            Ok(View::text(["project fixture"]))
+        }
+    }
+
+    fn act(&mut self, action: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        if action == "navigate" {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(self.navigation.clone().unwrap_or(Outcome::Unhandled));
+        }
+        if action != "write" {
+            return Ok(Outcome::Unhandled);
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome::Flash(t!(
+            en: "saved project",
+            ja: "プロジェクトを保存しました"
+        )))
+    }
+}
+
 /// What a test hexdump plugin does differently.
 #[derive(Clone, Default)]
 pub(crate) struct Variant {
