@@ -215,10 +215,11 @@ optional tools degrade to a hint.
 
 ## `[plugins.<id>]` — plugin switches and settings
 
-Each preview is made by a plugin built into konoma. The standard ones are `markdown`, `mermaid`, `math` (formulas
+Previews are made by standard plugins and plugins added by the user, including child-process programs.
+The standard ones are `markdown`, `mermaid`, `math` (formulas
 inside Markdown), `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`,
 `archive`, `code`, `video` and `pdf`. `konoma --plugins` prints which plugin shows which files, in the order a
-file is decided: your `[[preview.rules]]` first, then the standard plugins, then plain text, then
+file is decided: your `[[preview.rules]]` first, then user plugins, then the standard plugins, then plain text, then
 `[can not preview]`.
 
 ```toml
@@ -231,7 +232,27 @@ rainbow = false      # monochrome CSV / TSV columns
 
 - `enabled` (`true` by default) — `false` switches the plugin off. An unknown id, a value that is not `true`/`false`
   and a plugin that cannot be switched off are reported at startup.
-- Every other key of the table is that plugin's own setting. They **replace the matching `[ui]` keys**: the old
+- `command` (string, unset by default) — registers a child-process plugin under this table's id.
+  It must not be empty or whitespace-only. A name without `/` is searched in the absolute directories of `PATH`;
+  an absolute path is used directly, and a relative path containing `/` is resolved from konoma's
+  startup directory. The result must be an executable regular file. No shell is used.
+  `enabled = false` prevents loading this program. Its manifest id must match the table id.
+- `args` (array of strings, default `[]` when `command` is present) — literal arguments before
+  the automatically appended `--serve`; for example, `command = "python3"` with
+  `args = ["/absolute/path/plugin.py"]`. The child runs in a private working directory, so use
+  absolute script/file paths. The loader passes argument strings unchanged; it does not validate
+  relative paths. An invalid command/argument type (or an empty command) is reported and the
+  program is not loaded. Without `command`, `args` is a plugin setting if that plugin declares it,
+  rather than this host option. The manifest comes from the protocol handshake; `--manifest`
+  and `--version` modes are not required.
+- `read_dirs` (array of directory strings, default `[]`) — adds directories to the host's read
+  scope for a user-added plugin. By default that scope includes the tab root and the previewed
+  file's parent, both as opened and after resolving symlinks. Entries must be existing directories
+  given as absolute paths or `~` / `~/...` (expanded using `HOME`). Wrong types, relative paths
+  and missing/non-directory paths are reported and ignored; valid entries in the same list still
+  apply. Standard plugins remain unrestricted, even if this key is set. This controls files the
+  host reads for a plugin; it does not sandbox the plugin's own filesystem access.
+- Apart from these host options and `read_only` below, keys are the plugin's own settings. They **replace the matching `[ui]` keys**: the old
   `[ui]` name is still read and is used when the plugin table does not set the value; if both are set, the plugin
   table wins. A key the plugin does not have (`[plugins.markdown] foo = 1`) is reported at startup and ignored.
   A value of another type than the plugin declares (`[plugins.csv] rainbow = "yes"`, where `true` / `false` is expected)

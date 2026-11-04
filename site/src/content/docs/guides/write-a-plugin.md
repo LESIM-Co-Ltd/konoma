@@ -337,6 +337,21 @@ Read scopes limit what the host
 reads for a plugin; they do not sandbox a plugin's own filesystem access. Do not reuse a
 standard plugin id to replace it.
 
-Rust is optional. Implement the [child-process protocol](../../reference/plugin-protocol/)
-in another language, check it with `konoma-plugin-test`, and load the resulting program through
-`--plugin` or `[plugins.<id>] command`. The Rust `plugins()` installation entry is for Rust crates.
+Rust is optional. A text-only program in another language starts with the host's Hello and its
+Ack/manifest, then handles Open, View and Shutdown; it must also answer unsupported Act/Key
+calls and handle Close/Cancel rather than silently ignoring requests. Follow the protocol's
+[minimal loop for implementers](../../reference/plugin-protocol/#minimal-loop), including EOF
+and invalid-frame handling. The manifest needs `id`, `version`, `api`, `name`, `binds`, `actions`,
+`verbs`, `settings`, `screens`, `shows`, `converts`, `file_text`, `sized` and `unavailable`;
+`work_group` is nullable. Empty unused declaration arrays and `shows:["Text"]` suffice for the
+minimal file viewer with a file binding. Check it with `konoma-plugin-test`, then load it through
+`--plugin` or `[plugins.<id>] command`; the Rust `plugins()` installation entry is for Rust crates.
+
+To reproduce the sample without reading Rust: start with 16 bytes per row, with <kbd>w</kbd>
+switching to 8 and back. Each line has the byte offset in lowercase hex, zero-padded to at least
+8 digits, two spaces, lowercase two-digit hex bytes separated by one space, then enough trailing
+spaces to make that hex column `width*3-1` characters wide, two more spaces, and the ASCII column
+between `|` characters. Preserve bytes `0x21` through `0x7e` and the space byte `0x20`; every
+other byte becomes `.`. The final short row uses the same hex-column padding without padding
+inside the ASCII bars. An empty file returns no lines. A plain line becomes a `Lines` source
+with one span and default span/line styles, as shown in the protocol exchange.

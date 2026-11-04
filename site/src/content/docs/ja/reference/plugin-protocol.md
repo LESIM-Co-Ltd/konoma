@@ -15,8 +15,8 @@ konoma は設定されたプログラムを `<command> <args> --serve` として
 `--serve` を追加します。シェルは介しません。複数プラグインを持つプログラムでは `args` に
 `--plugin <id>` を入れます。1プロセスで1プラグインを提供します。`konoma --plugin <path>`
 はその実行だけでプログラムを読み込み、相対プログラムパスを絶対化します。製品はユーザーの
-カレントディレクトリではなく専用の非公開ディレクトリで起動するため、設定の `args` のスクリプト
-パスは絶対パスが必要です。SDK 単体の `CommandLaunch` は指定がなければ `/` を使います。
+カレントディレクトリではなく専用の非公開ディレクトリで起動するため、設定の `args` のスクリプト・
+ファイルには絶対パスを使ってください。SDK 単体の `CommandLaunch` は指定がなければ `/` を使います。
 一方 `konoma-plugin-test` は呼び出し元のディレクトリを継承し、相対スクリプトパスを使えます。
 
 環境変数はホストから継承します。`CommandLaunch` は環境を消去・追加しません。実行ファイルの
@@ -34,6 +34,26 @@ SDK は `--manifest`（wire manifest の整形 JSON）、`--version`（選択し
 `--version` 単独は全件を列挙します。1プラグインなら選択指定を省略できます。ファイル引数で独立した
 端末表示を起動できるのは SDK の `app` feature を組み込んだ場合だけです。製品は `--manifest`
 を呼ばず、handshake で宣言を取得します。
+konoma 本体の子プログラムの読み込み処理と konoma-plugin-test は、非Rustプラグインの --manifest・--version を
+要求しません。任意の便利なモードです。この2つの利用者向けには --serve（複数プラグインを提供する
+場合は --plugin の選択も）を実装してください。
+
+## 通信パイプを保護する
+
+必要なのは元の stdin/stdout を通信バイトだけに使うことです。ホストは特定の fd 操作を要求・検査
+しません。SDK の推奨 Unix 手順は process.rs でなく `proc/server.rs::take_protocol_fds` にあります。
+
+1. 元の fd 1、次に fd 0 を `fcntl(fd, F_DUPFD_CLOEXEC, 3)` で複製し、通信の出力・入力用に保持します。
+   最小 fd 3 により0・1・2を上書きしません。
+2. `dup2(2, 1)` で通常の stdout を診断用 stderr に向けます。
+3. `/dev/null` を `O_RDONLY | O_CLOEXEC` で開き、`dup2(null_fd, 0)` し、余分な null fd が2より大きければ
+   閉じます。通常の読み込みは通信を消費せず EOF を読みます。
+4. 保存した fd だけでフレームを読み書きします。close-on-exec により exec した補助プログラムが通信
+   パイプを保持し続けるのを防ぎます。診断は stderr に書きます。
+
+他言語の同等の fd 操作でも構いません。SDK は複製・stdout 切替のエラーを返しますが、/dev/null の
+切替は best-effort です（open 失敗時は fd 0 を維持し、この箇所の dup2 の結果は未検査）。
+この fallback を、ライブラリが stdin を消費しない保証だと解釈しないでください。
 
 ## フレームと値の表記
 
@@ -56,6 +76,11 @@ handshake 前の要求エンベロープはありません。
 参照 encoder と同じく全フィールドを送ってください（nullable は `nil` 可）。現在の serde decoder
 は省略された nullable も nil として読み、Text.note には明示的な既定値があります。nonnullable の
 欠落は失敗し、未知の構造体フィールドは無視しますが、フィールドの型を変更できる意味ではありません。
+map のキー（フィールド名・enum タグ）は文字列で、`[action_id, enabled]` などの tuple は配列です。
+例えば manifest の Act.screen は `screen:nil` と screen の省略をどちらも受け付け、主表示の context
+（shows で宣言した型）を使います。`screen:"text"` ならその context を選びます。必須の nonnullable
+である Act.id は省略・nil のどちらも不可。Text.note は明示的に nil が既定ですが、nonnullable の
+省略値すべてに既定値が付くわけではありません。
 
 enum は外部タグ形式です。unit variant の `Shutdown` は文字列 `"Shutdown"`、1値の variant
 は `{"Text": value}`、名前付きフィールドは `{"Open": {fields...}}`、tuple variant は
@@ -68,7 +93,10 @@ SDK の byte visitor はデコード時に u8 配列も受け付けますが、�
 
 ## Handshake
 
-ホストが最初に送る map（enum タグなし）は次の形です。
+最初はホストが Hello を送り、子はそれを受け取る前に何も送信しません。Hello は次の裸の map で、
+`{"Hello": ...}` ではありません。応答は HelloReply の `{"Ack": {version:..., manifest:...}}`
+（または Refused）です。Ack にはタグがありますが、どちらも通常の ToChild 呼び出しや
+`{rid,answer}` 応答ではありません。
 
 ```text
 Hello = {versions:[u32], host_version:S, side_dir:WPath, lang:S}
@@ -88,6 +116,12 @@ HelloReply = Ack {version:u32, manifest:Manifest}
 要求しません。SDK server は `Hello.host_version` と `Hello.lang` を検証しません。
 API の互換検査は別で、major 一致、major 0 では minor も完全一致、それ以外ではプラグインの
 minor がホスト以下であることが必要です。この検査は `manifest_from_wire` でなく registry が行います。
+
+SDK は独立したメッセージ識別子で判定せず、最初の値を直接 Hello としてデコードします。例えば最初が
+`"Shutdown"`、必須フィールド欠落、型違いなどでデコードできない場合は Refused や call error を返さず、
+serving が失敗し、CLI が stderr に診断を書いて終了コード1で終了します。余分なフィールドがあっても
+schema が合う map は Hello として読めるため、送信側が別メッセージのつもりだっただけでは拒否しません。
+最初のフレーム前の正常な EOF は、何も送らず正常終了します。
 
 ## 呼び出し・応答・ヒント
 
@@ -145,6 +179,37 @@ KeyCode = Char(character) | Enter | Backspace | Delete | Tab | BackTab | Left | 
 変換はファンクションキー番号を制限しません。layout は64表現と100,000ページ・タイトルに切り詰め、
 長すぎる表現 id は捨てます。利用者向け翻訳文は512文字までに切り詰め、改行・タブ以外の制御文字と
 U+10EEEE を除去し、英語以外を最大16言語保持します。Failure.detail も切り詰めます。
+
+<a id="minimal-loop"></a>
+
+## 実装者向けの最小ループ
+
+テキスト専用プラグインの通信上の責務は次の順です。
+
+1. 何も送らず Hello を読み、提示された版を選び manifest 付き Ack を返します。一致する版がなければ
+   Refused を返します。下記 manifest の nonnullable フィールドを揃え、optional は nil、使わない宣言配列は
+   空にできます。ファイルビューアは file bind と `shows:["Text"]` を宣言します。設定・操作・独自画面・
+   起動verbは必須ではありません。通信例の manifest が完全な最小例です。
+2. 受信順に直列処理し、sid ごとにセッションを保持します。Open は入力を準備し、layout/enabled を持つ
+   Opened、または Err を返します。View は Text view と現在の状態を持つ Viewed、または Err を返します。
+   サイズ非依存・表現1つ・ページなしなら repr・page・cols・rows・cell_px によって出力を変える必要は
+   ありません。ただし wire 型は宣言どおりにします。
+3. 操作・入力を実装しなくても Act・Key に応答します。`outcome:"Unhandled"` と現在の state を持つ
+   Acted で十分です。call を黙って捨ててはいけません。未openの sid の call は失敗にし、SDK は
+   Err(Corrupt) を使います。
+4. Cancel 自体に応答はせず、対象の call を中断猶予内に終了させます。Err(Cancelled) でも、既に完了した
+   view の成功でも構いません。未知の cancel id は無視します。Close は応答なしでセッションを破棄し、
+   未知の close id は無視できます。call が長く止まり得るなら、その間も中断を受信できるようにします。
+   処理が直列だからといって、パイプを無期限に読まなくてよいわけではありません。
+5. Shutdown には応答せず、セッションを解放し、終了猶予内に終了コード0で終了します。フレーム間の正常な
+   EOF は新しい処理を止めて資源を解放します。SDK は通常この場合も0で終了し、Hello 前の EOF も同様です。
+   フレーム途中の切断・不正・過大フレームは正常 EOF ではなくエラーで、serving を止めます（SDK CLI は1）。
+   検査ツールは不正フレームも実際に送ります。
+
+参照 SDK は reader/worker 分離・cancel flag・panic guard・fd 手順を提供します。他言語では同等の通信
+動作を自分で実装します。特に SDK はホスト EOF で直ちに中断し、処理が止まったままなら2秒後に終了コード1で
+強制終了します。これは正常 EOF の通常の成功終了とは別です。ホストは子の予期しない EOF を終了コードに
+よらず接続失敗とし、検査ツールは Shutdown に終了コード0を要求します。別の hints メッセージは不要です。
 
 ## 入力・コンテキスト・manifest
 
@@ -317,6 +382,14 @@ file になるわけではありません。なおフレーム上限を超える
 RSS の制限は OS helper が測定値を返せる場合に適用し、測定できなければこの検査は無効で期限のみ
 有効です。RSS 上限は監視によるもので、OS が強制するメモリ割当上限ではありません。
 
+FailureKind の使い分けはプラグイン・SDK の慣例で、要求ごとの必須kind表はありません。サンプルは
+std::fs::read のエラーを SDK の From<std::io::Error> で変換し、Io、英日I/Oエラーメッセージ、detail の
+エラー文字列を返します（読めないファイルも含む）。ファイル以外の入力には明示的に Unsupported を使います。
+SDK は未知セッションに Corrupt、実行前の中断に Cancelled を使います。これは参照実装の慣例で、
+他言語の同等の失敗すべてに同じkindを強制する通信規則ではありません。Answer::Err は列挙済みの任意の
+FailureKind を運べ、読めないファイルや未対応入力へのkind割り当てを wire は固定していません。
+独自のwireエラー形式を作らず、プラグインに合うkindと役立つ文言を選んでください。
+
 呼び出し期限は送信時でなく最古の未完了呼び出しになった時から数えます。Cancel の猶予は中断要求と
 先頭到達の両方が成立してからです。これらはネゴシエーション値でなくホストの既定です。検査ツールは
 通常の Limits（handshake 30秒を含む）を使い、CLI に timeout 上書きはありません。
@@ -333,7 +406,7 @@ leader が終了しても子孫を終了させます。SIGKILL 後の reap は50
 ## 通信例（デコード後の MessagePack）
 
 `0x41` の1バイトが入った `/data/a.bin` を開く最小の hexdump 風プラグインです。各矢印が1フレーム。
-先に M・C・L を定義して後で展開します。これは説明上の省略で、wire 上の参照ではありません。
+先に M・C・L・S を定義して後で展開します。これは説明上の省略で、wire 上の参照ではありません。
 `bin("...")` はパスの実バイトです。ここでは全 optional フィールドも記載しています。
 
 ```text
@@ -343,18 +416,69 @@ M = {id:"hex", version:"0.1.0", api:[0,1], name:{en:"Hex",others:[]},
      sized:false, unavailable:"Message"}
 C = {settings:[],lang:"en",pixels:false,colors:0,external:false,read_dirs:nil}
 L = {reprs:[],default_repr:nil,default_repr_without_pixels:nil,pages:nil}
+S = {fg:nil,bg:nil,add:0,sub:0}
 
 host → {versions:[1],host_version:"0.31.2",side_dir:bin("/private/handoff"),lang:"en"}
 child → {Ack:{version:1,manifest:M}}
 host → {Open:{sid:1,rid:1,input:{File:{path:bin("/data/a.bin"),hint:nil}},cx:C}}
 child → {rid:1,answer:{Ok:{Opened:{state:{layout:L,enabled:[]}}}}}
 host → {View:{sid:1,rid:2,req:{repr:nil,page:nil,cols:80,rows:20,cell_px:nil},cx:C}}
-child → {rid:2,answer:{Ok:{Viewed:{view:{Text:{source:{Owned:"00000000  41  |A|"},
+child → {rid:2,answer:{Ok:{Viewed:{view:{Text:{source:{Lines:[{spans:[["00000000  41                                               |A|",S]],style:S}]},
           file_lines:false,syntax_name:nil,note:nil}},state:{layout:L,enabled:[]}}}}}
+host → {Act:{sid:1,rid:3,action:"unknown",cx:C}}
+child → {rid:3,answer:{Ok:{Acted:{outcome:"Unhandled",state:{layout:L,enabled:[]}}}}}
+host → {Key:{sid:1,rid:4,key:{code:{Char:"x"},mods:0},cx:C}}
+child → {rid:4,answer:{Ok:{Acted:{outcome:"Unhandled",state:{layout:L,enabled:[]}}}}}
+host → {Cancel:{rid:2}}
+host → {Close:{sid:1}}
+host → "Shutdown"
 ```
+
+Lines source・装飾なしのspan 1つ・行styleが実サンプルの View::text(lines) と同じ形です。S は2箇所それぞれ
+独立したstyle map に展開します。16バイト幅のhex列は47文字に埋めます。この最小manifestは操作なしなので、
+Act と生Key は Unhandled です。ここで Cancel は応答済みviewを指すため無視します。Cancel・Close・
+裸の文字列 Shutdown に子の応答はなく、Shutdown はプロセスを終了します。
 
 例えば Shutdown の全フレームは `00 00 00 09 a8 53 68 75 74 64 6f 77 6e`。
 本体長9、MessagePack fixstr 長8（a8）、UTF-8 の Shutdown です。後ろに改行はありません。
+
+## 参照テストベクター
+
+4バイト長prefixを含む完全なフレームです。konoma-sample-hexdump の tests/protocol_vectors.rs が
+実際の frame::send で生成しました。上の Hello と、最小の M（サンプルの操作付きmanifestではない）を
+使う Ack を符号化しています。offset は各フレーム先頭からの16進バイト位置です。Hello本体は67バイト
+（0x43）、Ack本体は218バイト（0xda）。mapのフィールド順は参照encoderの出力順であり、受信側はこの順序に
+依存せずmapキーを使ってください。テストは両言語のフレームを再符号化して照合し、通信例のviewも実サンプルと
+照合します。
+
+Hello:
+<!-- vector:hello -->
+```text
+0000  00 00 00 43 84 a8 76 65 72 73 69 6f 6e 73 91 01
+0010  ac 68 6f 73 74 5f 76 65 72 73 69 6f 6e a6 30 2e
+0020  33 31 2e 32 a8 73 69 64 65 5f 64 69 72 c4 10 2f
+0030  70 72 69 76 61 74 65 2f 68 61 6e 64 6f 66 66 a4
+0040  6c 61 6e 67 a2 65 6e
+```
+
+Ack:
+<!-- vector:ack -->
+```text
+0000  00 00 00 da 81 a3 41 63 6b 82 a7 76 65 72 73 69
+0010  6f 6e 01 a8 6d 61 6e 69 66 65 73 74 8f a2 69 64
+0020  a3 68 65 78 a7 76 65 72 73 69 6f 6e a5 30 2e 31
+0030  2e 30 a3 61 70 69 92 00 01 a4 6e 61 6d 65 82 a2
+0040  65 6e a3 48 65 78 a6 6f 74 68 65 72 73 90 a5 62
+0050  69 6e 64 73 91 82 a7 74 61 72 67 65 74 73 91 81
+0060  a4 47 6c 6f 62 a5 2a 2e 62 69 6e a6 6f 70 74 69
+0070  6f 6e c2 a7 61 63 74 69 6f 6e 73 90 a5 76 65 72
+0080  62 73 90 a8 73 65 74 74 69 6e 67 73 90 a7 73 63
+0090  72 65 65 6e 73 90 a5 73 68 6f 77 73 91 a4 54 65
+00a0  78 74 aa 77 6f 72 6b 5f 67 72 6f 75 70 c0 a8 63
+00b0  6f 6e 76 65 72 74 73 c2 a9 66 69 6c 65 5f 74 65
+00c0  78 74 c2 a5 73 69 7a 65 64 c2 ab 75 6e 61 76 61
+00d0  69 6c 61 62 6c 65 a7 4d 65 73 73 61 67 65
+```
 
 ## 実装を検査する
 
@@ -364,6 +488,22 @@ konoma の checkout で、存在する読み取り可能な `.bin` とビルド�
 cargo run -p konoma-plugin-test -- --file a.bin /absolute/path/to/plugin
 cargo run -p konoma-plugin-test -- --plugin hex --file a.bin python3 -- /absolute/path/plugin.py
 ```
+
+実行時に Cargo を使わない場合は、先にcheckerをビルドし、その実行ファイルを使います。既定の開発用パスは
+target/debug/konoma-plugin-test、CARGO_TARGET_DIR 指定時は $CARGO_TARGET_DIR/debug/konoma-plugin-test
+です（releaseビルドではdebugの代わりにrelease）。
+
+```sh
+cargo build -p konoma-plugin-test
+"${CARGO_TARGET_DIR:-target}/debug/konoma-plugin-test" --file a.bin /absolute/path/to/plugin
+"${CARGO_TARGET_DIR:-target}/debug/konoma-plugin-test" --plugin hex --file a.bin python3 -- ./plugin.py
+```
+
+checker は呼び出し元のディレクトリを継承するため、相対スクリプト ./plugin.py を使えます。
+製品設定の command は絶対パス必須ではなく、python3 は PATH、./viewer は konoma 起動ディレクトリから
+解決します。その後、子は専用ディレクトリで動くため、args には `args = ["/absolute/path/plugin.py"]`
+のように絶対スクリプトパスを使ってください。引数文字列はそのまま渡し、相対というだけでは拒否しません。
+[設定リファレンス](../configuration/)も参照してください。
 
 ツールは選択時の `--plugin <id>`、続けて `--serve` を付けます。`--manifest` でなくフレームの
 handshake を検査します。manifest・registry の検証、版拒否、open/view、ヒント、最初に enabled な
