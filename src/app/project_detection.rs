@@ -22,6 +22,7 @@ impl App {
                     runtime.dirty.extend(runtime.views.keys().cloned());
                     runtime.refresh_watch = true;
                     runtime.error = None;
+                    runtime.chip_dirty = true;
                     runtime.invalidated |= runtime.busy;
                 }
             }

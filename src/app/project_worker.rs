@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use konoma_plugin::project::ProjectView;
+use konoma_plugin::project::{Chip, ProjectView};
 use konoma_plugin::view::{TextSource, View, ViewReq};
 use konoma_plugin::{
     ActCx, Failure, Input, OpenCx, Plugin, ReadScope, Session, Settings, TermCaps, Tr, ViewCx,
@@ -15,6 +15,7 @@ use super::PathStyle;
 
 pub(super) enum ProjectJob {
     Watch,
+    Chip,
     View {
         key: ScreenKey,
         req: ViewReq,
@@ -24,6 +25,7 @@ pub(super) enum ProjectJob {
         context: konoma_plugin::project::ProjectAct,
         refresh: Vec<(ScreenKey, ViewReq)>,
         chip: bool,
+        watch: bool,
         effect: Box<ProjectEffect>,
     },
 }
@@ -32,7 +34,8 @@ pub(super) struct ProjectReply {
     pub watch_paths: Option<Vec<PathBuf>>,
     pub views: Vec<(ScreenKey, Arc<ProjectContent>)>,
     pub enabled: HashMap<String, bool>,
-    pub chip: Option<Option<Tr>>,
+    pub chip: Option<Option<Chip>>,
+    pub chip_error: Option<Failure>,
     pub effect: Option<ProjectEffect>,
     pub error: Option<Failure>,
     pub contexts: HashMap<ScreenKey, ProjectView>,
@@ -45,6 +48,7 @@ impl ProjectReply {
             views: Vec::new(),
             enabled: HashMap::new(),
             chip: None,
+            chip_error: None,
             effect: None,
             error: None,
             contexts: HashMap::new(),
@@ -59,7 +63,8 @@ pub(crate) struct ProjectRuntime {
     pub(super) views: HashMap<ScreenKey, Arc<ProjectContent>>,
     pub(super) contexts: HashMap<ScreenKey, ProjectView>,
     pub(super) enabled: HashMap<String, bool>,
-    pub(super) chip: Option<Tr>,
+    pub(super) chip: Option<Chip>,
+    pub(super) chip_dirty: bool,
     pub(super) busy: bool,
     pub(super) acting: bool,
     #[cfg(test)]
@@ -92,8 +97,13 @@ impl ProjectRuntime {
         let (results, rx) = mpsc::sync_channel(1);
         let root = project.root.clone();
         let marker = project.marker.clone();
-        let chip = project.declaration.chip.clone();
         let declaration = project.declaration.clone();
+        let chip = project
+            .declaration
+            .chip
+            .as_ref()
+            .map(|chip| Chip::new(chip.get(&lang)));
+        let fallback = chip.clone();
         std::thread::spawn(move || {
             let scope = crate::plugins::read_scope::scope_for(
                 standard,
@@ -132,11 +142,11 @@ impl ProjectRuntime {
                     .collect()
             };
             let mut initial = ProjectReply::empty();
-            let view_cx = ViewCx::new(&settings, &lang)
+            let cx = ViewCx::new(&settings, &lang)
                 .with_term(term)
                 .with_read_scope(scope.clone());
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                session.watch_paths(&view_cx)
+                session.watch_paths(&cx)
             })) {
                 Ok(Ok(paths)) => match resolved_watch_paths(paths, &root, &declaration) {
                     Ok(paths) => initial.watch_paths = Some(paths),
@@ -145,6 +155,13 @@ impl ProjectRuntime {
                 Ok(Err(error)) => initial.error = Some(error),
                 Err(_) => initial.error = Some(Failure::external(Tr::new(panic_message.clone()))),
             }
+            refresh_chip(
+                &mut initial,
+                session.as_mut(),
+                &cx,
+                &fallback,
+                &panic_message,
+            );
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 enabled(session.as_ref())
             })) {
@@ -169,7 +186,22 @@ impl ProjectRuntime {
                                 &root,
                                 &declaration,
                             )?);
-                            reply.chip = Some(plugin.manifest().project.and_then(|p| p.chip));
+                            refresh_chip(
+                                &mut reply,
+                                session.as_mut(),
+                                &cx,
+                                &fallback,
+                                &panic_message,
+                            );
+                        }
+                        ProjectJob::Chip => {
+                            refresh_chip(
+                                &mut reply,
+                                session.as_mut(),
+                                &cx,
+                                &fallback,
+                                &panic_message,
+                            );
                         }
                         ProjectJob::View { key, req } => {
                             if let Some(context) = &req.project {
@@ -191,6 +223,7 @@ impl ProjectRuntime {
                             context,
                             refresh,
                             chip,
+                            watch,
                             mut effect,
                         } => {
                             let cx_act = ActCx::new(&settings, &lang)
@@ -204,11 +237,13 @@ impl ProjectRuntime {
                             )?;
                             effect.outcome = Some(outcome);
                             reply.effect = Some(*effect);
-                            reply.watch_paths = Some(resolved_watch_paths(
-                                session.watch_paths(&cx)?,
-                                &root,
-                                &declaration,
-                            )?);
+                            if watch {
+                                reply.watch_paths = Some(resolved_watch_paths(
+                                    session.watch_paths(&cx)?,
+                                    &root,
+                                    &declaration,
+                                )?);
+                            }
                             for (key, req) in refresh {
                                 if let Some(context) = &req.project {
                                     reply.contexts.insert(key.clone(), context.clone());
@@ -224,7 +259,13 @@ impl ProjectRuntime {
                                 }
                             }
                             if chip {
-                                reply.chip = Some(plugin.manifest().project.and_then(|p| p.chip));
+                                refresh_chip(
+                                    &mut reply,
+                                    session.as_mut(),
+                                    &cx,
+                                    &fallback,
+                                    &panic_message,
+                                );
                             }
                         }
                     }
@@ -255,6 +296,7 @@ impl ProjectRuntime {
             contexts: HashMap::new(),
             enabled: HashMap::new(),
             chip,
+            chip_dirty: false,
             busy: true,
             acting: false,
             #[cfg(test)]
@@ -290,6 +332,28 @@ fn resolved_watch_paths(
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+fn refresh_chip(
+    reply: &mut ProjectReply,
+    session: &mut dyn Session,
+    cx: &ViewCx,
+    fallback: &Option<Chip>,
+    panic_message: &str,
+) {
+    // A chip failure is reported without losing this job's views or action outcome.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.chip(cx)));
+    reply.chip = Some(match result {
+        Ok(Ok(Some(chip))) => Some(chip.clipped()),
+        Ok(Ok(None)) => fallback.clone(),
+        error => {
+            reply.chip_error = Some(match error {
+                Ok(Err(error)) => error,
+                _ => Failure::external(Tr::new(panic_message.to_owned())),
+            });
+            fallback.clone()
+        }
+    });
 }
 
 /// The same text, Markdown and diff widgets the file previews use, prepared off the UI thread.
@@ -465,3 +529,7 @@ impl super::App {
         self.project_runtimes.insert(key, runtime);
     }
 }
+
+#[cfg(test)]
+#[path = "project_worker_tests.rs"]
+mod tests;

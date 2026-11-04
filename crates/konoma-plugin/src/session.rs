@@ -67,9 +67,10 @@ pub trait Session: Send {
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure>;
     /// The current short summary beside the project's tree title.
     ///
-    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and when a
-    /// effective watch path changes (the session's [`Session::watch_paths`] answer, or
-    /// [`crate::ProjectDecl::watch_paths`] when it returns `None`). The host calls this only for
+    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and after
+    /// invalidation by an effective watch path (the session's [`Session::watch_paths`] answer,
+    /// or [`crate::ProjectDecl::watch_paths`] when it returns `None`). After invalidation the host
+    /// asks for watch paths again before the chip. The host calls this only for
     /// a project session of a plugin with a project declaration; file-only plugins are never
     /// called. Host scheduling is implemented separately from this SDK contract.
     ///

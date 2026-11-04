@@ -1045,7 +1045,10 @@ impl App {
         }
         let mut targets = BTreeSet::new();
         let mut chip = false;
+        // Actions can change the gitdir; only a chip-only refresh skips watch discovery.
+        let mut watch = invocation.declaration.refresh.is_empty();
         for target in &invocation.declaration.refresh {
+            watch |= !matches!(target, RefreshTarget::Chip);
             match target {
                 RefreshTarget::CurrentScreen => {
                     if let Some(key) = &invocation.effect.view {
@@ -1091,6 +1094,7 @@ impl App {
             context: invocation.context,
             refresh,
             chip,
+            watch,
             effect: Box::new(invocation.effect),
         };
         if runtime.tx.try_send(job).is_ok() {
@@ -1120,6 +1124,7 @@ impl App {
         let mut changed = false;
         let mut effects = Vec::new();
         let mut watches = Vec::new();
+        let mut chip_errors = Vec::new();
         for (key, runtime) in &mut self.project_runtimes {
             while let Some(reply) = runtime
                 .pending
@@ -1154,7 +1159,12 @@ impl App {
                     }
                 }
                 if let Some(chip) = reply.chip {
-                    runtime.chip = chip;
+                    if !runtime.chip_dirty {
+                        runtime.chip = chip;
+                    }
+                }
+                if let Some(error) = reply.chip_error {
+                    chip_errors.push((key.clone(), error));
                 }
                 if runtime.invalidated {
                     runtime.dirty.extend(runtime.views.keys().cloned());
@@ -1191,6 +1201,15 @@ impl App {
                 && runtime.tx.try_send(ProjectJob::Watch).is_ok()
             {
                 runtime.refresh_watch = false;
+                runtime.chip_dirty = false;
+                runtime.busy = true;
+            }
+            if runtime.chip_dirty
+                && runtime.ready
+                && !runtime.busy
+                && runtime.tx.try_send(ProjectJob::Chip).is_ok()
+            {
+                runtime.chip_dirty = false;
                 runtime.busy = true;
             }
         }
@@ -1222,6 +1241,17 @@ impl App {
             changed = true;
         }
         self.ensure_project_view();
+        for (key, error) in chip_errors {
+            if self
+                .tab
+                .projects
+                .projects
+                .iter()
+                .any(|p| ProjectKey::from(p) == key)
+            {
+                self.flash = Some(error.message.get(self.plugin_lang()).into());
+            }
+        }
         changed
     }
 
@@ -1370,7 +1400,7 @@ impl App {
         })
     }
 
-    pub(crate) fn project_chips(&self) -> Vec<&str> {
+    pub(crate) fn project_chips(&self) -> Vec<Line<'static>> {
         self.tab
             .projects
             .projects
@@ -1379,7 +1409,8 @@ impl App {
                 self.project_runtimes
                     .get(&ProjectKey::from(project))
                     .and_then(|runtime| runtime.chip.as_ref())
-                    .map(|chip| chip.get(self.plugin_lang()))
+                    .map(|chip| konoma_plugin::ratatui_draw::into_line(chip.text.clone()))
+                    .filter(|line| line.width() > 0)
             })
             .collect()
     }
