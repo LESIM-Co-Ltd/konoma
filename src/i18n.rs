@@ -423,6 +423,7 @@ pub enum Msg {
     PluginCountUnknown,
     PluginReasonUnknown,
     PluginRegistryUnknown,
+    PluginListContext,
     PluginHostDuplicate,
     PluginUpdateOne,
     PluginUpdates,
@@ -1520,6 +1521,7 @@ fn en(msg: Msg) -> &'static str {
         PluginCountUnknown => "declarations",
         PluginReasonUnknown => "unrecognized manifest validation reason: `{reason}`",
         PluginRegistryUnknown => "plugin registration was refused: `{reason}`",
+        PluginListContext => "{context}: {detail}",
         PluginHostDuplicate => "plugin id `{id}` is already registered",
         PluginUpdateOne => "{n} plugin update available (`konoma plugin update`)",
         PluginUpdates => "{n} plugin updates available (`konoma plugin update`)",
@@ -2251,21 +2253,21 @@ fn jp(msg: Msg) -> &'static str {
         PluginCannotRemove => "{path} を削除できません",
         PluginCannotEnumerate => "{path} の項目を読み取れません",
         PluginCannotLock => "{path} をロックできません",
-        PluginLockWaiting => "別の `konoma plugin` が実行中です。終了を待っています（Ctrl-C で中止）…",
+        PluginLockWaiting => "別の `konoma plugin` が実行中です。終了を待っています（`Ctrl-C` で中止）…",
         PluginTildeHome => "`{path}` は ~ で始まっていますが、HOME が未設定です",
-        PluginEmptyKey => "{context}: `{key}` が空です",
-        PluginStringKey => "{context}: `{key}` は文字列で指定してください",
-        PluginUnknownKey => "{context}: 不明なキー `{key}` です（指定できるキー: {allowed}）",
-        PluginConfigPath => "{context}: `path = \"{path}\"` は絶対パスか ~ で始まるパスで指定してください",
-        PluginTableRequired => "{context} はテーブルで指定してください",
-        PluginSourceRequired => "{context}: `version`、`git`、`path` のいずれかを指定してください",
-        PluginSourceOnlyOne => "{context}: `version`、`git`、`path` は1つだけ指定してください",
-        PluginSourceGitSelector => "{context}: `branch` と `rev` には `git` が必要です",
-        PluginSourceGitOne => "{context}: `branch` と `rev` はどちらか一方を指定してください",
+        PluginEmptyKey => "`{context}`: `{key}` が空です",
+        PluginStringKey => "`{context}`: `{key}` は文字列で指定してください",
+        PluginUnknownKey => "`{context}`: 不明なキー `{key}` です（指定できるキー: `{allowed}`）",
+        PluginConfigPath => "`{context}`: `path = \"{path}\"` は絶対パスか ~ で始まるパスで指定してください",
+        PluginTableRequired => "`{context}` はテーブルで指定してください",
+        PluginSourceRequired => "`{context}`: `version`、`git`、`path` のいずれかを指定してください",
+        PluginSourceOnlyOne => "`{context}`: `version`、`git`、`path` は1つだけ指定してください",
+        PluginSourceGitSelector => "`{context}`: `branch` と `rev` には `git` が必要です",
+        PluginSourceGitOne => "`{context}`: `branch` と `rev` はどちらか一方を指定してください",
         PluginInvalidToml => "TOML として解析できません",
-        PluginTomlPosition => "TOML の解析エラー（バイト位置 {start}..{end}）",
-        PluginUnknownTable => "不明なテーブル `{key}` です（指定できるテーブル: [plugins.<crate>]、[konoma]）",
-        PluginPluginsTable => "[plugins] は [plugins.<crate>] のテーブルで指定してください",
+        PluginTomlPosition => "TOML の解析エラー（バイト位置 `{start}..{end}`）",
+        PluginUnknownTable => "不明なテーブル `{key}` です（指定できるテーブル: `[plugins.<crate>]`、`[konoma]`）",
+        PluginPluginsTable => "`[plugins]` は `[plugins.<crate>]` のテーブルで指定してください",
         PluginBrokenFile => "{path} の内容が壊れています",
         PluginMetadataNoRoot => "メタデータにルートがありません",
         PluginMetadataNoNodes => "メタデータにノードがありません",
@@ -2289,7 +2291,7 @@ fn jp(msg: Msg) -> &'static str {
         PluginRepairRetry => "問題を直してから同じコマンドを再実行してください",
         PluginReplacementPartial => "{cause}\n置き換えが途中で止まりました。\n  更新済み: {new}\n  未更新: {old}\n{repair}。",
         PluginCargoFailed => "`cargo {args}` が失敗しました（{status}）。以前の konoma は変更していません",
-        PluginCargoMissing => "cargo が見つかりません（$CARGO を設定するか、PATH に cargo を追加してください）。\n`konoma plugin install` と `update` は Cargo で konoma を再ビルドするため、Rust のツールチェーンが必要です。\nツールチェーンがない場合は、プラグインを単独の実行ファイルとして用意し、config.toml に次のように記述してください:\n\n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n",
+        PluginCargoMissing => "`cargo` が見つかりません（`$CARGO` を設定するか、`PATH` に `cargo` を追加してください）。\n`konoma plugin install` と `update` は Cargo で konoma を再ビルドするため、Rust のツールチェーンが必要です。\nツールチェーンがない場合は、プラグインを単独の実行ファイルとして用意し、config.toml に次のように記述してください:\n\n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n",
         PluginProgramAlreadyRemoved => "（再ビルドした実行ファイルは削除済みです）",
         PluginWatcherStart => "プラグイン処理の監視プロセスを起動できません（{path}）",
         PluginWatcherRead => "プラグイン処理の監視結果を読み取れません",
@@ -2339,6 +2341,7 @@ fn jp(msg: Msg) -> &'static str {
         PluginCountUnknown => "宣言",
         PluginReasonUnknown => "未知の宣言検査エラーです: `{reason}`",
         PluginRegistryUnknown => "プラグインの登録が拒否されました: `{reason}`",
+        PluginListContext => "`{context}`: {detail}",
         PluginHostDuplicate => "プラグイン id `{id}` はすでに登録されています",
         PluginUpdateOne => "プラグインの更新が {n} 件あります（`konoma plugin update`）",
         PluginUpdates => "プラグインの更新が {n} 件あります（`konoma plugin update`）",
@@ -3514,6 +3517,7 @@ mod tests {
         Msg::PluginCountUnknown,
         Msg::PluginReasonUnknown,
         Msg::PluginRegistryUnknown,
+        Msg::PluginListContext,
         Msg::PluginHostDuplicate,
         Msg::PluginUpdateOne,
         Msg::PluginUpdates,
@@ -3976,11 +3980,35 @@ mod tests {
     #[test]
     fn plugin_placeholders_never_reinterpret_inserted_values() {
         for lang in [Lang::En, Lang::Jp] {
-            let text = tr_format(lang, Msg::PluginUnknownKey, &[("context", "{key}"), ("key", "{allowed}"), ("allowed", "version, path")]);
-            assert!(text.starts_with("{key}:"), "{text}");
+            let text = tr_format(
+                lang,
+                Msg::PluginUnknownKey,
+                &[
+                    ("context", "{key}"),
+                    ("key", "{allowed}"),
+                    ("allowed", "version, path"),
+                ],
+            );
+            assert!(
+                text.starts_with(if lang == Lang::En {
+                    "{key}:"
+                } else {
+                    "`{key}`:"
+                }),
+                "{text}"
+            );
             assert!(text.contains("`{allowed}`"), "{text}");
             assert!(text.contains("version, path"), "{text}");
-            let text = tr_format(lang, Msg::PluginReplacementPartial, &[("cause", "{new} {old} {repair}"), ("new", "new data"), ("old", "old data"), ("repair", "repair data")]);
+            let text = tr_format(
+                lang,
+                Msg::PluginReplacementPartial,
+                &[
+                    ("cause", "{new} {old} {repair}"),
+                    ("new", "new data"),
+                    ("old", "old data"),
+                    ("repair", "repair data"),
+                ],
+            );
             assert!(text.starts_with("{new} {old} {repair}\n"), "{text}");
         }
     }

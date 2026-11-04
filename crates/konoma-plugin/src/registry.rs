@@ -90,14 +90,24 @@ fn is_unclean(c: char) -> bool {
 /// The declaration whose name is invalid. No unsanitized identifier is carried here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ManifestName { PluginId, ActionId, ActionScreen, SettingName, ScreenName, WorkGroup }
+pub enum ManifestName {
+    PluginId,
+    ActionId,
+    ActionScreen,
+    SettingName,
+    ScreenName,
+    WorkGroup,
+}
 
 impl ManifestName {
     fn english(self) -> &'static str {
         match self {
-            Self::PluginId => "the plugin id", Self::ActionId => "an action id",
-            Self::ActionScreen => "an action's screen", Self::SettingName => "a setting name",
-            Self::ScreenName => "a screen name", Self::WorkGroup => "the work group",
+            Self::PluginId => "the plugin id",
+            Self::ActionId => "an action id",
+            Self::ActionScreen => "an action's screen",
+            Self::SettingName => "a setting name",
+            Self::ScreenName => "a screen name",
+            Self::WorkGroup => "the work group",
         }
     }
 }
@@ -105,13 +115,22 @@ impl ManifestName {
 /// The declaration count that exceeded its limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ManifestCount { Actions, Settings, Binds, Screens, Targets }
+pub enum ManifestCount {
+    Actions,
+    Settings,
+    Binds,
+    Screens,
+    Targets,
+}
 
 impl ManifestCount {
     fn english(self) -> &'static str {
         match self {
-            Self::Actions => "actions", Self::Settings => "settings", Self::Binds => "binds",
-            Self::Screens => "screens", Self::Targets => "targets in a bind",
+            Self::Actions => "actions",
+            Self::Settings => "settings",
+            Self::Binds => "binds",
+            Self::Screens => "screens",
+            Self::Targets => "targets in a bind",
         }
     }
 }
@@ -121,14 +140,36 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
-    InvalidName { kind: ManifestName, name: String, limit: usize },
-    TooMany { kind: ManifestCount, count: usize, limit: usize },
-    TargetTooLong { bind: usize, bytes: usize, limit: usize },
-    TargetUnclean { bind: usize },
-    DefaultTooMany { limit: usize },
-    DefaultKeyTooLong { limit: usize },
-    DefaultKeyUnclean { limit: usize },
-    DefaultTooDeep { limit: usize },
+    InvalidName {
+        kind: ManifestName,
+        name: String,
+        limit: usize,
+    },
+    TooMany {
+        kind: ManifestCount,
+        count: usize,
+        limit: usize,
+    },
+    TargetTooLong {
+        bind: usize,
+        bytes: usize,
+        limit: usize,
+    },
+    TargetUnclean {
+        bind: usize,
+    },
+    DefaultTooMany {
+        limit: usize,
+    },
+    DefaultKeyTooLong {
+        limit: usize,
+    },
+    DefaultKeyUnclean {
+        limit: usize,
+    },
+    DefaultTooDeep {
+        limit: usize,
+    },
 }
 
 impl fmt::Display for ManifestReason {
@@ -148,33 +189,56 @@ impl fmt::Display for ManifestReason {
 
 /// Never carry a target's text in a refusal: it may contain terminal control characters.
 fn target_problem(bind: usize, t: &Target) -> Option<ManifestReason> {
-    let (Target::Glob(s) | Target::FileName(s) | Target::Mime(s) | Target::Content(s) | Target::Embed(s)) = t;
+    let (Target::Glob(s)
+    | Target::FileName(s)
+    | Target::Mime(s)
+    | Target::Content(s)
+    | Target::Embed(s)) = t;
     if s.len() > MAX_TARGET_BYTES {
-        return Some(ManifestReason::TargetTooLong { bind, bytes: s.len(), limit: MAX_TARGET_BYTES });
+        return Some(ManifestReason::TargetTooLong {
+            bind,
+            bytes: s.len(),
+            limit: MAX_TARGET_BYTES,
+        });
     }
-    s.chars().any(is_unclean).then_some(ManifestReason::TargetUnclean { bind })
+    s.chars()
+        .any(is_unclean)
+        .then_some(ManifestReason::TargetUnclean { bind })
 }
 
 fn default_problem(v: &Value) -> Option<ManifestReason> {
     fn walk(v: &Value, depth: usize, nodes: &mut usize) -> Option<ManifestReason> {
         *nodes += 1;
         if *nodes > MAX_DEFAULT_NODES {
-            return Some(ManifestReason::DefaultTooMany { limit: MAX_DEFAULT_NODES });
+            return Some(ManifestReason::DefaultTooMany {
+                limit: MAX_DEFAULT_NODES,
+            });
         }
         let children: Box<dyn Iterator<Item = &Value>> = match v {
             Value::List(l) => Box::new(l.iter()),
             Value::Table(t) => {
-                if let Some(k) = t.keys().find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean)) {
+                if let Some(k) = t
+                    .keys()
+                    .find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean))
+                {
                     return Some(if k.len() > MAX_DEFAULT_KEY_BYTES {
-                        ManifestReason::DefaultKeyTooLong { limit: MAX_DEFAULT_KEY_BYTES }
-                    } else { ManifestReason::DefaultKeyUnclean { limit: MAX_DEFAULT_KEY_BYTES } });
+                        ManifestReason::DefaultKeyTooLong {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    } else {
+                        ManifestReason::DefaultKeyUnclean {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    });
                 }
                 Box::new(t.values())
             }
             _ => return None,
         };
         if depth > MAX_DEFAULT_DEPTH {
-            return Some(ManifestReason::DefaultTooDeep { limit: MAX_DEFAULT_DEPTH });
+            return Some(ManifestReason::DefaultTooDeep {
+                limit: MAX_DEFAULT_DEPTH,
+            });
         }
         children.into_iter().find_map(|c| walk(c, depth + 1, nodes))
     }
@@ -184,7 +248,11 @@ fn default_problem(v: &Value) -> Option<ManifestReason> {
 /// The single validation used by the registry and every host/checker that registers a manifest.
 fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
     let name = |kind: ManifestName, s: &str| {
-        (!is_valid_name(s)).then(|| ManifestReason::InvalidName { kind, name: display_name(s), limit: MAX_NAME_CHARS })
+        (!is_valid_name(s)).then(|| ManifestReason::InvalidName {
+            kind,
+            name: display_name(s),
+            limit: MAX_NAME_CHARS,
+        })
     };
     let count = |kind, count, limit| {
         (count > limit).then_some(ManifestReason::TooMany { kind, count, limit })
@@ -194,17 +262,41 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
         .or_else(|| count(ManifestCount::Settings, m.settings.len(), MAX_SETTINGS))
         .or_else(|| count(ManifestCount::Binds, m.binds.len(), MAX_BINDS))
         .or_else(|| count(ManifestCount::Screens, m.screens.len(), MAX_SCREENS))
-        .or_else(|| m.binds.iter().enumerate().find_map(|(i, b)| {
-            count(ManifestCount::Targets, b.targets.len(), MAX_TARGETS_PER_BIND)
+        .or_else(|| {
+            m.binds.iter().enumerate().find_map(|(i, b)| {
+                count(
+                    ManifestCount::Targets,
+                    b.targets.len(),
+                    MAX_TARGETS_PER_BIND,
+                )
                 .or_else(|| b.targets.iter().find_map(|t| target_problem(i, t)))
-        }))
+            })
+        })
         .or_else(|| m.settings.iter().find_map(|s| default_problem(&s.default)))
-        .or_else(|| m.actions.iter().find_map(|a| {
-            name(ManifestName::ActionId, &a.id).or_else(|| a.screen.as_deref().and_then(|s| name(ManifestName::ActionScreen, s)))
-        }))
-        .or_else(|| m.settings.iter().find_map(|s| name(ManifestName::SettingName, &s.name)))
-        .or_else(|| m.screens.iter().find_map(|s| name(ManifestName::ScreenName, s)))
-        .or_else(|| m.work_group.as_deref().and_then(|g| name(ManifestName::WorkGroup, g)))
+        .or_else(|| {
+            m.actions.iter().find_map(|a| {
+                name(ManifestName::ActionId, &a.id).or_else(|| {
+                    a.screen
+                        .as_deref()
+                        .and_then(|s| name(ManifestName::ActionScreen, s))
+                })
+            })
+        })
+        .or_else(|| {
+            m.settings
+                .iter()
+                .find_map(|s| name(ManifestName::SettingName, &s.name))
+        })
+        .or_else(|| {
+            m.screens
+                .iter()
+                .find_map(|s| name(ManifestName::ScreenName, s))
+        })
+        .or_else(|| {
+            m.work_group
+                .as_deref()
+                .and_then(|g| name(ManifestName::WorkGroup, g))
+        })
 }
 
 /// Why a registration was refused.
@@ -213,7 +305,11 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
 pub enum RegistryError {
     /// The manifest declares a name that is not usable or more than the host takes (see
     /// [`is_valid_name`], [`MAX_ACTIONS`]...). `id` is safe to print.
-    InvalidManifest { id: String, why: String, reason: ManifestReason },
+    InvalidManifest {
+        id: String,
+        why: String,
+        reason: ManifestReason,
+    },
     /// A plugin with this id is already registered; the later one is refused.
     DuplicateId(String),
     /// A glob in the manifest does not compile.

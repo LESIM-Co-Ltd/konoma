@@ -11,13 +11,31 @@ pub fn assert_original_english_sample(label: &str, text: &str) {
     // then retain all pre-fix-9 golden assertions for the original extra-plugin output.
     let mut normalized = text.to_owned();
     if label == "[\"plugin\", \"list\"]" || matches!(label, "populated list" | "list update time") {
-        let version = if label == "[\"plugin\", \"list\"]" { "0.1.0" } else { "not built yet" };
-        for name in ["konoma-code", "konoma-markdown", "konoma-math", "konoma-media", "konoma-mermaid", "konoma-office", "konoma-table"] {
+        let version = if label == "[\"plugin\", \"list\"]" {
+            "0.1.0"
+        } else {
+            "not built yet"
+        };
+        for name in [
+            "konoma-code",
+            "konoma-markdown",
+            "konoma-math",
+            "konoma-media",
+            "konoma-mermaid",
+            "konoma-office",
+            "konoma-table",
+        ] {
             let block = format!("{name}  {version}\n    crates.io, version ^0.1.0\n");
-            assert!(normalized.contains(&block), "missing standard row in {label}: {normalized}");
+            assert!(
+                normalized.contains(&block),
+                "missing standard row in {label}: {normalized}"
+            );
             normalized = normalized.replacen(&block, "", 1);
         }
-        assert!(normalized.ends_with("Plugin update checking is turned off.\n"), "{normalized}");
+        assert!(
+            normalized.ends_with("Plugin update checking is turned off.\n"),
+            "{normalized}"
+        );
         normalized.truncate(normalized.len() - "Plugin update checking is turned off.\n".len());
     }
     let text = normalized.as_str();

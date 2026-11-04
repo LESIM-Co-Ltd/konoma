@@ -76,12 +76,23 @@ impl HostBuilder {
             result.map_err(|error| {
                 use konoma_plugin::registry::RegistryError;
                 anyhow::anyhow!(match error {
-                    RegistryError::InvalidManifest { id, reason, .. } =>
-                        format!("{}: {}", tr_format(lang, Msg::PluginHostInvalidManifest, &[("id", &id)]), manifest_reason_text(&reason, lang)),
-                    RegistryError::InvalidGlob { id, glob } => tr_format(lang, Msg::PluginHostInvalidGlob, &[("id", &id), ("glob", &glob)]),
+                    RegistryError::InvalidManifest { id, reason, .. } => format!(
+                        "{}: {}",
+                        tr_format(lang, Msg::PluginHostInvalidManifest, &[("id", &id)]),
+                        manifest_reason_text(&reason, lang)
+                    ),
+                    RegistryError::InvalidGlob { id, glob } => tr_format(
+                        lang,
+                        Msg::PluginHostInvalidGlob,
+                        &[("id", &id), ("glob", &glob)]
+                    ),
                     RegistryError::DuplicateId(id) =>
                         tr(lang, Msg::PluginHostDuplicate).replace("{id}", &id),
-                    other => tr_format(lang, Msg::PluginRegistryUnknown, &[("reason", &other.to_string())]),
+                    other => tr_format(
+                        lang,
+                        Msg::PluginRegistryUnknown,
+                        &[("reason", &other.to_string())]
+                    ),
                 })
             })?;
         }
@@ -207,23 +218,88 @@ impl HostBuilder {
 }
 
 fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
-    use konoma_plugin::registry::{ManifestReason as R, ManifestName as N, ManifestCount as C};
+    use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     match reason {
         R::InvalidName { kind, name, limit } => {
-            let kind = tr(lang, match kind { N::PluginId => Msg::PluginNameId, N::ActionId => Msg::PluginNameAction, N::ActionScreen => Msg::PluginNameActionScreen, N::SettingName => Msg::PluginNameSetting, N::ScreenName => Msg::PluginNameScreen, N::WorkGroup => Msg::PluginNameWorkGroup, _ => Msg::PluginNameUnknown });
-            tr_format(lang, Msg::PluginReasonName, &[("kind", kind), ("name", name), ("max", &limit.to_string())])
+            let kind = tr(
+                lang,
+                match kind {
+                    N::PluginId => Msg::PluginNameId,
+                    N::ActionId => Msg::PluginNameAction,
+                    N::ActionScreen => Msg::PluginNameActionScreen,
+                    N::SettingName => Msg::PluginNameSetting,
+                    N::ScreenName => Msg::PluginNameScreen,
+                    N::WorkGroup => Msg::PluginNameWorkGroup,
+                    _ => Msg::PluginNameUnknown,
+                },
+            );
+            tr_format(
+                lang,
+                Msg::PluginReasonName,
+                &[("kind", kind), ("name", name), ("max", &limit.to_string())],
+            )
         }
         R::TooMany { kind, count, limit } => {
-            let kind = tr(lang, match kind { C::Actions => Msg::PluginCountActions, C::Settings => Msg::PluginCountSettings, C::Binds => Msg::PluginCountBinds, C::Screens => Msg::PluginCountScreens, C::Targets => Msg::PluginCountTargets, _ => Msg::PluginCountUnknown });
-            tr_format(lang, Msg::PluginReasonCount, &[("kind", kind), ("n", &count.to_string()), ("max", &limit.to_string())])
+            let kind = tr(
+                lang,
+                match kind {
+                    C::Actions => Msg::PluginCountActions,
+                    C::Settings => Msg::PluginCountSettings,
+                    C::Binds => Msg::PluginCountBinds,
+                    C::Screens => Msg::PluginCountScreens,
+                    C::Targets => Msg::PluginCountTargets,
+                    _ => Msg::PluginCountUnknown,
+                },
+            );
+            tr_format(
+                lang,
+                Msg::PluginReasonCount,
+                &[
+                    ("kind", kind),
+                    ("n", &count.to_string()),
+                    ("max", &limit.to_string()),
+                ],
+            )
         }
-        R::TargetTooLong { bind, bytes, limit } => tr_format(lang, Msg::PluginReasonTargetLong, &[("bind", &bind.to_string()), ("bytes", &bytes.to_string()), ("max", &limit.to_string())]),
-        R::TargetUnclean { bind } => tr_format(lang, Msg::PluginReasonTargetUnclean, &[("bind", &bind.to_string())]),
-        R::DefaultTooMany { limit } => tr_format(lang, Msg::PluginReasonDefaultCount, &[("max", &limit.to_string())]),
-        R::DefaultKeyTooLong { limit } => tr_format(lang, Msg::PluginReasonDefaultKeyLong, &[("max", &limit.to_string())]),
-        R::DefaultKeyUnclean { limit } => tr_format(lang, Msg::PluginReasonDefaultKeyUnclean, &[("max", &limit.to_string())]),
-        R::DefaultTooDeep { limit } => tr_format(lang, Msg::PluginReasonDefaultDepth, &[("max", &limit.to_string())]),
-        other => tr_format(lang, Msg::PluginReasonUnknown, &[("reason", &other.to_string())]),
+        R::TargetTooLong { bind, bytes, limit } => tr_format(
+            lang,
+            Msg::PluginReasonTargetLong,
+            &[
+                ("bind", &bind.to_string()),
+                ("bytes", &bytes.to_string()),
+                ("max", &limit.to_string()),
+            ],
+        ),
+        R::TargetUnclean { bind } => tr_format(
+            lang,
+            Msg::PluginReasonTargetUnclean,
+            &[("bind", &bind.to_string())],
+        ),
+        R::DefaultTooMany { limit } => tr_format(
+            lang,
+            Msg::PluginReasonDefaultCount,
+            &[("max", &limit.to_string())],
+        ),
+        R::DefaultKeyTooLong { limit } => tr_format(
+            lang,
+            Msg::PluginReasonDefaultKeyLong,
+            &[("max", &limit.to_string())],
+        ),
+        R::DefaultKeyUnclean { limit } => tr_format(
+            lang,
+            Msg::PluginReasonDefaultKeyUnclean,
+            &[("max", &limit.to_string())],
+        ),
+        R::DefaultTooDeep { limit } => tr_format(
+            lang,
+            Msg::PluginReasonDefaultDepth,
+            &[("max", &limit.to_string())],
+        ),
+        other => tr_format(
+            lang,
+            Msg::PluginReasonUnknown,
+            &[("reason", &other.to_string())],
+        ),
     }
 }
 
@@ -259,36 +335,70 @@ mod tests {
 
     #[test]
     fn every_manifest_reason_keeps_the_sanitized_id_and_reason_in_both_languages() {
-        use konoma_plugin::registry::{Registry, RegistryError, PluginOrigin};
+        use konoma_plugin::registry::{PluginOrigin, Registry, RegistryError};
         use konoma_plugin::settings::Value;
         struct Decl(Manifest);
         impl Plugin for Decl {
-            fn manifest(&self) -> Manifest { self.0.clone() }
-            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> { Err(Failure::unsupported("fixture")) }
+            fn manifest(&self) -> Manifest {
+                self.0.clone()
+            }
+            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+                Err(Failure::unsupported("fixture"))
+            }
         }
         let mut cases = vec![Manifest::new("Bad ID", "1")];
         for m in [
             Manifest::new("p", "1").action(Act::new("Bad ID")),
             Manifest::new("p", "1").action(Act::new("a").screen("Bad ID")),
-            Manifest::new("p", "1").setting(SettingDecl::new("Bad ID", Value::Bool(false), Tr::new(""))),
+            Manifest::new("p", "1").setting(SettingDecl::new(
+                "Bad ID",
+                Value::Bool(false),
+                Tr::new(""),
+            )),
             Manifest::new("p", "1").screen("Bad ID"),
             Manifest::new("p", "1").work_group("Bad ID"),
-        ] { cases.push(m); }
-        let mut m = Manifest::new("p", "1"); m.actions = vec![Act::new("a"); 257]; cases.push(m);
-        let mut m = Manifest::new("p", "1"); m.settings = vec![SettingDecl::new("k", Value::Bool(false), Tr::new("")); 257]; cases.push(m);
-        let mut m = Manifest::new("p", "1"); m.binds = vec![Bind::files(["a"]); 1025]; cases.push(m);
-        let mut m = Manifest::new("p", "1"); m.screens = vec!["s".into(); 65]; cases.push(m);
+        ] {
+            cases.push(m);
+        }
+        let mut m = Manifest::new("p", "1");
+        m.actions = vec![Act::new("a"); 257];
+        cases.push(m);
+        let mut m = Manifest::new("p", "1");
+        m.settings = vec![SettingDecl::new("k", Value::Bool(false), Tr::new("")); 257];
+        cases.push(m);
+        let mut m = Manifest::new("p", "1");
+        m.binds = vec![Bind::files(["a"]); 1025];
+        cases.push(m);
+        let mut m = Manifest::new("p", "1");
+        m.screens = vec!["s".into(); 65];
+        cases.push(m);
         cases.push(Manifest::new("p", "1").bind(Bind::files(vec!["a"; 513])));
         cases.push(Manifest::new("p", "1").bind(Bind::files(["a".repeat(1025)])));
         cases.push(Manifest::new("p", "1").bind(Bind::files(["a\n"])));
         for value in [
             Value::List(vec![Value::Bool(false); 1024]),
-            Value::Table(std::collections::BTreeMap::from([("a".repeat(257), Value::Bool(false))])),
-            Value::Table(std::collections::BTreeMap::from([("a\n".into(), Value::Bool(false))])),
+            Value::Table(std::collections::BTreeMap::from([(
+                "a".repeat(257),
+                Value::Bool(false),
+            )])),
+            Value::Table(std::collections::BTreeMap::from([(
+                "a\n".into(),
+                Value::Bool(false),
+            )])),
             (0..9).fold(Value::Bool(false), |v, _| Value::List(vec![v])),
-        ] { cases.push(Manifest::new("p", "1").setting(SettingDecl::new("k", value, Tr::new("")))); }
-        let mut expected_japanese = ["プラグインの id", "操作の id", "操作の画面名", "設定名", "画面名", "作業グループ名"]
-            .map(|kind| format!("{kind} `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）")).to_vec();
+        ] {
+            cases.push(Manifest::new("p", "1").setting(SettingDecl::new("k", value, Tr::new(""))));
+        }
+        let mut expected_japanese = [
+            "プラグインの id",
+            "操作の id",
+            "操作の画面名",
+            "設定名",
+            "画面名",
+            "作業グループ名",
+        ]
+        .map(|kind| format!("{kind} `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）"))
+        .to_vec();
         expected_japanese.extend([
             "操作が 257 件あります（最大 256 件）",
             "設定が 257 件あります（最大 256 件）",
@@ -305,18 +415,40 @@ mod tests {
         assert_eq!(cases.len(), expected_japanese.len());
         for (manifest, expected_japanese) in cases.into_iter().zip(expected_japanese) {
             let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
-            let RegistryError::InvalidManifest { id, why, reason, .. } = Registry::new().register(plugin.clone(), PluginOrigin::User).unwrap_err() else { panic!("expected invalid manifest") };
+            let RegistryError::InvalidManifest {
+                id, why, reason, ..
+            } = Registry::new()
+                .register(plugin.clone(), PluginOrigin::User)
+                .unwrap_err()
+            else {
+                panic!("expected invalid manifest")
+            };
             assert_eq!(why, reason.to_string());
             assert_eq!(manifest_reason_text(&reason, Lang::En), why);
-            let english = format!("{:#}", HostBuilder::checked_id(&plugin, Lang::En).unwrap_err());
-            assert!(english.ends_with(&format!("plugin `{id}` is refused: {why}")), "{english}");
-            let japanese = format!("{:#}", HostBuilder::checked_id(&plugin, Lang::Jp).unwrap_err());
-            assert!(japanese.contains(&format!("プラグイン `{id}`")), "{japanese}");
+            let english = format!(
+                "{:#}",
+                HostBuilder::checked_id(&plugin, Lang::En).unwrap_err()
+            );
+            assert!(
+                english.ends_with(&format!("plugin `{id}` is refused: {why}")),
+                "{english}"
+            );
+            let japanese = format!(
+                "{:#}",
+                HostBuilder::checked_id(&plugin, Lang::Jp).unwrap_err()
+            );
+            assert!(
+                japanese.contains(&format!("プラグイン `{id}`")),
+                "{japanese}"
+            );
             let cause = manifest_reason_text(&reason, Lang::Jp);
             assert_eq!(cause, expected_japanese);
             assert!(japanese.ends_with(&cause), "{japanese}");
             assert_ne!(cause, why);
-            crate::test_support::plugin_language::assert_japanese_plugin_prose("manifest reason", &japanese);
+            crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                "manifest reason",
+                &japanese,
+            );
         }
     }
 

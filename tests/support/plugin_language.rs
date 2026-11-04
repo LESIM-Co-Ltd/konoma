@@ -4,6 +4,7 @@ pub fn assert_japanese_plugin_prose(label: &str, output: &str) {
     for allowed in [
         "konoma plugin:",
         "command =",
+        "[plugins.<id>]",
         "Fixture author",
         "fixture metadata failure",
         "the source path is neither a regular file nor a symlink to a regular file",
@@ -62,13 +63,18 @@ pub fn assert_japanese_plugin_prose(label: &str, output: &str) {
                     "id" | "git" | "konoma" | "HOME" | "PATH" | "CARGO" | "JSON" | "TOML" | "UTC"
                 )
                 || ((word.contains('-') || word.contains('_'))
-                    && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
                 || word.chars().all(|c| c.is_ascii_digit() || c == '.')
             {
                 continue;
             }
             let mut found = false;
-            for _word in token.split(|c: char| !c.is_ascii_alphabetic()).filter(|s| !s.is_empty()) {
+            for _word in token
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .filter(|s| !s.is_empty())
+            {
                 found = true;
                 run += 1;
                 words += 1;
@@ -121,6 +127,14 @@ mod tests {
     #[test]
     fn keeps_an_unmatched_backtick_line_in_the_check() {
         rejects("これは `bad data です");
+    }
+
+    #[test]
+    fn accepts_the_literal_toml_table_in_the_configuration_example() {
+        assert_japanese_plugin_prose(
+            "configuration example",
+            "[plugins.<id>]\n    command = \"/fixture/plugin\"",
+        );
     }
 
     #[test]

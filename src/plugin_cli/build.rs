@@ -558,11 +558,22 @@ fn unfinished_lang(cause: &anyhow::Error, plan: &[&str], done: usize, lang: Lang
     } else {
         tr(lang, Msg::PluginRepairRetry)
     };
-    anyhow!(tr_format(lang, Msg::PluginReplacementPartial, &[
-        ("cause", &format!("{cause:#}")),
-        ("new", &new.iter().map(|s| step_text(s, lang)).collect::<Vec<_>>().join(", ")),
-        ("old", &old.join(", ")), ("repair", repair),
-    ]))
+    anyhow!(tr_format(
+        lang,
+        Msg::PluginReplacementPartial,
+        &[
+            ("cause", &format!("{cause:#}")),
+            (
+                "new",
+                &new.iter()
+                    .map(|s| step_text(s, lang))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ("old", &old.join(", ")),
+            ("repair", repair),
+        ]
+    ))
 }
 
 fn run_checked(
@@ -575,7 +586,14 @@ fn run_checked(
 ) -> Result<()> {
     let st = run_cargo(cargo, args, dir, target, interrupted, lang)?;
     if !st.success() {
-        bail!(tr_format(lang, Msg::PluginCargoFailed, &[("args", &args.join(" ")), ("status", &super::status_text(st, lang))]));
+        bail!(tr_format(
+            lang,
+            Msg::PluginCargoFailed,
+            &[
+                ("args", &args.join(" ")),
+                ("status", &super::status_text(st, lang))
+            ]
+        ));
     }
     Ok(())
 }
@@ -728,9 +746,13 @@ mod tests {
     #[test]
     fn unfinished_substitution_preserves_the_original_cause() {
         for lang in [Lang::En, Lang::Jp] {
-            let cause = anyhow::anyhow!("data {cause} {new} {old} {repair}");
-            let error = unfinished_lang(&cause, &[STEP_LOCK, STEP_LIST, STEP_PROGRAM], 1, lang).to_string();
-            assert!(error.contains("data {cause} {new} {old} {repair}"), "{error}");
+            let cause = anyhow::anyhow!("{}", "data {cause} {new} {old} {repair}");
+            let error =
+                unfinished_lang(&cause, &[STEP_LOCK, STEP_LIST, STEP_PROGRAM], 1, lang).to_string();
+            assert!(
+                error.contains("data {cause} {new} {old} {repair}"),
+                "{error}"
+            );
         }
     }
 
@@ -822,7 +844,9 @@ mod tests {
             std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o300)).unwrap();
             errors.push(format!("{:#}", clean_lang(&unreadable, lang).unwrap_err()));
             if lang == Lang::Jp {
-                for error in errors { assert_japanese_plugin_prose("build failure", &error); }
+                for error in errors {
+                    assert_japanese_plugin_prose("build failure", &error);
+                }
             } else {
                 // Own contexts copied from 7359773; OS causes remain platform data.
                 let pid = std::process::id();
@@ -834,16 +858,27 @@ mod tests {
                     format!("the new build did not finish `--plugins`: plugin job watcher: cannot start watched program {}/absent", dir.display()),
                 ];
                 for (error, expected) in errors.iter().zip(expected) {
-                    crate::test_support::plugin_english_lower::assert_english_context("build", error, &expected);
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "build", error, &expected,
+                    );
                 }
                 assert_eq!(errors[1], "cargo was not found (set $CARGO, or put cargo in PATH).\n`konoma plugin install` and `update` rebuild konoma with Cargo, so they need a Rust toolchain.\nWithout one, install the plugin as a standalone program (for example `konoma-office`) and let\nkonoma run it as a child process: in config.toml write\n\n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n");
                 let cause = std::io::Error::from_raw_os_error(libc::EACCES).to_string();
-                let plan = ["Cargo.lock", "plugins.toml", "the record of the program", "the konoma program (the previous one keeps running)"];
+                let plan = [
+                    "Cargo.lock",
+                    "plugins.toml",
+                    "the record of the program",
+                    "the konoma program (the previous one keeps running)",
+                ];
                 for done in 0..4 {
                     let expected = if done == 0 {
                         format!("{cause}\nNothing was replaced; the previous konoma is unchanged. Run the command again once that is fixed.")
                     } else {
-                        let repair = if done >= 2 { "`konoma plugin update` builds konoma from plugins.toml as it is now and brings the rest in line" } else { "run the same command again once that is fixed" };
+                        let repair = if done >= 2 {
+                            "`konoma plugin update` builds konoma from plugins.toml as it is now and brings the rest in line"
+                        } else {
+                            "run the same command again once that is fixed"
+                        };
                         format!("{cause}\nThe replacement stopped half way.\n  Now new:  {}\n  Still old: {}\n{repair}.", plan[..done].join(", "), plan[done..].join(", "))
                     };
                     assert_eq!(errors[5 + done], expected);
@@ -859,7 +894,11 @@ mod tests {
                 ];
                 assert_eq!(errors.len(), 9 + expected.len());
                 for (error, expected) in errors[9..].iter().zip(expected) {
-                    crate::test_support::plugin_english_lower::assert_english_context("build file", error, &expected);
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "build file",
+                        error,
+                        &expected,
+                    );
                 }
             }
         }

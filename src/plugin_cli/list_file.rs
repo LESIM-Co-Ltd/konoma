@@ -105,15 +105,31 @@ fn str_key(t: &toml::Table, key: &str, ctx: &str, lang: Lang) -> Result<Option<S
     match t.get(key) {
         None => Ok(None),
         Some(toml::Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
-        Some(toml::Value::String(_)) => bail!(tr_format(lang, Msg::PluginEmptyKey, &[("context", ctx), ("key", key)])),
-        Some(_) => bail!(tr_format(lang, Msg::PluginStringKey, &[("context", ctx), ("key", key)])),
+        Some(toml::Value::String(_)) => bail!(tr_format(
+            lang,
+            Msg::PluginEmptyKey,
+            &[("context", ctx), ("key", key)]
+        )),
+        Some(_) => bail!(tr_format(
+            lang,
+            Msg::PluginStringKey,
+            &[("context", ctx), ("key", key)]
+        )),
     }
 }
 
 fn only_keys(t: &toml::Table, allowed: &[&str], ctx: &str, lang: Lang) -> Result<()> {
     for k in t.keys() {
         if !allowed.contains(&k.as_str()) {
-            bail!(tr_format(lang, Msg::PluginUnknownKey, &[("context", ctx), ("key", k), ("allowed", &allowed.join(", "))]));
+            bail!(tr_format(
+                lang,
+                Msg::PluginUnknownKey,
+                &[
+                    ("context", ctx),
+                    ("key", k),
+                    ("allowed", &allowed.join(", "))
+                ]
+            ));
         }
     }
     Ok(())
@@ -124,7 +140,11 @@ fn path_key(t: &toml::Table, ctx: &str, lang: Lang) -> Result<Option<String>> {
         return Ok(None);
     };
     if !path_form_ok(&p) {
-        bail!(tr_format(lang, Msg::PluginConfigPath, &[("context", ctx), ("path", &p)]));
+        bail!(tr_format(
+            lang,
+            Msg::PluginConfigPath,
+            &[("context", ctx), ("path", &p)]
+        ));
     }
     Ok(Some(p))
 }
@@ -175,10 +195,19 @@ impl PluginList {
                 anyhow::Error::new(error).context(tr(lang, Msg::PluginInvalidToml))
             } else {
                 let span = error.span().unwrap_or(0..0);
-                anyhow::anyhow!(tr_format(lang, Msg::PluginTomlCause, &[("cause", error.message())]))
-                .context(tr_format(lang, Msg::PluginTomlPosition, &[
-                    ("start", &span.start.to_string()), ("end", &span.end.to_string()),
-                ]))
+                anyhow::anyhow!(tr_format(
+                    lang,
+                    Msg::PluginTomlCause,
+                    &[("cause", error.message())]
+                ))
+                .context(tr_format(
+                    lang,
+                    Msg::PluginTomlPosition,
+                    &[
+                        ("start", &span.start.to_string()),
+                        ("end", &span.end.to_string()),
+                    ],
+                ))
                 .context(tr(lang, Msg::PluginInvalidToml))
             }
         })?;
@@ -201,10 +230,17 @@ impl PluginList {
             };
             for (name, v) in t {
                 if !valid_crate_name(name) {
-                    bail!(
-                        "[plugins.{name}]: {}",
-                        tr(lang, Msg::PluginBadCrate).replace("{name}", name)
-                    );
+                    bail!(tr_format(
+                        lang,
+                        Msg::PluginListContext,
+                        &[
+                            ("context", &format!("[plugins.{name}]")),
+                            (
+                                "detail",
+                                &tr(lang, Msg::PluginBadCrate).replace("{name}", name)
+                            ),
+                        ]
+                    ));
                 }
                 list.plugins
                     .insert(name.clone(), parse_source(name, v, lang)?);
@@ -449,7 +485,10 @@ mod tests {
             ));
             if lang == Lang::Jp {
                 for error in errors {
-                    crate::test_support::plugin_language::assert_japanese_plugin_prose("list file", &error);
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "list file",
+                        &error,
+                    );
                 }
             } else {
                 let expected = [
@@ -457,11 +496,19 @@ mod tests {
                     format!("cannot read {}", target.display()),
                     format!("cannot replace {}", target.display()),
                     format!("cannot create {}", file.display()),
-                    format!("cannot write {}/.write.tmp-{}", dir.display(), std::process::id()),
+                    format!(
+                        "cannot write {}/.write.tmp-{}",
+                        dir.display(),
+                        std::process::id()
+                    ),
                 ];
                 assert_eq!(errors.len(), expected.len());
                 for (error, expected) in errors.iter().zip(expected) {
-                    crate::test_support::plugin_english_lower::assert_english_context("list file", error, &expected);
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "list file",
+                        error,
+                        &expected,
+                    );
                 }
             }
         }
@@ -475,17 +522,35 @@ mod tests {
             let error = format!("{:#}", PluginList::parse_lang(&text, Lang::Jp).unwrap_err());
             let span = parser.span().unwrap();
             assert!(error.contains(parser.message()), "{error}");
-            assert!(error.contains(&format!("{}..{}", span.start, span.end)), "{error}");
-            crate::test_support::plugin_language::assert_japanese_plugin_prose("TOML cause", &error);
+            assert!(
+                error.contains(&format!("{}..{}", span.start, span.end)),
+                "{error}"
+            );
+            crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                "TOML cause",
+                &error,
+            );
         }
     }
 
     #[test]
     fn error_substitution_keeps_placeholder_shaped_user_data() {
         for lang in [Lang::En, Lang::Jp] {
-            let error = PluginList::parse_lang("[konoma]\\n'{allowed}' = 1".replace("\\n", "\n").as_str(), lang).unwrap_err().to_string();
+            let error = PluginList::parse_lang(
+                "[konoma]\\n'{allowed}' = 1".replace("\\n", "\n").as_str(),
+                lang,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("`{allowed}`"), "{error}");
-            let error = PluginList::parse_lang("[plugins.a]\\npath = '{context}/{cause}'".replace("\\n", "\n").as_str(), lang).unwrap_err().to_string();
+            let error = PluginList::parse_lang(
+                "[plugins.a]\\npath = '{context}/{cause}'"
+                    .replace("\\n", "\n")
+                    .as_str(),
+                lang,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("{context}/{cause}"), "{error}");
         }
     }
