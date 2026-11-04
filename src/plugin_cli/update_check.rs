@@ -2,14 +2,39 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 use super::{list_file::PluginList, project};
-use crate::i18n::{tr, Lang, Msg};
+use crate::i18n::{tr, tr_format, Lang, Msg};
+
+const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+const QUERY_PARALLELISM: usize = 3;
+
+type QueryClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+type QueryAnswer = std::thread::Result<(String, Option<Observation>)>;
+type FetchFn = dyn Fn(&str, Duration) -> Option<String> + Send + Sync;
+
+#[derive(Clone)]
+pub(super) struct Fetch(Arc<FetchFn>);
+
+impl Fetch {
+    pub(super) fn http() -> Self {
+        Self(Arc::new(fetch_index))
+    }
+
+    #[cfg(test)]
+    pub(super) fn injected(fetch: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(move |url, _budget| fetch(url)))
+    }
+}
 
 // The SDK's public transport defaults embed its own CARGO_PKG_VERSION. Read that once, rather
 // than confusing the host package version or a dependency's semver requirement with the SDK
@@ -35,7 +60,7 @@ impl Worker {
             konoma_base::xdg::xdg_config_home()
                 .zip(konoma_base::xdg::data_dir())
                 .and_then(|(config, data)| {
-                    start_with(
+                    start_with_fetch(
                         true,
                         &config.join("konoma"),
                         data,
@@ -46,7 +71,7 @@ impl Worker {
                                 .unwrap_or_default()
                                 .as_secs()
                         },
-                        fetch_index,
+                        Fetch::http(),
                         spawn_worker,
                     )
                 })
@@ -91,16 +116,21 @@ fn spawn_worker(job: Box<dyn FnOnce() + Send>) -> bool {
         .is_ok()
 }
 
-fn http_config() -> ureq::config::Config {
+fn http_config_with_timeout(timeout: Duration) -> ureq::config::Config {
     ureq::Agent::config_builder()
         .user_agent(USER_AGENT)
-        .timeout_global(Some(Duration::from_secs(10)))
+        .timeout_global(Some(timeout.min(QUERY_TIMEOUT)))
         .max_redirects(0)
         .build()
 }
 
-fn fetch_index(url: &str) -> Option<String> {
-    let agent = ureq::Agent::new_with_config(http_config());
+#[cfg(test)]
+fn http_config() -> ureq::config::Config {
+    http_config_with_timeout(QUERY_TIMEOUT)
+}
+
+fn fetch_index(url: &str, remaining: Duration) -> Option<String> {
+    let agent = ureq::Agent::new_with_config(http_config_with_timeout(remaining));
     agent
         .get(url)
         .call()
@@ -183,16 +213,7 @@ fn notice(
             },
         );
         notes.push(
-            tr(
-                lang,
-                if needs_host == 1 {
-                    Msg::PluginHostUpdateOne
-                } else {
-                    Msg::PluginHostUpdates
-                },
-            )
-            .replace("{n}", &needs_host.to_string())
-            .replace("{method}", method),
+            tr_format(lang, if needs_host == 1 { Msg::PluginHostUpdateOne } else { Msg::PluginHostUpdates }, &[("n", &needs_host.to_string()), ("method", method)]),
         );
     }
     (!notes.is_empty()).then(|| notes.join(" / "))
@@ -201,6 +222,7 @@ fn notice(
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Snapshot {
     pub checked_at: u64,
+    pub(super) show_checked_time: bool,
     host_version: String,
     plugins: BTreeMap<String, Observation>,
 }
@@ -212,20 +234,54 @@ struct Observation {
 }
 
 impl Snapshot {
-    pub(crate) fn list_note(&self, name: &str, installed: Option<&String>) -> Option<String> {
+    #[cfg(test)]
+    pub(super) fn language_fixture() -> Self {
+        Self {
+            checked_at: 0,
+            show_checked_time: true,
+            host_version: "0.31.2".into(),
+            plugins: BTreeMap::from([
+                (
+                    "konoma-foo".into(),
+                    Observation {
+                        installed: "0.3.2".into(),
+                        updates: Updates {
+                            compatible: Some("0.3.3".into()),
+                            needs_host: None,
+                        },
+                    },
+                ),
+                (
+                    "konoma-bar".into(),
+                    Observation {
+                        installed: "1.0.0".into(),
+                        updates: Updates {
+                            compatible: None,
+                            needs_host: Some("2.0.0".into()),
+                        },
+                    },
+                ),
+            ]),
+        }
+    }
+    pub(crate) fn list_note_lang(
+        &self,
+        name: &str,
+        installed: Option<&String>,
+        lang: Lang,
+    ) -> Option<String> {
         let observed = self.plugins.get(name)?;
         if installed != Some(&observed.installed) {
             return None;
         }
+        let mut notes = Vec::new();
         if let Some(v) = &observed.updates.compatible {
-            Some(format!("update available: {v}"))
-        } else {
-            observed
-                .updates
-                .needs_host
-                .as_ref()
-                .map(|v| format!("newer {v} needs a newer konoma"))
+            notes.push(tr(lang, Msg::PluginListUpdate).replace("{version}", v));
         }
+        if let Some(v) = &observed.updates.needs_host {
+            notes.push(tr(lang, Msg::PluginListNeedsHost).replace("{version}", v));
+        }
+        Some(if notes.is_empty() { tr(lang, Msg::PluginListCurrent).into() } else { notes.join(" / ") })
     }
 
     pub(crate) fn load(data_dir: &Path) -> Option<Self> {
@@ -233,6 +289,7 @@ impl Snapshot {
         let saved: CheckTime = toml::from_str(&text).ok()?;
         Some(Self {
             checked_at: saved.checked_at,
+            show_checked_time: true,
             host_version: String::new(),
             plugins: BTreeMap::new(),
         })
@@ -244,7 +301,7 @@ struct CheckTime {
     checked_at: u64,
 }
 
-fn standard_targets() -> BTreeMap<String, (Version, VersionReq)> {
+pub(super) fn standard_targets() -> BTreeMap<String, (Version, VersionReq)> {
     let manifest: toml::Table = include_str!("../../Cargo.toml")
         .parse()
         .expect("package manifest");
@@ -278,13 +335,13 @@ fn standard_targets() -> BTreeMap<String, (Version, VersionReq)> {
 
 // Both the clock and thread launcher are injected: tests can prove that a check is never even
 // scheduled, and can hold the network operation behind a latch without blocking the caller.
-fn start_with(
+fn start_with_fetch(
     enabled: bool,
     config_dir: &Path,
     data_dir: PathBuf,
     host: Version,
     now: impl Fn() -> u64 + Send + 'static,
-    fetch: impl Fn(&str) -> Option<String> + Send + 'static,
+    fetch: Fetch,
     spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
 ) -> Option<Receiver<Snapshot>> {
     if !enabled {
@@ -316,7 +373,9 @@ fn start_with(
             let _ = tx.send(saved);
             return;
         }
-        let Ok(list) = PluginList::load(&config_dir.join("plugins.toml")) else {
+        // These worker errors are deliberately silent; no English diagnostic reaches the UI.
+        // Snapshots hold data only, and apply/list format their notices in the caller's language.
+        let Ok(list) = PluginList::load_lang(&config_dir.join("plugins.toml"), Lang::En) else {
             return;
         };
         let lock_text = std::fs::read_to_string(data_dir.join("Cargo.lock"));
@@ -359,37 +418,198 @@ fn start_with(
         let Ok(text) = toml::to_string(&CheckTime { checked_at }) else {
             return;
         };
-        if super::list_file::write_atomic(&data_dir.join("plugin-updates.toml"), text.as_bytes())
-            .is_err()
+        if super::list_file::write_atomic_lang(
+            &data_dir.join("plugin-updates.toml"),
+            text.as_bytes(),
+            Lang::En,
+        )
+        .is_err()
         {
             return;
         }
         drop(claim);
-        let mut plugins = BTreeMap::new();
-        for (name, (installed, requirement)) in targets {
-            if let Some(updates) = fetch(&index_url(&name))
-                .and_then(|body| inspect_index_in_range(&body, &installed, &host, &requirement))
-            {
-                plugins.insert(
-                    name,
-                    Observation {
-                        installed: installed.to_string(),
-                        updates,
-                    },
-                );
-            }
-        }
+        let (plugins, _) = query_targets(targets, &host, fetch);
         if plugins.is_empty() {
             return;
         }
         let snapshot = Snapshot {
             checked_at,
+            show_checked_time: true,
             host_version: host.to_string(),
             plugins,
         };
         let _ = tx.send(snapshot);
     }))
     .then_some(rx)
+}
+
+#[cfg(test)]
+fn start_with(
+    enabled: bool,
+    config_dir: &Path,
+    data_dir: PathBuf,
+    host: Version,
+    now: impl Fn() -> u64 + Send + 'static,
+    fetch: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+) -> Option<Receiver<Snapshot>> {
+    start_with_fetch(enabled, config_dir, data_dir, host, now, Fetch::injected(fetch), spawn)
+}
+
+pub(super) struct ListCheck {
+    pub snapshot: Snapshot,
+    pub disabled: bool,
+    pub failed: bool,
+}
+
+impl ListCheck {
+    pub fn status_note(&self, lang: Lang) -> Option<String> {
+        if self.disabled { Some(tr(lang, Msg::PluginListCheckDisabled).into()) }
+        else if self.failed { Some(tr(lang, Msg::PluginListCheckFailed).into()) }
+        else { None }
+    }
+}
+
+// List is an explicit, read-only check: no daily claim, clock or timestamp writes.
+fn query_list_fetch(
+    list: &PluginList,
+    locked: &BTreeMap<String, String>,
+    host: &Version,
+    enabled: bool,
+    fetch: Fetch,
+) -> ListCheck {
+    let targets = list.plugins.iter().filter_map(|(name, source)| {
+        let super::Source::Crates { version } = source else { return None };
+        Some((name.clone(), (Version::parse(locked.get(name)?).ok()?, VersionReq::parse(version).ok()?)))
+    }).collect();
+    let (plugins, failed) = if enabled { query_targets(targets, host, fetch) } else { (BTreeMap::new(), false) };
+    ListCheck {
+        snapshot: Snapshot { checked_at: 0, show_checked_time: false, host_version: host.to_string(), plugins },
+        disabled: !enabled,
+        failed,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn query_list_with(
+    list: &PluginList,
+    locked: &BTreeMap<String, String>,
+    host: &Version,
+    enabled: bool,
+    fetch: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+) -> ListCheck {
+    query_list_fetch(list, locked, host, enabled, Fetch::injected(fetch))
+}
+
+pub(super) fn query_list(list: &PluginList, locked: &BTreeMap<String, String>, enabled: bool, fetch: Fetch) -> ListCheck {
+    query_list_fetch(list, locked, &HOST_PLUGIN_VERSION, enabled, fetch)
+}
+
+fn query_targets(
+    targets: BTreeMap<String, (Version, VersionReq)>,
+    host: &Version,
+    fetch: Fetch,
+) -> (BTreeMap<String, Observation>, bool) {
+    let started = Instant::now();
+    let remaining: QueryClock = Arc::new(move || QUERY_TIMEOUT.saturating_sub(started.elapsed()));
+    query_targets_with(targets, host, fetch, remaining, |rx, budget| rx.recv_timeout(budget))
+}
+
+// The receive decision and remaining budget are injected together so tests can expire a query
+// while fetches are latched. No thread join can extend the caller's overall deadline.
+fn query_targets_with(
+    targets: BTreeMap<String, (Version, VersionReq)>,
+    host: &Version,
+    fetch: Fetch,
+    remaining: QueryClock,
+    mut receive: impl FnMut(&Receiver<QueryAnswer>, Duration) -> Result<QueryAnswer, mpsc::RecvTimeoutError>,
+) -> (BTreeMap<String, Observation>, bool) {
+    let expected = targets.len();
+    if expected == 0 {
+        return (BTreeMap::new(), false);
+    }
+    let queue = Arc::new(Mutex::new(targets.into_iter()));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    struct CancelQuery(Arc<AtomicBool>);
+    impl Drop for CancelQuery {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _cancel = CancelQuery(cancelled.clone());
+    let (tx, rx) = mpsc::channel();
+    for _ in 0..expected.min(QUERY_PARALLELISM) {
+        if remaining().is_zero() {
+            break;
+        }
+        let queue = queue.clone();
+        let cancelled = cancelled.clone();
+        let remaining = remaining.clone();
+        let fetch = fetch.clone();
+        let host = host.clone();
+        let tx = tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("plugin-index".into())
+            .spawn(move || loop {
+                if cancelled.load(Ordering::SeqCst) || remaining().is_zero() {
+                    break;
+                }
+                let target = queue.lock().ok().and_then(|mut queue| queue.next());
+                let Some((name, (installed, requirement))) = target else {
+                    break;
+                };
+                let budget = remaining();
+                if cancelled.load(Ordering::SeqCst) || budget.is_zero() {
+                    break;
+                }
+                // Preserve injected fetch assertions: a panic is not an ordinary index failure.
+                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let updates = (fetch.0)(&index_url(&name), budget)
+                        .and_then(|body| inspect_index_in_range(&body, &installed, &host, &requirement));
+                    let observation = updates.map(|updates| Observation {
+                        installed: installed.to_string(),
+                        updates,
+                    });
+                    (name, observation)
+                }));
+                let panicked = answer.is_err();
+                // Expired responses must not be presented as a completed check.
+                if !panicked && (cancelled.load(Ordering::SeqCst) || remaining().is_zero()) {
+                    break;
+                }
+                if tx.send(answer).is_err() || panicked {
+                    break;
+                }
+            });
+        match spawned {
+            // HTTP receives only the remaining overall budget; callers never wait on joins.
+            Ok(handle) => drop(handle),
+            Err(_) => break,
+        }
+    }
+    drop(tx);
+    let mut answers = Vec::new();
+    while answers.len() < expected {
+        let budget = remaining();
+        if budget.is_zero() {
+            break;
+        }
+        match receive(&rx, budget) {
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Ok(answer) => answers.push(answer),
+            Err(_) => break,
+        }
+    }
+    cancelled.store(true, Ordering::SeqCst);
+    // Keep responses already delivered before expiry even if the caller was descheduled.
+    answers.extend(rx.try_iter());
+    let answers: Vec<_> = answers.into_iter().map(|answer| match answer {
+        Ok(answer) => answer,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }).collect();
+    let failed = answers.len() < expected || answers.iter().any(|(_, answer)| answer.is_none());
+    let plugins = answers.into_iter().filter_map(|(name, answer)| answer.map(|answer| (name, answer))).collect();
+    (plugins, failed)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -400,13 +620,7 @@ pub(crate) struct Updates {
 
 impl Updates {
     fn counts(&self) -> (usize, usize) {
-        if self.compatible.is_some() {
-            (1, 0)
-        } else if self.needs_host.is_some() {
-            (0, 1)
-        } else {
-            (0, 0)
-        }
+        (usize::from(self.compatible.is_some()), usize::from(self.needs_host.is_some()))
     }
 }
 
@@ -458,11 +672,10 @@ fn inspect_index_in_range(
         if row.yanked
             || !version.pre.is_empty()
             || version <= *installed
-            || !requirement.matches(&version)
         {
             continue;
         }
-        let best = if requirements.iter().all(|r| r.matches(host)) {
+        let best = if requirement.matches(&version) && requirements.iter().all(|r| r.matches(host)) {
             &mut compatible
         } else {
             &mut needs_host
@@ -492,8 +705,261 @@ fn index_url(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_notice_language_walk() {
+        for lang in [super::Lang::En, super::Lang::Jp] {
+            for counts in [(1, 0), (2, 0), (0, 1), (0, 2), (1, 1)] {
+                for method in [
+                    super::InstallMethod::Cargo,
+                    super::InstallMethod::Brew,
+                    super::InstallMethod::Apt,
+                    super::InstallMethod::Other,
+                ] {
+                    let text = super::notice(counts.0, counts.1, lang, method).unwrap();
+                    if lang == super::Lang::Jp {
+                        crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                            "update notice",
+                            &text,
+                        );
+                    } else {
+                        let mut expected = Vec::new();
+                        if counts.0 > 0 {
+                            expected.push(format!("{} plugin update{} available (`konoma plugin update`)", counts.0, if counts.0 == 1 { "" } else { "s" }));
+                        }
+                        if counts.1 > 0 {
+                            let method = match method {
+                                super::InstallMethod::Cargo => "`cargo install konoma`",
+                                super::InstallMethod::Brew => "`brew upgrade konoma`",
+                                super::InstallMethod::Apt => "`sudo apt upgrade konoma`",
+                                super::InstallMethod::Other => "update konoma using the method you installed it with",
+                            };
+                            expected.push(format!("{} newer plugin version{} {} a newer konoma ({method})", counts.1, if counts.1 == 1 { "" } else { "s" }, if counts.1 == 1 { "needs" } else { "need" }));
+                        }
+                        assert_eq!(text, expected.join(" / "));
+                        crate::test_support::plugin_english_lower::assert_english_context("notice", &text, &expected.join(" / "));
+                    }
+                }
+            }
+        }
+    }
     use super::*;
     use konoma_test_support::{unique_tmp, TmpDir};
+
+    #[derive(Default)]
+    struct FetchGate {
+        open: std::sync::Mutex<bool>,
+        changed: std::sync::Condvar,
+    }
+
+    impl FetchGate {
+        fn wait(&self) {
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.changed.wait(open).unwrap();
+            }
+        }
+        fn release(&self) {
+            *self.open.lock().unwrap() = true;
+            self.changed.notify_all();
+        }
+    }
+
+    struct ReleaseFetches(std::sync::Arc<FetchGate>);
+    impl Drop for ReleaseFetches {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    fn query_fixture(names: &[&str]) -> BTreeMap<String, (Version, VersionReq)> {
+        names.iter().map(|name| ((*name).into(), (Version::parse("0.3.0").unwrap(), VersionReq::STAR))).collect()
+    }
+
+    #[test]
+    fn query_overall_deadline_keeps_ready_answers_without_joining_blocked_fetches() {
+        use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+        let seconds = Arc::new(AtomicU64::new(10));
+        let clock: QueryClock = {
+            let seconds = seconds.clone();
+            Arc::new(move || Duration::from_secs(seconds.load(Ordering::SeqCst)))
+        };
+        let gate = Arc::new(FetchGate::default());
+        let release = ReleaseFetches(gate.clone());
+        let (entered, entering) = mpsc::channel();
+        let (finished, finishing) = mpsc::channel();
+        let fetch = Fetch(Arc::new(move |url, budget| {
+            assert_eq!(budget, QUERY_TIMEOUT);
+            if url.ends_with("/fast") {
+                return Some(row("0.4.0", None, false));
+            }
+            entered.send(()).unwrap();
+            gate.wait();
+            finished.send(()).unwrap();
+            None
+        }));
+        let mut waits = 0;
+        let (plugins, failed) = query_targets_with(
+            query_fixture(&["fast", "slow"]), &host(), fetch, clock,
+            |rx, budget| {
+                assert_eq!(budget, QUERY_TIMEOUT);
+                waits += 1;
+                if waits == 1 {
+                    rx.recv_timeout(Duration::from_secs(5))
+                } else {
+                    entering.recv_timeout(Duration::from_secs(5)).unwrap();
+                    seconds.store(0, Ordering::SeqCst);
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                }
+            },
+        );
+        assert!(failed, "the unanswered crate must be reported as uncheckable");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins["fast"].updates.compatible.as_deref(), Some("0.4.0"));
+        // Release after return: joining the blocked fetch would prevent reaching this point.
+        drop(release);
+        finishing.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn query_parallelism_is_bounded_and_queued_crates_stop_at_the_overall_deadline() {
+        use std::sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}};
+        let seconds = Arc::new(AtomicU64::new(10));
+        let clock: QueryClock = {
+            let seconds = seconds.clone();
+            Arc::new(move || Duration::from_secs(seconds.load(Ordering::SeqCst)))
+        };
+        let gate = Arc::new(FetchGate::default());
+        let release = ReleaseFetches(gate.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let (entered, entering) = mpsc::channel();
+        let (finished, finishing) = mpsc::channel();
+        let fetch = {
+            let calls = calls.clone();
+            let active = active.clone();
+            let maximum = maximum.clone();
+            Fetch(Arc::new(move |_, budget| {
+                assert_eq!(budget, QUERY_TIMEOUT);
+                calls.fetch_add(1, Ordering::SeqCst);
+                maximum.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                entered.send(()).unwrap();
+                gate.wait();
+                active.fetch_sub(1, Ordering::SeqCst);
+                finished.send(()).unwrap();
+                None
+            }))
+        };
+        let (plugins, failed) = query_targets_with(
+            query_fixture(&["a", "b", "c", "d", "e", "f", "g", "h"]), &host(), fetch, clock,
+            |_, budget| {
+                assert_eq!(budget, QUERY_TIMEOUT);
+                for _ in 0..QUERY_PARALLELISM {
+                    entering.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                seconds.store(0, Ordering::SeqCst);
+                Err(mpsc::RecvTimeoutError::Timeout)
+            },
+        );
+        assert!(plugins.is_empty() && failed);
+        assert_eq!(calls.load(Ordering::SeqCst), QUERY_PARALLELISM);
+        assert_eq!(maximum.load(Ordering::SeqCst), QUERY_PARALLELISM);
+        drop(release);
+        for _ in 0..QUERY_PARALLELISM {
+            finishing.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), QUERY_PARALLELISM);
+    }
+
+    #[test]
+    fn query_passes_only_the_remaining_budget_to_fetch_and_receive() {
+        let remaining = Duration::from_secs(4);
+        let fetch = Fetch(Arc::new(move |_, budget| {
+            assert_eq!(budget, remaining);
+            Some(row("0.4.0", None, false))
+        }));
+        let (plugins, failed) = query_targets_with(
+            query_fixture(&["foo"]), &host(), fetch,
+            Arc::new(move || remaining),
+            |rx, budget| {
+                assert_eq!(budget, remaining);
+                rx.recv_timeout(Duration::from_secs(5))
+            },
+        );
+        assert!(!failed);
+        assert!(plugins.contains_key("foo"));
+    }
+
+    #[test]
+    fn injected_fetch_panics_are_not_silent_query_failures() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            query_targets_with(
+                query_fixture(&["foo"]), &host(), Fetch::injected(|_| panic!("fetch assertion")),
+                Arc::new(|| QUERY_TIMEOUT),
+                |rx, _| rx.recv_timeout(Duration::from_secs(5)),
+            )
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn an_expired_query_never_starts_a_fetch_or_waits() {
+        let (plugins, failed) = query_targets_with(
+            query_fixture(&["foo"]), &host(),
+            Fetch::injected(|_| panic!("expired fetch")),
+            std::sync::Arc::new(|| Duration::ZERO),
+            |_, _| panic!("expired wait"),
+        );
+        assert!(plugins.is_empty() && failed);
+    }
+
+    #[test]
+    fn explicit_list_queries_each_time_without_claiming_the_daily_check() {
+        let d = fixture();
+        std::fs::write(d.join("data/plugin-updates.toml"), "checked_at = 100\n").unwrap();
+        let list = PluginList::load(&d.join("config/plugins.toml")).unwrap();
+        let locked = BTreeMap::from([("foo".into(), "0.3.0".into())]);
+        let before = std::fs::read(d.join("data/plugin-updates.toml")).unwrap();
+        for _ in 0..2 {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker_calls = calls.clone();
+            let result = query_list_with(&list, &locked, &host(), true, move |url| {
+                worker_calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(url, index_url("foo"));
+                Some([row("0.3.1", None, false), row("2.0.0", Some("^2"), false)].join("\n"))
+            });
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(!result.disabled && !result.failed);
+            for lang in [Lang::En, Lang::Jp] {
+                let note = result.snapshot.list_note_lang("foo", locked.get("foo"), lang).unwrap();
+                assert!(note.contains("0.3.1") && note.contains("2.0.0"), "{note}");
+                if lang == Lang::Jp { crate::test_support::plugin_language::assert_japanese_plugin_prose("list updates", &note); }
+                else { assert_eq!(note, "update available: 0.3.1 / newer 2.0.0 needs a newer konoma"); }
+            }
+            assert_eq!(std::fs::read(d.join("data/plugin-updates.toml")).unwrap(), before);
+            assert!(!d.join("data/plugin-updates.lock").exists());
+        }
+    }
+
+    #[test]
+    fn explicit_list_failures_and_disabled_checks_are_visible_in_both_languages() {
+        let list = PluginList::parse("[plugins.foo]\\nversion = '*'".replace("\\n", "\n").as_str()).unwrap();
+        let locked = BTreeMap::from([("foo".into(), "0.3.0".into())]);
+        let failed = query_list_with(&list, &locked, &host(), true, |_| None);
+        let disabled = query_list_with(&list, &locked, &host(), false, |_| panic!("disabled HTTP"));
+        for (check, english, japanese) in [
+            (failed, "Could not check for plugin updates.", "プラグインの更新を確認できませんでした。"),
+            (disabled, "Plugin update checking is turned off.", "プラグインの更新確認は無効です。"),
+        ] {
+            assert_eq!(check.status_note(Lang::En).as_deref(), Some(english));
+            assert_eq!(check.status_note(Lang::Jp).as_deref(), Some(japanese));
+        }
+        for source in ["path = '/fixture'", "git = 'url'"] {
+            let list = PluginList::parse(&format!("[plugins.local]\\n{source}").replace("\\n", "\n")).unwrap();
+            let result = query_list_with(&list, &BTreeMap::new(), &host(), true, |_| panic!("no registry target"));
+            assert!(!result.failed);
+        }
+    }
 
     fn flash_app(d: &Path, lang: Lang) -> crate::App {
         let cfg =
@@ -727,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn update_standard_crate_offers_only_versions_in_konomas_range() {
+    fn update_standard_crate_separates_reachable_and_newer_host_versions() {
         for (versions, expected) in [
             (vec!["0.1.1", "0.2.0"], Some("0.1.1")),
             (vec!["0.2.0"], None),
@@ -747,7 +1213,7 @@ mod tests {
             .unwrap();
             let updates = &snapshot.plugins["konoma-office"].updates;
             assert_eq!(updates.compatible.as_deref(), expected);
-            assert!(updates.needs_host.is_none());
+            assert_eq!(updates.needs_host.as_deref(), Some("0.2.0"));
         }
     }
 
@@ -803,7 +1269,7 @@ mod tests {
             let snapshot = check(&d, 100, |_| Some(row("0.4.0", None, false))).unwrap();
             assert_eq!(
                 snapshot.plugins["foo"].updates.counts(),
-                (0, 0),
+                (0, 1),
                 "{requirement}"
             );
         }
@@ -822,6 +1288,7 @@ mod tests {
         let d = fixture();
         let (entered, entering) = mpsc::channel();
         let (release, released) = mpsc::channel();
+        let released = Mutex::new(released);
         let first = start_with(
             true,
             &d.join("config"),
@@ -830,7 +1297,7 @@ mod tests {
             || 100,
             move |_| {
                 entered.send(()).unwrap();
-                released.recv().unwrap();
+                released.lock().unwrap().recv().unwrap();
                 None
             },
             spawn_worker,
@@ -890,7 +1357,7 @@ mod tests {
     fn check(
         d: &Path,
         now: u64,
-        fetch: impl Fn(&str) -> Option<String> + Send + 'static,
+        fetch: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Option<Snapshot> {
         start_with(
             true,
@@ -1126,11 +1593,11 @@ mod tests {
     #[test]
     fn update_list_uses_only_saved_matching_results_and_date() {
         let d = fixture();
-        let list = PluginList::load(&d.join("config/plugins.toml")).unwrap();
+        let list = PluginList::load_lang(&d.join("config/plugins.toml"), Lang::En).unwrap();
         let locked = [("foo".into(), "0.3.0".into())].into();
         let plain = super::super::list_text(&list, &locked);
         assert_eq!(
-            super::super::list_text_with_updates(&list, &locked, None),
+            super::super::list_text_with_updates(&list, &locked, None, Lang::En),
             plain
         );
         for (req, expected) in [
@@ -1138,24 +1605,29 @@ mod tests {
             (Some("^1"), "newer 0.4.0 needs a newer konoma"),
         ] {
             let snapshot = check(&d, 100, move |_| Some(row("0.4.0", req, false))).unwrap();
-            let text = super::super::list_text_with_updates(&list, &locked, Some(&snapshot));
+            let text =
+                super::super::list_text_with_updates(&list, &locked, Some(&snapshot), Lang::En);
             assert!(text.contains(expected), "{text}");
             assert!(text.contains("Last checked: 1970-01-01 00:01:40 UTC"));
             let changed = [("foo".into(), "0.4.0".into())].into();
-            assert!(
-                !super::super::list_text_with_updates(&list, &changed, Some(&snapshot))
-                    .contains(expected)
-            );
+            assert!(!super::super::list_text_with_updates(
+                &list,
+                &changed,
+                Some(&snapshot),
+                Lang::En
+            )
+            .contains(expected));
             std::fs::remove_file(d.join("data/plugin-updates.toml")).unwrap();
         }
         let snapshot = check(&d, 101, |_| Some(row("0.3.0", None, false))).unwrap();
-        let text = super::super::list_text_with_updates(&list, &locked, Some(&snapshot));
+        let text = super::super::list_text_with_updates(&list, &locked, Some(&snapshot), Lang::En);
         assert!(!text.contains("update available") && !text.contains("needs a newer"));
         assert!(text.contains("Last checked:"));
         assert!(super::super::list_text_with_updates(
             &PluginList::default(),
             &BTreeMap::new(),
-            Some(&snapshot)
+            Some(&snapshot),
+            Lang::En,
         )
         .contains("Last checked:"));
     }
@@ -1168,6 +1640,7 @@ mod tests {
         };
         assert_eq!(value.as_str(), USER_AGENT);
         assert_eq!(cfg.timeouts().global, Some(Duration::from_secs(10)));
+        assert_eq!(http_config_with_timeout(Duration::from_secs(4)).timeouts().global, Some(Duration::from_secs(4)));
         assert_eq!(cfg.max_redirects(), 0);
         assert!(cfg.http_status_as_error());
     }
@@ -1194,6 +1667,7 @@ mod tests {
         std::fs::write(d.join("b.txt"), "b").unwrap();
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
         let (started_tx, started_rx) = mpsc::channel();
         let config_dir = d.join("config");
         let data_dir = d.join("data");
@@ -1206,7 +1680,7 @@ mod tests {
                 || 100,
                 move |_| {
                     entered_tx.send(()).unwrap();
-                    let _ = release_rx.recv();
+                    let _ = release_rx.lock().unwrap().recv();
                     Some(row("0.4.0", None, false))
                 },
                 spawn_worker,
@@ -1310,7 +1784,7 @@ mod tests {
     }
 
     #[test]
-    fn update_index_classifies_and_prefers_compatible_once() {
+    fn update_index_reports_compatible_and_newer_host_versions_separately() {
         let host = semver::Version::parse("0.1.0").unwrap();
         let installed = semver::Version::parse("0.3.0").unwrap();
         let body = [
@@ -1322,7 +1796,7 @@ mod tests {
         let got = inspect_index(&body, &installed, &host).unwrap();
         assert_eq!(got.compatible.as_deref(), Some("0.5.0"));
         assert_eq!(got.needs_host.as_deref(), Some("1.0.0"));
-        assert_eq!(got.counts(), (1, 0));
+        assert_eq!(got.counts(), (1, 1));
         let got = inspect_index(&row("1.0.0", Some("^1"), false), &installed, &host).unwrap();
         assert_eq!(got.counts(), (0, 1));
     }

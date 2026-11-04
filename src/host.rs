@@ -15,6 +15,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use konoma_plugin::Plugin;
 
+use crate::i18n::{tr, tr_format, Lang, Msg};
 use crate::plugins::{self, statics::StaticSet};
 
 /// Entry point of the library: [`Host::builder`].
@@ -58,17 +59,32 @@ impl Default for HostBuilder {
 }
 
 impl HostBuilder {
-    fn checked_id(plugin: &Arc<dyn Plugin>) -> Result<String> {
+    fn checked_id(plugin: &Arc<dyn Plugin>, lang: Lang) -> Result<String> {
         // Registration is the source of truth for all manifest refusals, including invalid globs.
         // A fresh registry checks one declaration; resolve handles the assembled set's taken ids.
         let mut validation = konoma_plugin::registry::Registry::new();
         let id = plugin.manifest().id;
-        validation
-            .register(
-                Arc::clone(plugin),
-                konoma_plugin::registry::PluginOrigin::User,
-            )
-            .with_context(|| format!("{id:?}"))?;
+        let result = validation.register(
+            Arc::clone(plugin),
+            konoma_plugin::registry::PluginOrigin::User,
+        );
+        if lang == Lang::En {
+            result.with_context(|| format!("{id:?}"))?;
+        } else {
+            // Registry validation remains the source of truth. Its public why string is English;
+            // render the typed rejection and offending data without reparsing that prose.
+            result.map_err(|error| {
+                use konoma_plugin::registry::RegistryError;
+                anyhow::anyhow!(match error {
+                    RegistryError::InvalidManifest { id, reason, .. } =>
+                        format!("{}: {}", tr_format(lang, Msg::PluginHostInvalidManifest, &[("id", &id)]), manifest_reason_text(&reason, lang)),
+                    RegistryError::InvalidGlob { id, glob } => tr_format(lang, Msg::PluginHostInvalidGlob, &[("id", &id), ("glob", &glob)]),
+                    RegistryError::DuplicateId(id) =>
+                        tr(lang, Msg::PluginHostDuplicate).replace("{id}", &id),
+                    other => tr_format(lang, Msg::PluginRegistryUnknown, &[("reason", &other.to_string())]),
+                })
+            })?;
+        }
         Ok(validation.ids()[0].to_owned())
     }
 
@@ -109,9 +125,13 @@ impl HostBuilder {
         self
     }
 
-    /// Check the ids and fix what is linked in. Touches nothing outside this value, so a failure
-    /// here means konoma never started.
+    /// Check the linked declarations using the language supplied by the verifying parent,
+    /// without reading configuration or starting the application.
     fn resolve(&self) -> Result<StaticSet> {
+        self.resolve_lang(crate::plugin_cli::verification_language())
+    }
+
+    fn resolve_lang(&self, lang: Lang) -> Result<StaticSet> {
         // The ids a registry would hold before the program's own plugins: the standard ones (when
         // asked for) and the host-internal ones, which nobody can take or replace.
         let mut taken: BTreeSet<String> = [
@@ -132,10 +152,10 @@ impl HostBuilder {
         let mut targets = BTreeSet::new();
         for (target, _) in &self.replaced {
             if !targets.insert(target.clone()) {
-                bail!("the plugin `{target}` is replaced more than once");
+                bail!(tr(lang, Msg::PluginHostReplacedTwice).replace("{id}", target));
             }
             if !standard_ids.contains(target) {
-                bail!("cannot replace `{target}`: there is no standard plugin with that id");
+                bail!(tr(lang, Msg::PluginHostMissingTarget).replace("{id}", target));
             }
             taken.remove(target);
         }
@@ -143,16 +163,16 @@ impl HostBuilder {
         // another replaced slot's old id, regardless of the order the builder calls arrived.
         let mut replaced = std::collections::BTreeMap::new();
         for (target, plugin) in &self.replaced {
-            let id = Self::checked_id(plugin)?;
+            let id = Self::checked_id(plugin, lang)?;
             if !taken.insert(id.clone()) {
-                bail!("plugin id `{id}` is already taken");
+                bail!(tr(lang, Msg::PluginHostTaken).replace("{id}", &id));
             }
             replaced.insert(target.clone(), Arc::clone(plugin));
         }
         for plugin in &self.added {
-            let id = Self::checked_id(plugin)?;
+            let id = Self::checked_id(plugin, lang)?;
             if !taken.insert(id.clone()) {
-                bail!("plugin id `{id}` is already taken");
+                bail!(tr(lang, Msg::PluginHostTaken).replace("{id}", &id));
             }
         }
         Ok(StaticSet {
@@ -177,9 +197,33 @@ impl HostBuilder {
         // configuration, the terminal).
         konoma_base::process::mark_app_main();
         if plugins::statics::install(set).is_err() {
-            bail!("konoma was already started in this process");
+            bail!(tr(
+                crate::plugin_cli::verification_language(),
+                Msg::PluginHostStarted
+            ));
         }
         crate::run_application(startup)
+    }
+}
+
+fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
+    use konoma_plugin::registry::{ManifestReason as R, ManifestName as N, ManifestCount as C};
+    match reason {
+        R::InvalidName { kind, name, limit } => {
+            let kind = tr(lang, match kind { N::PluginId => Msg::PluginNameId, N::ActionId => Msg::PluginNameAction, N::ActionScreen => Msg::PluginNameActionScreen, N::SettingName => Msg::PluginNameSetting, N::ScreenName => Msg::PluginNameScreen, N::WorkGroup => Msg::PluginNameWorkGroup, _ => Msg::PluginNameUnknown });
+            tr_format(lang, Msg::PluginReasonName, &[("kind", kind), ("name", name), ("max", &limit.to_string())])
+        }
+        R::TooMany { kind, count, limit } => {
+            let kind = tr(lang, match kind { C::Actions => Msg::PluginCountActions, C::Settings => Msg::PluginCountSettings, C::Binds => Msg::PluginCountBinds, C::Screens => Msg::PluginCountScreens, C::Targets => Msg::PluginCountTargets, _ => Msg::PluginCountUnknown });
+            tr_format(lang, Msg::PluginReasonCount, &[("kind", kind), ("n", &count.to_string()), ("max", &limit.to_string())])
+        }
+        R::TargetTooLong { bind, bytes, limit } => tr_format(lang, Msg::PluginReasonTargetLong, &[("bind", &bind.to_string()), ("bytes", &bytes.to_string()), ("max", &limit.to_string())]),
+        R::TargetUnclean { bind } => tr_format(lang, Msg::PluginReasonTargetUnclean, &[("bind", &bind.to_string())]),
+        R::DefaultTooMany { limit } => tr_format(lang, Msg::PluginReasonDefaultCount, &[("max", &limit.to_string())]),
+        R::DefaultKeyTooLong { limit } => tr_format(lang, Msg::PluginReasonDefaultKeyLong, &[("max", &limit.to_string())]),
+        R::DefaultKeyUnclean { limit } => tr_format(lang, Msg::PluginReasonDefaultKeyUnclean, &[("max", &limit.to_string())]),
+        R::DefaultTooDeep { limit } => tr_format(lang, Msg::PluginReasonDefaultDepth, &[("max", &limit.to_string())]),
+        other => tr_format(lang, Msg::PluginReasonUnknown, &[("reason", &other.to_string())]),
     }
 }
 
@@ -187,6 +231,94 @@ impl HostBuilder {
 mod tests {
     use super::*;
     use konoma_plugin::prelude::*;
+
+    #[test]
+    fn verification_manifest_errors_follow_the_parent_language() {
+        for lang in [Lang::Jp, Lang::En] {
+            for builder in [
+                Host::builder().plugin(Fake("Bad ID")),
+                Host::builder().standard_plugins().plugin(Fake("markdown")),
+                Host::builder()
+                    .standard_plugins()
+                    .replace("absent", Fake("valid")),
+                Host::builder()
+                    .standard_plugins()
+                    .replace("markdown", Fake("first"))
+                    .replace("markdown", Fake("second")),
+            ] {
+                let error = builder.resolve_lang(lang).err().unwrap();
+                if lang == Lang::Jp {
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "verified manifest",
+                        &format!("{error:#}"),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_manifest_reason_keeps_the_sanitized_id_and_reason_in_both_languages() {
+        use konoma_plugin::registry::{Registry, RegistryError, PluginOrigin};
+        use konoma_plugin::settings::Value;
+        struct Decl(Manifest);
+        impl Plugin for Decl {
+            fn manifest(&self) -> Manifest { self.0.clone() }
+            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> { Err(Failure::unsupported("fixture")) }
+        }
+        let mut cases = vec![Manifest::new("Bad ID", "1")];
+        for m in [
+            Manifest::new("p", "1").action(Act::new("Bad ID")),
+            Manifest::new("p", "1").action(Act::new("a").screen("Bad ID")),
+            Manifest::new("p", "1").setting(SettingDecl::new("Bad ID", Value::Bool(false), Tr::new(""))),
+            Manifest::new("p", "1").screen("Bad ID"),
+            Manifest::new("p", "1").work_group("Bad ID"),
+        ] { cases.push(m); }
+        let mut m = Manifest::new("p", "1"); m.actions = vec![Act::new("a"); 257]; cases.push(m);
+        let mut m = Manifest::new("p", "1"); m.settings = vec![SettingDecl::new("k", Value::Bool(false), Tr::new("")); 257]; cases.push(m);
+        let mut m = Manifest::new("p", "1"); m.binds = vec![Bind::files(["a"]); 1025]; cases.push(m);
+        let mut m = Manifest::new("p", "1"); m.screens = vec!["s".into(); 65]; cases.push(m);
+        cases.push(Manifest::new("p", "1").bind(Bind::files(vec!["a"; 513])));
+        cases.push(Manifest::new("p", "1").bind(Bind::files(["a".repeat(1025)])));
+        cases.push(Manifest::new("p", "1").bind(Bind::files(["a\n"])));
+        for value in [
+            Value::List(vec![Value::Bool(false); 1024]),
+            Value::Table(std::collections::BTreeMap::from([("a".repeat(257), Value::Bool(false))])),
+            Value::Table(std::collections::BTreeMap::from([("a\n".into(), Value::Bool(false))])),
+            (0..9).fold(Value::Bool(false), |v, _| Value::List(vec![v])),
+        ] { cases.push(Manifest::new("p", "1").setting(SettingDecl::new("k", value, Tr::new("")))); }
+        let mut expected_japanese = ["プラグインの id", "操作の id", "操作の画面名", "設定名", "画面名", "作業グループ名"]
+            .map(|kind| format!("{kind} `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）")).to_vec();
+        expected_japanese.extend([
+            "操作が 257 件あります（最大 256 件）",
+            "設定が 257 件あります（最大 256 件）",
+            "関連付けが 1025 件あります（最大 1024 件）",
+            "画面が 65 件あります（最大 64 件）",
+            "1つの関連付けの対象が 513 件あります（最大 512 件）",
+            "関連付け 0 の対象が長すぎます（1025 バイト、最大 1024 バイト）",
+            "関連付け 0 の対象に制御文字があります",
+            "設定の既定値の値が 1024 個を超えています",
+            "設定の既定値のキーが長すぎます（最大 256 バイト、制御文字は使用できません）",
+            "設定の既定値のキーに制御文字があります（最大 256 バイト、制御文字は使用できません）",
+            "設定の既定値の入れ子が 8 段を超えています",
+        ].map(str::to_owned));
+        assert_eq!(cases.len(), expected_japanese.len());
+        for (manifest, expected_japanese) in cases.into_iter().zip(expected_japanese) {
+            let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
+            let RegistryError::InvalidManifest { id, why, reason, .. } = Registry::new().register(plugin.clone(), PluginOrigin::User).unwrap_err() else { panic!("expected invalid manifest") };
+            assert_eq!(why, reason.to_string());
+            assert_eq!(manifest_reason_text(&reason, Lang::En), why);
+            let english = format!("{:#}", HostBuilder::checked_id(&plugin, Lang::En).unwrap_err());
+            assert!(english.ends_with(&format!("plugin `{id}` is refused: {why}")), "{english}");
+            let japanese = format!("{:#}", HostBuilder::checked_id(&plugin, Lang::Jp).unwrap_err());
+            assert!(japanese.contains(&format!("プラグイン `{id}`")), "{japanese}");
+            let cause = manifest_reason_text(&reason, Lang::Jp);
+            assert_eq!(cause, expected_japanese);
+            assert!(japanese.ends_with(&cause), "{japanese}");
+            assert_ne!(cause, why);
+            crate::test_support::plugin_language::assert_japanese_plugin_prose("manifest reason", &japanese);
+        }
+    }
 
     struct Fake(&'static str);
 
@@ -231,8 +363,21 @@ mod tests {
                 Err(Failure::unsupported("fixture"))
             }
         }
-        let error = err(Host::builder().plugin(BadGlob));
-        assert!(error.contains("bad-glob"), "{error}");
+        for lang in [Lang::En, Lang::Jp] {
+            let error = Host::builder()
+                .plugin(BadGlob)
+                .resolve_lang(lang)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("bad-glob"), "{error}");
+            if lang == Lang::Jp {
+                crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                    "manifest glob",
+                    &error,
+                );
+            }
+        }
     }
 
     #[test]

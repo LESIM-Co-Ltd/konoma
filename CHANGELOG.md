@@ -7,7 +7,8 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- Background plugin update notices, checked against the public crates.io sparse index at most once per day: compatible updates and versions requiring a newer konoma are reported separately, with installation-specific host upgrade guidance. `[external] update_check = false` disables checks; `konoma plugin list` shows saved results and the last check time without network access.
+- **Plugin update status.** Startup checks the public crates.io sparse index at most once per day and reports compatible updates separately from versions requiring a newer konoma. `konoma plugin list` also lists standard plugins and queries their current update status with a bounded timeout, without changing the saved startup check time. It reports unavailable or disabled checks; `[external] update_check = false` disables both startup and list queries.
+- **Extensible SDK validation errors.** The registry error and manifest reason enums are non-exhaustive, allowing new rejection reasons without breaking callers' matches.
 - **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
   that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
   developing a plugin). konoma asks the program for its manifest once and keeps it in its cache directory (keyed by the
@@ -196,6 +197,9 @@ All notable changes to konoma are documented in this file. The format is based o
   resolved before Cargo runs in the generated build directory.
 - **Plugin builds stop when konoma is killed.** A separate watcher stops Cargo and its process group even after
   SIGKILL or an out-of-memory kill, on both macOS and Linux. Metadata queries and new-build checks use the same supervision.
+- **Plugin commands follow the configured language.** Confirmation prompts, permissions, lists, cleanup messages and
+  failure explanations use `ui.lang`, including the build watcher. Command usage stays English like the main help;
+  Cargo output and underlying system diagnostics retain their original text.
 - **External preview commands leave no background helpers.** A command that captures output stops its entire process
   group when it finishes, including successful exits, so helpers do not remain between previews. It also stops when
   either stdout or stderr exceeds the output limit. Running captures are also stopped when konoma exits, including

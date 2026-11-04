@@ -10,6 +10,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+/// Internal diagnostic shared with konoma's localized process-error adapter.
+pub const OUTPUT_PIPES_REMAINED_OPEN: &str = "output pipes remained open after child exit";
+
 pub(crate) fn signal_group(pid: u32, signal: libc::c_int) {
     // SAFETY: callers supply the group of a child they started, never a name match.
     unsafe {
@@ -544,7 +547,7 @@ pub fn collect_output(
             if drain_started.is_some_and(|started: Instant| started.elapsed() >= REAP_TIMEOUT) {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "output pipes remained open after child exit",
+                    OUTPUT_PIPES_REMAINED_OPEN,
                 ));
             }
             let mut stdout_truncated = false;

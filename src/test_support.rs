@@ -13,6 +13,15 @@ pub(crate) mod command {
     ));
 }
 use std::path::PathBuf;
+pub(crate) mod plugin_english_lower {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/plugin_english_lower.rs"));
+}
+pub(crate) mod plugin_language {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/plugin_language.rs"
+    ));
+}
 
 mod program_fixture {
     include!(concat!(

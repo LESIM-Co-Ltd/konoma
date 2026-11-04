@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::list_file::write_atomic;
+use super::list_file::write_atomic_lang;
+use crate::i18n::Lang;
 
 /// Set by a konoma that handed over; its value is that konoma's version.
 pub const SWITCHED_ENV: &str = "KONOMA_PLUGIN_SWITCHED_FROM";
@@ -141,8 +142,15 @@ impl Record {
         })
     }
 
+    pub fn save_lang(&self, data_dir: &Path, lang: Lang) -> Result<()> {
+        write_atomic_lang(&record_path(data_dir), self.to_toml().as_bytes(), lang)
+    }
+}
+
+#[cfg(test)]
+impl Record {
     pub fn save(&self, data_dir: &Path) -> Result<()> {
-        write_atomic(&record_path(data_dir), self.to_toml().as_bytes())
+        self.save_lang(data_dir, Lang::En)
     }
 }
 
@@ -237,9 +245,7 @@ pub fn stale_notice(own: &str, from: Option<&OsStr>, lang: crate::i18n::Lang) ->
         return None;
     }
     Some(
-        crate::i18n::tr(lang, crate::i18n::Msg::PluginBuildStale)
-            .replace("{embedded}", own)
-            .replace("{base}", from),
+        crate::i18n::tr_format(lang, crate::i18n::Msg::PluginBuildStale, &[("embedded", own), ("base", from)]),
     )
 }
 

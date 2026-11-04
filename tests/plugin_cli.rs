@@ -28,6 +28,8 @@ metadata)
     test -f Cargo.toml || exit 71
   fi
   if [ -n "$FAKE_METADATA_FAIL" ]; then echo 'fixture metadata failure' >&2; exit 72; fi
+  if [ "$FAKE_METADATA_MODE" = json ]; then printf '['; exit 0; fi
+  if [ "$FAKE_METADATA_MODE" = utf8 ]; then printf '\377'; exit 0; fi
   authors='["Fixture author"]'
   if [ "$FAKE_METADATA_NAME" = konoma-bar ]; then authors='[]'; fi
   printf '{"packages":[{"id":"fixture","name":"%s","authors":%s}],"resolve":{"root":"root","nodes":[{"id":"root","deps":[{"pkg":"fixture"}]}]}}\n' "$FAKE_METADATA_NAME" "$authors"
@@ -50,6 +52,8 @@ build)
   fi
   if [ -n "$FAKE_MARK" ]; then touch "$FAKE_MARK"; exec sleep 30; fi
   if [ -n "$FAKE_FAIL_BUILD" ]; then echo "error: fake build failure" >&2; exit 101; fi
+  if [ -n "$FAKE_NO_PROGRAM" ]; then exit 0; fi
+  if [ -n "$FAKE_BUILD_SIGNAL" ]; then kill -TERM $$; fi
   n=$(cat "$FAKE_DIR/counter" 2>/dev/null || echo 0)
   n=$((n+1))
   echo $n > "$FAKE_DIR/counter"
@@ -65,7 +69,10 @@ exit 0
 const FAKE_KONOMA: &str = r#"#!/bin/sh
 case "$1" in
 --plugins)
-  if [ -n "$FAKE_VERIFY_FAIL" ]; then echo "duplicate plugin id: markdown" >&2; exit 1; fi
+  if [ -n "$FAKE_VERIFY_FAIL" ]; then
+    echo "duplicate plugin id: markdown" >&2;
+    exit 1
+  fi
   if [ -n "$FAKE_VERIFY_MARK" ]; then echo $$ > "$FAKE_VERIFY_MARK.tmp"; mv "$FAKE_VERIFY_MARK.tmp" "$FAKE_VERIFY_MARK"; exec sleep 30; fi
   echo "fake plugin table"; exit 0 ;;
 --version)
@@ -77,6 +84,383 @@ esac
 
 struct Sandbox {
     root: TmpDir,
+}
+
+// Coverage of the spec's surfaces (both jp and en):
+// - confirmation/permissions/question/cancellation, list, clean, parse/path/list/lock/metadata/
+//   cargo/build/replacement errors: this walk, through the isolated real CLI;
+// - watcher child-start failure: this walk (a non-executable fake cargo);
+//   watcher_error_language_walk covers missing watcher, malformed/missing reports, collection,
+//   timeout and interruption with injected private executables/control pipes. The real CLI
+//   always uses current_exe, so it cannot select those broken watchers without altering itself;
+// - lock-wait notice: waiting_notice_language_walk (ordered with a channel);
+// - missing config/data roots: bootstrap_error_language_walk (injected roots and locale);
+// - lower-level file, project-metadata and build errors: list_file_error_language_walk,
+//   metadata_error_language_walk and build_error_language_walk (private directories/seams);
+// - update notices: this walk checks disabled queries, standard rows and the saved check time.
+//   list_output_language_walk injects the shared fetch seam for current, update, newer-host,
+//   failed and disabled statuses; explicit_list_queries_each_time_without_claiming_the_daily_check
+//   checks the read-only, unthrottled query. No test needs the network.
+//   confirmation_and_list_language_walk and update_notice_language_walk cover list/flash formats;
+// - parser causes/positions and placeholder-shaped user data: list_file_error_language_walk,
+//   japanese_toml_syntax_errors_keep_the_parser_cause_and_position and
+//   error_substitution_keeps_placeholder_shaped_user_data;
+// - environment-free usage errors: usage_errors_precede_missing_environment_directories;
+// - every typed manifest reason: every_manifest_reason_keeps_the_sanitized_id_and_reason_in_both_languages;
+// - lower English contexts: metadata_error_language_walk, build_error_language_walk and
+//   watcher_error_language_walk pin literals from 7359773 and reject Japanese;
+//   language_walk_timeout_inputs_are_injected keeps their timeout decisions clock-free;
+// - verification: this walk reuses Cargo's integration binary with a real invalid Host. The same host
+//   validation is also covered by verification_manifest_errors_follow_the_parent_language;
+//   verification_helper_uses_the_cargo_built_binary_without_runtime_compilers rejects any
+//   dependency on a working Cargo home, rustup installation, RUSTC or RUSTC_WRAPPER.
+fn plugin_language_walk(language: &str) {
+    let mut samples = Vec::new();
+    for args in [
+        vec!["plugin", "list"],
+        vec!["plugin", "clean"],
+        vec!["plugin", "install", "konoma-foo"],
+        vec!["plugin", "install", "konoma-foo", "-y"],
+        vec!["plugin", "install", "konoma-bar", "-y"],
+        vec!["plugin", "install", "konoma-office", "-y"],
+        vec!["plugin", "update", "absent"],
+        vec!["plugin", "remove", "absent"],
+        vec!["plugin"],
+        vec!["plugin", "unknown"],
+        vec!["plugin", "list", "extra"],
+        vec!["plugin", "remove"],
+        vec!["plugin", "remove", "bad name"],
+        vec!["plugin", "remove", "a", "b"],
+        vec!["plugin", "update", "a", "b"],
+        vec!["plugin", "install"],
+        vec!["plugin", "install", "a", "b"],
+        vec!["plugin", "install", "a@"],
+        vec!["plugin", "install", "a", "--bogus"],
+        vec!["plugin", "install", "a", "--git"],
+        vec!["plugin", "install", "a", "--git", "url", "--path", "/p"],
+        vec!["plugin", "install", "a@1", "--path", "/p"],
+        vec!["plugin", "install", "a", "--branch", "b"],
+        vec![
+            "plugin", "install", "a", "--git", "url", "--branch", "b", "--rev", "r",
+        ],
+        vec![
+            "plugin",
+            "install",
+            "a",
+            "--path",
+            "/nonexistent-konoma-fixture",
+            "-y",
+        ],
+    ] {
+        let s = language_sandbox(language);
+        let output = s.run(&args);
+        push_language_sample(
+            &mut samples,
+            &s,
+            (
+                format!("{args:?}"),
+                format!("{}{}", out(&output), err(&output)),
+            ),
+        );
+    }
+    for (label, envs) in [
+        (
+            "cargo missing",
+            vec![("CARGO", "/nonexistent-konoma-cargo")],
+        ),
+        ("metadata failure", vec![("FAKE_METADATA_FAIL", "1")]),
+        ("metadata JSON", vec![("FAKE_METADATA_MODE", "json")]),
+        ("metadata UTF-8", vec![("FAKE_METADATA_MODE", "utf8")]),
+        ("build failure", vec![("FAKE_FAIL_BUILD", "1")]),
+        ("missing build output", vec![("FAKE_NO_PROGRAM", "1")]),
+        ("build signal", vec![("FAKE_BUILD_SIGNAL", "1")]),
+    ] {
+        let s = language_sandbox(language);
+        let output = s.run_env(&["plugin", "install", "konoma-foo", "-y"], &envs);
+        assert_ne!(code(&output), 0, "{label}");
+        push_language_sample(
+            &mut samples,
+            &s,
+            (label.into(), format!("{}{}", out(&output), err(&output))),
+        );
+    }
+    for (label, setup) in [
+        ("lock", 0),
+        ("saved lock", 1),
+        ("record replacement", 2),
+        ("program replacement", 3),
+        ("clean removal", 4),
+        ("list read", 5),
+        ("watcher failure", 6),
+    ] {
+        let s = language_sandbox(language);
+        match setup {
+            0 => std::fs::create_dir_all(s.data().join("plugin.lock")).unwrap(),
+            1 => std::fs::create_dir_all(s.lock()).unwrap(),
+            2 => std::fs::create_dir_all(s.record()).unwrap(),
+            3 => std::fs::create_dir_all(s.program()).unwrap(),
+            4 => {
+                std::fs::create_dir_all(s.data().join("build")).unwrap();
+            }
+            5 => std::fs::create_dir_all(s.plugins_toml()).unwrap(),
+            _ => std::fs::set_permissions(
+                s.fake().join("cargo"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap(),
+        }
+        let args = if setup == 4 {
+            vec!["plugin", "clean"]
+        } else if setup == 5 {
+            vec!["plugin", "list"]
+        } else {
+            vec!["plugin", "install", "konoma-foo", "-y"]
+        };
+        let output = s.run(&args);
+        push_language_sample(
+            &mut samples,
+            &s,
+            (label.into(), format!("{}{}", out(&output), err(&output))),
+        );
+    }
+    for text in [
+        "[",
+        "unknown = 1",
+        "konoma = 1",
+        "plugins = 1",
+        "[konoma]\npath = 'relative'",
+        "[konoma]\nbad = 1",
+        "[konoma]\npath = ''",
+        "[konoma]\npath = 1",
+        "[plugins]\n'bad name' = {}",
+        "[plugins]\na = 1",
+        "[plugins.a]",
+        "[plugins.a]\nversion = '1'\npath = '/p'",
+        "[plugins.a]\npath = '/p'\nbranch = 'b'",
+        "[plugins.a]\ngit = 'url'\nbranch = 'b'\nrev = 'r'",
+    ] {
+        let s = language_sandbox(language);
+        std::fs::write(s.plugins_toml(), text).unwrap();
+        let output = s.run(&["plugin", "list"]);
+        assert_ne!(code(&output), 0, "{text}");
+        push_language_sample(&mut samples, &s, (text.into(), err(&output)));
+    }
+    let s = language_sandbox(language);
+    // Publish the question before answering; no scheduling delay decides whether it is asked.
+    let (mut terminal, input) = pty();
+    let transcript = s.root.join("confirmation.txt");
+    let mut question = s.command(&["plugin", "install", "konoma-foo"]);
+    question
+        .stdin(Stdio::from(input))
+        .stdout(File::create(&transcript).unwrap())
+        .stderr(Stdio::null());
+    let mut question = GuardedChild::new(question.spawn().unwrap());
+    wait_until(30, "localized question", || {
+        std::fs::read_to_string(&transcript).is_ok_and(|s| s.contains("[y/N]"))
+    });
+    use std::io::Write;
+    terminal.write_all(b"n\n").unwrap();
+    assert!(wait_exit(&mut question, 20, "localized cancellation").success());
+    push_language_sample(
+        &mut samples,
+        &s,
+        (
+            "question and cancellation".into(),
+            std::fs::read_to_string(&transcript).unwrap(),
+        ),
+    );
+    assert_eq!(code(&s.run(&["plugin", "install", "konoma-foo", "-y"])), 0);
+    push_language_sample(
+        &mut samples,
+        &s,
+        ("populated list".into(), out(&s.run(&["plugin", "list"]))),
+    );
+    std::fs::write(s.data().join("plugin-updates.toml"), "checked_at = 0\n").unwrap();
+    push_language_sample(
+        &mut samples,
+        &s,
+        ("list update time".into(), out(&s.run(&["plugin", "list"]))),
+    );
+    push_language_sample(
+        &mut samples,
+        &s,
+        (
+            "last removal".into(),
+            out(&s.run(&["plugin", "remove", "konoma-foo"])),
+        ),
+    );
+    assert_eq!(code(&s.run(&["plugin", "install", "konoma-foo", "-y"])), 0);
+    let config = s.config().join("konoma");
+    let permissions = std::fs::metadata(&config).unwrap().permissions();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let output = s.run(&["plugin", "remove", "konoma-foo"]);
+    std::fs::set_permissions(&config, permissions).unwrap();
+    assert_eq!(code(&output), 1);
+    push_language_sample(
+        &mut samples,
+        &s,
+        ("last removal list failure".into(), err(&output)),
+    );
+    let invalid = real_invalid_host();
+    let s = language_sandbox(language);
+    write_exe(
+        &s.fake().join("fake-konoma"),
+        &format!("#!/bin/sh\nunset KONOMA_PLUGIN_SWITCHED_FROM KONOMA_PLUGIN_SWITCHED_PATH\nexec '{}' --exact invalid_host_verification_child --nocapture\n", invalid.display()),
+    );
+    let output = s.run_env(&["plugin", "install", "konoma-foo", "-y"], &[("KONOMA_TEST_INVALID_HOST_CHILD", "1")]);
+    assert_eq!(code(&output), 1);
+    assert!(
+        !s.program().exists(),
+        "Host refusal must not replace the program"
+    );
+    // HostBuilder::checked_id in src/host.rs uses PluginHostInvalidManifest (src/i18n.rs)
+    // for Japanese; English keeps RegistryError's text from registry.rs at 7359773.
+    let refusal = if language == "en" {
+        "plugin `?ad???` is refused: the plugin id `?ad???` is not a name ([a-z0-9._-], 1 to 64 characters)"
+    } else {
+        "プラグイン `?ad???` の id または宣言が不正です: プラグインの id `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）"
+    };
+    let verification = format!("{}{}", out(&output), err(&output));
+    assert!(
+        verification.contains(refusal),
+        "missing real Host rejection for {language}: expected {refusal:?}, got {verification:?}"
+    );
+    push_language_sample(
+        &mut samples,
+        &s,
+        ("verification failure".into(), verification),
+    );
+    for (label, text) in samples {
+        if language == "en" {
+            assert_original_english_sample(&label, &text);
+        } else {
+            assert_japanese_plugin_prose(&label, &text);
+        }
+    }
+}
+
+fn language_sandbox(language: &str) -> Sandbox {
+    let s = Sandbox::new("plugin-language-walk");
+    std::fs::write(
+        s.config().join("konoma/config.toml"),
+        format!("[ui]\nlang = '{language}'\n[external]\nupdate_check = false\n"),
+    )
+    .unwrap();
+    s
+}
+
+fn push_language_sample(
+    samples: &mut Vec<(String, String)>,
+    sandbox: &Sandbox,
+    sample: (String, String),
+) {
+    let mut text = sample.1.replace(sandbox.root.to_str().unwrap(), "<ROOT>");
+    let mut cursor = 0;
+    while let Some(start) = text[cursor..].find("/build-") {
+        let start = cursor + start + "/build-".len();
+        let end = start + text[start..].bytes().take_while(u8::is_ascii_digit).count();
+        if end > start {
+            text.replace_range(start..end, "<PID>");
+            cursor = start + "<PID>".len();
+        } else {
+            cursor = start;
+        }
+    }
+    samples.push((sample.0, text));
+}
+
+// Cargo builds this integration binary; verification reuses it under Sandbox's cleared environment.
+fn real_invalid_host() -> PathBuf {
+    std::env::current_exe().unwrap()
+}
+
+#[test]
+fn invalid_host_verification_child() {
+    if std::env::var_os("KONOMA_TEST_INVALID_HOST_CHILD").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    use konoma_plugin::prelude::*;
+    struct Invalid;
+    impl Plugin for Invalid {
+        fn manifest(&self) -> Manifest { Manifest::new("Bad ID", "0.1.0") }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> { Err(Failure::unsupported("fixture")) }
+    }
+    let error = konoma::Host::builder().plugin(Invalid).run().unwrap_err();
+    eprintln!("{error:#}");
+    std::process::exit(1);
+}
+
+#[test]
+fn verification_helper_uses_the_cargo_built_binary_without_runtime_compilers() {
+    const MARKER: &str = "KONOMA_TEST_ISOLATED_HOST_HELPER";
+    if std::env::var_os(MARKER).is_some() {
+        let _helper = real_invalid_host();
+        return;
+    }
+    let sandbox = language_sandbox("en");
+    let output = sandbox.isolated_command(&std::env::current_exe().unwrap(), &["--exact", "verification_helper_uses_the_cargo_built_binary_without_runtime_compilers", "--nocapture"])
+        .env(MARKER, "1")
+        .env("CARGO_HOME", sandbox.root.join("cargo-home"))
+        .env("RUSTUP_HOME", sandbox.root.join("rustup-home"))
+        .env("RUSTC_WRAPPER", "/nonexistent-konoma-wrapper")
+        .env("RUSTC", "/nonexistent-konoma-rustc")
+        .supervised_output().unwrap();
+    assert!(output.status.success(), "{}\n{}", out(&output), err(&output));
+}
+
+#[path = "support/plugin_english.rs"]
+mod plugin_english;
+use plugin_english::assert_original_english_sample;
+
+#[path = "support/plugin_language.rs"]
+mod plugin_language;
+use plugin_language::assert_japanese_plugin_prose;
+
+#[test]
+fn every_plugin_cli_surface_follows_japanese_config() {
+    plugin_language_walk("jp");
+}
+#[test]
+fn every_plugin_cli_surface_keeps_english_config() {
+    plugin_language_walk("en");
+}
+
+#[test]
+fn updating_only_a_standard_plugin_lists_its_resolved_version() {
+    let s = Sandbox::new("list-standard-update");
+    let lock = format!("version = 4\\n[[package]]\\nname = 'konoma-with-plugins'\\nversion = '0.0.0'\\ndependencies = ['konoma']\\n[[package]]\\nname = 'konoma'\\nversion = '{OWN}'\\ndependencies = ['konoma-office']\\n[[package]]\\nname = 'konoma-office'\\nversion = '0.1.7'\\n").replace("\\n", "\n");
+    std::fs::write(s.fake().join("lock-initial"), &lock).unwrap();
+    std::fs::write(s.fake().join("lock-new"), &lock).unwrap();
+    let updated = s.run(&["plugin", "update", "konoma-office"]);
+    assert_eq!(code(&updated), 0, "{}", err(&updated));
+    let output = s.run(&["plugin", "list"]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let text = out(&output);
+    assert!(text.contains("konoma-office  0.1.7"), "{text}");
+    assert!(!text.contains("konoma is the standard build."), "{text}");
+    // The build record describes the installed executable even if the lock is lost.
+    std::fs::remove_file(s.lock()).unwrap();
+    assert!(out(&s.run(&["plugin", "list"])).contains("konoma-office  0.1.7"));
+    // A surviving lock still provides versions for an older or missing record.
+    std::fs::write(s.lock(), &lock).unwrap();
+    std::fs::remove_file(s.record()).unwrap();
+    let text = out(&s.run(&["plugin", "list"]));
+    assert!(text.contains("konoma-office  0.1.7"), "{text}");
+    assert!(!text.contains("konoma is the standard build."), "{text}");
+}
+
+#[test]
+fn usage_errors_precede_missing_environment_directories() {
+    let sandbox = Sandbox::new("usage-without-home");
+    let output = sandbox.command(&["plugin", "unknown"])
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env("LC_ALL", "C").env("LANG", "C")
+        .supervised_output().unwrap();
+    assert_eq!(code(&output), 2, "{}", err(&output));
+    assert!(err(&output).contains("unknown"), "{}", err(&output));
+    assert!(err(&output).contains("Usage:"), "{}", err(&output));
 }
 
 #[test]
@@ -126,7 +510,7 @@ impl Sandbox {
         write_exe(&s.fake().join("cargo"), FAKE_CARGO);
         write_exe(&s.fake().join("fake-konoma"), FAKE_KONOMA);
         std::fs::create_dir_all(s.config().join("konoma")).unwrap();
-        std::fs::write(s.config().join("konoma/config.toml"), "[ui]\nlang = 'en'\n").unwrap();
+        std::fs::write(s.config().join("konoma/config.toml"), "[ui]\nlang = 'en'\n[external]\nupdate_check = false\n").unwrap();
         std::fs::write(
             s.fake().join("lock-initial"),
             format!(
@@ -180,7 +564,11 @@ impl Sandbox {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_konoma"));
+        self.isolated_command(Path::new(env!("CARGO_BIN_EXE_konoma")), args)
+    }
+
+    fn isolated_command(&self, program: &Path, args: &[&str]) -> Command {
+        let mut c = Command::new(program);
         c.args(args)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
@@ -647,7 +1035,7 @@ fn install_confirmation_shows_resolved_authors_before_building() {
 }
 
 #[test]
-fn plugin_list_reads_only_the_saved_timestamp_without_changing_it() {
+fn plugin_list_disabled_check_reads_only_the_saved_timestamp_without_changing_it() {
     let s = Sandbox::new("plugin-cli-update-list");
     std::fs::create_dir_all(s.plugins_toml().parent().unwrap()).unwrap();
     std::fs::write(
@@ -1097,7 +1485,7 @@ fn keep_build_cache_keeps_the_cache_and_clean_removes_it() {
     std::fs::create_dir_all(s.config().join("konoma")).unwrap();
     std::fs::write(
         s.config().join("konoma").join("config.toml"),
-        "[plugins]\nkeep_build_cache = true\n",
+        "[plugins]\nkeep_build_cache = true\n[ui]\nlang = 'en'\n",
     )
     .unwrap();
     let o = s.run(&["plugin", "install", "konoma-foo", "-y"]);
@@ -1521,8 +1909,11 @@ fn closing_the_terminal_stops_the_processes_cargo_started_too() {
 #[test]
 fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     let s = Sandbox::new("plugin-cli-int-verify");
+    assert_eq!(code(&s.run(&["plugin", "install", "konoma-foo", "-y"])), 0);
+    let paths = [s.program(), s.record(), s.plugins_toml(), s.lock()];
+    let before: Vec<_> = paths.iter().map(|path| std::fs::read(path).unwrap()).collect();
     let mark = s.root.join("verify-started");
-    let mut c = s.command(&["plugin", "install", "konoma-foo", "-y"]);
+    let mut c = s.command(&["plugin", "install", "konoma-bar", "-y"]);
     c.env("FAKE_VERIFY_MARK", &mark)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -1557,7 +1948,12 @@ fn an_interrupt_while_the_new_build_starts_keeps_the_previous_konoma() {
     );
     assert!(!o.1.contains("did not finish"), "{}", o.1);
     wait_until(10, "the new build to end", || !alive(verifier));
-    assert!(!s.program().exists() && !s.record().exists() && !s.plugins_toml().exists());
+    for (path, previous) in paths.iter().zip(before) {
+        assert_eq!(std::fs::read(path).unwrap(), previous, "changed {}", path.display());
+    }
+    let previous = s.command(&["--version"]).supervised_output().unwrap();
+    assert!(previous.status.success(), "{}", err(&previous));
+    assert!(out(&previous).contains("fake-konoma"), "{}", out(&previous));
     assert!(s.leftovers().is_empty(), "{:?}", s.leftovers());
 }
 
@@ -1862,6 +2258,7 @@ pub fn plugins() -> Vec<Box<dyn Plugin>> {
         format!("[konoma]\npath = \"{}\"\n", root.display()),
     )
     .unwrap();
+    std::fs::write(cfg.join("konoma/config.toml"), "[external]\nupdate_check = false\n").unwrap();
     // Offline, a fresh resolution would trip over yanked versions: start from this tree's lock
     // (`install` keeps the saved lock, as it does for the user).
     std::fs::create_dir_all(data.join("konoma")).unwrap();

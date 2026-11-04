@@ -18,6 +18,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use crate::i18n::{tr, Lang, Msg};
 use anyhow::{bail, Context, Result};
 use konoma_plugin::proc::process::{self, ChildGuard};
 
@@ -32,10 +33,11 @@ pub(super) struct Launch {
     command: Command,
     control: UnixStream,
     inherited: UnixStream,
+    lang: Lang,
 }
 
 impl Launch {
-    pub fn new(program: impl AsRef<OsStr>) -> Result<Self> {
+    pub fn new_lang(program: impl AsRef<OsStr>, lang: Lang) -> Result<Self> {
         let executable = std::env::current_exe()?;
         // Unit tests are linked into a harness; integration tests and production re-exec the
         // running application itself. Cargo builds this application beside the harness's deps.
@@ -46,10 +48,14 @@ impl Launch {
             .parent()
             .unwrap()
             .join("konoma");
-        Self::with_executable(&executable, program.as_ref())
+        Self::with_executable_lang(&executable, program.as_ref(), lang)
     }
 
-    fn with_executable(executable: &std::path::Path, program: &OsStr) -> Result<Self> {
+    fn with_executable_lang(
+        executable: &std::path::Path,
+        program: &OsStr,
+        lang: Lang,
+    ) -> Result<Self> {
         let (control, inherited) = UnixStream::pair()?;
         // Configure this while the peer is connected; macOS rejects SO_RCVTIMEO after its exit.
         control.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -58,6 +64,7 @@ impl Launch {
         command
             .arg(CHILD_FLAG)
             .arg(fd.to_string())
+            .arg(if lang == Lang::Jp { "jp" } else { "en" })
             .arg(program)
             .process_group(0);
         // SAFETY: fcntl is async-signal-safe. The stream remains owned until spawn completes.
@@ -73,6 +80,7 @@ impl Launch {
             command,
             control,
             inherited,
+            lang,
         })
     }
 
@@ -82,16 +90,15 @@ impl Launch {
 
     pub fn spawn(mut self) -> Result<Watched> {
         let child = self.command.spawn().with_context(|| {
-            format!(
-                "cannot start the plugin job watcher ({})",
-                self.command.get_program().to_string_lossy()
-            )
+            tr(self.lang, Msg::PluginWatcherStart)
+                .replace("{path}", &self.command.get_program().to_string_lossy())
         })?;
         drop(self.inherited);
         Ok(Watched {
             child: ChildGuard::new(child),
             control: self.control,
             finished: false,
+            lang: self.lang,
         })
     }
 }
@@ -100,6 +107,7 @@ pub(super) struct Watched {
     child: ChildGuard,
     control: UnixStream,
     finished: bool,
+    lang: Lang,
 }
 
 impl Watched {
@@ -108,33 +116,20 @@ impl Watched {
     }
 
     fn report(&mut self) -> Result<ExitStatus> {
-        let mut report = Vec::new();
-        (&self.control)
-            .take(MAX_REPORT + 1)
-            .read_to_end(&mut report)
-            .context("cannot read the plugin job watcher's result")?;
-        match report.first() {
-            Some(0) if report.len() == 5 => Ok(ExitStatus::from_raw(i32::from_le_bytes(
-                report[1..].try_into().unwrap(),
-            ))),
-            Some(1) if report.len() <= MAX_REPORT as usize => bail!(
-                "plugin job watcher: {}",
-                String::from_utf8_lossy(&report[1..])
-            ),
-            _ => bail!("plugin job watcher ended without a valid child result"),
-        }
+        read_report(&self.control, self.lang)
     }
 
     pub fn wait(&mut self, interrupted: &AtomicBool) -> Result<ExitStatus> {
         loop {
             if interrupted.load(Ordering::SeqCst) {
-                return Err(super::build::Interrupted.into());
+                return Err(super::build::Interrupted(self.lang).into());
             }
             if let Some(status) = process::poll_exit(&self.child)? {
                 process::stop_group(&mut self.child, Duration::ZERO)?;
                 self.finished = true;
                 if !status.success() {
-                    bail!("plugin job watcher failed ({status})");
+                    bail!(tr(self.lang, Msg::PluginWatcherFailed)
+                        .replace("{status}", &super::status_text(status, self.lang)));
                 }
                 return self.report();
             }
@@ -161,22 +156,46 @@ impl Watched {
             usize::MAX,
             WATCHER_STOP,
         );
+        self.finish_output(result)
+    }
+
+    fn finish_output(&mut self, result: io::Result<process::Capture>) -> Result<Output> {
         match result {
             Ok(capture) => {
                 self.finished = true;
                 let mut output = capture.output;
                 if !output.status.success() {
-                    bail!("plugin job watcher failed ({})", output.status);
+                    bail!(tr(self.lang, Msg::PluginWatcherFailed)
+                        .replace("{status}", &super::status_text(output.status, self.lang)));
                 }
                 output.status = self.report()?;
                 Ok(output)
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                Err(super::build::Interrupted.into())
+                Err(super::build::Interrupted(self.lang).into())
             }
-            Err(error) => Err(error).context("cannot collect the plugin job watcher's output"),
+            Err(error) => Err(super::process_error(error, self.lang))
+                .context(tr(self.lang, Msg::PluginWatcherCollect)),
         }
     }
+}
+
+fn read_report(reader: impl Read, lang: Lang) -> Result<ExitStatus> {
+        let mut report = Vec::new();
+        reader
+            .take(MAX_REPORT + 1)
+            .read_to_end(&mut report)
+            .context(tr(lang, Msg::PluginWatcherRead))?;
+        match report.first() {
+            Some(0) if report.len() == 5 => Ok(ExitStatus::from_raw(i32::from_le_bytes(
+                report[1..].try_into().unwrap(),
+            ))),
+            Some(1) if report.len() <= MAX_REPORT as usize => {
+                bail!(tr(lang, Msg::PluginWatcherError)
+                    .replace("{detail}", &String::from_utf8_lossy(&report[1..])))
+            }
+            _ => bail!(tr(lang, Msg::PluginWatcherNoResult)),
+        }
 }
 
 impl Drop for Watched {
@@ -201,7 +220,13 @@ pub(crate) fn child_main() -> i32 {
     };
     // SAFETY: the launcher passed this owned UnixStream descriptor across exec.
     let mut control = unsafe { UnixStream::from_raw_fd(fd) };
-    let result = run(&mut control, args);
+    // The parent already resolved ui.lang; do not read config or construct plugins here.
+    let lang = match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("jp") => Lang::Jp,
+        Some("en") => Lang::En,
+        _ => crate::i18n::resolve_lang("auto"),
+    };
+    let result = run(&mut control, args, lang);
     let mut report = Vec::new();
     match result {
         Ok(status) => {
@@ -223,8 +248,11 @@ pub(crate) fn child_main() -> i32 {
 fn run(
     control: &mut UnixStream,
     mut args: impl Iterator<Item = std::ffi::OsString>,
+    lang: Lang,
 ) -> Result<ExitStatus> {
-    let program = args.next().context("missing watched program")?;
+    let program = args
+        .next()
+        .context(tr(lang, Msg::PluginWatcherProgramMissing))?;
     // Do not let cargo inherit the lifetime socket: only konoma's end may keep the watcher alive.
     if unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
         return Err(io::Error::last_os_error().into());
@@ -243,9 +271,9 @@ fn run(
     unsafe {
         command.pre_exec(reset_child_signals);
     }
-    let child = command
-        .spawn()
-        .with_context(|| format!("cannot start watched program {}", program.to_string_lossy()))?;
+    let child = command.spawn().with_context(|| {
+        tr(lang, Msg::PluginWatcherProgramStart).replace("{path}", &program.to_string_lossy())
+    })?;
     let mut child = ChildGuard::new(child);
     let observed = (|| -> Result<()> {
         loop {
@@ -257,7 +285,7 @@ fn run(
             }
             match control.read(&mut [0]) {
                 Ok(0) => return Ok(()),
-                Ok(_) => bail!("unexpected watcher control data"),
+                Ok(_) => bail!(tr(lang, Msg::PluginWatcherControl)),
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -295,10 +323,177 @@ fn reset_child_signals() -> io::Result<()> {
 }
 
 #[cfg(test)]
+impl Launch {
+    pub fn new(program: impl AsRef<OsStr>) -> Result<Self> {
+        Self::new_lang(program, Lang::En)
+    }
+    fn with_executable(exe: &std::path::Path, program: &OsStr) -> Result<Self> {
+        Self::with_executable_lang(exe, program, Lang::En)
+    }
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{unique_tmp, ProgramFixture};
     use std::process::Stdio;
+
+    #[test]
+    fn language_walk_timeout_inputs_are_injected() {
+        let source = include_str!("watcher.rs");
+        let start = source.find("\n    fn watcher_error_language_walk() {").unwrap();
+        let end = source[start..].find("\n    fn child_receives_inherited_blocked_signal").unwrap() + start;
+        assert!(!source[start..end].contains("Duration::from_millis"), "language checking must not race a short real deadline");
+    }
+
+    #[test]
+    fn watcher_error_language_walk() {
+        for lang in [Lang::Jp, Lang::En] {
+            let dir = unique_tmp("watcher-language");
+            std::fs::create_dir_all(&dir).unwrap();
+            let missing = dir.join("absent");
+            let mut errors = vec![format!(
+                "{:#}",
+                Launch::with_executable_lang(&missing, OsStr::new("/bin/true"), lang)
+                    .unwrap()
+                    .spawn()
+                    .err()
+                    .unwrap()
+            )];
+            let mut launch = Launch::new_lang(&missing, lang).unwrap();
+            launch
+                .command()
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            errors.push(format!(
+                "{:#}",
+                launch
+                    .spawn()
+                    .unwrap()
+                    .output(&AtomicBool::new(false), Some(Duration::from_secs(10)))
+                    .unwrap_err()
+            ));
+            for status in ["exit 0", "exit 42", "kill -KILL $$"] {
+                let program = dir.join("watcher");
+                crate::test_support::write_executable(&program, format!("#!/bin/sh\n{status}\n"));
+                let mut launch =
+                    Launch::with_executable_lang(&program, OsStr::new("/bin/true"), lang).unwrap();
+                launch
+                    .command()
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                errors.push(format!(
+                    "{:#}",
+                    launch
+                        .spawn()
+                        .unwrap()
+                        .wait(&AtomicBool::new(false))
+                        .unwrap_err()
+                ));
+            }
+            let mut fixture =
+                ProgramFixture::new(&dir, "printf '%s\\n' \"$$\" >&3\nexec sleep 300");
+            let mut launch = Launch::new_lang(&fixture.program, lang).unwrap();
+            launch
+                .command()
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut job = launch.spawn().unwrap();
+            fixture.ready();
+            job.control.write_all(b"invalid").unwrap();
+            errors.push(format!(
+                "{:#}",
+                job.output(&AtomicBool::new(false), Some(Duration::from_secs(10)))
+                    .unwrap_err()
+            ));
+            assert!(fixture.gone());
+            let (mut control, _peer) = UnixStream::pair().unwrap();
+            errors.push(format!(
+                "{:#}",
+                run(&mut control, std::iter::empty(), lang).unwrap_err()
+            ));
+            let mut launch = Launch::new_lang("/bin/true", lang).unwrap();
+            launch
+                .command()
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            errors.push(format!(
+                "{:#}",
+                launch
+                    .spawn()
+                    .unwrap()
+                    .output(&AtomicBool::new(false), Some(Duration::from_secs(10)))
+                    .unwrap_err()
+            ));
+            struct ReadTimeout;
+            impl Read for ReadTimeout {
+                fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                    Err(io::Error::from_raw_os_error(libc::EAGAIN))
+                }
+            }
+            errors.push(format!("{:#}", read_report(ReadTimeout, lang).unwrap_err()));
+            for error in [
+                io::Error::new(io::ErrorKind::TimedOut, "timed out"),
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    konoma_plugin::proc::process::OUTPUT_PIPES_REMAINED_OPEN,
+                ),
+            ] {
+                errors.push(super::super::process_error(error, lang).to_string());
+            }
+            for interrupt in [false, true] {
+                let path = dir.join(if interrupt { "interrupt" } else { "deadline" });
+                std::fs::create_dir(&path).unwrap();
+                let mut fixture =
+                    ProgramFixture::new(&path, "printf '%s\\n' \"$$\" >&3\nexec sleep 300");
+                let mut launch = Launch::new_lang(&fixture.program, lang).unwrap();
+                launch
+                    .command()
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let mut job = launch.spawn().unwrap();
+                fixture.ready();
+                errors.push(format!(
+                    "{:#}",
+                    job.finish_output(Err(io::Error::new(
+                        if interrupt { io::ErrorKind::Interrupted } else { io::ErrorKind::TimedOut },
+                        if interrupt { "interrupted" } else { "timed out" },
+                    ))).unwrap_err()
+                ));
+                drop(job);
+                assert!(fixture.gone());
+            }
+            if lang == Lang::Jp {
+                for error in errors {
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose("watcher", &error);
+                }
+            } else {
+                let expected = [
+                    format!("cannot start the plugin job watcher ({})", missing.display()),
+                    format!("plugin job watcher: cannot start watched program {}", missing.display()),
+                    "plugin job watcher ended without a valid child result".into(),
+                    "plugin job watcher failed (exit status: 42)".into(),
+                    "plugin job watcher failed (signal: 9 (SIGKILL))".into(),
+                    "plugin job watcher: unexpected watcher control data".into(),
+                    "missing watched program".into(),
+                    "cannot collect the plugin job watcher's output: missing stdout pipe".into(),
+                    "cannot read the plugin job watcher's result".into(),
+                    "timed out".into(),
+                    "output pipes remained open after child exit".into(),
+                    "cannot collect the plugin job watcher's output: timed out".into(),
+                    "interrupted; the previous konoma is unchanged".into(),
+                ];
+                assert_eq!(errors.len(), expected.len());
+                for (error, expected) in errors.iter().zip(expected) {
+                    crate::test_support::plugin_english_lower::assert_english_context("watcher", error, &expected);
+                }
+            }
+        }
+    }
 
     fn child_receives_inherited_blocked_signal(name: &str, signal: libc::c_int) {
         let mut launch = Launch::new("/bin/sh").unwrap();
