@@ -1,11 +1,7 @@
 mod support;
 
-mod command {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/support/command.rs"
-    ));
-}
+#[path = "support/command.rs"]
+mod command;
 use command::CommandOutput;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -505,6 +501,10 @@ fn main() -> ExitCode {
         ("no_file", no_file),
         ("multi_plugin", multi_plugin),
         ("clock", clock),
+        (
+            "clock_build_checks_the_new_binary_for_release_and_cross_profiles",
+            support::clock_build::clock_build_checks_the_new_binary_for_release_and_cross_profiles,
+        ),
         ("cli", cli),
         (
             "cli_signals_stop_the_plugin_group",

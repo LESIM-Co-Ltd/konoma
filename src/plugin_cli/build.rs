@@ -4,31 +4,36 @@
 //! temporary one by default), restore the saved `Cargo.lock`, optionally `cargo update`, then
 //! `cargo build --release`. Only when that succeeds *and* the new program starts (`--plugins`: the
 //! id checks of `Host::run`) is anything replaced: the program, its record, the lock and, for
-//! install and remove, `plugins.toml`. Whatever happens -- success, failure, Ctrl-C -- the work
-//! directory is removed, unless `[plugins] keep_build_cache = true` asks to keep it.
+//! install and remove, `plugins.toml`. On success, failure or interruption the work directory is
+//! removed, unless `[plugins] keep_build_cache = true` asks to keep it. A separate re-exec watcher
+//! stops every job's process group even if konoma is killed without running cleanup; `plugin clean`
+//! removes any work directory left by such a kill.
 
 use std::ffi::{OsStr, OsString};
 #[cfg(test)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+#[cfg(test)]
+use std::process::{Command, Output};
+use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::i18n::{tr, tr_format, Lang, Msg};
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::list_file::{write_atomic, PluginList};
-use super::project::{generate, locked_versions};
+use super::list_file::{write_atomic_lang, PluginList};
+use super::project::{generate_lang, locked_versions};
 use super::switch::{self, Record, SWITCHED_ENV};
 
 /// The build was cut short by SIGINT, SIGTERM or SIGHUP.
 #[derive(Debug)]
-pub struct Interrupted;
+pub struct Interrupted(pub Lang);
 
 impl std::fmt::Display for Interrupted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "interrupted; the previous konoma is unchanged")
+        write!(f, "{}", tr(self.0, Msg::PluginInterrupted))
     }
 }
 
@@ -114,13 +119,8 @@ fn find_in_path(name: &OsStr, path_env: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 /// What `install` and `update` say when there is no cargo.
-pub fn no_cargo_message() -> String {
-    "cargo was not found (set $CARGO, or put cargo in PATH).\n\
-     `konoma plugin install` and `update` rebuild konoma with Cargo, so they need a Rust toolchain.\n\
-     Without one, install the plugin as a standalone program (for example `konoma-office`) and let\n\
-     konoma run it as a child process: in config.toml write\n\
-     \n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n"
-        .to_string()
+pub fn no_cargo_message_lang(lang: Lang) -> String {
+    tr(lang, Msg::PluginCargoMissing).to_owned()
 }
 
 /// The work directory; removed when dropped unless it is the kept build cache.
@@ -130,13 +130,14 @@ struct WorkDir {
 }
 
 impl WorkDir {
-    fn create(data_dir: &Path, keep: bool) -> Result<WorkDir> {
-        Self::create_with(data_dir, keep, |path| std::fs::create_dir_all(path))
+    fn create_lang(data_dir: &Path, keep: bool, lang: Lang) -> Result<WorkDir> {
+        Self::create_with_lang(data_dir, keep, lang, |path| std::fs::create_dir_all(path))
     }
 
-    fn create_with(
+    fn create_with_lang(
         data_dir: &Path,
         keep: bool,
+        lang: Lang,
         create: impl FnOnce(&Path) -> std::io::Result<()>,
     ) -> Result<WorkDir> {
         let path = if keep {
@@ -149,8 +150,9 @@ impl WorkDir {
             path,
             keep: keep && existed,
         };
-        create(&work.path.join("src"))
-            .with_context(|| format!("cannot create {}", work.path.display()))?;
+        create(&work.path.join("src")).with_context(|| {
+            tr(lang, Msg::PluginCannotCreate).replace("{path}", &work.path.display().to_string())
+        })?;
         work.keep = keep;
         Ok(work)
     }
@@ -182,7 +184,7 @@ pub(super) fn catch_interrupts(interrupted: &Arc<AtomicBool>) {
 }
 
 /// How long the processes of a stopped child get to end after SIGTERM before SIGKILL.
-const STOP_GRACE: Duration = Duration::from_secs(3);
+pub(super) const STOP_GRACE: Duration = Duration::from_secs(3);
 
 static METADATA_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -226,86 +228,12 @@ impl Drop for MetadataSignals {
     }
 }
 
-/// Start `cmd` as the leader of a process group of its own, so that everything it starts (cargo
-/// runs rustc and the build scripts) can be stopped together. The price: the terminal's Ctrl-C no
-/// longer reaches it, so [`wait_for`] passes on the signals this process catches.
-///
-/// On Linux the child also asks to get SIGTERM when this process dies without being able to
-/// stop it (SIGKILL, the OOM killer). macOS has no such facility, so there nothing is done: a
-/// killed konoma leaves its build running until it ends.
+/// Raw groups are used only by supervision fixtures. Runtime jobs use the same re-exec watcher
+/// on macOS and Linux, so the entire group is stopped even when konoma cannot run cleanup.
+#[cfg(test)]
 fn in_own_group(cmd: &mut Command) -> &mut Command {
     use std::os::unix::process::CommandExt;
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: the closure runs between fork and exec and calls only async-signal-safe
-        // functions (prctl, sigaction, sigprocmask, getppid, _exit); no allocation or locks.
-        let parent = std::process::id() as libc::pid_t;
-        unsafe {
-            cmd.pre_exec(move || {
-                reset_parent_death_signal()?;
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // The parent may have died before the request took effect (it then never
-                // fires): the child has been given to another parent by now.
-                ensure_parent(parent);
-                Ok(())
-            });
-        }
-    }
     cmd.process_group(0)
-}
-
-#[cfg(any(target_os = "linux", test))]
-unsafe fn ensure_parent(parent: libc::pid_t) {
-    if libc::getppid() != parent {
-        // A handler inherited across fork could catch raise before exec resets dispositions.
-        libc::_exit(128 + libc::SIGTERM);
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
-unsafe fn reset_parent_death_signal() -> std::io::Result<()> {
-    // Exec resets caught handlers, but preserves SIG_IGN and the blocked signal mask.
-    let mut action: libc::sigaction = std::mem::zeroed();
-    action.sa_sigaction = libc::SIG_DFL;
-    libc::sigemptyset(&mut action.sa_mask);
-    if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut term = std::mem::zeroed();
-    libc::sigemptyset(&mut term);
-    libc::sigaddset(&mut term, libc::SIGTERM);
-    if libc::sigprocmask(libc::SIG_UNBLOCK, &term, std::ptr::null_mut()) == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn stop_group(child: &mut std::process::Child) -> std::io::Result<ExitStatus> {
-    konoma_plugin::proc::process::stop_group(child, STOP_GRACE)
-}
-
-/// Wait for a child started with [`in_own_group`]. On interruption or timeout the whole process
-/// group is stopped, not just the child.
-fn wait_for(
-    child: &mut std::process::Child,
-    interrupted: &AtomicBool,
-    timeout: Option<Duration>,
-) -> Result<ExitStatus> {
-    let start = Instant::now();
-    loop {
-        if let Some(st) = konoma_plugin::proc::process::poll_exit(child)? {
-            return Ok(st);
-        }
-        if interrupted.load(Ordering::SeqCst) {
-            return Err(Interrupted.into());
-        }
-        if timeout.is_some_and(|t| start.elapsed() > t) {
-            bail!("timed out");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// Run cargo in `dir` with its output going to the terminal.
@@ -315,66 +243,64 @@ fn run_cargo(
     dir: &Path,
     target: &Path,
     interrupted: &AtomicBool,
+    lang: Lang,
 ) -> Result<ExitStatus> {
-    let child = in_own_group(&mut Command::new(cargo))
+    let mut launch = super::watcher::Launch::new_lang(cargo, lang)?;
+    launch
+        .command()
         .args(args)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target)
-        .stdin(Stdio::null())
-        .spawn()
-        .with_context(|| format!("cannot run {}", cargo.display()))?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let result = wait_for(&mut child, interrupted, None);
-    stop_group(&mut child)?;
-    result
+        .stdin(Stdio::null());
+    launch.spawn()?.wait(interrupted)
 }
 
 /// Run the new program with `--plugins`; an error carries what it printed.
-fn verify(bin: &Path, own: &str, interrupted: &AtomicBool) -> Result<()> {
-    verify_with_timeout(bin, own, interrupted, VERIFY_TIMEOUT)
+fn verify(bin: &Path, own: &str, interrupted: &AtomicBool, lang: Lang) -> Result<()> {
+    verify_with_timeout_lang(bin, own, interrupted, VERIFY_TIMEOUT, lang)
 }
 
-fn verify_with_timeout(
+fn verify_with_timeout_lang(
     bin: &Path,
     own: &str,
     interrupted: &AtomicBool,
     timeout: Duration,
+    lang: Lang,
 ) -> Result<()> {
     let started = Instant::now();
-    let child = in_own_group(&mut Command::new(bin))
+    let mut launch = super::watcher::Launch::new_lang(bin, lang)?;
+    launch
+        .command()
         .arg("--plugins")
         // So the new program does not hand over to the one installed now.
         .env(SWITCHED_ENV, own)
+        .env(
+            super::VERIFICATION_LANG_ENV,
+            if lang == Lang::Jp { "jp" } else { "en" },
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("cannot start the new build ({})", bin.display()))?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let output = collect_output(
-        &mut child,
-        interrupted,
-        Some(timeout.saturating_sub(started.elapsed())),
-    )
-    .map_err(|e| {
-        if e.is::<Interrupted>() {
-            e
-        } else {
-            e.context("the new build did not finish `--plugins`")
-        }
-    })?;
+        .stderr(Stdio::piped());
+    let mut child = launch.spawn()?;
+    let output = child
+        .output(interrupted, Some(timeout.saturating_sub(started.elapsed())))
+        .map_err(|e| {
+            if e.is::<Interrupted>() {
+                e
+            } else {
+                e.context(tr(lang, Msg::PluginVerifyIncomplete))
+            }
+        })?;
     if !output.status.success() {
         let out = String::from_utf8_lossy(&output.stdout);
         let err = String::from_utf8_lossy(&output.stderr);
         let why = if err.trim().is_empty() { out } else { err };
-        bail!(
-            "the new build refused to start; nothing was replaced:\n{}",
-            why.trim_end()
-        );
+        bail!(tr(lang, Msg::PluginVerifyRefused).replace("{detail}", why.trim_end()));
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn collect_output(
     child: &mut std::process::Child,
     interrupted: &AtomicBool,
@@ -388,7 +314,9 @@ fn collect_output(
         STOP_GRACE,
     ) {
         Ok(capture) => Ok(capture.output),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Err(Interrupted.into()),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            Err(Interrupted(Lang::En).into())
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -415,27 +343,26 @@ fn restore_lock(env: &Env, lock_in: &Path) -> Result<()> {
 /// Resolve metadata without executing build scripts, before asking whether to trust a crate.
 pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<String>> {
     let cargo = find_cargo(env.cargo_env.as_deref(), env.path_env.as_deref())
-        .ok_or_else(|| anyhow!(no_cargo_message()))?;
+        .ok_or_else(|| anyhow!(no_cargo_message_lang(env.lang)))?;
     // Metadata has a work directory too. Release this lock and remove that directory before the
     // trust question; rebuild takes the same lock again after confirmation.
     let _lock = super::write_lock(env)?;
     let _signals = MetadataSignals::install()?;
-    let project = generate(list, &env.konoma_version, env.home.as_deref())?;
-    let work = WorkDir::create(&env.data_dir, false)?;
+    let project = generate_lang(list, &env.konoma_version, env.home.as_deref(), env.lang)?;
+    let work = WorkDir::create_lang(&env.data_dir, false, env.lang)?;
     std::fs::write(work.path.join("Cargo.toml"), project.cargo_toml)?;
     std::fs::write(work.path.join("src/main.rs"), project.main_rs)?;
     restore_lock(env, &work.path.join("Cargo.lock"))?;
-    let mut command = Command::new(cargo);
-    let child = in_own_group(&mut command)
+    let mut launch = super::watcher::Launch::new_lang(cargo, env.lang)?;
+    launch
+        .command()
         .args(["metadata", "--format-version", "1"])
         .current_dir(&work.path)
         .env("CARGO_TARGET_DIR", work.path.join("target"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut child = konoma_plugin::proc::process::ChildGuard::new(child);
-    let output = collect_output(&mut child, &METADATA_INTERRUPTED, None)?;
+        .stderr(Stdio::piped());
+    let output = launch.spawn()?.output(&METADATA_INTERRUPTED, None)?;
     if !output.status.success() {
         bail!(
             "{}: {}",
@@ -443,9 +370,19 @@ pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<St
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let authors = super::project::metadata_authors(&String::from_utf8(output.stdout)?, name)?;
+    let authors = super::project::metadata_authors_lang(
+        &String::from_utf8(output.stdout).map_err(|error| {
+            if env.lang == Lang::En {
+                anyhow::Error::new(error)
+            } else {
+                anyhow!(tr(env.lang, Msg::PluginMetadataUtf8))
+            }
+        })?,
+        name,
+        env.lang,
+    )?;
     if METADATA_INTERRUPTED.load(Ordering::SeqCst) {
-        return Err(Interrupted.into());
+        return Err(Interrupted(env.lang).into());
     }
     Ok(authors)
 }
@@ -454,10 +391,10 @@ pub(super) fn authors(env: &Env, list: &PluginList, name: &str) -> Result<Vec<St
 /// `write_list` also writes `plugins.toml` (install and remove change it; update does not).
 pub fn rebuild(env: &Env, list: &PluginList, update: Update, write_list: bool) -> Result<()> {
     let cargo = find_cargo(env.cargo_env.as_deref(), env.path_env.as_deref())
-        .ok_or_else(|| anyhow!(no_cargo_message()))?;
+        .ok_or_else(|| anyhow!(no_cargo_message_lang(env.lang)))?;
     catch_interrupts(&env.interrupted);
-    let project = generate(list, &env.konoma_version, env.home.as_deref())?;
-    let work = WorkDir::create(&env.data_dir, env.keep_build_cache())?;
+    let project = generate_lang(list, &env.konoma_version, env.home.as_deref(), env.lang)?;
+    let work = WorkDir::create_lang(&env.data_dir, env.keep_build_cache(), env.lang)?;
     std::fs::write(work.path.join("Cargo.toml"), &project.cargo_toml)?;
     std::fs::write(work.path.join("src").join("main.rs"), &project.main_rs)?;
     // The saved lock decides the versions; without one the work directory starts clean (a kept
@@ -469,22 +406,34 @@ pub fn rebuild(env: &Env, list: &PluginList, update: Update, write_list: bool) -
 
     match &update {
         Update::Nothing => {}
-        Update::All => run_checked(&cargo, &["update"], &work.path, &target, flag)?,
-        Update::One(name) => {
-            run_checked(&cargo, &["update", "-p", name], &work.path, &target, flag)?
-        }
+        Update::All => run_checked(&cargo, &["update"], &work.path, &target, flag, env.lang)?,
+        Update::One(name) => run_checked(
+            &cargo,
+            &["update", "-p", name],
+            &work.path,
+            &target,
+            flag,
+            env.lang,
+        )?,
     }
     println!(
-        "Building konoma with {} plugin crate(s); this takes a few minutes...",
-        list.plugins.len()
+        "{}",
+        tr(env.lang, Msg::PluginBuilding).replace("{n}", &list.plugins.len().to_string())
     );
-    run_checked(&cargo, &["build", "--release"], &work.path, &target, flag)?;
+    run_checked(
+        &cargo,
+        &["build", "--release"],
+        &work.path,
+        &target,
+        flag,
+        env.lang,
+    )?;
 
     let built = target.join("release").join("konoma");
     if !built.is_file() {
-        bail!("the build produced no program at {}", built.display());
+        bail!(tr(env.lang, Msg::PluginBuildMissing).replace("{path}", &built.display().to_string()));
     }
-    verify(&built, &env.konoma_version, flag)?;
+    verify(&built, &env.konoma_version, flag, env.lang)?;
 
     let lock_text = std::fs::read_to_string(&lock_in).unwrap_or_default();
     let versions = locked_versions(&lock_text);
@@ -513,7 +462,13 @@ pub fn rebuild(env: &Env, list: &PluginList, update: Update, write_list: bool) -
         (!lock_text.is_empty()).then_some(lock_text.as_str()),
         write_list.then_some(list),
     )?;
-    println!("Installed {}", switch::binary_path(&env.data_dir).display());
+    println!(
+        "{}",
+        tr(env.lang, Msg::PluginInstalled).replace(
+            "{path}",
+            &switch::binary_path(&env.data_dir).display().to_string()
+        )
+    );
     Ok(())
 }
 
@@ -544,7 +499,7 @@ fn commit(
     lock: Option<&str>,
     list: Option<&PluginList>,
 ) -> Result<()> {
-    let staged = StagedProgram::new(&env.data_dir, built)?;
+    let staged = StagedProgram::new_lang(&env.data_dir, built, env.lang)?;
     let mut plan = Vec::new();
     if lock.is_some() {
         plan.push(STEP_LOCK);
@@ -561,48 +516,64 @@ fn commit(
                 done += 1;
                 Ok(())
             }
-            Err(e) => Err(unfinished(&e, &plan, done)),
+            Err(e) => Err(unfinished_lang(&e, &plan, done, env.lang)),
         }
     };
     if let Some(text) = lock {
-        step(write_atomic(&env.lock_path(), text.as_bytes()))?;
+        step(write_atomic_lang(
+            &env.lock_path(),
+            text.as_bytes(),
+            env.lang,
+        ))?;
     }
     if let Some(list) = list {
-        step(list.save(&env.plugins_toml()))?;
+        step(list.save_lang(&env.plugins_toml(), env.lang))?;
     }
-    step(record.save(&env.data_dir))?;
+    step(record.save_lang(&env.data_dir, env.lang))?;
     step(staged.commit())
 }
 
 /// The message for a replacement that stopped: which of `plan` were done, which were not, and the
 /// way to repair it.
-fn unfinished(cause: &anyhow::Error, plan: &[&str], done: usize) -> anyhow::Error {
+fn unfinished_lang(cause: &anyhow::Error, plan: &[&str], done: usize, lang: Lang) -> anyhow::Error {
     let (new, old) = plan.split_at(done);
     if new.is_empty() {
         return anyhow!(
-            "{cause:#}\nNothing was replaced; the previous konoma is unchanged. Run the command again once that is fixed."
+            tr(lang, Msg::PluginNothingReplaced).replace("{cause}", &format!("{cause:#}"))
         );
     }
     let old: Vec<String> = old
         .iter()
         .map(|s| {
             if *s == STEP_PROGRAM {
-                format!("{s} (the previous one keeps running)")
+                tr(lang, Msg::PluginPreviousRunning)
+                    .replace("{step}", tr(lang, Msg::PluginStepProgram))
             } else {
-                s.to_string()
+                step_text(s, lang)
             }
         })
         .collect();
     let repair = if new.contains(&STEP_LIST) {
-        "`konoma plugin update` builds konoma from plugins.toml as it is now and brings the rest in line"
+        tr(lang, Msg::PluginRepairUpdate)
     } else {
-        "run the same command again once that is fixed"
+        tr(lang, Msg::PluginRepairRetry)
     };
-    anyhow!(
-        "{cause:#}\nThe replacement stopped half way.\n  Now new:  {}\n  Still old: {}\n{repair}.",
-        new.join(", "),
-        old.join(", ")
-    )
+    anyhow!(tr_format(
+        lang,
+        Msg::PluginReplacementPartial,
+        &[
+            ("cause", &format!("{cause:#}")),
+            (
+                "new",
+                &new.iter()
+                    .map(|s| step_text(s, lang))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ("old", &old.join(", ")),
+            ("repair", repair),
+        ]
+    ))
 }
 
 fn run_checked(
@@ -611,13 +582,18 @@ fn run_checked(
     dir: &Path,
     target: &Path,
     interrupted: &AtomicBool,
+    lang: Lang,
 ) -> Result<()> {
-    let st = run_cargo(cargo, args, dir, target, interrupted)?;
+    let st = run_cargo(cargo, args, dir, target, interrupted, lang)?;
     if !st.success() {
-        bail!(
-            "`cargo {}` failed ({st}); the previous konoma is unchanged",
-            args.join(" ")
-        );
+        bail!(tr_format(
+            lang,
+            Msg::PluginCargoFailed,
+            &[
+                ("args", &args.join(" ")),
+                ("status", &super::status_text(st, lang))
+            ]
+        ));
     }
     Ok(())
 }
@@ -627,27 +603,31 @@ fn run_checked(
 struct StagedProgram {
     tmp: PathBuf,
     dest: PathBuf,
+    lang: Lang,
 }
 
 impl StagedProgram {
-    fn new(data_dir: &Path, built: &Path) -> Result<StagedProgram> {
+    fn new_lang(data_dir: &Path, built: &Path, lang: Lang) -> Result<StagedProgram> {
         use std::os::unix::fs::PermissionsExt;
         let dest = switch::binary_path(data_dir);
         let dir = dest.parent().expect("bin dir");
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!(".konoma.new-{}", std::process::id()));
         // Owned from here, so a failed copy or chmod removes what it left.
-        let staged = StagedProgram { tmp, dest };
-        std::fs::copy(built, &staged.tmp)
-            .with_context(|| format!("cannot write {}", staged.tmp.display()))?;
+        let staged = StagedProgram { tmp, dest, lang };
+        std::fs::copy(built, &staged.tmp).with_context(|| {
+            tr(lang, Msg::PluginCannotWrite).replace("{path}", &staged.tmp.display().to_string())
+        })?;
         std::fs::set_permissions(&staged.tmp, std::fs::Permissions::from_mode(0o755))?;
         Ok(staged)
     }
 
     /// Rename it over the program.
     fn commit(self) -> Result<()> {
-        std::fs::rename(&self.tmp, &self.dest)
-            .with_context(|| format!("cannot replace {}", self.dest.display()))
+        std::fs::rename(&self.tmp, &self.dest).with_context(|| {
+            tr(self.lang, Msg::PluginCannotReplace)
+                .replace("{path}", &self.dest.display().to_string())
+        })
     }
 }
 
@@ -660,7 +640,7 @@ impl Drop for StagedProgram {
 /// Remove the rebuilt program, its record and the saved lock: konoma is the standard one again.
 /// The program goes first: it is the one that decides what starts, so even if a later removal
 /// fails, the standard konoma already runs.
-pub fn remove_program(data_dir: &Path) -> Result<()> {
+pub fn remove_program_lang(data_dir: &Path, lang: Lang) -> Result<()> {
     for (i, p) in [
         switch::binary_path(data_dir),
         switch::record_path(data_dir),
@@ -676,9 +656,15 @@ pub fn remove_program(data_dir: &Path) -> Result<()> {
                 let note = if i == 0 {
                     ""
                 } else {
-                    " (the rebuilt program itself is already removed)"
+                    tr(lang, Msg::PluginProgramAlreadyRemoved)
                 };
-                return Err(e).with_context(|| format!("cannot remove {}{note}", p.display()));
+                return Err(e).with_context(|| {
+                    format!(
+                        "{}{note}",
+                        tr(lang, Msg::PluginCannotRemove)
+                            .replace("{path}", &p.display().to_string())
+                    )
+                });
             }
         }
     }
@@ -686,21 +672,27 @@ pub fn remove_program(data_dir: &Path) -> Result<()> {
 }
 
 /// Remove the kept build cache and any work directory a killed run left. Returns the paths removed.
-pub fn clean(data_dir: &Path) -> Result<Vec<PathBuf>> {
+pub fn clean_lang(data_dir: &Path, lang: Lang) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     let rd = match std::fs::read_dir(data_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
         Err(e) => {
-            return Err(e).with_context(|| format!("cannot enumerate {}", data_dir.display()))
+            return Err(e).with_context(|| {
+                tr(lang, Msg::PluginCannotEnumerate)
+                    .replace("{path}", &data_dir.display().to_string())
+            })
         }
     };
     for e in rd {
-        let e = e.with_context(|| format!("cannot enumerate {}", data_dir.display()))?;
+        let e = e.with_context(|| {
+            tr(lang, Msg::PluginCannotEnumerate).replace("{path}", &data_dir.display().to_string())
+        })?;
         let name = e.file_name().to_string_lossy().into_owned();
         if (name == "build" || name.starts_with("build-")) && e.path().is_dir() {
-            std::fs::remove_dir_all(e.path())
-                .with_context(|| format!("cannot remove {}", e.path().display()))?;
+            std::fs::remove_dir_all(e.path()).with_context(|| {
+                tr(lang, Msg::PluginCannotRemove).replace("{path}", &e.path().display().to_string())
+            })?;
             removed.push(e.path());
         }
     }
@@ -708,8 +700,209 @@ pub fn clean(data_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
+fn step_text(step: &str, lang: Lang) -> String {
+    match step {
+        STEP_RECORD => tr(lang, Msg::PluginStepRecord).into(),
+        STEP_PROGRAM => tr(lang, Msg::PluginStepProgram).into(),
+        _ => step.into(),
+    }
+}
+#[cfg(test)]
+fn no_cargo_message() -> String {
+    no_cargo_message_lang(Lang::En)
+}
+#[cfg(test)]
+fn verify_with_timeout(
+    bin: &Path,
+    own: &str,
+    interrupted: &AtomicBool,
+    timeout: Duration,
+) -> Result<()> {
+    verify_with_timeout_lang(bin, own, interrupted, timeout, Lang::En)
+}
+#[cfg(test)]
+fn clean(data: &Path) -> Result<Vec<PathBuf>> {
+    clean_lang(data, Lang::En)
+}
+#[cfg(test)]
+fn remove_program(data: &Path) -> Result<()> {
+    remove_program_lang(data, Lang::En)
+}
+#[cfg(test)]
+impl WorkDir {
+    fn create(data: &Path, keep: bool) -> Result<Self> {
+        Self::create_lang(data, keep, Lang::En)
+    }
+    fn create_with(
+        data: &Path,
+        keep: bool,
+        create: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<Self> {
+        Self::create_with_lang(data, keep, Lang::En, create)
+    }
+}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unfinished_substitution_preserves_the_original_cause() {
+        for lang in [Lang::En, Lang::Jp] {
+            let cause = anyhow::anyhow!("{}", "data {cause} {new} {old} {repair}");
+            let error =
+                unfinished_lang(&cause, &[STEP_LOCK, STEP_LIST, STEP_PROGRAM], 1, lang).to_string();
+            assert!(
+                error.contains("data {cause} {new} {old} {repair}"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_error_language_walk() {
+        use super::*;
+        use crate::test_support::plugin_language::assert_japanese_plugin_prose;
+        for lang in [Lang::Jp, Lang::En] {
+            let dir = crate::test_support::unique_tmp("build-error-language");
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut env = env_in(&dir);
+            env.lang = lang;
+            let mut errors = vec![Interrupted(lang).to_string(), no_cargo_message_lang(lang)];
+            let create = WorkDir::create_with_lang(&env.data_dir, false, lang, |_| {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            });
+            errors.push(format!("{:#}", create.err().unwrap()));
+            let built = dir.join("built");
+            crate::test_support::write_executable(&built, "#!/bin/sh\nexit 37\n");
+            errors.push(format!(
+                "{:#}",
+                run_checked(&built, &[], &dir, &dir, &AtomicBool::new(false), lang).unwrap_err()
+            ));
+            errors.push(format!(
+                "{:#}",
+                verify_with_timeout_lang(
+                    &dir.join("absent"),
+                    "0.31.2",
+                    &AtomicBool::new(false),
+                    Duration::from_secs(10),
+                    lang
+                )
+                .unwrap_err()
+            ));
+            let cause = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES));
+            for done in 0..4 {
+                errors.push(
+                    unfinished_lang(
+                        &cause,
+                        &[STEP_LOCK, STEP_LIST, STEP_RECORD, STEP_PROGRAM],
+                        done,
+                        lang,
+                    )
+                    .to_string(),
+                );
+            }
+            let record = Record {
+                konoma_version: "0.31.2".into(),
+                plugins: std::collections::BTreeMap::new(),
+            };
+            std::fs::create_dir_all(env.lock_path()).unwrap();
+            errors.push(format!(
+                "{:#}",
+                commit(&env, &built, &record, Some("version = 4"), None).unwrap_err()
+            ));
+            std::fs::remove_dir(env.lock_path()).unwrap();
+            errors.push(format!(
+                "{:#}",
+                StagedProgram::new_lang(&env.data_dir, &dir.join("absent"), lang)
+                    .err()
+                    .unwrap()
+            ));
+            for path in [
+                switch::binary_path(&env.data_dir),
+                switch::record_path(&env.data_dir),
+                env.lock_path(),
+            ] {
+                std::fs::create_dir_all(&path).unwrap();
+                errors.push(format!(
+                    "{:#}",
+                    remove_program_lang(&env.data_dir, lang).unwrap_err()
+                ));
+                std::fs::remove_dir(&path).unwrap();
+            }
+            let bad = dir.join("file");
+            std::fs::write(&bad, b"x").unwrap();
+            errors.push(format!("{:#}", clean_lang(&bad, lang).unwrap_err()));
+            let unreadable = dir.join("unreadable");
+            std::fs::create_dir(&unreadable).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::metadata(&unreadable).unwrap().permissions();
+            struct Restore(std::path::PathBuf, std::fs::Permissions);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
+                }
+            }
+            let _restore = Restore(unreadable.clone(), permissions);
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o300)).unwrap();
+            errors.push(format!("{:#}", clean_lang(&unreadable, lang).unwrap_err()));
+            if lang == Lang::Jp {
+                for error in errors {
+                    assert_japanese_plugin_prose("build failure", &error);
+                }
+            } else {
+                // Own contexts copied from 7359773; OS causes remain platform data.
+                let pid = std::process::id();
+                let expected = [
+                    "interrupted; the previous konoma is unchanged".into(),
+                    "cargo was not found (set $CARGO, or put cargo in PATH).".into(),
+                    format!("cannot create {}/data/build-{pid}", dir.display()),
+                    "`cargo ` failed (exit status: 37); the previous konoma is unchanged".into(),
+                    format!("the new build did not finish `--plugins`: plugin job watcher: cannot start watched program {}/absent", dir.display()),
+                ];
+                for (error, expected) in errors.iter().zip(expected) {
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "build", error, &expected,
+                    );
+                }
+                assert_eq!(errors[1], "cargo was not found (set $CARGO, or put cargo in PATH).\n`konoma plugin install` and `update` rebuild konoma with Cargo, so they need a Rust toolchain.\nWithout one, install the plugin as a standalone program (for example `konoma-office`) and let\nkonoma run it as a child process: in config.toml write\n\n    [plugins.<id>]\n    command = \"/path/to/the-program\"\n");
+                let cause = std::io::Error::from_raw_os_error(libc::EACCES).to_string();
+                let plan = [
+                    "Cargo.lock",
+                    "plugins.toml",
+                    "the record of the program",
+                    "the konoma program (the previous one keeps running)",
+                ];
+                for done in 0..4 {
+                    let expected = if done == 0 {
+                        format!("{cause}\nNothing was replaced; the previous konoma is unchanged. Run the command again once that is fixed.")
+                    } else {
+                        let repair = if done >= 2 {
+                            "`konoma plugin update` builds konoma from plugins.toml as it is now and brings the rest in line"
+                        } else {
+                            "run the same command again once that is fixed"
+                        };
+                        format!("{cause}\nThe replacement stopped half way.\n  Now new:  {}\n  Still old: {}\n{repair}.", plan[..done].join(", "), plan[done..].join(", "))
+                    };
+                    assert_eq!(errors[5 + done], expected);
+                }
+                let expected = [
+                    format!("cannot replace {}/data/Cargo.lock", dir.display()),
+                    format!("cannot write {}/data/bin/.konoma.new-{pid}", dir.display()),
+                    format!("cannot remove {}/data/bin/konoma", dir.display()),
+                    format!("cannot remove {}/data/bin/konoma.built.toml (the rebuilt program itself is already removed)", dir.display()),
+                    format!("cannot remove {}/data/Cargo.lock (the rebuilt program itself is already removed)", dir.display()),
+                    format!("cannot enumerate {}/file", dir.display()),
+                    format!("cannot enumerate {}/unreadable", dir.display()),
+                ];
+                assert_eq!(errors.len(), 9 + expected.len());
+                for (error, expected) in errors[9..].iter().zip(expected) {
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "build file",
+                        error,
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn metadata_exit_stops_helpers_holding_its_output_pipes() {
         let dir = crate::test_support::unique_tmp("metadata-pipe-holder");
@@ -744,48 +937,6 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with("build-")));
-    }
-    #[test]
-    fn parent_death_term_is_default_and_unblocked_after_exec() {
-        use crate::test_support::command::CommandOutput;
-        use std::os::unix::process::{CommandExt, ExitStatusExt};
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "kill -TERM $$; printf survived"]);
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                let mut blocked = std::mem::zeroed();
-                libc::sigemptyset(&mut blocked);
-                libc::sigaddset(&mut blocked, libc::SIGTERM);
-                libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
-                super::reset_parent_death_signal()
-            });
-        }
-        let output = command.supervised_output().unwrap();
-        assert_eq!(output.status.signal(), Some(libc::SIGTERM));
-        assert!(output.stdout.is_empty());
-    }
-    #[test]
-    fn a_missing_parent_cannot_be_ignored_before_exec() {
-        use crate::test_support::command::CommandOutput;
-        use std::os::unix::process::CommandExt;
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "printf executed"]);
-        // Only async-signal-safe calls run in the child. A controlled mismatch avoids a race
-        // against the real parent's death, and SIG_IGN survives exec unless we reset it.
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                super::ensure_parent(0);
-                Ok(())
-            });
-        }
-        let output = command.supervised_output().unwrap();
-        assert!(
-            !output.status.success(),
-            "a missing parent must end the child before exec"
-        );
-        assert!(output.stdout.is_empty());
     }
     #[test]
     fn partially_created_work_directory_is_removed() {

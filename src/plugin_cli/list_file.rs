@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::{tr, tr_format, Lang, Msg};
 use anyhow::{bail, Context, Result};
 use toml_edit::{value, DocumentMut, Item, Table, TableLike};
 
@@ -38,20 +39,22 @@ pub enum Source {
 
 impl Source {
     /// One line for the confirmation and `list`: where the code comes from.
-    pub fn describe(&self) -> String {
+    pub fn describe_lang(&self, lang: Lang) -> String {
         match self {
-            Source::Crates { version } => format!("crates.io, version {version}"),
+            Source::Crates { version } => {
+                tr(lang, Msg::PluginSourceVersion).replace("{version}", version)
+            }
             Source::Git { url, branch, rev } => {
                 let mut s = format!("git {url}");
                 if let Some(b) = branch {
-                    s.push_str(&format!(", branch {b}"));
+                    s.push_str(&tr(lang, Msg::PluginSourceBranch).replace("{branch}", b));
                 }
                 if let Some(r) = rev {
-                    s.push_str(&format!(", rev {r}"));
+                    s.push_str(&tr(lang, Msg::PluginSourceRev).replace("{rev}", r));
                 }
                 s
             }
-            Source::Path { path } => format!("path {path}"),
+            Source::Path { path } => tr(lang, Msg::PluginSourcePath).replace("{path}", path),
         }
     }
 
@@ -84,10 +87,10 @@ pub fn path_form_ok(p: &str) -> bool {
 }
 
 /// Expand a leading `~` with `home`.
-pub fn expand_tilde(p: &str, home: Option<&Path>) -> Result<PathBuf> {
+pub fn expand_tilde_lang(p: &str, home: Option<&Path>, lang: Lang) -> Result<PathBuf> {
     if p == "~" || p.starts_with("~/") {
         let Some(home) = home else {
-            bail!("`{p}` starts with ~ but HOME is not set");
+            bail!(tr(lang, Msg::PluginTildeHome).replace("{path}", p));
         };
         return Ok(if p == "~" {
             home.to_path_buf()
@@ -98,60 +101,80 @@ pub fn expand_tilde(p: &str, home: Option<&Path>) -> Result<PathBuf> {
     Ok(PathBuf::from(p))
 }
 
-fn str_key(t: &toml::Table, key: &str, ctx: &str) -> Result<Option<String>> {
+fn str_key(t: &toml::Table, key: &str, ctx: &str, lang: Lang) -> Result<Option<String>> {
     match t.get(key) {
         None => Ok(None),
         Some(toml::Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
-        Some(toml::Value::String(_)) => bail!("{ctx}: `{key}` is empty"),
-        Some(_) => bail!("{ctx}: `{key}` must be a string"),
+        Some(toml::Value::String(_)) => bail!(tr_format(
+            lang,
+            Msg::PluginEmptyKey,
+            &[("context", ctx), ("key", key)]
+        )),
+        Some(_) => bail!(tr_format(
+            lang,
+            Msg::PluginStringKey,
+            &[("context", ctx), ("key", key)]
+        )),
     }
 }
 
-fn only_keys(t: &toml::Table, allowed: &[&str], ctx: &str) -> Result<()> {
+fn only_keys(t: &toml::Table, allowed: &[&str], ctx: &str, lang: Lang) -> Result<()> {
     for k in t.keys() {
         if !allowed.contains(&k.as_str()) {
-            bail!("{ctx}: unknown key `{k}` (allowed: {})", allowed.join(", "));
+            bail!(tr_format(
+                lang,
+                Msg::PluginUnknownKey,
+                &[
+                    ("context", ctx),
+                    ("key", k),
+                    ("allowed", &allowed.join(", "))
+                ]
+            ));
         }
     }
     Ok(())
 }
 
-fn path_key(t: &toml::Table, ctx: &str) -> Result<Option<String>> {
-    let Some(p) = str_key(t, "path", ctx)? else {
+fn path_key(t: &toml::Table, ctx: &str, lang: Lang) -> Result<Option<String>> {
+    let Some(p) = str_key(t, "path", ctx, lang)? else {
         return Ok(None);
     };
     if !path_form_ok(&p) {
-        bail!("{ctx}: `path = \"{p}\"` must be an absolute path or start with ~");
+        bail!(tr_format(
+            lang,
+            Msg::PluginConfigPath,
+            &[("context", ctx), ("path", &p)]
+        ));
     }
     Ok(Some(p))
 }
 
-fn parse_source(name: &str, v: &toml::Value) -> Result<Source> {
+fn parse_source(name: &str, v: &toml::Value, lang: Lang) -> Result<Source> {
     let ctx = format!("[plugins.{name}]");
     let Some(t) = v.as_table() else {
-        bail!("{ctx} must be a table");
+        bail!(tr(lang, Msg::PluginTableRequired).replace("{context}", &ctx));
     };
-    only_keys(t, &["version", "git", "branch", "rev", "path"], &ctx)?;
-    let version = str_key(t, "version", &ctx)?;
-    let git = str_key(t, "git", &ctx)?;
-    let path = path_key(t, &ctx)?;
-    let branch = str_key(t, "branch", &ctx)?;
-    let rev = str_key(t, "rev", &ctx)?;
+    only_keys(t, &["version", "git", "branch", "rev", "path"], &ctx, lang)?;
+    let version = str_key(t, "version", &ctx, lang)?;
+    let git = str_key(t, "git", &ctx, lang)?;
+    let path = path_key(t, &ctx, lang)?;
+    let branch = str_key(t, "branch", &ctx, lang)?;
+    let rev = str_key(t, "rev", &ctx, lang)?;
     let sources = [version.is_some(), git.is_some(), path.is_some()]
         .iter()
         .filter(|b| **b)
         .count();
     if sources == 0 {
-        bail!("{ctx}: write one of `version`, `git` or `path`");
+        bail!(tr(lang, Msg::PluginSourceRequired).replace("{context}", &ctx));
     }
     if sources > 1 {
-        bail!("{ctx}: `version`, `git` and `path` are alternatives; write only one");
+        bail!(tr(lang, Msg::PluginSourceOnlyOne).replace("{context}", &ctx));
     }
     if git.is_none() && (branch.is_some() || rev.is_some()) {
-        bail!("{ctx}: `branch` and `rev` go with `git`");
+        bail!(tr(lang, Msg::PluginSourceGitSelector).replace("{context}", &ctx));
     }
     if branch.is_some() && rev.is_some() {
-        bail!("{ctx}: write `branch` or `rev`, not both");
+        bail!(tr(lang, Msg::PluginSourceGitOne).replace("{context}", &ctx));
     }
     Ok(if let Some(version) = version {
         Source::Crates { version }
@@ -166,30 +189,61 @@ fn parse_source(name: &str, v: &toml::Value) -> Result<Source> {
 
 impl PluginList {
     /// Parse the text of a `plugins.toml`.
-    pub fn parse(text: &str) -> Result<Self> {
-        let root: toml::Table = text.parse().context("not valid TOML")?;
+    pub fn parse_lang(text: &str, lang: Lang) -> Result<Self> {
+        let root: toml::Table = text.parse().map_err(|error: toml::de::Error| {
+            if lang == Lang::En {
+                anyhow::Error::new(error).context(tr(lang, Msg::PluginInvalidToml))
+            } else {
+                let span = error.span().unwrap_or(0..0);
+                anyhow::anyhow!(tr_format(
+                    lang,
+                    Msg::PluginTomlCause,
+                    &[("cause", error.message())]
+                ))
+                .context(tr_format(
+                    lang,
+                    Msg::PluginTomlPosition,
+                    &[
+                        ("start", &span.start.to_string()),
+                        ("end", &span.end.to_string()),
+                    ],
+                ))
+                .context(tr(lang, Msg::PluginInvalidToml))
+            }
+        })?;
         for k in root.keys() {
             if k != "plugins" && k != "konoma" {
-                bail!("unknown table `{k}` (allowed: [plugins.<crate>], [konoma])");
+                bail!(tr(lang, Msg::PluginUnknownTable).replace("{key}", k));
             }
         }
         let mut list = PluginList::default();
         if let Some(k) = root.get("konoma") {
             let Some(t) = k.as_table() else {
-                bail!("[konoma] must be a table");
+                bail!(tr(lang, Msg::PluginTableRequired).replace("{context}", "[konoma]"));
             };
-            only_keys(t, &["path"], "[konoma]")?;
-            list.konoma_path = path_key(t, "[konoma]")?;
+            only_keys(t, &["path"], "[konoma]", lang)?;
+            list.konoma_path = path_key(t, "[konoma]", lang)?;
         }
         if let Some(p) = root.get("plugins") {
             let Some(t) = p.as_table() else {
-                bail!("[plugins] must be a table of [plugins.<crate>]");
+                bail!(tr(lang, Msg::PluginPluginsTable));
             };
             for (name, v) in t {
                 if !valid_crate_name(name) {
-                    bail!("[plugins.{name}]: `{name}` is not a crate name");
+                    bail!(tr_format(
+                        lang,
+                        Msg::PluginListContext,
+                        &[
+                            ("context", &format!("[plugins.{name}]")),
+                            (
+                                "detail",
+                                &tr(lang, Msg::PluginBadCrate).replace("{name}", name)
+                            ),
+                        ]
+                    ));
                 }
-                list.plugins.insert(name.clone(), parse_source(name, v)?);
+                list.plugins
+                    .insert(name.clone(), parse_source(name, v, lang)?);
             }
         }
         Ok(list)
@@ -197,13 +251,19 @@ impl PluginList {
 
     /// Read the file. A missing file is an empty list; an unreadable or broken one is an error that
     /// names the file.
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load_lang(path: &Path, lang: Lang) -> Result<Self> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    tr(lang, Msg::PluginCannotRead).replace("{path}", &path.display().to_string())
+                })
+            }
         };
-        Self::parse(&text).with_context(|| format!("{} is broken", path.display()))
+        Self::parse_lang(&text, lang).with_context(|| {
+            tr(lang, Msg::PluginBrokenFile).replace("{path}", &path.display().to_string())
+        })
     }
 
     /// The file's text, as a new file.
@@ -296,9 +356,9 @@ impl PluginList {
     }
 
     /// Write the file atomically (temporary file, then rename).
-    pub fn save(&self, path: &Path) -> Result<()> {
+    pub fn save_lang(&self, path: &Path, lang: Lang) -> Result<()> {
         let existing = std::fs::read_to_string(path).ok();
-        write_atomic(path, self.render(existing.as_deref()).as_bytes())
+        write_atomic_lang(path, self.render(existing.as_deref()).as_bytes(), lang)
     }
 }
 
@@ -321,17 +381,20 @@ fn set_str(t: &mut dyn TableLike, key: &str, val: &str) {
 }
 
 /// Write `bytes` to `path` through a temporary file in the same directory and a rename.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    write_atomic_with(path, bytes, |p, b| std::fs::write(p, b))
+pub fn write_atomic_lang(path: &Path, bytes: &[u8], lang: Lang) -> Result<()> {
+    write_atomic_with_lang(path, bytes, lang, |p, b| std::fs::write(p, b))
 }
 
-fn write_atomic_with(
+fn write_atomic_with_lang(
     path: &Path,
     bytes: &[u8],
+    lang: Lang,
     write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
 ) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| {
+        tr(lang, Msg::PluginCannotCreate).replace("{path}", &dir.display().to_string())
+    })?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(
         ".{}.tmp-{}",
@@ -345,14 +408,152 @@ fn write_atomic_with(
         }
     }
     let tmp = TempPath(tmp);
-    write(&tmp.0, bytes).with_context(|| format!("cannot write {}", tmp.0.display()))?;
-    std::fs::rename(&tmp.0, path).with_context(|| format!("cannot replace {}", path.display()))
+    write(&tmp.0, bytes).with_context(|| {
+        tr(lang, Msg::PluginCannotWrite).replace("{path}", &tmp.0.display().to_string())
+    })?;
+    std::fs::rename(&tmp.0, path).with_context(|| {
+        tr(lang, Msg::PluginCannotReplace).replace("{path}", &path.display().to_string())
+    })
 }
 
+#[cfg(test)]
+impl Source {
+    pub fn describe(&self) -> String {
+        self.describe_lang(Lang::En)
+    }
+}
+#[cfg(test)]
+impl PluginList {
+    pub fn parse(text: &str) -> Result<Self> {
+        Self::parse_lang(text, Lang::En)
+    }
+    pub fn load(path: &Path) -> Result<Self> {
+        Self::load_lang(path, Lang::En)
+    }
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.save_lang(path, Lang::En)
+    }
+}
+#[cfg(test)]
+pub fn expand_tilde(p: &str, home: Option<&Path>) -> Result<PathBuf> {
+    expand_tilde_lang(p, home, Lang::En)
+}
+#[cfg(test)]
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_lang(path, bytes, Lang::En)
+}
+#[cfg(test)]
+fn write_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<()> {
+    write_atomic_with_lang(path, bytes, Lang::En, write)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use konoma_test_support::{unique_tmp, TmpDir};
+
+    #[test]
+    fn list_file_error_language_walk() {
+        for lang in [Lang::Jp, Lang::En] {
+            let dir = tmp("list-error-language");
+            let target = dir.join("target");
+            std::fs::create_dir(&target).unwrap();
+            let mut errors = vec![
+                format!(
+                    "{:#}",
+                    expand_tilde_lang("~/fixture", None, lang).unwrap_err()
+                ),
+                format!("{:#}", PluginList::load_lang(&target, lang).unwrap_err()),
+                format!("{:#}", write_atomic_lang(&target, b"x", lang).unwrap_err()),
+            ];
+            let file = dir.join("file");
+            std::fs::write(&file, b"x").unwrap();
+            errors.push(format!(
+                "{:#}",
+                write_atomic_lang(&file.join("child"), b"x", lang).unwrap_err()
+            ));
+            errors.push(format!(
+                "{:#}",
+                write_atomic_with_lang(&dir.join("write"), b"x", lang, |path, bytes| {
+                    std::fs::write(path, bytes)?;
+                    Err(std::io::Error::from_raw_os_error(libc::EACCES))
+                })
+                .unwrap_err()
+            ));
+            if lang == Lang::Jp {
+                for error in errors {
+                    crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                        "list file",
+                        &error,
+                    );
+                }
+            } else {
+                let expected = [
+                    "`~/fixture` starts with ~ but HOME is not set".to_string(),
+                    format!("cannot read {}", target.display()),
+                    format!("cannot replace {}", target.display()),
+                    format!("cannot create {}", file.display()),
+                    format!(
+                        "cannot write {}/.write.tmp-{}",
+                        dir.display(),
+                        std::process::id()
+                    ),
+                ];
+                assert_eq!(errors.len(), expected.len());
+                for (error, expected) in errors.iter().zip(expected) {
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "list file",
+                        error,
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn japanese_toml_syntax_errors_keep_the_parser_cause_and_position() {
+        for text in ["[plugins.a]\\nversion = ", "[plugins.a]\\n[plugins.a]"] {
+            let text = text.replace("\\n", "\n");
+            let parser = text.parse::<toml::Table>().unwrap_err();
+            let error = format!("{:#}", PluginList::parse_lang(&text, Lang::Jp).unwrap_err());
+            let span = parser.span().unwrap();
+            assert!(error.contains(parser.message()), "{error}");
+            assert!(
+                error.contains(&format!("{}..{}", span.start, span.end)),
+                "{error}"
+            );
+            crate::test_support::plugin_language::assert_japanese_plugin_prose(
+                "TOML cause",
+                &error,
+            );
+        }
+    }
+
+    #[test]
+    fn error_substitution_keeps_placeholder_shaped_user_data() {
+        for lang in [Lang::En, Lang::Jp] {
+            let error = PluginList::parse_lang(
+                "[konoma]\\n'{allowed}' = 1".replace("\\n", "\n").as_str(),
+                lang,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("`{allowed}`"), "{error}");
+            let error = PluginList::parse_lang(
+                "[plugins.a]\\npath = '{context}/{cause}'"
+                    .replace("\\n", "\n")
+                    .as_str(),
+                lang,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("{context}/{cause}"), "{error}");
+        }
+    }
 
     fn tmp(prefix: &str) -> TmpDir {
         let d = unique_tmp(prefix);

@@ -282,6 +282,13 @@ fn dispatch_internal_child() {
         let rest: Vec<_> = std::env::args_os().skip(2).collect();
         std::process::exit(preview::svg_proc::child_main(&rest));
     }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == plugin_cli::watcher::CHILD_FLAG)
+    {
+        konoma_base::process::mark_app_main();
+        std::process::exit(plugin_cli::watcher::child_main());
+    }
 }
 
 /// The normal application, after internal dispatch and Host::run's plugin validation.
