@@ -342,6 +342,10 @@ impl Choice {
 }
 
 /// A confirmation key and its value (for example `y` = `-d`, `!` = `-D`).
+///
+/// Exact keys take priority; an unmatched uppercase ASCII letter picks its lowercase choice.
+/// `n`, `N` and `Esc` are reserved: they cancel the whole dialog without running the action
+/// and show the host's localized cancellation flash. `Enter` and undeclared keys do nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ConfirmChoice {
@@ -359,6 +363,11 @@ impl ConfirmChoice {
 }
 
 /// A destructive action must declare a confirmation with at least one choice.
+///
+/// At a confirmation stage, `n`, `N` and `Esc` cancel the whole dialog without running the action
+/// and show the host's localized cancellation flash (`canceled` / `取消`). These keys cannot
+/// be declared as choices. Exact keys win; an unmatched uppercase ASCII letter picks its
+/// lowercase choice. `Enter` and all other undeclared keys do nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Confirmation {

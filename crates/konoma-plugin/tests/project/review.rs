@@ -179,6 +179,31 @@ fn confirmation(choices: Vec<ConfirmChoice>) -> Manifest {
     Manifest::new("p", "1").action(Act::new("go").confirmation(Confirmation::new("Go?", choices)))
 }
 
+fn rejects_cancel_key(key: char) {
+    let refusal = reason(confirmation(vec![ConfirmChoice::new(key, "run", "Run")]));
+    assert_eq!(
+        refusal,
+        ManifestReason::InvalidConfirmationKey {
+            action: "go".into(),
+            key: key.to_string(),
+        }
+    );
+    assert_eq!(
+        refusal.to_string(),
+        format!("confirmation key `{key}` of action `go` is a control character or reserved by the host")
+    );
+}
+
+#[test]
+fn project_confirmation_rejects_cancel_n() {
+    rejects_cancel_key('n');
+}
+
+#[test]
+fn project_confirmation_rejects_cancel_upper_n() {
+    rejects_cancel_key('N');
+}
+
 #[test]
 fn project_confirmation_keys_are_nonempty_unique_and_safe() {
     assert_eq!(
@@ -217,6 +242,8 @@ fn project_confirmation_keys_are_nonempty_unique_and_safe() {
     check(confirmation(vec![
         ConfirmChoice::new('y', "-d", "Delete"),
         ConfirmChoice::new('!', "-D", "Force delete"),
+        ConfirmChoice::new('a', "lower", "Lowercase"),
+        ConfirmChoice::new('A', "upper", "Uppercase"),
     ]))
     .unwrap();
 }

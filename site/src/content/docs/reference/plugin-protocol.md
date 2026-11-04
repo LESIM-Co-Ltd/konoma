@@ -225,6 +225,13 @@ one or more row kinds, through the same declaration and validation path as any
 other action. Distinct row kinds may have distinct Enter actions. Confirmation
 choices can distinguish `y` → `-d` and `!` → `-D`.
 
+At any confirmation stage, `n`, `N` and `Esc` cancel the whole dialog without running
+the action and show the host's localized cancellation flash (`canceled` / `取消`).
+These keys cannot be declared as choices. An exact declared key wins; only if no
+exact match exists does an uppercase ASCII letter pick its lowercase choice
+(for example `Y` picks `y`). `Enter` and all other undeclared keys do nothing.
+On text prompts, list prompts and the project chooser, `Esc` closes silently.
+
 After selecting the language, the host replaces every literal `{row}` in confirmation
 text with the invoked row's `name`, falling back to its `value`. Without a selected
 row it uses an empty string. The invocation captures the row, so moving the cursor
@@ -270,7 +277,7 @@ validation, including project screen/row names and marker/row-kind counts.
 Watch paths must be nonempty relative paths without parent, root or prefix components
 (at most 512 paths). Markers must be a single nonempty file-name component other than
 `.` or `..`, at most 1024 bytes. Screen keys use the existing list reserved-key table;
-confirmation keys reserve its global layer plus `q` and `Esc`, while allowing `y` and `!`.
+confirmation keys reserve its global layer plus `q`, `n`, `N` and `Esc`, while allowing `y` and `!`.
 Control characters and duplicate keys in either set are refused. A confirmation has
 1–64 choices; list prompts also have at most 64 choices. Choice values are at most
 1024 bytes and every translated choice label is at most 512 characters.

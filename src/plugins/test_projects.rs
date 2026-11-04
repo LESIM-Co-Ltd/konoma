@@ -6,6 +6,7 @@ use konoma_plugin::{Origin, Resources};
 use std::sync::{Arc, Mutex};
 
 /// Observes the real VCS session without substituting its data or action implementation.
+#[cfg(feature = "git")]
 #[derive(Default)]
 pub(crate) struct VcsCalls {
     pub acts: Vec<String>,
@@ -13,11 +14,13 @@ pub(crate) struct VcsCalls {
     pub chips: usize,
 }
 
+#[cfg(feature = "git")]
 pub(crate) struct ObservedVcs {
     pub plugin: Arc<dyn Plugin>,
     pub calls: Arc<Mutex<VcsCalls>>,
 }
 
+#[cfg(feature = "git")]
 impl Plugin for ObservedVcs {
     fn manifest(&self) -> Manifest {
         self.plugin.manifest()
@@ -31,11 +34,13 @@ impl Plugin for ObservedVcs {
     }
 }
 
+#[cfg(feature = "git")]
 struct ObservedVcsSession {
     session: Box<dyn Session>,
     calls: Arc<Mutex<VcsCalls>>,
 }
 
+#[cfg(feature = "git")]
 impl Session for ObservedVcsSession {
     fn enabled(&self, action: &str) -> bool {
         self.session.enabled(action)
@@ -232,6 +237,8 @@ impl Plugin for Screens {
                     vec![
                         ConfirmChoice::new('y', "yes-value", "Accept"),
                         ConfirmChoice::new('!', "force-value", "Force"),
+                        ConfirmChoice::new('a', "lower-value", "Lowercase"),
+                        ConfirmChoice::new('A', "upper-value", "Uppercase"),
                     ],
                 )),
             )

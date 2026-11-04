@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Project confirmations now cancel with `n` / `N` / `Esc` and the host's localized cancellation flash, accept uppercase fallback keys, and ignore `Enter`; `n` and `N` are reserved for cancelling.
+
 - Plugin actions can declare hint groups to share one footer token and help row, with enabled, rebound keys and independent `Space` menu entries.
 
 - Project actions can opt into `TextInput::keep_on_failure()` to reopen a failed action's text prompt with its submitted text and original context when focus permits a retry.
