@@ -45,7 +45,14 @@ pub fn metadata_authors_lang(text: &str, name: &str, lang: Lang) -> Result<Vec<S
             if lang == Lang::En {
                 anyhow::Error::new(error)
             } else {
-                anyhow::anyhow!(tr_format(lang, Msg::PluginMetadataJson, &[("line", &error.line().to_string()), ("column", &error.column().to_string())]))
+                anyhow::anyhow!(tr_format(
+                    lang,
+                    Msg::PluginMetadataJson,
+                    &[
+                        ("line", &error.line().to_string()),
+                        ("column", &error.column().to_string())
+                    ]
+                ))
             }
         })?;
     let resolved = &metadata["resolve"];
@@ -262,10 +269,22 @@ mod tests {
                 ("[", "EOF while parsing a list at line 1 column 1"),
                 ("{}", "metadata has no root"),
                 (r#"{"resolve":{"root":"r"}}"#, "metadata has no nodes"),
-                (r#"{"resolve":{"root":"r","nodes":[]}}"#, "metadata root is missing"),
-                (r#"{"resolve":{"root":"r","nodes":[{"id":"r"}]}}"#, "metadata has no direct dependencies"),
-                (r#"{"resolve":{"root":"r","nodes":[{"id":"r","deps":[]}]}}"#, "metadata has no packages"),
-                (r#"{"resolve":{"root":"r","nodes":[{"id":"r","deps":[]}]},"packages":[]}"#, "metadata does not contain the requested direct dependency"),
+                (
+                    r#"{"resolve":{"root":"r","nodes":[]}}"#,
+                    "metadata root is missing",
+                ),
+                (
+                    r#"{"resolve":{"root":"r","nodes":[{"id":"r"}]}}"#,
+                    "metadata has no direct dependencies",
+                ),
+                (
+                    r#"{"resolve":{"root":"r","nodes":[{"id":"r","deps":[]}]}}"#,
+                    "metadata has no packages",
+                ),
+                (
+                    r#"{"resolve":{"root":"r","nodes":[{"id":"r","deps":[]}]},"packages":[]}"#,
+                    "metadata does not contain the requested direct dependency",
+                ),
             ] {
                 let error = super::metadata_authors_lang(json, "konoma-foo", lang).unwrap_err();
                 if lang == Lang::Jp {
@@ -274,7 +293,11 @@ mod tests {
                         &format!("{error:#}"),
                     );
                 } else {
-                    crate::test_support::plugin_english_lower::assert_english_context("metadata", &format!("{error:#}"), expected);
+                    crate::test_support::plugin_english_lower::assert_english_context(
+                        "metadata",
+                        &format!("{error:#}"),
+                        expected,
+                    );
                     assert_eq!(error.to_string(), expected);
                 }
             }
@@ -289,8 +312,15 @@ mod tests {
                     &format!("{error:#}"),
                 );
             } else {
-                assert_eq!(error.to_string(), "`~/fixture` starts with ~ but HOME is not set");
-                crate::test_support::plugin_english_lower::assert_english_context("project", &format!("{error:#}"), "`~/fixture` starts with ~ but HOME is not set");
+                assert_eq!(
+                    error.to_string(),
+                    "`~/fixture` starts with ~ but HOME is not set"
+                );
+                crate::test_support::plugin_english_lower::assert_english_context(
+                    "project",
+                    &format!("{error:#}"),
+                    "`~/fixture` starts with ~ but HOME is not set",
+                );
             }
         }
     }

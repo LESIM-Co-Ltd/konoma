@@ -864,28 +864,34 @@ fn e2e_ext_the_run_loop_reaps_at_an_interval_and_never_twice_in_a_row() {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let tx2 = tx.clone();
     let t0 = Instant::now();
-    assert!(external::reap_if_due_with_for_test(t0, move || {
+    let first = external::reap_if_due_with_for_test(t0, move || {
         let _ = tx.send(());
-    }));
+    })
+    .expect("the first look is not throttled");
     rx.recv_timeout(PATIENCE)
         .expect("the work ran on its thread");
+    // Receiving the message does not mean the thread has cleared the throttle's busy flag.
+    first.join().unwrap();
     // Again within the interval: not started.
-    assert!(!external::reap_if_due_with_for_test(
+    assert!(external::reap_if_due_with_for_test(
         t0 + external::REAP_INTERVAL - Duration::from_secs(1),
         move || {
             let _ = tx2.send(());
         }
-    ));
+    )
+    .is_none());
     assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     // After the interval: started again.
     let (tx3, rx3) = std::sync::mpsc::channel::<()>();
-    assert!(external::reap_if_due_with_for_test(
+    let again = external::reap_if_due_with_for_test(
         t0 + external::REAP_INTERVAL + Duration::from_secs(1),
         move || {
             let _ = tx3.send(());
-        }
-    ));
+        },
+    )
+    .expect("a look is due");
     rx3.recv_timeout(PATIENCE).expect("ran again");
+    again.join().unwrap();
 }
 
 #[test]

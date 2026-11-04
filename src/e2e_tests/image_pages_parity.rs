@@ -11,11 +11,14 @@ use super::image_parity::{
 use super::table_parity::{help_lines, hints, panel_lines, presses, same_row, APP_H, HOST_H, W};
 use super::*;
 use konoma_plugin::app::{
-    key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, AppKeys, Pictures,
+    key_from_crossterm, open_file, run_with_pictures, AppCx, AppEvent, Pictures,
 };
 use konoma_plugin::TermCaps;
 use ratatui_image::picker::Picker;
 use std::sync::Arc;
+
+mod cached_pdf;
+mod resizes;
 
 /// A PDF of `n` pages, each filled with another color (so a turn changes the picture).
 fn make_pdf(dir: &crate::test_support::TmpDir, name: &str, n: usize) {
@@ -30,13 +33,17 @@ fn make_pdf(dir: &crate::test_support::TmpDir, name: &str, n: usize) {
 }
 
 fn app_pdf_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> Shot {
-    let mut opened = open_file(
-        vec![Arc::new(konoma_media::PdfPlugin)],
-        path,
-        "en",
-        TermCaps::new(),
-    )
-    .expect("opens");
+    app_pdf_shot_with(path, h, spec, pictures, Arc::new(konoma_media::PdfPlugin))
+}
+
+fn app_pdf_shot_with(
+    path: &std::path::Path,
+    h: u16,
+    spec: &str,
+    pictures: bool,
+    plugin: Arc<dyn konoma_plugin::Plugin>,
+) -> Shot {
+    let mut opened = open_file(vec![plugin], path, "en", TermCaps::new()).expect("opens");
     let mut term = Terminal::new(TestBackend::new(W, h)).unwrap();
     let cx = AppCx {
         lang: "en".into(),
@@ -60,7 +67,7 @@ fn app_pdf_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> S
         &mut *opened.session,
         &mut events,
         &cx,
-        &AppKeys::defaults(),
+        super::plugin_act_parity::app_default_keys(),
         pics,
     )
     .unwrap();
@@ -69,19 +76,62 @@ fn app_pdf_shot(path: &std::path::Path, h: u16, spec: &str, pictures: bool) -> S
 }
 
 fn host_pdf_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker: bool) -> Shot {
+    let s = host_pdf_walk(root, file, h, spec, picker, |_, _| {});
+    shot(&s.term)
+}
+
+fn host_pdf_walk(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+    picker: bool,
+    mut at_frame: impl FnMut(&Sim, usize),
+) -> Sim {
+    host_pdf_walk_impl(root, file, h, spec, picker, None, &mut at_frame)
+}
+
+fn host_pdf_walk_cached(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+    cache: &mut resizes::Resizes,
+    mut at_frame: impl FnMut(&Sim, usize),
+) -> Sim {
+    host_pdf_walk_impl(root, file, h, spec, true, Some(cache), &mut at_frame)
+}
+
+fn host_pdf_walk_impl(
+    root: &std::path::Path,
+    file: &str,
+    h: u16,
+    spec: &str,
+    picker: bool,
+    mut cache: Option<&mut resizes::Resizes>,
+    mut at_frame: impl FnMut(&Sim, usize),
+) -> Sim {
     let mut s = Sim::with_config_sized(root, cfg_en(), W, h);
     let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
     if picker {
         s = s.with_picker().with_media();
-        s.app.attach_image_backend(Picker::halfblocks(), req_tx);
+        if let Some(cache) = cache.as_ref() {
+            cache.attach(&mut s);
+        } else {
+            s.app.attach_image_backend(Picker::halfblocks(), req_tx);
+        }
     }
     s.select(file);
     s.enter();
     if picker {
         s.drain_media();
     }
-    let settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
-        s.draw();
+    let mut settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
+        if let Some(cache) = cache.as_mut() {
+            cache.settle(s, &root.join(file));
+            return;
+        }
+        // Enter, each key and each media result already drew the page and queued its resize.
         while let Ok(req) = req_rx.try_recv() {
             let req: ratatui_image::thread::ResizeRequest = req;
             s.app.apply_image_resize(req.resize_encode());
@@ -89,7 +139,8 @@ fn host_pdf_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker:
         }
     };
     settle(&mut s, &mut req_rx);
-    for (code, mods) in presses(spec) {
+    at_frame(&s, 0);
+    for (n, (code, mods)) in presses(spec).into_iter().enumerate() {
         let before = s.app.page_indicator();
         s.press(code, mods);
         assert!(!s.quit, "the host ended early: {spec}");
@@ -98,8 +149,63 @@ fn host_pdf_shot(root: &std::path::Path, file: &str, h: u16, spec: &str, picker:
             s.drain_media();
         }
         settle(&mut s, &mut req_rx);
+        at_frame(&s, n + 1);
     }
-    shot(&s.term)
+    s
+}
+
+type Frames<T> = std::collections::BTreeMap<String, T>;
+
+fn pdf_cases(
+    root: &std::path::Path,
+    host_plugin: Arc<cached_pdf::CachedPdf>,
+    app_plugin: Arc<cached_pdf::CachedPdf>,
+) -> (Frames<Shot>, Frames<super::plugin_act_parity::batch::Frame>) {
+    use super::plugin_act_parity::{batch, MediaPluginGuard};
+    let specs: Vec<String> = SPECS.iter().map(|s| (*s).to_string()).collect();
+    let requested: std::collections::BTreeSet<String> = specs.iter().cloned().collect();
+    let _media = MediaPluginGuard::set(host_plugin);
+    let mut hosts = std::collections::BTreeMap::new();
+    let mut resizes = resizes::Resizes::default();
+    for spec in batch::longest_first(&specs) {
+        if hosts.contains_key(spec) {
+            continue;
+        }
+        let tokens: Vec<_> = spec.split_whitespace().collect();
+        host_pdf_walk_cached(root, "three.pdf", HOST_H, spec, &mut resizes, |s, n| {
+            let prefix = tokens[..n].join(" ");
+            if requested.contains(&prefix) {
+                hosts.entry(prefix).or_insert_with(|| shot(&s.term));
+            }
+        });
+    }
+    assert!(resizes.computed < 40, "reuse identical immutable resizes");
+    assert!(resizes.reused > 0);
+    let mut opened = open_file(
+        vec![app_plugin],
+        &root.join("three.pdf"),
+        "en",
+        TermCaps::new(),
+    )
+    .unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "t".into(),
+        unavailable: opened.unavailable.clone(),
+        path: opened.path.clone(),
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        ..AppCx::default()
+    };
+    let apps = batch::app_cases(
+        &mut *opened.session,
+        &cx,
+        super::plugin_act_parity::app_default_keys(),
+        (W, APP_H),
+        &specs,
+        Some("pdf"),
+    );
+    (hosts, apps)
 }
 
 /// `2/5` as a footer or status word.
@@ -151,14 +257,17 @@ fn the_page_turn_the_number_and_the_footer_agree_with_the_host() {
     let dir = sandbox("image_pages_parity");
     make_pdf(&dir, "three.pdf", 3);
     let root = canon(&dir);
+    let host_pdf = Arc::new(cached_pdf::CachedPdf::default());
+    let app_pdf = Arc::new(cached_pdf::CachedPdf::default());
     let (mut checked, mut moved, mut hinted) = (0, 0, 0);
     let mut pages = std::collections::BTreeSet::new();
     let mut seen_host_only = std::collections::BTreeSet::new();
-    let at_fit = host_pdf_shot(&root, "three.pdf", HOST_H, "", true);
+    let (hosts, apps) = pdf_cases(&root, host_pdf.clone(), app_pdf.clone());
+    let at_fit = &hosts[""];
     for spec in SPECS {
         let what = format!("three.pdf [{spec}]");
-        let h = host_pdf_shot(&root, "three.pdf", HOST_H, spec, true);
-        let a = app_pdf_shot(&root.join("three.pdf"), APP_H, spec, true);
+        let h = &hosts[*spec];
+        let a = shot(&apps[*spec].term);
         assert!(h.cells.len() > 400, "{what}: the host frame is there");
         assert_eq!(
             h.cells.len(),
@@ -218,6 +327,9 @@ fn the_page_turn_the_number_and_the_footer_agree_with_the_host() {
         checked += 1;
         moved += usize::from(h.cells != at_fit.cells);
     }
+    assert_eq!(checked, 14, "every original combination is compared");
+    assert_eq!(host_pdf.rendered(), 3);
+    assert_eq!(app_pdf.rendered(), 3);
     assert!(checked >= 14, "{checked}");
     assert!(hinted >= 14, "{hinted}");
     // The turns moved the picture, and the number took every value 1..=3.
