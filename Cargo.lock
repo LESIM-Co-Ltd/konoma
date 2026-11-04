@@ -2061,7 +2061,6 @@ dependencies = [
  "ignore",
  "konoma-base",
  "konoma-test-support",
- "ratatui",
  "similar",
 ]
 

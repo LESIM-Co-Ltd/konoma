@@ -18,6 +18,40 @@ use crate::app::App;
 use crate::i18n::tr;
 use crate::ui::icons;
 
+/// Convert the core's small color vocabulary at the host's drawing boundary.
+pub(crate) fn vcs_color(color: konoma_vcs_core::style::VcsColor) -> ratatui::style::Color {
+    use konoma_vcs_core::style::VcsColor;
+    use ratatui::style::Color;
+    match color {
+        VcsColor::Reset => Color::Reset,
+        VcsColor::Red => Color::Red,
+        VcsColor::Green => Color::Green,
+        VcsColor::Yellow => Color::Yellow,
+        VcsColor::Blue => Color::Blue,
+        VcsColor::Magenta => Color::Magenta,
+        VcsColor::Cyan => Color::Cyan,
+        VcsColor::White => Color::White,
+        VcsColor::LightRed => Color::LightRed,
+        VcsColor::LightGreen => Color::LightGreen,
+        VcsColor::LightYellow => Color::LightYellow,
+    }
+}
+
+fn graph_style(style: konoma_vcs_core::style::GraphStyle) -> Style {
+    use konoma_vcs_core::style::GraphStyle;
+    use ratatui::style::Modifier;
+    let GraphStyle { fg, bold } = style;
+    let style = match fg {
+        Some(color) => Style::new().fg(vcs_color(color)),
+        None => Style::new(),
+    };
+    if bold {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
 fn repo_label(app: &App, icons_on: bool) -> Option<String> {
     let name = match app.git_vcs {
         crate::vcs::VcsKind::Git => "Git",
@@ -78,7 +112,10 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
                 // Staged indicator: ●=staged / blank=unstaged.
                 let staged = if e.staged { "● " } else { "  " };
                 // Status marker (color = meaning).
-                let marker = Span::styled(format!("{} ", st.marker()), Style::new().fg(st.color()));
+                let marker = Span::styled(
+                    format!("{} ", st.marker()),
+                    Style::new().fg(vcs_color(st.color())),
+                );
                 // Path relative to the repo (follows the display style via format_path).
                 let name = app.format_path(&e.path);
                 let line = Line::from(vec![
@@ -490,7 +527,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
                 let mut left: Vec<Span> = r
                     .graph
                     .iter()
-                    .map(|(t, st)| Span::styled(t.clone(), *st))
+                    .map(|(t, st)| Span::styled(t.clone(), graph_style(*st)))
                     .collect();
                 let line = if r.worktree {
                     // The uncommitted working-tree row: subject highlighted in yellow + date (meta).
@@ -576,6 +613,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
         let bold = Style::new().add_modifier(Modifier::BOLD);
         let mut spans: Vec<Span> = Vec::new();
         for (k, e) in legend.iter().enumerate() {
+            let color = vcs_color(e.color);
             if k > 0 {
                 spans.push(Span::from("  "));
             }
@@ -587,18 +625,18 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             if e.is_head {
                 spans.push(Span::styled(icons::branch_marker(icons_on), bold));
                 spans.push(Span::from(" "));
-                spans.push(Span::styled("●", bold.fg(e.color)));
+                spans.push(Span::styled("●", bold.fg(color)));
                 spans.push(Span::styled(format!(" {}", e.name), bold));
             } else if e.is_base {
                 spans.push(Span::styled(
                     icons::base_marker(icons_on),
-                    Style::new().fg(e.color),
+                    Style::new().fg(color),
                 ));
                 spans.push(Span::from(" "));
-                spans.push(Span::styled("●", Style::new().fg(e.color)));
+                spans.push(Span::styled("●", Style::new().fg(color)));
                 spans.push(Span::from(format!(" {}", e.name)));
             } else {
-                spans.push(Span::styled("●", Style::new().fg(e.color)));
+                spans.push(Span::styled("●", Style::new().fg(color)));
                 spans.push(Span::from(format!(" {}", e.name)));
             }
         }
@@ -876,6 +914,70 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     crate::ops::help::sections(app)
 }
 
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+    use konoma_vcs_core::style::{GraphStyle, VcsColor};
+    use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn vcs_color_mapping_preserves_every_legacy_color() {
+        for (core, legacy) in [
+            (VcsColor::Reset, Color::Reset),
+            (VcsColor::Red, Color::Red),
+            (VcsColor::Green, Color::Green),
+            (VcsColor::Yellow, Color::Yellow),
+            (VcsColor::Blue, Color::Blue),
+            (VcsColor::Magenta, Color::Magenta),
+            (VcsColor::Cyan, Color::Cyan),
+            (VcsColor::White, Color::White),
+            (VcsColor::LightRed, Color::LightRed),
+            (VcsColor::LightGreen, Color::LightGreen),
+            (VcsColor::LightYellow, Color::LightYellow),
+        ] {
+            assert_eq!(vcs_color(core), legacy, "{core:?}");
+            for bold in [false, true] {
+                let expected = if bold {
+                    Style::new().fg(legacy).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(legacy)
+                };
+                assert_eq!(
+                    graph_style(GraphStyle {
+                        fg: Some(core),
+                        bold
+                    }),
+                    expected
+                );
+            }
+        }
+        assert_eq!(graph_style(GraphStyle::default()), Style::new());
+        assert_eq!(
+            graph_style(GraphStyle {
+                fg: None,
+                bold: true
+            }),
+            Style::new().add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn vcs_file_status_colors_preserve_legacy_colors() {
+        use crate::git::FileStatus;
+        for (status, legacy) in [
+            (FileStatus::Modified, Color::Yellow),
+            (FileStatus::Added, Color::Green),
+            (FileStatus::Untracked, Color::LightGreen),
+            (FileStatus::Deleted, Color::Red),
+            (FileStatus::Renamed, Color::Cyan),
+            (FileStatus::TypeChange, Color::Yellow),
+            (FileStatus::Conflicted, Color::LightRed),
+        ] {
+            assert_eq!(vcs_color(status.color()), legacy, "{status:?}");
+        }
+    }
+}
+
 #[cfg(all(test, feature = "git"))]
 mod tests {
     use super::*;
@@ -883,6 +985,121 @@ mod tests {
     use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git, run_jj, unique_tmp};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn graph_legend_preserves_each_branch_node_color() {
+        use konoma_vcs_core::style::VcsColor;
+        let dir = unique_tmp("konoma_graph_legend_colors");
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        std::fs::write(dir.join("file"), "content").unwrap();
+        run_git(&dir, &["add", "file"]);
+        run_git(&dir, &["commit", "-qm", "fixture"]);
+        run_git(&dir, &["branch", "-M", "feature"]);
+        run_git(&dir, &["branch", "base"]);
+        run_git(&dir, &["branch", "topic"]);
+        let rows = konoma_vcs_core::testing::graph_style_fixture(crate::vcs::VcsKind::Git, true);
+        let legend = crate::git::legend_from_rows(&rows, &dir, Some("base"));
+        let entries: Vec<_> = legend
+            .iter()
+            .map(|e| (e.name.as_str(), e.color, e.is_head, e.is_base))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("feature", VcsColor::Cyan, true, false),
+                ("base", VcsColor::White, false, true),
+                ("topic", VcsColor::Green, false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_cells_preserve_legacy_text_colors_and_modifiers() {
+        use ratatui::style::{Color, Modifier};
+        // Captured with the original ratatui-backed core. `n` is an unset foreground;
+        // `r` explicitly resets it. Keep that distinction, including on padding cells.
+        let legacy_style = |code| match code {
+            'W' => Style::new().fg(Color::White),
+            'C' => Style::new().fg(Color::Cyan),
+            'G' => Style::new().fg(Color::Green),
+            'Y' => Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            'r' => Style::new().fg(Color::Reset),
+            'n' => Style::new(),
+            _ => panic!("unknown legacy style code"),
+        };
+        for vcs in [crate::vcs::VcsKind::Git, crate::vcs::VcsKind::Jj] {
+            for worktree in [false, true] {
+                let rows = konoma_vcs_core::testing::graph_style_fixture(vcs, worktree);
+                let cells: Vec<_> = rows
+                    .iter()
+                    .map(|r| {
+                        r.graph
+                            .iter()
+                            .map(|(text, style)| (text.as_str(), graph_style(*style)))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                let legacy = match (vcs, worktree) {
+                    (crate::vcs::VcsKind::Git, false) => vec![
+                        ("◆  ", "Wnn"),
+                        ("├─┐", "WCC"),
+                        ("● │", "WrC"),
+                        ("│ ●", "WrC"),
+                        ("├─┘", "WCC"),
+                        ("●  ", "Wnn"),
+                    ],
+                    (crate::vcs::VcsKind::Jj, false) => vec![
+                        ("○  ", "Wnn"),
+                        ("├─┐", "WCC"),
+                        ("○ │", "WrC"),
+                        ("│ ○", "WrC"),
+                        ("├─┘", "WCC"),
+                        ("○  ", "Wnn"),
+                    ],
+                    (crate::vcs::VcsKind::Git, true) => vec![
+                        ("│ ●  ", "WrYnn"),
+                        ("│ ◆  ", "WrCnn"),
+                        ("│ ├─┐", "WrCGG"),
+                        ("├─┘ │", "WCCrG"),
+                        ("●   │", "WrrrG"),
+                        ("│   ●", "WrrrG"),
+                        ("├───┘", "WGGGG"),
+                        ("●    ", "Wnnnn"),
+                    ],
+                    (crate::vcs::VcsKind::Jj, true) => vec![
+                        ("│ @  ", "WrYnn"),
+                        ("│ ○  ", "WrCnn"),
+                        ("│ ├─┐", "WrCGG"),
+                        ("├─┘ │", "WCCrG"),
+                        ("○   │", "WrrrG"),
+                        ("│   ○", "WrrrG"),
+                        ("├───┘", "WGGGG"),
+                        ("○    ", "Wnnnn"),
+                    ],
+                };
+                let expected: Vec<Vec<_>> = legacy
+                    .into_iter()
+                    .map(|(text, styles)| {
+                        assert_eq!(text.chars().count(), styles.len());
+                        text.chars()
+                            .zip(styles.chars())
+                            .map(|(ch, code)| (ch.to_string(), legacy_style(code)))
+                            .collect()
+                    })
+                    .collect();
+                let actual: Vec<Vec<_>> = cells
+                    .into_iter()
+                    .map(|r| {
+                        r.into_iter()
+                            .map(|(text, style)| (text.to_string(), style))
+                            .collect()
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "{vcs:?}, worktree={worktree}");
+            }
+        }
+    }
 
     #[test]
     fn git_view_renders_marker_and_filename() {

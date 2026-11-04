@@ -10,6 +10,7 @@
 
 pub mod git;
 pub mod glyph;
+pub mod style;
 pub mod vcs;
 
 #[cfg(any(test, feature = "test-hooks"))]

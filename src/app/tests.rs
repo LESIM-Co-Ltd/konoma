@@ -1288,6 +1288,91 @@ fn git_graph_move_extremes_no_panic() {
     assert_eq!(app.tab.git_graph_sel, 0, "先頭コミット行へ");
 }
 
+#[cfg(feature = "git")]
+#[test]
+fn git_graph_legend_worktree_and_log_preserve_legacy_cell_styles() {
+    use konoma_vcs_core::style::VcsColor;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_graph_legacy_styles");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.cfg.ui.icons = false;
+    app.tab.git_graph = Some(konoma_vcs_core::testing::graph_style_fixture(
+        crate::vcs::VcsKind::Git,
+        true,
+    ));
+    app.tab.git_graph_legend = vec![
+        crate::git::LegendEntry {
+            name: "head".into(),
+            color: VcsColor::Cyan,
+            is_head: true,
+            is_base: false,
+        },
+        crate::git::LegendEntry {
+            name: "base".into(),
+            color: VcsColor::White,
+            is_head: false,
+            is_base: true,
+        },
+        crate::git::LegendEntry {
+            name: "topic".into(),
+            color: VcsColor::Green,
+            is_head: false,
+            is_base: false,
+        },
+    ];
+    let mut term = Terminal::new(TestBackend::new(90, 16)).unwrap();
+    term.draw(|f| crate::ui::git::render_graph(f, &app, f.area()))
+        .unwrap();
+    let buffer = term.backend().buffer();
+    assert_eq!(buffer[(3, 1)].symbol(), "●");
+    assert_eq!(buffer[(3, 1)].fg, Color::Yellow);
+    assert_eq!(buffer[(3, 1)].modifier, Modifier::BOLD | Modifier::REVERSED);
+    let first: String = (0..90).map(|x| buffer[(x, 1)].symbol()).collect();
+    let subject = first[..first.find("Uncommitted changes").unwrap()]
+        .chars()
+        .count() as u16;
+    for x in subject..subject + 19 {
+        assert_eq!(buffer[(x, 1)].fg, Color::Yellow);
+        assert_eq!(buffer[(x, 1)].modifier, Modifier::BOLD | Modifier::REVERSED);
+    }
+    let legend: String = (0..90).map(|x| buffer[(x, 14)].symbol()).collect();
+    for (label, color, modifier) in [
+        ("● head", Color::Cyan, Modifier::BOLD),
+        ("● base", Color::White, Modifier::empty()),
+        ("● topic", Color::Green, Modifier::empty()),
+    ] {
+        // Count characters, since the dot is a multi-byte UTF-8 glyph.
+        let x = legend[..legend.find(label).unwrap()].chars().count() as u16;
+        assert_eq!(buffer[(x, 14)].fg, color, "{label}");
+        assert_eq!(buffer[(x, 14)].modifier, modifier, "{label}");
+    }
+
+    app.tab.git_log = Some(vec![crate::git::CommitInfo {
+        id: "id".into(),
+        short: "abc123".into(),
+        summary: "log subject".into(),
+        author: "author".into(),
+        time_epoch: 0,
+    }]);
+    term.draw(|f| crate::ui::git::render_log(f, &app, f.area()))
+        .unwrap();
+    let buffer = term.backend().buffer();
+    assert_eq!(buffer[(1, 1)].symbol(), "a");
+    assert_eq!(buffer[(1, 1)].fg, Color::Reset);
+    assert_eq!(buffer[(1, 1)].modifier, Modifier::DIM | Modifier::REVERSED);
+    assert_eq!(buffer[(8, 1)].symbol(), "l");
+    assert_eq!(buffer[(8, 1)].fg, Color::Reset);
+    assert_eq!(buffer[(8, 1)].modifier, Modifier::REVERSED);
+    let line: String = (0..90).map(|x| buffer[(x, 1)].symbol()).collect();
+    let author = line.find("author").unwrap() as u16;
+    assert_eq!(buffer[(author, 1)].fg, Color::DarkGray);
+    assert_eq!(buffer[(author, 1)].modifier, Modifier::REVERSED);
+}
+
 #[test]
 fn git_log_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_log_move_extremes_test");
