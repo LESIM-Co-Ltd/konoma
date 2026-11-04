@@ -127,8 +127,9 @@ pub use manifest::{
     Unavailable, Verb, VerbDecl, ViewKind,
 };
 pub use project::{
-    ActContext, Choice, ChoiceInput, ConfirmChoice, Confirmation, DetectionMarker, MarkerKind,
-    ProjectAct, ProjectDecl, ProjectRow, ProjectScreen, ProjectView, RefreshTarget, TextInput,
+    ActContext, Chip, Choice, ChoiceInput, ConfirmChoice, Confirmation, DetectionMarker,
+    MarkerKind, ProjectAct, ProjectDecl, ProjectRow, ProjectScreen, ProjectView, RefreshTarget,
+    TextInput,
 };
 pub use scope::{ReadScope, ScopeError};
 pub use session::{

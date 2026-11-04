@@ -152,7 +152,7 @@ where
             return Ok(());
         }
     };
-    let wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut wm = manifest_to_wire(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
     let supported: Vec<u32> = (wire::manifest_protocol(&wm)..=PROTOCOL_VERSION).collect();
     let selected = supported
         .iter()
@@ -171,6 +171,7 @@ where
         return Ok(());
     };
     let action_ids: Vec<String> = manifest.actions.iter().map(|a| a.id.clone()).collect();
+    wm.session_chip = version >= 2 && manifest.project.is_some();
     frame::send(
         &mut output,
         &HelloReply::Ack {
@@ -335,6 +336,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn call_rid(m: &ToChild) -> Option<u64> {
     match m {
         ToChild::Open { rid, .. }
+        | ToChild::Chip { rid, .. }
         | ToChild::View { rid, .. }
         | ToChild::Act { rid, .. }
         | ToChild::Key { rid, .. } => Some(*rid),
@@ -452,6 +454,30 @@ impl Worker {
             Ok(cx_from_wire(c)?)
         };
         match msg {
+            ToChild::Chip { sid, cx, .. } => {
+                wire::require_protocol(self.version, 2)?;
+                let cx = cx_of(cx)?;
+                let vcx = ViewCx::new(&cx.settings, &cx.lang)
+                    .with_cancel(cancel_of(flag))
+                    .with_term(cx.term)
+                    .with_external(cx.external)
+                    .with_read_scope(cx.read_scope.clone());
+                let session = self
+                    .sessions
+                    .get_mut(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                let chip = catch_unwind(AssertUnwindSafe(|| session.chip(&vcx)))
+                    .map_err(|p| panic_failure("chip", p))??;
+                let chip = chip.as_ref().map(wire::chip_to_wire);
+                let session = self
+                    .sessions
+                    .get(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                Ok(Reply::Chip {
+                    chip,
+                    state: self.state(&**session)?,
+                })
+            }
             ToChild::Open { sid, input, cx, .. } => {
                 wire::require_protocol(self.version, wire::input_protocol(&input))?;
                 if self.sessions.len() >= self.max_sessions && !self.sessions.contains_key(&sid) {

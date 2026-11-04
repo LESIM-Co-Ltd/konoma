@@ -185,3 +185,24 @@ pub fn cx_protocol(cx: &WCx) -> u32 {
         1
     }
 }
+
+/// A styled project summary. `None` in the reply means use the declaration.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct WChip {
+    pub text: super::WLine,
+}
+
+impl WChip {
+    pub fn new(text: super::WLine) -> Self {
+        Self { text }
+    }
+}
+
+pub fn chip_to_wire(chip: &crate::Chip) -> WChip {
+    WChip::new(super::line_to_wire(&chip.clipped().text))
+}
+
+pub fn chip_from_wire(chip: WChip) -> crate::Chip {
+    crate::Chip::new(super::line_from_wire(chip.text)).clipped()
+}
