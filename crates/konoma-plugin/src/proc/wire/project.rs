@@ -134,6 +134,8 @@ pub struct WConfirmation {
 pub struct WTextInput {
     pub label: WTr,
     pub initial: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_on_failure: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,12 +295,14 @@ pub fn confirmation_from_wire(c: WConfirmation) -> Confirmation {
 }
 pub fn text_input_to_wire(i: &TextInput) -> WTextInput {
     WTextInput {
+        keep_on_failure: i.keep_on_failure,
         label: tr_to_wire(&i.label),
         initial: i.initial.clone(),
     }
 }
 pub fn text_input_from_wire(i: WTextInput) -> TextInput {
     TextInput {
+        keep_on_failure: i.keep_on_failure,
         label: tr_from_wire(i.label),
         initial: i.initial,
     }

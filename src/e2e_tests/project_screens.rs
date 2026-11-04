@@ -1400,6 +1400,392 @@ fn e2e_project_text_input_edits_unicode_initial_value() {
 }
 
 #[test]
+fn e2e_project_keep_input_failure_preserves_text_and_invocation_for_retry() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_retry",
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" retry λ");
+    f.sim.enter();
+    started.wait();
+    f.sim.key('j');
+    f.sim.key('j');
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, cursor, .. })
+            if buffer == "seed retry λ" && *cursor == buffer.chars().count()));
+    let first = last_act(&f);
+    assert_eq!(first.0, "retry-input");
+    assert_eq!(first.1.text.as_deref(), Some("seed retry λ"));
+    assert_eq!(
+        first.1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+fn pending_input_failure(name: &str) -> (Fixture, Arc<Latch>) {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" saved");
+    f.sim.enter();
+    started.wait();
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    (f, release)
+}
+
+#[test]
+fn e2e_project_keep_input_panic_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_panic",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_panic: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" panic");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert!(f.sim.app.flash.is_some());
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed panic"));
+}
+
+#[test]
+fn e2e_project_keep_input_reported_dead_child_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_dead_child",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            act_error: Some(konoma_plugin::Failure::corrupt("plugin child disconnected")),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" child");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.flash.as_deref(),
+        Some("plugin child disconnected")
+    );
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed child"));
+}
+
+#[test]
+fn e2e_project_keep_input_success_does_not_reopen() {
+    for (index, outcome) in [Outcome::Unhandled, Outcome::Redraw, Outcome::Reload]
+        .into_iter()
+        .enumerate()
+    {
+        let mut f = fixture_with_log(
+            &format!("project_keep_input_success_{index}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                outcome: Some(outcome),
+                ..Default::default()
+            },
+        );
+        open(&mut f);
+        f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+        f.sim.enter();
+        drain(&mut f.sim);
+        assert_eq!(last_act(&f).0, "retry-input");
+        assert!(f.sim.app.project_dialog.is_none());
+    }
+}
+
+#[test]
+fn e2e_project_keep_input_flash_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_flash",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            outcome: Some(Outcome::Flash("action said no".into())),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("action said no"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_watch_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_watch_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            watch_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project watch failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_refresh_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_refresh_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            view_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(7), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-refresh");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project refresh failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_without_flag_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_without_flag",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::NONE);
+    f.sim.keys(" edit");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "text-input");
+    assert!(last_act(&f).1.text.unwrap().ends_with(" edit"));
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_confirmation_is_not_repeated() {
+    let mut f = fixture_with_log(
+        "project_keep_input_confirmation",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(6), KeyModifiers::CONTROL);
+    f.sim.see("Confirm retry?");
+    f.sim.key('y');
+    f.sim.keys(" confirmed");
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.see("Retry message");
+    f.sim.dont_see("Confirm retry?");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage: 0, .. })
+            if matches!(prompts.as_slice(), [crate::app::project_screens::ProjectPrompt::Text(_)])));
+    let first = last_act(&f);
+    assert_eq!(first.1.confirmation.as_deref(), Some("yes"));
+    assert_eq!(first.1.text.as_deref(), Some("seed confirmed"));
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_other_tab_does_not_reopen_even_on_same_screen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_other_tab");
+    let origin = f.sim.app.tab.id;
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    assert_ne!(f.sim.app.tab.id, origin);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert!(
+        f.sim.app.project_dialog.is_none(),
+        "a dropped retry must not reopen on a later tab switch"
+    );
+}
+
+#[test]
+fn e2e_project_keep_input_changed_screen_does_not_reopen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_changed_screen");
+    f.sim.key('z');
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "text");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_dialog_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_dialog");
+    f.sim.key('Q');
+    assert!(f.sim.app.confirm_is_quit());
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.confirm_is_quit());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_active_filter_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_active_filter");
+    f.sim.key('/');
+    f.sim.keys("alp");
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    assert_eq!(f.sim.app.project_frame().unwrap().query, "alp");
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_text_input_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_input");
+    f.sim.app.start_filter();
+    f.sim.app.filter_input_push('x');
+    assert!(f.sim.app.is_filtering());
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.is_filtering());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_project_dialog_is_not_overwritten() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_project_dialog",
+        false,
+        2,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    f.sim.key('p');
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    started.wait();
+    f.sim.key('p');
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+    release.open();
+    drain(&mut f.sim);
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+}
+
+#[test]
 fn e2e_project_choice_input_returns_value_not_label() {
     let mut f = fixture("project_choice_input", false, 1, None, None, None);
     open(&mut f);
