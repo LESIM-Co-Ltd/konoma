@@ -171,7 +171,7 @@ project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
 confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
-text_input: { label: Tr, initial: string } | null
+text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
@@ -195,6 +195,16 @@ Choice = { value: string, label: Tr }
 `None` で送信時に省略するため、古い子プロセスの確認は常に表示します。
 破壊的操作の確認への設定指定と、真偽値の既定値を持つ `SettingDecl` がないキーは
 登録時に拒否し、それぞれのエラーに操作名とキーを含めます。破壊的操作の確認は必須です。
+
+`TextInput::keep_on_failure()` を指定すると、`act` が `Failure` を返した際に
+文字入力を開き直します。panic や子プロセスの失敗も対象です。ホストは失敗を通知し、
+送信した文字列を復元してカーソルを末尾に置きます。呼び出し時の行・画面・回答を
+保持するため、Enter で同じ操作を再試行できます。文字入力だけを復元し、前段の
+確認は繰り返しません。呼び出したタブがアクティブで、同じプロジェクト画面を表示し、
+他のダイアログや文字入力がない場合だけ復元します。それ以外は失敗の通知のみです。
+成功や `Flash` を含むすべての `Ok` では開き直しません。操作成功後の監視パス取得や
+表示更新の失敗でも開き直しません。既定は false で、false の
+場合は送信時に省略するため、古い子プロセスの動作は変わりません。
 
 `RefreshTarget` は `"CurrentScreen"`・`{"Screen":{"screen":string}}`・`"AllScreens"`・
 `"TreeStatus"`・`"Chip"` のいずれかです。操作の `refresh` は既定で空、空なら送信時に

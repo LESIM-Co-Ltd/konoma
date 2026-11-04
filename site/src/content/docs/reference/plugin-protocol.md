@@ -182,7 +182,7 @@ project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
 confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
-text_input: { label: Tr, initial: string } | null
+text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
@@ -208,6 +208,19 @@ runs normally. `setting` defaults to `None` and is omitted on the wire; older ch
 therefore always ask. The registry rejects a setting on a destructive confirmation,
 and a key without a `SettingDecl` with a boolean default, with separate errors naming
 the action and key. Destructive actions always require confirmation.
+
+`TextInput::keep_on_failure()` opts an action into reopening its text prompt when
+`act` returns a `Failure`, including a panic or a child process failure. The host
+flashes the failure and restores the submitted text with the cursor at the end.
+The original row, screen and answers are retained, so Enter retries the same action;
+only the text prompt returns, without repeating a preceding confirmation.
+Restoration requires the invoking tab to be active, still displaying the same
+project screen, with no dialog or text input active. Otherwise the failure is only
+flashed. Success and every `Ok` outcome, including `Flash`, never reopen the prompt.
+Failures while reading watch paths or refreshing after a successful action also
+never reopen it.
+The flag defaults to false and is omitted on the wire when false; older children
+therefore keep the existing behavior.
 
 `RefreshTarget` is one of `"CurrentScreen"`, `{"Screen":{"screen":string}}`,
 `"AllScreens"`, `"TreeStatus"`, or `"Chip"`. An action's `refresh` list defaults

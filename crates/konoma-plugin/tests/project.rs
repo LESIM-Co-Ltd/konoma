@@ -493,8 +493,28 @@ mod wire {
 
     #[test]
     fn project_text_input_round_trip() {
-        let i = TextInput::new(t!(en: "Message", ja: "メッセージ"), "initial text");
+        let i =
+            TextInput::new(t!(en: "Message", ja: "メッセージ"), "initial text").keep_on_failure();
+        assert!(i.keep_on_failure);
         assert_eq!(text_input_from_wire(bytes(&text_input_to_wire(&i))), i);
+        let m = manifest().action(Act::new("edit").text_input(i));
+        let json = konoma_plugin::proc::manifest_to_json(&m).unwrap();
+        assert_eq!(
+            konoma_plugin::proc::manifest_from_json(&json)
+                .unwrap()
+                .actions,
+            m.actions
+        );
+    }
+
+    #[test]
+    fn project_text_input_older_child_does_not_keep_on_failure() {
+        let input = TextInput::new("Message", "seed");
+        assert!(!input.keep_on_failure);
+        let json = serde_json::to_value(text_input_to_wire(&input)).unwrap();
+        assert!(json.get("keep_on_failure").is_none());
+        let old: WTextInput = serde_json::from_value(json).unwrap();
+        assert_eq!(text_input_from_wire(bytes(&old)), input);
     }
 
     #[test]

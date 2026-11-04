@@ -7,6 +7,11 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub act_failures: usize,
+    pub act_error: Option<Failure>,
+    pub act_panic: bool,
+    pub watch_failure_after_act: bool,
+    pub view_failure_after_act: bool,
     pub row_name: Option<String>,
     pub prompt_default: Option<bool>,
     pub prompt_value: Option<toml::Value>,
@@ -95,6 +100,23 @@ impl Plugin for Screens {
             .shows(ViewKind::Text)
             .shows(ViewKind::Diff)
             .shows(ViewKind::Document)
+            .action(
+                action("retry-refresh", "ctrl-F7", on())
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure())
+                    .refresh(RefreshTarget::CurrentScreen),
+            )
+            .action(
+                action("retry-input", "ctrl-F5", on())
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure()),
+            )
+            .action(
+                action("retry-confirmed", "ctrl-F6", on())
+                    .confirmation(Confirmation::new(
+                        "Confirm retry?",
+                        vec![ConfirmChoice::new('y', "yes", "Yes")],
+                    ))
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure()),
+            )
             .setting(SettingDecl::new(
                 "confirm_sync",
                 Value::Bool(self.log.lock().unwrap().prompt_default.unwrap_or(true)),
@@ -247,6 +269,9 @@ impl Session for ScreenSession {
     fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
         let mut log = self.log.lock().unwrap();
         log.watch_threads.push(std::thread::current().id());
+        if log.watch_failure_after_act && !log.acts.is_empty() {
+            return Err(Failure::external("project watch failed"));
+        }
         Ok(log.watch_paths.clone())
     }
 
@@ -301,6 +326,9 @@ impl Session for ScreenSession {
         let mut log = self.log.lock().unwrap();
         log.views.push(project.clone());
         log.threads.push(std::thread::current().id());
+        if log.view_failure_after_act && !log.acts.is_empty() {
+            return Err(Failure::external("project refresh failed"));
+        }
         let hold = if log
             .view_hold
             .as_ref()
@@ -409,7 +437,24 @@ impl Session for ScreenSession {
         if let Some(hold) = &self.hold {
             hold.wait();
         }
+        let mut log = self.log.lock().unwrap();
+        if log.act_panic {
+            drop(log);
+            panic!("project action panic");
+        }
+        if log.act_failures > 0 {
+            log.act_failures -= 1;
+            return Err(log
+                .act_error
+                .clone()
+                .unwrap_or_else(|| Failure::external("project action failed")));
+        }
+        let retry_outcome = log.outcome.clone();
+        drop(log);
         Ok(match action {
+            "retry-input" | "retry-confirmed" | "retry-refresh" => {
+                retry_outcome.unwrap_or(Outcome::Unhandled)
+            }
             "push" => Outcome::PushScreen {
                 screen: "text".into(),
                 selection: context.selected.as_ref().map(|row| row.value.clone()),

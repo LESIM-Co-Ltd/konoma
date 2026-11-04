@@ -388,6 +388,8 @@ impl Confirmation {
 pub struct TextInput {
     pub label: Tr,
     pub initial: String,
+    /// Reopen this prompt with the submitted text if the action fails and focus is unchanged.
+    pub keep_on_failure: bool,
 }
 
 impl TextInput {
@@ -395,7 +397,13 @@ impl TextInput {
         Self {
             label: label.into(),
             initial: initial.into(),
+            keep_on_failure: false,
         }
+    }
+
+    pub fn keep_on_failure(mut self) -> Self {
+        self.keep_on_failure = true;
+        self
     }
 }
 
