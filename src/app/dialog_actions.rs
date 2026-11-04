@@ -7,6 +7,15 @@ impl App {
         let Some(dialog) = self.project_dialog.take() else {
             return;
         };
+        if matches!(
+            &dialog,
+            ProjectDialog::Act { prompts, stage, .. }
+                if matches!(prompts[*stage], ProjectPrompt::Confirmation(_))
+        ) && matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc)
+        {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
+            return;
+        }
         if key.code == KeyCode::Esc {
             return;
         }
@@ -44,10 +53,20 @@ impl App {
                 match &prompts[stage] {
                     ProjectPrompt::Confirmation(prompt) => {
                         let choice = match key.code {
-                            KeyCode::Char(c) => {
-                                prompt.choices.iter().find(|choice| choice.key == c)
-                            }
-                            KeyCode::Enter => prompt.choices.first(),
+                            KeyCode::Char(c) => prompt
+                                .choices
+                                .iter()
+                                .find(|choice| choice.key == c)
+                                .or_else(|| {
+                                    if c.is_ascii_uppercase() {
+                                        prompt
+                                            .choices
+                                            .iter()
+                                            .find(|choice| choice.key == c.to_ascii_lowercase())
+                                    } else {
+                                        None
+                                    }
+                                }),
                             _ => None,
                         };
                         if let Some(choice) = choice {

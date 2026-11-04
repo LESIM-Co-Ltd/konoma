@@ -658,6 +658,7 @@ pub enum Msg {
     ProjectMark,
     ProjectChoose,
     ProjectDialogKeys,
+    ProjectConfirmCancel,
     PluginsHead,
     PluginKeyUnknownAction,
     PluginKeyBad,
@@ -1710,6 +1711,7 @@ fn en(msg: Msg) -> &'static str {
         ProjectMark => "Toggle the selected row's mark",
         ProjectChoose => "Choose a project",
         ProjectDialogKeys => "Enter:choose  Esc:cancel",
+        ProjectConfirmCancel => "n / Esc = cancel",
         PluginsHead => CoreMsg::PluginsHead.en(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.en(),
         PluginKeyBad => CoreMsg::PluginKeyBad.en(),
@@ -2565,6 +2567,7 @@ fn jp(msg: Msg) -> &'static str {
         ProjectMark => "選択行のマークを切り替える",
         ProjectChoose => "プロジェクトを選択",
         ProjectDialogKeys => "Enter:選択  Esc:キャンセル",
+        ProjectConfirmCancel => "n / Esc = 取消",
         PluginsHead => CoreMsg::PluginsHead.ja(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.ja(),
         PluginKeyBad => CoreMsg::PluginKeyBad.ja(),
@@ -3209,6 +3212,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_confirmation_cancel_hint_en() {
+        assert_eq!(tr(Lang::En, Msg::ProjectConfirmCancel), "n / Esc = cancel");
+    }
+
+    #[test]
+    fn project_confirmation_cancel_hint_ja() {
+        assert_eq!(tr(Lang::Jp, Msg::ProjectConfirmCancel), "n / Esc = 取消");
+    }
+
+    #[test]
     fn parse_defaults_to_en() {
         assert_eq!(Lang::parse(""), Lang::En);
         assert_eq!(Lang::parse("en"), Lang::En);
@@ -3770,6 +3783,7 @@ mod tests {
         Msg::ProjectMark,
         Msg::ProjectChoose,
         Msg::ProjectDialogKeys,
+        Msg::ProjectConfirmCancel,
         Msg::PluginsHead,
         Msg::PluginKeyUnknownAction,
         Msg::PluginKeyBad,

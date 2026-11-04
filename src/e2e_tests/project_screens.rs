@@ -3,6 +3,9 @@
 #[path = "project_scroll.rs"]
 mod scroll;
 
+#[path = "project_confirmations.rs"]
+mod confirmations;
+
 use super::*;
 use crate::plugins::test_plugins::{self, Latch};
 use crate::plugins::test_projects::{ProjectLog, Screens, ViewHold};
@@ -2000,27 +2003,53 @@ fn e2e_project_choice_input_returns_value_not_label() {
 }
 
 macro_rules! cancel_dialog {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr, $flash:expr) => {
         #[test]
         fn $name() {
-            let mut f = fixture(stringify!($name), false, 1, None, None, None);
-            open(&mut f);
-            f.sim.press(KeyCode::F($key), KeyModifiers::NONE);
-            drain(&mut f.sim);
-            assert!(f.sim.app.project_dialog.is_some());
-            f.sim.esc();
-            drain(&mut f.sim);
-            assert!(f.sim.app.project_dialog.is_none());
-            assert!(f.log.lock().unwrap().acts.is_empty());
-            f.sim.key('x');
-            drain(&mut f.sim);
-            assert_eq!(last_act(&f).0, "capture");
+            for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+                let mut f = fixture(
+                    &format!("{}_{lang:?}", stringify!($name)),
+                    false,
+                    1,
+                    None,
+                    None,
+                    None,
+                );
+                f.sim.app.lang = lang;
+                open(&mut f);
+                f.sim.press(KeyCode::F($key), KeyModifiers::NONE);
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_some());
+                f.sim.esc();
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_none());
+                assert!(f.log.lock().unwrap().acts.is_empty());
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    $flash.map(|msg| crate::i18n::tr(lang, msg))
+                );
+                f.sim.key('x');
+                drain(&mut f.sim);
+                assert_eq!(last_act(&f).0, "capture");
+            }
         }
     };
 }
-cancel_dialog!(e2e_project_confirmation_esc_runs_nothing, 2);
-cancel_dialog!(e2e_project_text_input_esc_runs_nothing, 3);
-cancel_dialog!(e2e_project_choice_input_esc_runs_nothing, 4);
+cancel_dialog!(
+    e2e_project_confirmation_esc_runs_nothing,
+    2,
+    Some(crate::i18n::Msg::Canceled)
+);
+cancel_dialog!(
+    e2e_project_text_input_esc_runs_nothing,
+    3,
+    None::<crate::i18n::Msg>
+);
+cancel_dialog!(
+    e2e_project_choice_input_esc_runs_nothing,
+    4,
+    None::<crate::i18n::Msg>
+);
 
 macro_rules! refresh {
     ($name:ident, $key:expr, $screens:expr, $tree:expr, $chip:expr, $watch:expr) => {
@@ -2195,6 +2224,8 @@ fn e2e_project_multiple_matches_open_choice_menu_and_esc_cancels() {
     f.sim.esc();
     assert!(f.sim.app.project_dialog.is_none());
     assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.flash, None);
+    assert!(f.log.lock().unwrap().acts.is_empty());
     f.sim.key('p');
     f.sim.key('j');
     f.sim.enter();
