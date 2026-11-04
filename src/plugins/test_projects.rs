@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub watch_paths: Option<Vec<std::path::PathBuf>>,
+    pub watch_threads: Vec<std::thread::ThreadId>,
     pub chip: Option<Chip>,
     pub chips: usize,
     pub chip_failure: bool,
@@ -73,6 +75,8 @@ impl Plugin for Screens {
                     .marker(DetectionMarker::new("*.screen-project", MarkerKind::File))
                     .screen(
                         ProjectScreen::new("items", "Items")
+                            .marks(true)
+                            .checks(true)
                             .key('i')
                             .row_kind("item")
                             .row_kind("other"),
@@ -147,6 +151,16 @@ impl Plugin for Screens {
             .action(action("all", "F8", on()).refresh(RefreshTarget::AllScreens))
             .action(action("tree-status", "F9", on()).refresh(RefreshTarget::TreeStatus))
             .action(action("chip", "F10", on()).refresh(RefreshTarget::Chip))
+            .action(
+                action("current-chip", "F12", on())
+                    .refresh(RefreshTarget::CurrentScreen)
+                    .refresh(RefreshTarget::Chip),
+            )
+            .action(
+                action("tree-chip", "F1", on())
+                    .refresh(RefreshTarget::TreeStatus)
+                    .refresh(RefreshTarget::Chip),
+            )
             .action(action("navigate", "F11", on()));
         if self.read_only {
             m = m.read_only();
@@ -194,6 +208,12 @@ struct ScreenSession {
 }
 
 impl Session for ScreenSession {
+    fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        let mut log = self.log.lock().unwrap();
+        log.watch_threads.push(std::thread::current().id());
+        Ok(log.watch_paths.clone())
+    }
+
     fn chip(&mut self, _: &ViewCx) -> Result<Option<Chip>, Failure> {
         let mut log = self.log.lock().unwrap();
         log.chips += 1;

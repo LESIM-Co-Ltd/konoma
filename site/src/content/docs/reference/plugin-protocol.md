@@ -58,7 +58,8 @@ English is required; missing translations fall back to English.
 ### Project view and action calls (version 2)
 
 `View.req.project` is absent for file previews. For a project it is
-`{ screen: string, selection: string | null }`. `selection` is the opaque value
+`{ screen: string, selection: string | null, tree_root?: Path, open_dir?: Path, home_dir?: Path }`.
+`selection` is the opaque value
 from `PushScreen`; it is kept in the view request because screens can change
 within one open project session. The SDK builds it with
 `ViewReq::new(cols, rows).project(ProjectView::new(screen).selection(value))`.
@@ -84,13 +85,50 @@ Use `ActCx::with_project(ProjectAct::new()...)` to attach this data.
 
 ## Project declaration (version 2)
 
+### Screen presentation and path context
+
+`ProjectScreen.marks(bool)` and `.checks(bool)` reserve fixed multi-selection
+and check columns. Both default to false (omitted on the wire). Row data never
+changes the column width; a missing check state reserves four blank cells.
+Row `kind` is action metadata and is never rendered. `ListRow::selectable(false)`
+represents a non-interactive message or heading, without selection reversal,
+marks or actions. For an empty list, return a styled non-selectable row whose
+text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
+
+`ProjectView` carries optional absolute `tree_root`, `open_dir` and `home_dir`.
+The current tree root may differ from the detected root in `Input::Project`;
+`open_dir` is the tab's launch directory. The host passes these on every request
+and invalidates cached views when their path context changes. Older peers may
+omit them. Display preferences remain plugin settings: Git and jj declare
+`[plugins.git]` / `[plugins.jj] path_style = "relative" | "home" | "full"`.
+Without an override, the host uses its existing path display setting.
+
+### Session watch paths
+
+`Session::watch_paths(&ViewCx) -> Result<Option<Vec<PathBuf>>, Failure>` returns
+absolute paths. `None` uses the declaration's root-relative `watch_paths`;
+`Some(vec![])` watches no data paths. The host calls on the session owner worker
+after opening and after invalidation, and updates watches on its notification
+worker. Notifications and chip refreshes use the effective paths. Linked Git
+worktrees include the resolved gitdir and shared metadata directory, even outside
+the project root; replacing a gitdir file causes paths to be resolved again.
+
+Protocol-2 children advertise `session_watch: true` in the handshake manifest.
+The call is `WatchPaths { sid, rid, cx }`; the reply is
+`WatchPaths { paths: Path[] | null, state }`. Paths must be absolute; the host
+accepts at most 512. Without the capability, the client returns `None` locally
+and sends no unknown request to an old child. Ordinary protocol-1 data and
+default-valued fields retain their bytes.
+
+### Static declaration
+
 `Manifest.project` is optional and independent of file bindings and the existing
 `screens: string[]` key contexts. Its shape is:
 
 ```text
 ProjectDecl {
   markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
-  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[] }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean }],
   chip: Tr | null,
   watch_paths: Path[],
   version_control: boolean
@@ -182,8 +220,8 @@ Until project navigation is implemented in standalone apps, its five outcomes sh
 unsupported-action notice. A version refusal reports the manifest's actual supported
 versions; a panic while reading the manifest produces a refusal instead of an abrupt EOF.
 
-This stage declares dialogs only. Host dialogs, prompt answers, project screen
-rendering and the single write guard are attached in a later change.
+The host renders project screens and dialogs, passes prompt answers, and applies
+the shared write guard before dispatching actions on the project worker.
 
 ## Lists and navigation (version 2)
 
@@ -211,8 +249,8 @@ Diff views retain their existing hunks and lines without a new encoding.
 
 Navigation paths must be absolute, have no NUL bytes and fit the existing path
 limit. The host's **`q` pops one screen**; it is host behavior, not another plugin
-outcome or an action that bypasses the guard. Navigation is declared and
-transported here; the host attaches its behavior in the subsequent stage.
+outcome or an action that bypasses the guard. The host applies navigation after
+the worker returns the outcome.
 
 The checked examples live in
 `crates/konoma-plugin-test/tests/vectors/project-v2.json`, `project-calls-v2.msgpack.hex` and

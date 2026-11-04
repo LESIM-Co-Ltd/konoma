@@ -1749,6 +1749,7 @@ dependencies = [
  "konoma-svg",
  "konoma-table",
  "konoma-test-support",
+ "konoma-vcs",
  "konoma-vcs-core",
  "konoma-widgets",
  "libc",
@@ -2053,6 +2054,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-vcs"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-test-support",
+ "konoma-vcs-core",
+]
+
+[[package]]
 name = "konoma-vcs-core"
 version = "0.1.0"
 dependencies = [
@@ -2061,7 +2071,6 @@ dependencies = [
  "ignore",
  "konoma-base",
  "konoma-test-support",
- "ratatui",
  "similar",
 ]
 

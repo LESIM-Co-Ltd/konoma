@@ -11,8 +11,10 @@ use konoma_plugin::{
 };
 
 use super::project_screens::{ProjectContent, ProjectEffect, ProjectKey, ScreenKey};
+use super::PathStyle;
 
 pub(super) enum ProjectJob {
+    Watch,
     Chip,
     View {
         key: ScreenKey,
@@ -23,35 +25,43 @@ pub(super) enum ProjectJob {
         context: konoma_plugin::project::ProjectAct,
         refresh: Vec<(ScreenKey, ViewReq)>,
         chip: bool,
+        watch: bool,
         effect: Box<ProjectEffect>,
     },
 }
 
 pub(super) struct ProjectReply {
+    pub watch_paths: Option<Vec<PathBuf>>,
     pub views: Vec<(ScreenKey, Arc<ProjectContent>)>,
     pub enabled: HashMap<String, bool>,
     pub chip: Option<Option<Chip>>,
     pub chip_error: Option<Failure>,
     pub effect: Option<ProjectEffect>,
     pub error: Option<Failure>,
+    pub contexts: HashMap<ScreenKey, ProjectView>,
 }
 
 impl ProjectReply {
     fn empty() -> Self {
         Self {
+            watch_paths: None,
             views: Vec::new(),
             enabled: HashMap::new(),
             chip: None,
             chip_error: None,
             effect: None,
             error: None,
+            contexts: HashMap::new(),
         }
     }
 }
 
 pub(crate) struct ProjectRuntime {
+    pub(super) watch_paths: Option<Vec<PathBuf>>,
+    pub(super) refresh_watch: bool,
     pub(crate) project: crate::plugins::projects::MatchedProject,
     pub(super) views: HashMap<ScreenKey, Arc<ProjectContent>>,
+    pub(super) contexts: HashMap<ScreenKey, ProjectView>,
     pub(super) enabled: HashMap<String, bool>,
     pub(super) chip: Option<Chip>,
     pub(super) chip_dirty: bool,
@@ -87,6 +97,7 @@ impl ProjectRuntime {
         let (results, rx) = mpsc::sync_channel(1);
         let root = project.root.clone();
         let marker = project.marker.clone();
+        let declaration = project.declaration.clone();
         let chip = project
             .declaration
             .chip
@@ -103,7 +114,10 @@ impl ProjectRuntime {
             );
             let open = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.open(
-                    Input::Project { root, marker },
+                    Input::Project {
+                        root: root.clone(),
+                        marker,
+                    },
                     &OpenCx::new(&settings, &lang)
                         .with_term(term)
                         .with_read_scope(scope.clone()),
@@ -131,6 +145,16 @@ impl ProjectRuntime {
             let cx = ViewCx::new(&settings, &lang)
                 .with_term(term)
                 .with_read_scope(scope.clone());
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                session.watch_paths(&cx)
+            })) {
+                Ok(Ok(paths)) => match resolved_watch_paths(paths, &root, &declaration) {
+                    Ok(paths) => initial.watch_paths = Some(paths),
+                    Err(error) => initial.error = Some(error),
+                },
+                Ok(Err(error)) => initial.error = Some(error),
+                Err(_) => initial.error = Some(Failure::external(Tr::new(panic_message.clone()))),
+            }
             refresh_chip(
                 &mut initial,
                 session.as_mut(),
@@ -156,6 +180,20 @@ impl ProjectRuntime {
                         .with_read_scope(scope.clone());
                     let mut reply = ProjectReply::empty();
                     match job {
+                        ProjectJob::Watch => {
+                            reply.watch_paths = Some(resolved_watch_paths(
+                                session.watch_paths(&cx)?,
+                                &root,
+                                &declaration,
+                            )?);
+                            refresh_chip(
+                                &mut reply,
+                                session.as_mut(),
+                                &cx,
+                                &fallback,
+                                &panic_message,
+                            );
+                        }
                         ProjectJob::Chip => {
                             refresh_chip(
                                 &mut reply,
@@ -166,6 +204,9 @@ impl ProjectRuntime {
                             );
                         }
                         ProjectJob::View { key, req } => {
+                            if let Some(context) = &req.project {
+                                reply.contexts.insert(key.clone(), context.clone());
+                            }
                             reply.views.push((
                                 key,
                                 Arc::new(content(
@@ -182,6 +223,7 @@ impl ProjectRuntime {
                             context,
                             refresh,
                             chip,
+                            watch,
                             mut effect,
                         } => {
                             let cx_act = ActCx::new(&settings, &lang)
@@ -195,7 +237,17 @@ impl ProjectRuntime {
                             )?;
                             effect.outcome = Some(outcome);
                             reply.effect = Some(*effect);
+                            if watch {
+                                reply.watch_paths = Some(resolved_watch_paths(
+                                    session.watch_paths(&cx)?,
+                                    &root,
+                                    &declaration,
+                                )?);
+                            }
                             for (key, req) in refresh {
+                                if let Some(context) = &req.project {
+                                    reply.contexts.insert(key.clone(), context.clone());
+                                }
                                 match session
                                     .view(&req, &cx)
                                     .and_then(|view| content(view, &req, &scope, &theme, &lang))
@@ -237,8 +289,11 @@ impl ProjectRuntime {
             }
         });
         Self {
+            watch_paths: None,
+            refresh_watch: false,
             project,
             views: HashMap::new(),
+            contexts: HashMap::new(),
             enabled: HashMap::new(),
             chip,
             chip_dirty: false,
@@ -255,6 +310,28 @@ impl ProjectRuntime {
             invalidated: false,
         }
     }
+}
+
+fn resolved_watch_paths(
+    paths: Option<Vec<PathBuf>>,
+    root: &std::path::Path,
+    declaration: &konoma_plugin::ProjectDecl,
+) -> Result<Vec<PathBuf>, Failure> {
+    let mut paths = paths.unwrap_or_else(|| {
+        declaration
+            .watch_paths
+            .iter()
+            .map(|p| root.join(p))
+            .collect()
+    });
+    if paths.len() > 512 || paths.iter().any(|p| !p.is_absolute()) {
+        return Err(Failure::unsupported(
+            konoma_plugin::t!(en: "Invalid project watch paths", ja: "プロジェクトの監視パスが不正です"),
+        ));
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn refresh_chip(
@@ -390,7 +467,9 @@ fn content(
 
 impl super::App {
     pub(super) fn project_request(&self, key: &ScreenKey) -> ViewReq {
-        let mut project = ProjectView::new(&key.screen);
+        let mut project = ProjectView::new(&key.screen)
+            .paths(&self.tab.root, &self.tab.open_dir)
+            .home_dir(crate::plugins::read_scope::home_dir());
         if let Some(selection) = &key.selection {
             project = project.selection(selection);
         }
@@ -417,6 +496,20 @@ impl super::App {
         let Some(plugin) = registry.plugin(&project.plugin) else {
             return;
         };
+        let mut settings = crate::plugins::effective_settings(&self.cfg, &project.plugin);
+        if settings.get("path_style").is_none() {
+            settings.set(
+                "path_style",
+                konoma_plugin::Value::Str(
+                    match self.path_style {
+                        PathStyle::Relative => "relative",
+                        PathStyle::Home => "home",
+                        PathStyle::Full => "full",
+                    }
+                    .into(),
+                ),
+            );
+        }
         let runtime = ProjectRuntime::start(
             project.clone(),
             plugin,
@@ -424,7 +517,7 @@ impl super::App {
                 .manifest(&project.plugin)
                 .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
                 .unwrap_or_default(),
-            crate::plugins::effective_settings(&self.cfg, &project.plugin),
+            settings,
             self.plugin_lang().into(),
             self.cfg.ui.theme.code_theme.clone(),
             TermCaps::new().colors(self.plugin_colors),
@@ -438,109 +531,5 @@ impl super::App {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use konoma_plugin::proc::{
-        client::{Config, ProcPlugin, Spawned},
-        frame,
-        proto::{Answer, FromChild, Hello, HelloReply, Reply, ToChild, WState},
-        wire::{layout_to_wire, manifest_to_wire},
-    };
-    use konoma_plugin::{Manifest, ProjectDecl};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
-    #[test]
-    fn project_chip_old_child_uses_localized_declaration_without_unknown_call() {
-        let dir = crate::test_support::unique_tmp("konoma_project_chip_old_child");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("side")).unwrap();
-        let declaration = ProjectDecl::new().chip(Tr::new("declared chip").ja("宣言チップ"));
-        let manifest = Manifest::new("old-project", "1").project(declaration.clone());
-        let (host, mut child) = UnixStream::pair().unwrap();
-        let peer = std::thread::spawn(move || {
-            let _: Hello = frame::recv(&mut child).unwrap().unwrap();
-            let mut manifest = manifest_to_wire(&manifest).unwrap();
-            manifest.session_chip = false;
-            frame::send(
-                &mut child,
-                &HelloReply::Ack {
-                    version: 2,
-                    manifest,
-                },
-            )
-            .unwrap();
-            let ToChild::Open { rid, .. } = frame::recv(&mut child).unwrap().unwrap() else {
-                panic!("expected project open");
-            };
-            frame::send(
-                &mut child,
-                &FromChild {
-                    rid,
-                    answer: Answer::Ok(Reply::Opened {
-                        state: WState {
-                            layout: layout_to_wire(&konoma_plugin::view::Layout::single()),
-                            enabled: Vec::new(),
-                        },
-                    }),
-                },
-            )
-            .unwrap();
-            loop {
-                match frame::recv::<_, ToChild>(&mut child).unwrap() {
-                    Some(ToChild::Close { .. }) => {}
-                    Some(ToChild::Shutdown) | None => break,
-                    other => panic!("old child received unknown call: {other:?}"),
-                }
-            }
-        });
-        let connection = Arc::new(std::sync::Mutex::new(Some(host)));
-        let plugin = Arc::new(
-            ProcPlugin::start(
-                move || {
-                    let host = connection.lock().unwrap().take().expect("one launch");
-                    let kill = host.try_clone()?;
-                    Ok(Spawned {
-                        reader: Box::new(host.try_clone()?),
-                        writer: Box::new(host),
-                        stderr: None,
-                        pid: None,
-                        kill: Box::new(move || {
-                            let _ = kill.shutdown(std::net::Shutdown::Both);
-                        }),
-                    })
-                },
-                Config {
-                    scratch_root: dir.join("side"),
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        );
-        let runtime = ProjectRuntime::start(
-            crate::plugins::projects::MatchedProject {
-                plugin: "old-project".into(),
-                root: dir.to_path_buf(),
-                marker: "project".into(),
-                declaration,
-            },
-            plugin.clone(),
-            Vec::new(),
-            Settings::empty().clone(),
-            "ja".into(),
-            String::new(),
-            TermCaps::new(),
-            None,
-            false,
-            None,
-            "worker failed".into(),
-        );
-        let reply = runtime.rx.recv_timeout(Duration::from_secs(20)).unwrap();
-        assert!(reply.error.is_none());
-        assert!(reply.chip_error.is_none());
-        assert_eq!(reply.chip.unwrap().unwrap().text.plain(), "宣言チップ");
-        drop(runtime);
-        plugin.stop();
-        peer.join().unwrap();
-    }
-}
+#[path = "project_worker_tests.rs"]
+mod tests;

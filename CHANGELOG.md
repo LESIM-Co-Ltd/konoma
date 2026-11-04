@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: begin moving Git and jj changes screens into `konoma-vcs`, exercised alongside the legacy hub in tests; there is no user-visible change.
+
 ### Added
 
 - Project input received during a view fetch is retained for the current screen and dispatched
@@ -158,6 +160,7 @@ All notable changes to konoma are documented in this file. The format is based o
 - **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
 
 ### Changed
+- Internal: the git/jj reading core (`konoma-vcs-core`) no longer depends on ratatui; it describes graph colors with its own small types and the host converts them when drawing. No user-visible change.
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
   new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches

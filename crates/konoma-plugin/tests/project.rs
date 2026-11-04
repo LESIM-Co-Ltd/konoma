@@ -8,6 +8,8 @@ use std::sync::Arc;
 mod chip;
 #[path = "project/host_api.rs"]
 mod host_api;
+#[path = "project/presentation.rs"]
+mod presentation;
 #[path = "project/review.rs"]
 mod review;
 

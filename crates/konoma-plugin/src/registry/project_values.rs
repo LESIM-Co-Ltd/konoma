@@ -38,7 +38,10 @@ pub(super) fn problem(m: &Manifest) -> Option<ManifestReason> {
         }
         for screen in &p.screens {
             if let Some(key) = screen.key {
-                if key.is_control() || reserved("list").iter().any(|(k, _)| *k == KeySpec::ch(key))
+                // `p` is the project entry key. Within a project the host handles screen
+                // jumps before verbs, so it may also return to the changes screen.
+                if key.is_control()
+                    || (key != 'p' && reserved("list").iter().any(|(k, _)| *k == KeySpec::ch(key)))
                 {
                     return Some(ManifestReason::InvalidScreenKey {
                         key: key.escape_default().to_string(),

@@ -237,7 +237,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 match status {
                     Some(st) => spans.push(Span::styled(
                         format!("{} ", st.marker()),
-                        Style::new().fg(st.color()),
+                        Style::new().fg(super::git::vcs_color(st.color())),
                     )),
                     None => spans.push(Span::from("  ")),
                 }
@@ -253,7 +253,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             // Name color priority: git status color > ignored (dimmed) > default color (follows theme).
             let name_style = if let Some(st) = status {
-                Style::new().fg(st.color())
+                Style::new().fg(super::git::vcs_color(st.color()))
             } else if ignored {
                 dim
             } else {

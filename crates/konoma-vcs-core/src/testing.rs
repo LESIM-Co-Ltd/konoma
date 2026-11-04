@@ -3,6 +3,33 @@
 
 use std::cell::Cell;
 
+/// A deterministic DAG for comparing the host's graph cells across style representations.
+#[cfg(feature = "git")]
+pub fn graph_style_fixture(vcs: crate::vcs::VcsKind, worktree: bool) -> Vec<crate::git::GraphRow> {
+    let commit = |id: &str, parents: &[&str], refs: &str| crate::git::DagCommit {
+        id: id.into(),
+        parents: parents.iter().map(|s| s.to_string()).collect(),
+        short: id.into(),
+        subject: id.into(),
+        author: "a".into(),
+        date: "d".into(),
+        refs: refs.into(),
+        kind: None,
+    };
+    let commits = [
+        commit("M", &["B", "F"], "HEAD -> feature"),
+        commit("B", &["R"], "base"),
+        commit("F", &["R"], "topic"),
+        commit("R", &[], ""),
+    ];
+    crate::git::lay_out_lanes(
+        &commits,
+        worktree.then_some("B"),
+        worktree.then(|| ("Uncommitted changes".into(), "1 staged".into())),
+        vcs,
+    )
+}
+
 thread_local! {
     /// How many times `vcs::base_contents` ran **on this thread** — the call this measures is a
     /// real backend invocation (a `jj log` + `jj file show` subprocess pair under jj, ~20-25ms), so

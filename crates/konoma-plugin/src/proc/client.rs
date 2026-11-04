@@ -280,6 +280,7 @@ struct SessionState {
 }
 
 enum Done {
+    WatchPaths(Option<Vec<std::path::PathBuf>>, SessionState),
     Chip(Option<crate::Chip>, SessionState),
     Opened(SessionState),
     Viewed(View, SessionState),
@@ -319,6 +320,7 @@ impl State {
 struct Shared {
     version: AtomicU32,
     session_chip: AtomicBool,
+    session_watch: AtomicBool,
     limits: Limits,
     side: Side,
     side_dir: PathBuf,
@@ -717,6 +719,20 @@ fn read_loop(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
 fn convert(shared: &Shared, answer: Answer) -> CallResult {
     let mut dec = Dec::with_total_max(&shared.side, wire::SIDE_TOTAL_MAX_FROM_CHILD);
     match answer {
+        Answer::Ok(Reply::WatchPaths { paths, state }) => {
+            wire::require_protocol(shared.version.load(Ordering::Acquire), 2)?;
+            Ok(Done::WatchPaths(
+                paths
+                    .map(|paths| {
+                        paths
+                            .into_iter()
+                            .map(|p| wire::abs_path_from_wire(p, "watch path"))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?,
+                state_from_wire(state),
+            ))
+        }
         Answer::Ok(Reply::Chip { chip, state }) => {
             wire::require_protocol(shared.version.load(Ordering::Acquire), 2)?;
             Ok(Done::Chip(
@@ -979,6 +995,7 @@ fn connect(
     let shared = Arc::new(Shared {
         version: AtomicU32::new(1),
         session_chip: AtomicBool::new(false),
+        session_watch: AtomicBool::new(false),
         limits: cfg.limits.clone(),
         side: Side::new(&side_dir, 'h'),
         side_dir: side_dir.clone(),
@@ -1111,6 +1128,10 @@ fn connect(
                 return Err(abort("its manifest protocol", e.to_string()));
             }
             shared.version.store(version, Ordering::Release);
+            shared.session_watch.store(
+                version >= 2 && manifest.session_watch && manifest.project.is_some(),
+                Ordering::Release,
+            );
             shared
                 .session_chip
                 .store(supports_session_chip(version, &manifest), Ordering::Release);
@@ -1554,6 +1575,32 @@ impl ProcSession {
 }
 
 impl Session for ProcSession {
+    fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        if !self.project || !self.shared.session_watch.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let done = self.shared.call(
+            |rid| {
+                Ok((
+                    ToChild::WatchPaths {
+                        sid: self.sid,
+                        rid,
+                        cx: cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?,
+                    },
+                    Vec::new(),
+                ))
+            },
+            self.shared.limits.open_view,
+            &cx.cancel,
+        )?;
+        match done {
+            Done::WatchPaths(paths, state) => {
+                self.state = state;
+                Ok(paths)
+            }
+            _ => Err(self.wrong()),
+        }
+    }
     fn chip(&mut self, cx: &ViewCx) -> Result<Option<crate::Chip>, Failure> {
         if !self.project || !self.shared.session_chip.load(Ordering::Acquire) {
             return Ok(None);

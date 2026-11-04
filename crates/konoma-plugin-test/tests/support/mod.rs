@@ -179,6 +179,9 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
             }
         };
         let (rid, answer) = match msg {
+            ToChild::WatchPaths { .. } => {
+                panic!("fixture does not advertise session_watch")
+            }
             ToChild::Open { rid, input, .. } => {
                 if mode.starts_with("chip") {
                     assert!(

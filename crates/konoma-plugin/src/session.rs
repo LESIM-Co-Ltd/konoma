@@ -50,6 +50,15 @@ impl<P: Plugin + ?Sized> Plugin for Box<P> {
 /// What the user presses while the file is being read again (`R`, a declared action, typing in a
 /// canvas) waits for the new session and goes to it, in order.
 pub trait Session: Send {
+    /// Absolute paths to watch for this project session. `None` (the default) uses the
+    /// declaration's root-relative paths; `Some([])` explicitly watches no data paths.
+    /// The host calls this on the session's owner worker after opening and after invalidation,
+    /// before reading views again. Paths may change, for example when a gitdir file is replaced.
+    /// Old process plugins without the advertised capability return `None` without a call.
+    fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        let _ = cx;
+        Ok(None)
+    }
     /// The representations and pages this content has.
     fn layout(&self) -> Layout {
         Layout::single()
@@ -58,8 +67,10 @@ pub trait Session: Send {
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure>;
     /// The current short summary beside the project's tree title.
     ///
-    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and when a
-    /// declared [`crate::ProjectDecl::watch_paths`] path changes. The host calls this only for
+    /// Host contract: ask on opening a project, on [`crate::RefreshTarget::Chip`], and after
+    /// invalidation by an effective watch path (the session's [`Session::watch_paths`] answer,
+    /// or [`crate::ProjectDecl::watch_paths`] when it returns `None`). After invalidation the host
+    /// asks for watch paths again before the chip. The host calls this only for
     /// a project session of a plugin with a project declaration; file-only plugins are never
     /// called. Host scheduling is implemented separately from this SDK contract.
     ///

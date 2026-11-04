@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use ratatui::style::Color;
+use crate::style::{GraphStyle, VcsColor as Color};
 
 /// Test-only counter of actual `statuses()` invocations, so a speed guard can assert the per-workdir
 /// status cache reuses the result across `h`/`l` instead of re-scanning the whole worktree.
@@ -1503,7 +1503,7 @@ pub fn branch_tip(_root: &Path, _name: &str) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct LegendEntry {
     pub name: String,
-    pub color: ratatui::style::Color,
+    pub color: Color,
     pub is_head: bool,
     pub is_base: bool,
 }
@@ -1517,7 +1517,6 @@ pub fn legend_from_rows(
     root: &Path,
     base_label: Option<&str>,
 ) -> Vec<LegendEntry> {
-    use ratatui::style::Color;
     use std::collections::{HashMap, HashSet};
     let locals = branches(root);
     let local_names: HashSet<&str> = locals.iter().map(|b| b.name.as_str()).collect();
@@ -2437,7 +2436,7 @@ pub enum NodeKind {
 /// `commit` = the commit on that row (Some = commit row / None = connector-only row).
 #[derive(Debug, Clone)]
 pub struct GraphRow {
-    pub graph: Vec<(String, ratatui::style::Style)>,
+    pub graph: Vec<(String, GraphStyle)>,
     /// What this row's node is (None on connector-only rows).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub node: Option<NodeKind>,
@@ -2585,7 +2584,7 @@ fn dag_commits(root: &Path, max: usize, refs: Option<&[String]>) -> Vec<DagCommi
 #[derive(Clone)]
 struct Lane {
     target: String,
-    color: ratatui::style::Color,
+    color: Color,
 }
 
 /// Assigns the DAG to lanes and returns the `GraphRow` sequence connected with angular box-drawing (a pure function = testable).
@@ -2601,8 +2600,6 @@ pub(crate) fn lay_out_lanes(
     wt: Option<(String, String)>,
     vcs: crate::vcs::VcsKind,
 ) -> Vec<GraphRow> {
-    use ratatui::style::Color;
-
     // Uncommitted working-tree changes (a pseudo "Uncommitted changes" row).
     // **Splice it into the DAG as a virtual commit whose parent is HEAD's commit**, so lane
     // assignment automatically places `●` at the head of HEAD's lane and connects it to HEAD with
@@ -2793,7 +2790,6 @@ pub(crate) fn lay_out_lanes(
     // Turn the spliced-in virtual WT row back into the original "Uncommitted changes" pseudo-row:
     // clear commit, set worktree=true, and repaint the node (●) yellow-bold (keeping the lane position).
     if wt.is_some() {
-        use ratatui::style::{Modifier, Style};
         if let Some(r) = rows
             .iter_mut()
             .find(|r| r.node == Some(NodeKind::WorkingCopy))
@@ -2801,9 +2797,10 @@ pub(crate) fn lay_out_lanes(
             r.commit = None;
             r.worktree = true;
             r.short = String::new();
-            let node = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
+            let node = GraphStyle {
+                fg: Some(Color::Yellow),
+                bold: true,
+            };
             if let Some(cell) = r.node_col.and_then(|i| r.graph.get_mut(i)) {
                 cell.1 = node;
             }
@@ -2814,8 +2811,7 @@ pub(crate) fn lay_out_lanes(
     let maxw = rows.iter().map(|r| r.graph.len()).max().unwrap_or(0);
     for r in &mut rows {
         while r.graph.len() < maxw {
-            r.graph
-                .push((" ".to_string(), ratatui::style::Style::default()));
+            r.graph.push((" ".to_string(), GraphStyle::default()));
         }
     }
     rows
@@ -2836,13 +2832,9 @@ fn head_id_of(commits: &[DagCommit]) -> Option<String> {
         .map(|c| c.id.clone())
 }
 
-/// (glyph, color) arrays -> `Vec<(String, Style)>` with trailing blanks trimmed.
+/// (glyph, color) arrays -> styled cells with trailing blanks trimmed.
 #[cfg(feature = "git")]
-fn cells_from(
-    mut glyph: Vec<char>,
-    mut color: Vec<ratatui::style::Color>,
-) -> Vec<(String, ratatui::style::Style)> {
-    use ratatui::style::Style;
+fn cells_from(mut glyph: Vec<char>, mut color: Vec<Color>) -> Vec<(String, GraphStyle)> {
     while glyph.len() > 1 && *glyph.last().unwrap() == ' ' {
         glyph.pop();
         color.pop();
@@ -2850,13 +2842,13 @@ fn cells_from(
     glyph
         .into_iter()
         .zip(color)
-        .map(|(g, c)| (g.to_string(), Style::new().fg(c)))
+        .map(|(g, c)| (g.to_string(), GraphStyle::foreground(c)))
         .collect()
 }
 
 /// A connector-only `GraphRow` (no commit).
 #[cfg(feature = "git")]
-fn connector_row(graph: Vec<(String, ratatui::style::Style)>) -> GraphRow {
+fn connector_row(graph: Vec<(String, GraphStyle)>) -> GraphRow {
     GraphRow {
         graph,
         node: None,
@@ -2912,11 +2904,10 @@ fn glyph_for(mask: u8) -> char {
 fn build_connector(
     active: &[Option<Lane>],
     my_lane: usize,
-    my_color: ratatui::style::Color,
-    endpoints: &[(usize, ratatui::style::Color)],
+    my_color: Color,
+    endpoints: &[(usize, Color)],
     is_fork: bool,
-) -> Vec<(String, ratatui::style::Style)> {
-    use ratatui::style::Color;
+) -> Vec<(String, GraphStyle)> {
     let max_e = endpoints.iter().map(|&(i, _)| i).max().unwrap_or(my_lane);
     let lanes_n = active.len().max(max_e + 1);
     let width = lanes_n.saturating_mul(2).saturating_sub(1).max(1);

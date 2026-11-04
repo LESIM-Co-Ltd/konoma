@@ -154,6 +154,12 @@ fn project_screen_keys_reuse_the_list_reserved_table() {
             continue;
         }
         if let konoma_plugin::keys::KeyName::Char(c) = key.code {
+            if c == 'p' {
+                let mut p = project();
+                p.screens[0].key = Some(c);
+                check(Manifest::new("p", "1").project(p)).unwrap();
+                continue;
+            }
             let mut p = project();
             p.screens[0].key = Some(c);
             // A duplicate key is also refused before the reserved-key check.
