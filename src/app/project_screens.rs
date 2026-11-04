@@ -1085,6 +1085,7 @@ impl App {
         }
         let mut changed = false;
         let mut effects = Vec::new();
+        let mut chip_errors = Vec::new();
         for (key, runtime) in &mut self.project_runtimes {
             while let Some(reply) = runtime
                 .pending
@@ -1115,7 +1116,12 @@ impl App {
                     }
                 }
                 if let Some(chip) = reply.chip {
-                    runtime.chip = chip;
+                    if !runtime.chip_dirty {
+                        runtime.chip = chip;
+                    }
+                }
+                if let Some(error) = reply.chip_error {
+                    chip_errors.push((key.clone(), error));
                 }
                 if runtime.invalidated {
                     runtime.dirty.extend(runtime.views.keys().cloned());
@@ -1143,6 +1149,14 @@ impl App {
                     }
                 }
             }
+            if runtime.chip_dirty
+                && runtime.ready
+                && !runtime.busy
+                && runtime.tx.try_send(ProjectJob::Chip).is_ok()
+            {
+                runtime.chip_dirty = false;
+                runtime.busy = true;
+            }
         }
         for effect in effects {
             if effect.tree_status && self.tab.root.starts_with(&effect.project.root) {
@@ -1166,6 +1180,17 @@ impl App {
             changed = true;
         }
         self.ensure_project_view();
+        for (key, error) in chip_errors {
+            if self
+                .tab
+                .projects
+                .projects
+                .iter()
+                .any(|p| ProjectKey::from(p) == key)
+            {
+                self.flash = Some(error.message.get(self.plugin_lang()).into());
+            }
+        }
         changed
     }
 
@@ -1300,7 +1325,7 @@ impl App {
         })
     }
 
-    pub(crate) fn project_chips(&self) -> Vec<&str> {
+    pub(crate) fn project_chips(&self) -> Vec<Line<'static>> {
         self.tab
             .projects
             .projects
@@ -1309,7 +1334,8 @@ impl App {
                 self.project_runtimes
                     .get(&ProjectKey::from(project))
                     .and_then(|runtime| runtime.chip.as_ref())
-                    .map(|chip| chip.get(self.plugin_lang()))
+                    .map(|chip| konoma_plugin::ratatui_draw::into_line(chip.text.clone()))
+                    .filter(|line| line.width() > 0)
             })
             .collect()
     }
