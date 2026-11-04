@@ -185,6 +185,7 @@ fn render_project(
             tr(app.lang, Msg::ProjectChoose)
         }
         ProjectDialog::Act {
+            invocation,
             prompts,
             stage,
             buffer,
@@ -194,9 +195,8 @@ fn render_project(
         } => match &prompts[*stage] {
             ProjectPrompt::Confirmation(prompt) => {
                 lines.extend(
-                    prompt
-                        .text
-                        .get(lang)
+                    invocation
+                        .confirmation_text(prompt, lang)
                         .lines()
                         .map(|l| Line::raw(l.to_string()).bold()),
                 );

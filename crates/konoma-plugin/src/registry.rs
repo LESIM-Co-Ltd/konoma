@@ -200,6 +200,14 @@ pub enum ManifestReason {
     DestructiveWithoutConfirmation {
         action: String,
     },
+    DestructiveConfirmationSetting {
+        action: String,
+        key: String,
+    },
+    InvalidConfirmationSetting {
+        action: String,
+        key: String,
+    },
     DuplicateScreen {
         screen: String,
     },
@@ -261,6 +269,8 @@ impl fmt::Display for ManifestReason {
             Self::ChoiceValueTooLong { action, limit } => write!(f, "a choice value of action `{action}` exceeds {limit} bytes"),
             Self::ChoiceLabelTooLong { action, limit } => write!(f, "a choice label of action `{action}` exceeds {limit} characters"),
             Self::DestructiveWithoutConfirmation { action } => write!(f, "action `{action}` is destructive but has no confirmation choices"),
+            Self::DestructiveConfirmationSetting { action, key } => write!(f, "destructive action `{action}` cannot use confirmation setting `{key}`"),
+            Self::InvalidConfirmationSetting { action, key } => write!(f, "action `{action}` confirmation setting `{key}` must declare a boolean default"),
             Self::DuplicateScreen { screen } => write!(f, "screen `{screen}` is declared twice"),
             Self::DuplicateScreenKey { key } => write!(f, "screen key `{key}` is declared twice"),
             Self::UnknownScreen { action, screen } => write!(f, "action `{action}` names unknown screen `{screen}`"),
@@ -458,6 +468,24 @@ fn project_problem(m: &Manifest) -> Option<ManifestReason> {
         }
     }
     for a in &m.actions {
+        if let Some(key) = a.confirmation.as_ref().and_then(|c| c.setting.as_ref()) {
+            if a.destructive {
+                return Some(ManifestReason::DestructiveConfirmationSetting {
+                    action: display_name(&a.id),
+                    key: display_name(key),
+                });
+            }
+            if m.settings
+                .iter()
+                .find(|setting| &setting.name == key)
+                .is_none_or(|setting| !matches!(setting.default, Value::Bool(_)))
+            {
+                return Some(ManifestReason::InvalidConfirmationSetting {
+                    action: display_name(&a.id),
+                    key: display_name(key),
+                });
+            }
+        }
         if a.destructive && a.confirmation.as_ref().is_none_or(|c| c.choices.is_empty()) {
             return Some(ManifestReason::DestructiveWithoutConfirmation {
                 action: display_name(&a.id),

@@ -97,6 +97,7 @@ impl ProjectView {
 pub struct ProjectRow {
     pub kind: String,
     pub value: String,
+    pub name: Option<String>,
 }
 
 impl ProjectRow {
@@ -104,13 +105,22 @@ impl ProjectRow {
         Self {
             kind: kind.into(),
             value: value.into(),
+            name: None,
         }
+    }
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
 impl From<&crate::view::ListRow> for ProjectRow {
     fn from(row: &crate::view::ListRow) -> Self {
-        Self::new(&row.kind, &row.value)
+        Self {
+            kind: row.kind.clone(),
+            value: row.value.clone(),
+            name: row.name.clone(),
+        }
     }
 }
 
@@ -354,6 +364,8 @@ impl ConfirmChoice {
 pub struct Confirmation {
     pub text: Tr,
     pub choices: Vec<ConfirmChoice>,
+    /// Boolean plugin setting controlling this prompt. Destructive actions cannot opt out.
+    pub setting: Option<String>,
 }
 
 impl Confirmation {
@@ -361,7 +373,12 @@ impl Confirmation {
         Self {
             text: text.into(),
             choices,
+            setting: None,
         }
+    }
+    pub fn setting(mut self, key: impl Into<String>) -> Self {
+        self.setting = Some(key.into());
+        self
     }
 }
 

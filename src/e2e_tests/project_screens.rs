@@ -69,6 +69,12 @@ fn fixture_with_log(
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = "en".into();
     cfg.external.git = false;
+    if let Some(value) = log.lock().unwrap().prompt_value.clone() {
+        cfg.plugins
+            .entry("project-screens".into())
+            .or_default()
+            .insert("confirm_sync".into(), value);
+    }
     let mut sim = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
     if !file_only {
         sim.app.tab.projects.wait_for_result();
@@ -1194,6 +1200,185 @@ fn e2e_project_confirmation_chooses_the_declared_value() {
     f.sim.key('!');
     drain(&mut f.sim);
     assert_eq!(last_act(&f).1.confirmation.as_deref(), Some("force-value"));
+}
+
+#[test]
+fn e2e_project_confirmation_row_name_uses_invocation_after_cursor_moves() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_name",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim
+        .app
+        .tab
+        .project_navigation
+        .as_mut()
+        .unwrap()
+        .stack
+        .last_mut()
+        .unwrap()
+        .cursor = 2;
+    f.sim.draw();
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim.key('y');
+    drain(&mut f.sim);
+    assert_eq!(
+        last_act(&f).1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_row_value_and_empty_selection() {
+    let mut f = fixture("project_prompt_row_value", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim
+        .see("Discard opaque-alpha? Again opaque-alpha; {other}");
+    f.sim.esc();
+    f.sim.key('/');
+    f.sim.keys("no matching rows");
+    f.sim.enter();
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard ? Again ; {other}");
+}
+
+#[test]
+fn e2e_project_confirmation_row_localized_and_refreshed() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_refresh",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("{row}.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.app.lang = crate::i18n::Lang::Jp;
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("JA {row}.txt / {row}.txt");
+    f.log.lock().unwrap().row_name = Some("changed.txt".into());
+    f.log.lock().unwrap().reverse_rows = true;
+    let views = f.log.lock().unwrap().views.len();
+    f.sim.resize(159, 24);
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.len() > views);
+    f.sim.see("JA {row}.txt / {row}.txt");
+}
+
+fn conditional_confirmation(name: &str, value: Option<toml::Value>, default: bool, asks: bool) {
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: value,
+            prompt_default: Some(default),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::CONTROL);
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_dialog.is_some(), asks);
+    if asks {
+        f.sim.see("Sync project?");
+        assert!(f.log.lock().unwrap().acts.is_empty());
+        f.sim.key('y');
+        drain(&mut f.sim);
+    }
+    assert_eq!(last_act(&f).0, "conditional");
+    assert_eq!(
+        last_act(&f).1.confirmation.as_deref(),
+        asks.then_some("yes")
+    );
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![asks]);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_true_asks() {
+    conditional_confirmation(
+        "project_prompt_true",
+        Some(toml::Value::Boolean(true)),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_runs_act() {
+    conditional_confirmation(
+        "project_prompt_false",
+        Some(toml::Value::Boolean(false)),
+        true,
+        false,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_missing_uses_default() {
+    conditional_confirmation("project_prompt_missing_true", None, true, true);
+    conditional_confirmation("project_prompt_missing_false", None, false, false);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_non_boolean_asks() {
+    conditional_confirmation(
+        "project_prompt_non_boolean",
+        Some(toml::Value::String("false".into())),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_keeps_later_inputs() {
+    let mut f = fixture_with_log(
+        "project_prompt_later_inputs",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: Some(toml::Value::Boolean(false)),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(4), KeyModifiers::CONTROL);
+    f.sim.see("Sync message");
+    f.sim.dont_see("Sync project?");
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.keys(" edit");
+    f.sim.enter();
+    f.sim.see("Sync target");
+    f.sim.enter();
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "conditional-input");
+    assert_eq!(context.confirmation, None);
+    assert_eq!(context.text.as_deref(), Some("seed edit"));
+    assert_eq!(context.choice.as_deref(), Some("all"));
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![false]);
 }
 
 #[test]

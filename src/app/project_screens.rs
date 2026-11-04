@@ -119,6 +119,16 @@ pub(crate) struct ProjectInvocation {
     origin_path: Option<PathBuf>,
 }
 
+impl ProjectInvocation {
+    pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
+        let row = self.context.selected.as_ref();
+        let name = row
+            .map(|row| row.name.as_deref().unwrap_or(&row.value))
+            .unwrap_or("");
+        prompt.text.get(lang).replace("{row}", name)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum ProjectPrompt {
     Confirmation(Confirmation),
@@ -931,6 +941,23 @@ impl App {
         false
     }
 
+    fn project_confirmation_enabled(&self, plugin: &str, prompt: &Confirmation) -> bool {
+        let Some(key) = &prompt.setting else {
+            return true;
+        };
+        let settings = crate::plugins::effective_settings(&self.cfg, plugin);
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        let value = settings.get(key).or_else(|| {
+            registry
+                .manifest(plugin)?
+                .settings
+                .iter()
+                .find(|setting| &setting.name == key)
+                .map(|setting| &setting.default)
+        });
+        !matches!(value, Some(konoma_plugin::Value::Bool(false)))
+    }
+
     pub(crate) fn request_project_act(&mut self, action: PluginAct) -> bool {
         let Some(decl) = self.plugin_keys.declaration(action).cloned() else {
             return false;
@@ -958,7 +985,11 @@ impl App {
             label: decl.label.get(self.plugin_lang()).into(),
         };
         let mut prompts = Vec::new();
-        if let Some(prompt) = &decl.confirmation {
+        if let Some(prompt) = decl
+            .confirmation
+            .as_ref()
+            .filter(|prompt| self.project_confirmation_enabled(action.plugin(), prompt))
+        {
             prompts.push(ProjectPrompt::Confirmation(prompt.clone()));
         }
         if let Some(prompt) = &decl.text_input {
