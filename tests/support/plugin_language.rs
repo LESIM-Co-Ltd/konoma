@@ -4,6 +4,7 @@ pub fn assert_japanese_plugin_prose(label: &str, output: &str) {
     for allowed in [
         "konoma plugin:",
         "command =",
+        "[plugins.<id>]",
         "Fixture author",
         "fixture metadata failure",
         "the source path is neither a regular file nor a symlink to a regular file",
@@ -126,6 +127,14 @@ mod tests {
     #[test]
     fn keeps_an_unmatched_backtick_line_in_the_check() {
         rejects("これは `bad data です");
+    }
+
+    #[test]
+    fn accepts_the_literal_toml_table_in_the_configuration_example() {
+        assert_japanese_plugin_prose(
+            "configuration example",
+            "[plugins.<id>]\n    command = \"/fixture/plugin\"",
+        );
     }
 
     #[test]

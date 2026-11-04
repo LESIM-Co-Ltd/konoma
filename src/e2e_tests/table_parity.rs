@@ -4,7 +4,7 @@
 //! the keys both have (the host also has search, copy, tabs and so on, which the app does not).
 
 use super::*;
-use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys};
+use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent};
 use konoma_plugin::TermCaps;
 use std::sync::Arc;
 
@@ -53,7 +53,10 @@ pub(super) fn default_launch(manifest: &konoma_plugin::Manifest) -> konoma_plugi
 
 /// The rows of a buffer, a wide symbol counted once.
 pub(super) fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
-    let buf = term.backend().buffer();
+    buffer_rows(term.backend().buffer())
+}
+
+pub(super) fn buffer_rows(buf: &ratatui::buffer::Buffer) -> Vec<String> {
     (0..buf.area.height)
         .map(|y| {
             let mut line = String::new();
@@ -103,7 +106,7 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         &mut *opened.session,
         &mut it,
         &cx,
-        &AppKeys::defaults(),
+        super::plugin_act_parity::app_default_keys(),
     )
     .unwrap();
     assert_eq!(
@@ -439,6 +442,11 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
             paged += usize::from(af[0].contains("Two") || af[0].contains("Three"));
         }
     }
+    assert_eq!(
+        checked + skipped + left,
+        909,
+        "every original combination is compared"
+    );
     // The footers really compared (the flash-only ones are counted apart, not here).
     assert!(checked > 880, "{checked}");
     assert!(skipped > 0 && skipped < 30, "{skipped}");
@@ -714,6 +722,7 @@ fn the_table_help_rows_agree_with_the_host() {
     let root = canon(&dir);
     let mut compared = 0;
     let mut seen_rows = std::collections::BTreeSet::new();
+    let mut combinations = 0;
     for file in [
         "plain.csv",
         "cjk.csv",
@@ -724,18 +733,21 @@ fn the_table_help_rows_agree_with_the_host() {
         "three.xlsx",
     ] {
         for (spec, popup_open) in HELP_SPECS {
+            combinations += 1;
             // Whether a popup shows before `?` must match the flag (a table without cells
             // never opens one). The help is compared with the popup open too: the host draws
             // it above the other overlays.
             let before = spec.trim_end_matches('?').trim();
-            let (h0, _s0) = host_rows(&root, file, 70, before);
+            let (h0, mut s) = host_rows(&root, file, 70, before);
             let has_cells = file != "empty.csv";
             assert_eq!(
                 h0.iter().any(|l| l.contains("Cell ·")),
                 *popup_open && has_cells,
                 "{file} [{spec}]: the popup flag is wrong"
             );
-            let (h, _s) = host_rows(&root, file, 70, spec);
+            s.press(KC::Char('?'), KM::NONE);
+            assert!(!s.quit, "the host ended early: {spec}");
+            let h = rows_of(&s.term);
             let a = app_rows(&root.join(file), 69, spec);
             let what = format!("{file} [{spec}]");
             let (py, px) = h
@@ -795,6 +807,7 @@ fn the_table_help_rows_agree_with_the_host() {
             );
         }
     }
+    assert_eq!(combinations, 140, "every original combination is compared");
     assert!(compared > 800, "{compared}");
     assert_all_seen("table HOST_ONLY_ROWS", HOST_ONLY_ROWS, &seen_rows);
 }

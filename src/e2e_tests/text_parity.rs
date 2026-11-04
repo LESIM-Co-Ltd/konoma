@@ -8,12 +8,48 @@
 //! caret and the line highlight, and the same line for `e`. Range selection (`v` `V`) and the
 //! other colors are not compared.
 
+use super::plugin_act_parity::batch;
 use super::table_parity::{hints, panel_lines, presses, rows_of, same_footer, same_help_rows};
 use super::*;
 use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys, Display};
 use konoma_plugin::TermCaps;
 use konoma_test_support::TermScreen as Screen;
 use std::sync::Arc;
+
+pub(super) fn app_text_cases_by(
+    plugin: Arc<dyn konoma_plugin::Plugin>,
+    path: &std::path::Path,
+    wrap: bool,
+    tab_width: usize,
+    (w, h): (u16, u16),
+    specs: &[String],
+) -> std::collections::BTreeMap<String, batch::Frame> {
+    let mut opened = open_file(vec![plugin], path, "en", TermCaps::new()).expect("opens");
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: String::new(),
+        shows: opened.shows.clone(),
+        path: opened.path.clone(),
+        open_dir: opened.path.parent().map(|p| p.to_path_buf()),
+        display: Display {
+            wrap,
+            tab_width,
+            ..Display::default()
+        },
+        launch: Some(super::table_parity::default_launch(&opened.manifest)),
+        converts: opened.manifest.converts,
+        ..AppCx::default()
+    };
+    batch::app_cases(
+        &mut *opened.session,
+        &cx,
+        super::plugin_act_parity::app_default_keys(),
+        (w, h),
+        specs,
+        None,
+    )
+}
 
 /// What the app shows after the presses.
 fn app_text(
@@ -67,14 +103,8 @@ fn app_text_by(
         })
         .collect();
     let mut it = ev.into_iter();
-    run_with(
-        &mut term,
-        &mut *opened.session,
-        &mut it,
-        &cx,
-        &AppKeys::defaults(),
-    )
-    .unwrap();
+    let keys = AppKeys::defaults();
+    run_with(&mut term, &mut *opened.session, &mut it, &cx, &keys).unwrap();
     assert_eq!(it.count(), 0, "the app ended early: {spec}");
     // The screen the updates leave, as the frame the other tests read.
     let mut shown = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -368,6 +398,20 @@ fn check_caret(wrap: bool) {
     let mut at = std::collections::BTreeSet::new();
     for (name, _) in caret_fixtures() {
         for (w, h) in [(60u16, 12u16), (24, 8)] {
+            let active: Vec<_> = specs
+                .iter()
+                .filter(|s| w >= 40 || s.split_whitespace().count() != 2)
+                .cloned()
+                .collect();
+            let hosts = batch::host_cases(host_text(&root, &name, wrap, 4, (w, h), ""), &active);
+            let apps = app_text_cases_by(
+                Arc::new(konoma_code::CodePlugin),
+                &root.join(&name),
+                wrap,
+                4,
+                (w, h - 1),
+                &active,
+            );
             for spec in &specs {
                 // The small terminal takes the longer sequences (the window is a few rows there:
                 // the runs and the starts pass it); the pairs are checked in the larger one.
@@ -375,22 +419,20 @@ fn check_caret(wrap: bool) {
                     continue;
                 }
                 let what = format!("{name} wrap={wrap} {w}x{h} [{spec}]");
-                let host = host_text(&root, &name, wrap, 4, (w, h), spec);
-                let app = app_text(&root.join(&name), wrap, 4, (w, h - 1), spec);
-                let (hr, ar) = (frame_cells(&host.term), frame_cells(&app));
+                let host = &hosts[spec];
+                let app = &apps[spec];
+                assert!(!host.highlight_pending, "{name}: still coloring");
+                let (hr, ar) = (frame_cells(&host.term), frame_cells(&app.term));
                 assert_eq!(
                     hr,
                     ar,
                     "{what}: the frame differs\nhost:\n{}\napp:\n{}",
                     rows_of(&host.term).join("\n"),
-                    rows_of(&app).join("\n")
+                    rows_of(&app.term).join("\n")
                 );
-                let (hc, ac) = (caret_cells(&host.term), caret_cells(&app));
+                let (hc, ac) = (caret_cells(&host.term), caret_cells(&app.term));
                 assert_eq!(hc, ac, "{what}: the caret and its line differ");
-                let (he, ae) = (
-                    host.app.preview_edit_line_for_test(),
-                    konoma_plugin::app::edit_line(),
-                );
+                let (he, ae) = (host.edit, app.edit);
                 assert_eq!(he, ae, "{what}: the line `e` opens differs");
                 checked += 1;
                 carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
@@ -403,6 +445,7 @@ fn check_caret(wrap: bool) {
         }
     }
     // The bounds sit well below what the cases give (the exact counts are not the point).
+    assert_eq!(checked, 7860, "every original combination is compared");
     assert!(checked >= 7000, "{checked}");
     assert!(carets >= 5500, "frames with the caret character: {carets}");
     assert!(lined >= 5500, "frames with the highlighted line: {lined}");
@@ -418,6 +461,51 @@ fn the_caret_agrees_with_the_host_wrapping() {
 #[test]
 fn the_caret_agrees_with_the_host_scrolling_sideways() {
     check_caret(false);
+}
+
+#[test]
+fn batched_text_motions_match_independent_runs() {
+    let dir = sandbox("batched-text-prefixes");
+    let body: String = (0..45)
+        .map(|n| format!("\t日本語 line {n} {}\n", "wide ".repeat(n % 8)))
+        .collect();
+    std::fs::write(dir.join("a.rs"), body).unwrap();
+    let root = canon(&dir);
+    let specs: Vec<String> = [
+        "", "j", "j j", "j k", "G", "G k", "G k k", "$", "$ j", "l l j", "j k",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    for wrap in [true, false] {
+        let hosts = batch::host_cases(host_text(&root, "a.rs", wrap, 4, (24, 8), ""), &specs);
+        let apps = app_text_cases_by(
+            Arc::new(konoma_code::CodePlugin),
+            &root.join("a.rs"),
+            wrap,
+            4,
+            (24, 7),
+            &specs,
+        );
+        for spec in &specs {
+            let h = host_text(&root, "a.rs", wrap, 4, (24, 8), spec);
+            let a = app_text(&root.join("a.rs"), wrap, 4, (24, 7), spec);
+            for (saved, independent) in [(&hosts[spec], &h.term), (&apps[spec], &a)] {
+                assert_eq!(
+                    frame_cells(&saved.term),
+                    frame_cells(independent),
+                    "{wrap} [{spec}]"
+                );
+                assert_eq!(
+                    caret_cells(&saved.term),
+                    caret_cells(independent),
+                    "{wrap} [{spec}]"
+                );
+            }
+            assert_eq!(hosts[spec].edit, h.app.preview_edit_line_for_test());
+            assert_eq!(apps[spec].edit, konoma_plugin::app::edit_line());
+        }
+    }
 }
 
 /// The title is the path relative to the folder the app was opened in, a framed text carries no
@@ -654,35 +742,36 @@ fn the_caret_on_generated_text_agrees_with_the_host() {
             };
             let marker = crate::plugins::test_plugins::register(&name, Arc::new(mk()));
             let root = canon(&dir);
+            let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+            cfg.ui.lang = "en".into();
+            cfg.ui.wrap = wrap;
+            let mut s = Sim::with_config_sized(&root, cfg, 60, 12);
+            s.select("a.gen");
+            s.enter();
+            s.draw();
+            let hosts = batch::host_cases(s, &specs);
+            let apps = app_text_cases_by(
+                Arc::new(mk()),
+                &root.join("a.gen"),
+                wrap,
+                4,
+                (60, 11),
+                &specs,
+            );
             for spec in &specs {
                 let what = format!("owned={owned} file_lines={file_lines} wrap={wrap} [{spec}]");
-                let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
-                cfg.ui.lang = "en".into();
-                cfg.ui.wrap = wrap;
-                let mut s = Sim::with_config_sized(&root, cfg, 60, 12);
-                s.select("a.gen");
-                s.enter();
-                s.draw();
-                for (code, mods) in presses(spec) {
-                    s.press(code, mods);
-                    assert!(!s.quit, "{what}: the host ended early");
-                }
-                s.term.clear().expect("clear");
-                s.draw();
-                let app = app_text_by(Arc::new(mk()), &root.join("a.gen"), wrap, 4, (60, 11), spec);
+                let s = &hosts[spec];
+                let app = &apps[spec];
                 assert_eq!(
                     frame_cells(&s.term),
-                    frame_cells(&app),
+                    frame_cells(&app.term),
                     "{what}: the frame differs\nhost:\n{}\napp:\n{}",
                     rows_of(&s.term).join("\n"),
-                    rows_of(&app).join("\n")
+                    rows_of(&app.term).join("\n")
                 );
-                let (hc, ac) = (caret_cells(&s.term), caret_cells(&app));
+                let (hc, ac) = (caret_cells(&s.term), caret_cells(&app.term));
                 assert_eq!(hc, ac, "{what}: the caret and its line differ");
-                let (he, ae) = (
-                    s.app.preview_edit_line_for_test(),
-                    konoma_plugin::app::edit_line(),
-                );
+                let (he, ae) = (s.edit, app.edit);
                 assert_eq!(he, ae, "{what}: the line `e` opens differs");
                 assert_eq!(he.is_some(), file_lines, "{what}: `e` follows file_lines");
                 carets += usize::from(hc.iter().any(|c| c.2 & 1 != 0));
@@ -692,6 +781,7 @@ fn the_caret_on_generated_text_agrees_with_the_host() {
             }
         }
     }
+    assert_eq!(checked, 1720, "every original combination is compared");
     assert!(checked >= 1700, "{checked}");
     assert!(carets >= 1480, "frames with the caret character: {carets}");
     assert!(some >= 850 && none >= 850, "{some} {none}");

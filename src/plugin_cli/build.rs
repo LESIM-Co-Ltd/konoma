@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn unfinished_substitution_preserves_the_original_cause() {
         for lang in [Lang::En, Lang::Jp] {
-            let cause = anyhow::anyhow!("data {cause} {new} {old} {repair}");
+            let cause = anyhow::anyhow!("{}", "data {cause} {new} {old} {repair}");
             let error =
                 unfinished_lang(&cause, &[STEP_LOCK, STEP_LIST, STEP_PROGRAM], 1, lang).to_string();
             assert!(

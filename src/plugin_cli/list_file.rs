@@ -230,10 +230,17 @@ impl PluginList {
             };
             for (name, v) in t {
                 if !valid_crate_name(name) {
-                    bail!(
-                        "[plugins.{name}]: {}",
-                        tr(lang, Msg::PluginBadCrate).replace("{name}", name)
-                    );
+                    bail!(tr_format(
+                        lang,
+                        Msg::PluginListContext,
+                        &[
+                            ("context", &format!("[plugins.{name}]")),
+                            (
+                                "detail",
+                                &tr(lang, Msg::PluginBadCrate).replace("{name}", name)
+                            ),
+                        ]
+                    ));
                 }
                 list.plugins
                     .insert(name.clone(), parse_source(name, v, lang)?);

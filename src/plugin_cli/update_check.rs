@@ -19,6 +19,7 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const QUERY_PARALLELISM: usize = 3;
 
 type QueryClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+type QueryJob = Box<dyn FnOnce() + Send>;
 type QueryAnswer = std::thread::Result<(String, Option<Observation>)>;
 type FetchFn = dyn Fn(&str, Duration) -> Option<String> + Send + Sync;
 
@@ -553,6 +554,12 @@ pub(super) fn query_list(
     query_list_fetch(list, locked, &HOST_PLUGIN_VERSION, enabled, fetch)
 }
 
+fn spawn_query_worker(job: QueryJob) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("plugin-index".into())
+        .spawn(job)
+}
+
 fn query_targets(
     targets: BTreeMap<String, (Version, VersionReq)>,
     host: &Version,
@@ -572,10 +579,21 @@ fn query_targets_with(
     host: &Version,
     fetch: Fetch,
     remaining: QueryClock,
+    receive: impl FnMut(&Receiver<QueryAnswer>, Duration) -> Result<QueryAnswer, mpsc::RecvTimeoutError>,
+) -> (BTreeMap<String, Observation>, bool) {
+    query_targets_on(targets, host, fetch, remaining, receive, spawn_query_worker)
+}
+
+fn query_targets_on(
+    targets: BTreeMap<String, (Version, VersionReq)>,
+    host: &Version,
+    fetch: Fetch,
+    remaining: QueryClock,
     mut receive: impl FnMut(
         &Receiver<QueryAnswer>,
         Duration,
     ) -> Result<QueryAnswer, mpsc::RecvTimeoutError>,
+    mut spawn: impl FnMut(QueryJob) -> std::io::Result<std::thread::JoinHandle<()>>,
 ) -> (BTreeMap<String, Observation>, bool) {
     let expected = targets.len();
     if expected == 0 {
@@ -601,40 +619,38 @@ fn query_targets_with(
         let fetch = fetch.clone();
         let host = host.clone();
         let tx = tx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("plugin-index".into())
-            .spawn(move || loop {
-                if cancelled.load(Ordering::SeqCst) || remaining().is_zero() {
-                    break;
-                }
-                let target = queue.lock().ok().and_then(|mut queue| queue.next());
-                let Some((name, (installed, requirement))) = target else {
-                    break;
-                };
-                let budget = remaining();
-                if cancelled.load(Ordering::SeqCst) || budget.is_zero() {
-                    break;
-                }
-                // Preserve injected fetch assertions: a panic is not an ordinary index failure.
-                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let updates = (fetch.0)(&index_url(&name), budget).and_then(|body| {
-                        inspect_index_in_range(&body, &installed, &host, &requirement)
-                    });
-                    let observation = updates.map(|updates| Observation {
-                        installed: installed.to_string(),
-                        updates,
-                    });
-                    (name, observation)
-                }));
-                let panicked = answer.is_err();
-                // Expired responses must not be presented as a completed check.
-                if !panicked && (cancelled.load(Ordering::SeqCst) || remaining().is_zero()) {
-                    break;
-                }
-                if tx.send(answer).is_err() || panicked {
-                    break;
-                }
-            });
+        let spawned = spawn(Box::new(move || loop {
+            if cancelled.load(Ordering::SeqCst) || remaining().is_zero() {
+                break;
+            }
+            let target = queue.lock().ok().and_then(|mut queue| queue.next());
+            let Some((name, (installed, requirement))) = target else {
+                break;
+            };
+            let budget = remaining();
+            if cancelled.load(Ordering::SeqCst) || budget.is_zero() {
+                break;
+            }
+            // Preserve injected fetch assertions: a panic is not an ordinary index failure.
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let updates = (fetch.0)(&index_url(&name), budget).and_then(|body| {
+                    inspect_index_in_range(&body, &installed, &host, &requirement)
+                });
+                let observation = updates.map(|updates| Observation {
+                    installed: installed.to_string(),
+                    updates,
+                });
+                (name, observation)
+            }));
+            let panicked = answer.is_err();
+            // Expired responses must not be presented as a completed check.
+            if !panicked && (cancelled.load(Ordering::SeqCst) || remaining().is_zero()) {
+                break;
+            }
+            if tx.send(answer).is_err() || panicked {
+                break;
+            }
+        }));
         match spawned {
             // HTTP receives only the remaining overall budget; callers never wait on joins.
             Ok(handle) => drop(handle),
@@ -893,13 +909,11 @@ mod tests {
             |rx, budget| {
                 assert_eq!(budget, QUERY_TIMEOUT);
                 waits += 1;
-                if waits == 1 {
-                    rx.recv_timeout(Duration::from_secs(5))
-                } else {
-                    entering.recv_timeout(Duration::from_secs(5)).unwrap();
-                    seconds.store(0, Ordering::SeqCst);
-                    Err(mpsc::RecvTimeoutError::Timeout)
-                }
+                assert_eq!(waits, 1, "the overall deadline must prevent another wait");
+                let answer = rx.recv_timeout(Duration::from_secs(5))?;
+                entering.recv_timeout(Duration::from_secs(5)).unwrap();
+                seconds.store(0, Ordering::SeqCst);
+                Ok(answer)
             },
         );
         assert!(
@@ -946,12 +960,18 @@ mod tests {
                 None
             }))
         };
-        let (plugins, failed) = query_targets_with(
+        let spawned_workers = std::cell::Cell::new(0);
+        let (plugins, failed) = query_targets_on(
             query_fixture(&["a", "b", "c", "d", "e", "f", "g", "h"]),
             &host(),
             fetch,
             clock,
             |_, budget| {
+                assert_eq!(
+                    spawned_workers.get(),
+                    QUERY_PARALLELISM,
+                    "worker creation must be bounded before any deadline decision"
+                );
                 assert_eq!(budget, QUERY_TIMEOUT);
                 for _ in 0..QUERY_PARALLELISM {
                     entering.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -959,8 +979,13 @@ mod tests {
                 seconds.store(0, Ordering::SeqCst);
                 Err(mpsc::RecvTimeoutError::Timeout)
             },
+            |job| {
+                spawned_workers.set(spawned_workers.get() + 1);
+                spawn_query_worker(job)
+            },
         );
         assert!(plugins.is_empty() && failed);
+        assert_eq!(spawned_workers.get(), QUERY_PARALLELISM);
         assert_eq!(calls.load(Ordering::SeqCst), QUERY_PARALLELISM);
         assert_eq!(maximum.load(Ordering::SeqCst), QUERY_PARALLELISM);
         drop(release);

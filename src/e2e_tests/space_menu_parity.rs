@@ -509,10 +509,18 @@ struct HostView {
     bound: Vec<KeyPress>,
     /// The menus `y` and `,` open on this screen: the prefix and the items by key and operation.
     menus: Vec<(char, Vec<(char, Action)>)>,
+    /// The screen after the help's key was pressed in the open menu (when asked for).
+    help_rows: Option<Vec<String>>,
 }
 
-fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
+/// `with_help`: also press the menu's help key on the open menu and keep the screen it leaves,
+/// which is what a fresh host does for `Space` and then that key.
+fn host_view(root: &std::path::Path, o: &Opt, with_help: bool) -> HostView {
     let (mut s, _log, _opens) = host_sim_sized(root, o, HOST_H);
+    host_view_of(&mut s, with_help)
+}
+
+fn host_view_of(s: &mut super::Sim, with_help: bool) -> HostView {
     let ctx = s.app.key_context().expect("a preview context");
     let m = menu(&s.app, ctx, LeaderId::Actions, View::Open).expect("the Space menu");
     let items: Vec<Item> = m
@@ -532,23 +540,28 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
         .collect();
     let keys = items
         .iter()
+        .filter(|_| !with_help)
         .map(|i| match i.act {
             Action::Plugin(_) => Vec::new(),
             a => s.app.keymaps.keys_of(ctx, a),
         })
         .collect();
-    let mut bound: Vec<KeyPress> = s
-        .app
-        .keymaps
-        .bound_actions(ctx)
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    let mut bound: Vec<KeyPress> = if with_help {
+        Vec::new()
+    } else {
+        s.app
+            .keymaps
+            .bound_actions(ctx)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    };
     bound.extend(
         s.app
             .keymaps
             .leader_keys_of(ctx)
             .into_iter()
+            .filter(|_| !with_help)
             .map(|(k, _)| k),
     );
     let copy_id = if ctx.name() == "table" {
@@ -558,6 +571,7 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
     };
     let menus: Vec<(char, Vec<(char, Action)>)> = [(',', LeaderId::Options), ('y', copy_id)]
         .into_iter()
+        .filter(|_| !with_help)
         .filter_map(|(pre, id)| {
             let m = s.app.keymaps.menu(ctx, id)?;
             let its = m
@@ -571,10 +585,20 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
             Some((pre, its))
         })
         .collect();
-    s.press(KeyCode::Char(' '), KeyModifiers::NONE);
     s.term.clear().expect("clear");
-    s.draw();
+    s.press(KeyCode::Char(' '), KeyModifiers::NONE);
     let line = line_items(&rows_of(&s.term)).expect("the host's menu line");
+    let help_rows = with_help.then(|| {
+        let help = items
+            .iter()
+            .find(|i| i.action == "ToggleHelp")
+            .expect("the help in the menu")
+            .key;
+        let (c, m) = kt(&help.to_string());
+        s.term.clear().expect("clear");
+        s.press(c, m);
+        rows_of(&s.term)
+    });
     HostView {
         ctx,
         items,
@@ -582,7 +606,78 @@ fn host_view(root: &std::path::Path, o: &Opt) -> HostView {
         keys,
         bound,
         menus,
+        help_rows,
     }
+}
+
+#[test]
+fn a_reconfigured_matrix_host_matches_independent_startups() {
+    let (_dir, root) = fixture();
+    let mut checked = 0;
+    let normalize = |line: &str| {
+        let mut line = line.to_string();
+        while let Some(i) = line.find("actp-") {
+            let end = line[i + 5..]
+                .find(|c: char| !c.is_ascii_digit())
+                .map_or(line.len(), |n| i + 5 + n);
+            line.replace_range(i..end, "ID");
+        }
+        line
+    };
+    for kind in KINDS {
+        for lang in LANGS {
+            for scheme in SCHEMES {
+                let base = format!("keys = \"{scheme}\"\n");
+                let mut host =
+                    KeyedHost::new(&root, &Opt::new(kind).lang(lang).toml(&base), HOST_H);
+                // Return to the plain config too: neither the help nor the previous keys may leak.
+                for more in [
+                    "",
+                    "[keys.text]\nb = \"toggle_help\"\n",
+                    "[keys.\"{id}\"]\nb = \"bump\"\n",
+                    "[keys.global]\n\"?\" = \"noop\"\n",
+                    "",
+                ] {
+                    let opt = Opt::new(kind).lang(lang).toml(&format!("{base}{more}"));
+                    let actual = host.with_options(&opt, |s| host_view_of(s, true));
+                    let expected = host_view(&root, &opt, true);
+                    let items = |v: &HostView| {
+                        v.items
+                            .iter()
+                            .map(|i| (i.key, i.label.clone(), normalize(&i.action)))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(
+                        items(&actual),
+                        items(&expected),
+                        "{kind:?} {lang} {scheme} {more}"
+                    );
+                    assert_eq!(actual.line, expected.line);
+                    let help = |v: &HostView| {
+                        panel_lines(v.help_rows.as_ref().unwrap())
+                            .iter()
+                            .map(|l| normalize(l))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(
+                        help(&actual),
+                        help(&expected),
+                        "{kind:?} {lang} {scheme} {more}"
+                    );
+                    assert_eq!(
+                        panel_title(actual.help_rows.as_ref().unwrap()),
+                        panel_title(expected.help_rows.as_ref().unwrap())
+                    );
+                    assert_eq!(
+                        hints(actual.help_rows.as_ref().unwrap().last().unwrap()),
+                        hints(expected.help_rows.as_ref().unwrap().last().unwrap())
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 100);
 }
 
 /// A key as a config token (`None` for a key the rewrites do not write).
@@ -623,7 +718,7 @@ struct Rewrite {
 /// the next one's letter at once.
 fn rewrites(root: &std::path::Path, kind: Kind, scheme: &str) -> Vec<Rewrite> {
     let o = Opt::new(kind).toml(&format!("keys = \"{scheme}\"\n"));
-    let v = host_view(root, &o);
+    let v = host_view(root, &o, false);
     let own = v.ctx.name();
     let mut tables: Vec<String> = Vec::new();
     for t in [own.as_str(), "text", "document", "global"] {
@@ -817,8 +912,14 @@ struct Tally {
 }
 
 /// One view under one configuration: the app's menu is the host's, less what the app cannot do.
-fn check(root: &std::path::Path, o: &Opt, tag: &str, t: &mut Tally) -> Vec<(char, String)> {
-    let v = host_view(root, o);
+fn check(
+    root: &std::path::Path,
+    o: &Opt,
+    tag: &str,
+    t: &mut Tally,
+    host: &mut KeyedHost,
+) -> Vec<(char, String)> {
+    let v = host.with_options(o, |s| host_view_of(s, true));
     // The host's line is cut at the screen's width: what it draws is the start of its menu.
     let menu_line: Vec<(char, String)> = v.items.iter().map(|i| (i.key, i.label.clone())).collect();
     assert!(
@@ -838,7 +939,16 @@ fn check(root: &std::path::Path, o: &Opt, tag: &str, t: &mut Tally) -> Vec<(char
         );
         t.hidden += 1;
     }
-    let ar = open_run_app(root, o, &[]);
+    // One run of the app stands for the menu on its own and for the help over it: the screen after
+    // `Space` is taken when the app is idle, and the run goes on with the help's key.
+    let help_key = v
+        .items
+        .iter()
+        .find(|i| i.action == "ToggleHelp")
+        .expect("the help in the menu")
+        .key;
+    let (ar_help, ar) = app_watching(root, o, APP_H, &[K("<Sp>"), kc(help_key)], true, Some(1));
+    let ar = ar.expect("the menu's screen");
     let aline =
         line_items(&ar.rows).unwrap_or_else(|| panic!("{tag}: the app's menu line: {:?}", ar.rows));
     assert_eq!(
@@ -854,22 +964,15 @@ fn check(root: &std::path::Path, o: &Opt, tag: &str, t: &mut Tally) -> Vec<(char
         t.items += 1;
     }
     // The help over that screen: the title and the footer follow the same keys.
-    let help = v
-        .items
-        .iter()
-        .find(|i| i.action == "ToggleHelp")
-        .expect("the help in the menu")
-        .key;
-    let hr = host(root, o, HOST_H, &[K("<Sp>"), kc(help)]);
-    let ar = app(root, o, APP_H, &[K("<Sp>"), kc(help)], true);
+    let hr_rows = v.help_rows.as_ref().expect("the host's help screen");
     assert_eq!(
-        panel_title(&hr.rows),
-        panel_title(&ar.rows),
+        panel_title(hr_rows),
+        panel_title(&ar_help.rows),
         "{tag}: the help's title"
     );
     assert_eq!(
-        hints(hr.rows.last().unwrap()),
-        hints(ar.rows.last().unwrap()),
+        hints(hr_rows.last().unwrap()),
+        hints(ar_help.rows.last().unwrap()),
         "{tag}: the footer while the help is open"
     );
     t.helps += 1;
@@ -881,33 +984,81 @@ fn matrix(kind: Kind) {
     let (_dir, root) = fixture();
     let mut t = Tally::default();
     let mut rewrites_n = 0;
-    for (si, scheme) in SCHEMES.iter().enumerate() {
-        let rws = rewrites(&root, kind, scheme);
+    let rewrites: Vec<_> = SCHEMES
+        .iter()
+        .map(|scheme| rewrites(&root, kind, scheme))
+        .collect();
+    for (scheme, rws) in SCHEMES.iter().zip(&rewrites) {
         assert!(rws.len() >= 8, "{kind:?} {scheme}: {} rewrites", rws.len());
         rewrites_n += rws.len();
-        for (li, lang) in LANGS.iter().enumerate() {
-            let base = format!("keys = \"{scheme}\"\n");
-            let plain = check(
-                &root,
-                &Opt::new(kind).lang(lang).toml(&base),
-                &format!("{kind:?} {lang} {scheme} plain"),
-                &mut t,
-            );
-            for rw in &rws {
-                let o = Opt::new(kind)
-                    .lang(lang)
-                    .toml(&format!("{base}{}", rw.toml));
-                let line = check(&root, &o, &format!("{lang} {scheme} {}", rw.name), &mut t);
-                if line != plain {
-                    t.changed += 1;
-                }
-                t.cells.insert((si, li));
+    }
+    // The four scheme/language cells share only the read-only fixture and rewrite descriptions.
+    // Each worker owns its tally and simulators; plugin ids are unique across threads and tests.
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for (si, (scheme, rws)) in SCHEMES.iter().zip(&rewrites).enumerate() {
+            for (li, lang) in LANGS.iter().enumerate() {
+                let root = &root;
+                let run = move || {
+                    let mut t = Tally::default();
+                    let base = format!("keys = \"{scheme}\"\n");
+                    let mut host =
+                        KeyedHost::new(root, &Opt::new(kind).lang(lang).toml(&base), HOST_H);
+                    let plain = check(
+                        root,
+                        &Opt::new(kind).lang(lang).toml(&base),
+                        &format!("{kind:?} {lang} {scheme} plain"),
+                        &mut t,
+                        &mut host,
+                    );
+                    for rw in rws {
+                        let o = Opt::new(kind)
+                            .lang(lang)
+                            .toml(&format!("{base}{}", rw.toml));
+                        let line = check(
+                            root,
+                            &o,
+                            &format!("{lang} {scheme} {}", rw.name),
+                            &mut t,
+                            &mut host,
+                        );
+                        if line != plain {
+                            t.changed += 1;
+                        }
+                        t.cells.insert((si, li));
+                    }
+                    t
+                };
+                workers.push(scope.spawn(run));
             }
         }
-    }
+        for worker in workers {
+            let cell = worker
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            t.variants += cell.variants;
+            t.changed += cell.changed;
+            t.items += cell.items;
+            t.hidden += cell.hidden;
+            t.helps += cell.helps;
+            t.cells.extend(cell.cells);
+        }
+    });
     eprintln!(
         "matrix {kind:?}: rewrites {rewrites_n} variants {} changed {} items {} hidden {} helps {}",
         t.variants, t.changed, t.items, t.hidden, t.helps
+    );
+    let expected = match kind {
+        Kind::Canvas => (1258, 2520, 348, 20176, 32788, 2520),
+        Kind::Document => (1216, 2436, 248, 21928, 46300, 2436),
+        Kind::Image => (1306, 2616, 280, 28780, 31424, 2616),
+        Kind::Table => (1282, 2568, 244, 23124, 38540, 2568),
+        Kind::Text => (1222, 2448, 254, 22036, 44080, 2448),
+    };
+    assert_eq!(
+        (rewrites_n, t.variants, t.changed, t.items, t.hidden, t.helps),
+        expected,
+        "every original matrix comparison is retained"
     );
     // Every scheme x language cell ran.
     assert_eq!(t.cells.len(), SCHEMES.len() * LANGS.len(), "{kind:?}");

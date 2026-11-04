@@ -744,6 +744,7 @@ pub enum LeaderId {
 
 /// One leader-menu item (suffix key + command + i18n label).
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct LeaderItem {
     pub key: KeyPress,
     pub action: Action,
@@ -752,6 +753,7 @@ pub struct LeaderItem {
 
 /// The whole menu shown in the which-key popup.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct LeaderMenu {
     /// This menu's kind (redundant with the HashMap key, but kept for self-description).
     #[allow(dead_code)]
@@ -795,6 +797,7 @@ pub use konoma_host_core::keys::KeysFileConfig;
 /// The startup flash (`App::keymap_report`) shows the count and the first conflict's key, `kept`
 /// and `dropped`.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct KeyConflict {
     /// The surface of the context the conflict is in (a context is finer; `dropped` names it).
     pub surface: Surface,
@@ -833,6 +836,7 @@ pub enum Resolution {
 /// materialized yet because today no verb key is bound identically in all the contexts that would
 /// inherit it; B3 introduces it together with the new default keys.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct KeyMap {
     /// Each context's own table (layer 4 in the design's numbering): what it adds to, or does
     /// differently from, the layers below it.
@@ -1256,7 +1260,30 @@ impl KeyMap {
     /// §10-3): layer 1 (`basic`) holds what every context with a cursor shares, layer 2 (`types`)
     /// what contexts showing the same kind of thing share, and each context's own table holds the
     /// rest. `defaults_tests` pins the result key by key.
+    ///
+    /// The table is a pure function of `scheme`, so it is built once per thread and cloned.
     pub fn defaults(scheme: KeyScheme) -> KeyMap {
+        (*Self::shared_defaults(scheme)).clone()
+    }
+
+    /// The built-in defaults for `scheme`, built once per thread (see [`KeyMap::defaults`]).
+    fn shared_defaults(scheme: KeyScheme) -> std::rc::Rc<KeyMap> {
+        thread_local! {
+            static CACHE: std::cell::RefCell<Vec<(KeyScheme, std::rc::Rc<KeyMap>)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if let Some((_, m)) = c.iter().find(|(s, _)| *s == scheme) {
+                return std::rc::Rc::clone(m);
+            }
+            let m = std::rc::Rc::new(Self::build_defaults(scheme));
+            c.push((scheme, std::rc::Rc::clone(&m)));
+            m
+        })
+    }
+
+    fn build_defaults(scheme: KeyScheme) -> KeyMap {
         let nav = |m: Motion| Binding::Run(Action::Navigate(m));
         let run = |a: Action| Binding::Run(a);
 
@@ -1684,8 +1711,8 @@ impl KeyMap {
     /// now covers, and noted in `renames` so the startup flash can say what to write instead. When a
     /// context is configured both ways, the new name wins.
     pub fn from_config(scheme: KeyScheme, cfg: &KeysFileConfig) -> KeyMap {
+        let defaults = KeyMap::shared_defaults(scheme); // kept aside for rollback.
         let mut map = KeyMap::defaults(scheme);
-        let defaults = KeyMap::defaults(scheme); // kept aside for rollback.
         let mut warnings: Vec<String> = Vec::new();
         let mut renames: Vec<(String, String)> = Vec::new();
 
@@ -2917,6 +2944,28 @@ fn binding_name(b: &Binding) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn cached_defaults_match_fresh_maps_for_every_scheme() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let fresh = KeyMap::build_defaults(scheme);
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?}");
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?} again");
+        }
+    }
+
+    #[test]
+    fn configuring_a_map_does_not_change_cached_defaults() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let fresh = KeyMap::build_defaults(scheme);
+            let cfg = cfg_with("text", &[("Z", "refresh"), ("y z", "copy_full")]);
+            let _ = KeyMap::from_config(scheme, &cfg);
+            let mut owned = KeyMap::defaults(scheme);
+            owned.basic.clear();
+            owned.leaders.clear();
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?}");
+        }
+    }
 
     /// A git-backed version-control screen as a context.
     #[cfg(feature = "git")]

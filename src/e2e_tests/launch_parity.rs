@@ -613,6 +613,7 @@ fn e_and_o_start_the_same_things_in_the_host_and_in_the_app() {
     assert!(with_cwd >= 1, "{with_cwd}");
     // (measured: 227 = 55 cases x 4 comparisons [hints, started, notice, terminal cwd] + 7 cases
     // that also check the editor's flag; a comparison is counted only where it was made.)
+    assert_eq!(cases().len(), 55, "every original combination is compared");
     assert!(compared >= 225, "{compared}");
 }
 

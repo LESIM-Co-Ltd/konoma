@@ -303,13 +303,20 @@ fn plugin_language_walk(language: &str) {
     );
     let invalid = real_invalid_host();
     let s = language_sandbox(language);
+    let host_marker = s.root.join("host-marker");
     write_exe(
         &s.fake().join("fake-konoma"),
         &format!("#!/bin/sh\nunset KONOMA_PLUGIN_SWITCHED_FROM KONOMA_PLUGIN_SWITCHED_PATH\nexec '{}' --exact invalid_host_verification_child --nocapture\n", invalid.display()),
     );
     let output = s.run_env(
         &["plugin", "install", "konoma-foo", "-y"],
-        &[("KONOMA_TEST_INVALID_HOST_CHILD", "1")],
+        &[
+            ("KONOMA_TEST_INVALID_HOST_CHILD", "1"),
+            (
+                "KONOMA_TEST_INVALID_HOST_MARKER_FILE",
+                host_marker.to_str().unwrap(),
+            ),
+        ],
     );
     assert_eq!(code(&output), 1);
     assert!(
@@ -327,6 +334,20 @@ fn plugin_language_walk(language: &str) {
     assert!(
         verification.contains(refusal),
         "missing real Host rejection for {language}: expected {refusal:?}, got {verification:?}"
+    );
+    for noise in [
+        "running 1 test",
+        "test result:",
+        "test invalid_host_verification_child",
+    ] {
+        assert!(
+            !verification.contains(noise),
+            "libtest output leaked into the CLI sample: {verification}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(&host_marker).expect("the real Host child must record its marker"),
+        b"1"
     );
     push_language_sample(
         &mut samples,
@@ -383,6 +404,13 @@ fn invalid_host_verification_child() {
         != Some(std::ffi::OsStr::new("1"))
     {
         return;
+    }
+    if let Some(path) = std::env::var_os("KONOMA_TEST_INVALID_HOST_MARKER_FILE") {
+        std::fs::write(
+            path,
+            std::env::var("KONOMA_TEST_INVALID_HOST_CHILD").unwrap(),
+        )
+        .expect("record the private Host marker");
     }
     use konoma_plugin::prelude::*;
     struct Invalid;
