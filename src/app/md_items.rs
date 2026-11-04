@@ -454,7 +454,7 @@ impl App {
             self.tab.selected = 0;
             self.rebuild_tree()?;
         } else if resolved.is_file() {
-            self.enter_preview(&resolved);
+            self.open_file_at(&resolved, None);
         } else {
             self.flash = Some(format!(
                 "{}{}",
@@ -463,6 +463,14 @@ impl App {
             ));
         }
         Ok(())
+    }
+
+    /// The file branch of following a link, also used by a plugin's OpenFile outcome.
+    pub(super) fn open_file_at(&mut self, path: &Path, line: Option<usize>) {
+        self.enter_preview(path);
+        if let Some(line) = line {
+            self.preview_goto_line(line);
+        }
     }
 
     /// Resolve a local (non-URL, non-anchor) Markdown link target to an absolute path (existence not

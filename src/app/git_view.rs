@@ -262,6 +262,9 @@ impl App {
     /// `start_file_op`/`spawn_or_sync_statuses`, and the reason every existing test of these flows
     /// keeps passing unchanged. Returns false and flashes when another write is already in flight.
     pub(super) fn start_git_op(&mut self, mut job: crate::app::GitOpJob) -> bool {
+        if !self.allow_write("git", true, true) {
+            return false;
+        }
         if self.gitop_pending.is_some() {
             // Only one at a time: two concurrent writes would contend on `.git/index.lock` and the
             // loser would just fail. Refuse cleanly instead, and leave every bit of state (the
@@ -625,9 +628,7 @@ impl App {
     pub fn git_view_start_discard(&mut self) {
         // The footer hides this key when the backend cannot write, but the binding still exists —
         // say why rather than attempting a git operation on a repository git does not own.
-        if !crate::vcs::caps(&self.tab.root).write {
-            self.flash =
-                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+        if !self.allow_write("git", true, true) {
             return;
         }
         let Some(path) = self.git_view_selected() else {
@@ -859,9 +860,7 @@ impl App {
     /// (on confirm: git::discard then return to the Git view). Uses the same flow as discard from the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_diff_start_discard(&mut self) {
-        if !crate::vcs::caps(&self.tab.root).write {
-            self.flash =
-                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+        if !self.allow_write("git", true, true) {
             return;
         }
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
@@ -1315,16 +1314,21 @@ impl App {
                 self.close_git_worktrees();
             }
             Some(WorktreeTarget::Go(path)) => {
-                self.reset_git_worktree_list_state();
-                self.jump_to_dir(path.clone());
-                self.tab.open_dir = path;
-                self.flash = Some(format!(
-                    "{}: {}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::SwitchedTo),
-                    home_relative(&self.tab.root)
-                ));
+                self.switch_worktree_root(path);
             }
         }
+    }
+
+    /// The existing worktree root switch, also used by a project's SwitchRoot outcome.
+    pub(super) fn switch_worktree_root(&mut self, path: PathBuf) {
+        self.reset_git_worktree_list_state();
+        self.jump_to_dir(path.clone());
+        self.tab.open_dir = path;
+        self.flash = Some(format!(
+            "{}: {}",
+            crate::i18n::tr(self.lang, crate::i18n::Msg::SwitchedTo),
+            home_relative(&self.tab.root)
+        ));
     }
     /// `Ctrl-t` in the worktree list: open the selected worktree in a new (foreground) tab, leaving
     /// this tab — and its own open worktree list — untouched (mirrors `tab_new_from_selection`'s
@@ -1765,6 +1769,9 @@ impl App {
     /// `[ui] confirm_jj_sync` is off.
     #[cfg(feature = "git")]
     pub fn jj_start_sync(&mut self) {
+        if !self.allow_write("jj", true, false) {
+            return;
+        }
         if crate::vcs::detect(&self.tab.root) != crate::vcs::VcsKind::Jj {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JjSyncNotJj).into());
             return;
@@ -1785,6 +1792,9 @@ impl App {
     /// Takes the snapshot and re-reads, so the tree shows what jj now knows.
     #[cfg(feature = "git")]
     pub(super) fn jj_run_sync(&mut self) {
+        if !self.allow_write("jj", true, false) {
+            return;
+        }
         let ok = crate::vcs::jj::snapshot(&self.tab.root);
         self.git_status_for = None;
         self.git_status_dirty = true;

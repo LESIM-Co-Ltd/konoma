@@ -2068,6 +2068,9 @@ impl App {
     /// Run a queued action (the oldest: `typing::next_job` decided, the session is free). One
     /// at a time: each answer may change what works, and the next press then goes in its turn.
     pub(super) fn send_queued_act(&mut self, action: String) {
+        if !self.allow_plugin_write(&action) {
+            return;
+        }
         let Some(show) = self.plugin.as_mut() else {
             return;
         };
@@ -2200,6 +2203,9 @@ impl App {
 
     /// Run a declared action of the open session. Returns false when there is no session to ask.
     pub(super) fn plugin_act(&mut self, action: &str) -> bool {
+        if !self.allow_plugin_write(action) {
+            return false;
+        }
         // A canvas whose session a job holds (the redraw timer's tick, a key, a refit, the file
         // being read again): the press waits in line and goes, in order, when the session comes
         // back -- it is not dropped, and its hint did not flicker meanwhile
@@ -2446,7 +2452,12 @@ impl App {
                 self.made_text_landed(made_text);
             }
         }
+        let mut navigation = None;
         match outcome {
+            Some(outcome @ Outcome::OpenFile { .. })
+            | Some(outcome @ Outcome::OpenDiff { .. })
+            | Some(outcome @ Outcome::SwitchRoot { .. })
+            | Some(outcome @ Outcome::OpenTab { .. }) => navigation = Some(outcome),
             Some(Outcome::Flash(msg)) => {
                 self.flash = Some(msg.get(self.plugin_lang()).to_string());
             }
@@ -2482,6 +2493,13 @@ impl App {
         }
         // What waited for the session goes now: the keys typed while it was out (in order, in one
         // job), the actions pressed meanwhile, a view asked for.
+        if let Some(outcome) = navigation {
+            // Finish the old show's bookkeeping before navigation can install another show.
+            // Queued presses of the show being left must not run on the destination session.
+            let result = self.apply_plugin_navigation(outcome);
+            crate::resolve_key_result(self, result.map(|()| false));
+            return true;
+        }
         self.plugin_session_returned();
         true
     }

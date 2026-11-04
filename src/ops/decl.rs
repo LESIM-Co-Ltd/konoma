@@ -19,6 +19,17 @@ pub struct Decl {
     pub help: Option<Msg>,
     /// Layer 3: an operation that starts something outside konoma's own views (`e`).
     pub launch: bool,
+    /// The plugin whose files this operation writes. Declared beside its labels, not in a
+    /// separate key list: fixed keys and rebound keys describe the same operation.
+    pub writes: Option<&'static str>,
+}
+
+impl Decl {
+    #[cfg(feature = "git")]
+    const fn writes(mut self, plugin: &'static str) -> Self {
+        self.writes = Some(plugin);
+        self
+    }
 }
 
 const fn d(label: Option<Msg>, help: Option<Msg>) -> Decl {
@@ -26,6 +37,7 @@ const fn d(label: Option<Msg>, help: Option<Msg>) -> Decl {
         label,
         help,
         launch: false,
+        writes: None,
     }
 }
 
@@ -71,11 +83,13 @@ pub fn decl(a: Action) -> Decl {
             label: Some(M::HintEdit),
             help: Some(M::EditExternalEnv),
             launch: true,
+            writes: None,
         },
         A::OpenExternal => Decl {
             label: Some(M::HintOpenApp),
             help: Some(M::OpenAppHelp),
             launch: true,
+            writes: None,
         },
         A::OpenGitView => d(Some(M::HintGit), Some(M::TreeGitChangesHub)),
         A::Refresh => d(None, Some(M::Refresh)),
@@ -132,7 +146,7 @@ pub fn decl(a: Action) -> Decl {
 
         // Preview: diff
         #[cfg(feature = "git")]
-        A::GitDiffDiscard => d(Some(M::FtDiscard), Some(M::DiscardWholeFile)),
+        A::GitDiffDiscard => d(Some(M::FtDiscard), Some(M::DiscardWholeFile)).writes("git"),
         #[cfg(feature = "git")]
         A::CycleDiffLayout => d(Some(M::FtDiffLayout), Some(M::GitLayout)),
         #[cfg(feature = "git")]
@@ -147,13 +161,13 @@ pub fn decl(a: Action) -> Decl {
 
         // The changes hub
         #[cfg(feature = "git")]
-        A::GitStage | A::GitStageAll => d(Some(M::FtStage), Some(M::StageHint)),
+        A::GitStage | A::GitStageAll => d(Some(M::FtStage), Some(M::StageHint)).writes("git"),
         #[cfg(feature = "git")]
-        A::GitUnstage | A::GitUnstageAll => d(Some(M::FtUnstage), Some(M::UnstageHint)),
+        A::GitUnstage | A::GitUnstageAll => d(Some(M::FtUnstage), Some(M::UnstageHint)).writes("git"),
         #[cfg(feature = "git")]
-        A::GitDiscard => d(Some(M::FtDiscard), Some(M::GitDiscardFile)),
+        A::GitDiscard => d(Some(M::FtDiscard), Some(M::GitDiscardFile)).writes("git"),
         #[cfg(feature = "git")]
-        A::GitCommit => d(Some(M::FtCommit), Some(M::GitCommit)),
+        A::GitCommit => d(Some(M::FtCommit), Some(M::GitCommit)).writes("git"),
         #[cfg(feature = "git")]
         A::GitWorktreeDiff => d(Some(M::FtDiffAll), Some(M::GitDiffAll)),
         #[cfg(feature = "git")]
@@ -177,7 +191,7 @@ pub fn decl(a: Action) -> Decl {
         #[cfg(feature = "git")]
         A::GitGraphToggleAll => d(Some(M::FtAllRevisions), Some(M::JjGraphAllRow)),
         #[cfg(feature = "git")]
-        A::JjSync => d(Some(M::FtSync), Some(M::JjSyncRow)),
+        A::JjSync => d(Some(M::FtSync), Some(M::JjSyncRow)).writes("jj"),
         #[cfg(feature = "git")]
         A::GitGraphOpenPicker => d(Some(M::FtBranch), Some(M::GraphBranchesHelp)),
         #[cfg(feature = "git")]
@@ -202,11 +216,11 @@ pub fn decl(a: Action) -> Decl {
             d(Some(M::HintSearch), Some(M::GitFilterByName))
         }
         #[cfg(feature = "git")]
-        A::BranchCheckout => d(Some(M::GitCheckout), Some(M::GitCheckout)),
+        A::BranchCheckout => d(Some(M::GitCheckout), Some(M::GitCheckout)).writes("git"),
         #[cfg(feature = "git")]
-        A::BranchCreate => d(Some(M::FtNew), Some(M::GitNewBranch)),
+        A::BranchCreate => d(Some(M::FtNew), Some(M::GitNewBranch)).writes("git"),
         #[cfg(feature = "git")]
-        A::BranchDelete => d(Some(M::WkDelete), Some(M::GitDelete)),
+        A::BranchDelete => d(Some(M::WkDelete), Some(M::GitDelete)).writes("git"),
         #[cfg(feature = "git")]
         A::GitOpenWorktrees => d(Some(M::GitWorktreesRow), Some(M::GitWorktreesRow)),
         #[cfg(feature = "git")]
@@ -218,7 +232,7 @@ pub fn decl(a: Action) -> Decl {
         #[cfg(feature = "git")]
         A::WorktreeShowChanges => d(Some(M::HintDiff), Some(M::WorktreeShowChangesHelp)),
         #[cfg(feature = "git")]
-        A::WorktreeCreate => d(Some(M::FtNew), Some(M::WorktreeCreateHelp)),
+        A::WorktreeCreate => d(Some(M::FtNew), Some(M::WorktreeCreateHelp)).writes("git"),
         #[cfg(feature = "git")]
         A::GitCopy(_) => NONE,
         #[cfg(feature = "git")]

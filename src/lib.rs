@@ -956,6 +956,7 @@ fn run(
     let mut startup_keys = startup_keys;
     loop {
         needs_redraw |= rx.plugin_updates.apply(app);
+        needs_redraw |= app.poll_projects();
         if needs_redraw {
             // The right to write to the terminal for the whole frame (a signal's exit cleanup
             // waits for it, so its escapes never land between the chunks of a transmit).

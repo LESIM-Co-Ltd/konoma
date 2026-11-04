@@ -5303,7 +5303,7 @@ fn e2e_git_graph_branch_picker_toggles() {
 }
 
 // =============================================================================
-// jj: the read-only gate (`Action::writes_repository()` + `dispatch_action`'s check in
+// jj: the read-only gate (`ops::decl` write metadata + `dispatch_action`'s check in
 // src/main.rs), and jj-specific key behavior (R sync, w worktrees, a graph range).
 //
 // konoma never writes to a jj repository (see `crate::vcs::jj`'s module docs): every write-shaped
@@ -5401,14 +5401,14 @@ fn jj_colocated_seed_repo(name: &str) -> Option<crate::test_support::TmpDir> {
     Some(dir)
 }
 
-/// Walks every key that reaches a write-shaped `Action` (`Action::writes_repository()` in
-/// `src/keymap.rs`) in a jj repository, and confirms each one is refused — the `VcsReadOnly` flash,
-/// no dialog opened, no navigation away from wherever the key was pressed. `writes_repository()`
+/// Walks every key that reaches a write-shaped `Action` (write metadata in
+/// `src/ops/decl.rs`) in a jj repository, and confirms each one is refused — the `VcsReadOnly` flash,
+/// no dialog opened, no navigation away from wherever the key was pressed. The write metadata
 /// has no enumerable list of variants to iterate (`Action` derives no `EnumIter`-style trait, unlike
 /// `i18n::Msg`'s `ALL_MSGS`), so the (surface, key) pairs below are transcribed by hand from
 /// `src/keymap.rs`'s per-surface maps rather than generated — see this test's sibling
-/// `writes_repository_set_is_pinned...` (`app/tests.rs`) for the trip-wire that catches this list
-/// (and `writes_repository()` itself) drifting apart.
+/// `guard_write_declarations_are_pinned...` (`app/tests.rs`) for the trip-wire that catches this list
+/// (and the write metadata itself) drifting apart.
 ///
 /// `WorktreeCreate` is deliberately not exercised here: `w` never reaches `Surface::GitWorktrees` in
 /// a jj repository at all (`open_git_worktrees` redirects to the `JjWorkspacesUnlisted` flash
@@ -5627,9 +5627,9 @@ fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
 /// confirms → `jj_run_sync` actually runs → the flash reports what happened. This is the one write
 /// konoma makes to a jj repository, by design (`crate::vcs::jj`'s module docs) — `dialog_confirm`'s
 /// `y`/Enter key is a **fixed key**, resolved before `dispatch_action`'s `Action`-based gate ever
-/// sees it (`Surface::DialogConfirmDelete` in `src/main.rs`'s `handle_key`), so nothing in this path
-/// is `writes_repository()`-gated; it relies entirely on `jj_start_sync`'s own
-/// `detect() != VcsKind::Jj` check having already been true when the dialog was opened.
+/// sees it (`Surface::DialogConfirmDelete` in `src/main.rs`'s `handle_key`). `jj_run_sync` checks
+/// the shared write guard again; the operation also needs `jj_start_sync`'s backend check to have
+/// selected jj when the dialog was opened.
 #[cfg(feature = "git")]
 #[test]
 fn e2e_jj_sync_full_round_trip_confirms_and_reports_completion() {
@@ -21213,6 +21213,7 @@ mod launch_parity;
 mod options_parity;
 mod plugin_act_parity;
 mod preview_plan_parity;
+mod project_host;
 mod space_menu_parity;
 mod table_parity;
 mod text_parity;

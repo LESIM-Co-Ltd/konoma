@@ -7,6 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+
+- Static project marker discovery runs on a worker and keeps its results with each host tab.
+  Project watch paths and ancestor marker changes trigger discovery again.
+- Plugin navigation outcomes open files at a line, full-screen diffs, worktree roots and new tabs
+  through the host's existing navigation paths.
+- One host write policy checks plugin actions and the existing git/jj write executors, including
+  checkout through Enter and writes resumed after dialogs. `[plugins.git] read_only = true` and
+  `[plugins.jj] read_only = true` also cover the host's current version-control screens.
 - **Project plugin API.** Plugins can declare detection markers, screens and row kinds, a chip, watch paths and a static-only version-control capability flag. Actions gain typed project contexts and confirmation, text and list prompts; list rows gain an independent multi-selection mark. Project input and five navigation outcomes use protocol 2, while ordinary file plugins retain protocol 1 support. Host project screens and the write guard follow in a later change.
 - **Plugin update status.** Startup checks the public crates.io sparse index at most once per day and reports compatible updates separately from versions requiring a newer konoma. `konoma plugin list` also lists standard plugins and queries their current update status with a bounded timeout, without changing the saved startup check time. It reports unavailable or disabled checks; `[external] update_check = false` disables both startup and list queries.
 - **Extensible SDK validation errors.** The registry error and manifest reason enums are non-exhaustive, allowing new rejection reasons without breaking callers' matches.

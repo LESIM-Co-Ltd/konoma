@@ -16,6 +16,21 @@ use crate::plugins::{ActBinding, PluginAct};
 use konoma_plugin::host::acts;
 
 impl App {
+    /// The execution boundary also uses the write policy: callers that do not come from a key
+    /// and presses queued before a dialog/config change cannot bypass it.
+    pub(super) fn allow_plugin_write(&mut self, action: &str) -> bool {
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        let id = show.acting().to_string();
+        let writes = self
+            .plugin_keys
+            .acts_of(&id)
+            .iter()
+            .any(|b| b.act.act() == action && b.writes);
+        self.allow_write(&id, writes, false)
+    }
+
     /// The id of the plugin whose session the show holds (the destination after a `Reopen`), if the
     /// show is the current one: its declared actions are the ones offered and run.
     fn acting_plugin(&self) -> Option<&str> {
@@ -68,17 +83,6 @@ impl App {
             None => acts::ShowFacts::default(),
         };
         acts::act_enabled(&facts)
-    }
-
-    /// Whether `[plugins.<id>] read_only = true` forbids the plugin's writing actions.
-    pub fn plugin_is_read_only(&self, plugin: &str) -> bool {
-        matches!(
-            self.cfg
-                .plugins
-                .get(plugin)
-                .and_then(|t| t.get("read_only")),
-            Some(toml::Value::Boolean(true))
-        )
     }
 
     /// The key of `p` in `ctx`, if it has one.

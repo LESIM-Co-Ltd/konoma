@@ -25,9 +25,12 @@ pub mod help;
 pub mod keys;
 pub mod menu;
 pub mod preview_plan;
+pub mod write_guard;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_guard_tests;
 
 pub use gate::{action_enabled, gate, Gate};
 
