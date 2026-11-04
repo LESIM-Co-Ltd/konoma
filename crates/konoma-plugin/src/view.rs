@@ -519,6 +519,13 @@ pub struct ListView {
 
 /// One row of a list.
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::view::ListRow;
+/// let _ = ListRow { ..ListRow::new("row", vec![]) };
+/// ```
+#[non_exhaustive]
 pub struct ListRow {
     pub cells: Vec<Line>,
     /// The kind of row (decides which actions apply).
@@ -532,6 +539,21 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn target(mut self, target: impl Into<PathBuf>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    pub fn marked(mut self, marked: bool) -> Self {
+        self.marked = marked;
+        self
+    }
+
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
             cells,

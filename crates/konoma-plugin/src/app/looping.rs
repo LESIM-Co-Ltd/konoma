@@ -2633,8 +2633,23 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
                 }
                 Ok(Outcome::Redraw) => again = true,
                 Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
-                // Project navigation is attached by a later host change.
-                Ok(_) => {}
+                Ok(
+                    Outcome::PushScreen { .. }
+                    | Outcome::OpenFile { .. }
+                    | Outcome::OpenDiff { .. }
+                    | Outcome::SwitchRoot { .. }
+                    | Outcome::OpenTab { .. },
+                ) => {
+                    flash = Some(
+                        crate::t!(
+                            en: "this action is not supported in the standalone app",
+                            ja: "この操作は単体アプリでは使えません",
+                        )
+                        .get(&cx.lang)
+                        .to_string(),
+                    );
+                }
+                Ok(Outcome::Unhandled) => {}
                 Err(f) => flash = Some(f.message.get(&cx.lang).to_string()),
             }
         }
@@ -3346,6 +3361,71 @@ mod reopen_state_tests {
     use super::*;
     use crate::host::acts::ActBinding;
     use crate::host::typing::QueuedAct;
+    use crate::Failure;
+
+    struct Answers(Outcome);
+    impl Session for Answers {
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Err(Failure::unsupported("unused"))
+        }
+        fn act(&mut self, _: &str, _: &ActCx) -> Result<Outcome, Failure> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn project_navigation_outcomes_report_a_notice() {
+        for outcome in [
+            Outcome::PushScreen {
+                screen: "log".into(),
+                selection: None,
+            },
+            Outcome::OpenFile {
+                path: "/file".into(),
+                line: None,
+            },
+            Outcome::OpenDiff {
+                path: "/file".into(),
+            },
+            Outcome::SwitchRoot {
+                root: "/root".into(),
+            },
+            Outcome::OpenTab {
+                path: "/file".into(),
+            },
+        ] {
+            for (lang, expected) in [
+                ("en", "this action is not supported in the standalone app"),
+                ("ja", "この操作は単体アプリでは使えません"),
+            ] {
+                let mut cx = dummy_cx();
+                cx.lang = lang.into();
+                let mut st = State {
+                    act_queue: vec![QueuedAct::now("go")],
+                    ..State::default()
+                };
+                assert!(!flush_jobs(&mut Answers(outcome.clone()), &mut st, &cx));
+                assert_eq!(st.flash.as_deref(), Some(expected), "{outcome:?} {lang}");
+                assert!(!st.reload);
+            }
+        }
+    }
+
+    #[test]
+    fn unhandled_keeps_the_previous_notice() {
+        let mut st = State {
+            flash: Some("previous".into()),
+            act_queue: vec![QueuedAct::now("go")],
+            ..State::default()
+        };
+        assert!(!flush_jobs(
+            &mut Answers(Outcome::Unhandled),
+            &mut st,
+            &dummy_cx()
+        ));
+        assert_eq!(st.flash.as_deref(), Some("previous"));
+        assert!(!st.reload);
+    }
 
     fn acts_of(ids: &[&str]) -> super::super::AppActs {
         super::super::AppActs {

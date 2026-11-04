@@ -101,6 +101,13 @@ pub enum Unavailable {
 /// Everything a plugin declares. The host reads it once at startup; the implementation is not
 /// called until an input is opened.
 #[derive(Clone, Debug)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::Manifest;
+/// let _ = Manifest { ..Manifest::new("p", "1") };
+/// ```
+#[non_exhaustive]
 pub struct Manifest {
     /// Optional project declarations, independent of file bindings and legacy screen names.
     pub project: Option<ProjectDecl>,
@@ -361,6 +368,13 @@ impl Bind {
 
 /// An action the plugin handles, with its key, help and footer entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::Act;
+/// let _ = Act { ..Act::new("go") };
+/// ```
+#[non_exhaustive]
 pub struct Act {
     pub id: String,
     /// The default key (see [`crate::keys::parse_key`]). `None` means menu-only.

@@ -304,6 +304,19 @@ pub fn forbidden_defaults() -> Vec<KeySpec> {
     "jmih[sq".chars().map(KeySpec::ctrl).collect()
 }
 
+/// Modal confirmations retain the existing global layer and cancellation keys. The base
+/// motion and verb layers do not run in a confirmation, leaving `y` and `!` for its choices.
+pub fn confirmation_reserved() -> Vec<(KeySpec, Layer)> {
+    reserved("global")
+        .into_iter()
+        .filter(|(key, layer)| {
+            *layer == Layer::Global
+                || *key == KeySpec::ch('q')
+                || *key == KeySpec::key(KeyName::Esc)
+        })
+        .collect()
+}
+
 /// What happened to an action because of an issue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -324,8 +337,8 @@ pub enum KeyIssueKind {
     Duplicate { other: String, context: String },
     /// The key is on the forbidden list.
     Forbidden,
-    /// A destructive action has no nonempty confirmation declaration. The registry refuses
-    /// its manifest with a typed reason before key sanitization.
+    /// A destructive action has no nonempty confirmation declaration. Public `validate` and
+    /// `sanitize` can check an unregistered manifest; registration refuses the whole manifest.
     DestructiveWithoutConfirm,
     /// Another action has the same id.
     DuplicateActId,
@@ -363,7 +376,7 @@ impl fmt::Display for KeyIssue {
             }
             KeyIssueKind::DestructiveWithoutConfirm => write!(
                 f,
-                "action `{}` is destructive and there is no way to declare a confirmation yet",
+                "action `{}` is destructive but has no confirmation choices",
                 self.act
             )?,
             KeyIssueKind::DuplicateActId => {
@@ -516,15 +529,15 @@ pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
     (out, issues)
 }
 
-fn context_of(act: &Act) -> &str {
+fn context_of(act: &Act) -> String {
     if let Some(c) = &act.project_context {
         return match c {
-            crate::project::ActContext::Screen { screen, .. } => screen,
-            crate::project::ActContext::TreeSelection => "tree",
-            crate::project::ActContext::Diff => "diff",
+            crate::project::ActContext::Screen { screen, .. } => format!("project:{screen}"),
+            crate::project::ActContext::TreeSelection => "tree".into(),
+            crate::project::ActContext::Diff => "diff".into(),
         };
     }
-    act.screen.as_deref().unwrap_or("")
+    act.screen.clone().unwrap_or_default()
 }
 
 fn check_key(
@@ -556,12 +569,12 @@ fn check_key(
     let table = if ctx.is_empty() {
         reserved_for_main_view(manifest)
     } else {
-        reserved(ctx)
+        reserved(&ctx)
     };
     let row_enter = spec == KeySpec::key(KeyName::Enter)
         && matches!(&act.project_context, Some(crate::project::ActContext::Screen { row_kinds, .. }) if !row_kinds.is_empty());
     if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec && !row_enter) {
-        let context = if ctx.is_empty() { "any" } else { ctx };
+        let context = if ctx.is_empty() { "any" } else { &ctx };
         return issue(KeyIssueKind::Reserved {
             layer: *layer,
             context: context.to_string(),
@@ -575,9 +588,9 @@ fn check_key(
             ) => a.is_empty() || b.is_empty() || a.iter().any(|r| b.contains(r)),
             _ => true,
         };
-        c == ctx && *k == spec && overlaps
+        c == &ctx && *k == spec && overlaps
     }) {
-        let context = if ctx.is_empty() { "main" } else { ctx };
+        let context = if ctx.is_empty() { "main" } else { &ctx };
         return issue(KeyIssueKind::Duplicate {
             other: other.id.clone(),
             context: context.to_string(),

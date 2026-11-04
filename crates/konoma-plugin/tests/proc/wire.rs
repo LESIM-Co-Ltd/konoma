@@ -238,13 +238,7 @@ fn every_other_path_a_child_sends_must_be_absolute_too() {
     }
     // A list row's target, and the origin of a document.
     let mut list = View::List(ListView {
-        rows: vec![ListRow {
-            cells: vec![],
-            kind: String::new(),
-            target: Some(PathBuf::from("rel/t")),
-            checked: None,
-            marked: false,
-        }],
+        rows: vec![ListRow::new("", vec![]).target("rel/t")],
     });
     let r = view_to_wire(&mut list, &mut Enc::new(&side));
     assert!(matches!(r, Err(WireError::Bad(_))), "list target: {r:?}");
@@ -687,20 +681,8 @@ fn rgba_with_a_wrong_pixel_count_is_refused() {
 fn list_diff_message_reopen_round_trip() {
     let list = View::List(ListView {
         rows: vec![
-            ListRow {
-                cells: lines(),
-                kind: "file".into(),
-                target: Some(PathBuf::from("/a/b")),
-                checked: Some(true),
-                marked: false,
-            },
-            ListRow {
-                cells: vec![],
-                kind: String::new(),
-                target: None,
-                checked: None,
-                marked: false,
-            },
+            ListRow::new("file", lines()).target("/a/b").checked(true),
+            ListRow::new("", vec![]),
         ],
     });
     let s = dbg(&list);

@@ -10,6 +10,18 @@ use crate::view::ImageData;
 
 /// The thing to open.
 #[derive(Clone, Debug)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::Input;
+/// fn exhaustive(input: Input) {
+///     match input {
+///         Input::Project { .. } => (), Input::File { .. } => (),
+///         Input::Content { .. } => (), Input::Embed { .. } => (),
+///     }
+/// }
+/// ```
+#[non_exhaustive]
 pub enum Input {
     /// A detected project root and the actual matched entry name (not its glob).
     Project { root: PathBuf, marker: String },

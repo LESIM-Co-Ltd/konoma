@@ -1120,6 +1120,8 @@ pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
     }
 }
 
+/// Malformed navigation data becomes `Unhandled`. Use [`outcome_from_wire_checked`] when
+/// receiving untrusted data so a decoding failure cannot silently disappear.
 pub fn outcome_from_wire(o: WOutcome) -> Outcome {
     outcome_from_wire_checked(o).unwrap_or(Outcome::Unhandled)
 }
@@ -1493,6 +1495,13 @@ pub struct WImageView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::proc::wire::WListRow;
+/// let _ = WListRow { cells: vec![], kind: String::new(), target: None, checked: None, marked: false };
+/// ```
+#[non_exhaustive]
 pub struct WListRow {
     pub cells: Vec<WLine>,
     pub kind: String,
@@ -2297,6 +2306,15 @@ pub struct WBind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::{Act, Manifest};
+/// use konoma_plugin::proc::wire::{WAct, manifest_to_wire};
+/// let action = manifest_to_wire(&Manifest::new("p", "1").action(Act::new("go"))).unwrap().actions.into_iter().next().unwrap();
+/// let _ = WAct { ..action };
+/// ```
+#[non_exhaustive]
 pub struct WAct {
     pub id: String,
     pub key: Option<String>,
@@ -2362,6 +2380,14 @@ pub enum WUnavailable {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Construct through the SDK and leave room for future fields or variants.
+///
+/// ```compile_fail
+/// use konoma_plugin::Manifest;
+/// use konoma_plugin::proc::wire::{WManifest, manifest_to_wire};
+/// let _ = WManifest { ..manifest_to_wire(&Manifest::new("p", "1")).unwrap() };
+/// ```
+#[non_exhaustive]
 pub struct WManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<WProjectDecl>,
