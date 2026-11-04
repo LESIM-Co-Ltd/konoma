@@ -83,12 +83,27 @@ fn e2e_a_writing_action_runs_unless_read_only_is_true() {
 
 /// The question itself, asked of the app: only `read_only = true` of that plugin's own table.
 #[test]
-fn plugin_is_read_only_is_true_only_for_true_in_the_plugins_own_table() {
+fn write_guard_refuses_only_true_in_the_plugins_own_table() {
+    use crate::i18n::Msg;
+    use crate::ops::write_guard::write_guard;
+    use crate::ops::Gate;
     let (s, _, _dir) = hexdump_session("f8b_ro_probe_true", true, Some(true.into()));
-    assert!(s.app.plugin_is_read_only("hexdump"));
-    assert!(!s.app.plugin_is_read_only("csv"), "another plugin's table");
+    assert_eq!(
+        write_guard(&s.app, "hexdump", true, false),
+        Gate::Off(Some(Msg::PluginReadOnly))
+    );
+    assert_eq!(
+        write_guard(&s.app, "csv", true, false),
+        Gate::On,
+        "another plugin's table"
+    );
+    assert_eq!(
+        write_guard(&s.app, "hexdump", false, false),
+        Gate::On,
+        "reading still works"
+    );
     let (s, _, _dir) = hexdump_session("f8b_ro_probe_false", true, Some(false.into()));
-    assert!(!s.app.plugin_is_read_only("hexdump"));
+    assert_eq!(write_guard(&s.app, "hexdump", true, false), Gate::On);
     let (s, _, _dir) = hexdump_session("f8b_ro_probe_unset", true, None);
-    assert!(!s.app.plugin_is_read_only("hexdump"));
+    assert_eq!(write_guard(&s.app, "hexdump", true, false), Gate::On);
 }

@@ -10,8 +10,10 @@ pub mod git;
 pub mod help;
 pub mod icons;
 pub mod info;
+mod list;
 pub mod outline;
 pub mod preview;
+mod project;
 pub mod status;
 pub mod tab_list;
 pub mod tabbar;
@@ -92,7 +94,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Git-related full-screen views go into content in place of tree/preview.
     // Priority: commit detail > git log > changes hub (detail overlays on top of log).
-    if app.is_git_detail() {
+    if app.project_active() {
+        project::render(frame, app, content);
+    } else if app.is_git_detail() {
         git::render_detail(frame, app, content);
     } else if app.is_git_graph_picker() {
         git::render_graph_picker(frame, app, content);
@@ -169,7 +173,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         help::render(frame, app, frame.area());
     }
     // A confirm/input dialog has top priority (it also intercepts keys), so it sits on top of everything.
-    if app.is_dialog() {
+    if app.is_dialog() || app.project_dialog.is_some() {
         dialog::render(frame, app, frame.area());
     }
     // If an inline image moved/disappeared since the previous frame, the run loop fully redraws the

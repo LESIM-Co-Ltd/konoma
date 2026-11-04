@@ -90,7 +90,11 @@ mod plugin_host;
 #[cfg(test)]
 pub(crate) use plugin_host::InlineAnswers;
 mod plugin_input;
+mod plugin_outcomes;
 mod preview_visual;
+mod project_detection;
+pub(crate) mod project_screens;
+mod project_worker;
 mod repr_cycle;
 mod search;
 mod session_actions;
@@ -1498,6 +1502,10 @@ pub struct GitOpResult {
 }
 
 pub struct App {
+    pub(crate) project_runtimes:
+        std::collections::HashMap<project_screens::ProjectKey, project_worker::ProjectRuntime>,
+    pub(crate) project_dialog: Option<project_screens::ProjectDialog>,
+    project_replaying: bool,
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
@@ -2448,6 +2456,12 @@ pub(crate) struct PerTab {
     pub(crate) id: u64,
     // --- Tree/root navigation state ---
     pub(crate) root: PathBuf,
+    pub(crate) projects: crate::plugins::projects::ProjectDetection,
+    pub(crate) project_navigation: Option<project_screens::ProjectNavigation>,
+    pub(crate) project_return: Option<project_screens::ProjectNavigation>,
+    project_enter_pending: bool,
+    project_effects: Vec<project_screens::ProjectEffect>,
+    project_pending_acts: std::collections::VecDeque<project_screens::ProjectInvocation>,
     /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
     pub(crate) open_dir: PathBuf,
     /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
@@ -2674,6 +2688,12 @@ impl Default for PerTab {
             // `PerTab::default()`, and `rebuild_tree` fills `entries`.
             root: PathBuf::new(),
             open_dir: PathBuf::new(),
+            projects: crate::plugins::projects::ProjectDetection::default(),
+            project_navigation: None,
+            project_return: None,
+            project_enter_pending: false,
+            project_effects: Vec::new(),
+            project_pending_acts: Default::default(),
             entries: Vec::new(),
             selected: 0,
             show_hidden: false,
@@ -2807,6 +2827,9 @@ impl App {
             &keys_config,
         );
         let mut app = Self {
+            project_runtimes: std::collections::HashMap::new(),
+            project_dialog: None,
+            project_replaying: false,
             launch_dir: root.clone(),
             path_style,
             lang,
@@ -3173,6 +3196,7 @@ impl App {
     /// Starting from directly under root, recursively expand the expanded directories and flatten them.
     /// A naive implementation for M0. Support for large directories will later be replaced with lazy loading.
     pub fn rebuild_tree(&mut self) -> Result<()> {
+        self.ensure_project_detection();
         let mut out = Vec::new();
         // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
         let expanded_dirs: std::collections::HashSet<PathBuf> = self
@@ -3494,6 +3518,15 @@ impl App {
     /// [`UiLayer`] for the priority order and [`UiLayer::surface`] for the one case that has none.
     pub fn surface(&self) -> crate::keymap::Surface {
         let layer = self.frontmost_layer(|l| l.surface().is_some());
+        if self.project_active()
+            && !self.show_help
+            && !self.is_bookmark_list()
+            && !self.is_tab_list()
+            && !self.is_info()
+            && self.dialog.is_none()
+        {
+            return crate::keymap::Surface::PreviewCanvas;
+        }
         match layer.surface() {
             Some(s) => s,
             // Unreachable: `frontmost_layer` only returns layers that just answered `Some`, and the
@@ -3539,6 +3572,9 @@ impl App {
     /// ignoring every overlay in front of it. The footer of the tree and of the previews is the
     /// plan of this context (`ops::footer`).
     pub fn base_context(&self) -> crate::keymap::Context {
+        if self.project_active() {
+            return crate::keymap::Context::Canvas;
+        }
         crate::keymap::Context::of_surface(
             self.base_layer().surface(),
             self.shows_document(),
@@ -3844,6 +3880,11 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
+        self.tab.project_navigation = None;
+        self.tab.project_return = None;
+        self.project_dialog = None;
+        self.tab.project_enter_pending = false;
+        self.tab.project_pending_acts.clear();
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
@@ -6444,6 +6485,9 @@ mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+#[cfg(test)]
+mod write_guard_tests;
 
 // The read scope of the pictures in a document a plugin the user added returned.
 #[cfg(test)]

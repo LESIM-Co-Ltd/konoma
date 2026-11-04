@@ -956,6 +956,7 @@ fn run(
     let mut startup_keys = startup_keys;
     loop {
         needs_redraw |= rx.plugin_updates.apply(app);
+        needs_redraw |= app.poll_projects();
         if needs_redraw {
             // The right to write to the terminal for the whole frame (a signal's exit cleanup
             // waits for it, so its escapes never land between the chunks of a transmit).
@@ -1893,7 +1894,11 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
         Action::OpenExternal => app.open_in_other_app(),
-        Action::OpenGitView => app.open_git_view(),
+        Action::OpenGitView => {
+            if !app.enter_project() {
+                app.open_git_view();
+            }
+        }
         Action::Refresh => {
             app.refresh_explicit()?;
             // The log, the graph, the branch and worktree lists read again too.
@@ -1959,6 +1964,9 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
         Action::PreviewBack => {
+            if app.return_to_project() {
+                return Ok(false);
+            }
             // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
             // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
             // returns to the Git view (or the tree, whichever it came from). Everything else
@@ -2425,7 +2433,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
 
 /// The fixed keys (arrows, `Home`/`End`, `Esc`, `Enter`, `Tab`/`Shift-Tab`). They cannot be rebound, but each has a
 /// default operation per context (`ops::keys::fixed_bindings`) and runs through `dispatch_action`
-/// like every other key, so the same guards apply (`ops::gate`, `writes_repository`): `Enter` on a
+/// like every other key, so the same policy applies (`ops::gate`, `write_guard`): `Enter` on a
 /// jj bookmark list no longer reaches the checkout.
 /// Returns `Some(quit)` when handled, or `None` if not a fixed key (falls through to keymap resolution). Requirements 3/4.
 fn handle_fixed_key(
@@ -2460,6 +2468,12 @@ fn handle_fixed_key(
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // The previous transient message (flash) is cleared on the next key input.
     app.flash = None;
+    if !app.project_input_replaying() {
+        app.poll_projects();
+    }
+    if app.handle_project_key(key) {
+        return Ok(false);
+    }
     let sfc = app.surface();
     // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
     // confirm modals), which are handled before any lookup below.

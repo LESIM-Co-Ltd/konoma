@@ -7,7 +7,22 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- **Computed project chips.** Project sessions can return a current styled tree-title summary through `Session::chip`, with bounded text and spans. Protocol 2 carries chip calls and replies; children without the advertised capability use the declared chip. The SDK documents refresh scheduling and failure fallback for the host integration that follows separately.
+
+- Project input received during a view fetch is retained for the current screen and dispatched
+  after its reply, including dialogs and navigation. Refreshes preserve row identities, queued
+  actions recheck their guards, and screen-jump collisions only suppress keys in project screens.
+- Project providers now open from `p`, with declared screen tabs, row actions and pushed screens.
+  The host renders their lists, diffs, text and documents, supplies selection and prompt answers,
+  runs one worker per project and refreshes only the action's declared targets. The shared write
+  policy also respects a plugin's own read-only declaration.
+- Static project marker discovery runs on a worker and keeps its results with each host tab.
+  Project watch paths and ancestor marker changes trigger discovery again.
+- Plugin navigation outcomes open files at a line, full-screen diffs, worktree roots and new tabs
+  through the host's existing navigation paths.
+- One host write policy checks plugin actions and the existing git/jj write executors, including
+  checkout through Enter and writes resumed after dialogs. `[plugins.git] read_only = true` and
+  `[plugins.jj] read_only = true` also cover the host's current version-control screens.
+- **Computed project chips.** The host displays the styled summary from `Session::chip`, fetched on the project worker at open, on `RefreshTarget::Chip`, and after declared watch paths invalidate the project. Text and spans are bounded before caching; empty chips hide the summary, while `None`, failures and panics use the localized declaration. Failures are reported without discarding the session. Protocol 2 carries chip calls and replies; children without the advertised capability use the declared chip.
 - **Project host API data.** Project view requests carry the screen and pushed selection; action contexts carry row values, marked rows and dialog answers. Plugins can declare static read-only mode and typed refresh targets. These fields require protocol 2, preserve legacy bytes when absent, and validate named refresh screens.
 - **Project declaration checks.** The plugin registry bounds and validates project paths, markers, screen keys and choice prompts, with typed English/Japanese refusals. Project screen key contexts no longer collide with host context names. Standalone apps report unsupported project navigation; protocol refusals report the actual supported versions and handle manifest panics. The expanded SDK data types are non-exhaustive and list rows have field builders.
 - **Project plugin API.** Plugins can declare detection markers, screens and row kinds, a chip, watch paths and a static-only version-control capability flag. Actions gain typed project contexts and confirmation, text and list prompts; list rows gain an independent multi-selection mark. Project input and five navigation outcomes use protocol 2, while ordinary file plugins retain protocol 1 support. Host project screens and the write guard follow in a later change.

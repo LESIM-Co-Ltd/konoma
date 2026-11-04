@@ -23801,7 +23801,7 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
 
 // =============================================================================
 // jj write-safety audit (2026-08): the read-only gate itself
-// (`Action::writes_repository()` + `dispatch_action`'s check, `src/main.rs`), which had no test
+// (`ops::decl` write metadata + `ops::write_guard`), which had no test
 // coverage of its own before this. The key-driven walk through every reachable write action lives
 // in `src/e2e_tests.rs` (needs `Sim`); what stays here needs either private `PerTab` field access
 // (only visible inside `app` and its submodules) or is a pure source/logic check unrelated to keys.
@@ -23862,16 +23862,12 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
 /// The read-only gate in `dispatch_action` only protects a write if it is reached through an
 /// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::git::` write call
 /// lives, `src/app/git_view.rs`) would bypass the gate entirely, no matter what
-/// `Action::writes_repository()` says. This scans the actual source of `git_view.rs` at compile time
+/// the key declaration says. This scans the actual source of `git_view.rs` at compile time
 /// (`include_str!`) and confirms every one of the write API's call sites is still exactly the one
 /// inside `run_git_op`.
 ///
-/// What this catches: a write call added, or moved, to somewhere else in this file, outside
-/// `run_git_op` — the concrete way today's single gate could stop covering a write that already
-/// exists. What this does **not** catch: a brand new write-shaped `Action` that calls a brand new
-/// `crate::git::` function correctly routed *through* `run_git_op`, but never added to
-/// `writes_repository()` in the first place — see `writes_repository_set_is_pinned...` below for
-/// that (still incomplete) half of the picture.
+/// A second source scan in `ops::write_guard_tests` covers other production source files and
+/// checks the guard at each execution boundary.
 #[cfg(feature = "git")]
 #[test]
 fn git_write_api_calls_stay_confined_to_run_git_op() {
@@ -23911,8 +23907,8 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
             total, 1,
             "{needle} must appear exactly once in git_view.rs (inside run_git_op). More than once \
              means a write path was added outside run_git_op — route it through \
-             start_git_op/run_git_op like every other write here, so dispatch_action's \
-             writes_repository() gate (src/main.rs) still covers it. Zero means this needle itself \
+             start_git_op/run_git_op like every other write here, so the execution guard \
+             still covers it. Zero means this needle itself \
              needs updating (the function was renamed, removed, or its call site changed shape)."
         );
         let inside = body.matches(needle).count();
@@ -23924,27 +23920,12 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
     }
 }
 
-/// `writes_repository()` (`src/keymap.rs`) is a hand-written list — the only thing that decides
-/// which `Action`s `dispatch_action`'s read-only gate refuses in a jj repository. Pinning its answer
-/// here means any change to the SET it returns true for breaks this test and forces a human to look.
-///
-/// If you just **added** a new write-shaped Action and correctly included it in
-/// `writes_repository()`, this test fails with a diff — add the new variant to both `candidates` and
-/// `want` below, AND add a real key press for it to
-/// `e2e_jj_write_actions_are_gated_by_the_read_only_backend` (`src/e2e_tests.rs`), so the new action
-/// is actually exercised against jj rather than merely declared correctly.
-///
-/// What this test **cannot** catch: a new write-shaped Action that was never added to
-/// `writes_repository()` at all. `Action` has no enumerable list of its own variants (unlike
-/// `i18n::Msg`'s `ALL_MSGS`, which `all_msg_variants_are_covered_by_all_msgs` checks against the
-/// enum source directly) — there is no way, from outside `src/keymap.rs`, to ask "what are all the
-/// Action variants", and therefore no way to mechanically prove none of them was left out of this
-/// list. That is a real, standing gap that only a human reviewing a diff to `keymap.rs` can close;
-/// the closest mechanical mitigation is `git_write_api_calls_stay_confined_to_run_git_op` (above),
-/// which at least confirms no git write call exists outside the one path this gate is meant to guard.
+/// Pin the write metadata used by keys, footer and help. Execution is guarded independently at
+/// `start_git_op`, so forgetting a key declaration cannot permit a write. New operations still
+/// need a key-driven test to keep their hints consistent with that execution boundary.
 #[cfg(feature = "git")]
 #[test]
-fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
+fn guard_write_declarations_are_pinned_add_new_write_actions_to_e2e_tests_too() {
     use crate::keymap::{action_name, Action};
     let candidates = [
         Action::GitStage,
@@ -23958,10 +23939,11 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
         Action::BranchCreate,
         Action::BranchDelete,
         Action::WorktreeCreate,
+        Action::JjSync,
     ];
     let mut got: Vec<String> = candidates
         .into_iter()
-        .filter(|a| a.writes_repository())
+        .filter(|a| crate::ops::decl::decl(*a).writes.is_some())
         .map(action_name)
         .collect();
     got.sort();
@@ -23978,6 +23960,7 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
         "git_unstage",
         "git_unstage_all",
         "worktree_create",
+        "jj_sync",
     ]
     .into_iter()
     .map(String::from)
@@ -23986,7 +23969,7 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
 
     assert_eq!(
         got, want,
-        "writes_repository()'s answer for the known write actions changed. If you removed one, the \
+        "The write declarations for known write actions changed. If you removed one, the \
          jj gate just got weaker — put it back unless that was deliberate. If you added a brand new \
          write action, this candidate list (and the pinned `want` list) also needs the new variant, \
          AND it needs a real key press in e2e_jj_write_actions_are_gated_by_the_read_only_backend \
@@ -23994,16 +23977,15 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
     );
 
     // Sanity: some read/navigation Actions must stay ungated, or the pinned lists above could
-    // vacuously agree even if writes_repository() had degenerated into "gate everything".
+    // vacuously agree even if the declarations had degenerated into "gate everything".
     for (name, a) in [
-        ("jj_sync", Action::JjSync),
         ("git_open_worktrees", Action::GitOpenWorktrees),
         ("git_open_branches", Action::GitOpenBranches),
         ("git_close", Action::GitClose),
         ("git_graph_toggle_all", Action::GitGraphToggleAll),
     ] {
         assert!(
-            !a.writes_repository(),
+            crate::ops::decl::decl(a).writes.is_none(),
             "{name} is a read/navigation action and must not be gated as a write"
         );
     }

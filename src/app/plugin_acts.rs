@@ -16,6 +16,21 @@ use crate::plugins::{ActBinding, PluginAct};
 use konoma_plugin::host::acts;
 
 impl App {
+    /// The execution boundary also uses the write policy: callers that do not come from a key
+    /// and presses queued before a dialog/config change cannot bypass it.
+    pub(super) fn allow_plugin_write(&mut self, action: &str) -> bool {
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        let id = show.acting().to_string();
+        let writes = self
+            .plugin_keys
+            .acts_of(&id)
+            .iter()
+            .any(|b| b.act.act() == action && b.writes);
+        self.allow_write(&id, writes, false)
+    }
+
     /// The id of the plugin whose session the show holds (the destination after a `Reopen`), if the
     /// show is the current one: its declared actions are the ones offered and run.
     fn acting_plugin(&self) -> Option<&str> {
@@ -31,17 +46,31 @@ impl App {
     /// The declared actions of the plugin on screen that belong to `ctx`, in declaration order.
     /// Empty off the plugin views.
     pub fn plugin_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
-        let Some(id) = self.acting_plugin() else {
-            return Vec::new();
-        };
-        acts::acts_in(self.plugin_keys.acts_of(id), &ctx.name())
+        let mut bindings = self.project_acts_in(ctx);
+        if !self.project_active() {
+            if let Some(id) = self.acting_plugin() {
+                bindings.extend(
+                    acts::acts_in(self.plugin_keys.acts_of(id), &ctx.name())
+                        .into_iter()
+                        .filter(|b| {
+                            self.plugin_keys
+                                .declaration(b.act)
+                                .is_some_and(|a| a.project_context.is_none())
+                        }),
+                );
+            }
+        }
+        bindings
     }
 
     /// The operation a key runs in the plugin's layer. Layers 0 to 3 are the host's and a plugin
     /// cannot take their keys, so this is asked after the fixed keys and before the keymap
     /// without any chance of shadowing either.
     pub fn plugin_action_for_key(&self, ctx: Context, kp: KeyPress) -> Option<Action> {
-        acts::act_for_key(&self.plugin_acts_in(ctx), kp).map(|b| Action::Plugin(b.act))
+        self.plugin_acts_in(ctx)
+            .into_iter()
+            .find(|binding| self.plugin_key_of(ctx, binding.act) == Some(kp))
+            .map(|binding| Action::Plugin(binding.act))
     }
 
     /// The declared action `p`, if it exists and belongs to `ctx`.
@@ -55,6 +84,13 @@ impl App {
     /// act: [[hint-shown-iff-key-acts]], and the hint does not flicker with a redraw timer's
     /// ticks); for any other display it is false, because the press would be ignored -- except while the file is read again (`ShowFlow::reopening`): then the press waits for the new session, so the hint stays.
     pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
+        if self
+            .plugin_keys
+            .declaration(p)
+            .is_some_and(|a| a.project_context.is_some())
+        {
+            return self.project_act_enabled(p).unwrap_or(false);
+        }
         let canvas = self.is_canvas_preview();
         let facts = match self.plugin.as_ref() {
             Some(s) => acts::ShowFacts {
@@ -70,20 +106,38 @@ impl App {
         acts::act_enabled(&facts)
     }
 
-    /// Whether `[plugins.<id>] read_only = true` forbids the plugin's writing actions.
-    pub fn plugin_is_read_only(&self, plugin: &str) -> bool {
-        matches!(
-            self.cfg
-                .plugins
-                .get(plugin)
-                .and_then(|t| t.get("read_only")),
-            Some(toml::Value::Boolean(true))
-        )
-    }
-
     /// The key of `p` in `ctx`, if it has one.
     pub fn plugin_key_of(&self, ctx: Context, p: PluginAct) -> Option<KeyPress> {
-        self.plugin_binding_in(ctx, p).and_then(|b| b.key)
+        let key = self.plugin_binding_in(ctx, p)?.key?;
+        if self.project_active() && ctx == Context::Canvas {
+            let nav = self.tab.project_navigation.as_ref()?;
+            if self
+                .project_runtimes
+                .get(&nav.project)
+                .is_some_and(|runtime| {
+                    runtime
+                        .project
+                        .declaration
+                        .screens
+                        .iter()
+                        .any(|screen| screen.key.is_some_and(|c| key == KeyPress::ch(c)))
+                })
+            {
+                return None;
+            }
+        }
+        Some(key)
+    }
+
+    pub(crate) fn plugin_context_bindings(&self, ctx: Context) -> Vec<ActBinding> {
+        self.plugin_acts_in(ctx)
+            .into_iter()
+            .map(|binding| {
+                let mut binding = binding.clone();
+                binding.key = self.plugin_key_of(ctx, binding.act);
+                binding
+            })
+            .collect()
     }
 
     /// Run a declared action of the open plugin on the worker. While a job still holds the
@@ -91,6 +145,9 @@ impl App {
     /// other display it is ignored, and so is its hint (`plugin_act_enabled`), unless the file is
     /// being read again: then it waits for the new session.
     pub fn run_plugin_action(&mut self, p: PluginAct) {
+        if self.request_project_act(p) {
+            return;
+        }
         let _ = self.plugin_act(p.act());
     }
 }

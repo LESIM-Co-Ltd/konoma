@@ -88,7 +88,11 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 /// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
 /// here, in one function per screen.
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
-    let mut v = base_plan(app, ctx);
+    let mut v = if app.project_active() && ctx == Context::Canvas {
+        vec![Foot::Dyn(|app, _| app.project_controls())]
+    } else {
+        base_plan(app, ctx)
+    };
     // The open plugin's own operations come right after the screen's movement keys, in the
     // order of the priority the plugin declared (a stable sort: declaration order within one
     // priority). Only actions that asked for a footer entry are planned here; the others are in
@@ -636,7 +640,11 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                 let action = Action::Plugin(*p);
                 match app.plugin_binding_in(ctx, *p) {
                     Some(b) => konoma_plugin::host::acts::footer_token(
-                        b,
+                        &{
+                            let mut binding = b.clone();
+                            binding.key = app.plugin_key_of(ctx, *p);
+                            binding
+                        },
                         action_enabled(app, ctx, action),
                         app.plugin_lang(),
                         |key| write_keys(&[key], ctx),

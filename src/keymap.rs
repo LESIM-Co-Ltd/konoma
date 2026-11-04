@@ -490,7 +490,7 @@ pub enum Action {
 
     // --- The default operation of the fixed keys (`Enter`, `Esc`, `Space`; plugin stage 2 / B2) ---
     // These keys cannot be rebound, but they run through `dispatch_action` like every other key so
-    // that the same guards apply (`writes_repository`, the `ops::gate` check) and so that the help
+    // that the same guard applies (`ops::write_guard`) and so that the help
     // and the footer can name them from the same declaration.
     /// `Esc`: leave / cancel / clear whatever the frontmost context calls "the thing I am in"
     /// (close an overlay, clear a search or filter, go back one screen). What it does in each
@@ -508,31 +508,6 @@ pub enum Action {
     /// An action the open plugin declared (`Manifest::actions`). It has no config name: its key
     /// is the plugin's own (`[keys.<plugin id>]`), and it is always reachable from `Space`.
     Plugin(crate::plugins::PluginAct),
-}
-
-#[cfg(feature = "git")]
-impl Action {
-    /// Whether running this changes the repository.
-    ///
-    /// Not every backend can take one: konoma reads a jj repository and never writes to it, so a
-    /// write asked of jj is answered with an explanation instead of a failure. Keeping the list
-    /// here means a new write action is refused by default rather than by remembering to guard it.
-    pub fn writes_repository(self) -> bool {
-        matches!(
-            self,
-            Action::GitStage
-                | Action::GitUnstage
-                | Action::GitStageAll
-                | Action::GitUnstageAll
-                | Action::GitDiscard
-                | Action::GitDiffDiscard
-                | Action::GitCommit
-                | Action::BranchCheckout
-                | Action::BranchCreate
-                | Action::BranchDelete
-                | Action::WorktreeCreate
-        )
-    }
 }
 
 // =============================================================================

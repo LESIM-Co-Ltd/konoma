@@ -90,7 +90,7 @@ fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu
         LeaderId::Options => action_enabled(app, ctx, a),
         _ => !matches!(a, Action::CopyCodeBlock) || action_enabled(app, ctx, a),
     };
-    let items = m
+    let mut items: Vec<_> = m
         .items
         .iter()
         .filter(|it| gated(it.action))
@@ -109,6 +109,30 @@ fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu
             }
         })
         .collect();
+    if id == LeaderId::File {
+        let bindings = app.plugin_context_bindings(ctx);
+        let declared =
+            konoma_plugin::host::acts::menu_candidates(&bindings.iter().collect::<Vec<_>>());
+        let mut candidates: Vec<_> = items
+            .iter()
+            .map(|item| (item.action, Some(item.key)))
+            .collect();
+        candidates.extend(
+            declared
+                .into_iter()
+                .map(|(act, key)| (Action::Plugin(act), key)),
+        );
+        let assigned = menu_core::assign(&candidates, mnemonic);
+        for ((action, _), key) in candidates.into_iter().zip(assigned).skip(items.len()) {
+            if let (Action::Plugin(plugin), Some(key)) = (action, key) {
+                if action_enabled(app, ctx, action) {
+                    if let Some(label) = plugin_label(app, ctx, plugin) {
+                        items.push(MenuItem { key, action, label });
+                    }
+                }
+            }
+        }
+    }
     Some(Menu {
         id,
         title: tr(app.lang, m.title).to_string(),
@@ -205,10 +229,15 @@ fn candidates(
 ) -> Vec<(Action, Option<KeyPress>)> {
     // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
     // its key (a collision, a rebinding) is still reachable.
-    let declared = konoma_plugin::host::acts::menu_candidates(&app.plugin_acts_in(ctx))
-        .into_iter()
-        .map(|(act, key)| (Action::Plugin(act), key))
-        .collect();
+    let bindings = app.plugin_context_bindings(ctx);
+    let declared: Vec<_> =
+        konoma_plugin::host::acts::menu_candidates(&bindings.iter().collect::<Vec<_>>())
+            .into_iter()
+            .map(|(act, key)| (Action::Plugin(act), key))
+            .collect();
+    if app.project_active() && ctx == Context::Canvas {
+        return declared;
+    }
     let skeleton = Skeleton {
         bound: app.keymaps.bound_actions(ctx),
         // What the context has by default but no key reaches now (moved away by `[keys]`, or lost

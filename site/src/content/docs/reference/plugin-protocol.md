@@ -106,6 +106,26 @@ summary. Watch paths are relative to the detected project root; a change
 invalidates the project's data. `version_control` advertises an optional
 capability; **the capability calls are static-link only** and have no wire RPC.
 
+For project sessions, the host asks `Session::chip` on the worker after opening,
+after an action declaring `RefreshTarget::Chip`, and when declared watch paths
+invalidate the project. It caches the result, rather than calling on every key or
+draw. `Ok(None)` uses `ProjectDecl.chip` in the host's language (or no summary if
+absent); an empty `Some(Chip::default())` explicitly hides it. A failure or panic
+is reported through the host's flash message, keeps the session alive, and uses
+the declared fallback. File-only sessions are never asked.
+
+A computed `Chip` contains a styled `Line`. The host takes it through
+`Chip::clipped` once before keeping it: at most 64 spans and 512 characters, with
+controls and the terminal image placeholder removed and a trailing `…` when text
+is cut. The tree title preserves span colors and uses terminal cell widths when
+clipping, including CJK text. Multiple project summaries retain detection order
+and the ` · ` separator; each tab displays only its detected projects.
+
+Protocol 2 children advertise chip calls with `session_chip: true`. An older
+child without that advertisement receives no chip call: the SDK client returns
+`Ok(None)`, so the host displays the declared fallback. Project discovery in the
+host currently accepts statically registered providers only.
+
 The input is `{"Project":{"root":Path,"marker":string}}`: an absolute detected
 root and the actual matched entry name (for example `MyApp.xcworkspace`, rather
 than `*.xcworkspace`). It is not a file byte input.

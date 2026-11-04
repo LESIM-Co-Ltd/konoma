@@ -18,6 +18,7 @@ impl App {
 
     /// Save the current working state to the active tab.
     pub(super) fn save_active(&mut self) {
+        self.cancel_project_input();
         // This tab's media is about to be discarded by clear_image. Stash the one slot so that
         // when we return, decoding/rasterizing/launching external tools doesn't need to be redone.
         self.stash_media_cache();
@@ -316,6 +317,15 @@ impl App {
         // (it doesn't build a fresh `PerTab`), so without this the new tab would inherit — and be
         // indistinguishable from — the tab it was opened from. See `PerTab::id`.
         self.tab.id = self.next_tab_id();
+        // A new tab needs its own watcher/result slot even when its root is the same. Sharing
+        // the snapshot's worker would let one tab consume or cancel another tab's discoveries.
+        self.tab.projects = crate::plugins::projects::ProjectDetection::default();
+        self.tab.project_navigation = None;
+        self.tab.project_pending_acts.clear();
+        self.tab.project_return = None;
+        self.tab.project_effects.clear();
+        self.tab.project_enter_pending = false;
+        self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;
         self.tab.selected = 0;
@@ -440,21 +450,32 @@ impl App {
     /// current tab untouched. A file opens as a preview; a directory becomes the new tab's root
     /// (mirroring `l`). No-op when the tree is empty.
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
+        if self.project_active() {
+            if let Some(path) = self.project_row_target() {
+                return self.tab_new_from_path(path, false);
+            }
+            return Ok(());
+        }
         let Some(entry) = self.tab.entries.get(self.tab.selected).cloned() else {
             return Ok(());
         };
+        self.tab_new_from_path(entry.path, entry.is_dir)
+    }
+
+    /// The path branch of Ctrl-t, shared by a project's OpenTab outcome.
+    pub(super) fn tab_new_from_path(&mut self, path: PathBuf, is_dir: bool) -> Result<()> {
         self.tab_new()?; // fresh Tree tab at the current root, now active
-        if entry.is_dir {
+        if is_dir {
             // Descend into the folder in the new tab (same as `l`); root changes, so drop stale state.
             self.clear_for_root_change();
-            self.tab.root = entry.path;
+            self.tab.root = path;
             self.tab.entries.clear();
             self.tab.selected = 0;
             self.rebuild_tree()?;
         } else {
             // Reveal the file (so returning with `q` lands on it), then preview it.
-            let _ = self.reveal_path_deep(&entry.path);
-            self.enter_preview(&entry.path);
+            let _ = self.reveal_path_deep(&path);
+            self.enter_preview(&path);
         }
         self.save_session();
         Ok(())
