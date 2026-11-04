@@ -1509,6 +1509,12 @@ fn cx_wire(
     .map_err(Failure::from)
 }
 
+fn act_cx_wire(cx: &ActCx<'_>, version: u32) -> Result<wire::WCx, Failure> {
+    let cx = wire::act_cx_to_wire(cx)?;
+    wire::require_protocol(version, wire::cx_protocol(&cx))?;
+    Ok(cx)
+}
+
 /// One session of a [`ProcPlugin`].
 struct ProcSession {
     shared: Arc<Shared>,
@@ -1532,11 +1538,16 @@ impl Session for ProcSession {
         let sid = self.sid;
         let done = self.shared.call(
             |rid| {
+                let req = req_to_wire(req);
+                wire::require_protocol(
+                    self.shared.version.load(Ordering::Acquire),
+                    wire::req_protocol(&req),
+                )?;
                 Ok((
                     ToChild::View {
                         sid,
                         rid,
-                        req: req_to_wire(req),
+                        req,
                         cx: cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?,
                     },
                     Vec::new(),
@@ -1563,7 +1574,7 @@ impl Session for ProcSession {
                         sid,
                         rid,
                         action: action.to_string(),
-                        cx: cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?,
+                        cx: act_cx_wire(cx, self.shared.version.load(Ordering::Acquire))?,
                     },
                     Vec::new(),
                 ))
@@ -1589,7 +1600,7 @@ impl Session for ProcSession {
                         sid,
                         rid,
                         key: key_to_wire(key),
-                        cx: cx_wire(cx.settings, cx.lang, cx.term, cx.external, &cx.read_scope)?,
+                        cx: act_cx_wire(cx, self.shared.version.load(Ordering::Acquire))?,
                     },
                     Vec::new(),
                 ))

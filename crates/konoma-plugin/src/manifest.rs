@@ -109,6 +109,8 @@ pub enum Unavailable {
 /// ```
 #[non_exhaustive]
 pub struct Manifest {
+    /// The plugin's own static declaration. The host combines it with configured read-only.
+    pub read_only: bool,
     /// Optional project declarations, independent of file bindings and legacy screen names.
     pub project: Option<ProjectDecl>,
     pub id: String,
@@ -143,6 +145,7 @@ impl Manifest {
     pub fn new(id: impl Into<String>, version: impl Into<String>) -> Manifest {
         let id = id.into();
         Manifest {
+            read_only: false,
             project: None,
             name: Tr::new(id.clone()),
             id,
@@ -160,6 +163,11 @@ impl Manifest {
             sized: false,
             unavailable: Unavailable::Message,
         }
+    }
+
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 
     pub fn name(mut self, name: impl Into<Tr>) -> Manifest {
@@ -376,6 +384,7 @@ impl Bind {
 /// ```
 #[non_exhaustive]
 pub struct Act {
+    pub refresh: Vec<crate::project::RefreshTarget>,
     pub id: String,
     /// The default key (see [`crate::keys::parse_key`]). `None` means menu-only.
     pub key: Option<String>,
@@ -407,6 +416,7 @@ impl Act {
     pub fn new(id: impl Into<String>) -> Act {
         let id = id.into();
         Act {
+            refresh: Vec::new(),
             label: Tr::new(id.clone()),
             help: Tr::new(""),
             id,
@@ -420,6 +430,11 @@ impl Act {
             text_input: None,
             choice_input: None,
         }
+    }
+
+    pub fn refresh(mut self, target: crate::project::RefreshTarget) -> Self {
+        self.refresh.push(target);
+        self
     }
 
     pub fn key(mut self, key: impl Into<String>) -> Act {

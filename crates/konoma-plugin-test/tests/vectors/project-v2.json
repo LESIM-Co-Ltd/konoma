@@ -1,5 +1,6 @@
 {
   "id": "project-fixture",
+  "read_only": true,
   "version": "1",
   "api": [
     0,
@@ -76,6 +77,7 @@
   "actions": [
     {
       "id": "delete",
+      "refresh": ["CurrentScreen", {"Screen": {"screen": "branches"}}, "AllScreens", "TreeStatus", "Chip"],
       "key": "Enter",
       "label": {
         "en": "Delete",

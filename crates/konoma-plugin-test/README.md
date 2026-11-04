@@ -24,12 +24,13 @@ Manifest checks reuse the host registry's validation of ids, declarations and gl
 to the SDK's key and `shows` checks. Hints use the state from `Viewed`, or keep the open state after
 a valid `Answer::Err`; EOF, a deadline, a broken frame or an unexpected reply fails the hints check.
 
-The harness offers protocol versions 1 and 2. Project declarations, dialog declarations,
-project inputs, marked rows and navigation outcomes require version 2; sending them after
+The harness offers protocol versions 1 and 2. Project, dialog, read-only and refresh declarations,
+project inputs and view requests, action selections/answers, row values, marked rows and navigation outcomes require version 2; sending them after
 selecting version 1 fails conformance. Navigation paths and preview line numbers are checked
 before an action reply is accepted. The project manifest JSON vector is
 `tests/vectors/project-v2.json`; `tests/project_vectors.rs` covers project input, all five
-navigation outcomes and independent list marks. SDK tests also cover each project wire type.
+navigation outcomes and independent list marks. `tests/vectors/project-calls-v2.msgpack.hex` fixes the
+view selection, row values, marked set and dialog answers. SDK tests also cover each project wire type.
 
 Each independent probe uses a fresh process group and a private handoff directory. The child's
 working directory is inherited so interpreter arguments such as `plugin.py` still resolve.

@@ -447,7 +447,10 @@ impl Worker {
     }
 
     fn call_inner(&mut self, msg: ToChild, flag: &Arc<AtomicBool>) -> Result<Reply, Failure> {
-        let cx_of = |c| -> Result<CxData, Failure> { Ok(cx_from_wire(c)?) };
+        let cx_of = |c: wire::WCx| -> Result<CxData, Failure> {
+            wire::require_protocol(self.version, wire::cx_protocol(&c))?;
+            Ok(cx_from_wire(c)?)
+        };
         match msg {
             ToChild::Open { sid, input, cx, .. } => {
                 wire::require_protocol(self.version, wire::input_protocol(&input))?;
@@ -480,6 +483,7 @@ impl Worker {
                 Ok(Reply::Opened { state })
             }
             ToChild::View { sid, req, cx, .. } => {
+                wire::require_protocol(self.version, wire::req_protocol(&req))?;
                 let cx = cx_of(cx)?;
                 let req = req_from_wire(req)?;
                 let vcx = ViewCx::new(&cx.settings, &cx.lang)
@@ -531,11 +535,12 @@ impl Worker {
                 sid, action, cx, ..
             } => {
                 let cx = cx_of(cx)?;
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)
@@ -557,11 +562,12 @@ impl Worker {
             ToChild::Key { sid, key, cx, .. } => {
                 let cx = cx_of(cx)?;
                 let key = key_from_wire(key);
-                let acx = ActCx::new(&cx.settings, &cx.lang)
+                let mut acx = ActCx::new(&cx.settings, &cx.lang)
                     .with_cancel(cancel_of(flag))
                     .with_term(cx.term)
                     .with_external(cx.external)
                     .with_read_scope(cx.read_scope.clone());
+                acx.project = cx.project.clone();
                 let session = self
                     .sessions
                     .get_mut(&sid)

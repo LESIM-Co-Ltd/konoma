@@ -34,6 +34,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod project;
 pub use project::*;
+mod project_context;
+pub use project_context::*;
 
 use crate::input::{Input, Origin, Resource, Resources};
 use crate::key::{Key, KeyCode, KeyMods};
@@ -733,6 +735,7 @@ pub fn value_from_wire(v: WValue, depth: usize) -> Result<Value, WireError> {
 /// The parts of `OpenCx` / `ViewCx` / `ActCx` that cross (the cancel flag does not: it is the
 /// request id and a `Cancel` message).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WCx {
     pub settings: Vec<(String, WValue)>,
     pub lang: String,
@@ -741,16 +744,55 @@ pub struct WCx {
     pub external: bool,
     /// `None` is unrestricted.
     pub read_dirs: Option<Vec<WPath>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<WProjectAct>,
+}
+
+impl WCx {
+    pub fn new(lang: impl Into<String>) -> Self {
+        Self {
+            settings: Vec::new(),
+            lang: lang.into(),
+            pixels: false,
+            colors: 0,
+            external: false,
+            read_dirs: None,
+            project: None,
+        }
+    }
+    pub fn project(mut self, project: WProjectAct) -> Self {
+        self.project = Some(project);
+        self
+    }
 }
 
 /// An owned context, decoded; the child borrows from it to build the `*Cx`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CxData {
     pub settings: Settings,
     pub lang: String,
     pub term: TermCaps,
     pub external: bool,
     pub read_scope: ReadScope,
+    pub project: Option<crate::project::ProjectAct>,
+}
+
+impl CxData {
+    pub fn new(settings: Settings, lang: impl Into<String>) -> Self {
+        Self {
+            settings,
+            lang: lang.into(),
+            term: TermCaps::new(),
+            external: false,
+            read_scope: ReadScope::unrestricted(),
+            project: None,
+        }
+    }
+    pub fn project(mut self, project: crate::project::ProjectAct) -> Self {
+        self.project = Some(project);
+        self
+    }
 }
 
 /// What the host puts in a call's context.
@@ -769,6 +811,7 @@ pub fn cx_to_wire(cx: &CxSource<'_>) -> Result<WCx, WireError> {
         settings.push((k.clone(), value_to_wire(v, 0)?));
     }
     Ok(WCx {
+        project: None,
         settings,
         lang: cx.lang.to_string(),
         pixels: cx.term.pixels,
@@ -803,6 +846,7 @@ pub fn cx_from_wire(c: WCx) -> Result<CxData, WireError> {
         }
     };
     Ok(CxData {
+        project: c.project.map(project_act_from_wire),
         settings,
         lang: c.lang,
         term: TermCaps::new().pixels(c.pixels).colors(match c.colors {
@@ -1043,16 +1087,30 @@ pub fn key_from_wire(k: WKey) -> Key {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WViewReq {
     pub repr: Option<String>,
     pub page: Option<u64>,
     pub cols: u16,
     pub rows: u16,
     pub cell_px: Option<(u16, u16)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<WProjectView>,
+}
+
+impl WViewReq {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        req_to_wire(&ViewReq::new(cols, rows))
+    }
+    pub fn project(mut self, project: WProjectView) -> Self {
+        self.project = Some(project);
+        self
+    }
 }
 
 pub fn req_to_wire(r: &ViewReq) -> WViewReq {
     WViewReq {
+        project: r.project.as_ref().map(project_view_to_wire),
         repr: r.repr.clone(),
         page: r.page.map(|p| p as u64),
         cols: r.cols,
@@ -1066,6 +1124,7 @@ pub fn req_from_wire(r: WViewReq) -> Result<ViewReq, WireError> {
     out.repr = r.repr;
     out.page = r.page.map(|p| index_from_wire(p, "page")).transpose()?;
     out.cell_px = r.cell_px;
+    out.project = r.project.map(project_view_from_wire);
     Ok(out)
 }
 
@@ -1499,10 +1558,12 @@ pub struct WImageView {
 ///
 /// ```compile_fail
 /// use konoma_plugin::proc::wire::WListRow;
-/// let _ = WListRow { cells: vec![], kind: String::new(), target: None, checked: None, marked: false };
+/// let _ = WListRow { cells: vec![], kind: String::new(), value: String::new(), target: None, checked: None, marked: false };
 /// ```
 #[non_exhaustive]
 pub struct WListRow {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
     pub cells: Vec<WLine>,
     pub kind: String,
     pub target: Option<WPath>,
@@ -2095,6 +2156,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 .iter()
                 .map(|r| {
                     Ok(WListRow {
+                        value: r.value.clone(),
                         cells: lines_to_wire(&r.cells),
                         kind: r.kind.clone(),
                         target: r
@@ -2233,6 +2295,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             let mut out = Vec::with_capacity(rows.len());
             for r in rows {
                 out.push(ListRow {
+                    value: r.value,
                     cells: lines_from_wire(r.cells),
                     kind: r.kind,
                     target: r
@@ -2316,6 +2379,8 @@ pub struct WBind {
 /// ```
 #[non_exhaustive]
 pub struct WAct {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refresh: Vec<WRefreshTarget>,
     pub id: String,
     pub key: Option<String>,
     pub label: WTr,
@@ -2389,6 +2454,8 @@ pub enum WUnavailable {
 /// ```
 #[non_exhaustive]
 pub struct WManifest {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<WProjectDecl>,
     pub id: String,
@@ -2410,6 +2477,7 @@ pub struct WManifest {
 
 pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
     Ok(WManifest {
+        read_only: m.read_only,
         project: m.project.as_ref().map(project_to_wire),
         id: m.id.clone(),
         version: m.version.clone(),
@@ -2437,6 +2505,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
             .actions
             .iter()
             .map(|a| WAct {
+                refresh: a.refresh.iter().map(refresh_target_to_wire).collect(),
                 id: a.id.clone(),
                 key: a.key.clone(),
                 label: tr_to_wire(&a.label),
@@ -2517,6 +2586,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
 /// themselves (keys, globs, ids) are validated by the registry as for any plugin, not here.
 pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
     let mut out = Manifest::new(m.id, m.version);
+    out.read_only = m.read_only;
     out.project = m.project.map(project_from_wire).transpose()?;
     out.api = ApiVersion {
         major: m.api.0,
@@ -2549,6 +2619,11 @@ pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
         .actions
         .into_iter()
         .map(|a| Act {
+            refresh: a
+                .refresh
+                .into_iter()
+                .map(refresh_target_from_wire)
+                .collect(),
             id: a.id,
             key: a.key,
             label: tr_from_wire(a.label),

@@ -49,6 +49,27 @@ pub(super) fn problem(m: &Manifest) -> Option<ManifestReason> {
     }
     for action in &m.actions {
         let id = || display_name(&action.id);
+        if action.refresh.len() > MAX_REFRESH_TARGETS {
+            return Some(ManifestReason::TooMany {
+                kind: ManifestCount::RefreshTargets,
+                count: action.refresh.len(),
+                limit: MAX_REFRESH_TARGETS,
+            });
+        }
+        for target in &action.refresh {
+            if let crate::project::RefreshTarget::Screen { screen } = target {
+                if !m
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.screens.iter().any(|s| &s.id == screen))
+                {
+                    return Some(ManifestReason::UnknownRefreshScreen {
+                        action: id(),
+                        screen: display_name(screen),
+                    });
+                }
+            }
+        }
         if let Some(c) = &action.confirmation {
             if c.choices.is_empty() {
                 return Some(ManifestReason::EmptyConfirmation { action: id() });

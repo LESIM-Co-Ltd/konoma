@@ -220,6 +220,11 @@ impl HostBuilder {
 fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
     use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     match reason {
+        R::UnknownRefreshScreen { action, screen } => tr_format(
+            lang,
+            Msg::PluginReasonRefreshScreen,
+            &[("action", action), ("screen", screen)],
+        ),
         R::InvalidWatchPath { index } => tr_format(
             lang,
             Msg::PluginReasonWatchPath,
@@ -313,6 +318,7 @@ fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: 
                     C::RowKinds => Msg::PluginCountRowKinds,
                     C::WatchPaths => Msg::PluginCountWatchPaths,
                     C::Choices => Msg::PluginCountChoices,
+                    C::RefreshTargets => Msg::PluginCountRefreshTargets,
                     _ => Msg::PluginCountUnknown,
                 },
             );
@@ -642,6 +648,16 @@ mod tests {
                 .action(Act::new("go").choice_input(ChoiceInput::new("Pick", vec![choice])))
         };
         let extra = [
+            (m().action(Act::new("go").refresh(RefreshTarget::screen("missing"))),
+             "action `go` refreshes unknown screen `missing`",
+             "操作 `go` が未宣言の画面 `missing` を再取得しようとしています"),
+            ({
+                let mut act = Act::new("go");
+                act.refresh = vec![RefreshTarget::TreeStatus; 65];
+                m().action(act)
+             },
+             "65 refresh targets in an action (at most 64)",
+             "操作の再取得対象が 65 件あります（最大 64 件）"),
             (Manifest::new("p", "1").project(project().watch("../out")),
              "project watch path 0 must be nonempty and relative without parent components",
              "プロジェクトの監視パス 0 は空でなく、親要素を含まない相対パスにしてください"),
