@@ -1,5 +1,5 @@
 //! Differential tests of the formula cost model (`fmt_xls_formula`): every token class that
-//! `calamine` 0.37 `parse_formula` handles is built into a formula, run through `calamine`
+//! `calamine` 0.38 `parse_formula` handles is built into a formula, run through `calamine`
 //! itself (over the container made from the same stream), and the cost konoma charged for it
 //! (taken from the scan, so the sheet and name sizes come from the records) is held against the
 //! real text. A cost under the real length is a hole in the budget; the exact pins catch a cost
@@ -754,6 +754,67 @@ fn every_token_class_is_charged_at_least_what_calamine_prints_and_exactly_what_i
 }
 
 #[test]
+fn biff5_work_after_a_string_cannot_escape_the_formula_budgets() {
+    let tokens = [vec![0x17, 1, b'a'], attr(0x40, &[0, 255]).repeat(4)].concat();
+    let mut raw = Raw::standard5(vec![tokens]);
+    raw.names.clear();
+    let original = run(&raw);
+    assert!(original.real[0].len() > 256);
+    for limits in [
+        Limits {
+            max_formula_text_bytes: 256,
+            ..Limits::default()
+        },
+        Limits {
+            max_formula_work: 1_000,
+            ..Limits::default()
+        },
+    ] {
+        let mut stream = raw.stream();
+        let (_, blanks) = fmt_xls::scan_stream(&stream, &limits, None).unwrap();
+        assert_eq!(blanks.len(), 1, "the work after PtgStr must be counted");
+        fmt_xls::apply_blanks(&mut stream, &blanks);
+        let mut guarded = calamine::Xls::new(fmt_xls::clean_container(&stream).unwrap()).unwrap();
+        let name = guarded.sheet_names()[raw.formula_sheet].clone();
+        assert!(guarded
+            .worksheet_formula(&name)
+            .unwrap()
+            .cells()
+            .all(|(_, _, f)| f.is_empty()));
+        assert_eq!(
+            guarded.worksheet_range(&name).unwrap().get_value((0, 0)),
+            Some(&calamine::Data::Float(1.0))
+        );
+    }
+}
+
+#[test]
+fn biff5_string_literals_consume_no_flags_and_stay_bounded() {
+    for (codepage, bytes, expected) in [
+        (1252, b"ABC".as_slice(), "ABC"),
+        (932, &[0x93, 0xfa, 0x96, 0x7b][..], "日本"),
+        (936, &[0xd6, 0xd0, 0xce, 0xc4][..], "中文"),
+        (950, &[0xa4, 0xa4, 0xa4, 0xe5][..], "中文"),
+        (932, &[0x81][..], "�"),
+    ] {
+        // A token after the literal must also be charged, including its copying work.
+        let literal = [&[0x17, bytes.len() as u8], bytes].concat();
+        for tokens in [literal.clone(), [literal, int(9), vec![0x08]].concat()] {
+            let mut raw = Raw::standard5(vec![tokens]);
+            raw.codepage = Some(codepage);
+            let r = run(&raw);
+            assert!(!r.cost[0].failed, "{codepage}: {:?}", r.cost[0]);
+            assert!(
+                r.real[0].starts_with(&format!("\"{expected}\"")),
+                "{:?}",
+                r.real
+            );
+            assert_sound("BIFF5 literal", &r.cost[0], &r.real[0]);
+        }
+    }
+}
+
+#[test]
 fn the_same_tokens_in_a_biff5_workbook_are_laid_out_the_old_way_and_still_bounded() {
     // Before BIFF8 a reference has 3 (or 6) operand bytes and a 3d reference names its sheet by
     // index; `calamine` ignores the EXTERNSHEET record there and makes the XTI table the identity.
@@ -1001,6 +1062,27 @@ fn a_string_is_charged_its_worst_case_whatever_the_code_page() {
         }
     }
     assert!(ran > 200, "{ran} workbooks");
+}
+
+#[test]
+fn biff5_multibyte_names_and_literals_keep_the_six_byte_bound() {
+    let mut seed = 0x8452_6117_abcd_1234;
+    // Code pages supported by calamine/codepage, including multibyte and stateful encodings.
+    for cp in [
+        932, 936, 949, 950, 1252, 50220, 20932, 54936, 65001, 1200, 1201,
+    ] {
+        for _ in 0..12 {
+            let (_, n, bytes) = random_str(&mut seed, false);
+            let literal = [&[0x17, n as u8], bytes.as_slice()].concat();
+            let mut raw = Raw::standard5(vec![literal, name_tok(1)]);
+            raw.names = vec![((false, n, bytes), int(1))];
+            raw.codepage = Some(cp);
+            let r = run(&raw);
+            for (cost, real) in r.cost.iter().zip(&r.real) {
+                assert_sound(&format!("BIFF5 codepage {cp}"), cost, real);
+            }
+        }
+    }
 }
 
 #[test]
@@ -2235,4 +2317,29 @@ fn the_zero_stripping_never_eats_the_header_slots_even_at_exactly_109_entries() 
     let l = fat_list(b).unwrap();
     assert_eq!(l.len(), 109);
     assert_eq!(l[108], 0);
+}
+
+#[test]
+fn calamine_038_biff5_formula_strings_have_no_unicode_flags() {
+    // PtgStr is cch + bytes before BIFF8, so neither an empty string nor its first byte
+    // may be mistaken for a Unicode flags byte. The cost must consume exactly the same bytes.
+    for (codepage, bytes, want) in [
+        (1252u16, b"abc".as_slice(), "\"abc\""),
+        (1252, b"".as_slice(), "\"\""),
+        (936, &[0xd6, 0xd0, 0xce, 0xc4][..], "\"\u{4e2d}\u{6587}\""),
+    ] {
+        let rgce = [vec![0x17, bytes.len() as u8], bytes.to_vec()].concat();
+        let mut raw = Raw::standard5(vec![rgce]);
+        raw.codepage = Some(codepage);
+        let result = run(&raw);
+        assert_eq!(result.real, [want]);
+        assert!(!result.cost[0].failed);
+        assert_eq!(result.cost[0].text, 2 + 6 * bytes.len() as u64);
+        assert_sound("BIFF5 PtgStr", &result.cost[0], &result.real[0]);
+    }
+    let mut raw = Raw::standard5(vec![vec![0x17, 3, b'a']]);
+    raw.codepage = Some(1252);
+    let result = run(&raw);
+    assert!(result.cost[0].failed, "a truncated literal must be refused");
+    assert_sound("truncated BIFF5 PtgStr", &result.cost[0], &result.real[0]);
 }

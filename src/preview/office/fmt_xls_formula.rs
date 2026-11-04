@@ -1,4 +1,4 @@
-//! What `calamine` 0.37 will do with the formulas of an xls file, worked out before it does it.
+//! What `calamine` 0.38 will do with the formulas of an xls file, worked out before it does it.
 //!
 //! `calamine` turns **every** `FORMULA` record (and the first token of every defined name) into a
 //! `String` while it opens the file, and it cannot be stopped or limited. Its `parse_formula` is
@@ -83,7 +83,8 @@ const NO_SHEET: u64 = 4;
 
 /// What one character of a string costs, whatever the code page. `calamine` decodes a string
 /// with the encoding of the workbook's `CODEPAGE` record: a compressed (8-bit) character is
-/// widened to two bytes (`b, 0`) and a 16-bit one is two bytes, and `encoding_rs` turns each
+/// widened to two bytes (`b, 0`) only for UTF-16; legacy multibyte code pages in 0.38 consume
+/// the original bytes. A 16-bit unit is two bytes, and `encoding_rs` turns each
 /// input byte into at most one `U+FFFD` (3 bytes of UTF-8), e.g. any byte of an ISO-2022-JP
 /// stream in the wrong state. So a character is at most 6 bytes of output, an ASCII one too.
 /// A surrogate pair is two characters (12 bytes).
@@ -238,10 +239,14 @@ pub(crate) fn formula_cost(data: &[u8], env: &Env) -> Cost {
                 stack.push(len);
                 let Some(&cch) = rgce.first() else { fail!() };
                 let cch = usize::from(cch);
-                let Some(&flags) = rgce.get(1) else { fail!() };
-                let consumed = 1 + if flags & 1 != 0 { 2 * cch } else { cch };
+                let consumed = if env.pre_biff8 {
+                    cch
+                } else {
+                    let Some(&flags) = rgce.get(1) else { fail!() };
+                    1 + if flags & 1 != 0 { 2 * cch } else { cch }
+                };
                 push_text!(2 + CHAR_MAX * cch as u64);
-                // (`cch`, then the flags and the characters: a string cut short is a failure.)
+                // BIFF5: cch + bytes. BIFF8: cch + flags + characters.
                 adv!(1 + consumed);
             }
             0x18 => adv!(5),

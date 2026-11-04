@@ -12,8 +12,8 @@
 //! What is read, and where the rules come from (the behaviour of `calamine` 0.36 was the
 //! reference for the *values*; the code is konoma's own):
 //!
-//! * `xl/workbook.xml`: sheet names, `state` (visible / hidden / veryHidden) and `date1904`;
-//!   `xl/_rels/workbook.xml.rels`: which part is each sheet, and its kind (only `worksheet`
+//! * the workbook part selected by `_rels/.rels`: sheet names, `state` (visible / hidden /
+//!   veryHidden) and `date1904`; its `.rels`: which part is each sheet, and its kind (only `worksheet`
 //!   parts are sheets; chart / dialog / macro sheets carry no cells and are not even counted as
 //!   hidden).
 //! * `xl/styles.xml`: `cellXfs` -> number format (shared with the other formats, `fmt_xlsx`) and,
@@ -202,19 +202,83 @@ fn read_part<'z>(
     Ok(container::part_reader_at(zip, index, cap)?.map(|r| BufReader::with_capacity(64 * 1024, r)))
 }
 
+/// The last officeDocument target in `_rels/.rels`, as in calamine 0.38's
+/// `read_package_relationships`. Packages without that part retain the conventional fallback.
+pub(crate) fn workbook_part(
+    zip: &mut ZipArchive<BufReader<File>>,
+    cap: u64,
+) -> Result<String, OfficeError> {
+    let names = container::entry_index(zip);
+    let Some(r) = read_part(zip, &names, "_rels/.rels", cap)? else {
+        return Ok("xl/workbook.xml".into());
+    };
+    let mut rd = XmlReader::new(r);
+    let mut buf = Vec::new();
+    let mut target = None;
+    loop {
+        buf.clear();
+        match rd.read_event_into(&mut buf).map_err(xml_err)? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
+                if attr(&e, "Type", false)
+                    .is_some_and(|t| t.ends_with("/relationships/officeDocument"))
+                {
+                    if let Some(t) = attr(&e, "Target", false) {
+                        target = Some(t.strip_prefix('/').unwrap_or(&t).to_string());
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    target.ok_or_else(|| OfficeError::Corrupt("missing officeDocument relationship".into()))
+}
+
+/// Identifies a relocated workbook without treating Word or PowerPoint packages as spreadsheets.
+pub(crate) fn has_workbook_part(path: &Path, limits: &Limits) -> Result<bool, OfficeError> {
+    let mut zip = container::open_zip(path)?;
+    let part = match workbook_part(&mut zip, limits.max_part_bytes) {
+        Ok(p) => p,
+        Err(OfficeError::Corrupt(_)) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let names = container::entry_index(&zip);
+    let Some(r) = read_part(&mut zip, &names, &part, limits.max_part_bytes)? else {
+        return Ok(false);
+    };
+    let mut rd = XmlReader::new(r);
+    let mut buf = Vec::new();
+    loop {
+        match rd.read_event_into(&mut buf).map_err(xml_err)? {
+            Event::Start(e) | Event::Empty(e) => return Ok(e.local_name().as_ref() == "workbook"),
+            Event::Eof => return Ok(false),
+            _ => buf.clear(),
+        }
+    }
+}
+
 /// Opens the package: workbook, relationships, styles and shared strings are read; sheets are not.
 pub(crate) fn open(path: &Path, limits: &Limits) -> Result<XlsxBook, OfficeError> {
     let mut zip = container::open_zip(path)?;
     let names = container::entry_index(&zip);
     let cap = limits.max_part_bytes;
+    let workbook_part = workbook_part(&mut zip, cap)?;
+    let (base, file) = workbook_part
+        .rsplit_once('/')
+        .unwrap_or(("", &workbook_part));
+    let rels_part = if base.is_empty() {
+        format!("_rels/{file}.rels")
+    } else {
+        format!("{base}/_rels/{file}.rels")
+    };
 
     let (date1904, decls) = {
-        let r = read_part(&mut zip, &names, "xl/workbook.xml", cap)?
-            .ok_or_else(|| OfficeError::Corrupt("missing xl/workbook.xml".into()))?;
+        let r = read_part(&mut zip, &names, &workbook_part, cap)?
+            .ok_or_else(|| OfficeError::Corrupt(format!("missing {workbook_part}")))?;
         parse_workbook(r)?
     };
-    let rels = match read_part(&mut zip, &names, "xl/_rels/workbook.xml.rels", cap)? {
-        Some(r) => parse_rels(r)?,
+    let rels = match read_part(&mut zip, &names, &rels_part, cap)? {
+        Some(r) => parse_rels_at(r, base)?,
         None => HashMap::new(),
     };
     let rel_part = |suffix: &str, default: &str| -> String {
@@ -225,12 +289,14 @@ pub(crate) fn open(path: &Path, limits: &Limits) -> Result<XlsxBook, OfficeError
             .map_or_else(|| default.to_string(), |r| r.target.clone())
     };
 
-    let styles_part = rel_part("styles", "xl/styles.xml");
+    let styles_default = fmt_xlsx::resolve_target(base, "styles.xml");
+    let styles_part = rel_part("styles", &styles_default);
     let styles = match read_part(&mut zip, &names, &styles_part, cap)? {
         Some(r) => fmt_xlsx::parse_styles(r)?,
         None => fmt_xlsx::Styles::without_styles(),
     };
-    let strings_part = rel_part("sharedStrings", "xl/sharedStrings.xml");
+    let strings_default = fmt_xlsx::resolve_target(base, "sharedStrings.xml");
+    let strings_part = rel_part("sharedStrings", &strings_default);
     let strings = match read_part(&mut zip, &names, &strings_part, cap)? {
         Some(r) => read_shared_strings(r, limits)?,
         None => SharedStrings::default(),
@@ -374,15 +440,19 @@ pub(crate) fn parse_workbook(src: impl BufRead) -> Result<(bool, Vec<SheetDecl>)
 /// One internal relationship of the workbook.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Rel {
-    /// The part, resolved against `xl/` (`worksheets/sheet1.xml` and `/xl/worksheets/sheet1.xml`
-    /// are the same).
+    /// The part, resolved against the workbook part's directory.
     pub target: String,
     /// The last segment of the relationship type (`worksheet`, `chartsheet`, `styles`, ...).
     pub kind: String,
 }
 
 /// Internal relationships by id (external targets are not parts of the package).
+#[cfg(test)]
 pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, Rel>, OfficeError> {
+    parse_rels_at(src, "xl")
+}
+
+fn parse_rels_at(src: impl BufRead, base: &str) -> Result<HashMap<String, Rel>, OfficeError> {
     let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut map = HashMap::new();
@@ -402,7 +472,7 @@ pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, Rel>, Offi
                     map.insert(
                         id,
                         Rel {
-                            target: fmt_xlsx::resolve_target("xl", &target),
+                            target: fmt_xlsx::resolve_target(base, &target),
                             kind,
                         },
                     );
@@ -584,28 +654,39 @@ fn read_rich<R: BufRead>(
 }
 
 /// Appends `s` with Excel's `_xHHHH_` escapes decoded (`_x000D_` is a carriage return; the text
-/// `_x000D_` itself is written `_x005F_x000D_`). A sequence that is not an escape, or names a
-/// surrogate, is kept as written.
+/// `_x000D_` itself is written `_x005F_x000D_`). Like calamine 0.38's `unescape_xml`, adjacent
+/// surrogate escapes form one character; an unpaired surrogate becomes U+FFFD.
 fn push_unescaped(s: &str, out: &mut String) {
     if !s.contains("_x") {
         out.push_str(s);
         return;
     }
     let b = s.as_bytes();
+    let unit_at = |i: usize| -> Option<u16> {
+        let escape = b.get(i..i + 7)?;
+        if escape[0..2] != *b"_x" || escape[6] != b'_' {
+            return None;
+        }
+        escape[2..6].iter().try_fold(0u16, |n, &c| {
+            (c as char).to_digit(16).map(|d| n * 16 + d as u16)
+        })
+    };
     let mut i = 0;
     let mut start = 0;
     while i < b.len() {
-        if b[i] == b'_' && i + 7 <= b.len() && b[i + 1] == b'x' && b[i + 6] == b'_' {
-            let hex = &s[i + 2..i + 6];
-            if hex.bytes().all(|c| c.is_ascii_hexdigit()) {
-                if let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
-                    out.push_str(&s[start..i]);
-                    out.push(c);
+        if let Some(unit) = unit_at(i) {
+            out.push_str(&s[start..i]);
+            i += 7;
+            let code = match (unit, unit_at(i)) {
+                (0xD800..=0xDBFF, Some(low @ 0xDC00..=0xDFFF)) => {
                     i += 7;
-                    start = i;
-                    continue;
+                    0x10000 + ((u32::from(unit) - 0xD800) << 10) + u32::from(low) - 0xDC00
                 }
-            }
+                _ => u32::from(unit),
+            };
+            out.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
+            start = i;
+            continue;
         }
         i += 1;
     }

@@ -1,8 +1,8 @@
 //! Format pass for ods (OpenDocument spreadsheets): which number format each cell has, translated
 //! into the Excel-style format codes the number-format engine (`numfmt`) understands.
 //!
-//! `calamine` reads ods values but not their display styles (and it turns LibreOffice's error
-//! cells into empty strings), so konoma reads `styles.xml` and `content.xml` itself:
+//! `calamine` reads ods values but not their display styles, so konoma reads `styles.xml` and
+//! `content.xml` itself (including error types, which calamine 0.38 returns as displayed text):
 //!
 //! 1. `META-INF/manifest.xml`: any `manifest:encryption-data` means the package is encrypted.
 //! 2. Styles (`styles.xml`, then the automatic styles of `content.xml`): the `number:*-style`
@@ -51,8 +51,7 @@
 //! `number:fill-character`, `number:decimal-replacement`, text styles' conditions.
 //!
 //! Besides formats the pass reads what `calamine` does not report: the `table:null-date` (the day
-//! 0 of numbers used as dates; dates themselves are ISO strings in the file), merged ranges, and
-//! the text of cells with `<text:tab/>` / `<text:line-break/>` (which `calamine` drops).
+//! 0 of numbers used as dates; dates themselves are ISO strings in the file) and merged ranges.
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -69,7 +68,7 @@ use super::OfficeError;
 /// Excel's own limits, which `calamine`'s ods reader also applies while expanding repeats.
 const MAX_ROWS: u64 = 1_048_576;
 const MAX_COLS: u64 = 16_384;
-/// Most error cells remembered per sheet (an error repeated across a huge area stays empty text).
+/// Most typed error cells remembered per sheet (beyond this, calamine's displayed text remains).
 const MAX_ERRORS: usize = 100_000;
 /// Safety caps on the style tables (a real file has dozens).
 const MAX_STYLES: usize = 100_000;
@@ -93,27 +92,12 @@ pub struct OdsSheet {
     /// Merged ranges (`table:number-columns-spanned` / `number-rows-spanned`), at most
     /// [`MAX_MERGES`].
     pub merges: Vec<MergeRange>,
-    /// Cells whose text `calamine` reads wrongly (it drops `<text:tab/>` and `<text:line-break/>`).
-    pub texts: Vec<TextRun>,
-}
-
-/// A rectangle of cells (a repeated cell) that all hold `text`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextRun {
-    pub row0: u32,
-    pub rows: u32,
-    pub col0: u32,
-    pub cols: u32,
-    pub text: String,
 }
 
 /// The ods null date when the file has none: 1899-12-30 (LibreOffice's day 0).
 const DEFAULT_NULL_DAY: i64 = -25_569;
 /// Most merged ranges kept per table (a hostile file could list millions).
 const MAX_MERGES: usize = 100_000;
-/// Longest cell text collected for the tab / line-break repair; a longer cell is left as
-/// `calamine` read it.
-const MAX_FIX_TEXT: usize = 1 << 20;
 
 /// Reads the format information of an ods package. Errors for any table that is too large for
 /// `calamine` to open safely (it parses hidden tables too).
@@ -122,7 +106,7 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
     read_full(path, limits).map(|(f, _)| f)
 }
 
-/// [`read`] with the ods-only information (null date, merged ranges, repaired texts).
+/// [`read`] with the ods-only information (null date and merged ranges).
 #[cfg(test)]
 pub fn read_full(
     path: &std::path::Path,
@@ -934,49 +918,11 @@ struct CellState {
     /// `table:number-columns-spanned` / `number-rows-spanned` (1 = not merged).
     cols_spanned: u64,
     rows_spanned: u64,
-    /// The text of a string cell that has no `office:string-value`, collected the way `calamine`
-    /// reads it but with tabs and line breaks kept (only while the cell is open).
-    fix: Option<TextFix>,
+    /// Whether a paragraph has been seen, for the separators calamine allocates.
+    paragraph: bool,
     /// Bytes of text the cell holds (its `string-value`, its paragraphs, its formula), for the
     /// text budget: a repeated cell holds them once per repetition.
     text_len: u64,
-}
-
-/// A string cell's text being rebuilt (see [`CellState::fix`]).
-#[derive(Default)]
-struct TextFix {
-    text: String,
-    /// A `text:p` has been seen (the next one starts a new line).
-    paragraph: bool,
-    /// A tab or a line break was seen: `calamine`'s text is wrong.
-    special: bool,
-    /// Nesting depth of `office:annotation` (its text is not the cell's).
-    annotation: usize,
-    /// Longer than [`MAX_FIX_TEXT`]: not repaired.
-    overflow: bool,
-}
-
-impl TextFix {
-    fn push_str(&mut self, s: &str) {
-        if self.annotation > 0 || self.overflow {
-            return;
-        }
-        if self.text.len() + s.len() > MAX_FIX_TEXT {
-            self.overflow = true;
-            self.text = String::new();
-        } else {
-            self.text.push_str(s);
-        }
-    }
-
-    fn push_event(&mut self, ev: &Event<'_>) {
-        if self.annotation > 0 || self.overflow {
-            return;
-        }
-        let mut t = String::new();
-        push_text(ev, &mut t);
-        self.push_str(&t);
-    }
 }
 
 /// What every table of the workbook costs together (see [`parse_body`]), and what else the body
@@ -1053,19 +999,14 @@ fn parse_body(
                     continue;
                 }
                 match name {
-                    "office:annotation" => {
-                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
-                            f.annotation += 1;
-                        }
-                    }
                     "text:p" => {
-                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
-                            if f.annotation == 0 {
-                                if f.paragraph {
-                                    f.push_str("\n");
-                                }
-                                f.paragraph = true;
+                        if let Some(c) = t.cell.as_mut() {
+                            if c.paragraph
+                                && (c.is_error || matches!(c.value_type.as_str(), "string" | ""))
+                            {
+                                c.text_len = c.text_len.saturating_add(1);
                             }
+                            c.paragraph = true;
                         }
                     }
                     "text:s" | "text:tab" | "text:line-break" => {
@@ -1073,35 +1014,12 @@ fn parse_body(
                             let n = qattr(e, "text:c")
                                 .and_then(|v| v.trim().parse::<u64>().ok())
                                 .unwrap_or(1);
-                            if name == "text:s" {
-                                // Counted against the text budget as well: `calamine` allocates
-                                // this many spaces.
-                                if matches!(c.value_type.as_str(), "string" | "") {
-                                    c.text_len = c.text_len.saturating_add(n);
-                                }
-                            }
-                            if let Some(f) = c.fix.as_mut() {
-                                if f.annotation == 0 {
-                                    match name {
-                                        "text:s" => {
-                                            let room = MAX_FIX_TEXT.saturating_sub(f.text.len());
-                                            if n as usize > room {
-                                                f.overflow = true;
-                                                f.text = String::new();
-                                            } else {
-                                                f.push_str(&" ".repeat(n as usize));
-                                            }
-                                        }
-                                        "text:tab" => {
-                                            f.special = true;
-                                            f.push_str("\t");
-                                        }
-                                        _ => {
-                                            f.special = true;
-                                            f.push_str("\n");
-                                        }
-                                    }
-                                }
+                            // calamine 0.38 keeps tabs and soft line breaks, too. Charge before
+                            // repeat expansion; annotations/value attributes only overestimate.
+                            if c.is_error || matches!(c.value_type.as_str(), "string" | "") {
+                                c.text_len =
+                                    c.text_len
+                                        .saturating_add(if name == "text:s" { n } else { 1 });
                             }
                         }
                     }
@@ -1128,7 +1046,6 @@ fn parse_body(
                         let reps = reps.min(MAX_COLS.saturating_sub(start_col));
                         t.col_cursor = start_col.saturating_add(reps);
                         let value_type = qattr(e, "office:value-type").unwrap_or_default();
-                        let is_string_cell = value_type == "string";
                         let date_value = qattr(e, "office:date-value");
                         let value_attr = [
                             "office:value",
@@ -1142,7 +1059,6 @@ fn parse_body(
                         let has_value = value_attr || value_type == "string";
                         let formula_len = qattr(e, "table:formula").map_or(0, |f| f.len() as u64);
                         let has_formula = formula_len > 0;
-                        let value_type_is_text = matches!(value_type.as_str(), "string" | "");
                         let string_len =
                             qattr(e, "office:string-value").map_or(0, |v| v.len() as u64);
                         t.cell = Some(CellState {
@@ -1158,12 +1074,10 @@ fn parse_body(
                                 .map_or(1, |v| v as u64),
                             rows_spanned: attr_usize(e, "table:number-rows-spanned")
                                 .map_or(1, |v| v as u64),
-                            // `calamine` takes the text of a string cell from its content when
-                            // there is no value attribute.
-                            fix: (reps > 0 && !value_attr && is_string_cell).then(TextFix::default),
-                            // Only strings keep their text (numbers and dates are read from
-                            // attributes); every cell keeps its formula.
-                            text_len: formula_len + if value_type_is_text { string_len } else { 0 },
+                            paragraph: false,
+                            // A string-value can supply text even with another value-type.
+                            // Every cell keeps its formula as well.
+                            text_len: formula_len + string_len,
                         });
                     }
                     _ => {}
@@ -1172,17 +1086,18 @@ fn parse_body(
             Event::Text(_) | Event::GeneralRef(_) => {
                 if nested == 0 {
                     if let Some(c) = cur.as_mut().and_then(|t| t.cell.as_mut()) {
-                        if matches!(c.value_type.as_str(), "string" | "") {
+                        if c.is_error || matches!(c.value_type.as_str(), "string" | "") {
                             c.text_len = c.text_len.saturating_add(match &ev {
                                 Event::Text(t) => t.len() as u64,
-                                _ => 1,
+                                _ => {
+                                    let mut decoded = String::new();
+                                    push_text(&ev, &mut decoded);
+                                    decoded.len() as u64
+                                }
                             });
                         }
                         if c.is_error && c.text.len() < 256 {
                             push_text(&ev, &mut c.text);
-                        }
-                        if let Some(f) = c.fix.as_mut() {
-                            f.push_event(&ev);
                         }
                     }
                 }
@@ -1209,11 +1124,6 @@ fn parse_body(
                     continue;
                 }
                 match name {
-                    "office:annotation" => {
-                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
-                            f.annotation = f.annotation.saturating_sub(1);
-                        }
-                    }
                     "table:table-cell" | "table:covered-table-cell" => {
                         if let Some(c) = t.cell.take() {
                             let mut res = StyleResolver {
@@ -1300,18 +1210,6 @@ fn finish_cell(
         return Err(OfficeError::TooLarge { what: "sheet area" });
     }
 
-    // A string with tabs or line breaks: the text `calamine` will not have.
-    if let Some(f) = c.fix {
-        if f.special && !f.overflow {
-            t.extra.texts.push(TextRun {
-                row0: row0 as u32,
-                rows: rows as u32,
-                col0: col0 as u32,
-                cols: c.reps as u32,
-                text: f.text,
-            });
-        }
-    }
     // The error value: remembered per repetition (capped).
     let error = c.is_error.then(|| error_code(&c.text));
     // Formats: cell style, else the row default, else the column default.

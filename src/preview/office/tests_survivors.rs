@@ -82,8 +82,8 @@ fn text_escapes_are_recognised_exactly() {
     assert_eq!(inline_text("<t>_x00G1_</t>"), "_x00G1_", "not hexadecimal");
     assert_eq!(
         inline_text("<t>_xD800_</t>"),
-        "_xD800_",
-        "a surrogate stays as written"
+        "�", // calamine 0.38 utils::unescape_xml replaces unpaired surrogates.
+        "an unpaired surrogate becomes U+FFFD (calamine 0.38)"
     );
     assert_eq!(
         inline_text("<t>_x005F_x000D_</t>"),
@@ -655,9 +655,22 @@ fn ods_read(
     fmt_ods::read_full(&p, limits)
 }
 
-fn ods_texts(tables: &str) -> Vec<fmt_ods::TextRun> {
-    let (_, extra) = ods_read("surv_texts", "", tables, &Limits::default()).unwrap();
-    extra.sheets["S"].texts.clone()
+fn ods_texts(tables: &str) -> Vec<String> {
+    use calamine::Reader;
+    let dir = tmp("surv_texts");
+    let p = ods_write(&dir, "s.ods", "", tables);
+    let wb = load(&p).unwrap();
+    let mut oracle: calamine::Ods<_> = calamine::open_workbook(&p).unwrap();
+    oracle
+        .worksheet_range("S")
+        .unwrap()
+        .used_cells()
+        .map(|(r, c, v)| {
+            let ours = wb.sheets[0].display(r, c).to_string();
+            assert_eq!(ours, v.to_string());
+            ours
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -673,15 +686,15 @@ fn an_ods_space_without_a_count_is_one_space() {
     ));
     let texts = ods_texts(&ods_table("S", &rows));
     assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text, "a b\tc");
+    assert_eq!(texts[0], "a b\tc");
     // Through the whole loader.
     let dir = tmp("surv_ods_s");
     let p = ods_write(&dir, "s.ods", "", &ods_table("S", &rows));
     assert_eq!(load(&p).unwrap().sheets[0].display(0, 0), "a b\tc");
 }
 
-/// The repair buffer takes up to `MAX_FIX_TEXT` (1 MiB) bytes: a run of spaces that brings it to
-/// exactly that is kept, one more is "too long to repair".
+/// calamine 0.38 keeps tabs itself (ods::read_cell); both sides of the former repair-buffer
+/// limit must now preserve the whole value, without a second buffer in the format pass.
 #[test]
 fn a_space_run_that_fills_the_repair_buffer_exactly_is_repaired() {
     let max = 1usize << 20;
@@ -694,16 +707,14 @@ fn a_space_run_that_fills_the_repair_buffer_exactly_is_repaired() {
     };
     let texts = at(max - 1);
     assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text.len(), max);
-    assert!(texts[0].text.starts_with("\t "));
-    assert!(
-        at(max).is_empty(),
-        "one byte over: left as calamine read it"
-    );
+    assert_eq!(texts[0].len(), max);
+    assert!(texts[0].starts_with("\t "));
+    let above = at(max);
+    assert_eq!(above[0].len(), max + 1);
+    assert!(above[0].starts_with("\t "));
 }
 
-/// The same edge for plain text: `MAX_FIX_TEXT - 1` characters and then a tab fill the buffer to
-/// exactly the limit (kept); one more byte and it is not repaired.
+/// The same former boundary for plain text: calamine 0.38 preserves the trailing tab above it.
 #[test]
 fn a_text_that_fills_the_repair_buffer_exactly_is_repaired() {
     let max = 1usize << 20;
@@ -716,9 +727,11 @@ fn a_text_that_fills_the_repair_buffer_exactly_is_repaired() {
     };
     let texts = at(max - 1);
     assert_eq!(texts.len(), 1);
-    assert_eq!(texts[0].text.len(), max);
-    assert!(texts[0].text.ends_with("x\t"));
-    assert!(at(max).is_empty());
+    assert_eq!(texts[0].len(), max);
+    assert!(texts[0].ends_with("x\t"));
+    let above = at(max);
+    assert_eq!(above[0].len(), max + 1);
+    assert!(above[0].ends_with("x\t"));
 }
 
 /// LibreOffice's error codes and their spelling: `Err:503` is `#NUM!`, and the text of the cell

@@ -992,7 +992,8 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
     // 2. A number cell whose text is not a number (explicit `t="n"`).
     // 3. A shared string index past the table.
     // 4. An unknown cell type.
-    let cases: [(&str, &str, Option<V>); 4] = [
+    // 5. A boolean other than 0 or 1 (konoma accepts any nonzero number as true).
+    let cases: [(&str, &str, Option<V>); 5] = [
         (
             "unknown child",
             r#"<c r="A1"><v>1</v><x14ac:foo xmlns:x14ac="u"><b/></x14ac:foo></c>"#,
@@ -1012,6 +1013,11 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
             "unknown type",
             r#"<c r="A1" t="zz"><v>x</v></c>"#,
             Some(V::Text("x".into())),
+        ),
+        (
+            "boolean two",
+            r#"<c r="A1" t="b"><v>2</v></c>"#,
+            Some(V::Bool(true)),
         ),
     ];
     for (i, (what, cell, want)) in cases.into_iter().enumerate() {
@@ -1065,8 +1071,7 @@ fn a_shared_formula_is_expanded_from_its_anchor_cell() {
 
 #[test]
 fn text_escapes_beyond_the_ascii_range_are_decoded_here() {
-    // `_x4E2D_` is U+4E2D: Excel writes `_xHHHH_` for any character it escapes; calamine decodes
-    // only the `_x00HH_` ones.
+    // calamine 0.38 utils::unescape_xml decodes every UTF-16 code unit.
     let dir = tmp("xlsx_x4e2d");
     let p = Pkg::new()
         .sheet(
@@ -1080,7 +1085,94 @@ fn text_escapes_beyond_the_ascii_range_are_decoded_here() {
     let ours = read_ours(&p).reads.remove(0).unwrap();
     assert_eq!(ours.values[&(0, 0)], V::Text("a中bAc".into()));
     let theirs = read_oracle(&p).reads.remove(0).unwrap();
-    assert_eq!(theirs.values[&(0, 0)], V::Text("a_x4E2D_bAc".into()));
+    assert_eq!(ours.values, theirs.values);
+}
+
+#[test]
+fn the_root_relationship_selects_the_workbook_and_its_relative_parts() {
+    let dir = tmp("xlsx_main_part");
+    for target in ["books/main.xml", "/books/main.xml", "main.xml"] {
+        let base = if target.contains("books/") {
+            "books/"
+        } else {
+            ""
+        };
+        let original = Pkg::new()
+            .date1904()
+            .styles(r#"<styleSheet><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>"#.into())
+            .shared("<sst><si><t>selected</t></si></sst>".into())
+            .sheet("Selected", "visible", body(r#"<row><c r="A1" t="s"><v>0</v></c><c r="B1" s="1"><v>42</v></c></row>"#))
+            .bytes();
+        let source = write(&dir, "source.xlsx", &original);
+        let mut parts = read_parts(&source);
+        for (name, bytes) in &mut parts {
+            *name = match name.as_str() {
+                "xl/workbook.xml" => target.trim_start_matches('/').into(),
+                "xl/_rels/workbook.xml.rels" => format!("{base}_rels/main.xml.rels"),
+                n if n.starts_with("xl/") => format!("{base}{}", &n[3..]),
+                _ => name.clone(),
+            };
+            if name == "_rels/.rels" {
+                *bytes = format!(r#"<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ignored.xml"/><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="{target}"/></Relationships>"#).into_bytes();
+            }
+        }
+        for decoy in [false, true] {
+            let mut entries = parts.clone();
+            if decoy {
+                entries.push((
+                    "xl/workbook.xml".into(),
+                    b"<workbook><sheets/></workbook>".to_vec(),
+                ));
+            }
+            let refs: Vec<_> = entries
+                .iter()
+                .map(|(n, b)| (n.as_str(), b.as_slice()))
+                .collect();
+            let p = write(&dir, "m.xlsx", &deflated(&refs));
+            let ours = read_ours(&p);
+            let theirs = read_oracle(&p);
+            assert_eq!(ours.sheets, theirs.sheets);
+            assert_eq!(ours.date1904, theirs.date1904);
+            assert_eq!(
+                ours.reads[0].as_ref().unwrap().values,
+                theirs.reads[0].as_ref().unwrap().values
+            );
+            assert_eq!(
+                container::inspect(&p, &Limits::default()).unwrap(),
+                container::Detected::Xlsx
+            );
+            assert!(load_workbook_unguarded_for_tests(&p).sheets[0].loaded);
+        }
+    }
+}
+
+#[test]
+fn utf16_escapes_match_calamine_in_every_string_storage() {
+    let dir = tmp("xlsx_utf16");
+    for text in [
+        "_xD83D__xDCF7_",
+        "_xD800_",
+        "_xDC00_",
+        "_xD800__x0041_",
+        "_xD800__xD83D__xDCF7_",
+        "_xD800_a_xDC00_",
+        "_x005F_xD800_",
+        "中_xD83D__xDCF7_é",
+        "_xD800__xZZZZ_",
+        "_xD800__xDC00_",
+        "_x0000__xFFFF_",
+        "_xD800__xéaa_",
+    ] {
+        let p = Pkg::new()
+            .shared(format!("<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><si><t>{text}</t></si></sst>"))
+            .sheet("S", "visible", body(&format!(
+                r#"<row><c r="A1" t="inlineStr"><is><t>{text}</t></is></c><c r="B1" t="str"><v>{text}</v></c><c r="C1" t="s"><v>0</v></c></row>"#
+            )))
+            .write(&dir, "x.xlsx");
+        let ours = read_ours(&p).reads.remove(0).unwrap();
+        let theirs = read_oracle(&p).reads.remove(0).unwrap();
+        assert_eq!(ours.values, theirs.values, "{text}");
+    }
 }
 
 #[test]
@@ -1635,8 +1727,8 @@ fn rich_and_phonetic_text_trimming_and_escapes() {
     );
     assert_eq!(
         text("<t>_xD800_</t>"),
-        "_xD800_",
-        "a surrogate is not a character: kept"
+        "�",
+        "calamine 0.38 utils::unescape_xml replaces an unpaired surrogate"
     );
     assert_eq!(text("<t>a&amp;b&#65;&#x42;&unknown;</t>"), "a&bAB&unknown;");
     assert_eq!(text("<t><![CDATA[<x>]]></t>"), "<x>");
