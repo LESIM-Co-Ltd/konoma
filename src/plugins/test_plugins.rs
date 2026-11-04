@@ -50,8 +50,7 @@ pub(crate) fn marker_config(marker: &str) -> crate::config::Config {
     cfg
 }
 
-/// A static project provider. Its file view also exercises the common write boundary while
-/// the SDK has no request fields for project screens or action arguments yet.
+/// A static project provider whose file view exercises the common write boundary and navigation.
 pub(crate) struct ProjectFixture {
     pub id: &'static str,
     pub project: konoma_plugin::project::ProjectDecl,

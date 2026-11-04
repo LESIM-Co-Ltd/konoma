@@ -11,6 +11,10 @@ use crate::app::App;
 use crate::i18n::tr;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(dialog) = &app.project_dialog {
+        render_project(frame, app, area, dialog);
+        return;
+    }
     // The batch-rename preview uses dedicated rendering (an old → new list + scrolling).
     if let Some((title, pairs, scroll)) = app.dialog_preview_view() {
         render_preview(frame, app, area, title, pairs, scroll);
@@ -95,7 +99,28 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         (tr(app.lang, crate::i18n::Msg::DlgInputTitle), Color::Cyan)
     };
 
-    // Popup dimensions (follows the bookmarks style).
+    render_box(frame, area, lines, title, accent);
+}
+
+fn render_box(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    title: &str,
+    accent: Color,
+) {
+    render_box_selected(frame, area, lines, title, accent, 0);
+}
+
+fn render_box_selected(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    title: &str,
+    accent: Color,
+    selected: usize,
+) {
+    // The legacy dialogs and project prompts share exactly the same frame.
     let w = 66.min(area.width.saturating_sub(2)).max(24);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -114,10 +139,107 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::new().fg(accent));
     let para = Paragraph::new(lines)
         .block(block)
+        .scroll((
+            selected
+                .saturating_sub(usize::from(h.saturating_sub(3)))
+                .min(u16::MAX as usize) as u16,
+            0,
+        ))
         .alignment(Alignment::Left);
 
     konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
     frame.render_widget(para, popup);
+}
+
+fn render_project(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    dialog: &crate::app::project_screens::ProjectDialog,
+) {
+    use crate::app::project_screens::{ProjectDialog, ProjectPrompt};
+    use crate::i18n::Msg;
+    let lang = app.plugin_lang();
+    let mut lines = Vec::new();
+    let mut selected_line = 0;
+    let title = match dialog {
+        ProjectDialog::Projects { projects, selected } => {
+            selected_line = *selected;
+            for (index, project) in projects.iter().enumerate() {
+                let name = app
+                    .plugin_keys
+                    .name_of(&project.plugin)
+                    .map(|n| n.get(lang))
+                    .unwrap_or(&project.plugin);
+                let line = Line::raw(format!(
+                    "{name}  {} ({})",
+                    app.format_path(&project.root),
+                    project.marker
+                ));
+                lines.push(if index == *selected {
+                    line.reversed()
+                } else {
+                    line
+                });
+            }
+            tr(app.lang, Msg::ProjectChoose)
+        }
+        ProjectDialog::Act {
+            prompts,
+            stage,
+            buffer,
+            cursor,
+            selected,
+            ..
+        } => match &prompts[*stage] {
+            ProjectPrompt::Confirmation(prompt) => {
+                lines.extend(
+                    prompt
+                        .text
+                        .get(lang)
+                        .lines()
+                        .map(|l| Line::raw(l.to_string()).bold()),
+                );
+                lines.push(Line::raw(""));
+                for choice in &prompt.choices {
+                    lines.push(Line::raw(format!(
+                        "{}: {}",
+                        choice.key,
+                        choice.choice.label.get(lang)
+                    )));
+                }
+                tr(app.lang, Msg::DlgConfirmTitle)
+            }
+            ProjectPrompt::Text(prompt) => {
+                lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
+                let chars: Vec<_> = buffer.chars().collect();
+                let at = (*cursor).min(chars.len());
+                lines.push(Line::from(vec![
+                    Span::raw("> "),
+                    Span::raw(chars[..at].iter().collect::<String>()),
+                    Span::raw(chars.get(at).unwrap_or(&' ').to_string()).reversed(),
+                    Span::raw(chars.iter().skip(at + 1).collect::<String>()),
+                ]));
+                tr(app.lang, Msg::DlgInputTitle)
+            }
+            ProjectPrompt::Choice(prompt) => {
+                selected_line = selected.saturating_add(1);
+                lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
+                for (index, choice) in prompt.choices.iter().enumerate() {
+                    let line = Line::raw(choice.label.get(lang).to_string());
+                    lines.push(if index == *selected {
+                        line.reversed()
+                    } else {
+                        line
+                    });
+                }
+                tr(app.lang, Msg::ProjectChoose)
+            }
+        },
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::raw(tr(app.lang, Msg::ProjectDialogKeys)).dim());
+    render_box_selected(frame, area, lines, title, Color::Cyan, selected_line);
 }
 
 /// Batch-rename preview (old → new list). Cyan border, scrollable, applied with y.

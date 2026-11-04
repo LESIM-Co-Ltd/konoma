@@ -59,6 +59,15 @@ use konoma_plugin::{
 use super::media_plugin::image_failure_of;
 use super::*;
 
+/// Every host session act, including project workers, uses this executor.
+pub(super) fn act_session(
+    session: &mut dyn Session,
+    action: &str,
+    cx: &ActCx<'_>,
+) -> Result<Outcome, Failure> {
+    session.act(action, cx)
+}
+
 /// How long the UI waits for a freshly started `open` before it draws "Loading...".
 pub(crate) const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(30);
 
@@ -976,7 +985,7 @@ impl PluginWork {
                     .with_term(term)
                     .with_read_scope(read_scope.clone());
                 // A failed action is told to the user and leaves the view as it was.
-                let (outcome, failure) = match session.act(&action, &cx) {
+                let (outcome, failure) = match act_session(session.as_mut(), &action, &cx) {
                     Ok(o) => (Some(o), None),
                     Err(f) => (Some(Outcome::Flash(f.message.clone())), None),
                 };

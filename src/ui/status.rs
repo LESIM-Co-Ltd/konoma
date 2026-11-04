@@ -64,6 +64,9 @@ fn chip_str(text: String, bg: Color, dark_bg: bool) -> Span<'static> {
 /// Display-mode (outer) chip. In a Git view = GIT (yellow) / TREE = white / PREVIEW/IMAGE = blue.
 /// Since Git has grown, the changes hub/log/graph/branches/detail **promote the main mode to GIT**.
 fn display_chip(app: &App) -> Span<'static> {
+    if app.project_active() {
+        return chip(app.lang, Msg::ProjectTitle, Color::Cyan, false);
+    }
     if app.in_git_view() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
@@ -227,10 +230,12 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     }
     // Each view's own addition (Tree = sort/selection count / Preview = image zoom). No chip is
     // shown here.
-    spans.extend(match app.tab.mode {
-        Mode::Tree => crate::ui::tree::context(app),
-        Mode::Preview => crate::ui::preview::context(app),
-    });
+    if !app.project_active() {
+        spans.extend(match app.tab.mode {
+            Mode::Tree => crate::ui::tree::context(app),
+            Mode::Preview => crate::ui::preview::context(app),
+        });
+    }
     let lang = app.lang;
     let style = match app.path_style {
         PathStyle::Relative => tr(lang, crate::i18n::Msg::RelLabel),
@@ -320,6 +325,26 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     // candidates for the next keystroke.
     if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
+    }
+    if app.project_dialog.is_some() {
+        return vec![Span::raw(tr(lang, crate::i18n::Msg::ProjectDialogKeys)).dim()];
+    }
+    if app.project_active()
+        && app.key_context() == Some(crate::keymap::Context::Canvas)
+        && !app.is_dialog()
+    {
+        if let Some(frame) = app.project_frame().filter(|f| f.filtering) {
+            return vec![Span::raw(format!(
+                "/{}▏  {}",
+                frame.query,
+                tr(lang, crate::i18n::Msg::StApplyClearHint)
+            ))];
+        }
+        return vec![Span::raw(fit_tokens(
+            &crate::ops::footer::tokens(app, crate::keymap::Context::Canvas),
+            width,
+        ))
+        .dim()];
     }
     // While a list's `/` filter input is active (branches, worktrees, changes, log, graph), show
     // the query prompt (takes priority over the mode footer).

@@ -176,6 +176,8 @@ fn watch_targets(root: &Path, projects: &[MatchedProject]) -> BTreeSet<(PathBuf,
 struct Slot {
     value: Mutex<Option<Update>>,
     ready: Condvar,
+    #[cfg(test)]
+    injected: AtomicBool,
 }
 
 struct Update {
@@ -201,6 +203,8 @@ impl Slot {
 struct Worker {
     slot: Arc<Slot>,
     cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    events: Option<EventSender>,
 }
 
 impl Drop for Worker {
@@ -209,8 +213,22 @@ impl Drop for Worker {
     }
 }
 
+enum WatchMessage {
+    Event(notify::Result<notify::Event>),
+    /// Acknowledge only after preceding events and any resulting scan have completed.
+    #[cfg(test)]
+    Settled(mpsc::SyncSender<()>),
+}
+
+#[derive(Clone)]
+struct EventSender {
+    tx: mpsc::SyncSender<WatchMessage>,
+    overflow: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+}
+
 fn enqueue_event(
-    tx: &mpsc::SyncSender<notify::Result<notify::Event>>,
+    tx: &mpsc::SyncSender<WatchMessage>,
     overflow: &AtomicBool,
     failed: &AtomicBool,
     event: notify::Result<notify::Event>,
@@ -221,28 +239,116 @@ fn enqueue_event(
     if event.is_err() {
         failed.store(true, Ordering::Relaxed);
     }
-    if matches!(tx.try_send(event), Err(mpsc::TrySendError::Full(_))) {
+    if matches!(
+        tx.try_send(WatchMessage::Event(event)),
+        Err(mpsc::TrySendError::Full(_))
+    ) {
         // A burst occupies one event slot. Losing a named path invalidates everything,
         // so coalescing cannot miss a relevant marker or declared watch change.
         overflow.store(true, Ordering::Relaxed);
     }
 }
 
-fn run(root: PathBuf, declarations: Vec<Declaration>, slot: Arc<Slot>, cancelled: Arc<AtomicBool>) {
-    let (tx, rx) = mpsc::sync_channel(1);
-    let overflow = Arc::new(AtomicBool::new(false));
-    let watch_failed = Arc::new(AtomicBool::new(false));
-    let callback_overflow = overflow.clone();
-    let callback_failed = watch_failed.clone();
-    let mut watcher = match notify::recommended_watcher(move |event| {
-        enqueue_event(&tx, &callback_overflow, &callback_failed, event);
-    }) {
+enum ProjectWatcher {
+    Native(notify::RecommendedWatcher),
+    #[cfg(test)]
+    Injected,
+}
+
+impl ProjectWatcher {
+    fn new(events: EventSender, #[cfg(test)] native: bool) -> notify::Result<Self> {
+        #[cfg(test)]
+        if !native {
+            return Ok(Self::Injected);
+        }
+        notify::recommended_watcher(move |event| {
+            enqueue_event(&events.tx, &events.overflow, &events.failed, event);
+        })
+        .map(Self::Native)
+    }
+
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        match self {
+            Self::Native(watcher) => watcher.watch(path, mode),
+            #[cfg(test)]
+            Self::Injected => Ok(()),
+        }
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        match self {
+            Self::Native(watcher) => watcher.unwatch(path),
+            #[cfg(test)]
+            Self::Injected => Ok(()),
+        }
+    }
+}
+
+/// Exercise the host's native backend and callback queue, separately from injected e2e events.
+#[cfg(test)]
+pub(super) fn assert_native_watch_delivery(directory: &Path) {
+    let target = directory.join("created-after-watch");
+    assert!(!target.exists());
+    let (tx, rx) = mpsc::sync_channel(64);
+    let events = EventSender {
+        tx,
+        overflow: Arc::new(AtomicBool::new(false)),
+        failed: Arc::new(AtomicBool::new(false)),
+    };
+    let mut watcher = ProjectWatcher::new(events, true).expect("native watcher setup");
+    watcher
+        .watch(directory, RecursiveMode::NonRecursive)
+        .expect("native watch registration");
+    // Registration completes before this path first exists. Consume the event stream until
+    // this exact path arrives; delayed directory events cannot satisfy the observation.
+    // This performs one write, with no retry, sleep or event-count assertion.
+    std::fs::write(&target, "notification").unwrap();
+    loop {
+        match rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("native watcher did not deliver the newly created path")
+        {
+            WatchMessage::Event(event) => {
+                if event
+                    .expect("native notification error")
+                    .paths
+                    .contains(&target)
+                {
+                    return;
+                }
+            }
+            WatchMessage::Settled(_) => panic!("native watch does not receive test fences"),
+        }
+    }
+}
+
+fn run(
+    root: PathBuf,
+    declarations: Vec<Declaration>,
+    slot: Arc<Slot>,
+    cancelled: Arc<AtomicBool>,
+    events: EventSender,
+    rx: mpsc::Receiver<WatchMessage>,
+    #[cfg(test)] native: bool,
+) {
+    let overflow = events.overflow.clone();
+    let watch_failed = events.failed.clone();
+    let mut watcher = match ProjectWatcher::new(
+        events,
+        #[cfg(test)]
+        native,
+    ) {
         Ok(watcher) => watcher,
         Err(_) => {
             slot.publish(detect(&root, &declarations, &cancelled).ok(), true);
             return;
         }
     };
+    #[cfg(test)]
+    slot.injected.store(
+        matches!(watcher, ProjectWatcher::Injected),
+        Ordering::Relaxed,
+    );
     let mut watched = BTreeSet::new();
     loop {
         if cancelled.load(Ordering::Relaxed) {
@@ -290,16 +396,20 @@ fn run(root: PathBuf, declarations: Vec<Declaration>, slot: Arc<Slot>, cancelled
                 break;
             }
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(Ok(event)) => {
+                Ok(WatchMessage::Event(Ok(event))) => {
                     if !matches!(event.kind, notify::EventKind::Access(_))
                         && affected(&root, &declarations, &projects, &event.paths)
                     {
                         break;
                     }
                 }
-                Ok(Err(_)) => {
+                Ok(WatchMessage::Event(Err(_))) => {
                     slot.publish(Some(projects), true);
                     return;
+                }
+                #[cfg(test)]
+                Ok(WatchMessage::Settled(tx)) => {
+                    let _ = tx.send(());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -315,6 +425,11 @@ pub(crate) struct ProjectDetection {
     root: Option<PathBuf>,
     pub projects: Vec<MatchedProject>,
     worker: Option<Arc<Worker>>,
+    ready: bool,
+    // Unit/e2e tests inject events by default, including after root and tab changes. Native
+    // notification delivery is checked separately; no process-global test switch is used.
+    #[cfg(test)]
+    native_watch: bool,
 }
 
 impl ProjectDetection {
@@ -323,6 +438,7 @@ impl ProjectDetection {
             return;
         }
         self.root = Some(root.into());
+        self.ready = false;
         self.projects.clear();
         if let Some(worker) = &self.worker {
             worker.cancelled.store(true, Ordering::Relaxed);
@@ -330,16 +446,38 @@ impl ProjectDetection {
         self.worker = None;
         let declarations = declarations(disabled);
         if declarations.is_empty() {
+            self.ready = true;
             return;
         }
         let slot = Arc::new(Slot::default());
         let cancelled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let events = EventSender {
+            tx,
+            overflow: Arc::new(AtomicBool::new(false)),
+            failed: Arc::new(AtomicBool::new(false)),
+        };
         self.worker = Some(Arc::new(Worker {
             slot: slot.clone(),
             cancelled: cancelled.clone(),
+            #[cfg(test)]
+            events: (!self.native_watch).then(|| events.clone()),
         }));
         let root = root.to_path_buf();
-        std::thread::spawn(move || run(root, declarations, slot, cancelled));
+        #[cfg(test)]
+        let native = self.native_watch;
+        std::thread::spawn(move || {
+            run(
+                root,
+                declarations,
+                slot,
+                cancelled,
+                events,
+                rx,
+                #[cfg(test)]
+                native,
+            )
+        });
     }
 
     /// Nonblocking: neither discovery nor watch setup holds this lock.
@@ -355,7 +493,38 @@ impl ProjectDetection {
         if let Some(projects) = answer.projects {
             self.projects = projects;
         }
+        self.ready = true;
         Some(answer.failed)
+    }
+
+    pub fn pending(&self) -> bool {
+        self.worker.is_some() && !self.ready
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_injected_events(&self) -> bool {
+        self.worker.as_ref().is_some_and(|worker| {
+            worker.events.is_some() && worker.slot.injected.load(Ordering::Relaxed)
+        })
+    }
+
+    /// Feed the real callback queue and wait for its processing, including a resulting scan.
+    /// A fence also proves that an unrelated event was consumed without publishing an update.
+    #[cfg(test)]
+    pub(crate) fn inject_event(&self, event: notify::Result<notify::Event>) {
+        let events = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.events.as_ref())
+            .expect("project tests must use injected events");
+        enqueue_event(&events.tx, &events.overflow, &events.failed, event);
+        let (tx, rx) = mpsc::sync_channel(1);
+        events
+            .tx
+            .send(WatchMessage::Settled(tx))
+            .expect("project event worker");
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("project event processed");
     }
 
     #[cfg(test)]
@@ -637,10 +806,10 @@ mod tests {
             failed.load(Ordering::Relaxed),
             "a full queue cannot hide watch failures"
         );
-        assert_eq!(
-            rx.try_recv().unwrap().unwrap().paths,
-            [PathBuf::from("unrelated")]
-        );
+        let WatchMessage::Event(event) = rx.try_recv().unwrap() else {
+            panic!("notification event");
+        };
+        assert_eq!(event.unwrap().paths, [PathBuf::from("unrelated")]);
         assert!(rx.try_recv().is_err());
     }
 }

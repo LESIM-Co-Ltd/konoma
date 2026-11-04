@@ -311,6 +311,9 @@ fn gate_open_external(app: &App) -> Gate {
 
 /// `o`: the hub opens only in a repository the backend can show (mirrors `App::open_git_view`).
 fn gate_open_git_view(app: &App) -> Gate {
+    if !app.tab.projects.projects.is_empty() || app.tab.projects.pending() {
+        return Gate::On;
+    }
     let backend_is_git = app.git_vcs == crate::vcs::VcsKind::Git;
     if backend_is_git && !app.cfg.external.git {
         return Gate::Off(Some(Msg::ExternalGitDisabled));
