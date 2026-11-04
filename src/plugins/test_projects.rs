@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub hint_groups: bool,
+    pub rebound_hint_key: bool,
     pub act_failures: usize,
     pub act_error: Option<Failure>,
     pub act_panic: bool,
@@ -222,6 +224,38 @@ impl Plugin for Screens {
             .action(action("navigate", "F11", on()));
         if self.read_only {
             m = m.read_only();
+        }
+        if self.log.lock().unwrap().hint_groups {
+            m = m
+                .hint_group(HintGroup::new("stage", "stage(all)").help("stage / stage all"))
+                .hint_group(HintGroup::new("unstage", "unstage(all)").help("unstage / unstage all"))
+                .action(action("hint-before", "ctrl-F8", any()).footer(0))
+                .action(
+                    action("hint-stage", "s", any())
+                        .label("stage")
+                        .footer(8)
+                        .hint_group("stage"),
+                )
+                .action(action("hint-between", "ctrl-F9", any()).footer(4))
+                .action(
+                    action("hint-stage-all", "S", any())
+                        .label("stage all")
+                        .footer(2)
+                        .hint_group("stage"),
+                )
+                .action(
+                    action("hint-unstage", "u", any())
+                        .label("unstage")
+                        .footer(9)
+                        .hint_group("unstage"),
+                )
+                .action(
+                    action("hint-unstage-all", "U", any())
+                        .label("unstage all")
+                        .footer(9)
+                        .hint_group("unstage"),
+                )
+                .action(action("hint-after", "ctrl-F10", any()).footer(10));
         }
         if let Some(project) = &mut m.project {
             project.chip = (!self.log.lock().unwrap().no_declared_chip)

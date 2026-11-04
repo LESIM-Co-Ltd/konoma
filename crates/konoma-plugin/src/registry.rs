@@ -164,6 +164,22 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    UnknownHintGroup {
+        action: String,
+        group: String,
+    },
+    DuplicateHintGroup {
+        group: String,
+        action: Option<String>,
+    },
+    HintGroupContext {
+        action: String,
+        group: String,
+    },
+    HintGroupProjectScreen {
+        action: String,
+        group: String,
+    },
     UnknownRefreshScreen {
         action: String,
         screen: String,
@@ -259,6 +275,14 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownHintGroup { action, group } => write!(f, "action `{action}` names unknown hint group `{group}`"),
+            Self::DuplicateHintGroup { group, action } => {
+                write!(f, "hint group `{group}` is declared twice")?;
+                if let Some(action) = action { write!(f, " (action `{action}`)")?; }
+                Ok(())
+            },
+            Self::HintGroupContext { action, group } => write!(f, "action `{action}` has a different context in hint group `{group}`"),
+            Self::HintGroupProjectScreen { action, group } => write!(f, "action `{action}` has a different project screen in hint group `{group}`"),
             Self::UnknownRefreshScreen { action, screen } => write!(f, "action `{action}` refreshes unknown screen `{screen}`"),
             Self::InvalidWatchPath { index } => write!(f, "project watch path {index} must be nonempty and relative without parent components"),
             Self::InvalidMarker { index, limit } => write!(f, "project detection marker {index} must be one nonempty file name other than . or .. (at most {limit} bytes)"),
@@ -398,7 +422,58 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
                 .as_deref()
                 .and_then(|g| name(ManifestName::WorkGroup, g))
         })
+        .or_else(|| hint_group_problem(m))
         .or_else(|| project_problem(m))
+}
+
+fn hint_group_problem(m: &Manifest) -> Option<ManifestReason> {
+    use crate::project::ActContext;
+    let project_screen = |a: &crate::Act| match a.project_context.as_ref() {
+        None => (None, None),
+        Some(ActContext::TreeSelection) => (Some("tree"), None),
+        Some(ActContext::Diff) => (Some("diff"), None),
+        Some(ActContext::Screen { screen, .. }) => (Some("screen"), Some(screen.clone())),
+    };
+    for (index, group) in m.hint_groups.iter().enumerate() {
+        if m.hint_groups[..index].iter().any(|g| g.id == group.id) {
+            return Some(ManifestReason::DuplicateHintGroup {
+                group: display_name(&group.id),
+                action: m
+                    .actions
+                    .iter()
+                    .find(|a| a.hint_group.as_deref() == Some(&group.id))
+                    .map(|a| display_name(&a.id)),
+            });
+        }
+    }
+    for action in &m.actions {
+        let Some(group) = &action.hint_group else {
+            continue;
+        };
+        if !m.hint_groups.iter().any(|g| g.id == *group) {
+            return Some(ManifestReason::UnknownHintGroup {
+                action: display_name(&action.id),
+                group: display_name(group),
+            });
+        }
+        let first = m
+            .actions
+            .iter()
+            .find(|a| a.hint_group.as_ref() == Some(group))?;
+        if action.screen != first.screen {
+            return Some(ManifestReason::HintGroupContext {
+                action: display_name(&action.id),
+                group: display_name(group),
+            });
+        }
+        if project_screen(action) != project_screen(first) {
+            return Some(ManifestReason::HintGroupProjectScreen {
+                action: display_name(&action.id),
+                group: display_name(group),
+            });
+        }
+    }
+    None
 }
 
 fn project_problem(m: &Manifest) -> Option<ManifestReason> {

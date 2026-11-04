@@ -8,6 +8,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
 - `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+- Plugin actions can declare hint groups to share one footer token and help row, with enabled, rebound keys and independent `Space` menu entries.
+
 - Project actions can opt into `TextInput::keep_on_failure()` to reopen a failed action's text prompt with its submitted text and original context when focus permits a retry.
 
 - Project confirmations can include the invoked row's short `ListRow::name` through `{row}`, and non-destructive confirmations can use `Confirmation::setting` to respect a boolean plugin preference.

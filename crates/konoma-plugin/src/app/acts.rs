@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use konoma_host_core::help::{footer_key, help_key, CoreSection};
+use konoma_host_core::help::{help_key, write_keys, CoreSection};
 use konoma_host_core::keymap::KeyPress;
 
 use crate::host::acts::{self, ActBinding};
@@ -97,10 +97,12 @@ impl AppActs {
         lang: &str,
         enabled: impl Fn(&str) -> bool,
     ) -> Vec<String> {
-        acts::footer_order(&self.in_context(ctx))
+        acts::footer_hints(&self.in_context(ctx))
             .into_iter()
-            .filter_map(|b| {
-                acts::footer_token(b, enabled(&b.act), lang, |k| footer_key(k, true)).map(|t| t.0)
+            .filter_map(|hint| {
+                let keys = hint.keys(|b| enabled(&b.act));
+                (!keys.is_empty())
+                    .then(|| format!("{}:{}", write_keys(&keys, true), hint.label(lang)))
             })
             .collect()
     }
@@ -141,8 +143,158 @@ impl AppActs {
                 .unwrap_or_default(),
             rows: rows
                 .into_iter()
-                .map(|(k, desc, _)| (help_key(k), desc.to_string()))
+                .map(|(keys, desc, _)| {
+                    (
+                        keys.iter()
+                            .map(|k| help_key(*k))
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                        desc.to_string(),
+                    )
+                })
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Act, HintGroup, ViewKind};
+
+    fn grouped_actions() -> AppActs {
+        let manifest = Manifest::new("hints", "1")
+            .name("Hint actions")
+            .shows(ViewKind::Canvas)
+            .hint_group(HintGroup::new("stage", "stage(all)").help("stage / stage all"))
+            .action(
+                Act::new("stage")
+                    .key("s")
+                    .label("stage")
+                    .footer(8)
+                    .hint_group("stage"),
+            )
+            .action(
+                Act::new("outside")
+                    .key("x")
+                    .label("outside")
+                    .help("outside help")
+                    .footer(4),
+            )
+            .action(
+                Act::new("stage-all")
+                    .key("S")
+                    .label("stage all")
+                    .footer(2)
+                    .hint_group("stage"),
+            );
+        let (actions, notes) = AppActs::from_manifest("hints", &manifest, None, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        actions
+    }
+
+    #[test]
+    fn standalone_hint_group_footer_order_and_enabled_keys() {
+        let actions = grouped_actions();
+        assert_eq!(
+            actions.footer_tokens("canvas", "en", |_| true),
+            ["s/S:stage(all)", "x:outside"]
+        );
+        for (enabled, token) in [("stage", "s:stage(all)"), ("stage-all", "S:stage(all)")] {
+            assert_eq!(
+                actions.footer_tokens("canvas", "en", |id| id == enabled || id == "outside"),
+                [token, "x:outside"]
+            );
+        }
+        assert_eq!(
+            actions.footer_tokens("canvas", "en", |id| id == "outside"),
+            ["x:outside"]
+        );
+        assert!(actions.footer_tokens("canvas", "en", |_| false).is_empty());
+    }
+
+    #[test]
+    fn standalone_hint_group_help_matches_host_and_keeps_ungrouped_row() {
+        let mut actions = grouped_actions();
+        let section = actions.help_section("canvas", "en", |_| true).unwrap();
+        assert_eq!(section.title, "Hint actions");
+        // These are the same keys and description as the host's project-screen test.
+        assert_eq!(
+            section.rows,
+            [
+                ("s / S".into(), "stage / stage all".into()),
+                ("x".into(), "outside help".into()),
+            ]
+        );
+        for (enabled, key) in [("stage", "s"), ("stage-all", "S")] {
+            assert_eq!(
+                actions
+                    .help_section("canvas", "en", |id| id == enabled || id == "outside")
+                    .unwrap()
+                    .rows,
+                [
+                    (key.into(), "stage / stage all".into()),
+                    ("x".into(), "outside help".into())
+                ]
+            );
+        }
+        assert_eq!(
+            actions
+                .help_section("canvas", "en", |id| id == "outside")
+                .unwrap()
+                .rows,
+            [("x".into(), "outside help".into())]
+        );
+        assert!(actions.help_section("canvas", "en", |_| false).is_none());
+        for binding in &mut actions.bindings {
+            if let Some((_, group)) = &mut binding.hint_group {
+                group.help = Tr::new("");
+            }
+        }
+        assert_eq!(
+            actions.help_section("canvas", "en", |_| true).unwrap().rows,
+            [
+                ("s / S".into(), "stage(all)".into()),
+                ("x".into(), "outside help".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn standalone_hint_group_space_menu_keeps_individual_actions() {
+        use crate::app::{space, LaunchFacts};
+        use konoma_host_core::keymap::{CoreContext, CoreKeys, KeyScheme};
+        use konoma_host_core::lang::Lang;
+
+        let actions = grouped_actions();
+        let keys = CoreKeys::defaults(KeyScheme::Vim);
+        let items = space::items(
+            &keys,
+            &keys,
+            CoreContext::Canvas,
+            Lang::En,
+            "en",
+            &actions,
+            "canvas",
+            false,
+            &LaunchFacts::default(),
+            |_| true,
+        );
+        let mut declared: Vec<_> = items
+            .iter()
+            .filter_map(|item| {
+                let binding = space::declared(&actions, "canvas", item.action)?;
+                Some((binding.act.as_str(), item.key, item.label.as_str()))
+            })
+            .collect();
+        declared.sort_by_key(|(id, _, _)| *id);
+        assert_eq!(
+            declared,
+            [
+                ("outside", KeyPress::ch('x'), "outside"),
+                ("stage", KeyPress::ch('s'), "stage"),
+                ("stage-all", KeyPress::ch('S'), "stage all"),
+            ]
+        );
     }
 }
