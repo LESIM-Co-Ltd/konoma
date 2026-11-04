@@ -1,0 +1,14 @@
+[package]
+name = "{{project-name}}"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+description = "A konoma plugin that shows binary files as hex lines"
+keywords = ["konoma-plugin"]
+
+[dependencies]
+konoma-plugin = { version = "0.1.0", features = ["app"] }
+
+# Also allows generating inside another workspace without joining it.
+[workspace]

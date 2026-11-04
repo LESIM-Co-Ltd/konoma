@@ -2012,6 +2012,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-sample-hexdump"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-plugin-test",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
