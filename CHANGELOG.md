@@ -7,6 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- A language-independent plugin protocol specification and a "Write a plugin" guide in English and Japanese, with a minimal hexdump sample and a `cargo generate` template. The sample covers translated action hints, standalone/child-process entry points, and the library entry used by `konoma plugin install`; its tests check the real program and build the rendered template offline.
 - Background plugin update notices, checked against the public crates.io sparse index at most once per day: compatible updates and versions requiring a newer konoma are reported separately, with installation-specific host upgrade guidance. `[external] update_check = false` disables checks; `konoma plugin list` shows saved results and the last check time without network access.
 - **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
   that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
@@ -43,7 +44,7 @@ All notable changes to konoma are documented in this file. The format is based o
   The host draws a plugin by what it declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and by the type of view
   it returns, not by its id, so another plugin can stand in for a standard one (a text view a plugin makes is read in windows
   like a file; what the host shows when a plugin cannot show a file is the plugin's own `Manifest::unavailable`); how to add a
-  plugin of your own comes in a later stage. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
+  plugin of your own is described in the "Write a plugin" guide. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
   plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
   is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
   its file changed (its modification time, size, inode or change time), or when an event names the file itself and the file was
