@@ -7,6 +7,15 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub chip: Option<Chip>,
+    pub chips: usize,
+    pub chip_failure: bool,
+    pub chip_panic: bool,
+    pub no_declared_chip: bool,
+    pub file_only: bool,
+    pub chip_from_marker: bool,
+    pub chip_from_watch: bool,
+    pub chip_hold: Option<Arc<ViewHold>>,
     pub views: Vec<ProjectView>,
     pub acts: Vec<(String, ProjectAct)>,
     pub threads: Vec<std::thread::ThreadId>,
@@ -142,12 +151,23 @@ impl Plugin for Screens {
         if self.read_only {
             m = m.read_only();
         }
+        if let Some(project) = &mut m.project {
+            project.chip = (!self.log.lock().unwrap().no_declared_chip)
+                .then(|| Tr::new("project chip").ja("宣言チップ"));
+        }
+        if self.log.lock().unwrap().file_only {
+            m.project = None;
+            m.actions.clear();
+            m = m.bind(Bind::files(["*.screen-file"]));
+        }
         m
     }
 
     fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
-        let Input::Project { root, .. } = input else {
-            return Err(Failure::unsupported("project required"));
+        let (root, marker) = match input {
+            Input::Project { root, marker } => (root, marker),
+            Input::File { path, .. } => (path.parent().unwrap().to_path_buf(), String::new()),
+            _ => return Err(Failure::unsupported("project or file required")),
         };
         let mut log = self.log.lock().unwrap();
         log.opens += 1;
@@ -155,6 +175,7 @@ impl Plugin for Screens {
         drop(log);
         Ok(Box::new(ScreenSession {
             root,
+            marker,
             log: self.log.clone(),
             hold: self.hold.clone(),
             started: self.started.clone(),
@@ -165,6 +186,7 @@ impl Plugin for Screens {
 
 struct ScreenSession {
     root: std::path::PathBuf,
+    marker: String,
     log: Arc<Mutex<ProjectLog>>,
     hold: Option<Arc<super::test_plugins::Latch>>,
     started: Option<Arc<super::test_plugins::Latch>>,
@@ -172,6 +194,37 @@ struct ScreenSession {
 }
 
 impl Session for ScreenSession {
+    fn chip(&mut self, _: &ViewCx) -> Result<Option<Chip>, Failure> {
+        let mut log = self.log.lock().unwrap();
+        log.chips += 1;
+        log.threads.push(std::thread::current().id());
+        let chip = log.chip.clone();
+        let failure = log.chip_failure;
+        let panic = log.chip_panic;
+        let from_marker = log.chip_from_marker;
+        let from_watch = log.chip_from_watch;
+        let hold = log.chip_hold.take();
+        drop(log);
+        if let Some(hold) = hold {
+            hold.entered.open();
+            hold.release.wait();
+        }
+        assert!(!panic, "chip fixture panic");
+        if failure {
+            return Err(Failure::external("chip fixture failure"));
+        }
+        if from_marker {
+            return Ok(Some(Chip::new(std::fs::read_to_string(
+                self.root.join(&self.marker),
+            )?)));
+        }
+        if from_watch {
+            return std::fs::read_to_string(self.root.join("metadata/index"))
+                .map(|text| Some(Chip::new(text)))
+                .map_err(Failure::from);
+        }
+        Ok(chip)
+    }
     fn enabled(&self, action: &str) -> bool {
         !self
             .log
@@ -182,6 +235,9 @@ impl Session for ScreenSession {
             .any(|disabled| disabled == action)
     }
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        if req.project.is_none() {
+            return Ok(View::text(["file session"]));
+        }
         let project = req
             .project
             .as_ref()

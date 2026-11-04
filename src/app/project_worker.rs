@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use konoma_plugin::project::ProjectView;
+use konoma_plugin::project::{Chip, ProjectView};
 use konoma_plugin::view::{TextSource, View, ViewReq};
 use konoma_plugin::{
     ActCx, Failure, Input, OpenCx, Plugin, ReadScope, Session, Settings, TermCaps, Tr, ViewCx,
@@ -13,6 +13,7 @@ use konoma_plugin::{
 use super::project_screens::{ProjectContent, ProjectEffect, ProjectKey, ScreenKey};
 
 pub(super) enum ProjectJob {
+    Chip,
     View {
         key: ScreenKey,
         req: ViewReq,
@@ -29,7 +30,8 @@ pub(super) enum ProjectJob {
 pub(super) struct ProjectReply {
     pub views: Vec<(ScreenKey, Arc<ProjectContent>)>,
     pub enabled: HashMap<String, bool>,
-    pub chip: Option<Option<Tr>>,
+    pub chip: Option<Option<Chip>>,
+    pub chip_error: Option<Failure>,
     pub effect: Option<ProjectEffect>,
     pub error: Option<Failure>,
 }
@@ -40,6 +42,7 @@ impl ProjectReply {
             views: Vec::new(),
             enabled: HashMap::new(),
             chip: None,
+            chip_error: None,
             effect: None,
             error: None,
         }
@@ -50,7 +53,8 @@ pub(crate) struct ProjectRuntime {
     pub(crate) project: crate::plugins::projects::MatchedProject,
     pub(super) views: HashMap<ScreenKey, Arc<ProjectContent>>,
     pub(super) enabled: HashMap<String, bool>,
-    pub(super) chip: Option<Tr>,
+    pub(super) chip: Option<Chip>,
+    pub(super) chip_dirty: bool,
     pub(super) busy: bool,
     pub(super) acting: bool,
     #[cfg(test)]
@@ -83,7 +87,12 @@ impl ProjectRuntime {
         let (results, rx) = mpsc::sync_channel(1);
         let root = project.root.clone();
         let marker = project.marker.clone();
-        let chip = project.declaration.chip.clone();
+        let chip = project
+            .declaration
+            .chip
+            .as_ref()
+            .map(|chip| Chip::new(chip.get(&lang)));
+        let fallback = chip.clone();
         std::thread::spawn(move || {
             let scope = crate::plugins::read_scope::scope_for(
                 standard,
@@ -119,6 +128,16 @@ impl ProjectRuntime {
                     .collect()
             };
             let mut initial = ProjectReply::empty();
+            let cx = ViewCx::new(&settings, &lang)
+                .with_term(term)
+                .with_read_scope(scope.clone());
+            refresh_chip(
+                &mut initial,
+                session.as_mut(),
+                &cx,
+                &fallback,
+                &panic_message,
+            );
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 enabled(session.as_ref())
             })) {
@@ -137,6 +156,15 @@ impl ProjectRuntime {
                         .with_read_scope(scope.clone());
                     let mut reply = ProjectReply::empty();
                     match job {
+                        ProjectJob::Chip => {
+                            refresh_chip(
+                                &mut reply,
+                                session.as_mut(),
+                                &cx,
+                                &fallback,
+                                &panic_message,
+                            );
+                        }
                         ProjectJob::View { key, req } => {
                             reply.views.push((
                                 key,
@@ -179,7 +207,13 @@ impl ProjectRuntime {
                                 }
                             }
                             if chip {
-                                reply.chip = Some(plugin.manifest().project.and_then(|p| p.chip));
+                                refresh_chip(
+                                    &mut reply,
+                                    session.as_mut(),
+                                    &cx,
+                                    &fallback,
+                                    &panic_message,
+                                );
                             }
                         }
                     }
@@ -207,6 +241,7 @@ impl ProjectRuntime {
             views: HashMap::new(),
             enabled: HashMap::new(),
             chip,
+            chip_dirty: false,
             busy: true,
             acting: false,
             #[cfg(test)]
@@ -220,6 +255,28 @@ impl ProjectRuntime {
             invalidated: false,
         }
     }
+}
+
+fn refresh_chip(
+    reply: &mut ProjectReply,
+    session: &mut dyn Session,
+    cx: &ViewCx,
+    fallback: &Option<Chip>,
+    panic_message: &str,
+) {
+    // A chip failure is reported without losing this job's views or action outcome.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.chip(cx)));
+    reply.chip = Some(match result {
+        Ok(Ok(Some(chip))) => Some(chip.clipped()),
+        Ok(Ok(None)) => fallback.clone(),
+        error => {
+            reply.chip_error = Some(match error {
+                Ok(Err(error)) => error,
+                _ => Failure::external(Tr::new(panic_message.to_owned())),
+            });
+            fallback.clone()
+        }
+    });
 }
 
 /// The same text, Markdown and diff widgets the file previews use, prepared off the UI thread.
@@ -377,5 +434,113 @@ impl super::App {
             crate::i18n::tr(self.lang, crate::i18n::Msg::ProjectWorkerFailed).into(),
         );
         self.project_runtimes.insert(key, runtime);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use konoma_plugin::proc::{
+        client::{Config, ProcPlugin, Spawned},
+        frame,
+        proto::{Answer, FromChild, Hello, HelloReply, Reply, ToChild, WState},
+        wire::{layout_to_wire, manifest_to_wire},
+    };
+    use konoma_plugin::{Manifest, ProjectDecl};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    #[test]
+    fn project_chip_old_child_uses_localized_declaration_without_unknown_call() {
+        let dir = crate::test_support::unique_tmp("konoma_project_chip_old_child");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("side")).unwrap();
+        let declaration = ProjectDecl::new().chip(Tr::new("declared chip").ja("宣言チップ"));
+        let manifest = Manifest::new("old-project", "1").project(declaration.clone());
+        let (host, mut child) = UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            let _: Hello = frame::recv(&mut child).unwrap().unwrap();
+            let mut manifest = manifest_to_wire(&manifest).unwrap();
+            manifest.session_chip = false;
+            frame::send(
+                &mut child,
+                &HelloReply::Ack {
+                    version: 2,
+                    manifest,
+                },
+            )
+            .unwrap();
+            let ToChild::Open { rid, .. } = frame::recv(&mut child).unwrap().unwrap() else {
+                panic!("expected project open");
+            };
+            frame::send(
+                &mut child,
+                &FromChild {
+                    rid,
+                    answer: Answer::Ok(Reply::Opened {
+                        state: WState {
+                            layout: layout_to_wire(&konoma_plugin::view::Layout::single()),
+                            enabled: Vec::new(),
+                        },
+                    }),
+                },
+            )
+            .unwrap();
+            loop {
+                match frame::recv::<_, ToChild>(&mut child).unwrap() {
+                    Some(ToChild::Close { .. }) => {}
+                    Some(ToChild::Shutdown) | None => break,
+                    other => panic!("old child received unknown call: {other:?}"),
+                }
+            }
+        });
+        let connection = Arc::new(std::sync::Mutex::new(Some(host)));
+        let plugin = Arc::new(
+            ProcPlugin::start(
+                move || {
+                    let host = connection.lock().unwrap().take().expect("one launch");
+                    let kill = host.try_clone()?;
+                    Ok(Spawned {
+                        reader: Box::new(host.try_clone()?),
+                        writer: Box::new(host),
+                        stderr: None,
+                        pid: None,
+                        kill: Box::new(move || {
+                            let _ = kill.shutdown(std::net::Shutdown::Both);
+                        }),
+                    })
+                },
+                Config {
+                    scratch_root: dir.join("side"),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let runtime = ProjectRuntime::start(
+            crate::plugins::projects::MatchedProject {
+                plugin: "old-project".into(),
+                root: dir.to_path_buf(),
+                marker: "project".into(),
+                declaration,
+            },
+            plugin.clone(),
+            Vec::new(),
+            Settings::empty().clone(),
+            "ja".into(),
+            String::new(),
+            TermCaps::new(),
+            None,
+            false,
+            None,
+            "worker failed".into(),
+        );
+        let reply = runtime.rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(reply.error.is_none());
+        assert!(reply.chip_error.is_none());
+        assert_eq!(reply.chip.unwrap().unwrap().text.plain(), "宣言チップ");
+        drop(runtime);
+        plugin.stop();
+        peer.join().unwrap();
     }
 }

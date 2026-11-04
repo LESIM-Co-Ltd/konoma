@@ -21,13 +21,38 @@ fn fixture(
     hold: Option<Arc<Latch>>,
     started: Option<Arc<Latch>>,
 ) -> Fixture {
+    fixture_with_log(
+        name,
+        declared_read_only,
+        markers,
+        outcome,
+        hold,
+        started,
+        ProjectLog::default(),
+    )
+}
+
+fn fixture_with_log(
+    name: &str,
+    declared_read_only: bool,
+    markers: usize,
+    outcome: Option<Outcome>,
+    hold: Option<Arc<Latch>>,
+    started: Option<Arc<Latch>>,
+    initial: ProjectLog,
+) -> Fixture {
     let dir = sandbox(name);
     for index in 0..markers {
-        std::fs::write(dir.join(format!("{index}.screen-project")), "project").unwrap();
+        std::fs::write(
+            dir.join(format!("{index}.screen-project")),
+            format!("chip-{index}"),
+        )
+        .unwrap();
     }
     std::fs::write(dir.join("file.txt"), "one\ntwo\nthree\nfour\n").unwrap();
     std::fs::create_dir_all(dir.join("destination")).unwrap();
-    let log = Arc::new(Mutex::new(ProjectLog::default()));
+    let file_only = initial.file_only;
+    let log = Arc::new(Mutex::new(initial));
     let marker = test_plugins::register(
         name,
         Arc::new(Screens {
@@ -42,8 +67,10 @@ fn fixture(
     cfg.ui.lang = "en".into();
     cfg.external.git = false;
     let mut sim = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
-    sim.app.tab.projects.wait_for_result();
-    assert!(sim.app.tab.projects.uses_injected_events());
+    if !file_only {
+        sim.app.tab.projects.wait_for_result();
+        assert!(sim.app.tab.projects.uses_injected_events());
+    }
     sim.app.poll_projects();
     drain(&mut sim);
     Fixture {
@@ -51,6 +78,294 @@ fn fixture(
         log,
         _dir: dir,
     }
+}
+
+#[test]
+fn e2e_project_chip_initial_styled_and_worker_owned() {
+    use konoma_plugin::{Chip, Color, Line, Span, Style};
+    let mut f = fixture_with_log(
+        "project_chip_initial",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip: Some(Chip::new(Line::from(vec![
+                Span::styled("計算", Style::new().fg(Color::Red)),
+                Span::styled(" chip", Style::new().fg(Color::Green)),
+            ]))),
+            ..Default::default()
+        },
+    );
+    let screen = chip_screen(&f.sim);
+    let title = screen
+        .lines()
+        .find(|line| line.contains(" · "))
+        .unwrap_or(&screen);
+    assert!(title.contains(" · 計算 chip "), "{title}");
+    f.sim.dont_see("project chip");
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+    assert!(f
+        .log
+        .lock()
+        .unwrap()
+        .threads
+        .iter()
+        .all(|id| *id != std::thread::current().id()));
+    let buffer = f.sim.term.backend().buffer();
+    let (x, y) = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .find(|pos| buffer[*pos].symbol() == "計")
+        .unwrap();
+    assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Red);
+    assert_eq!(buffer[(x + 2, y)].symbol(), "算");
+    for _ in 0..3 {
+        f.sim.draw();
+    }
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+}
+
+fn chip_screen(s: &Sim) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let buffer = s.term.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buffer.area.height {
+        let mut x = 0;
+        while x < buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            text.push_str(symbol);
+            // A terminal advances over the continuation cell of a wide glyph.
+            x += symbol.width().max(1) as u16;
+        }
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn e2e_project_chip_fallback_empty_failure_and_panic_keep_session() {
+    for mode in 0..4 {
+        for declared in [true, false] {
+            let mut f = fixture_with_log(
+                &format!("project_chip_fallback_{mode}_{declared}"),
+                false,
+                1,
+                None,
+                None,
+                None,
+                ProjectLog {
+                    chip: (mode == 1).then(konoma_plugin::Chip::default),
+                    chip_failure: mode == 2,
+                    chip_panic: mode == 3,
+                    no_declared_chip: !declared,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                f.sim.screen().contains(" · project chip "),
+                declared && mode != 1
+            );
+            if mode >= 2 {
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    Some(if mode == 2 {
+                        "chip fixture failure"
+                    } else {
+                        crate::i18n::tr(f.sim.app.lang, crate::i18n::Msg::ProjectWorkerFailed)
+                    })
+                );
+            }
+            open(&mut f);
+            f.sim.key('x');
+            drain(&mut f.sim);
+            assert_eq!(last_act(&f).0, "capture");
+            assert_eq!(f.log.lock().unwrap().opens, 1);
+            // A later chip failure must replace a previous computed value, too.
+            f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("before failure"));
+            f.log.lock().unwrap().chip_failure = false;
+            f.log.lock().unwrap().chip_panic = false;
+            press(&mut f, KeyCode::F(10));
+            assert_eq!(f.sim.app.project_chips()[0].to_string(), "before failure");
+            f.log.lock().unwrap().chip = (mode == 1).then(konoma_plugin::Chip::default);
+            f.log.lock().unwrap().chip_failure = mode == 2;
+            f.log.lock().unwrap().chip_panic = mode == 3;
+            press(&mut f, KeyCode::F(10));
+            if mode >= 2 {
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    Some(if mode == 2 {
+                        "chip fixture failure"
+                    } else {
+                        crate::i18n::tr(f.sim.app.lang, crate::i18n::Msg::ProjectWorkerFailed)
+                    })
+                );
+            }
+            f.sim.key('x');
+            drain(&mut f.sim);
+            assert_eq!(f.log.lock().unwrap().acts.last().unwrap().0, "capture");
+            f.sim.key('q');
+            assert_eq!(
+                f.sim.screen().contains(" · project chip "),
+                declared && mode != 1
+            );
+            f.sim.dont_see("before failure");
+            assert_eq!(f.log.lock().unwrap().opens, 1);
+        }
+    }
+}
+
+#[test]
+fn e2e_project_chip_clips_controls_text_spans_and_narrow_cjk_title() {
+    use konoma_plugin::{Chip, Line, Span};
+    let mut f = fixture_with_log(
+        "project_chip_clipped",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip: Some(Chip::new(Line::from(vec![
+                Span::raw("a\0\n\t\r\x1b\x7f\u{85}\u{10eeee}b"),
+                Span::raw("界".repeat(600)),
+            ]))),
+            ..Default::default()
+        },
+    );
+    let kept = f.sim.app.project_chips()[0].to_string();
+    assert_eq!(kept, format!("ab{}…", "界".repeat(509)));
+    f.sim.resize(1200, 24);
+    drain(&mut f.sim);
+    assert!(chip_screen(&f.sim).contains(&kept));
+    for width in [73, 74, 75, 76] {
+        f.sim.resize(width, 24);
+        drain(&mut f.sim);
+        let screen = chip_screen(&f.sim);
+        let title = screen.lines().find(|line| line.starts_with('┌')).unwrap();
+        assert!(title.ends_with('┐'), "{title}");
+        assert_eq!(unicode_width::UnicodeWidthStr::width(title), width as usize);
+        assert_eq!(f.sim.app.project_chips()[0].to_string(), kept);
+    }
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+    f.log.lock().unwrap().chip = Some(Chip::new(Line::from(
+        (0..65)
+            .map(|i| Span::raw(if i == 64 { "overflow" } else { "x" }))
+            .collect::<Vec<_>>(),
+    )));
+    open(&mut f);
+    press(&mut f, KeyCode::F(10));
+    assert_eq!(f.sim.app.project_chips()[0].to_string(), "x".repeat(64));
+}
+
+#[test]
+fn e2e_project_chip_file_only_session_is_never_called() {
+    let mut f = fixture_with_log(
+        "project_chip_file_only",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            file_only: true,
+            chip_panic: true,
+            ..Default::default()
+        },
+    );
+    assert!(f.sim.app.tab.projects.projects.is_empty());
+    std::fs::write(f.sim.app.tab.root.join("view.screen-file"), "file").unwrap();
+    f.sim.app.rebuild_tree().unwrap();
+    f.sim.select("view.screen-file");
+    f.sim.enter();
+    f.sim.see("file session");
+    assert_eq!(f.log.lock().unwrap().opens, 1);
+    assert_eq!(f.log.lock().unwrap().chips, 0);
+}
+
+#[test]
+fn e2e_project_chip_tabs_roots_and_multiple_project_order() {
+    let mut f = fixture_with_log(
+        "project_chip_tabs",
+        false,
+        2,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip_from_marker: true,
+            ..Default::default()
+        },
+    );
+    let first_root = f.sim.app.tab.root.clone();
+    f.sim.see(" · chip-0  · chip-1 ");
+    let other = sandbox("project_chip_other_root");
+    std::fs::write(other.join("0.screen-project"), "other chip").unwrap();
+    let empty = sandbox("project_chip_empty_root");
+    f.log.lock().unwrap().outcome = Some(Outcome::OpenTab {
+        path: canon(&other),
+    });
+    f.sim.key('p');
+    f.sim.enter();
+    drain(&mut f.sim);
+    press(&mut f, KeyCode::F(11));
+    f.sim.app.tab.projects.wait_for_result();
+    drain(&mut f.sim);
+    f.sim.see(" · other chip ");
+    f.sim.dont_see("chip-0");
+    f.sim.dont_see("chip-1");
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.root, first_root);
+    f.sim.key('q');
+    f.sim.see(" · chip-0  · chip-1 ");
+    f.sim.dont_see("other chip");
+    f.sim.key(']');
+    drain(&mut f.sim);
+    open(&mut f);
+    f.log.lock().unwrap().outcome = Some(Outcome::SwitchRoot {
+        root: canon(&empty),
+    });
+    press(&mut f, KeyCode::F(11));
+    assert!(f.sim.app.project_chips().is_empty());
+    f.sim.app.tab.projects.wait_for_result();
+    drain(&mut f.sim);
+    f.sim.dont_see("other chip");
+    f.sim.dont_see("chip-0");
+}
+
+#[test]
+fn e2e_project_chip_watch_during_held_reply_fetches_latest_on_tree() {
+    let mut f = fixture("project_chip_watch_busy", false, 1, None, None, None);
+    open(&mut f);
+    let before = f.log.lock().unwrap().chips;
+    let gate = ViewHold::new("chip");
+    f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("stale chip"));
+    f.log.lock().unwrap().chip_hold = Some(gate.clone());
+    f.sim.press(KeyCode::F(10), KeyModifiers::NONE);
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+    f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("latest chip"));
+    let root = f.sim.app.tab.root.clone();
+    std::fs::create_dir_all(root.join("metadata")).unwrap();
+    std::fs::write(root.join("metadata/index"), "change").unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("metadata/index"))
+    ));
+    assert!(f.sim.app.poll_projects());
+    f.sim.key('q');
+    gate.release.open();
+    f.sim.app.wait_project_job();
+    assert!(!f
+        .sim
+        .app
+        .project_chips()
+        .iter()
+        .any(|chip| chip.to_string() == "stale chip"));
+    drain(&mut f.sim);
+    f.sim.see("latest chip");
+    assert_eq!(f.log.lock().unwrap().chips, before + 2);
+    f.sim.dont_see("stale chip");
 }
 
 fn drain(s: &mut Sim) {
@@ -294,7 +609,9 @@ fn e2e_project_watch_paths_refresh_only_current_screen_once_and_ignore_unrelated
     drain(&mut f.sim);
     let root = f.sim.app.tab.root.clone();
     std::fs::create_dir_all(root.join("metadata")).unwrap();
-    std::fs::write(root.join("metadata/index"), "updated").unwrap();
+    std::fs::write(root.join("metadata/index"), "watched chip").unwrap();
+    let chips = f.log.lock().unwrap().chips;
+    f.log.lock().unwrap().chip_from_watch = true;
     f.log.lock().unwrap().views.clear();
     // Actual file writes have no effect until the test delivers their notification.
     drain(&mut f.sim);
@@ -306,7 +623,11 @@ fn e2e_project_watch_paths_refresh_only_current_screen_once_and_ignore_unrelated
     assert!(f.sim.app.poll_projects());
     drain(&mut f.sim);
     assert_eq!(f.log.lock().unwrap().views, [ProjectView::new("items")]);
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
+    f.sim.key('q');
+    f.sim.see("watched chip");
     f.log.lock().unwrap().views.clear();
+    std::fs::write(root.join("unrelated.txt"), "unrelated change").unwrap();
     f.sim.app.tab.projects.inject_event(Ok(
         notify::Event::new(notify::EventKind::Any).add_path(root.join("unrelated.txt"))
     ));
@@ -317,9 +638,11 @@ fn e2e_project_watch_paths_refresh_only_current_screen_once_and_ignore_unrelated
     );
     drain(&mut f.sim);
     assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
     // A second UI poll cannot consume a duplicate event or produce another view request.
     drain(&mut f.sim);
     assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
 }
 
 #[test]
@@ -825,6 +1148,8 @@ macro_rules! refresh {
             open(&mut f);
             f.log.lock().unwrap().views.clear();
             let manifests = f.log.lock().unwrap().manifests;
+            let chips = f.log.lock().unwrap().chips;
+            f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("updated chip"));
             f.sim.app.clear_project_tree_dirty();
             handle_key(
                 &mut f.sim.app,
@@ -834,12 +1159,19 @@ macro_rules! refresh {
             while f.sim.app.project_jobs_pending() {
                 f.sim.app.wait_project_job();
             }
+            assert_eq!(f.sim.app.project_tree_dirty(), $tree);
+            f.sim.key('q');
+            f.sim.see(if $chip == 1 {
+                "updated chip"
+            } else {
+                "project chip"
+            });
             let log = f.log.lock().unwrap();
             let mut screens: Vec<_> = log.views.iter().map(|view| view.screen.as_str()).collect();
             screens.sort();
             assert_eq!(screens, $screens);
-            assert_eq!(f.sim.app.project_tree_dirty(), $tree);
-            assert_eq!(log.manifests - manifests, $chip);
+            assert_eq!(log.manifests - manifests, 0);
+            assert_eq!(log.chips - chips, $chip);
         }
     };
 }

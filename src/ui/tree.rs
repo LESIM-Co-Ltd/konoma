@@ -298,7 +298,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let root = app.tab.root.clone();
     // The title border shows the path + (if a git repo) the branch name alongside it. While filtering,
     // also show the query's match count; while showing changes-only, show the change count.
-    let mut title = match (app.filter_query(), app.git_branch()) {
+    let title = match (app.filter_query(), app.git_branch()) {
         (Some(q), _) => format!(
             " {}  /{}  ({}) ",
             app.format_path(&root),
@@ -317,8 +317,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         },
         (None, None) => format!(" {} ", app.format_path(&root)),
     };
+    let mut title = Line::raw(title);
     for chip in app.project_chips() {
-        title.push_str(&format!(" · {chip} "));
+        title.spans.push(Span::raw(" · "));
+        // Apply the line style to its spans before merging it into the title.
+        title.spans.extend(chip.spans.into_iter().map(|span| {
+            let style = chip.style.patch(span.style);
+            span.style(style)
+        }));
+        title.spans.push(Span::raw(" "));
     }
 
     // Only `[offset..end]` has already been turned into Lines, so Paragraph's vertical scroll is 0
