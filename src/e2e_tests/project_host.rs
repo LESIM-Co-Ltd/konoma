@@ -22,8 +22,15 @@ fn navigation_config(
         Arc::new(ProjectFixture {
             id: "e2e-project",
             project: ProjectDecl::new()
-                .marker(DetectionMarker::new("host-project.marker", MarkerKind::File))
-                .screen(ProjectScreen::new("items", "Items").key('i').row_kind("item"))
+                .marker(DetectionMarker::new(
+                    "host-project.marker",
+                    MarkerKind::File,
+                ))
+                .screen(
+                    ProjectScreen::new("items", "Items")
+                        .key('i')
+                        .row_kind("item"),
+                )
                 .screen(ProjectScreen::new("text", "Text").key('z'))
                 .watch("metadata/index"),
             calls: calls.clone(),
@@ -132,7 +139,11 @@ fn e2e_git_read_only_stops_checkout_enter_before_starting_a_job() {
         .position(|b| b.name == "feature-x")
         .unwrap();
     while s.app.git_branch_sel() != want {
-        s.key(if s.app.git_branch_sel() > want { 'k' } else { 'j' });
+        s.key(if s.app.git_branch_sel() > want {
+            'k'
+        } else {
+            'j'
+        });
     }
     s.dont_see("checkout");
     s.enter();
@@ -180,12 +191,13 @@ fn navigation_session(
 #[test]
 fn e2e_project_outcome_open_file_uses_link_preview_and_its_line() {
     for asynchronous in [false, true] {
-        let (s, _dir, target) = navigation_session("project_outcome_file", asynchronous, |target| {
-            konoma_plugin::Outcome::OpenFile {
-                path: target.into(),
-                line: Some(3),
-            }
-        });
+        let (s, _dir, target) =
+            navigation_session("project_outcome_file", asynchronous, |target| {
+                konoma_plugin::Outcome::OpenFile {
+                    path: target.into(),
+                    line: Some(3),
+                }
+            });
         assert_eq!(s.app.tab.preview_path.as_ref(), Some(&target));
         assert_eq!(s.app.tab.mode, Mode::Preview);
         assert_eq!(s.app.preview_caret_line(), 2);
@@ -196,11 +208,12 @@ fn e2e_project_outcome_open_file_uses_link_preview_and_its_line() {
 #[test]
 fn e2e_project_outcome_open_diff_uses_the_host_full_screen_diff() {
     for asynchronous in [false, true] {
-        let (s, _dir, target) = navigation_session("project_outcome_diff", asynchronous, |target| {
-            konoma_plugin::Outcome::OpenDiff {
-                path: target.into(),
-            }
-        });
+        let (s, _dir, target) =
+            navigation_session("project_outcome_diff", asynchronous, |target| {
+                konoma_plugin::Outcome::OpenDiff {
+                    path: target.into(),
+                }
+            });
         assert!(
             matches!(&s.app.tab.preview_kind, Some(crate::preview::PreviewKind::GitDiff(path)) if *path == target)
         );
@@ -211,11 +224,12 @@ fn e2e_project_outcome_open_diff_uses_the_host_full_screen_diff() {
 #[test]
 fn e2e_project_outcome_switch_root_uses_the_worktree_root_switch() {
     for asynchronous in [false, true] {
-        let (s, _dir, target) = navigation_session("project_outcome_root", asynchronous, |target| {
-            konoma_plugin::Outcome::SwitchRoot {
-                root: target.parent().unwrap().into(),
-            }
-        });
+        let (s, _dir, target) =
+            navigation_session("project_outcome_root", asynchronous, |target| {
+                konoma_plugin::Outcome::SwitchRoot {
+                    root: target.parent().unwrap().into(),
+                }
+            });
         assert_eq!(s.app.tab.root, target.parent().unwrap());
         assert_eq!(s.app.tab.open_dir, s.app.tab.root);
         assert_eq!(s.app.tab.mode, Mode::Tree);
