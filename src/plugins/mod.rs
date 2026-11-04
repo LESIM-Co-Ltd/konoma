@@ -21,6 +21,7 @@ pub(crate) mod read_scope;
 mod resolve;
 #[cfg(test)]
 mod settings_parity_tests;
+pub(crate) mod statics;
 #[cfg(test)]
 mod survivor_tests;
 #[cfg(test)]
@@ -176,9 +177,29 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
 
 /// A registry of the standard plugins, with `disabled` ids switched off.
 pub(crate) fn build_registry(disabled: &[String]) -> Registry {
+    build_registry_with(disabled, statics::current())
+}
+
+/// [`build_registry`] with the plugins the program linked in given explicitly (`None` = the plain
+/// standard set).
+fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>) -> Registry {
     let mut r = Registry::new();
-    for m in standard_manifests().into_iter().chain(internal_manifests()) {
-        // The declarations are static; a refusal would be a bug that `tests` catches.
+    // What the program that started konoma linked in (`konoma::Host`): a replaced standard plugin
+    // keeps its place in the order; the added ones follow the standard ones.
+    if linked.is_none_or(|s| s.standard) {
+        for m in standard_manifests() {
+            // The declarations are static; a refusal would be a bug that `tests` catches.
+            let _ = match linked.and_then(|s| s.replaced.get(&m.id)) {
+                Some(p) => register(&mut r, Arc::clone(p), PluginOrigin::User),
+                None => register(&mut r, plugin_of(m), PluginOrigin::Standard),
+            };
+        }
+    }
+    for p in linked.map(|s| s.added.as_slice()).unwrap_or_default() {
+        // A taken or malformed id was refused when the program was assembled (`HostBuilder`).
+        let _ = register(&mut r, Arc::clone(p), PluginOrigin::User);
+    }
+    for m in internal_manifests() {
         let _ = register(&mut r, plugin_of(m), PluginOrigin::Standard);
     }
     for id in disabled {
@@ -236,6 +257,42 @@ pub(crate) fn with_registry<T>(disabled: &[String], f: impl FnOnce(&Registry) ->
 /// `[plugins.<id>]` as read from the config: the raw tables. `enabled` is read by the host; every
 /// other key is the plugin's own setting.
 pub(crate) type PluginTables = BTreeMap<String, toml::Table>;
+
+/// The keys of `[plugins]` that are not a plugin's table: options of `konoma plugin`
+/// (`keep_build_cache`, read by that command from the file itself). They are accepted here, with
+/// the type they must have, and are not plugins.
+const PLUGINS_OPTIONS: &[&str] = &["keep_build_cache"];
+
+/// Read `[plugins]`: every `[plugins.<id>]` table, and the options of [`PLUGINS_OPTIONS`] (checked,
+/// then set aside). Any other key that is not a table is a mistake worth a clear message.
+pub(crate) fn deserialize_tables<'de, D>(d: D) -> Result<PluginTables, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let raw = <BTreeMap<String, toml::Value> as serde::Deserialize>::deserialize(d)?;
+    let mut out = PluginTables::new();
+    for (key, value) in raw {
+        match value {
+            toml::Value::Table(t) => {
+                out.insert(key, t);
+            }
+            toml::Value::Boolean(_) if PLUGINS_OPTIONS.contains(&key.as_str()) => {}
+            _ if PLUGINS_OPTIONS.contains(&key.as_str()) => {
+                return Err(D::Error::custom(format!(
+                    "[plugins] {key} must be true or false"
+                )));
+            }
+            _ => {
+                return Err(D::Error::custom(format!(
+                    "[plugins] {key} must be a table ([plugins.{key}]); the options of `konoma plugin` are {}",
+                    PLUGINS_OPTIONS.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// The ids whose table says `enabled = false`.
 pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {

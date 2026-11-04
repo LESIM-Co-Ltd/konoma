@@ -87,123 +87,229 @@ fn is_unclean(c: char) -> bool {
     c.is_control() || c == '\u{10EEEE}'
 }
 
-/// What is wrong with a target of bind number `bind`: too long, or with a control character (a
-/// pattern cannot be cut or cleaned without changing what it matches, so the plugin is refused).
-/// The message names the bind and the reason and **never carries the target's text** (it can hold
-/// anything a terminal would act on, bidi controls included).
-fn target_problem(bind: usize, t: &Target) -> Option<String> {
+/// The declaration whose name is invalid. No unsanitized identifier is carried here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManifestName {
+    PluginId,
+    ActionId,
+    ActionScreen,
+    SettingName,
+    ScreenName,
+    WorkGroup,
+}
+
+impl ManifestName {
+    fn english(self) -> &'static str {
+        match self {
+            Self::PluginId => "the plugin id",
+            Self::ActionId => "an action id",
+            Self::ActionScreen => "an action's screen",
+            Self::SettingName => "a setting name",
+            Self::ScreenName => "a screen name",
+            Self::WorkGroup => "the work group",
+        }
+    }
+}
+
+/// The declaration count that exceeded its limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManifestCount {
+    Actions,
+    Settings,
+    Binds,
+    Screens,
+    Targets,
+}
+
+impl ManifestCount {
+    fn english(self) -> &'static str {
+        match self {
+            Self::Actions => "actions",
+            Self::Settings => "settings",
+            Self::Binds => "binds",
+            Self::Screens => "screens",
+            Self::Targets => "targets in a bind",
+        }
+    }
+}
+
+/// Structured data for a manifest refusal, so hosts can translate it without parsing prose.
+/// Its Display is the existing English `RegistryError::InvalidManifest::why` diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManifestReason {
+    InvalidName {
+        kind: ManifestName,
+        name: String,
+        limit: usize,
+    },
+    TooMany {
+        kind: ManifestCount,
+        count: usize,
+        limit: usize,
+    },
+    TargetTooLong {
+        bind: usize,
+        bytes: usize,
+        limit: usize,
+    },
+    TargetUnclean {
+        bind: usize,
+    },
+    DefaultTooMany {
+        limit: usize,
+    },
+    DefaultKeyTooLong {
+        limit: usize,
+    },
+    DefaultKeyUnclean {
+        limit: usize,
+    },
+    DefaultTooDeep {
+        limit: usize,
+    },
+}
+
+impl fmt::Display for ManifestReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName { kind, name, limit } => write!(f, "{} `{name}` is not a name ([a-z0-9._-], 1 to {limit} characters)", kind.english()),
+            Self::TooMany { kind, count, limit } => write!(f, "{count} {} (at most {limit})", kind.english()),
+            Self::TargetTooLong { bind, bytes, limit } => write!(f, "bind {bind} has a target that is too long ({bytes} bytes, at most {limit})"),
+            Self::TargetUnclean { bind } => write!(f, "bind {bind} has a target that contains a control character"),
+            Self::DefaultTooMany { limit } => write!(f, "a setting default of more than {limit} values"),
+            Self::DefaultKeyTooLong { limit } => write!(f, "a setting default has a key that is too long (at most {limit} bytes, no control character)"),
+            Self::DefaultKeyUnclean { limit } => write!(f, "a setting default has a key that is unclean (at most {limit} bytes, no control character)"),
+            Self::DefaultTooDeep { limit } => write!(f, "a setting default nested deeper than {limit}"),
+        }
+    }
+}
+
+/// Never carry a target's text in a refusal: it may contain terminal control characters.
+fn target_problem(bind: usize, t: &Target) -> Option<ManifestReason> {
     let (Target::Glob(s)
     | Target::FileName(s)
     | Target::Mime(s)
     | Target::Content(s)
     | Target::Embed(s)) = t;
     if s.len() > MAX_TARGET_BYTES {
-        return Some(format!(
-            "bind {bind} has a target that is too long ({} bytes, at most {MAX_TARGET_BYTES})",
-            s.len()
-        ));
+        return Some(ManifestReason::TargetTooLong {
+            bind,
+            bytes: s.len(),
+            limit: MAX_TARGET_BYTES,
+        });
     }
-    if s.chars().any(is_unclean) {
-        return Some(format!(
-            "bind {bind} has a target that contains a control character"
-        ));
-    }
-    None
+    s.chars()
+        .any(is_unclean)
+        .then_some(ManifestReason::TargetUnclean { bind })
 }
 
-/// What is wrong with the shape of a setting's default: nested too deep or holding too many
-/// values. (Its strings are cleaned and cut at registration, not refused.)
-fn default_problem(v: &Value) -> Option<String> {
-    fn walk(v: &Value, depth: usize, nodes: &mut usize) -> Option<String> {
+fn default_problem(v: &Value) -> Option<ManifestReason> {
+    fn walk(v: &Value, depth: usize, nodes: &mut usize) -> Option<ManifestReason> {
         *nodes += 1;
         if *nodes > MAX_DEFAULT_NODES {
-            return Some(format!(
-                "a setting default of more than {MAX_DEFAULT_NODES} values"
-            ));
+            return Some(ManifestReason::DefaultTooMany {
+                limit: MAX_DEFAULT_NODES,
+            });
         }
         let children: Box<dyn Iterator<Item = &Value>> = match v {
             Value::List(l) => Box::new(l.iter()),
             Value::Table(t) => {
-                // A key is an identifier: it is never cleaned or cut (two keys could become one).
                 if let Some(k) = t
                     .keys()
                     .find(|k| k.len() > MAX_DEFAULT_KEY_BYTES || k.chars().any(is_unclean))
                 {
-                    return Some(format!(
-                        "a setting default has a key that is {} (at most {} bytes, no control character)",
-                        if k.len() > MAX_DEFAULT_KEY_BYTES { "too long" } else { "unclean" },
-                        MAX_DEFAULT_KEY_BYTES
-                    ));
+                    return Some(if k.len() > MAX_DEFAULT_KEY_BYTES {
+                        ManifestReason::DefaultKeyTooLong {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    } else {
+                        ManifestReason::DefaultKeyUnclean {
+                            limit: MAX_DEFAULT_KEY_BYTES,
+                        }
+                    });
                 }
                 Box::new(t.values())
             }
             _ => return None,
         };
-        // The outermost list or table is level 1.
         if depth > MAX_DEFAULT_DEPTH {
-            return Some(format!(
-                "a setting default nested deeper than {MAX_DEFAULT_DEPTH}"
-            ));
+            return Some(ManifestReason::DefaultTooDeep {
+                limit: MAX_DEFAULT_DEPTH,
+            });
         }
         children.into_iter().find_map(|c| walk(c, depth + 1, nodes))
     }
     walk(v, 1, &mut 0)
 }
 
-/// What is wrong with the declarations of `m` that make the host refuse the plugin: a name that is
-/// not [`is_valid_name`], or more declarations than the host takes.
-fn manifest_problem(m: &Manifest) -> Option<String> {
-    let name = |what: &str, s: &str| -> Option<String> {
-        (!is_valid_name(s)).then(|| {
-            format!(
-                "{what} `{}` is not a name ([a-z0-9._-], 1 to {MAX_NAME_CHARS} characters)",
-                display_name(s)
-            )
+/// The single validation used by the registry and every host/checker that registers a manifest.
+fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
+    let name = |kind: ManifestName, s: &str| {
+        (!is_valid_name(s)).then(|| ManifestReason::InvalidName {
+            kind,
+            name: display_name(s),
+            limit: MAX_NAME_CHARS,
         })
     };
-    let count = |what: &str, n: usize, max: usize| -> Option<String> {
-        (n > max).then(|| format!("{n} {what} (at most {max})"))
+    let count = |kind, count, limit| {
+        (count > limit).then_some(ManifestReason::TooMany { kind, count, limit })
     };
-    name("the plugin id", &m.id)
-        .or_else(|| count("actions", m.actions.len(), MAX_ACTIONS))
-        .or_else(|| count("settings", m.settings.len(), MAX_SETTINGS))
-        .or_else(|| count("binds", m.binds.len(), MAX_BINDS))
-        .or_else(|| count("screens", m.screens.len(), MAX_SCREENS))
+    name(ManifestName::PluginId, &m.id)
+        .or_else(|| count(ManifestCount::Actions, m.actions.len(), MAX_ACTIONS))
+        .or_else(|| count(ManifestCount::Settings, m.settings.len(), MAX_SETTINGS))
+        .or_else(|| count(ManifestCount::Binds, m.binds.len(), MAX_BINDS))
+        .or_else(|| count(ManifestCount::Screens, m.screens.len(), MAX_SCREENS))
         .or_else(|| {
             m.binds.iter().enumerate().find_map(|(i, b)| {
-                count("targets in a bind", b.targets.len(), MAX_TARGETS_PER_BIND)
-                    .or_else(|| b.targets.iter().find_map(|t| target_problem(i, t)))
+                count(
+                    ManifestCount::Targets,
+                    b.targets.len(),
+                    MAX_TARGETS_PER_BIND,
+                )
+                .or_else(|| b.targets.iter().find_map(|t| target_problem(i, t)))
             })
         })
         .or_else(|| m.settings.iter().find_map(|s| default_problem(&s.default)))
         .or_else(|| {
             m.actions.iter().find_map(|a| {
-                name("an action id", &a.id).or_else(|| {
+                name(ManifestName::ActionId, &a.id).or_else(|| {
                     a.screen
                         .as_deref()
-                        .and_then(|s| name("an action's screen", s))
+                        .and_then(|s| name(ManifestName::ActionScreen, s))
                 })
             })
         })
         .or_else(|| {
             m.settings
                 .iter()
-                .find_map(|s| name("a setting name", &s.name))
+                .find_map(|s| name(ManifestName::SettingName, &s.name))
         })
-        .or_else(|| m.screens.iter().find_map(|s| name("a screen name", s)))
+        .or_else(|| {
+            m.screens
+                .iter()
+                .find_map(|s| name(ManifestName::ScreenName, s))
+        })
         .or_else(|| {
             m.work_group
                 .as_deref()
-                .and_then(|g| name("the work group", g))
+                .and_then(|g| name(ManifestName::WorkGroup, g))
         })
 }
 
 /// Why a registration was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistryError {
     /// The manifest declares a name that is not usable or more than the host takes (see
     /// [`is_valid_name`], [`MAX_ACTIONS`]...). `id` is safe to print.
-    InvalidManifest { id: String, why: String },
+    InvalidManifest {
+        id: String,
+        why: String,
+        reason: ManifestReason,
+    },
     /// A plugin with this id is already registered; the later one is refused.
     DuplicateId(String),
     /// A glob in the manifest does not compile.
@@ -217,7 +323,7 @@ impl fmt::Display for RegistryError {
             RegistryError::InvalidGlob { id, glob } => {
                 write!(f, "plugin `{id}` declares an invalid glob `{glob}`")
             }
-            RegistryError::InvalidManifest { id, why } => {
+            RegistryError::InvalidManifest { id, why, .. } => {
                 write!(f, "plugin `{id}` is refused: {why}")
             }
         }
@@ -392,13 +498,14 @@ impl Registry {
         origin: PluginOrigin,
     ) -> Result<(), RegistryError> {
         let manifest = plugin.manifest();
-        if let Some(why) = manifest_problem(&manifest) {
+        if let Some(reason) = manifest_problem(&manifest) {
+            let why = reason.to_string();
             let id = display_name(&manifest.id);
             self.refused.push(RegistryNote {
                 plugin: id.clone(),
                 kind: NoteKind::Refused { why: why.clone() },
             });
-            return Err(RegistryError::InvalidManifest { id, why });
+            return Err(RegistryError::InvalidManifest { id, why, reason });
         }
         // What the host registers is the sanitized manifest: an action whose key is reserved
         // (layers 0 to 3) or taken keeps the action and loses the key; one that cannot be

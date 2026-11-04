@@ -139,7 +139,8 @@ pub(crate) fn register(
 pub(crate) fn record(manifest: &Manifest) {
     let mut t = table().write().unwrap_or_else(|e| e.into_inner());
     // A plugin that is not a standard one never takes the place of an id they own.
-    if standard_ids().contains(&manifest.id) {
+    // (unless the program replaced that standard plugin by one of the same id).
+    if standard_ids().contains(&manifest.id) && !super::statics::is_replaced(&manifest.id) {
         return;
     }
     let entry = Entry::of(manifest, false);

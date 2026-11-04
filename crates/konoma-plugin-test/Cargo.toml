@@ -1,0 +1,29 @@
+[package]
+name = "konoma-plugin-test"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Language-independent protocol checks for konoma child-process plugins"
+publish = false
+
+[dependencies]
+# The public framing, protocol, conversions and declaration checks of the SDK.
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0", features = ["proc"] }
+# Process groups and signals: every test connection owns and reaps its children.
+libc.workspace = true
+
+[[bin]]
+name = "konoma-plugin-test"
+path = "src/main.rs"
+
+# A test-only program: nextest's listing/exact interface and protocol fixtures in one executable.
+[[test]]
+name = "protocol"
+path = "tests/protocol.rs"
+harness = false
+
+[dev-dependencies]
+# The SDK clock implementation in the two-plugin fixture; its real executable is checked too.
+konoma-demo-clock = { path = "../konoma-demo-clock" }

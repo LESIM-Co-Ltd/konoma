@@ -58,7 +58,7 @@ enabled = false             # 動画のサムネイルを出さない
 | `preview_loading` | `"indicator"` | 重いコードの初回表示: `"indicator"`(ロード表示) / `"progressive"`(先に素のテキスト、色は後から)。 |
 | `path_style` | `"relative"` | タイトルのパス表示: `"relative"` / `"home"`(`~/...`) / `"full"`。実行時は `,` メニュー(`p`)で巡回。 |
 | `keys` | `"vim"` | プレビューのページ送り流儀: `"vim"`(`Ctrl-f/b`・`Ctrl-d/u`) / `"less"`(`f`/`b`・`d`/`u`。`Space` は操作メニューのまま)。 |
-| `lang` | `"auto"` | ヘルプ/ヒント/メッセージの言語: `"auto"`(OS の言語) / `"en"` / `"jp"`。 |
+| `lang` | `"auto"` | UI と `konoma plugin` のメッセージの言語: `"auto"`(OS の言語) / `"en"` / `"jp"`。コマンドの使い方は本体の `--help` と同じく英語です。Cargo の出力とシステム由来の診断は元の文言を表示します。 |
 | `statusbar` | `"split"` | ステータス表示の配置: `"split"`(上=コンテキスト・下=ヒント) / `"bottom"` / `"top"`。 |
 | `image_render_scale` | `1.0` | 画像表示のスケール(0.1〜1.0)。小さいほど端末への転送ピクセルが減り速い(表示も小さい)。 |
 | `svg_max_px` | `800` | SVG ラスタライズの最大辺(px)。大きいほど精細だが重い。 `[plugins.svg] max_px` でも設定でき、そちらが勝つ。 |
@@ -336,7 +336,8 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 | `vcs` | `"auto"` | どのバージョン管理システムが答えるか。**jj 対応はプレビュー版**([git スイートのガイド](/ja/guides/git/))。`"auto"` は git が答えられる場所を git のままにするので、今まで動いていたリポジトリの見え方は変わらない。jj が答えるのは git のリポジトリが無い場所だけ(`jj git init --no-colocate` で作ったもの・`jj workspace`)。`"git"` は常に git。`"jj"` は `.jj` があれば colocated でも jj——実際に jj で作業しているならこれ。`jj` バイナリが無い環境では git に落ちる。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
 | `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、これらのコンテナの H.264/HEVC のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
-| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
+| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
+| `update_check` | `true` | crates.io から入れたプラグインの更新を、公開 sparse index で 24 時間に 1 回まで、裏のスレッドで確認します。User-Agent は `konoma/<版>` だけで、利用者の情報は送りません。起動時に最後に確認した日時だけを konoma のデータ置き場に保存します。`konoma plugin list` は標準・追加プラグインを表示し、期限を設けて索引を再確認します。1日の回数制限は適用せず、保存した日時も更新しません。確認できなかった場合はその旨を示し、更新できる版と konoma 本体の更新が必要な版を分けて表示します。`[external] update_check = false` で起動時と一覧表示時の確認を止められ、一覧には確認が無効であることを表示します。 |
 | `office_apps` | `true` | Office 文書(Word/Excel/PowerPoint/ODF)で `e` や `o` を押すと、`$EDITOR`(`e`)や OS の既定(`o`)に zip を渡さず GUI アプリで開く。Microsoft Office(macOS)→ LibreOffice → OS の既定の順。`false` なら何も起動しない。`[editor.ext]` で拡張子を指定していればそちらが優先。 |
 | `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)・`o`(ファイルを他のアプリで開く)等。 |
 | `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |

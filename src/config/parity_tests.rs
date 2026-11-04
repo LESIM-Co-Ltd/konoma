@@ -2053,6 +2053,7 @@ fn cfg_jj_tool_default_and_roundtrip() {
 #[test]
 fn cfg_external_defaults_all_true() {
     let d = ExternalConfig::default();
+    assert!(d.update_check);
     assert!(d.git);
     assert!(d.git_tool);
     assert!(d.pdf);
@@ -2063,6 +2064,7 @@ fn cfg_external_defaults_all_true() {
     assert!(d.preview_commands);
 
     let e = Config::default().external;
+    assert!(e.update_check);
     assert!(e.git);
     assert!(e.git_tool);
     assert!(e.pdf);
@@ -2074,6 +2076,7 @@ fn cfg_external_defaults_all_true() {
 
     // No `[external]` section at all in the file.
     let cfg: Config = toml::from_str("[ui]\n").unwrap();
+    assert!(cfg.external.update_check);
     assert!(cfg.external.git);
     assert!(cfg.external.git_tool);
     assert!(cfg.external.pdf);
@@ -2085,6 +2088,7 @@ fn cfg_external_defaults_all_true() {
 
     // An empty `[external]` table (present but nothing set).
     let cfg2: Config = toml::from_str("[external]\n").unwrap();
+    assert!(cfg2.external.update_check);
     assert!(cfg2.external.git);
     assert!(cfg2.external.git_tool);
     assert!(cfg2.external.pdf);
@@ -2135,6 +2139,7 @@ type ExternalFieldCase = (&'static str, fn(&ExternalConfig) -> bool);
 #[test]
 fn cfg_external_each_field_parses_independently() {
     let cases: &[ExternalFieldCase] = &[
+        ("update_check", |e| e.update_check),
         ("git", |e| e.git),
         ("git_tool", |e| e.git_tool),
         ("pdf", |e| e.pdf),
@@ -2173,11 +2178,13 @@ remote_images = false
 open_links = false
 office_apps = false
 preview_commands = false
+update_check = false
 ";
     let cfg: Config = toml::from_str(toml).unwrap();
     let e = &cfg.external;
     assert!(
         !e.git
+            && !e.update_check
             && !e.git_tool
             && !e.pdf
             && !e.video
@@ -2195,6 +2202,11 @@ preview_commands = false
 /// broken config file.
 #[test]
 fn cfg_external_field_wrong_type_fails_whole_parse_like_other_bool_fields() {
+    for value in ["\"nope\"", "1", "[]", "{}"] {
+        assert!(
+            toml::from_str::<Config>(&format!("[external]\nupdate_check = {value}\n")).is_err()
+        );
+    }
     assert!(toml::from_str::<Config>("[external]\ngit = \"nope\"\n").is_err());
     // Sanity: the same failure mode already exists for an established bool field.
     assert!(toml::from_str::<Config>("[ui]\nicons = \"nope\"\n").is_err());

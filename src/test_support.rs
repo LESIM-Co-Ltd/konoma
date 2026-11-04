@@ -6,7 +6,33 @@
 //! `main.rs` (as `watch_test_unique_tmp`), and `e2e_tests.rs` (inlined into `sandbox()`).
 
 use std::cell::{Cell, RefCell};
+pub(crate) mod command {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/command.rs"
+    ));
+}
 use std::path::PathBuf;
+pub(crate) mod plugin_english_lower {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/plugin_english_lower.rs"
+    ));
+}
+pub(crate) mod plugin_language {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/plugin_language.rs"
+    ));
+}
+
+mod program_fixture {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/program_fixture.rs"
+    ));
+}
+pub(crate) use program_fixture::ProgramFixture;
 
 thread_local! {
     /// How many stat syscalls the instrumented directory-walk helpers (`app::stat_follow`) issued
