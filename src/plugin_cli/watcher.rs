@@ -180,11 +180,25 @@ impl Watched {
     }
 }
 
-fn read_report(reader: impl Read, lang: Lang) -> Result<ExitStatus> {
-    let mut report = Vec::new();
+fn read_report(mut reader: impl Read, lang: Lang) -> Result<ExitStatus> {
+    // A close with unread control input yields ECONNRESET on Linux, even after the reply.
+    // Frame the private report so a complete reply does not require a subsequent EOF read.
+    let mut length = Vec::new();
     reader
-        .take(MAX_REPORT + 1)
-        .read_to_end(&mut report)
+        .by_ref()
+        .take(4)
+        .read_to_end(&mut length)
+        .context(tr(lang, Msg::PluginWatcherRead))?;
+    let Ok(length) = <[u8; 4]>::try_from(length) else {
+        bail!(tr(lang, Msg::PluginWatcherNoResult));
+    };
+    let length = u32::from_le_bytes(length) as u64;
+    if length == 0 || length > MAX_REPORT {
+        bail!(tr(lang, Msg::PluginWatcherNoResult));
+    }
+    let mut report = vec![0; length as usize];
+    reader
+        .read_exact(&mut report)
         .context(tr(lang, Msg::PluginWatcherRead))?;
     match report.first() {
         Some(0) if report.len() == 5 => Ok(ExitStatus::from_raw(i32::from_le_bytes(
@@ -227,6 +241,13 @@ pub(crate) fn child_main() -> i32 {
         _ => crate::i18n::resolve_lang("auto"),
     };
     let result = run(&mut control, args, lang);
+    // The parent may have died. A finite socket timeout also bounds a live but unresponsive peer.
+    let _ = control.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = write_report(&mut control, result);
+    0
+}
+
+fn write_report(mut writer: impl Write, result: Result<ExitStatus>) -> io::Result<()> {
     let mut report = Vec::new();
     match result {
         Ok(status) => {
@@ -239,10 +260,8 @@ pub(crate) fn child_main() -> i32 {
             report.truncate(MAX_REPORT as usize);
         }
     }
-    // The parent may have died. A finite socket timeout also bounds a live but unresponsive peer.
-    let _ = control.set_write_timeout(Some(Duration::from_millis(500)));
-    let _ = control.write_all(&report);
-    0
+    writer.write_all(&(report.len() as u32).to_le_bytes())?;
+    writer.write_all(&report)
 }
 
 fn run(
@@ -336,6 +355,69 @@ mod tests {
     use super::*;
     use crate::test_support::{unique_tmp, ProgramFixture};
     use std::process::Stdio;
+
+    /// Linux can return the queued reply, then reset instead of EOF when the watcher closes
+    /// with unread control bytes. Inject that order on every OS; never depend on socket timing.
+    struct Reset;
+
+    impl Read for Reset {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::ConnectionReset.into())
+        }
+    }
+
+    #[test]
+    fn complete_watcher_report_survives_a_reset_after_the_reply() {
+        for lang in [Lang::En, Lang::Jp] {
+            let mut bytes = Vec::new();
+            write_report(&mut bytes, Ok(ExitStatus::from_raw(42 << 8))).unwrap();
+            let status = read_report(io::Cursor::new(bytes).chain(Reset), lang).unwrap();
+            assert_eq!(status.code(), Some(42));
+
+            let mut bytes = Vec::new();
+            write_report(
+                &mut bytes,
+                Err(anyhow::anyhow!(tr(lang, Msg::PluginWatcherControl))),
+            )
+            .unwrap();
+            let error = read_report(io::Cursor::new(bytes).chain(Reset), lang).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                tr(lang, Msg::PluginWatcherError)
+                    .replace("{detail}", tr(lang, Msg::PluginWatcherControl))
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_watcher_reports_are_read_errors() {
+        for result in [
+            Ok(ExitStatus::from_raw(0)),
+            Err(anyhow::anyhow!("control error")),
+        ] {
+            let mut bytes = Vec::new();
+            write_report(&mut bytes, result).unwrap();
+            for len in [4, bytes.len() - 1] {
+                let partial = &bytes[..len];
+                for reader in [
+                    Box::new(partial) as Box<dyn Read>,
+                    Box::new(partial.chain(Reset)),
+                ] {
+                    let error = read_report(reader, Lang::En).unwrap_err();
+                    assert_eq!(error.to_string(), tr(Lang::En, Msg::PluginWatcherRead));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn watcher_report_length_is_bounded_before_reading_the_body() {
+        for length in [0, MAX_REPORT as u32 + 1] {
+            let reader = io::Cursor::new(length.to_le_bytes()).chain(Reset);
+            let error = read_report(reader, Lang::En).unwrap_err();
+            assert_eq!(error.to_string(), tr(Lang::En, Msg::PluginWatcherNoResult));
+        }
+    }
 
     #[test]
     fn language_walk_timeout_inputs_are_injected() {
