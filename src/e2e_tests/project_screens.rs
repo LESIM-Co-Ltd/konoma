@@ -268,6 +268,53 @@ fn open(f: &mut Fixture) {
     f.sim.see("alpha");
 }
 
+#[test]
+fn e2e_project_session_watch_paths_replace_declaration_and_reread_after_invalidation() {
+    let mut f = fixture("project_dynamic_watch_paths", false, 1, None, None, None);
+    open(&mut f);
+    let outside = sandbox("project_dynamic_watch_outside");
+    let first = canon(&outside).join("first/index");
+    let second = canon(&outside).join("second/index");
+    f.log.lock().unwrap().watch_paths = Some(vec![first.clone()]);
+    let inject = |f: &mut Fixture, path| {
+        f.sim
+            .app
+            .tab
+            .projects
+            .inject_event(Ok(notify::Event::new(notify::EventKind::Modify(
+                notify::event::ModifyKind::Any,
+            ))
+            .add_path(path)));
+        f.sim.app.poll_projects();
+        drain(&mut f.sim);
+    };
+    let root = f.sim.app.tab.root.clone();
+    inject(&mut f, root.join("metadata/index"));
+    let count = f.log.lock().unwrap().views.len();
+    let watches = f.log.lock().unwrap().watch_threads.len();
+    f.log.lock().unwrap().watch_paths = Some(vec![second.clone()]);
+    inject(&mut f, first.clone());
+    assert_eq!(f.log.lock().unwrap().views.len(), count + 1);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), watches + 1);
+    let count = f.log.lock().unwrap().views.len();
+    inject(&mut f, first);
+    inject(&mut f, root.join("metadata/index"));
+    assert_eq!(
+        f.log.lock().unwrap().views.len(),
+        count,
+        "old and declared paths no longer invalidate the session"
+    );
+    inject(&mut f, second);
+    assert_eq!(f.log.lock().unwrap().views.len(), count + 1);
+    assert!(f
+        .log
+        .lock()
+        .unwrap()
+        .watch_threads
+        .iter()
+        .all(|thread| *thread != std::thread::current().id()));
+}
+
 fn press(f: &mut Fixture, code: KeyCode) {
     f.sim.press(code, KeyModifiers::NONE);
     drain(&mut f.sim);
@@ -281,6 +328,12 @@ fn last_act(f: &Fixture) -> (String, ProjectAct) {
         .last()
         .cloned()
         .expect("act received")
+}
+
+fn view_context(f: &Fixture, screen: &str) -> ProjectView {
+    ProjectView::new(screen)
+        .paths(&f.sim.app.tab.root, &f.sim.app.tab.open_dir)
+        .home_dir(crate::plugins::read_scope::home_dir())
 }
 
 #[test]
@@ -305,7 +358,7 @@ fn e2e_project_watch_paths_refresh_only_current_screen_once_and_ignore_unrelated
     ));
     assert!(f.sim.app.poll_projects());
     drain(&mut f.sim);
-    assert_eq!(f.log.lock().unwrap().views, [ProjectView::new("items")]);
+    assert_eq!(f.log.lock().unwrap().views, [view_context(&f, "items")]);
     f.log.lock().unwrap().views.clear();
     f.sim.app.tab.projects.inject_event(Ok(
         notify::Event::new(notify::EventKind::Any).add_path(root.join("unrelated.txt"))
@@ -359,16 +412,16 @@ fn e2e_project_enter_cycle_jump_push_pop_and_view_fields() {
     open(&mut f);
     assert_eq!(
         f.log.lock().unwrap().views.last(),
-        Some(&ProjectView::new("items"))
+        Some(&view_context(&f, "items"))
     );
     press(&mut f, KeyCode::Tab);
     f.sim.see("text selection=none");
     assert_eq!(
         f.log.lock().unwrap().views.last(),
-        Some(&ProjectView::new("text"))
+        Some(&view_context(&f, "text"))
     );
     f.sim.press(KeyCode::BackTab, KeyModifiers::NONE);
-    f.sim.see("● [x] item alpha styled");
+    f.sim.see("● [x] alpha styled");
     f.sim.see("alpha");
     f.sim.key('b');
     drain(&mut f.sim);
@@ -379,7 +432,7 @@ fn e2e_project_enter_cycle_jump_push_pop_and_view_fields() {
     f.sim.see("text selection=opaque-alpha");
     assert_eq!(
         f.log.lock().unwrap().views.last(),
-        Some(&ProjectView::new("text").selection("opaque-alpha"))
+        Some(&view_context(&f, "text").selection("opaque-alpha"))
     );
     assert_eq!(last_act(&f).0, "push");
     f.sim.key('q');
@@ -701,8 +754,8 @@ fn e2e_project_rendering_reuses_styled_list_text_diff_and_document_widgets() {
     use ratatui::style::{Color, Modifier};
     let mut f = fixture("project_render_widgets", false, 1, None, None, None);
     open(&mut f);
-    f.sim.see("● [x] item alpha styled");
-    f.sim.see("[ ] other beta");
+    f.sim.see("● [x] alpha styled");
+    f.sim.see("[ ] beta");
     let cells = f.sim.term.backend().buffer().content();
     assert!(cells
         .iter()
@@ -1034,7 +1087,7 @@ fn e2e_project_tree_selection_push_carries_selection_and_returns_to_tree() {
     f.sim.see("text selection=from-tree");
     assert_eq!(
         f.log.lock().unwrap().views.last(),
-        Some(&ProjectView::new("text").selection("from-tree"))
+        Some(&view_context(&f, "text").selection("from-tree"))
     );
     let (_, context) = last_act(&f);
     assert_eq!(context.screen, None);

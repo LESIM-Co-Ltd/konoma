@@ -58,6 +58,12 @@ impl Chip {
 pub struct ProjectView {
     pub screen: String,
     pub selection: Option<String>,
+    /// The tab's current tree root, which may be below the detected project root.
+    pub tree_root: Option<PathBuf>,
+    /// The directory the tab was opened in, used for relative display paths.
+    pub open_dir: Option<PathBuf>,
+    /// The host's home directory for home-relative display, when available.
+    pub home_dir: Option<PathBuf>,
 }
 
 impl ProjectView {
@@ -65,10 +71,22 @@ impl ProjectView {
         Self {
             screen: screen.into(),
             selection: None,
+            tree_root: None,
+            open_dir: None,
+            home_dir: None,
         }
     }
     pub fn selection(mut self, selection: impl Into<String>) -> Self {
         self.selection = Some(selection.into());
+        self
+    }
+    pub fn paths(mut self, tree_root: impl Into<PathBuf>, open_dir: impl Into<PathBuf>) -> Self {
+        self.tree_root = Some(tree_root.into());
+        self.open_dir = Some(open_dir.into());
+        self
+    }
+    pub fn home_dir(mut self, home: Option<PathBuf>) -> Self {
+        self.home_dir = home;
         self
     }
 }
@@ -192,9 +210,14 @@ impl DetectionMarker {
 pub struct ProjectScreen {
     pub id: String,
     pub title: Tr,
-    /// An optional single character that jumps to this screen.
+    /// An optional single character that jumps to this screen. The project entry key `p`
+    /// may be reused here; other reserved host keys cannot be used as screen jumps.
     pub key: Option<char>,
     pub row_kinds: Vec<String>,
+    /// Reserve a stable multi-selection column and enable host marking on this screen.
+    pub marks: bool,
+    /// Reserve a stable check column, including for rows without a check state.
+    pub checks: bool,
 }
 
 impl ProjectScreen {
@@ -204,6 +227,8 @@ impl ProjectScreen {
             title: title.into(),
             key: None,
             row_kinds: Vec::new(),
+            marks: false,
+            checks: false,
         }
     }
 
@@ -213,6 +238,14 @@ impl ProjectScreen {
     }
     pub fn row_kind(mut self, kind: impl Into<String>) -> Self {
         self.row_kinds.push(kind.into());
+        self
+    }
+    pub fn marks(mut self, enabled: bool) -> Self {
+        self.marks = enabled;
+        self
+    }
+    pub fn checks(mut self, enabled: bool) -> Self {
+        self.checks = enabled;
         self
     }
 }

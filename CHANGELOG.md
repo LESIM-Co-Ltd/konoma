@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: begin moving Git and jj changes screens into `konoma-vcs`, exercised alongside the legacy hub in tests; there is no user-visible change.
+
 ### Added
 
 - Project input received during a view fetch is retained for the current screen and dispatched

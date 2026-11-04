@@ -11,8 +11,10 @@ use konoma_plugin::{
 };
 
 use super::project_screens::{ProjectContent, ProjectEffect, ProjectKey, ScreenKey};
+use super::PathStyle;
 
 pub(super) enum ProjectJob {
+    Watch,
     View {
         key: ScreenKey,
         req: ViewReq,
@@ -27,28 +29,35 @@ pub(super) enum ProjectJob {
 }
 
 pub(super) struct ProjectReply {
+    pub watch_paths: Option<Vec<PathBuf>>,
     pub views: Vec<(ScreenKey, Arc<ProjectContent>)>,
     pub enabled: HashMap<String, bool>,
     pub chip: Option<Option<Tr>>,
     pub effect: Option<ProjectEffect>,
     pub error: Option<Failure>,
+    pub contexts: HashMap<ScreenKey, ProjectView>,
 }
 
 impl ProjectReply {
     fn empty() -> Self {
         Self {
+            watch_paths: None,
             views: Vec::new(),
             enabled: HashMap::new(),
             chip: None,
             effect: None,
             error: None,
+            contexts: HashMap::new(),
         }
     }
 }
 
 pub(crate) struct ProjectRuntime {
+    pub(super) watch_paths: Option<Vec<PathBuf>>,
+    pub(super) refresh_watch: bool,
     pub(crate) project: crate::plugins::projects::MatchedProject,
     pub(super) views: HashMap<ScreenKey, Arc<ProjectContent>>,
+    pub(super) contexts: HashMap<ScreenKey, ProjectView>,
     pub(super) enabled: HashMap<String, bool>,
     pub(super) chip: Option<Tr>,
     pub(super) busy: bool,
@@ -84,6 +93,7 @@ impl ProjectRuntime {
         let root = project.root.clone();
         let marker = project.marker.clone();
         let chip = project.declaration.chip.clone();
+        let declaration = project.declaration.clone();
         std::thread::spawn(move || {
             let scope = crate::plugins::read_scope::scope_for(
                 standard,
@@ -94,7 +104,10 @@ impl ProjectRuntime {
             );
             let open = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.open(
-                    Input::Project { root, marker },
+                    Input::Project {
+                        root: root.clone(),
+                        marker,
+                    },
                     &OpenCx::new(&settings, &lang)
                         .with_term(term)
                         .with_read_scope(scope.clone()),
@@ -119,6 +132,19 @@ impl ProjectRuntime {
                     .collect()
             };
             let mut initial = ProjectReply::empty();
+            let view_cx = ViewCx::new(&settings, &lang)
+                .with_term(term)
+                .with_read_scope(scope.clone());
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                session.watch_paths(&view_cx)
+            })) {
+                Ok(Ok(paths)) => match resolved_watch_paths(paths, &root, &declaration) {
+                    Ok(paths) => initial.watch_paths = Some(paths),
+                    Err(error) => initial.error = Some(error),
+                },
+                Ok(Err(error)) => initial.error = Some(error),
+                Err(_) => initial.error = Some(Failure::external(Tr::new(panic_message.clone()))),
+            }
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 enabled(session.as_ref())
             })) {
@@ -137,7 +163,18 @@ impl ProjectRuntime {
                         .with_read_scope(scope.clone());
                     let mut reply = ProjectReply::empty();
                     match job {
+                        ProjectJob::Watch => {
+                            reply.watch_paths = Some(resolved_watch_paths(
+                                session.watch_paths(&cx)?,
+                                &root,
+                                &declaration,
+                            )?);
+                            reply.chip = Some(plugin.manifest().project.and_then(|p| p.chip));
+                        }
                         ProjectJob::View { key, req } => {
+                            if let Some(context) = &req.project {
+                                reply.contexts.insert(key.clone(), context.clone());
+                            }
                             reply.views.push((
                                 key,
                                 Arc::new(content(
@@ -167,7 +204,15 @@ impl ProjectRuntime {
                             )?;
                             effect.outcome = Some(outcome);
                             reply.effect = Some(*effect);
+                            reply.watch_paths = Some(resolved_watch_paths(
+                                session.watch_paths(&cx)?,
+                                &root,
+                                &declaration,
+                            )?);
                             for (key, req) in refresh {
+                                if let Some(context) = &req.project {
+                                    reply.contexts.insert(key.clone(), context.clone());
+                                }
                                 match session
                                     .view(&req, &cx)
                                     .and_then(|view| content(view, &req, &scope, &theme, &lang))
@@ -203,8 +248,11 @@ impl ProjectRuntime {
             }
         });
         Self {
+            watch_paths: None,
+            refresh_watch: false,
             project,
             views: HashMap::new(),
+            contexts: HashMap::new(),
             enabled: HashMap::new(),
             chip,
             busy: true,
@@ -220,6 +268,28 @@ impl ProjectRuntime {
             invalidated: false,
         }
     }
+}
+
+fn resolved_watch_paths(
+    paths: Option<Vec<PathBuf>>,
+    root: &std::path::Path,
+    declaration: &konoma_plugin::ProjectDecl,
+) -> Result<Vec<PathBuf>, Failure> {
+    let mut paths = paths.unwrap_or_else(|| {
+        declaration
+            .watch_paths
+            .iter()
+            .map(|p| root.join(p))
+            .collect()
+    });
+    if paths.len() > 512 || paths.iter().any(|p| !p.is_absolute()) {
+        return Err(Failure::unsupported(
+            konoma_plugin::t!(en: "Invalid project watch paths", ja: "プロジェクトの監視パスが不正です"),
+        ));
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// The same text, Markdown and diff widgets the file previews use, prepared off the UI thread.
@@ -333,7 +403,9 @@ fn content(
 
 impl super::App {
     pub(super) fn project_request(&self, key: &ScreenKey) -> ViewReq {
-        let mut project = ProjectView::new(&key.screen);
+        let mut project = ProjectView::new(&key.screen)
+            .paths(&self.tab.root, &self.tab.open_dir)
+            .home_dir(crate::plugins::read_scope::home_dir());
         if let Some(selection) = &key.selection {
             project = project.selection(selection);
         }
@@ -360,6 +432,20 @@ impl super::App {
         let Some(plugin) = registry.plugin(&project.plugin) else {
             return;
         };
+        let mut settings = crate::plugins::effective_settings(&self.cfg, &project.plugin);
+        if settings.get("path_style").is_none() {
+            settings.set(
+                "path_style",
+                konoma_plugin::Value::Str(
+                    match self.path_style {
+                        PathStyle::Relative => "relative",
+                        PathStyle::Home => "home",
+                        PathStyle::Full => "full",
+                    }
+                    .into(),
+                ),
+            );
+        }
         let runtime = ProjectRuntime::start(
             project.clone(),
             plugin,
@@ -367,7 +453,7 @@ impl super::App {
                 .manifest(&project.plugin)
                 .map(|m| m.actions.iter().map(|a| a.id.clone()).collect())
                 .unwrap_or_default(),
-            crate::plugins::effective_settings(&self.cfg, &project.plugin),
+            settings,
             self.plugin_lang().into(),
             self.cfg.ui.theme.code_theme.clone(),
             TermCaps::new().colors(self.plugin_colors),

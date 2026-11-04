@@ -59,7 +59,6 @@ pub(crate) enum ProjectContent {
 pub(crate) struct ProjectFrame {
     pub key: ScreenKey,
     pub cursor: usize,
-    pub scroll: usize,
     pub marked: BTreeSet<usize>,
     pub query: String,
     pub filtering: bool,
@@ -78,7 +77,6 @@ impl ProjectFrame {
         Self {
             key,
             cursor: 0,
-            scroll: 0,
             marked: BTreeSet::new(),
             query: String::new(),
             filtering: false,
@@ -227,6 +225,8 @@ impl App {
                     && runtime.error.is_none()
                     && (!runtime.ready
                         || runtime.busy
+                        || runtime.contexts.get(&frame.key)
+                            != self.project_request(&frame.key).project.as_ref()
                         || !runtime.views.contains_key(&frame.key)
                         || runtime.dirty.contains(&frame.key))
             })
@@ -357,11 +357,31 @@ impl App {
 
     pub(crate) fn project_content(&self) -> Option<Arc<ProjectContent>> {
         let nav = self.tab.project_navigation.as_ref()?;
-        self.project_runtimes
-            .get(&nav.project)?
-            .views
-            .get(&nav.stack.last()?.key)
-            .cloned()
+        let key = &nav.stack.last()?.key;
+        let runtime = self.project_runtimes.get(&nav.project)?;
+        if runtime.contexts.get(key) != self.project_request(key).project.as_ref() {
+            return None;
+        }
+        runtime.views.get(key).cloned()
+    }
+
+    fn project_marks_enabled(&self) -> bool {
+        self.tab
+            .project_navigation
+            .as_ref()
+            .and_then(|nav| {
+                let frame = nav.stack.last()?;
+                Some(
+                    self.project_runtimes
+                        .get(&nav.project)?
+                        .project
+                        .declaration
+                        .screens
+                        .iter()
+                        .any(|s| s.id == frame.key.screen && s.marks),
+                )
+            })
+            .unwrap_or(false)
     }
 
     pub(crate) fn project_visible_rows(&self) -> Vec<usize> {
@@ -396,9 +416,18 @@ impl App {
     }
 
     fn project_selected_index(&self) -> Option<usize> {
-        self.project_visible_rows()
+        let index = self
+            .project_visible_rows()
             .get(self.project_frame()?.cursor)
-            .copied()
+            .copied()?;
+        if let Some(content) = self.project_content() {
+            if let ProjectContent::List(list) = content.as_ref() {
+                if !list.rows.get(index)?.selectable {
+                    return None;
+                }
+            }
+        }
+        Some(index)
     }
 
     pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
@@ -623,7 +652,9 @@ impl App {
         if runtime.busy
             || !runtime.ready
             || runtime.error.is_some()
-            || (runtime.views.contains_key(&frame.key) && !runtime.dirty.contains(&frame.key))
+            || (runtime.views.contains_key(&frame.key)
+                && !runtime.dirty.contains(&frame.key)
+                && runtime.contexts.get(&frame.key) == req.project.as_ref())
         {
             return;
         }
@@ -833,6 +864,9 @@ impl App {
                     .project_content()
                     .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
             {
+                if !self.project_marks_enabled() {
+                    return true;
+                }
                 if let Some(index) = self.project_selected_index() {
                     let marks = &mut self
                         .tab
@@ -1085,6 +1119,7 @@ impl App {
         }
         let mut changed = false;
         let mut effects = Vec::new();
+        let mut watches = Vec::new();
         for (key, runtime) in &mut self.project_runtimes {
             while let Some(reply) = runtime
                 .pending
@@ -1100,10 +1135,14 @@ impl App {
                 }
                 runtime.ready |= reply.error.is_none();
                 runtime.error = reply.error;
+                if let Some(paths) = reply.watch_paths {
+                    runtime.watch_paths = Some(paths);
+                }
                 if !reply.enabled.is_empty() {
                     runtime.enabled = reply.enabled;
                 }
                 if !runtime.invalidated {
+                    runtime.contexts.extend(reply.contexts);
                     for (screen, view) in reply.views {
                         let old = runtime.views.get(&screen).map(Arc::as_ref);
                         remap_project_rows(&mut self.tab, key, &screen, old, &view);
@@ -1143,6 +1182,23 @@ impl App {
                     }
                 }
             }
+            if let Some(paths) = &runtime.watch_paths {
+                watches.push((key.clone(), paths.clone()));
+            }
+            if runtime.refresh_watch
+                && !runtime.busy
+                && runtime.ready
+                && runtime.tx.try_send(ProjectJob::Watch).is_ok()
+            {
+                runtime.refresh_watch = false;
+                runtime.busy = true;
+            }
+        }
+        for (key, paths) in watches {
+            for tab in std::iter::once(&mut self.tab).chain(self.tabs.iter_mut()) {
+                tab.projects
+                    .set_watch_paths(&key.plugin, &key.root, &key.marker, paths.clone());
+            }
         }
         for effect in effects {
             if effect.tree_status && self.tab.root.starts_with(&effect.project.root) {
@@ -1179,11 +1235,22 @@ impl App {
                         .and_then(|r| r.views.get(&frame.key))
                     {
                         if let ProjectContent::List(list) = view.as_ref() {
+                            let marks =
+                                self.project_runtimes
+                                    .get(&nav.project)
+                                    .is_some_and(|runtime| {
+                                        runtime
+                                            .project
+                                            .declaration
+                                            .screens
+                                            .iter()
+                                            .any(|s| s.id == frame.key.screen && s.marks)
+                                    });
                             frame.marked.extend(
                                 list.rows
                                     .iter()
                                     .enumerate()
-                                    .filter(|(_, row)| row.marked)
+                                    .filter(|(_, row)| marks && row.marked && row.selectable)
                                     .map(|(i, _)| i),
                             );
                         }
@@ -1284,6 +1351,9 @@ impl App {
                 },
             )
             .to_string();
+            if self.project_content().is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) && !self.project_marks_enabled() {
+                controls = konoma_plugin::t!(en: "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help", ja: "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ").get(self.plugin_lang()).to_string();
+            }
             if self.project_acts_in(Context::Canvas).iter().any(|binding| {
                 crate::ops::action_enabled(
                     self,

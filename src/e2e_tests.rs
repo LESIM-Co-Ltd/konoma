@@ -21219,3 +21219,5 @@ mod project_screens;
 mod space_menu_parity;
 mod table_parity;
 mod text_parity;
+#[cfg(feature = "git")]
+mod vcs_changes;

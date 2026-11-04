@@ -54,7 +54,7 @@ JSON の manifest 出力では整数の配列になります。
 ### プロジェクトの画面要求と操作（版2）
 
 `View.req.project` はファイルプレビューでは省略します。プロジェクトでは
-`{ screen: string, selection: string | null }` です。`selection` は `PushScreen` の
+`{ screen: string, selection: string | null, tree_root?: Path, open_dir?: Path, home_dir?: Path }` です。`selection` は `PushScreen` の
 不透明な値です。同じプロジェクトセッション内で画面が変わるため、入力ではなく
 画面要求に載せます。SDKでは `ViewReq::new(cols, rows).project(ProjectView::new(screen).selection(value))` と組み立てます。
 
@@ -78,13 +78,48 @@ ProjectAct {
 
 ## プロジェクト宣言（版2）
 
+### 画面の表示とパスの文脈
+
+`ProjectScreen.marks(bool)` と `.checks(bool)` で印（複数選択）とチェックの列を
+固定します。既定は false で、線上では省略します。行の内容では幅を変えず、
+チェック状態のない行もチェック列の空白4セルを取ります。行の `kind` は操作用の
+メタデータで、文字として描きません。`ListRow::selectable(false)` は文言や見出しを
+表し、反転・印・操作の対象にしません。空の一覧には、`Tr` で翻訳してスタイルを
+付けた非選択行を返します。既定は true で、既存の一覧のバイト列を維持します。
+
+`ProjectView` は省略可能な絶対パス `tree_root`・`open_dir`・`home_dir` も持ちます。
+現在のツリーの root は `Input::Project` の根と違う場合もあり、`open_dir` はタブの
+起動ディレクトリです。ホストは毎回の要求に渡し、パスの文脈が変われば表示を
+取り直します。古い相手は省略できます。表示の好みはプラグイン設定として読み、
+git と jj は `[plugins.git]` / `[plugins.jj]` の
+`path_style = "relative" | "home" | "full"` を宣言します。
+指定がない場合、ホストの既存のパス表示設定を使います。
+
+### セッションの監視パス
+
+`Session::watch_paths(&ViewCx) -> Result<Option<Vec<PathBuf>>, Failure>` は絶対パスを
+返します。`None` は宣言の根からの相対 `watch_paths` を使い、`Some(vec![])` は
+データの監視パスなしを意味します。ホストは開いた時と無効化の後に、セッションを
+所有するワーカーで呼び、通知用ワーカーで監視を更新します。通知の判定とチップの
+取り直しにも実効パスを使います。Git の linked worktree は、根の外にある gitdir の
+参照先と共通メタデータのディレクトリも返します。gitdir ファイルが変わったら、
+パスを解決し直します。
+
+プロトコル2の子はハンドシェイクの manifest に `session_watch: true` を宣言します。
+呼び出しは `WatchPaths { sid, rid, cx }`、返答は
+`WatchPaths { paths: Path[] | null, state }` です。パスは絶対パスで、ホストの上限は
+512件です。能力のない古い子には新しい要求を送らず、クライアントで `None` に
+戻します。通常のプロトコル1のデータと既定値のフィールドのバイト列は維持します。
+
+### 固定の宣言
+
 任意の `Manifest.project` を、従来のファイル関連付けや `screens: string[]` の
 キー文脈とは独立して追加できます。
 
 ```text
 ProjectDecl {
   markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
-  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[] }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean }],
   chip: Tr | null,
   watch_paths: Path[],
   version_control: boolean
@@ -149,8 +184,8 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 単体アプリがプロジェクト遷移に対応するまでは、5種類の結果に未対応の通知を表示します。
 版の不一致ではmanifestから決まる実際の対応版を返し、manifest取得中のpanicも拒否応答にします。
 
-この段階は宣言と通信までです。ホストのダイアログ、入力の回答、画面の描画、
-書き込みの一元ガードは後の変更で接続します。
+ホストが画面とダイアログを描き、入力の回答を渡します。共通の書き込みガードを
+通してから、プロジェクトのワーカーで操作を実行します。
 
 ## 一覧と遷移（版2）
 
@@ -177,7 +212,7 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 
 遷移先は絶対パス、NUL バイトなし、従来のパス長上限内とします。
 **`q` で画面を1つ戻すのはホストの動作**です。新しい結果やガードを迂回する操作には
-しません。この変更では宣言と通信を追加し、ホストの動作は次の段階で接続します。
+しません。ワーカーが結果を返してから、ホストが遷移を適用します。
 
 検査する例は `crates/konoma-plugin-test/tests/vectors/project-v2.json`・`project-calls-v2.msgpack.hex` と
 `tests/project_vectors.rs`、各新型と各結果の往復テストは SDK にあります。

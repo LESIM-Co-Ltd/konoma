@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub watch_paths: Option<Vec<std::path::PathBuf>>,
+    pub watch_threads: Vec<std::thread::ThreadId>,
     pub views: Vec<ProjectView>,
     pub acts: Vec<(String, ProjectAct)>,
     pub threads: Vec<std::thread::ThreadId>,
@@ -64,6 +66,8 @@ impl Plugin for Screens {
                     .marker(DetectionMarker::new("*.screen-project", MarkerKind::File))
                     .screen(
                         ProjectScreen::new("items", "Items")
+                            .marks(true)
+                            .checks(true)
                             .key('i')
                             .row_kind("item")
                             .row_kind("other"),
@@ -172,6 +176,11 @@ struct ScreenSession {
 }
 
 impl Session for ScreenSession {
+    fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        let mut log = self.log.lock().unwrap();
+        log.watch_threads.push(std::thread::current().id());
+        Ok(log.watch_paths.clone())
+    }
     fn enabled(&self, action: &str) -> bool {
         !self
             .log

@@ -497,7 +497,7 @@ fn path_made_absolute(p: &Path, what: &str) -> Result<WPath, WireError> {
 /// A path a child's view carries to the host: it must already be absolute. A relative path would
 /// mean the child's working directory (`/`), which is not where the plugin author thinks it is,
 /// so it is refused instead of silently pointing somewhere else.
-fn path_required_absolute(p: &Path, what: &str) -> Result<WPath, WireError> {
+pub(super) fn path_required_absolute(p: &Path, what: &str) -> Result<WPath, WireError> {
     if !p.is_absolute() {
         return Err(WireError::bad(format!(
             "{what} {} is not an absolute path",
@@ -1124,7 +1124,7 @@ pub fn req_from_wire(r: WViewReq) -> Result<ViewReq, WireError> {
     out.repr = r.repr;
     out.page = r.page.map(|p| index_from_wire(p, "page")).transpose()?;
     out.cell_px = r.cell_px;
-    out.project = r.project.map(project_view_from_wire);
+    out.project = r.project.map(project_view_from_wire).transpose()?;
     Ok(out)
 }
 
@@ -1562,6 +1562,8 @@ pub struct WImageView {
 /// ```
 #[non_exhaustive]
 pub struct WListRow {
+    #[serde(default = "is_true_default", skip_serializing_if = "is_true")]
+    pub selectable: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
     pub cells: Vec<WLine>,
@@ -1574,6 +1576,12 @@ pub struct WListRow {
 
 fn is_false(b: &bool) -> bool {
     !b
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_true_default() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2156,6 +2164,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 .iter()
                 .map(|r| {
                     Ok(WListRow {
+                        selectable: r.selectable,
                         value: r.value.clone(),
                         cells: lines_to_wire(&r.cells),
                         kind: r.kind.clone(),
@@ -2295,6 +2304,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             let mut out = Vec::with_capacity(rows.len());
             for r in rows {
                 out.push(ListRow {
+                    selectable: r.selectable,
                     value: r.value,
                     cells: lines_from_wire(r.cells),
                     kind: r.kind,
@@ -2454,6 +2464,9 @@ pub enum WUnavailable {
 /// ```
 #[non_exhaustive]
 pub struct WManifest {
+    /// Protocol 2 session watch calls; absent in older children.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_watch: bool,
     /// Session chip calls are supported. Advertised by the protocol-2 server only for projects.
     /// Absent in older children: hosts must use the declared chip without sending a call.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -2481,6 +2494,7 @@ pub struct WManifest {
 
 pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
     Ok(WManifest {
+        session_watch: false,
         session_chip: false,
         read_only: m.read_only,
         project: m.project.as_ref().map(project_to_wire),
