@@ -260,3 +260,35 @@ fn graph_sdk_wire_rejects_oversized_list_strips_in_both_directions() {
         }
     }
 }
+#[cfg(feature = "proc")]
+#[test]
+fn graph_picker_sdk_wire_navigation_filter_lifetime_and_old_json() {
+    use konoma_plugin::prelude::*;
+    use konoma_plugin::proc::{frame, wire::*};
+    let screen = ProjectScreen::new("picker", "Picker")
+        .pushed()
+        .filter(false)
+        .transient();
+    let wire = project_screen_to_wire(&screen);
+    let decoded = frame::decode(&frame::encode(&wire).unwrap()).unwrap();
+    assert_eq!(project_screen_from_wire(decoded), screen);
+    let old: WProjectScreen = serde_json::from_str(
+        r#"{"id":"list","title":{"en":"List","others":[]},"key":null,"row_kinds":[]}"#,
+    )
+    .unwrap();
+    let old = project_screen_from_wire(old);
+    assert!(old.filter);
+    assert!(!old.transient);
+    let json = serde_json::to_value(project_screen_to_wire(&old)).unwrap();
+    assert!(json.get("filter").is_none());
+    assert!(json.get("transient").is_none());
+    for outcome in [Outcome::PopScreen, Outcome::Redraw] {
+        let wire = outcome_to_wire(&outcome);
+        assert_eq!(
+            outcome_protocol(&wire),
+            if outcome == Outcome::PopScreen { 2 } else { 1 }
+        );
+        let decoded = frame::decode(&frame::encode(&wire).unwrap()).unwrap();
+        assert_eq!(outcome_from_wire_checked(decoded).unwrap(), outcome);
+    }
+}

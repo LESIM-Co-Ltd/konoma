@@ -86,6 +86,25 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 /// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
 /// here, in one function per screen.
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
+    if ctx == Context::Canvas && app.project_picker() {
+        let mut v: Vec<_> = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(ctx))
+            .into_iter()
+            .filter(|hint| {
+                app.plugin_keys
+                    .declaration(hint.members[0].act)
+                    .is_none_or(|act| act.key.as_deref() != Some("Enter"))
+            })
+            .map(|hint| Foot::Plugin(hint.members[0].act))
+            .collect();
+        v.push(Foot::Dyn(|app, _| {
+            app.project_open_control()
+                .map(|_| format!("l/Enter:{}", tr(app.lang, Msg::FtApply)))
+        }));
+        v.push(Foot::Dyn(|app, _| {
+            Some(format!("h/q:{}", tr(app.lang, Msg::FtCancel)))
+        }));
+        return v;
+    }
     // Remove this graph-only bridge when the old hub is removed.
     if ctx == Context::Canvas && app.project_graph_jj().is_some() {
         let mut v = vec![

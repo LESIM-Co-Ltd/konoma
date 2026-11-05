@@ -81,6 +81,13 @@ pub struct WProjectScreen {
     pub title: WTr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_label: Option<WTr>,
+    #[serde(
+        default = "super::is_true_default",
+        skip_serializing_if = "super::is_true"
+    )]
+    pub filter: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub transient: bool,
     pub key: Option<char>,
     pub row_kinds: Vec<String>,
     #[serde(default, skip_serializing_if = "super::is_false")]
@@ -190,6 +197,8 @@ pub fn project_screen_to_wire(screen: &ProjectScreen) -> WProjectScreen {
         id: screen.id.clone(),
         title: tr_to_wire(&screen.title),
         filter_label: screen.filter_label.as_ref().map(tr_to_wire),
+        filter: screen.filter,
+        transient: screen.transient,
         key: screen.key,
         row_kinds: screen.row_kinds.clone(),
         marks: screen.marks,
@@ -203,6 +212,8 @@ pub fn project_screen_from_wire(screen: WProjectScreen) -> ProjectScreen {
         id: screen.id,
         title: tr_from_wire(screen.title),
         filter_label: screen.filter_label.map(tr_from_wire),
+        filter: screen.filter,
+        transient: screen.transient,
         key: screen.key,
         row_kinds: screen.row_kinds,
         marks: screen.marks,

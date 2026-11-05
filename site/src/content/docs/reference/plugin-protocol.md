@@ -87,6 +87,22 @@ Use `ActCx::with_project(ProjectAct::new()...)` to attach this data.
 
 ### Screen presentation and path context
 
+`ProjectScreen::filter(false)` disables list filtering and its footer/help hints.
+The wire field `filter?: boolean` defaults to true and is omitted when true.
+`ProjectScreen::transient()` closes a pushed screen when its host tab loses focus;
+`transient?: boolean` defaults to false and is omitted when false. The underlying
+frame and its cursor survive. Reopening a modal should initialize its tentative state.
+
+`Outcome::PopScreen` (wire `"PopScreen"`, protocol 2) closes the current pushed
+screen, preserving the frame beneath it. It does nothing on an ordinary tab screen.
+Declare refresh targets for any underlying data the action changes. Standalone
+apps report project navigation as unsupported. Existing outcomes retain their encoding.
+
+Screen actions take precedence over shared screen-jump keys. Shared screen jumps,
+like Tab cycling, do nothing on pushed screens. Project screen actions
+may declare `Enter` (including on empty lists) and `J`/`K`: these screens have no
+representation/page cycle. Other host keys remain reserved.
+
 `ProjectScreen::filter_label(Tr)` optionally supplies the footer's list-filter
 label. Its wire field `filter_label?: Tr` defaults to `None` and is omitted when
 absent, so existing screens keep the shared label and their previous encoding.

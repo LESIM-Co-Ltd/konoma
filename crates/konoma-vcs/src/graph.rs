@@ -9,6 +9,19 @@ use std::path::Path;
 
 pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
     manifest = manifest
+        .hint_group(HintGroup::new("picker_reorder", t!(en: "reorder", ja: "並替")))
+        .action(Act::new("graph_picker").key("b")
+            .label(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "branches", ja: "ブランチ") })
+            .help(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "choose which branches are shown", ja: "表示するブランチを選ぶ") })
+            .footer(7).refresh(RefreshTarget::screen("graph_picker"))
+            .project_context(ActContext::screen("graph", [] as [&str; 0])))
+        .action(picker_action("picker_toggle", "x", t!(en: "toggle", ja: "トグル"), 0))
+        .action(picker_action("picker_down", "J", t!(en: "move down", ja: "下へ移動"), 1).hint_group("picker_reorder"))
+        .action(picker_action("picker_up", "K", t!(en: "move up", ja: "上へ移動"), 1).hint_group("picker_reorder"))
+        .action(picker_action("picker_all", "a", t!(en: "all", ja: "全部"), 2))
+        .action(picker_action("picker_current", "c", t!(en: "current only", ja: "現在のみ"), 3))
+        .action(picker_action("picker_apply", "Enter", t!(en: "apply", ja: "適用"), 4)
+            .refresh(RefreshTarget::screen("graph")))
         .setting(SettingDecl::new("graph_max_branches", Value::Int(12),
             t!(en: "Maximum visible graph branches (0: unlimited)", ja: "グラフの表示ブランチ数 (0: 無制限)")))
         .setting(SettingDecl::new("graph_base_branches", Value::List(vec![]),
@@ -41,6 +54,15 @@ pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
     }
 }
 
+fn picker_action(id: &str, key: &str, label: Tr, priority: u8) -> Act {
+    Act::new(id)
+        .key(key)
+        .label(label)
+        .footer(priority)
+        .refresh(RefreshTarget::CurrentScreen)
+        .project_context(ActContext::screen("graph_picker", [] as [&str; 0]))
+}
+
 #[derive(Default)]
 pub(super) struct Graph {
     base: Option<String>,
@@ -50,11 +72,31 @@ pub(super) struct Graph {
     all: bool,
     initialized: bool,
     rows: Vec<GraphRow>,
+    tentative: HashSet<String>,
+    reordered: bool,
 }
 
 impl Graph {
-    pub(super) fn act(&mut self, action: &str, project: &ProjectAct) -> Outcome {
+    pub(super) fn act(
+        &mut self,
+        action: &str,
+        project: &ProjectAct,
+        root: &Path,
+        settings: &Settings,
+    ) -> Outcome {
         match action {
+            "graph_picker" => {
+                self.ensure_order(&git::branches_by_recency(root), settings);
+                if self.visible.is_empty() {
+                    self.visible.extend(self.order.iter().cloned());
+                }
+                self.tentative.clone_from(&self.visible);
+                self.reordered = false;
+                Outcome::PushScreen {
+                    screen: "graph_picker".into(),
+                    selection: None,
+                }
+            }
             "graph_set_base" => {
                 let Some(row) = project
                     .selected
@@ -98,19 +140,150 @@ impl Graph {
             _ => Outcome::Unhandled,
         }
     }
-    pub(super) fn view(
+    pub(super) fn picker_act(
         &mut self,
-        backend: &super::Backend,
+        action: &str,
+        project: &ProjectAct,
         root: &Path,
-        icons: bool,
-        cx: &ViewCx,
-    ) -> View {
-        let branches = git::branches_by_recency(root);
+    ) -> Outcome {
+        let selected = project.selected.as_ref();
+        match action {
+            "picker_apply" => {
+                self.visible.clone_from(&self.tentative);
+                if self.reordered {
+                    let base = self
+                        .order
+                        .iter()
+                        .filter(|name| self.visible.contains(*name))
+                        .find_map(|name| {
+                            konoma_vcs_core::vcs::ref_tip(root, name).map(|oid| (oid, name.clone()))
+                        });
+                    (self.base, self.label) =
+                        base.map_or((None, None), |(oid, name)| (Some(oid), Some(name)));
+                }
+                self.reordered = false;
+                return Outcome::PopScreen;
+            }
+            "picker_toggle" => {
+                let Some(row) = selected else {
+                    return Outcome::Unhandled;
+                };
+                if row.kind == "current" {
+                    return Outcome::Flash(
+                        t!(en: "current branch (HEAD) is always shown", ja: "現在ブランチ(HEAD)は常に表示されます"),
+                    );
+                }
+                if !self.tentative.remove(&row.value) {
+                    self.tentative.insert(row.value.clone());
+                }
+            }
+            "picker_all" => self.tentative = self.order.iter().cloned().collect(),
+            "picker_current" => {
+                self.tentative.clear();
+                self.tentative.extend(
+                    git::branches_by_recency(root)
+                        .into_iter()
+                        .filter(|(_, current, _)| *current)
+                        .map(|(name, _, _)| name),
+                );
+                self.tentative.extend(self.label.iter().cloned());
+            }
+            "picker_down" | "picker_up" => {
+                if let Some(i) =
+                    selected.and_then(|row| self.order.iter().position(|name| name == &row.value))
+                {
+                    let j = if action == "picker_down" {
+                        i.checked_add(1)
+                    } else {
+                        i.checked_sub(1)
+                    };
+                    if let Some(j) = j.filter(|j| *j < self.order.len()) {
+                        self.order.swap(i, j);
+                        self.reordered = true;
+                    }
+                }
+            }
+            _ => return Outcome::Unhandled,
+        }
+        Outcome::Redraw
+    }
+    pub(super) fn picker_view(&self, root: &Path, icons: bool, lang: &str) -> View {
+        let head = git::branches_by_recency(root)
+            .into_iter()
+            .find(|(_, head, _)| *head)
+            .map(|(name, _, _)| name);
+        let rows = if self.order.is_empty() {
+            vec![ListRow::new(
+                "empty",
+                vec![Line::from(Span::styled(
+                    t!(en: "  (no branches)", ja: "  (ブランチなし)").get(lang),
+                    Style::new().dim(),
+                ))],
+            )
+            .selectable(false)]
+        } else {
+            self.order
+                .iter()
+                .map(|name| {
+                    let current = head.as_ref() == Some(name);
+                    let on = self.tentative.contains(name);
+                    ListRow::new(
+                        if current { "current" } else { "branch" },
+                        vec![Line::from(vec![
+                            Span::styled(
+                                if on { "[x] " } else { "[ ] " },
+                                if on {
+                                    Style::new().fg(Color::Green)
+                                } else {
+                                    Style::new().dim()
+                                },
+                            ),
+                            Span::raw(if current {
+                                if icons {
+                                    "⎇ "
+                                } else {
+                                    "* "
+                                }
+                            } else {
+                                "  "
+                            }),
+                            Span::styled(
+                                name,
+                                if current {
+                                    Style::new().fg(Color::Green).bold()
+                                } else if on {
+                                    Style::new()
+                                } else {
+                                    Style::new().dim()
+                                },
+                            ),
+                        ])],
+                    )
+                    .value(name)
+                    .name(name)
+                })
+                .collect()
+        };
+        let shown = self
+            .order
+            .iter()
+            .filter(|name| self.tentative.contains(*name))
+            .count();
+        View::List(ListView {
+            rows,
+            title: Some(Line::raw(format!(
+                "{}  ({shown}/{})",
+                t!(en: "Graph branches", ja: "グラフのブランチ").get(lang),
+                self.order.len()
+            ))),
+            bottom: None,
+        })
+    }
+    fn ensure_order(&mut self, branches: &[(String, bool, i64)], settings: &Settings) {
         let exists: HashSet<_> = branches.iter().map(|(name, _, _)| name.as_str()).collect();
         self.order.retain(|name| exists.contains(name.as_str()));
         if self.order.is_empty() {
-            for name in cx
-                .settings
+            for name in settings
                 .list_str("graph_base_branches")
                 .into_iter()
                 .chain(
@@ -126,12 +299,23 @@ impl Graph {
                 }
             }
         } else {
-            for (name, _, _) in &branches {
+            for (name, _, _) in branches {
                 if !self.order.contains(name) {
                     self.order.push(name.clone());
                 }
             }
         }
+    }
+
+    pub(super) fn view(
+        &mut self,
+        backend: &super::Backend,
+        root: &Path,
+        icons: bool,
+        cx: &ViewCx,
+    ) -> View {
+        let branches = git::branches_by_recency(root);
+        self.ensure_order(&branches, cx.settings);
         if !self.initialized {
             let cap = usize::try_from(cx.settings.int("graph_max_branches", 12)).unwrap_or(12);
             self.visible.extend(

@@ -136,6 +136,205 @@ fn m(acts: Vec<Act>) -> Manifest {
         .fold(Manifest::new("p", "1"), |m, a| m.action(a))
 }
 
+// Every named reserved-table context, plus the unknown and empty contexts pinned below.
+const SCREEN_KEY_CONTEXTS: [&str; 12] = [
+    "global",
+    "tree",
+    "text",
+    "document",
+    "table",
+    "image",
+    "diff",
+    "list",
+    "canvas",
+    "git.changes",
+    "my.screen",
+    "",
+];
+const PROJECT_SCREEN_KEYS: [&str; 3] = ["Enter", "J", "K"];
+const PROJECT_ROW_SCOPES: [&[&str]; 4] = [&[], &["file"], &["commit"], &["file", "commit"]];
+
+#[test]
+fn project_screen_key_relaxation_allows_plain_enter_j_and_k_for_all_screen_names() {
+    for screen in SCREEN_KEY_CONTEXTS {
+        for rows in PROJECT_ROW_SCOPES {
+            for key in PROJECT_SCREEN_KEYS {
+                let manifest = m(vec![Act::new("go")
+                    .key(key)
+                    .project_context(ActContext::screen(screen, rows.iter().copied()))]);
+                let issues = validate(&manifest);
+                assert!(issues.is_empty(), "{screen:?} {rows:?} {key}: {issues:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn project_screen_key_relaxation_keeps_screen_wide_overlaps_duplicate_in_both_orders() {
+    for screen in SCREEN_KEY_CONTEXTS {
+        for key in PROJECT_SCREEN_KEYS {
+            for rows in PROJECT_ROW_SCOPES {
+                for wide_first in [false, true] {
+                    for same_screen in [false, true] {
+                        let other_screen = format!("{screen}.other");
+                        let target = if same_screen { screen } else { &other_screen };
+                        let mut actions = vec![
+                            Act::new("wide")
+                                .key(key)
+                                .project_context(ActContext::screen(screen, [] as [&str; 0])),
+                            Act::new("other")
+                                .key(key)
+                                .project_context(ActContext::screen(target, rows.iter().copied())),
+                        ];
+                        if !wide_first {
+                            actions.reverse();
+                        }
+                        let issues = validate(&m(actions.clone()));
+                        let case = format!("{screen:?} {key} {rows:?} wide_first={wide_first} same_screen={same_screen}");
+                        if same_screen {
+                            assert_eq!(issues.len(), 1, "{case}: {issues:?}");
+                            assert_eq!(issues[0].act, actions[1].id, "{case}");
+                            assert_eq!(issues[0].effect, Effect::KeyDropped, "{case}");
+                            assert_eq!(
+                                issues[0].kind,
+                                KeyIssueKind::Duplicate {
+                                    other: actions[0].id.clone(),
+                                    context: format!("project:{screen}"),
+                                },
+                                "{case}"
+                            );
+                        } else {
+                            assert!(issues.is_empty(), "{case}: {issues:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn project_screen_key_relaxation_preserves_other_reservations_and_ctrl_chord_behavior() {
+    let blocked: Vec<_> = reserved("list")
+        .into_iter()
+        .filter(|(key, _)| !PROJECT_SCREEN_KEYS.contains(&key.to_string().as_str()))
+        .collect();
+    let mut failures = Vec::new();
+    for screen in SCREEN_KEY_CONTEXTS {
+        for rows in PROJECT_ROW_SCOPES {
+            for (key, layer) in &blocked {
+                let manifest = m(vec![Act::new("blocked")
+                    .key(key.to_string())
+                    .project_context(ActContext::screen(screen, rows.iter().copied()))]);
+                let issues = validate(&manifest);
+                let expected = KeyIssueKind::Reserved {
+                    layer: *layer,
+                    context: format!("project:{screen}"),
+                };
+                if issues.len() != 1
+                    || issues[0].kind != expected
+                    || issues[0].effect != Effect::KeyDropped
+                {
+                    failures.push(format!(
+                        "{screen:?} {rows:?} {key}: expected {expected:?}, got {issues:?}"
+                    ));
+                }
+            }
+            for plain in PROJECT_SCREEN_KEYS {
+                let key = KeySpec {
+                    ctrl: true,
+                    ..parse_key(plain).unwrap()
+                }
+                .to_string();
+                let reference = validate(&m(vec![Act::new("chord").key(&key).context("list")]));
+                let issues = validate(&m(vec![Act::new("chord")
+                    .key(&key)
+                    .project_context(ActContext::screen(screen, rows.iter().copied()))]));
+                // These exact Ctrl chords were free in the list context before the exception.
+                if !reference.is_empty() || issues != reference {
+                    failures.push(format!(
+                        "{screen:?} {rows:?} {key}: list={reference:?}, project={issues:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failed cases: {:#?}",
+        failures.len(),
+        failures.iter().take(12).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn project_screen_key_relaxation_does_not_escape_into_any_other_validator_context() {
+    for key in PROJECT_SCREEN_KEYS {
+        let mut cases = Vec::new();
+        for context in SCREEN_KEY_CONTEXTS.into_iter().chain(["project:picker"]) {
+            cases.push((
+                format!("host {context:?}"),
+                m(vec![Act::new("go").key(key).context(context)]),
+                context == "tree",
+                context == "canvas" && key == "Enter",
+            ));
+        }
+        for (context, tree) in [(ActContext::TreeSelection, true), (ActContext::Diff, false)] {
+            cases.push((
+                format!("project {context:?}"),
+                m(vec![Act::new("go").key(key).project_context(context)]),
+                tree,
+                false,
+            ));
+        }
+        let kinds = [
+            ViewKind::Text,
+            ViewKind::Document,
+            ViewKind::Table,
+            ViewKind::Image,
+            ViewKind::Diff,
+            ViewKind::List,
+            ViewKind::Canvas,
+        ];
+        // An action with no context uses the union of every declared main view.
+        // Include every subset, including no declaration and canvas alone.
+        for mask in 0..1usize << kinds.len() {
+            let mut manifest = m(vec![Act::new("go").key(key)]);
+            for (index, kind) in kinds.iter().enumerate() {
+                if mask & (1 << index) != 0 {
+                    manifest = manifest.shows(*kind);
+                }
+            }
+            let canvas_only = manifest.shows == [ViewKind::Canvas];
+            cases.push((
+                format!("main {:?}", manifest.shows),
+                manifest,
+                false,
+                canvas_only && key == "Enter",
+            ));
+        }
+        for (context, manifest, tree, canvas_enter) in cases {
+            let issues = validate(&manifest);
+            if canvas_enter {
+                // Canvas navigation keys were already free before project screens existed.
+                assert!(issues.is_empty(), "{context} {key}: {issues:?}");
+            } else {
+                assert_eq!(issues.len(), 1, "{context} {key}: {issues:?}");
+                assert_eq!(issues[0].effect, Effect::KeyDropped, "{context} {key}");
+                if tree {
+                    // Tree rejects all plugin single-key bindings before the reserved table.
+                    assert_eq!(issues[0].kind, KeyIssueKind::TreeKey, "{context} {key}");
+                } else {
+                    assert!(
+                        matches!(issues[0].kind, KeyIssueKind::Reserved { .. }),
+                        "{context} {key}: {issues:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn clean_manifest_has_no_issues() {
     assert!(validate(&m(vec![
