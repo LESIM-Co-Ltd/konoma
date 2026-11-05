@@ -211,7 +211,10 @@ mod wire {
     fn project_row_values_round_trip_and_require_two_without_a_mark() {
         let side = Side::new(Path::new("/unused-project-row-value"), 'h');
         let row = ListRow::new("branch", vec![]).value("branch-2");
-        let expected = ListView { rows: vec![row] };
+        let expected = ListView {
+            rows: vec![row],
+            ..Default::default()
+        };
         let w = view_to_wire(&mut View::List(expected.clone()), &mut Enc::new(&side)).unwrap();
         assert_eq!(view_protocol(&w), 2);
         assert!(require_protocol(1, view_protocol(&w)).is_err());

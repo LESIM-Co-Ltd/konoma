@@ -5,7 +5,7 @@ use konoma_plugin::view::{ListRow, ListView};
 use konoma_vcs_core::git::CommitInfo;
 
 pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
-    for screen in ["log", "detail"] {
+    for screen in ["log", "graph", "detail"] {
         for (field, key, label) in [
             (
                 "short_hash",
@@ -37,7 +37,7 @@ pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
                     .label(label)
                     .project_context(ActContext::screen(
                         screen,
-                        if screen == "log" {
+                        if screen != "detail" {
                             vec!["commit"]
                         } else {
                             vec![]
@@ -52,6 +52,8 @@ pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
 pub(super) fn view(commits: Vec<CommitInfo>, cx: &ViewCx) -> View {
     if commits.is_empty() {
         return View::List(ListView {
+            title: None,
+            bottom: None,
             rows: vec![ListRow::new(
                 "empty",
                 vec![Line::from(vec![Span::styled(
@@ -64,6 +66,8 @@ pub(super) fn view(commits: Vec<CommitInfo>, cx: &ViewCx) -> View {
     }
     let inline = cx.settings.str("commit_meta_align", "right") == "inline";
     View::List(ListView {
+        title: None,
+        bottom: None,
         rows: commits
             .into_iter()
             .map(|commit| row(commit, inline))
@@ -94,11 +98,12 @@ fn row(commit: CommitInfo, inline: bool) -> ListRow {
     if inline {
         row
     } else {
-        row.right(Line::from(vec![Span::styled(
-            format!("{} · {date}", commit.author),
-            Style::new().fg(Color::DarkGray),
-        )]))
+        row.right(right_meta(format!("{} · {date}", commit.author)))
     }
+}
+
+pub(super) fn right_meta(meta: String) -> Line {
+    Line::from(Span::styled(meta, Style::new().fg(Color::DarkGray)))
 }
 
 #[cfg(test)]

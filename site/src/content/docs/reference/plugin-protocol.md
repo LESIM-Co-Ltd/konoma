@@ -100,7 +100,8 @@ represents a non-interactive message or heading, without selection reversal,
 marks or actions. For an empty list, return a styled non-selectable row whose
 text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
 
-The `konoma-vcs` project tabs include `branches` after `log`: Git calls it Branches,
+The `konoma-vcs` project tabs are changes, log, graph, branches, then worktrees
+(Git only). Git calls the branches tab Branches,
 jj Bookmarks (`b`). Git declares checkout, create and safe/force delete; jj only
 declares name copying. Checkout and creation stay on this tab, whereas the legacy
 hub returns to Changes. The host retains shared navigation/filter controls before
@@ -119,6 +120,42 @@ and invalidates cached views when their path context changes. Older peers may
 omit them. Display preferences remain plugin settings: Git and jj declare
 `[plugins.git]` / `[plugins.jj] path_style = "relative" | "home" | "full"`.
 Without an override, the host uses its existing path display setting.
+
+### Tab contexts and list strips
+
+Project requests also carry `ProjectView::tab(u64)` and `ProjectView::icons(bool)`.
+`ProjectAct::tab(u64)` identifies the invoking tab. Sessions are shared per project;
+use this opaque identity for per-tab screen state. Cached project views are keyed by
+tab as well. Missing wire fields default to `tab = 0`, `icons = true`; default
+values are omitted. Icons follow the host's `ui.icons` preference.
+
+On active or inactive tab closure, the host removes that tab's view, context and dirty
+cache entries and discards late replies for it. It then calls
+`Session::tab_closed(tab: u64)` on the session owner after earlier jobs finish.
+The default implementation does nothing; a stateful project plugin should release
+only that tab's state. Shared sessions and other tabs remain alive.
+Protocol-2 project servers advertise `session_tab_closed: true`; missing means false
+and default false is omitted. Only an advertising child receives the no-reply notice
+`{"TabClosed":{"sid":N,"tab":N}}`. Older children receive no unknown notice;
+the existing `Close { sid }` still closes the entire session.
+
+`ListView.title: Option<Line>` adds a styled title beside the screen tabs.
+`ListView.bottom: Option<ListStrip>` adds a stationary divider and chip strip below
+the scrolling list. `ListStrip::new(chips: Vec<Line>, estimated_width: usize)` uses
+two spaces between chips and wraps with trimmed whitespace. The host reserves one
+chip line if the estimate fits the body width, otherwise two; it shows the strip
+only with at least `3 + chip_lines` body rows. Both list fields default to `None`.
+Decorated lists require protocol 2 and use
+`{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`.
+Undecorated lists retain the old `{"List":[…]}` bytes; old JSON yields absent decorations.
+The wire encoder and decoder reject strips over `LIST_STRIP_MAX_CHIPS` (1024 chips)
+or `LIST_STRIP_MAX_WIDTH` (1,048,576 estimated cells) with `WireError::TooLarge`,
+before converting their lines. Values at the limits are accepted.
+
+Git/jj graph preferences are plugin-owned: `[plugins.git]` / `[plugins.jj]`
+`graph_max_branches = 12` (`0` means unlimited), `graph_base_branches = []`, and
+`commit_meta_align = "right"` (`"inline"` places metadata after the subject).
+Legacy `[ui]` aliases are wired when the VCS plugins are registered in PR 5.
 
 ### Session watch paths
 

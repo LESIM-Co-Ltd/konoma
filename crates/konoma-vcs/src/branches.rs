@@ -44,7 +44,10 @@ pub(super) fn view(refs: Vec<konoma_vcs_core::git::BranchInfo>, cx: &ViewCx) -> 
         )
         .filter_fallback(true),
     );
-    View::List(ListView { rows })
+    View::List(ListView {
+        rows,
+        ..Default::default()
+    })
 }
 
 pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {

@@ -50,6 +50,11 @@ impl<P: Plugin + ?Sized> Plugin for Box<P> {
 /// What the user presses while the file is being read again (`R`, a declared action, typing in a
 /// canvas) waits for the new session and goes to it, in order.
 pub trait Session: Send {
+    /// Release state owned by a closed host tab. Called on the session owner, after prior calls.
+    /// The default is a no-op. A process host sends this notice only to an advertising child.
+    fn tab_closed(&mut self, tab: u64) {
+        let _ = tab;
+    }
     /// Absolute paths to watch for this project session. `None` (the default) uses the
     /// declaration's root-relative paths; `Some([])` explicitly watches no data paths.
     /// The host calls this on the session's owner worker after opening and after invalidation,

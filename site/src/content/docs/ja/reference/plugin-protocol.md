@@ -87,7 +87,8 @@ ProjectAct {
 表し、反転・印・操作の対象にしません。空の一覧には、`Tr` で翻訳してスタイルを
 付けた非選択行を返します。既定は true で、既存の一覧のバイト列を維持します。
 
-`konoma-vcs` のタブには `log` の次に `branches` があり、Git は「ブランチ」、jj は
+`konoma-vcs` のタブ順は changes・log・graph・branches・worktrees（Git のみ）です。
+branches は Git で「ブランチ」、jj は
 「ブックマーク」と表示します（`b`）。Git は切替・作成・安全削除・強制削除を宣言し、
 jj は名前コピーだけを宣言します。切替と作成の後もこのタブに留まります。旧ハブは
 変更画面へ戻ります。フッターはホスト共通の移動・画面切替・戻る・絞り込みを先に
@@ -106,6 +107,39 @@ jj では実行できない書き込みキー（`Enter`・`c`・`d`）を表示�
 git と jj は `[plugins.git]` / `[plugins.jj]` の
 `path_style = "relative" | "home" | "full"` を宣言します。
 指定がない場合、ホストの既存のパス表示設定を使います。
+
+### タブの文脈と一覧の凡例
+
+プロジェクトの要求は `ProjectView::tab(u64)` と `ProjectView::icons(bool)` も持ちます。
+`ProjectAct::tab(u64)` は操作元のタブを示します。セッションはプロジェクトごとに共有されるため、
+タブ固有の画面状態にはこの不透明な識別子を使います。表示キャッシュもタブごとに分かれます。
+wire で省略された時は `tab = 0`、`icons = true` です。既定値は送信時に省略します。
+icons はホストの `ui.icons` に従います。
+
+アクティブ／非アクティブのタブを閉じると、ホストはそのタブの表示・文脈・再取得待ちの
+キャッシュを削除し、遅れて返った表示も破棄します。先行ジョブの終了後、所有ワーカーで
+`Session::tab_closed(tab: u64)` を呼びます。既定の実装は何もしません。
+状態を持つプラグインはそのタブの状態だけを解放し、共有セッションと他のタブは残します。
+プロトコル2のプロジェクト用サーバーは `session_tab_closed: true` を通知します。
+未指定は false で、false は送信時に省略します。対応する子だけに、返答なしの
+`{"TabClosed":{"sid":N,"tab":N}}` を送ります。古い子には未知の通知を送らず、
+従来の `Close { sid }` はセッション全体を閉じる意味のままです。
+
+`ListView.title: Option<Line>` は画面タブの横にスタイル付きタイトルを加えます。
+`ListView.bottom: Option<ListStrip>` はスクロールする一覧の下に固定の区切りと凡例を加えます。
+`ListStrip::new(chips: Vec<Line>, estimated_width: usize)` のチップ間は空白2個で、
+折り返しの空白は除きます。幅の見積もりが本文幅に収まれば1行、そうでなければ2行を確保し、
+本文の高さが `3 + chip_lines` 以上の時だけ表示します。両フィールドの既定は `None` です。
+装飾付き一覧はプロトコル2の
+`{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`
+を使います。装飾なしの `{"List":[…]}` は従来のバイト列を保ち、旧 JSON では装飾なしになります。
+wire の送受信は、`LIST_STRIP_MAX_CHIPS`（1024個）または `LIST_STRIP_MAX_WIDTH`
+（見積もり幅1,048,576セル）を超える凡例を、行へ変換する前に `WireError::TooLarge`
+で拒みます。上限ちょうどの値は受け付けます。
+
+グラフの設定は `[plugins.git]` / `[plugins.jj]` の `graph_max_branches = 12`
+（`0` は無制限）、`graph_base_branches = []`、`commit_meta_align = "right"`
+（`"inline"` は件名の後ろに配置）です。旧 `[ui]` 名の接続は PR 5 の VCS 登録で行います。
 
 ### セッションの監視パス
 

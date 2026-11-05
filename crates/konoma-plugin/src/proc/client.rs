@@ -321,6 +321,7 @@ struct Shared {
     version: AtomicU32,
     session_chip: AtomicBool,
     session_watch: AtomicBool,
+    session_tab_closed: AtomicBool,
     limits: Limits,
     side: Side,
     side_dir: PathBuf,
@@ -996,6 +997,7 @@ fn connect(
         version: AtomicU32::new(1),
         session_chip: AtomicBool::new(false),
         session_watch: AtomicBool::new(false),
+        session_tab_closed: AtomicBool::new(false),
         limits: cfg.limits.clone(),
         side: Side::new(&side_dir, 'h'),
         side_dir: side_dir.clone(),
@@ -1128,6 +1130,10 @@ fn connect(
                 return Err(abort("its manifest protocol", e.to_string()));
             }
             shared.version.store(version, Ordering::Release);
+            shared.session_tab_closed.store(
+                version >= 2 && manifest.session_tab_closed && manifest.project.is_some(),
+                Ordering::Release,
+            );
             shared.session_watch.store(
                 version >= 2 && manifest.session_watch && manifest.project.is_some(),
                 Ordering::Release,
@@ -1575,6 +1581,13 @@ impl ProcSession {
 }
 
 impl Session for ProcSession {
+    fn tab_closed(&mut self, tab: u64) {
+        if self.project && self.shared.session_tab_closed.load(Ordering::Acquire) {
+            let _ = self
+                .shared
+                .send_frame(&ToChild::TabClosed { sid: self.sid, tab });
+        }
+    }
     fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
         if !self.project || !self.shared.session_watch.load(Ordering::Acquire) {
             return Ok(None);

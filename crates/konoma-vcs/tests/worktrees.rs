@@ -51,10 +51,22 @@ fn worktrees_git_declaration_settings_and_actions_jj_has_no_screen_or_jump() {
         .screens
         .iter()
         .any(|s| s.id == "worktrees" || s.key == Some('w')));
-    assert!(!jj
-        .settings
-        .iter()
-        .any(|s| s.name == "worktree_dir" || s.name == "graph_base_branches"));
+    assert!(!jj.settings.iter().any(|s| s.name == "worktree_dir"));
+    assert_eq!(
+        jj.settings
+            .iter()
+            .filter(|s| s.name == "graph_base_branches")
+            .count(),
+        1
+    );
+    assert_eq!(
+        manifest
+            .settings
+            .iter()
+            .filter(|s| s.name == "graph_base_branches")
+            .count(),
+        1
+    );
 }
 
 #[cfg(feature = "git")]

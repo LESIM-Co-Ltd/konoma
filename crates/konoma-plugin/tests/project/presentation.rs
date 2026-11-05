@@ -29,6 +29,8 @@ impl Session for Project {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         assert_eq!(req.project, Some(context()));
         Ok(View::List(ListView {
+            title: None,
+            bottom: None,
             rows: vec![
                 ListRow::new("empty", vec![Line::raw("empty")]).selectable(false),
                 ListRow::new("commit", vec![Line::raw("subject")])
@@ -201,6 +203,8 @@ mod transport {
                 .filter_fallback(true),
         ] {
             let mut view = View::List(ListView {
+                title: None,
+                bottom: None,
                 rows: vec![row.clone()],
             });
             let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
@@ -229,6 +233,7 @@ mod transport {
         let side = Side::new(dir.as_path(), 'h');
         let mut view = View::List(ListView {
             rows: vec![ListRow::new("empty", vec![Line::raw("No matches")]).filter_fallback(true)],
+            ..Default::default()
         });
         let mut wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
         let WView::List(rows) = &mut wire else {

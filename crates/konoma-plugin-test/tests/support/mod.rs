@@ -182,6 +182,9 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
             ToChild::WatchPaths { .. } => {
                 panic!("fixture does not advertise session_watch")
             }
+            ToChild::TabClosed { .. } => {
+                panic!("fixture does not advertise session_tab_closed")
+            }
             ToChild::Open { rid, input, .. } => {
                 if mode.starts_with("chip") {
                     assert!(

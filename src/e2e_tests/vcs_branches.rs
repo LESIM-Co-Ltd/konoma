@@ -447,6 +447,11 @@ fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration()
             );
             new.press(KeyCode::Tab, KeyModifiers::NONE);
             drain(&mut new);
+            if screen == "log" {
+                // Graph has its own legacy-worded help, covered by the graph comparisons.
+                new.press(KeyCode::Tab, KeyModifiers::NONE);
+                drain(&mut new);
+            }
         }
     }
 }
@@ -632,5 +637,30 @@ fn e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints() {
             assert!(new.app.project_dialog.is_none());
         }
         assert_eq!(crate::vcs::refs(&dir).len(), 2);
+        for (code, expected) in [
+            (KeyCode::Tab, "changes"),
+            (KeyCode::Tab, "log"),
+            (KeyCode::Tab, "graph"),
+            (KeyCode::Tab, "branches"),
+            (KeyCode::BackTab, "graph"),
+            (KeyCode::BackTab, "log"),
+            (KeyCode::BackTab, "changes"),
+            (KeyCode::BackTab, "branches"),
+        ] {
+            old.press(code, KeyModifiers::NONE);
+            new.press(code, KeyModifiers::NONE);
+            drain(&mut new);
+            assert_eq!(new.app.project_frame().unwrap().key.screen, expected);
+            let old_screen = if old.app.is_git_graph() {
+                "graph"
+            } else if old.app.is_git_log() {
+                "log"
+            } else if old.app.is_git_branches() {
+                "branches"
+            } else {
+                "changes"
+            };
+            assert_eq!(old_screen, expected);
+        }
     }
 }

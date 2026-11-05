@@ -498,6 +498,7 @@ impl App {
         // Same for a live delegated-command temp output — this tab's own slot in `self.tabs` is
         // about to be removed below without ever being saved again, so nothing else will clean it up.
         self.clear_command_out();
+        self.project_tab_closed(self.tab.id);
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
@@ -594,6 +595,7 @@ impl App {
                     let _ = std::fs::remove_file(p);
                 }
             }
+            self.project_tab_closed(self.tabs[i].id);
             self.tabs.remove(i);
             if self.active_tab > i {
                 self.active_tab -= 1;

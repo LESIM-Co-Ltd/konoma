@@ -11,13 +11,14 @@ fn log_declaration_follows_changes_with_enter_and_pushed_detail() {
                 vec![
                     "changes",
                     "log",
+                    "graph",
                     "branches",
                     "worktrees",
                     "detail",
                     "worktree_diff",
                 ]
             } else {
-                vec!["changes", "log", "branches", "detail"]
+                vec!["changes", "log", "graph", "branches", "detail"]
             }
         );
         let log = &screens[1];

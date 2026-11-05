@@ -173,6 +173,7 @@ where
     let action_ids: Vec<String> = manifest.actions.iter().map(|a| a.id.clone()).collect();
     wm.session_chip = version >= 2 && manifest.project.is_some();
     wm.session_watch = version >= 2 && manifest.project.is_some();
+    wm.session_tab_closed = version >= 2 && manifest.project.is_some();
     frame::send(
         &mut output,
         &HelloReply::Ack {
@@ -264,6 +265,13 @@ where
             Job::Notice(ToChild::Close { sid }) => {
                 if let Some(session) = worker.sessions.remove(&sid) {
                     quiet_drop(session);
+                }
+            }
+            Job::Notice(ToChild::TabClosed { sid, tab }) => {
+                if worker.version >= 2 {
+                    if let Some(session) = worker.sessions.get_mut(&sid) {
+                        let _ = catch_unwind(AssertUnwindSafe(|| session.tab_closed(tab)));
+                    }
                 }
             }
             Job::Notice(_) => {}

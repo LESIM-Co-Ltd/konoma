@@ -139,7 +139,7 @@ impl Session for TestSession {
             "m" => View::Message(MessageView {
                 lines: vec![Line::raw(format!("hello from {}", self.id))],
             }),
-            "list" => View::List(ListView { rows: Vec::new() }),
+            "list" => View::List(ListView::default()),
             "fail" => return Err(Failure::corrupt(t!(en: "broken on purpose"))),
             _ => return Err(Failure::unsupported(t!(en: "unknown"))),
         })

@@ -8,6 +8,7 @@ fn project_worktree_list_fallback_only_without_matching_rows() {
             ListRow::new("item", vec![Line::raw("branch path")]),
             ListRow::new("empty", vec![Line::raw("no worktrees")]).filter_fallback(true),
         ],
+        ..Default::default()
     };
     assert_eq!(list.visible_rows(""), [0]);
     assert_eq!(list.visible_rows("PATH"), [0]);
@@ -90,6 +91,7 @@ mod wire {
                     .selectable(false)
                     .filter_fallback(true),
             ],
+            ..Default::default()
         });
         let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
         let bytes = konoma_plugin::proc::frame::encode(&wire).unwrap();

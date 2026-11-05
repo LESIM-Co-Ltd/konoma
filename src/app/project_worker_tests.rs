@@ -237,6 +237,7 @@ fn project_initial_watch_and_chip_failures_are_independent_and_chip_job_skips_wa
             assert_eq!(log.lock().unwrap().watch_threads.len(), 1);
 
             let screen = ScreenKey {
+                tab: 0,
                 screen: "text".into(),
                 selection: None,
             };

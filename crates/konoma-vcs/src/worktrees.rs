@@ -95,7 +95,10 @@ pub(super) fn view(root: &Path, project: &ProjectView, cx: &ViewCx) -> View {
         )
         .filter_fallback(true),
     );
-    View::List(ListView { rows })
+    View::List(ListView {
+        rows,
+        ..Default::default()
+    })
 }
 
 fn refusal(kind: &str, switching: bool) -> Option<Tr> {
@@ -354,8 +357,6 @@ pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
     manifest
         .setting(SettingDecl::new("worktree_dir", Value::Str("../".into()),
             t!(en: "New worktrees: directory relative to the main worktree", ja: "新規ワークツリーの配置先: メインワークツリーからの相対ディレクトリ")))
-        .setting(SettingDecl::new("graph_base_branches", Value::List(vec![]),
-            t!(en: "Base branch candidates; the newest merge-base wins, ties keep list order", ja: "base ブランチの候補: 最新の merge-base を選択し、同時刻ならリスト順")))
         .action(Act::new("worktree_switch").key("Enter")
             .label(t!(en: "switch", ja: "切替"))
             .help(t!(en: "switch to it", ja: "切り替える"))

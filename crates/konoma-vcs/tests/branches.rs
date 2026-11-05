@@ -61,16 +61,17 @@ fn branches_declaration_titles_order_and_read_only_bookmarks() {
                 vec![
                     "changes",
                     "log",
+                    "graph",
                     "branches",
                     "worktrees",
                     "detail",
                     "worktree_diff",
                 ]
             } else {
-                vec!["changes", "log", "branches", "detail"]
+                vec!["changes", "log", "graph", "branches", "detail"]
             }
         );
-        let screen = &screens[2];
+        let screen = &screens[3];
         assert_eq!(screen.title.get("en"), title);
         assert_eq!(screen.title.get("ja"), ja);
         assert_eq!(screen.key, Some('b'));
