@@ -6,6 +6,7 @@ use konoma_vcs_core::style::VcsColor;
 use konoma_vcs_core::vcs::Vcs;
 use std::path::PathBuf;
 mod actions;
+mod log;
 mod paths;
 
 pub struct Git;
@@ -22,11 +23,15 @@ macro_rules! plugin {
                             .marker(DetectionMarker::new($marker, $kind))
                             .version_control()
                             .screen(ProjectScreen::new("changes", t!(en: "Changes", ja: "変更"))
-                                .key('p').row_kind("file").row_kind("empty")),
+                                .key('p').row_kind("file").row_kind("empty"))
+                            .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
+                                .row_kind("commit").row_kind("empty")),
                     )
                     .shows(ViewKind::List)
                     .setting(SettingDecl::new("path_style", Value::Str("relative".into()),
-                        t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")));
+                        t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
+                    .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
+                        t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
                 actions::declare(manifest, $id == "git")
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
@@ -80,6 +85,16 @@ enum Backend {
 }
 
 impl Backend {
+    fn log(&self, root: &std::path::Path) -> Vec<konoma_vcs_core::git::CommitInfo> {
+        match self {
+            Self::Git => konoma_vcs_core::vcs::Git.log(root, 200),
+            #[cfg(feature = "git")]
+            Self::Jj => konoma_vcs_core::vcs::Jj.log(root, 200),
+            #[cfg(not(feature = "git"))]
+            Self::Jj => Vec::new(),
+        }
+    }
+
     fn changed_files(&self, root: &std::path::Path) -> Vec<konoma_vcs_core::git::ChangeEntry> {
         match self {
             Self::Git => konoma_vcs_core::vcs::Git.changed_files(root),
@@ -127,6 +142,9 @@ impl Session for Changes {
         Ok(Some(paths))
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if req.project.as_ref().is_some_and(|p| p.screen == "log") {
+            return Ok(log::view(self.backend.log(&self.root), cx));
+        }
         if req.project.as_ref().is_none_or(|p| p.screen != "changes") {
             return Err(Failure::unsupported(
                 t!(en: "Unknown screen", ja: "不明な画面です"),

@@ -97,6 +97,20 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                         span
                     }));
                 }
+                let spans = if let Some(right) = &row.right {
+                    let right = konoma_plugin::ratatui_draw::into_line(right.clone());
+                    let right = right
+                        .spans
+                        .into_iter()
+                        .map(|mut span| {
+                            span.style = right.style.patch(span.style);
+                            span
+                        })
+                        .collect();
+                    line_with_right(spans, right, usize::from(body.width))
+                } else {
+                    spans
+                };
                 let line = Line::from(spans);
                 lines.push(if row.selectable && cursor == active.cursor {
                     line.reversed()
@@ -128,4 +142,56 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         scroll.min(u16::MAX as usize) as u16,
         Block::default(),
     );
+}
+
+/// Ellipsize by display width, retaining each span's style and the legacy plain ellipsis.
+fn truncate_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    if spans.iter().map(Span::width).sum::<usize>() <= max {
+        return spans;
+    }
+    if max == 0 {
+        return Vec::new();
+    }
+    let budget = max - 1;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let width = ch.width().unwrap_or(0);
+            if used + width > budget {
+                if !text.is_empty() {
+                    out.push(Span::styled(text, span.style));
+                }
+                out.push(Span::raw("…"));
+                return out;
+            }
+            text.push(ch);
+            used += width;
+        }
+        if !text.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+    }
+    out
+}
+
+/// The suffix is optional when narrow; its styles are entirely plugin-owned.
+fn line_with_right(
+    left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let right_width = right.iter().map(Span::width).sum::<usize>();
+    if right_width == 0 || right_width + 2 > width {
+        return truncate_spans(left, width);
+    }
+    let mut out = truncate_spans(left, width - right_width - 1);
+    let left_width = out.iter().map(Span::width).sum::<usize>();
+    out.push(Span::raw(
+        " ".repeat(width.saturating_sub(left_width + right_width).max(1)),
+    ));
+    out.extend(right);
+    out
 }
