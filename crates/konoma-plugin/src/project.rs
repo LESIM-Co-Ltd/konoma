@@ -228,6 +228,8 @@ pub struct ProjectScreen {
     pub marks: bool,
     /// Reserve a stable check column, including for rows without a check state.
     pub checks: bool,
+    /// Reached only through `Outcome::PushScreen`, outside the screen tabs and their cycle.
+    pub pushed: bool,
 }
 
 impl ProjectScreen {
@@ -239,11 +241,16 @@ impl ProjectScreen {
             row_kinds: Vec::new(),
             marks: false,
             checks: false,
+            pushed: false,
         }
     }
 
     pub fn key(mut self, key: char) -> Self {
         self.key = Some(key);
+        self
+    }
+    pub fn pushed(mut self) -> Self {
+        self.pushed = true;
         self
     }
     pub fn row_kind(mut self, kind: impl Into<String>) -> Self {

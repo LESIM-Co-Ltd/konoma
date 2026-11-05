@@ -193,8 +193,8 @@ pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16
         for x in 0..width - 2 {
             let before = &old[(x + 1, y)];
             let after = &new[(x, y)];
-            let before = (before.symbol(), before.fg, before.modifier);
-            let after = (after.symbol(), after.fg, after.modifier);
+            let before = (before.symbol(), before.fg, before.bg, before.modifier);
+            let after = (after.symbol(), after.fg, after.bg, after.modifier);
             if before != after {
                 differences.push(format!("({x}, {y}): {before:?} != {after:?}"));
             }

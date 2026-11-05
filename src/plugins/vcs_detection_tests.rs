@@ -1,6 +1,31 @@
 use super::*;
 use crate::test_support::unique_tmp;
 
+impl ProjectDetection {
+    pub(crate) fn inject_event_with_pending_watch_update(
+        &self,
+        event: notify::Result<notify::Event>,
+    ) {
+        let events = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.events.as_ref())
+            .expect("injected project events");
+        // A zero-capacity acknowledgement holds the worker while a path-update wake fills
+        // its one event slot. Sending the wake proves the worker consumed the hold message.
+        let (hold, release) = mpsc::sync_channel(0);
+        events.tx.send(WatchMessage::Settled(hold)).unwrap();
+        events.tx.send(WatchMessage::PathsChanged).unwrap();
+        drop(release);
+        // An ignored Access event fences the pending update without occupying the event slot.
+        // Named events must wait for it: a full queue correctly requests a conservative rescan.
+        self.inject_event(Ok(notify::Event::new(notify::EventKind::Access(
+            notify::event::AccessKind::Any,
+        ))));
+        self.inject_event(event);
+    }
+}
+
 fn vcs_declarations() -> Vec<Declaration> {
     [&konoma_vcs::Git as &dyn Plugin, &konoma_vcs::Jj]
         .into_iter()

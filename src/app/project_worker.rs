@@ -422,10 +422,24 @@ fn content(
             ProjectContent::Lines(lines)
         }
         View::Diff(diff) => {
+            let mut previous = None;
             let lines: Vec<_> = diff
                 .hunks
                 .into_iter()
-                .flat_map(|h| h.lines)
+                .flat_map(|h| {
+                    let marker = if h.path != previous {
+                        h.path.as_ref().map(|path| konoma_plugin::view::DiffLine {
+                            kind: konoma_plugin::view::DiffKind::Context,
+                            old_no: None,
+                            new_no: None,
+                            text: path.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                    previous = h.path;
+                    marker.into_iter().chain(h.lines)
+                })
                 .map(|line| crate::git::DiffLine {
                     kind: match line.kind {
                         konoma_plugin::view::DiffKind::Added => crate::git::DiffLineKind::Added,
@@ -437,11 +451,15 @@ fn content(
                     text: line.text,
                 })
                 .collect();
-            ProjectContent::Diff(crate::preview::gitdiff::diff_lines(
-                &lines,
-                "",
-                theme,
-                req.cols as usize,
+            ProjectContent::Diff(super::project_screens::ProjectDiff::new(
+                lines,
+                diff.header.into_iter().map(into_line).collect(),
+                theme.into(),
+                crate::i18n::tr(
+                    crate::i18n::Lang::parse(lang),
+                    crate::i18n::Msg::GitNoChanges,
+                )
+                .into(),
             ))
         }
         View::Document(doc) => {
