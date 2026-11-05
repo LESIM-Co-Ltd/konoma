@@ -189,7 +189,7 @@ mod transport {
         let side = Side::new(dir.as_path(), 'h');
         for row in [
             ListRow::new("commit", vec![Line::raw("subject")])
-                .initially_selected(true)
+                .initial_selection(true)
                 .right(Line::from(vec![Span::styled(
                     "author · date",
                     Style::new().fg(Color::DarkGray),
@@ -209,8 +209,8 @@ mod transport {
                 assert!(json["List"][0].get("right").is_none());
                 assert!(json["List"][0].get("filter_text").is_none());
             }
-            if !row.initially_selected {
-                assert!(json["List"][0].get("initially_selected").is_none());
+            if !row.initial_selection {
+                assert!(json["List"][0].get("initial_selection").is_none());
             }
             if !row.filter_fallback {
                 assert!(json["List"][0].get("filter_fallback").is_none());
@@ -236,7 +236,7 @@ mod transport {
         };
         // A child may bypass the SDK's builder and send conflicting flags.
         rows[0].selectable = true;
-        rows[0].initially_selected = true;
+        rows[0].initial_selection = true;
         let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
             panic!("list required")
         };
@@ -245,11 +245,10 @@ mod transport {
     }
 
     #[test]
-    fn project_list_old_json_defaults_selection_and_filter_fallback() {
-        let row: konoma_plugin::proc::wire::WListRow =
-            serde_json::from_str(r#"{"cells":[],"kind":"file","target":null,"checked":null}"#)
-                .unwrap();
-        assert!(!row.initially_selected && !row.filter_fallback);
+    fn project_list_builder_defaults_selection_and_filter_fallback() {
+        let row = ListRow::new("file", vec![]);
+        assert!(!row.initial_selection && !row.filter_fallback);
+        assert!(row.selectable);
     }
 
     #[test]

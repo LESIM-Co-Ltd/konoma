@@ -10,6 +10,7 @@ mod branches;
 mod detail;
 mod log;
 mod paths;
+mod worktrees;
 
 pub struct Git;
 pub struct Jj;
@@ -39,7 +40,7 @@ macro_rules! plugin {
                         t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
                     .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
                         t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
-                let manifest = actions::declare(manifest, $id == "git")
+                let manifest = actions::declare(worktrees::declare(manifest, $id == "git"), $id == "git")
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
@@ -54,7 +55,7 @@ macro_rules! plugin {
                 let Input::Project { root, .. } = input else {
                     return Err(Failure::unsupported(t!(en: "Project required", ja: "プロジェクトが必要です")));
                 };
-                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), detail_meta: Default::default() }))
+                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, worktree_diff: None, detail_meta: Default::default() }))
             }
         }
     };
@@ -131,10 +132,14 @@ impl Backend {
 }
 
 struct Changes {
+    // The host can reopen cached detail views without calling view(), so each cached header
+    // needs its original metadata when that older detail becomes active again.
     detail_meta: std::collections::HashMap<String, konoma_vcs_core::git::CommitMeta>,
     root: PathBuf,
     backend: Backend,
     files: Vec<DisplayedFile>,
+    worktree_home: Option<PathBuf>,
+    worktree_diff: worktrees::PreparedDiff,
 }
 
 struct DisplayedFile {
@@ -167,6 +172,22 @@ impl Session for Changes {
         Ok(Some(paths))
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktree_diff") {
+            if matches!(self.backend, Backend::Git) {
+                return Ok(worktrees::diff_view(
+                    &self.root,
+                    project,
+                    cx,
+                    &mut self.worktree_diff,
+                ));
+            }
+        }
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktrees") {
+            if matches!(self.backend, Backend::Git) {
+                self.worktree_home = project.home_dir.clone();
+                return Ok(worktrees::view(&self.root, project, cx));
+            }
+        }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
             let (view, meta) =
                 detail::read(&self.backend, &self.root, project.selection.as_deref());
@@ -312,6 +333,15 @@ impl Session for Changes {
         if !self.enabled(action) {
             return Ok(Outcome::Unhandled);
         }
+        if action.starts_with("worktree_") {
+            return worktrees::act(
+                &self.root,
+                action,
+                cx,
+                self.worktree_home.as_deref(),
+                &mut self.worktree_diff,
+            );
+        }
         let Some(context) = cx
             .project
             .as_ref()
@@ -413,7 +443,13 @@ impl Session for Changes {
         }
         match action {
             "branch_copy_name" => true,
-            "checkout" | "create_branch" | "delete_branch" | "delete_current_branch" => {
+            "checkout"
+            | "create_branch"
+            | "delete_branch"
+            | "delete_current_branch"
+            | "worktree_switch"
+            | "worktree_create"
+            | "worktree_changes" => {
                 matches!(self.backend, Backend::Git)
             }
             "detail" => true,

@@ -309,7 +309,6 @@ fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
         InternalMode::GitLog => Context::Screen(backend, Screen::Log),
         #[cfg(feature = "git")]
         InternalMode::GitDetail => Context::Screen(backend, Screen::Detail),
-        #[cfg(feature = "git")]
         InternalMode::GitDiff => Context::Diff,
         _ => return None,
     })

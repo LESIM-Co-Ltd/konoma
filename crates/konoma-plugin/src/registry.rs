@@ -164,6 +164,9 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    CopyOutsideProjectScreen {
+        action: String,
+    },
     InvalidCopyKey {
         action: String,
     },
@@ -285,7 +288,8 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidCopyKey { action } => write!(f, "copy action `{action}` must have one plain character as its key"),
+            Self::CopyOutsideProjectScreen { action } => write!(f, "action `{action}`: copy items belong to a project screen"),
+            Self::InvalidCopyKey { action } => write!(f, "copy action `{action}` must have one plain character as its key (menu closing keys are reserved)"),
             Self::DuplicateCopyKey { action, other } => write!(f, "copy action `{action}` has the same key and context as `{other}`"),
             Self::UnknownHintGroup { action, group } => write!(f, "action `{action}` names unknown hint group `{group}`"),
             Self::DuplicateHintGroup { group, action } => {
@@ -448,6 +452,14 @@ fn copy_problem(m: &Manifest) -> Option<ManifestReason> {
             });
         }
         if action.copy {
+            if !matches!(
+                action.project_context,
+                Some(crate::project::ActContext::Screen { .. })
+            ) {
+                return Some(ManifestReason::CopyOutsideProjectScreen {
+                    action: action.id.clone(),
+                });
+            }
             if let Some(other) = m.actions[..index].iter().find(|other| {
                 other.copy
                     && other.key == action.key

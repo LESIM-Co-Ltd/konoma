@@ -525,6 +525,29 @@ pub struct ListView {
     pub rows: Vec<ListRow>,
 }
 
+impl ListView {
+    /// Matching ordinary rows, or the fallback messages when no ordinary row matches.
+    pub fn visible_rows(&self, query: &str) -> Vec<usize> {
+        let matching: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.filter_fallback && row.matches_filter(query))
+            .map(|(index, _)| index)
+            .collect();
+        if matching.is_empty() {
+            self.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.filter_fallback)
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            matching
+        }
+    }
+}
+
 /// One row of a list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Construct through the SDK and leave room for future fields or variants.
@@ -535,9 +558,9 @@ pub struct ListView {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
-    /// Select this row when the host first opens the list; refreshes keep the user's cursor.
-    pub initially_selected: bool,
-    /// Show this unselectable message only when no ordinary rows match the list filter.
+    /// Preferred initial cursor, used once when the host first opens this list.
+    pub initial_selection: bool,
+    /// Unselectable message shown only when no ordinary row matches the filter.
     pub filter_fallback: bool,
     /// Optional styled suffix aligned to the body's right edge by the host.
     pub right: Option<Line>,
@@ -561,8 +584,8 @@ pub struct ListRow {
 }
 
 impl ListRow {
-    pub fn initially_selected(mut self, selected: bool) -> Self {
-        self.initially_selected = selected;
+    pub fn initial_selection(mut self, selected: bool) -> Self {
+        self.initial_selection = selected;
         self
     }
 
@@ -632,7 +655,7 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
-            initially_selected: false,
+            initial_selection: false,
             filter_fallback: false,
             right: None,
             filter_text: None,

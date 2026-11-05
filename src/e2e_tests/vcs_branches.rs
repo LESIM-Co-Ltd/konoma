@@ -442,7 +442,7 @@ fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration()
             assert!(
                 project
                     .rows
-                    .contains(&("/".into(), tr(new.app.lang, Msg::ListFilterHelp).into())),
+                    .contains(&("/".into(), tr(new.app.lang, Msg::GitFilterByName).into())),
                 "{lang} {screen}"
             );
             new.press(KeyCode::Tab, KeyModifiers::NONE);

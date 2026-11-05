@@ -57,7 +57,18 @@ fn branches_declaration_titles_order_and_read_only_bookmarks() {
         let writes = if cfg!(feature = "git") { writes } else { 0 };
         assert_eq!(
             screens.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            ["changes", "log", "branches", "detail"]
+            if manifest.id == "git" {
+                vec![
+                    "changes",
+                    "log",
+                    "branches",
+                    "worktrees",
+                    "detail",
+                    "worktree_diff",
+                ]
+            } else {
+                vec!["changes", "log", "branches", "detail"]
+            }
         );
         let screen = &screens[2];
         assert_eq!(screen.title.get("en"), title);

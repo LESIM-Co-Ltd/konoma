@@ -7,6 +7,9 @@ use crate::app::project_screens::ProjectContent;
 use crate::test_support::{init_git_repo, TmpDir};
 use konoma_vcs_core::git2;
 
+#[path = "vcs_worktrees.rs"]
+mod worktrees;
+
 fn commit(root: &std::path::Path, i: usize) {
     let repo = git2::Repository::open(root).unwrap();
     let sig = git2::Signature::new(
@@ -262,15 +265,27 @@ fn e2e_vcs_copy_empty_log_and_screen_without_copy_acts_do_nothing_without_hints(
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
     let dir = repo(0);
     let cfg = plugin_config("git", "vcs_copy_empty", "en");
-    let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+    let (mut old, mut new) = pair_config(&dir, "git", cfg, 100, 12);
     new.press(KeyCode::Tab, KeyModifiers::NONE);
     drain(&mut new);
     assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
-    for changes in [false, true] {
-        if changes {
+    for screen in ["log", "changes", "worktrees"] {
+        if screen == "changes" {
             new.press(KeyCode::BackTab, KeyModifiers::NONE);
             drain(&mut new);
         }
+        if screen == "worktrees" {
+            old.app.open_git_worktrees();
+            old.draw();
+            assert!(old.app.is_git_worktrees());
+            clear_test_clipboard();
+            old.key('y');
+            assert_eq!(old.app.pending_leader, None);
+            assert_eq!(get_test_clipboard(), None);
+            new.key('w');
+            drain(&mut new);
+        }
+        assert_eq!(new.app.project_frame().unwrap().key.screen, screen);
         clear_test_clipboard();
         assert!(!crate::ops::menu::opens(
             &new.app,
@@ -421,6 +436,52 @@ fn e2e_vcs_copy_detail_uses_the_metadata_it_shows_and_log_missing_commit_flashes
 }
 
 #[test]
+fn e2e_vcs_copy_reopened_cached_details_keep_each_displayed_commit() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = repo(2);
+    let (mut old, mut new) = pair(&dir, "git", "en", "right", 120, 14);
+    let ids = rows(&new);
+    let mut first_view = None;
+    for (step, index) in [0, 1, 0].into_iter().enumerate() {
+        if step > 0 {
+            old.esc();
+            new.esc();
+            let key = if index == 1 { 'j' } else { 'k' };
+            old.key(key);
+            new.key(key);
+            drain(&mut new);
+        }
+        old.enter();
+        new.enter();
+        drain(&mut new);
+        let view = new.app.project_content().unwrap();
+        if step == 0 {
+            first_view = Some(view);
+        } else if step == 2 {
+            assert!(
+                std::sync::Arc::ptr_eq(first_view.as_ref().unwrap(), &view),
+                "reopening A uses the host's cached view without calling the plugin"
+            );
+        }
+        clear_test_clipboard();
+        old.key('y');
+        old.key('h');
+        assert_eq!(get_test_clipboard().as_deref(), Some(ids[index].as_str()));
+        let flash = old.app.flash.clone();
+        clear_test_clipboard();
+        new.key('y');
+        new.key('h');
+        drain(&mut new);
+        assert_eq!(
+            get_test_clipboard().as_deref(),
+            Some(ids[index].as_str()),
+            "step {step}"
+        );
+        assert_eq!(new.app.flash, flash);
+    }
+}
+
+#[test]
 fn e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy() {
     let dir = detail_repo();
     for width in [80, 180] {
@@ -541,7 +602,9 @@ fn e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open() {
     for (code, expected) in [
         (KeyCode::Tab, "log"),
         (KeyCode::Tab, "branches"),
+        (KeyCode::Tab, "worktrees"),
         (KeyCode::Tab, "changes"),
+        (KeyCode::BackTab, "worktrees"),
         (KeyCode::BackTab, "branches"),
         (KeyCode::BackTab, "log"),
     ] {

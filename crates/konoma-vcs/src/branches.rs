@@ -28,7 +28,7 @@ pub(super) fn view(refs: Vec<konoma_vcs_core::git::BranchInfo>, cx: &ViewCx) -> 
                     ),
                 ])],
             )
-            .initially_selected(branch.is_current)
+            .initial_selection(branch.is_current)
             .name(&branch.name)
             .filter_text(&branch.name)
             .value(branch.name)
