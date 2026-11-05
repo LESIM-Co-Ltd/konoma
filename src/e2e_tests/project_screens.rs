@@ -3,6 +3,9 @@
 #[path = "project_scroll.rs"]
 mod scroll;
 
+#[path = "project_confirmations.rs"]
+mod confirmations;
+
 use super::*;
 use crate::plugins::test_plugins::{self, Latch};
 use crate::plugins::test_projects::{ProjectLog, Screens, ViewHold};
@@ -69,6 +72,18 @@ fn fixture_with_log(
     let mut cfg = test_plugins::marker_config(&marker);
     cfg.ui.lang = "en".into();
     cfg.external.git = false;
+    if log.lock().unwrap().rebound_hint_key {
+        cfg.keys.surfaces.insert(
+            "project-screens".into(),
+            [("W".into(), "hint-stage-all".into())].into(),
+        );
+    }
+    if let Some(value) = log.lock().unwrap().prompt_value.clone() {
+        cfg.plugins
+            .entry("project-screens".into())
+            .or_default()
+            .insert("confirm_sync".into(), value);
+    }
     let mut sim = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
     if !file_only {
         sim.app.tab.projects.wait_for_result();
@@ -585,6 +600,202 @@ fn open(f: &mut Fixture) {
     drain(&mut f.sim);
     assert!(f.sim.app.project_active(), "{:?}", f.sim.app.flash);
     f.sim.see("alpha");
+}
+
+fn hint_fixture(name: &str, disabled: &[&str], rebound: bool) -> Fixture {
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            hint_groups: true,
+            rebound_hint_key: rebound,
+            disabled: disabled.iter().map(|s| (*s).into()).collect(),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f
+}
+
+fn hint_rows(f: &Fixture) -> Vec<(String, String)> {
+    crate::ops::help::sections_for(&f.sim.app, crate::keymap::Context::Canvas)
+        .into_iter()
+        .filter(|s| s.title == "Project screens")
+        .flat_map(|s| s.rows)
+        .filter(|(_, desc)| desc.contains("stage"))
+        .collect()
+}
+
+#[test]
+fn e2e_project_hint_groups_footer_help_and_menu() {
+    let mut f = hint_fixture("project_hint_groups", &[], false);
+    let ctx = crate::keymap::Context::Canvas;
+    let tokens = crate::ui::status::hint_tokens(&f.sim.app);
+    let hints: Vec<_> = tokens
+        .iter()
+        .filter(|s| s.contains("stage") || s.contains("hint-"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        hints,
+        [
+            "C-F8:hint-before",
+            "s/S:stage(all)",
+            "C-F9:hint-between",
+            "u/U:unstage(all)",
+            "C-F10:hint-after"
+        ]
+    );
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s / S".into(), "stage / stage all".into()),
+            ("u / U".into(), "unstage / unstage all".into())
+        ]
+    );
+    f.sim.key(' ');
+    let menu = crate::ops::menu::menu(
+        &f.sim.app,
+        ctx,
+        f.sim.app.pending_leader.unwrap(),
+        crate::ops::menu::View::Open,
+    )
+    .unwrap();
+    for id in [
+        "hint-stage",
+        "hint-stage-all",
+        "hint-unstage",
+        "hint-unstage-all",
+    ] {
+        assert_eq!(
+            menu.items
+                .iter()
+                .filter(
+                    |item| matches!(item.action, crate::keymap::Action::Plugin(p) if p.act() == id)
+                )
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn e2e_project_hint_groups_only_enabled_keys_and_no_empty_hint() {
+    for (index, disabled, expected) in [
+        (0, vec!["hint-stage"], Some(("S:stage(all)", "S"))),
+        (1, vec!["hint-stage-all"], Some(("s:stage(all)", "s"))),
+        (2, vec!["hint-stage", "hint-stage-all"], None),
+    ] {
+        let f = hint_fixture(&format!("project_hint_enabled_{index}"), &disabled, false);
+        let tokens: Vec<_> = crate::ui::status::hint_tokens(&f.sim.app)
+            .into_iter()
+            .filter(|s| s.ends_with(":stage(all)"))
+            .collect();
+        let rows: Vec<_> = hint_rows(&f)
+            .into_iter()
+            .filter(|(_, d)| d == "stage / stage all")
+            .collect();
+        match expected {
+            Some((token, keys)) => {
+                assert_eq!(tokens, [token]);
+                assert_eq!(rows, [(keys.into(), "stage / stage all".into())]);
+            }
+            None => {
+                assert!(tokens.is_empty(), "{tokens:?}");
+                assert!(rows.is_empty(), "{rows:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_project_hint_groups_rebinding() {
+    let f = hint_fixture("project_hint_rebound", &[], true);
+    assert!(crate::ui::status::hint_tokens(&f.sim.app).contains(&"s/W:stage(all)".into()));
+    assert!(hint_rows(&f).contains(&("s / W".into(), "stage / stage all".into())));
+}
+
+#[test]
+fn e2e_project_hint_group_shared_key_is_deduplicated() {
+    use crate::keymap::{Action, Context, KeyPress};
+    use crate::plugins::PluginAct;
+
+    let mut f = hint_fixture("project_hint_shared_key", &[], false);
+    let stage = PluginAct::new("project-screens", "hint-stage");
+    let all = PluginAct::new("project-screens", "hint-stage-all");
+    // Registration drops collisions. Inject one at the binding boundary to exercise rendering.
+    f.sim.app.plugin_keys.share_key_for_test(stage, all);
+    for action in [stage, all] {
+        assert!(crate::ops::gate::action_enabled(
+            &f.sim.app,
+            Context::Canvas,
+            Action::Plugin(action)
+        ));
+    }
+    let tokens = crate::ops::footer::render_tokens(
+        &f.sim.app,
+        Context::Canvas,
+        &crate::ops::footer::plan(&f.sim.app, Context::Canvas),
+    );
+    let grouped: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.text.ends_with(":stage(all)"))
+        .collect();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].text, "s:stage(all)");
+    // Inspect raw keys too: the host's text writer also de-duplicates them.
+    assert_eq!(grouped[0].keys, [KeyPress::ch('s')]);
+    assert_eq!(
+        grouped[0].actions,
+        [Action::Plugin(stage), Action::Plugin(all)]
+    );
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s".into(), "stage / stage all".into()),
+            ("u / U".into(), "unstage / unstage all".into()),
+        ]
+    );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_hint_groups_match_old_changes_footer_and_help() {
+    use crate::keymap::{Action, Backend, Context, Screen};
+    let f = hint_fixture("project_hint_old_changes", &[], false);
+    let dir = sandbox("project_hint_old_hub");
+    seed_repo(&dir);
+    std::fs::write(dir.join("staged.txt"), "staged\n").unwrap();
+    crate::test_support::run_git(&dir, &["add", "staged.txt"]);
+    std::fs::write(dir.join("unstaged.txt"), "unstaged\n").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.lang = "en".into();
+    let mut old = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
+    old.app.open_git_view();
+    let ctx = Context::Screen(Backend::Git, Screen::Changes);
+    let old_tokens: Vec<_> = crate::ops::footer::tokens(&old.app, ctx)
+        .into_iter()
+        .filter(|s| s.ends_with(":stage(all)") || s.ends_with(":unstage(all)"))
+        .collect();
+    assert_eq!(old_tokens.len(), 2);
+    let new_tokens: Vec<_> = crate::ui::status::hint_tokens(&f.sim.app)
+        .into_iter()
+        .filter(|s| s.ends_with(":stage(all)") || s.ends_with(":unstage(all)"))
+        .collect();
+    assert_eq!(new_tokens, old_tokens);
+    let old_rows: Vec<_> = crate::ops::help::rows_for(&old.app, ctx)
+        .into_iter()
+        .filter(|r| {
+            r.actions.contains(&Action::GitStage) || r.actions.contains(&Action::GitUnstage)
+        })
+        .map(|r| (r.keys_text, r.desc))
+        .collect();
+    assert_eq!(old_rows.len(), 2);
+    assert_eq!(hint_rows(&f), old_rows);
 }
 
 #[test]
@@ -1197,6 +1408,185 @@ fn e2e_project_confirmation_chooses_the_declared_value() {
 }
 
 #[test]
+fn e2e_project_confirmation_row_name_uses_invocation_after_cursor_moves() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_name",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim
+        .app
+        .tab
+        .project_navigation
+        .as_mut()
+        .unwrap()
+        .stack
+        .last_mut()
+        .unwrap()
+        .cursor = 2;
+    f.sim.draw();
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim.key('y');
+    drain(&mut f.sim);
+    assert_eq!(
+        last_act(&f).1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_row_value_and_empty_selection() {
+    let mut f = fixture("project_prompt_row_value", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim
+        .see("Discard opaque-alpha? Again opaque-alpha; {other}");
+    f.sim.esc();
+    f.sim.key('/');
+    f.sim.keys("no matching rows");
+    f.sim.enter();
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard ? Again ; {other}");
+}
+
+#[test]
+fn e2e_project_confirmation_row_localized_and_refreshed() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_refresh",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("{row}.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.app.lang = crate::i18n::Lang::Jp;
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("JA {row}.txt / {row}.txt");
+    f.log.lock().unwrap().row_name = Some("changed.txt".into());
+    f.log.lock().unwrap().reverse_rows = true;
+    let views = f.log.lock().unwrap().views.len();
+    f.sim.resize(159, 24);
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.len() > views);
+    f.sim.see("JA {row}.txt / {row}.txt");
+}
+
+fn conditional_confirmation(name: &str, value: Option<toml::Value>, default: bool, asks: bool) {
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: value,
+            prompt_default: Some(default),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::CONTROL);
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_dialog.is_some(), asks);
+    if asks {
+        f.sim.see("Sync project?");
+        assert!(f.log.lock().unwrap().acts.is_empty());
+        f.sim.key('y');
+        drain(&mut f.sim);
+    }
+    assert_eq!(last_act(&f).0, "conditional");
+    assert_eq!(
+        last_act(&f).1.confirmation.as_deref(),
+        asks.then_some("yes")
+    );
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![asks]);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_true_asks() {
+    conditional_confirmation(
+        "project_prompt_true",
+        Some(toml::Value::Boolean(true)),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_runs_act() {
+    conditional_confirmation(
+        "project_prompt_false",
+        Some(toml::Value::Boolean(false)),
+        true,
+        false,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_missing_uses_default() {
+    conditional_confirmation("project_prompt_missing_true", None, true, true);
+    conditional_confirmation("project_prompt_missing_false", None, false, false);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_non_boolean_asks() {
+    conditional_confirmation(
+        "project_prompt_non_boolean",
+        Some(toml::Value::String("false".into())),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_keeps_later_inputs() {
+    let mut f = fixture_with_log(
+        "project_prompt_later_inputs",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: Some(toml::Value::Boolean(false)),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(4), KeyModifiers::CONTROL);
+    f.sim.see("Sync message");
+    f.sim.dont_see("Sync project?");
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.keys(" edit");
+    f.sim.enter();
+    f.sim.see("Sync target");
+    f.sim.enter();
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "conditional-input");
+    assert_eq!(context.confirmation, None);
+    assert_eq!(context.text.as_deref(), Some("seed edit"));
+    assert_eq!(context.choice.as_deref(), Some("all"));
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![false]);
+}
+
+#[test]
 fn e2e_project_text_input_edits_unicode_initial_value() {
     let mut f = fixture("project_text_input", false, 1, None, None, None);
     open(&mut f);
@@ -1215,6 +1605,392 @@ fn e2e_project_text_input_edits_unicode_initial_value() {
 }
 
 #[test]
+fn e2e_project_keep_input_failure_preserves_text_and_invocation_for_retry() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_retry",
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" retry λ");
+    f.sim.enter();
+    started.wait();
+    f.sim.key('j');
+    f.sim.key('j');
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, cursor, .. })
+            if buffer == "seed retry λ" && *cursor == buffer.chars().count()));
+    let first = last_act(&f);
+    assert_eq!(first.0, "retry-input");
+    assert_eq!(first.1.text.as_deref(), Some("seed retry λ"));
+    assert_eq!(
+        first.1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+fn pending_input_failure(name: &str) -> (Fixture, Arc<Latch>) {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" saved");
+    f.sim.enter();
+    started.wait();
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    (f, release)
+}
+
+#[test]
+fn e2e_project_keep_input_panic_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_panic",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_panic: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" panic");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert!(f.sim.app.flash.is_some());
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed panic"));
+}
+
+#[test]
+fn e2e_project_keep_input_reported_dead_child_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_dead_child",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            act_error: Some(konoma_plugin::Failure::corrupt("plugin child disconnected")),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" child");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.flash.as_deref(),
+        Some("plugin child disconnected")
+    );
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed child"));
+}
+
+#[test]
+fn e2e_project_keep_input_success_does_not_reopen() {
+    for (index, outcome) in [Outcome::Unhandled, Outcome::Redraw, Outcome::Reload]
+        .into_iter()
+        .enumerate()
+    {
+        let mut f = fixture_with_log(
+            &format!("project_keep_input_success_{index}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                outcome: Some(outcome),
+                ..Default::default()
+            },
+        );
+        open(&mut f);
+        f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+        f.sim.enter();
+        drain(&mut f.sim);
+        assert_eq!(last_act(&f).0, "retry-input");
+        assert!(f.sim.app.project_dialog.is_none());
+    }
+}
+
+#[test]
+fn e2e_project_keep_input_flash_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_flash",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            outcome: Some(Outcome::Flash("action said no".into())),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("action said no"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_watch_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_watch_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            watch_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project watch failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_refresh_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_refresh_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            view_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(7), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-refresh");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project refresh failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_without_flag_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_without_flag",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::NONE);
+    f.sim.keys(" edit");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "text-input");
+    assert!(last_act(&f).1.text.unwrap().ends_with(" edit"));
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_confirmation_is_not_repeated() {
+    let mut f = fixture_with_log(
+        "project_keep_input_confirmation",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(6), KeyModifiers::CONTROL);
+    f.sim.see("Confirm retry?");
+    f.sim.key('y');
+    f.sim.keys(" confirmed");
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.see("Retry message");
+    f.sim.dont_see("Confirm retry?");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage: 0, .. })
+            if matches!(prompts.as_slice(), [crate::app::project_screens::ProjectPrompt::Text(_)])));
+    let first = last_act(&f);
+    assert_eq!(first.1.confirmation.as_deref(), Some("yes"));
+    assert_eq!(first.1.text.as_deref(), Some("seed confirmed"));
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_other_tab_does_not_reopen_even_on_same_screen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_other_tab");
+    let origin = f.sim.app.tab.id;
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    assert_ne!(f.sim.app.tab.id, origin);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert!(
+        f.sim.app.project_dialog.is_none(),
+        "a dropped retry must not reopen on a later tab switch"
+    );
+}
+
+#[test]
+fn e2e_project_keep_input_changed_screen_does_not_reopen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_changed_screen");
+    f.sim.key('z');
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "text");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_dialog_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_dialog");
+    f.sim.key('Q');
+    assert!(f.sim.app.confirm_is_quit());
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.confirm_is_quit());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_active_filter_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_active_filter");
+    f.sim.key('/');
+    f.sim.keys("alp");
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    assert_eq!(f.sim.app.project_frame().unwrap().query, "alp");
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_text_input_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_input");
+    f.sim.app.start_filter();
+    f.sim.app.filter_input_push('x');
+    assert!(f.sim.app.is_filtering());
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.is_filtering());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_project_dialog_is_not_overwritten() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_project_dialog",
+        false,
+        2,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    f.sim.key('p');
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    started.wait();
+    f.sim.key('p');
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+    release.open();
+    drain(&mut f.sim);
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+}
+
+#[test]
 fn e2e_project_choice_input_returns_value_not_label() {
     let mut f = fixture("project_choice_input", false, 1, None, None, None);
     open(&mut f);
@@ -1227,27 +2003,53 @@ fn e2e_project_choice_input_returns_value_not_label() {
 }
 
 macro_rules! cancel_dialog {
-    ($name:ident, $key:expr) => {
+    ($name:ident, $key:expr, $flash:expr) => {
         #[test]
         fn $name() {
-            let mut f = fixture(stringify!($name), false, 1, None, None, None);
-            open(&mut f);
-            f.sim.press(KeyCode::F($key), KeyModifiers::NONE);
-            drain(&mut f.sim);
-            assert!(f.sim.app.project_dialog.is_some());
-            f.sim.esc();
-            drain(&mut f.sim);
-            assert!(f.sim.app.project_dialog.is_none());
-            assert!(f.log.lock().unwrap().acts.is_empty());
-            f.sim.key('x');
-            drain(&mut f.sim);
-            assert_eq!(last_act(&f).0, "capture");
+            for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+                let mut f = fixture(
+                    &format!("{}_{lang:?}", stringify!($name)),
+                    false,
+                    1,
+                    None,
+                    None,
+                    None,
+                );
+                f.sim.app.lang = lang;
+                open(&mut f);
+                f.sim.press(KeyCode::F($key), KeyModifiers::NONE);
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_some());
+                f.sim.esc();
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_none());
+                assert!(f.log.lock().unwrap().acts.is_empty());
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    $flash.map(|msg| crate::i18n::tr(lang, msg))
+                );
+                f.sim.key('x');
+                drain(&mut f.sim);
+                assert_eq!(last_act(&f).0, "capture");
+            }
         }
     };
 }
-cancel_dialog!(e2e_project_confirmation_esc_runs_nothing, 2);
-cancel_dialog!(e2e_project_text_input_esc_runs_nothing, 3);
-cancel_dialog!(e2e_project_choice_input_esc_runs_nothing, 4);
+cancel_dialog!(
+    e2e_project_confirmation_esc_runs_nothing,
+    2,
+    Some(crate::i18n::Msg::Canceled)
+);
+cancel_dialog!(
+    e2e_project_text_input_esc_runs_nothing,
+    3,
+    None::<crate::i18n::Msg>
+);
+cancel_dialog!(
+    e2e_project_choice_input_esc_runs_nothing,
+    4,
+    None::<crate::i18n::Msg>
+);
 
 macro_rules! refresh {
     ($name:ident, $key:expr, $screens:expr, $tree:expr, $chip:expr, $watch:expr) => {
@@ -1422,6 +2224,8 @@ fn e2e_project_multiple_matches_open_choice_menu_and_esc_cancels() {
     f.sim.esc();
     assert!(f.sim.app.project_dialog.is_none());
     assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.flash, None);
+    assert!(f.log.lock().unwrap().acts.is_empty());
     f.sim.key('p');
     f.sim.key('j');
     f.sim.enter();

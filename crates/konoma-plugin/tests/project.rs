@@ -80,6 +80,80 @@ fn project_destructive_requires_confirmation() {
     assert_eq!(r.manifest("p").unwrap().actions, vec![act]);
 }
 
+fn conditional_action() -> Act {
+    Act::new("sync").confirmation(
+        Confirmation::new("Sync?", vec![ConfirmChoice::new('y', "yes", "Yes")])
+            .setting("confirm_sync"),
+    )
+}
+
+#[test]
+fn project_confirmation_setting_destructive_is_refused() {
+    let refusal = reason(
+        manifest()
+            .setting(SettingDecl::new("confirm_sync", Value::Bool(true), "Ask"))
+            .action(conditional_action().destructive()),
+    );
+    assert_eq!(
+        refusal,
+        ManifestReason::DestructiveConfirmationSetting {
+            action: "sync".into(),
+            key: "confirm_sync".into(),
+        }
+    );
+    assert_eq!(
+        refusal.to_string(),
+        "destructive action `sync` cannot use confirmation setting `confirm_sync`"
+    );
+}
+
+#[test]
+fn project_confirmation_setting_requires_declared_boolean() {
+    for default in [
+        None,
+        Some(Value::Str("true".into())),
+        Some(Value::Int(1)),
+        Some(Value::Float(1.0)),
+        Some(Value::List(vec![])),
+        Some(Value::Table(Default::default())),
+    ] {
+        let mut m = manifest().action(conditional_action());
+        if let Some(default) = default {
+            m = m.setting(SettingDecl::new("confirm_sync", default, "Ask"));
+        }
+        let refusal = reason(m);
+        assert_eq!(
+            refusal,
+            ManifestReason::InvalidConfirmationSetting {
+                action: "sync".into(),
+                key: "confirm_sync".into(),
+            }
+        );
+        assert_eq!(
+            refusal.to_string(),
+            "action `sync` confirmation setting `confirm_sync` must declare a boolean default"
+        );
+    }
+}
+
+#[test]
+fn project_confirmation_setting_boolean_is_accepted() {
+    for default in [false, true] {
+        let action = conditional_action();
+        let registry = check(
+            manifest()
+                .setting(SettingDecl::new(
+                    "confirm_sync",
+                    Value::Bool(default),
+                    "Ask",
+                ))
+                .action(action.clone()),
+        )
+        .unwrap();
+        assert_eq!(registry.manifest("p").unwrap().actions, vec![action]);
+    }
+}
+
 #[test]
 fn project_duplicate_screen_is_refused() {
     let p = project().screen(ProjectScreen::new("log", "Other"));
@@ -391,13 +465,56 @@ mod wire {
                 ConfirmChoice::new('!', "-D", "Force"),
             ],
         );
+        let c = c.setting("confirm_sync");
+        assert_eq!(c.setting.as_deref(), Some("confirm_sync"));
         assert_eq!(confirmation_from_wire(bytes(&confirmation_to_wire(&c))), c);
+        let m = manifest()
+            .setting(SettingDecl::new("confirm_sync", Value::Bool(true), "Ask"))
+            .action(Act::new("sync").confirmation(c));
+        let json = konoma_plugin::proc::manifest_to_json(&m).unwrap();
+        assert_eq!(
+            konoma_plugin::proc::manifest_from_json(&json)
+                .unwrap()
+                .actions,
+            m.actions
+        );
+    }
+
+    #[test]
+    fn project_confirmation_older_child_has_no_setting() {
+        let c = Confirmation::new("Proceed?", vec![ConfirmChoice::new('y', "yes", "Yes")]);
+        assert_eq!(c.setting, None);
+        let mut json = serde_json::to_value(confirmation_to_wire(&c)).unwrap();
+        assert!(json.get("setting").is_none());
+        json.as_object_mut().unwrap().remove("setting");
+        let old: WConfirmation = serde_json::from_value(json).unwrap();
+        assert_eq!(confirmation_from_wire(bytes(&old)), c);
     }
 
     #[test]
     fn project_text_input_round_trip() {
-        let i = TextInput::new(t!(en: "Message", ja: "メッセージ"), "initial text");
+        let i =
+            TextInput::new(t!(en: "Message", ja: "メッセージ"), "initial text").keep_on_failure();
+        assert!(i.keep_on_failure);
         assert_eq!(text_input_from_wire(bytes(&text_input_to_wire(&i))), i);
+        let m = manifest().action(Act::new("edit").text_input(i));
+        let json = konoma_plugin::proc::manifest_to_json(&m).unwrap();
+        assert_eq!(
+            konoma_plugin::proc::manifest_from_json(&json)
+                .unwrap()
+                .actions,
+            m.actions
+        );
+    }
+
+    #[test]
+    fn project_text_input_older_child_does_not_keep_on_failure() {
+        let input = TextInput::new("Message", "seed");
+        assert!(!input.keep_on_failure);
+        let json = serde_json::to_value(text_input_to_wire(&input)).unwrap();
+        assert!(json.get("keep_on_failure").is_none());
+        let old: WTextInput = serde_json::from_value(json).unwrap();
+        assert_eq!(text_input_from_wire(bytes(&old)), input);
     }
 
     #[test]
@@ -479,6 +596,11 @@ mod wire {
         row.marked = true;
         row.checked = Some(false);
         row.target = Some("/project/file".into());
+        row = row.name("short file name");
+        assert_eq!(
+            ProjectRow::from(&row).name.as_deref(),
+            Some("short file name")
+        );
         let expected = ListView { rows: vec![row] };
         let mut v = View::List(expected.clone());
         let w = view_to_wire(&mut v, &mut Enc::new(&side)).unwrap();
@@ -486,6 +608,43 @@ mod wire {
             panic!()
         };
         assert_eq!(back, expected);
+    }
+
+    #[test]
+    fn project_row_name_round_trip_and_older_child_default() {
+        let row = ProjectRow::new("file", "opaque").name("file.txt");
+        assert_eq!(row.name.as_deref(), Some("file.txt"));
+        assert_eq!(
+            project_row_from_wire(bytes(&project_row_to_wire(&row))),
+            row
+        );
+        let context = ProjectAct::new().selected(row.clone()).marked([row]);
+        assert_eq!(
+            project_act_from_wire(bytes(&project_act_to_wire(&context))),
+            context
+        );
+        assert_eq!(ProjectRow::new("file", "opaque").name, None);
+        let old: WProjectRow = serde_json::from_value(serde_json::json!({
+            "kind": "file", "value": "opaque"
+        }))
+        .unwrap();
+        assert_eq!(
+            project_row_from_wire(old),
+            ProjectRow::new("file", "opaque")
+        );
+        let old: WListRow = serde_json::from_value(serde_json::json!({
+            "kind": "file", "cells": [], "target": null, "checked": null
+        }))
+        .unwrap();
+        let dir = konoma_test_support::unique_tmp("project_old_row");
+        let side = Side::new(dir.as_path(), 'h');
+        let View::List(list) =
+            view_from_wire(WView::List(vec![old]), &mut Dec::new(&side)).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(list.rows[0].name, None);
+        assert_eq!(ListRow::new("file", vec![]).name, None);
     }
 
     #[test]

@@ -63,8 +63,8 @@ JSON の manifest 出力では整数の配列になります。
 ```text
 ProjectAct {
   screen: string | null,
-  selected: { kind: string, value: string } | null,
-  marked: [{ kind: string, value: string }],
+  selected: { kind: string, value: string, name?: string } | null,
+  marked: [{ kind: string, value: string, name?: string }],
   confirmation: string | null,
   text: string | null,
   choice: string | null
@@ -161,6 +161,36 @@ chip はツリーの題の短い要約、監視パスはプロジェクトの根
 ホストは `[plugins.<id>] read_only` とのOR条件で `writes` 操作を止めます。
 このAPIには実行中の読み取り専用状態を上書きする仕組みを設けません。
 
+## ヒントのグループ
+
+`Manifest::hint_group(HintGroup::new(id, label).help(description))` で、複数の操作を
+フッターとヘルプの1つのヒントにまとめます。`Act::hint_group(id)` で所属を指定します。
+`label` と `description` は `Tr` で、ヘルプ文が空なら選択言語のラベルを使います。
+送信する任意フィールドは次のとおりです。
+
+```text
+Manifest.hint_groups: [{ id: string, label: Tr, help: Tr }]
+Act.hint_group: string | null
+```
+
+古い子プロセスでフィールドがなければ、グループは空、所属はなしになります。
+空の値は送信時に省略し、JSONとMessagePackで同じ宣言を渡します。
+グループidはプラグイン内で一意です。未宣言の所属先、グループidの重複、
+メンバー間の `screen`/`context` の違い、プロジェクト画面の違いはそれぞれ別の
+登録エラーとしてグループと該当操作を示します（空の重複グループには操作名がありません）。
+同じプロジェクト画面で行の種類が異なる場合と、メンバーのないグループは許可します。
+
+フッターでは最小の優先順位を持つメンバーの位置に1つのトークンを置き、
+同順位では従来どおり操作の宣言順を使います。フッターの優先順位のないメンバーは
+寄与しません。有効なメンバーのキーだけを操作の宣言順で表示し、ユーザーの
+割り当て変更とホストの通常の表記を使います（`s/S:stage(all)`）。
+キーのある有効なメンバーがいなければトークンは表示しません。
+ヘルプも従来の順序で最初のメンバーの位置に1行を置きます。フッターの優先順位の
+ないメンバーも含め、有効なメンバーのキーをホストの複数操作行と同じ表記
+（`s / S`）で書き、グループのヘルプ文を使います。キーのある有効なメンバーが
+いなければ行を表示しません。これは旧hubの有効メンバーの規則と同じです。
+`Space` メニューは各操作の項目とラベルを維持します。
+
 ## 操作とダイアログ（版2）
 
 既存の `id`、`key`、`label`、`help`、`footer`、`screen`、`writes`、`destructive` の
@@ -170,8 +200,8 @@ chip はツリーの題の短い要約、監視パスはプロジェクトの根
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
-text_input: { label: Tr, initial: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
@@ -181,6 +211,37 @@ Choice = { value: string, label: Tr }
 `Enter` は `key: "Enter"` と、行の種類を1つ以上指定した画面の文脈で宣言します。
 通常の操作と同じ宣言・検査の経路を通り、行の種類が異なれば別の Enter 操作を持てます。
 確認の選択肢は `y` → `-d`、`!` → `-D` のように値を分けられます。
+
+確認がどの入力段階にあっても、`n`・`N`・`Esc` はダイアログ全体を閉じ、操作を
+実行せず、ホストの現在の言語で取消メッセージ（`canceled` / `取消`）を表示します。
+これらのキーは選択肢として宣言できません。宣言したキーとの完全一致を優先し、
+一致がない場合だけ ASCII 大文字を小文字に対応する選択肢として扱います
+（例：`Y` で `y` を選択）。`Enter` と未宣言のほかのキーは何もしません。
+文字入力・一覧入力・プロジェクト選択の `Esc` はメッセージを表示せずに閉じます。
+
+ホストは言語を選んだ後、確認文のすべての `{row}` を、操作を呼び出した行の
+`name`（未指定なら `value`）に置き換えます。選択行がなければ空文字です。
+呼び出し時の行を保持するため、ダイアログを開いている間にカーソルが動いたり
+一覧が更新されたりしても、確認文の行名は変わりません。他の置換記法や
+エスケープはなく、`{row}` のない文はそのまま表示します。
+
+`Confirmation::setting(key)` は `[plugins.<id>]` の真偽値設定で確認の有無を
+切り替えます。`cx.settings` と同じ設定を使い、未指定なら宣言された既定値を使います。
+`false` の場合だけ確認を省略し、有効な値が見つからない場合や真偽値以外では確認します。
+後続の文字入力・一覧選択は表示し、操作は通常どおり実行します。`setting` の既定は
+`None` で送信時に省略するため、古い子プロセスの確認は常に表示します。
+破壊的操作の確認への設定指定と、真偽値の既定値を持つ `SettingDecl` がないキーは
+登録時に拒否し、それぞれのエラーに操作名とキーを含めます。破壊的操作の確認は必須です。
+
+`TextInput::keep_on_failure()` を指定すると、`act` が `Failure` を返した際に
+文字入力を開き直します。panic や子プロセスの失敗も対象です。ホストは失敗を通知し、
+送信した文字列を復元してカーソルを末尾に置きます。呼び出し時の行・画面・回答を
+保持するため、Enter で同じ操作を再試行できます。文字入力だけを復元し、前段の
+確認は繰り返しません。呼び出したタブがアクティブで、同じプロジェクト画面を表示し、
+他のダイアログや文字入力がない場合だけ復元します。それ以外は失敗の通知のみです。
+成功や `Flash` を含むすべての `Ok` では開き直しません。操作成功後の監視パス取得や
+表示更新の失敗でも開き直しません。既定は false で、false の
+場合は送信時に省略するため、古い子プロセスの動作は変わりません。
 
 `RefreshTarget` は `"CurrentScreen"`・`{"Screen":{"screen":string}}`・`"AllScreens"`・
 `"TreeStatus"`・`"Chip"` のいずれかです。操作の `refresh` は既定で空、空なら送信時に
@@ -195,7 +256,7 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 
 監視パスは空でない相対パスで、親・ルート・接頭辞の要素を含めず、最大512件です。
 検出目印は `.`・`..` 以外の空でない単一のファイル名要素で、最大1024バイトです。
-画面キーには既存の一覧用予約表を使います。確認キーにはそのGlobal層と `q`・Escを
+画面キーには既存の一覧用予約表を使います。確認キーにはそのGlobal層と `q`・`n`・`N`・Escを
 予約し、`y`・`!` は使えます。両方とも制御文字と同じ集合内の重複キーを拒否します。
 確認の選択肢は1〜64件、一覧入力の選択肢も最大64件です。選択肢の値は最大1024バイト、
 ラベルは翻訳ごとに最大512文字です。画面IDが `tree` などでも、キー文脈は専用の名前空間です。
@@ -211,6 +272,10 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 `target: Path | null`、`checked: boolean | null` と、新しい `marked: boolean` を持ちます。
 不透明な行の値 `value: string` も持ち、SDKの `ListRow::value` で指定します。
 既定の空文字は送信時に省略し、従来の行のバイト表現を保ちます。
+`ListRow::name(impl Into<String>)` は確認用の短い名前を任意で指定します
+（`Option<String>`、既定は `None`）。未指定の線上フィールドは省略し、古い子プロセス
+では `None`、古いホストでは無視されます。選択行と印付き行の `ProjectRow` にも渡り、
+`ProjectRow::new(kind, value).name(name)` で直接設定できます。
 従来の行の種類・行き先・プラグインのチェック状態の意味を保ち、`marked` は独立した
 ホストの複数選択の印です。セルは既に
 `Line { spans: [[text, Style], …], style: Style }` で、グラフの罫線もこの span で表せます。

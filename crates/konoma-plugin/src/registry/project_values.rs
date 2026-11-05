@@ -87,6 +87,7 @@ pub(super) fn problem(m: &Manifest) -> Option<ManifestReason> {
             let mut seen = std::collections::HashSet::new();
             for c in &c.choices {
                 if c.key.is_control()
+                    || matches!(c.key, 'n' | 'N')
                     || crate::keys::confirmation_reserved()
                         .iter()
                         .any(|(key, _)| *key == KeySpec::ch(c.key))

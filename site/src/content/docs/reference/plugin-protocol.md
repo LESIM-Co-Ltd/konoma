@@ -69,8 +69,8 @@ within one open project session. The SDK builds it with
 ```text
 ProjectAct {
   screen: string | null,
-  selected: { kind: string, value: string } | null,
-  marked: [{ kind: string, value: string }],
+  selected: { kind: string, value: string, name?: string } | null,
+  marked: [{ kind: string, value: string, name?: string }],
   confirmation: string | null,
   text: string | null,
   choice: string | null
@@ -172,6 +172,37 @@ than `*.xcworkspace`). It is not a file byte input.
 when false. The host combines it with `[plugins.<id>] read_only` using OR before
 running a `writes` action. No runtime read-only override is defined by this API.
 
+## Hint groups
+
+`Manifest::hint_group(HintGroup::new(id, label).help(description))` declares one
+footer/help hint for several actions. `Act::hint_group(id)` joins it. `label` and
+`description` are `Tr`; an empty help text uses the label in the selected language.
+The optional wire fields are:
+
+```text
+Manifest.hint_groups: [{ id: string, label: Tr, help: Tr }]
+Act.hint_group: string | null
+```
+
+Both fields default to absent (an empty list / no membership) for older children
+and are omitted when empty. JSON and MessagePack carry the same declarations.
+Group ids are local to the plugin. Unknown membership, duplicate group ids,
+members with different `screen`/`context` values, and members on different project
+screens are separate registration errors naming the group and affected actions
+(an empty duplicate group has no action to name). Different row kinds on the same
+project screen are allowed, as are groups without members.
+
+The footer replaces the members with one token at the position of the member
+with the smallest footer priority, keeping the existing declaration order for
+ties. Members without a footer priority do not contribute. Only enabled members'
+keys appear, in action declaration order, with user rebinding applied, using the
+host's usual notation (`s/S:stage(all)`). No enabled keyed member means no token.
+Help similarly places one row at the first member in the existing help order,
+including enabled members even without a footer priority, and writes its keys
+as the host writes a multi-action row (`s / S`). The row uses the group's help
+text and disappears when no enabled member has a key. This matches the legacy
+hub's enabled-member rule. The `Space` menu keeps each action's entry and label.
+
 ## Actions and dialogs (version 2)
 
 Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `writes`,
@@ -181,8 +212,8 @@ Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `write
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
-text_input: { label: Tr, initial: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
 Choice = { value: string, label: Tr }
@@ -193,6 +224,41 @@ are menu-only. `Enter` is declared with `key: "Enter"` and a screen context with
 one or more row kinds, through the same declaration and validation path as any
 other action. Distinct row kinds may have distinct Enter actions. Confirmation
 choices can distinguish `y` → `-d` and `!` → `-D`.
+
+At any confirmation stage, `n`, `N` and `Esc` cancel the whole dialog without running
+the action and show the host's localized cancellation flash (`canceled` / `取消`).
+These keys cannot be declared as choices. An exact declared key wins; only if no
+exact match exists does an uppercase ASCII letter pick its lowercase choice
+(for example `Y` picks `y`). `Enter` and all other undeclared keys do nothing.
+On text prompts, list prompts and the project chooser, `Esc` closes silently.
+
+After selecting the language, the host replaces every literal `{row}` in confirmation
+text with the invoked row's `name`, falling back to its `value`. Without a selected
+row it uses an empty string. The invocation captures the row, so moving the cursor
+or refreshing the list while the dialog is open does not change the prompt's name.
+There are no other placeholders or escaping; text without `{row}` is unchanged.
+
+`Confirmation::setting(key)` makes the confirmation conditional on a boolean setting
+in `[plugins.<id>]`, using the same settings as `cx.settings` and the declared default
+when absent. Only `false` skips the confirmation; a missing effective value or a
+non-boolean value asks. Later text and choice prompts still appear, and the action
+runs normally. `setting` defaults to `None` and is omitted on the wire; older children
+therefore always ask. The registry rejects a setting on a destructive confirmation,
+and a key without a `SettingDecl` with a boolean default, with separate errors naming
+the action and key. Destructive actions always require confirmation.
+
+`TextInput::keep_on_failure()` opts an action into reopening its text prompt when
+`act` returns a `Failure`, including a panic or a child process failure. The host
+flashes the failure and restores the submitted text with the cursor at the end.
+The original row, screen and answers are retained, so Enter retries the same action;
+only the text prompt returns, without repeating a preceding confirmation.
+Restoration requires the invoking tab to be active, still displaying the same
+project screen, with no dialog or text input active. Otherwise the failure is only
+flashed. Success and every `Ok` outcome, including `Flash`, never reopen the prompt.
+Failures while reading watch paths or refreshing after a successful action also
+never reopen it.
+The flag defaults to false and is omitted on the wire when false; older children
+therefore keep the existing behavior.
 
 `RefreshTarget` is one of `"CurrentScreen"`, `{"Screen":{"screen":string}}`,
 `"AllScreens"`, `"TreeStatus"`, or `"Chip"`. An action's `refresh` list defaults
@@ -211,7 +277,7 @@ validation, including project screen/row names and marker/row-kind counts.
 Watch paths must be nonempty relative paths without parent, root or prefix components
 (at most 512 paths). Markers must be a single nonempty file-name component other than
 `.` or `..`, at most 1024 bytes. Screen keys use the existing list reserved-key table;
-confirmation keys reserve its global layer plus `q` and `Esc`, while allowing `y` and `!`.
+confirmation keys reserve its global layer plus `q`, `n`, `N` and `Esc`, while allowing `y` and `!`.
 Control characters and duplicate keys in either set are refused. A confirmation has
 1–64 choices; list prompts also have at most 64 choices. Choice values are at most
 1024 bytes and every translated choice label is at most 512 characters.
@@ -229,6 +295,10 @@ A list remains `{"List":[row, …]}`. Each row has `cells: Line[]`, `kind: strin
 `target: Path | null`, `checked: boolean | null`, and the new `marked: boolean`.
 It also has an opaque `value: string`, built with `ListRow::value`. Its default is
 the empty string, omitted on the wire, so legacy rows keep their bytes.
+`ListRow::name(impl Into<String>)` adds an optional short prompt name (`Option<String>`,
+default `None`). The optional wire field is omitted when absent: older children
+produce `None` and older hosts ignore it. It also reaches selected and marked
+`ProjectRow`s; `ProjectRow::new(kind, value).name(name)` sets it directly.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
 is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same

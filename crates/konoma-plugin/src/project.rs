@@ -97,6 +97,7 @@ impl ProjectView {
 pub struct ProjectRow {
     pub kind: String,
     pub value: String,
+    pub name: Option<String>,
 }
 
 impl ProjectRow {
@@ -104,13 +105,22 @@ impl ProjectRow {
         Self {
             kind: kind.into(),
             value: value.into(),
+            name: None,
         }
+    }
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
 impl From<&crate::view::ListRow> for ProjectRow {
     fn from(row: &crate::view::ListRow) -> Self {
-        Self::new(&row.kind, &row.value)
+        Self {
+            kind: row.kind.clone(),
+            value: row.value.clone(),
+            name: row.name.clone(),
+        }
     }
 }
 
@@ -332,6 +342,10 @@ impl Choice {
 }
 
 /// A confirmation key and its value (for example `y` = `-d`, `!` = `-D`).
+///
+/// Exact keys take priority; an unmatched uppercase ASCII letter picks its lowercase choice.
+/// `n`, `N` and `Esc` are reserved: they cancel the whole dialog without running the action
+/// and show the host's localized cancellation flash. `Enter` and undeclared keys do nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ConfirmChoice {
@@ -349,11 +363,18 @@ impl ConfirmChoice {
 }
 
 /// A destructive action must declare a confirmation with at least one choice.
+///
+/// At a confirmation stage, `n`, `N` and `Esc` cancel the whole dialog without running the action
+/// and show the host's localized cancellation flash (`canceled` / `取消`). These keys cannot
+/// be declared as choices. Exact keys win; an unmatched uppercase ASCII letter picks its
+/// lowercase choice. `Enter` and all other undeclared keys do nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Confirmation {
     pub text: Tr,
     pub choices: Vec<ConfirmChoice>,
+    /// Boolean plugin setting controlling this prompt. Destructive actions cannot opt out.
+    pub setting: Option<String>,
 }
 
 impl Confirmation {
@@ -361,7 +382,12 @@ impl Confirmation {
         Self {
             text: text.into(),
             choices,
+            setting: None,
         }
+    }
+    pub fn setting(mut self, key: impl Into<String>) -> Self {
+        self.setting = Some(key.into());
+        self
     }
 }
 
@@ -371,6 +397,8 @@ impl Confirmation {
 pub struct TextInput {
     pub label: Tr,
     pub initial: String,
+    /// Reopen this prompt with the submitted text if the action fails and focus is unchanged.
+    pub keep_on_failure: bool,
 }
 
 impl TextInput {
@@ -378,7 +406,13 @@ impl TextInput {
         Self {
             label: label.into(),
             initial: initial.into(),
+            keep_on_failure: false,
         }
+    }
+
+    pub fn keep_on_failure(mut self) -> Self {
+        self.keep_on_failure = true;
+        self
     }
 }
 

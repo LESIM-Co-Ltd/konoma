@@ -731,23 +731,7 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
         }
         all_acts.extend(acts.iter().copied());
         all_keys.extend(cols.iter().flatten().copied());
-        let mut seen: Vec<String> = Vec::new();
-        let rendered: Vec<String> = cols
-            .iter()
-            .map(|c| {
-                let mut one: Vec<String> = Vec::new();
-                for k in c {
-                    let s = help_key(*k);
-                    if !seen.contains(&s) {
-                        seen.push(s.clone());
-                        one.push(s);
-                    }
-                }
-                one.join(" / ")
-            })
-            .filter(|s| !s.is_empty())
-            .collect();
-        parts.push(rendered.join(if zipped { "  ·  " } else { " / " }));
+        parts.push(write_columns(&cols, zipped));
     }
     let lead = lead?;
     let mut keys = parts.join("  ");
@@ -783,6 +767,26 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
     })
 }
 
+fn write_columns(cols: &[Vec<KeyPress>], zipped: bool) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let rendered: Vec<String> = cols
+        .iter()
+        .map(|c| {
+            let mut one: Vec<String> = Vec::new();
+            for k in c {
+                let s = help_key(*k);
+                if !seen.contains(&s) {
+                    seen.push(s.clone());
+                    one.push(s);
+                }
+            }
+            one.join(" / ")
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    rendered.join(if zipped { "  ·  " } else { " / " })
+}
+
 /// The section of the open plugin's keys (`None` when there is none to list).
 fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
     let lang = app.plugin_lang();
@@ -798,8 +802,10 @@ fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
             .map(|n| n.get(lang).to_string())
             .unwrap_or_default(),
     );
-    for (key, desc, _) in rows {
-        sec.rows.push((help_key(key), desc.to_string()));
+    for (keys, desc, _) in rows {
+        let (cols, zipped) = konoma_host_core::help::zip_columns(&keys, |k| vec![k]);
+        sec.rows
+            .push((write_columns(&cols, zipped), desc.to_string()));
     }
     Some(sec)
 }

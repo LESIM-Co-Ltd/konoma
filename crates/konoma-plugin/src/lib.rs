@@ -123,8 +123,8 @@ pub mod view;
 pub use input::{Input, LazyResource, Origin, Resource, ResourceReq, Resources};
 pub use key::{Key, KeyCode, KeyMods};
 pub use manifest::{
-    Act, ApiVersion, Bind, LaunchMode, Launcher, Manifest, Priority, SettingDecl, Target,
-    Unavailable, Verb, VerbDecl, ViewKind,
+    Act, ApiVersion, Bind, HintGroup, LaunchMode, Launcher, Manifest, Priority, SettingDecl,
+    Target, Unavailable, Verb, VerbDecl, ViewKind,
 };
 pub use project::{
     ActContext, Chip, Choice, ChoiceInput, ConfirmChoice, Confirmation, DetectionMarker,

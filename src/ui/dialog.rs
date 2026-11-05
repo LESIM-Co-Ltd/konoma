@@ -162,6 +162,7 @@ fn render_project(
     let lang = app.plugin_lang();
     let mut lines = Vec::new();
     let mut selected_line = 0;
+    let mut keys = Msg::ProjectDialogKeys;
     let title = match dialog {
         ProjectDialog::Projects { projects, selected } => {
             selected_line = *selected;
@@ -185,6 +186,7 @@ fn render_project(
             tr(app.lang, Msg::ProjectChoose)
         }
         ProjectDialog::Act {
+            invocation,
             prompts,
             stage,
             buffer,
@@ -193,10 +195,10 @@ fn render_project(
             ..
         } => match &prompts[*stage] {
             ProjectPrompt::Confirmation(prompt) => {
+                keys = Msg::ProjectConfirmCancel;
                 lines.extend(
-                    prompt
-                        .text
-                        .get(lang)
+                    invocation
+                        .confirmation_text(prompt, lang)
                         .lines()
                         .map(|l| Line::raw(l.to_string()).bold()),
                 );
@@ -238,7 +240,7 @@ fn render_project(
         },
     };
     lines.push(Line::raw(""));
-    lines.push(Line::raw(tr(app.lang, Msg::ProjectDialogKeys)).dim());
+    lines.push(Line::raw(tr(app.lang, keys)).dim());
     render_box_selected(frame, area, lines, title, Color::Cyan, selected_line);
 }
 

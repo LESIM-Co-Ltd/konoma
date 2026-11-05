@@ -5,8 +5,80 @@ use konoma_plugin::view::{DiffHunk, DiffKind, DiffLine, DiffView, ListRow, ListV
 use konoma_plugin::{Origin, Resources};
 use std::sync::{Arc, Mutex};
 
+/// Observes the real VCS session without substituting its data or action implementation.
+#[cfg(feature = "git")]
+#[derive(Default)]
+pub(crate) struct VcsCalls {
+    pub acts: Vec<String>,
+    pub views: usize,
+    pub chips: usize,
+}
+
+#[cfg(feature = "git")]
+pub(crate) struct ObservedVcs {
+    pub plugin: Arc<dyn Plugin>,
+    pub calls: Arc<Mutex<VcsCalls>>,
+}
+
+#[cfg(feature = "git")]
+impl Plugin for ObservedVcs {
+    fn manifest(&self) -> Manifest {
+        self.plugin.manifest()
+    }
+
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(ObservedVcsSession {
+            session: self.plugin.open(input, cx)?,
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+#[cfg(feature = "git")]
+struct ObservedVcsSession {
+    session: Box<dyn Session>,
+    calls: Arc<Mutex<VcsCalls>>,
+}
+
+#[cfg(feature = "git")]
+impl Session for ObservedVcsSession {
+    fn enabled(&self, action: &str) -> bool {
+        self.session.enabled(action)
+    }
+
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        self.calls.lock().unwrap().views += 1;
+        self.session.view(req, cx)
+    }
+
+    fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        self.calls.lock().unwrap().acts.push(action.into());
+        self.session.act(action, cx)
+    }
+
+    fn chip(&mut self, cx: &ViewCx) -> Result<Option<Chip>, Failure> {
+        self.calls.lock().unwrap().chips += 1;
+        self.session.chip(cx)
+    }
+
+    fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+        self.session.watch_paths(cx)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub hint_groups: bool,
+    pub rebound_hint_key: bool,
+    pub act_failures: usize,
+    pub act_error: Option<Failure>,
+    pub act_panic: bool,
+    pub watch_failure_after_act: bool,
+    pub view_failure_after_act: bool,
+    pub row_name: Option<String>,
+    pub prompt_default: Option<bool>,
+    pub prompt_value: Option<toml::Value>,
+    pub prompt_settings: Vec<bool>,
     pub watch_paths: Option<Vec<std::path::PathBuf>>,
     pub watch_threads: Vec<std::thread::ThreadId>,
     pub chip: Option<Chip>,
@@ -91,6 +163,55 @@ impl Plugin for Screens {
             .shows(ViewKind::Text)
             .shows(ViewKind::Diff)
             .shows(ViewKind::Document)
+            .action(
+                action("retry-refresh", "ctrl-F7", on())
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure())
+                    .refresh(RefreshTarget::CurrentScreen),
+            )
+            .action(
+                action("retry-input", "ctrl-F5", on())
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure()),
+            )
+            .action(
+                action("retry-confirmed", "ctrl-F6", on())
+                    .confirmation(Confirmation::new(
+                        "Confirm retry?",
+                        vec![ConfirmChoice::new('y', "yes", "Yes")],
+                    ))
+                    .text_input(TextInput::new("Retry message", "seed").keep_on_failure()),
+            )
+            .setting(SettingDecl::new(
+                "confirm_sync",
+                Value::Bool(self.log.lock().unwrap().prompt_default.unwrap_or(true)),
+                "Ask before sync",
+            ))
+            .action(
+                action("row-prompt", "ctrl-F2", any()).confirmation(Confirmation::new(
+                    Tr::new("Discard {row}? Again {row}; {other}").with("ja", "JA {row} / {row}"),
+                    vec![ConfirmChoice::new('y', "yes", "Yes")],
+                )),
+            )
+            .action(
+                action("conditional", "ctrl-F3", on()).confirmation(
+                    Confirmation::new("Sync project?", vec![ConfirmChoice::new('y', "yes", "Yes")])
+                        .setting("confirm_sync"),
+                ),
+            )
+            .action(
+                action("conditional-input", "ctrl-F4", on())
+                    .confirmation(
+                        Confirmation::new(
+                            "Sync project?",
+                            vec![ConfirmChoice::new('y', "yes", "Yes")],
+                        )
+                        .setting("confirm_sync"),
+                    )
+                    .text_input(TextInput::new("Sync message", "seed"))
+                    .choice_input(ChoiceInput::new(
+                        "Sync target",
+                        vec![Choice::new("all", "All")],
+                    )),
+            )
             .action(action("push", "Enter", on()))
             .action(action("capture", "x", on()))
             .action(action("screen", "a", any()))
@@ -116,6 +237,8 @@ impl Plugin for Screens {
                     vec![
                         ConfirmChoice::new('y', "yes-value", "Accept"),
                         ConfirmChoice::new('!', "force-value", "Force"),
+                        ConfirmChoice::new('a', "lower-value", "Lowercase"),
+                        ConfirmChoice::new('A', "upper-value", "Uppercase"),
                     ],
                 )),
             )
@@ -165,6 +288,38 @@ impl Plugin for Screens {
         if self.read_only {
             m = m.read_only();
         }
+        if self.log.lock().unwrap().hint_groups {
+            m = m
+                .hint_group(HintGroup::new("stage", "stage(all)").help("stage / stage all"))
+                .hint_group(HintGroup::new("unstage", "unstage(all)").help("unstage / unstage all"))
+                .action(action("hint-before", "ctrl-F8", any()).footer(0))
+                .action(
+                    action("hint-stage", "s", any())
+                        .label("stage")
+                        .footer(8)
+                        .hint_group("stage"),
+                )
+                .action(action("hint-between", "ctrl-F9", any()).footer(4))
+                .action(
+                    action("hint-stage-all", "S", any())
+                        .label("stage all")
+                        .footer(2)
+                        .hint_group("stage"),
+                )
+                .action(
+                    action("hint-unstage", "u", any())
+                        .label("unstage")
+                        .footer(9)
+                        .hint_group("unstage"),
+                )
+                .action(
+                    action("hint-unstage-all", "U", any())
+                        .label("unstage all")
+                        .footer(9)
+                        .hint_group("unstage"),
+                )
+                .action(action("hint-after", "ctrl-F10", any()).footer(10));
+        }
         if let Some(project) = &mut m.project {
             project.chip = (!self.log.lock().unwrap().no_declared_chip)
                 .then(|| Tr::new("project chip").ja("宣言チップ"));
@@ -211,6 +366,9 @@ impl Session for ScreenSession {
     fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
         let mut log = self.log.lock().unwrap();
         log.watch_threads.push(std::thread::current().id());
+        if log.watch_failure_after_act && !log.acts.is_empty() {
+            return Err(Failure::external("project watch failed"));
+        }
         Ok(log.watch_paths.clone())
     }
 
@@ -265,6 +423,9 @@ impl Session for ScreenSession {
         let mut log = self.log.lock().unwrap();
         log.views.push(project.clone());
         log.threads.push(std::thread::current().id());
+        if log.view_failure_after_act && !log.acts.is_empty() {
+            return Err(Failure::external("project refresh failed"));
+        }
         let hold = if log
             .view_hold
             .as_ref()
@@ -276,6 +437,7 @@ impl Session for ScreenSession {
         };
         let reverse = log.reverse_rows;
         let omit = log.omit_row.clone();
+        let row_name = log.row_name.clone();
         drop(log);
         if let Some(hold) = &hold {
             hold.entered.open();
@@ -338,6 +500,9 @@ impl Session for ScreenSession {
             }),
             _ => return Err(Failure::unsupported("unknown project screen")),
         };
+        if let View::List(list) = &mut view {
+            list.rows[0].name = row_name;
+        }
         if reverse {
             if let View::List(list) = &mut view {
                 list.rows.reverse();
@@ -355,6 +520,11 @@ impl Session for ScreenSession {
             .as_ref()
             .ok_or_else(|| Failure::unsupported("missing project act"))?;
         let mut log = self.log.lock().unwrap();
+        let default = Value::Bool(log.prompt_default.unwrap_or(true));
+        log.prompt_settings.push(!matches!(
+            cx.settings.get("confirm_sync").unwrap_or(&default),
+            Value::Bool(false)
+        ));
         log.acts.push((action.into(), context.clone()));
         log.threads.push(std::thread::current().id());
         drop(log);
@@ -364,7 +534,24 @@ impl Session for ScreenSession {
         if let Some(hold) = &self.hold {
             hold.wait();
         }
+        let mut log = self.log.lock().unwrap();
+        if log.act_panic {
+            drop(log);
+            panic!("project action panic");
+        }
+        if log.act_failures > 0 {
+            log.act_failures -= 1;
+            return Err(log
+                .act_error
+                .clone()
+                .unwrap_or_else(|| Failure::external("project action failed")));
+        }
+        let retry_outcome = log.outcome.clone();
+        drop(log);
         Ok(match action {
+            "retry-input" | "retry-confirmed" | "retry-refresh" => {
+                retry_outcome.unwrap_or(Outcome::Unhandled)
+            }
             "push" => Outcome::PushScreen {
                 screen: "text".into(),
                 selection: context.selected.as_ref().map(|row| row.value.clone()),
