@@ -19447,6 +19447,7 @@ fn e2e_sheet_workbook_is_released_whenever_the_preview_stops_being_a_sheet() {
 
     // Back to the tree, and a sheet again.
     s.key('q');
+    assert_eq!(s.app.surface(), crate::keymap::Surface::Tree);
     assert!(s.app.workbook_matches_preview(), "after q");
     open_sheet(&mut s);
 
