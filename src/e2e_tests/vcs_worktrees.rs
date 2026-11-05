@@ -556,8 +556,13 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
             } else {
                 String::new()
             };
+            let copy = if screen == "log" {
+                format!("  y:{}", tr(new.app.lang, Msg::CopyHint))
+            } else {
+                String::new()
+            };
             let expected = format!(
-                "{prefix}  ↵/l/→:{}{target}  Space:{}",
+                "{prefix}  ↵/l/→:{}{target}{copy}  Space:{}",
                 open_label.get(lang),
                 tr(new.app.lang, Msg::WkActionsTitle).trim()
             );
@@ -595,13 +600,14 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
         drain(&mut new);
         assert_eq!(new.app.project_frame().unwrap().key.screen, "detail");
         let expected = format!(
-            "j/k:{}  h/l:{}  s:{}  g/G:{}  q/Esc:{}  ?:{}",
+            "j/k:{}  h/l:{}  s:{}  g/G:{}  q/Esc:{}  ?:{}  y:{}",
             tr(new.app.lang, Msg::Scroll),
             tr(new.app.lang, Msg::HintHscroll),
             tr(new.app.lang, Msg::FtDiffLayout),
             tr(new.app.lang, Msg::HintEnds),
             tr(new.app.lang, Msg::ProjectBack),
-            tr(new.app.lang, Msg::HintHelp)
+            tr(new.app.lang, Msg::HintHelp),
+            tr(new.app.lang, Msg::CopyHint)
         );
         assert_eq!(crate::ui::status::hint_tokens(&new.app), [expected]);
     }

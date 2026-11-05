@@ -65,6 +65,7 @@ pub(crate) enum ProjectControlId {
     Help,
     Open,
     NewTab,
+    Copy,
     Actions,
     Scroll,
     Hscroll,
@@ -1412,7 +1413,15 @@ impl App {
         if !self.project_act_enabled(action).unwrap_or(false) {
             return true;
         }
-        let context = self.project_act_context();
+        let mut context = self.project_act_context();
+        if decl.copy && context.selected.is_none() {
+            if let Some(selection) = self
+                .project_frame()
+                .and_then(|frame| frame.key.selection.as_ref())
+            {
+                context = context.selected(ProjectRow::new("selection", selection));
+            }
+        }
         let effect = ProjectEffect {
             project: project.clone(),
             tab: self.tab.id,
@@ -1839,6 +1848,7 @@ impl App {
             return;
         }
         match effect.outcome {
+            Some(Outcome::Copy { text }) => self.set_clipboard_flash(&text),
             Some(Outcome::Flash(message)) => {
                 self.flash = Some(message.get(self.plugin_lang()).into())
             }
@@ -1971,13 +1981,33 @@ impl App {
         };
         controls.extend(self.project_open_control());
         controls.extend(self.project_new_tab_control());
-        if self.project_acts_in(Context::Canvas).iter().any(|binding| {
-            crate::ops::action_enabled(
-                self,
-                Context::Canvas,
-                crate::keymap::Action::Plugin(binding.act),
-            )
-        }) {
+        if crate::ops::menu::opens(self, Context::Canvas, crate::keymap::LeaderId::Copy) {
+            let keys = self
+                .keymaps
+                .leader_keys_of(Context::Canvas)
+                .into_iter()
+                .filter(|(_, id)| *id == crate::keymap::LeaderId::Copy)
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>();
+            if !keys.is_empty() {
+                controls.push(ProjectControl::new(
+                    Id::Copy,
+                    keys,
+                    tr(self.lang, Msg::CopyHint),
+                ));
+            }
+        }
+        let bindings = self.project_acts_in(Context::Canvas);
+        if konoma_plugin::host::acts::menu_candidates(&bindings)
+            .iter()
+            .any(|(act, _)| {
+                crate::ops::action_enabled(
+                    self,
+                    Context::Canvas,
+                    crate::keymap::Action::Plugin(*act),
+                )
+            })
+        {
             controls.push(
                 ProjectControl::new(
                     Id::Actions,

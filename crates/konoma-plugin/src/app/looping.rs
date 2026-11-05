@@ -2634,7 +2634,8 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
                 Ok(Outcome::Redraw) => again = true,
                 Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
                 Ok(
-                    Outcome::PushScreen { .. }
+                    Outcome::Copy { .. }
+                    | Outcome::PushScreen { .. }
                     | Outcome::OpenFile { .. }
                     | Outcome::OpenDiff { .. }
                     | Outcome::SwitchRoot { .. }
@@ -3433,6 +3434,7 @@ mod reopen_state_tests {
             bindings: ids
                 .iter()
                 .map(|id| ActBinding {
+                    copy_key: None,
                     hint_group: None,
                     act: id.to_string(),
                     key: None,

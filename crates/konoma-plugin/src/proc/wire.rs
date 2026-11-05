@@ -1130,6 +1130,9 @@ pub fn req_from_wire(r: WViewReq) -> Result<ViewReq, WireError> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WOutcome {
+    Copy {
+        text: String,
+    },
     Unhandled,
     Redraw,
     Flash(WTr),
@@ -1157,6 +1160,7 @@ pub enum WOutcome {
 
 pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
     match o {
+        Outcome::Copy { text } => WOutcome::Copy { text: text.clone() },
         Outcome::Unhandled => WOutcome::Unhandled,
         Outcome::Redraw => WOutcome::Redraw,
         Outcome::Flash(t) => WOutcome::Flash(tr_to_wire(t)),
@@ -1192,6 +1196,7 @@ pub fn outcome_from_wire(o: WOutcome) -> Outcome {
 /// infallible helper returns `Unhandled` for malformed navigation data.
 pub fn outcome_from_wire_checked(o: WOutcome) -> Result<Outcome, WireError> {
     Ok(match o {
+        WOutcome::Copy { text } => Outcome::Copy { text },
         WOutcome::Unhandled => Outcome::Unhandled,
         WOutcome::Redraw => Outcome::Redraw,
         WOutcome::Flash(t) => Outcome::Flash(tr_from_wire(t)),
@@ -2463,6 +2468,8 @@ pub struct WBind {
 /// ```
 #[non_exhaustive]
 pub struct WAct {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub copy: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint_group: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2620,6 +2627,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
             .actions
             .iter()
             .map(|a| WAct {
+                copy: a.copy,
                 hint_group: a.hint_group.clone(),
                 refresh: a.refresh.iter().map(refresh_target_to_wire).collect(),
                 id: a.id.clone(),
@@ -2740,6 +2748,7 @@ pub fn manifest_from_wire(m: WManifest) -> Result<Manifest, WireError> {
         .actions
         .into_iter()
         .map(|a| Act {
+            copy: a.copy,
             hint_group: a.hint_group,
             refresh: a
                 .refresh
