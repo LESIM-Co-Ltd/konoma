@@ -80,6 +80,44 @@ impl WritePair {
         )
     }
 
+    fn jj(name: &str, lang: &str, confirm: bool, read_only: bool, colocated: bool) -> Option<Self> {
+        if !crate::vcs::jj::available() {
+            return None;
+        }
+        let dir = sandbox(name).into_canonical().unwrap();
+        let old_root = dir.join("old/repo");
+        let new_root = dir.join("new/repo");
+        for root in [&old_root, &new_root] {
+            if colocated {
+                seed(root, false);
+            } else {
+                std::fs::create_dir_all(root).unwrap();
+            }
+            assert!(crate::test_support::run_jj(
+                root,
+                &[
+                    "git",
+                    "init",
+                    if colocated {
+                        "--colocate"
+                    } else {
+                        "--no-colocate"
+                    },
+                    "."
+                ]
+            ));
+            std::fs::write(root.join("a-modified"), "base\n").unwrap();
+            assert!(crate::test_support::run_jj(
+                root,
+                &["commit", "-m", "jj seed"]
+            ));
+            std::fs::write(root.join("a-modified"), "changed\n").unwrap();
+        }
+        Some(Self::open(
+            dir, old_root, new_root, "jj", name, lang, "relative", read_only, confirm,
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn open(
         dir: crate::test_support::TmpDir,
@@ -98,8 +136,10 @@ impl WritePair {
         } else {
             Arc::new(konoma_vcs::Jj)
         };
+        // Each registry cache entry must own this fixture's observer, including loop iterations.
+        let registration = format!("{name}-{}", dir.file_name().unwrap().to_string_lossy());
         let token = test_plugins::register(
-            name,
+            &registration,
             Arc::new(ObservedVcs {
                 plugin,
                 calls: calls.clone(),
@@ -119,7 +159,7 @@ impl WritePair {
         old_cfg.plugins.remove(&token);
         let mut old = Sim::with_config_sized(&old_root, old_cfg, 200, 24);
         old.app.open_git_view();
-        assert!(old.app.is_git_view());
+        assert!(old.app.is_git_view(), "id={id} flash={:?}", old.app.flash);
         old.draw();
         let mut new = Sim::with_config_sized(&new_root, cfg, 200, 24);
         new.app.tab.projects.wait_for_result();
@@ -448,7 +488,7 @@ fn discard_cancel(key: KeyCode) {
             p.old.app.flash.as_deref(),
             Some(tr(p.old.app.lang, Msg::Canceled))
         );
-        // Keep the legacy cancellation contract strict; this currently exposes a host mismatch.
+        // Keep the legacy cancellation contract strict, including its flash and no dispatch.
         p.assert_same();
         assert!(!p.old.app.is_dialog());
         assert!(p.new.app.project_dialog.is_none());
@@ -458,11 +498,47 @@ fn discard_cancel(key: KeyCode) {
 #[test]
 fn e2e_vcs_writes_discard_cancel_n_matches_legacy_flash_and_closes() {
     discard_cancel(KeyCode::Char('n'));
+    discard_cancel(KeyCode::Char('N'));
 }
 
 #[test]
 fn e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes() {
     discard_cancel(KeyCode::Esc);
+}
+
+#[test]
+fn e2e_vcs_writes_discard_enter_does_nothing_and_uppercase_y_confirms() {
+    for lang in ["en", "ja"] {
+        let mut p = WritePair::git(
+            "vcs_write_discard_confirm_keys",
+            true,
+            lang,
+            "relative",
+            false,
+        );
+        p.select("a-modified");
+        let before = git_output(&p.new_root, &["status", "--porcelain=v1"]);
+        p.key('x');
+        p.assert_confirmation();
+        p.press_before_draw(KeyCode::Enter);
+        drain(&mut p.new);
+        p.assert_confirmation();
+        p.assert_same();
+        assert!(p.calls.lock().unwrap().acts.is_empty());
+        assert_eq!(
+            git_output(&p.new_root, &["status", "--porcelain=v1"]),
+            before
+        );
+        p.key('Y');
+        assert!(!p.old.app.is_dialog());
+        assert!(p.new.app.project_dialog.is_none());
+        assert_eq!(p.calls.lock().unwrap().acts, ["discard"]);
+        assert_eq!(
+            std::fs::read_to_string(p.new_root.join("a-modified")).unwrap(),
+            "base a-modified\n"
+        );
+        p.assert_same();
+    }
 }
 
 #[test]
@@ -576,7 +652,7 @@ fn e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip() {
 fn write_hint(token: &str) -> bool {
     token
         .split_once(':')
-        .is_some_and(|(keys, _)| matches!(keys, "s/S" | "u/U" | "S" | "U" | "s" | "x" | "c"))
+        .is_some_and(|(keys, _)| matches!(keys, "s/S" | "u/U" | "S" | "U" | "s" | "u" | "x" | "c"))
 }
 
 fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
@@ -639,6 +715,201 @@ fn e2e_vcs_writes_footer_help_exact_except_empty_inert_file_keys() {
                 p.select("a-modified");
                 assert_hints(&p, false, false);
             }
+        }
+    }
+}
+
+struct JjPreference;
+
+impl JjPreference {
+    fn pin() -> Self {
+        crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Jj));
+        Self
+    }
+}
+
+impl Drop for JjPreference {
+    fn drop(&mut self) {
+        crate::vcs::set_preference_for_test(None);
+    }
+}
+
+fn jj_output(root: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("jj")
+        .current_dir(root)
+        .env("HOME", root)
+        .env("JJ_CONFIG", "/dev/null")
+        .env("JJ_USER", "Fixture")
+        .env("JJ_EMAIL", "fixture@example.invalid")
+        .args(["--ignore-working-copy", "--color=never"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "jj {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .replace(root.to_str().unwrap(), "<repo>")
+}
+
+fn jj_state(root: &Path) -> Vec<String> {
+    vec![
+        jj_output(root, &["file", "show", "-r", "@", "a-modified"]),
+        jj_output(
+            root,
+            &[
+                "log",
+                "--no-graph",
+                "-r",
+                "all()",
+                "-T",
+                "description ++ \"\\n\"",
+            ],
+        ),
+        jj_output(
+            root,
+            &["op", "log", "--no-graph", "-T", "description ++ \"\\n\""],
+        )
+        .lines()
+        .map(|line| {
+            // Separate fixtures have different commit IDs; retain the operation and its order.
+            match line.strip_prefix("commit ") {
+                Some(id) if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                    "commit <revision>"
+                }
+                _ => line,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n"),
+    ]
+}
+
+fn assert_jj_same(p: &WritePair, colocated: bool) {
+    assert_eq!(jj_state(&p.new_root), jj_state(&p.old_root));
+    assert_eq!(p.new.app.flash, p.old.app.flash);
+    p.assert_rows();
+    if colocated {
+        assert_eq!(
+            git_output(&p.new_root, &["status", "--porcelain=v1"]),
+            git_output(&p.old_root, &["status", "--porcelain=v1"])
+        );
+        assert_eq!(
+            git_output(&p.new_root, &["log", "--format=%s"]),
+            git_output(&p.old_root, &["log", "--format=%s"])
+        );
+    }
+}
+
+#[test]
+fn e2e_vcs_writes_jj_sync_confirmation_cancel_enter_and_uppercase_y() {
+    let _preference = JjPreference::pin();
+    for lang in ["en", "ja"] {
+        for colocated in [false, true] {
+            let Some(mut p) = WritePair::jj("vcs_write_jj_confirm", lang, true, false, colocated)
+            else {
+                return;
+            };
+            assert_hints(&p, true, false);
+            let before = jj_state(&p.new_root);
+            assert_eq!(before[0], "base\n", "reading changes must not snapshot");
+            for cancel in [KeyCode::Char('n'), KeyCode::Char('N'), KeyCode::Esc] {
+                p.key('s');
+                p.assert_confirmation();
+                p.old.press(cancel, KeyModifiers::NONE);
+                p.new.press(cancel, KeyModifiers::NONE);
+                drain(&mut p.new);
+                assert!(p.calls.lock().unwrap().acts.is_empty());
+                assert_eq!(jj_state(&p.new_root), before);
+                assert!(!p.old.app.is_dialog());
+                assert!(p.new.app.project_dialog.is_none());
+                assert_eq!(
+                    p.new.app.flash.as_deref(),
+                    Some(tr(p.new.app.lang, Msg::Canceled))
+                );
+                assert_jj_same(&p, colocated);
+            }
+            p.key('s');
+            p.assert_confirmation();
+            p.press_before_draw(KeyCode::Enter);
+            drain(&mut p.new);
+            p.assert_confirmation();
+            assert!(p.calls.lock().unwrap().acts.is_empty());
+            assert_eq!(jj_state(&p.new_root), before);
+            assert_jj_same(&p, colocated);
+            let (views, chips) = {
+                let calls = p.calls.lock().unwrap();
+                (calls.views, calls.chips)
+            };
+            p.new.app.clear_project_tree_dirty();
+            p.press_before_draw(KeyCode::Char('Y'));
+            assert!(p.new.app.project_tree_dirty());
+            assert_eq!(p.calls.lock().unwrap().views, views + 1);
+            assert_eq!(p.calls.lock().unwrap().chips, chips + 1);
+            drain(&mut p.new);
+            assert!(!p.old.app.is_dialog());
+            assert!(p.new.app.project_dialog.is_none());
+            assert_eq!(p.calls.lock().unwrap().acts, ["sync"]);
+            assert_eq!(
+                p.new.app.flash.as_deref(),
+                Some(tr(p.new.app.lang, Msg::JjSyncDone))
+            );
+            assert_eq!(jj_state(&p.new_root)[0], "changed\n");
+            assert_jj_same(&p, colocated);
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_writes_jj_sync_setting_false_snapshots_without_prompt() {
+    let _preference = JjPreference::pin();
+    for lang in ["en", "ja"] {
+        for colocated in [false, true] {
+            let Some(mut p) =
+                WritePair::jj("vcs_write_jj_no_confirm", lang, false, false, colocated)
+            else {
+                return;
+            };
+            assert_hints(&p, true, false);
+            assert_eq!(jj_state(&p.new_root)[0], "base\n");
+            p.key('s');
+            assert!(!p.old.app.is_dialog());
+            assert!(p.new.app.project_dialog.is_none());
+            assert_eq!(p.calls.lock().unwrap().acts, ["sync"]);
+            assert_eq!(
+                p.new.app.flash.as_deref(),
+                Some(tr(p.new.app.lang, Msg::JjSyncDone))
+            );
+            assert_eq!(jj_state(&p.new_root)[0], "changed\n");
+            assert_jj_same(&p, colocated);
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot() {
+    let _preference = JjPreference::pin();
+    for lang in ["en", "ja"] {
+        for confirm in [false, true] {
+            let Some(mut p) = WritePair::jj("vcs_write_jj_read_only", lang, confirm, true, false)
+            else {
+                return;
+            };
+            assert_hints(&p, true, false);
+            let before = jj_state(&p.new_root);
+            p.key('s');
+            assert!(!p.old.app.is_dialog());
+            assert!(p.new.app.project_dialog.is_none());
+            assert!(p.calls.lock().unwrap().acts.is_empty());
+            assert_eq!(
+                p.new.app.flash.as_deref(),
+                Some(tr(p.new.app.lang, Msg::PluginReadOnly))
+            );
+            assert_eq!(jj_state(&p.new_root), before);
+            assert_jj_same(&p, false);
         }
     }
 }
