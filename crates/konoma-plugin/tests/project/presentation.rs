@@ -191,12 +191,16 @@ mod transport {
         let side = Side::new(dir.as_path(), 'h');
         for row in [
             ListRow::new("commit", vec![Line::raw("subject")])
+                .initial_selection(true)
                 .right(Line::from(vec![Span::styled(
                     "author · date",
                     Style::new().fg(Color::DarkGray),
                 )]))
                 .filter_text("short subject author date"),
             ListRow::new("file", vec![Line::raw("legacy")]),
+            ListRow::new("empty", vec![Line::raw("no rows")])
+                .selectable(false)
+                .filter_fallback(true),
         ] {
             let mut view = View::List(ListView {
                 title: None,
@@ -209,12 +213,47 @@ mod transport {
                 assert!(json["List"][0].get("right").is_none());
                 assert!(json["List"][0].get("filter_text").is_none());
             }
+            if !row.initial_selection {
+                assert!(json["List"][0].get("initial_selection").is_none());
+            }
+            if !row.filter_fallback {
+                assert!(json["List"][0].get("filter_fallback").is_none());
+            }
             let wire = serde_json::from_value(json).unwrap();
             let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
                 panic!("list required")
             };
             assert_eq!(list.rows, [row]);
         }
+    }
+
+    #[test]
+    fn project_filter_fallback_wire_cannot_be_selected() {
+        let dir = konoma_test_support::unique_tmp("project_fallback_wire");
+        let side = Side::new(dir.as_path(), 'h');
+        let mut view = View::List(ListView {
+            rows: vec![ListRow::new("empty", vec![Line::raw("No matches")]).filter_fallback(true)],
+            ..Default::default()
+        });
+        let mut wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
+        let WView::List(rows) = &mut wire else {
+            panic!("list required")
+        };
+        // A child may bypass the SDK's builder and send conflicting flags.
+        rows[0].selectable = true;
+        rows[0].initial_selection = true;
+        let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+            panic!("list required")
+        };
+        assert!(list.rows[0].filter_fallback);
+        assert!(!list.rows[0].selectable);
+    }
+
+    #[test]
+    fn project_list_builder_defaults_selection_and_filter_fallback() {
+        let row = ListRow::new("file", vec![]);
+        assert!(!row.initial_selection && !row.filter_fallback);
+        assert!(row.selectable);
     }
 
     #[test]

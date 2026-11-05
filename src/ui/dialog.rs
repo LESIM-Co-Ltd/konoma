@@ -162,7 +162,7 @@ fn render_project(
     let lang = app.plugin_lang();
     let mut lines = Vec::new();
     let mut selected_line = 0;
-    let mut keys = Msg::ProjectDialogKeys;
+    let keys = Msg::ProjectDialogKeys;
     let title = match dialog {
         ProjectDialog::Projects { projects, selected } => {
             selected_line = *selected;
@@ -193,9 +193,8 @@ fn render_project(
             cursor,
             selected,
             ..
-        } => match &prompts[*stage] {
-            ProjectPrompt::Confirmation(prompt) => {
-                keys = Msg::ProjectConfirmCancel;
+        } => match prompts.get(*stage) {
+            Some(ProjectPrompt::Confirmation(prompt)) => {
                 lines.extend(
                     invocation
                         .confirmation_text(prompt, lang)
@@ -204,15 +203,32 @@ fn render_project(
                 );
                 lines.push(Line::raw(""));
                 for choice in &prompt.choices {
-                    lines.push(Line::raw(format!(
-                        "{}: {}",
+                    let line = Line::raw(format!(
+                        "{} = {}",
                         choice.key,
                         choice.choice.label.get(lang)
-                    )));
+                    ));
+                    lines.push(if choice.destructive {
+                        line.fg(Color::Red)
+                    } else {
+                        line.dim()
+                    });
                 }
-                tr(app.lang, Msg::DlgConfirmTitle)
+                lines.push(Line::raw(tr(app.lang, Msg::ProjectConfirmCancel)).dim());
+                render_box(
+                    frame,
+                    area,
+                    lines,
+                    tr(app.lang, Msg::DlgConfirmTitle),
+                    if invocation.destructive() {
+                        Color::Red
+                    } else {
+                        Color::Cyan
+                    },
+                );
+                return;
             }
-            ProjectPrompt::Text(prompt) => {
+            Some(ProjectPrompt::Text(prompt)) => {
                 lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
                 let chars: Vec<_> = buffer.chars().collect();
                 let at = (*cursor).min(chars.len());
@@ -224,7 +240,7 @@ fn render_project(
                 ]));
                 tr(app.lang, Msg::DlgInputTitle)
             }
-            ProjectPrompt::Choice(prompt) => {
+            Some(ProjectPrompt::Choice(prompt)) => {
                 selected_line = selected.saturating_add(1);
                 lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
                 for (index, choice) in prompt.choices.iter().enumerate() {
@@ -237,6 +253,7 @@ fn render_project(
                 }
                 tr(app.lang, Msg::ProjectChoose)
             }
+            None => return,
         },
     };
     lines.push(Line::raw(""));

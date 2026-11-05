@@ -250,11 +250,24 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), 4);
+        assert_eq!(project.screens.len(), if id == "git" { 7 } else { 5 });
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), if id == "git" { 29 } else { 23 });
+        assert_eq!(
+            manifest.actions.len(),
+            if !cfg!(feature = "git") {
+                if id == "git" {
+                    25
+                } else {
+                    23
+                }
+            } else if id == "git" {
+                37
+            } else {
+                24
+            }
+        );
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
@@ -299,45 +312,88 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             assert_eq!(session.enabled(id), git && cfg!(feature = "git"));
         }
         assert_eq!(session.enabled("sync"), !git && cfg!(feature = "git"));
+        let copies: Vec<_> = manifest.actions.iter().filter(|a| a.copy).collect();
+        assert_eq!(copies.len(), 19);
+        for a in copies {
+            assert!(
+                a.id.starts_with("log_copy_")
+                    || a.id.starts_with("detail_copy_")
+                    || a.id.starts_with("graph_copy_")
+                    || a.id == "branch_copy_name"
+            );
+            assert!(!a.writes && !a.destructive);
+            assert!(a.refresh.is_empty());
+            assert_eq!(session.enabled(&a.id), cfg!(feature = "git"));
+        }
         for a in manifest
             .actions
             .iter()
-            .filter(|a| !["diff", "detail"].contains(&a.id.as_str()))
+            .filter(|a| a.id.starts_with("graph_") && !a.copy)
         {
-            if a.copy {
-                assert!(
-                    a.id.starts_with("log_copy_")
-                        || a.id.starts_with("detail_copy_")
-                        || a.id.starts_with("graph_copy_")
-                );
-                assert!(!a.writes && !a.destructive);
-                assert!(a.refresh.is_empty());
-                assert_eq!(session.enabled(&a.id), cfg!(feature = "git"));
-            } else if a.id.starts_with("graph_") {
-                assert!(!a.writes && !a.destructive);
-                assert_eq!(
-                    session.enabled(&a.id),
-                    cfg!(feature = "git")
-                        && match a.id.as_str() {
-                            "graph_set_base" | "graph_clear_base" => git,
-                            "graph_all" => !git,
-                            _ => true,
-                        }
-                );
+            assert!(!a.writes && !a.destructive);
+            assert_eq!(
+                session.enabled(&a.id),
+                cfg!(feature = "git")
+                    && match a.id.as_str() {
+                        "graph_set_base" | "graph_clear_base" => git,
+                        "graph_all" => !git,
+                        _ => true,
+                    }
+            );
+        }
+        let writes: Vec<_> = manifest
+            .actions
+            .iter()
+            .filter(|a| a.id != "diff" && matches!(&a.project_context, Some(ActContext::Screen { screen, .. }) if screen == "changes"))
+            .collect();
+        assert_eq!(
+            writes.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            if !cfg!(feature = "git") {
+                vec![]
+            } else if git {
+                vec![
+                    "stage",
+                    "stage_all",
+                    "unstage",
+                    "unstage_all",
+                    "discard",
+                    "commit",
+                ]
             } else {
-                assert!(a.writes);
-                assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
-                assert!(a.refresh.contains(&RefreshTarget::TreeStatus));
-                assert_eq!(a.destructive, a.id == "discard");
-                if a.id == "commit" || a.id == "sync" {
-                    assert!(a.refresh.contains(&RefreshTarget::Chip));
-                }
-                if ["stage", "stage_all", "unstage", "unstage_all"].contains(&a.id.as_str()) {
-                    assert!(a.hint_group.is_some());
-                }
+                vec!["sync"]
+            }
+        );
+        for a in writes {
+            assert!(a.writes);
+            assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
+            assert!(a.refresh.contains(&RefreshTarget::TreeStatus));
+            assert_eq!(a.destructive, a.id == "discard");
+            if a.id == "commit" || a.id == "sync" {
+                assert!(a.refresh.contains(&RefreshTarget::Chip));
+            }
+            if ["stage", "stage_all", "unstage", "unstage_all"].contains(&a.id.as_str()) {
+                assert!(a.hint_group.is_some());
             }
         }
-        if git {
+        let branch_writes: Vec<_> = manifest
+            .actions
+            .iter()
+            .filter(|a| {
+                a.writes
+                    && matches!(&a.project_context,
+            Some(ActContext::Screen { screen, .. }) if screen == "branches")
+            })
+            .collect();
+        assert_eq!(
+            branch_writes.len(),
+            if git && cfg!(feature = "git") { 4 } else { 0 }
+        );
+        for action in branch_writes {
+            assert!(action.refresh.contains(&RefreshTarget::CurrentScreen));
+            assert!(action.refresh.contains(&RefreshTarget::TreeStatus));
+            assert_eq!(action.destructive, action.id == "delete_branch");
+        }
+        if git && cfg!(feature = "git") {
             let commit = manifest.actions.iter().find(|a| a.id == "commit").unwrap();
             assert!(commit.text_input.as_ref().unwrap().keep_on_failure);
             let discard = manifest.actions.iter().find(|a| a.id == "discard").unwrap();
@@ -345,7 +401,7 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             assert_eq!(confirm.choices[0].key, 'y');
             assert_eq!(confirm.text.get("en"), "Discard changes to {row} ?");
             assert_eq!(confirm.text.get("ja"), "変更を破棄しますか: {row} ?");
-        } else {
+        } else if cfg!(feature = "git") {
             let sync = manifest.actions.iter().find(|a| a.id == "sync").unwrap();
             assert_eq!(
                 sync.confirmation.as_ref().unwrap().setting.as_deref(),

@@ -3,7 +3,7 @@
 fn graph_sdk_wire_strip_title_tab_icons_and_old_json() {
     use konoma_plugin::prelude::*;
     use konoma_plugin::proc::wire::*;
-    use konoma_plugin::view::{ListStrip, ListView};
+    use konoma_plugin::view::{ListRow, ListStrip, ListView};
     let dir = konoma_test_support::unique_tmp("graph_sdk_wire");
     let side = Side::new(dir.as_path(), 'h');
     let expected = ListView {
@@ -15,7 +15,12 @@ fn graph_sdk_wire_strip_title_tab_icons_and_old_json() {
             )])],
             9,
         )),
-        rows: vec![],
+        rows: vec![
+            ListRow::new("commit", vec![Line::raw("selected")])
+                .initial_selection(true)
+                .filter_text("selected"),
+            ListRow::new("empty", vec![Line::raw("no match")]).filter_fallback(true),
+        ],
     };
     let mut view = View::List(expected.clone());
     let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
@@ -28,6 +33,8 @@ fn graph_sdk_wire_strip_title_tab_icons_and_old_json() {
         panic!()
     };
     assert_eq!(actual, expected);
+    assert_eq!(actual.visible_rows("selected"), [0]);
+    assert_eq!(actual.visible_rows("missing"), [1]);
     let legacy: WView = serde_json::from_str(r#"{"List":[]}"#).unwrap();
     let View::List(legacy) = view_from_wire(legacy, &mut Dec::new(&side)).unwrap() else {
         panic!()

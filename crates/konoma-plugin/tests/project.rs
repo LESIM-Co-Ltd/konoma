@@ -16,6 +16,8 @@ mod host_api;
 mod presentation;
 #[path = "project/review.rs"]
 mod review;
+#[path = "project/worktrees.rs"]
+mod worktrees;
 
 struct Decl(Manifest);
 impl Plugin for Decl {
@@ -76,7 +78,8 @@ fn project_destructive_requires_confirmation() {
         .confirmation(Confirmation::new(
             "Delete?",
             vec![
-                ConfirmChoice::new('y', "-d", "Delete"),
+                ConfirmChoice::new('y', "-d", "Delete")
+                    .status(t!(en: "delete(-d)", ja: "削除(-d)")),
                 ConfirmChoice::new('!', "-D", "Force delete"),
             ],
         ));
@@ -407,13 +410,22 @@ mod wire {
     fn project_confirm_choice_round_trip() {
         for choice in [
             ConfirmChoice::new('y', "-d", t!(en: "Delete", ja: "削除")),
-            ConfirmChoice::new('!', "-D", t!(en: "Force", ja: "強制削除")),
+            ConfirmChoice::new('!', "-D", t!(en: "Force", ja: "強制削除")).destructive(),
         ] {
             assert_eq!(
                 confirm_choice_from_wire(bytes(&confirm_choice_to_wire(&choice))),
                 choice
             );
         }
+    }
+
+    #[test]
+    fn project_confirm_choice_old_json_defaults_to_non_destructive() {
+        let choice = ConfirmChoice::new('!', "ordinary", "Ordinary");
+        assert!(!choice.destructive);
+        let json = serde_json::to_value(confirm_choice_to_wire(&choice)).unwrap();
+        assert!(json.get("destructive").is_none());
+        assert!(!confirm_choice_from_wire(serde_json::from_value(json).unwrap()).destructive);
     }
 
     #[test]
@@ -478,7 +490,8 @@ mod wire {
         let c = Confirmation::new(
             t!(en: "Delete?", ja: "削除しますか？"),
             vec![
-                ConfirmChoice::new('y', "-d", "Delete"),
+                ConfirmChoice::new('y', "-d", "Delete")
+                    .status(t!(en: "delete(-d)", ja: "削除(-d)")),
                 ConfirmChoice::new('!', "-D", "Force"),
             ],
         );
@@ -501,8 +514,10 @@ mod wire {
     fn project_confirmation_older_child_has_no_setting() {
         let c = Confirmation::new("Proceed?", vec![ConfirmChoice::new('y', "yes", "Yes")]);
         assert_eq!(c.setting, None);
+        assert_eq!(c.choices[0].status, None);
         let mut json = serde_json::to_value(confirmation_to_wire(&c)).unwrap();
         assert!(json.get("setting").is_none());
+        assert!(json["choices"][0].get("status").is_none());
         json.as_object_mut().unwrap().remove("setting");
         let old: WConfirmation = serde_json::from_value(json).unwrap();
         assert_eq!(confirmation_from_wire(bytes(&old)), c);
@@ -741,6 +756,7 @@ mod wire {
     fn project_switch_root_round_trip() {
         outcome(Outcome::SwitchRoot {
             root: "/project/worktree".into(),
+            message: None,
         });
     }
     #[test]
@@ -763,6 +779,7 @@ mod wire {
                 },
                 WOutcome::SwitchRoot {
                     root: path_to_wire(Path::new(path)),
+                    message: None,
                 },
                 WOutcome::OpenTab {
                     path: path_to_wire(Path::new(path)),
@@ -988,6 +1005,7 @@ mod wire {
                 },
                 "root" => Outcome::SwitchRoot {
                     root: "/project/next".into(),
+                    message: None,
                 },
                 "tab" => Outcome::OpenTab {
                     path: "/project/next".into(),

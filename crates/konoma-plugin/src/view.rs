@@ -547,6 +547,29 @@ impl ListStrip {
     }
 }
 
+impl ListView {
+    /// Matching ordinary rows, or the fallback messages when no ordinary row matches.
+    pub fn visible_rows(&self, query: &str) -> Vec<usize> {
+        let matching: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.filter_fallback && row.matches_filter(query))
+            .map(|(index, _)| index)
+            .collect();
+        if matching.is_empty() {
+            self.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.filter_fallback)
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            matching
+        }
+    }
+}
+
 /// One row of a list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Construct through the SDK and leave room for future fields or variants.
@@ -557,6 +580,10 @@ impl ListStrip {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
+    /// Preferred initial cursor, used once when the host first opens this list.
+    pub initial_selection: bool,
+    /// Unselectable message shown only when no ordinary row matches the filter.
+    pub filter_fallback: bool,
     /// Optional styled suffix aligned to the body's right edge by the host.
     pub right: Option<Line>,
     /// Filter matching text; absent means the displayed cells and optional right suffix.
@@ -579,6 +606,18 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn initial_selection(mut self, selected: bool) -> Self {
+        self.initial_selection = selected;
+        self
+    }
+
+    pub fn filter_fallback(mut self, fallback: bool) -> Self {
+        self.filter_fallback = fallback;
+        if fallback {
+            self.selectable = false;
+        }
+        self
+    }
     pub fn right(mut self, right: Line) -> Self {
         self.right = Some(right);
         self
@@ -638,6 +677,8 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
+            initial_selection: false,
+            filter_fallback: false,
             right: None,
             filter_text: None,
             name: None,

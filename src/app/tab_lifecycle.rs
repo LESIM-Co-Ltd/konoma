@@ -452,7 +452,8 @@ impl App {
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
         if self.project_active() {
             if let Some(path) = self.project_row_target() {
-                return self.tab_new_from_path(path, false);
+                let is_dir = path.is_dir();
+                return self.tab_new_from_path(path, is_dir);
             }
             return Ok(());
         }
@@ -464,10 +465,14 @@ impl App {
 
     /// The path branch of Ctrl-t, shared by a project's OpenTab outcome.
     pub(super) fn tab_new_from_path(&mut self, path: PathBuf, is_dir: bool) -> Result<()> {
+        let project_target = self.project_active();
         self.tab_new()?; // fresh Tree tab at the current root, now active
         if is_dir {
             // Descend into the folder in the new tab (same as `l`); root changes, so drop stale state.
             self.clear_for_root_change();
+            if project_target {
+                self.tab.open_dir = path.clone();
+            }
             self.tab.root = path;
             self.tab.entries.clear();
             self.tab.selected = 0;

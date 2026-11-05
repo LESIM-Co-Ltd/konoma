@@ -7,7 +7,19 @@ fn log_declaration_follows_changes_with_enter_and_pushed_detail() {
         let screens = &manifest.project.as_ref().unwrap().screens;
         assert_eq!(
             screens.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            ["changes", "log", "graph", "detail"]
+            if manifest.id == "git" {
+                vec![
+                    "changes",
+                    "log",
+                    "graph",
+                    "branches",
+                    "worktrees",
+                    "detail",
+                    "worktree_diff",
+                ]
+            } else {
+                vec!["changes", "log", "graph", "branches", "detail"]
+            }
         );
         let log = &screens[1];
         assert_eq!(log.title.get("en"), "Log");

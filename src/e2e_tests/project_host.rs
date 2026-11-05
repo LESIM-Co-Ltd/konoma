@@ -233,6 +233,7 @@ fn e2e_project_outcome_switch_root_uses_the_worktree_root_switch() {
             navigation_session("project_outcome_root", asynchronous, |target| {
                 konoma_plugin::Outcome::SwitchRoot {
                     root: target.parent().unwrap().into(),
+                    message: None,
                 }
             });
         assert_eq!(s.app.tab.root, target.parent().unwrap());

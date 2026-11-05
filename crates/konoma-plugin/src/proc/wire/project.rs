@@ -41,7 +41,7 @@ pub fn outcome_protocol(o: &WOutcome) -> u32 {
 }
 pub fn view_protocol(v: &WView) -> u32 {
     if matches!(v, WView::ListDecorated { .. })
-        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || !r.value.is_empty()))
+        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || r.initial_selection || r.filter_fallback || !r.value.is_empty()))
     {
         2
     } else {
@@ -79,6 +79,8 @@ pub struct WDetectionMarker {
 pub struct WProjectScreen {
     pub id: String,
     pub title: WTr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_label: Option<WTr>,
     pub key: Option<char>,
     pub row_kinds: Vec<String>,
     #[serde(default, skip_serializing_if = "super::is_false")]
@@ -122,6 +124,10 @@ pub struct WChoice {
 pub struct WConfirmChoice {
     pub key: char,
     pub choice: WChoice,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub destructive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<WTr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +189,7 @@ pub fn project_screen_to_wire(screen: &ProjectScreen) -> WProjectScreen {
     WProjectScreen {
         id: screen.id.clone(),
         title: tr_to_wire(&screen.title),
+        filter_label: screen.filter_label.as_ref().map(tr_to_wire),
         key: screen.key,
         row_kinds: screen.row_kinds.clone(),
         marks: screen.marks,
@@ -195,6 +202,7 @@ pub fn project_screen_from_wire(screen: WProjectScreen) -> ProjectScreen {
     ProjectScreen {
         id: screen.id,
         title: tr_from_wire(screen.title),
+        filter_label: screen.filter_label.map(tr_from_wire),
         key: screen.key,
         row_kinds: screen.row_kinds,
         marks: screen.marks,
@@ -271,6 +279,8 @@ pub fn confirm_choice_to_wire(choice: &ConfirmChoice) -> WConfirmChoice {
     WConfirmChoice {
         key: choice.key,
         choice: choice_to_wire(&choice.choice),
+        destructive: choice.destructive,
+        status: choice.status.as_ref().map(tr_to_wire),
     }
 }
 
@@ -278,6 +288,8 @@ pub fn confirm_choice_from_wire(choice: WConfirmChoice) -> ConfirmChoice {
     ConfirmChoice {
         key: choice.key,
         choice: choice_from_wire(choice.choice),
+        destructive: choice.destructive,
+        status: choice.status.map(tr_from_wire),
     }
 }
 

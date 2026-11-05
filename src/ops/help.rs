@@ -200,9 +200,9 @@ pub fn help_context(app: &App) -> Context {
         if let Some(s) = screen {
             return Context::Screen(backend, s);
         }
-        if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
-            return Context::Diff;
-        }
+    }
+    if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
+        return Context::Diff;
     }
     match app.tab.mode {
         crate::app::Mode::Tree => Context::Tree,
@@ -249,18 +249,7 @@ fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         Context::Image => (Msg::PreviewImage, image_rows()),
         Context::Table => (Msg::PreviewTable, table_rows()),
         Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
-        #[cfg(feature = "git")]
         Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
-        #[cfg(not(feature = "git"))]
-        Context::Diff => (
-            Msg::PreviewGitDiff,
-            vec![
-                r(SCROLL),
-                r(ENDS),
-                r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds),
-                r(&[Action::CycleDiffLayout]),
-            ],
-        ),
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen_rows(b, s),
         // The overlays are never what the help is opened over (`help_context`), but a plan for
@@ -454,7 +443,6 @@ fn table_rows() -> Vec<Row> {
     ]
 }
 
-#[cfg(feature = "git")]
 fn diff_rows(app: &App) -> Vec<Row> {
     // The media diff's side-by-side view and the binary-summary body have nothing to scroll.
     let media_or_summary = app.diff_footer_is_media_or_summary();
@@ -466,9 +454,12 @@ fn diff_rows(app: &App) -> Vec<Row> {
     }
     v.push(r(&[Action::CycleDiffLayout]));
     v.push(r(PAGE_TURN));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::CycleDiffView]));
     v.push(r(CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(DIFF_CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::ToggleFollowDiffScope]));
     v.push(r(&[Action::RequestEdit]));
     v.push(r(&[Action::OpenExternal]));
@@ -480,6 +471,7 @@ fn diff_rows(app: &App) -> Vec<Row> {
         v.push(r(PAGE_KEYS));
         v.push(r(HALF_KEYS));
     }
+    #[cfg(feature = "git")]
     v.push(r(&[Action::GitDiffDiscard]));
     v.push(r(BACK_PREVIEW).d(Msg::BackToGitView));
     v
@@ -799,6 +791,10 @@ fn write_columns(cols: &[Vec<KeyPress>], zipped: bool) -> String {
 
 /// The section of the open plugin's keys (`None` when there is none to list).
 fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
+    plugin_section_with_keys(app, ctx).map(|(section, _)| section)
+}
+
+fn plugin_section_with_keys(app: &App, ctx: Context) -> Option<(HelpSection, Vec<KeyPress>)> {
     let lang = app.plugin_lang();
     let bindings = app.plugin_context_bindings(ctx);
     let rows =
@@ -812,12 +808,22 @@ fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
             .map(|n| n.get(lang).to_string())
             .unwrap_or_default(),
     );
+    let mut covered = Vec::new();
     for (keys, desc, _) in rows {
+        covered.extend(keys.iter().copied());
         let (cols, zipped) = konoma_host_core::help::zip_columns(&keys, |k| vec![k]);
         sec.rows
             .push((write_columns(&cols, zipped), desc.to_string()));
     }
-    Some(sec)
+    Some((sec, covered))
+}
+
+fn remaining_project_open_control(
+    mut control: crate::app::project_screens::ProjectControl,
+    covered: &[KeyPress],
+) -> Option<crate::app::project_screens::ProjectControl> {
+    control.keys.retain(|key| !covered.contains(key));
+    (!control.keys.is_empty()).then_some(control)
 }
 
 /// Every row of `ctx`'s help (before it is grouped into sections), for tests.
@@ -838,7 +844,10 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
 
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
-        let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
+        let (mut sections, covered) = match plugin_section_with_keys(app, ctx) {
+            Some((section, keys)) => (vec![section], keys),
+            None => (vec![], vec![]),
+        };
         if let Some(jj) = app.project_graph_jj() {
             let mut graph = sections.pop().unwrap_or_else(|| HelpSection::new(""));
             graph.title = tr(
@@ -892,11 +901,21 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
             return sections;
         }
         let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
+        if let Some((keys, _)) = app.project_new_tab_hint() {
+            navigation
+                .rows
+                .push((keys, tr(app.lang, Msg::OpenInNewTabHelp).into()));
+        }
         if let Some(hints) = app.project_text_help() {
             navigation.rows.extend(hints);
         } else {
-            if let Some(hint) = app.project_open_hint() {
-                navigation.rows.push(hint);
+            if let Some(control) = app
+                .project_open_control()
+                .and_then(|control| remaining_project_open_control(control, &covered))
+            {
+                navigation
+                    .rows
+                    .push((control.rendered_keys(), control.label));
             }
             if !app.project_pushed() {
                 navigation.rows.push((
@@ -919,7 +938,12 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
         }) {
             navigation
                 .rows
-                .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+                .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
+            if app.project_marks_enabled() {
+                navigation
+                    .rows
+                    .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+            }
         }
         if let Some(nav) = &app.tab.project_navigation {
             if let Some(runtime) = app.project_runtimes.get(&nav.project) {
@@ -1035,4 +1059,57 @@ pub fn declared_groups(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
         return d;
     }
     declared_groups_by_rows(app, ctx)
+}
+
+#[cfg(test)]
+mod project_open_tests {
+    use super::*;
+    use crate::app::project_screens::{ProjectControl, ProjectControlId};
+    use crossterm::event::KeyCode;
+    use konoma_plugin::{
+        host::acts::{help_rows, ActBinding},
+        HintGroup, Tr,
+    };
+
+    #[test]
+    fn project_open_help_subtracts_plugin_enter_and_enter_l_key_sets() {
+        let enter = KeyPress::key(KeyCode::Enter);
+        let right = KeyPress::key(KeyCode::Right);
+        for keys in [vec![enter], vec![enter, KeyPress::ch('l')]] {
+            let bindings: Vec<_> = keys
+                .iter()
+                .enumerate()
+                .map(|(act, key)| ActBinding {
+                    act,
+                    key: Some(*key),
+                    copy_key: None,
+                    context: None,
+                    hint_group: Some(("test".into(), HintGroup::new("open", "open"))),
+                    label: Tr::new("open"),
+                    help: Tr::new("open"),
+                    footer: None,
+                    writes: false,
+                })
+                .collect();
+            let refs: Vec<_> = bindings.iter().collect();
+            let rows = help_rows(&refs, "en", |_| true);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, keys);
+            let control = ProjectControl::new(
+                ProjectControlId::Open,
+                vec![enter, KeyPress::ch('l'), right],
+                "open",
+            );
+            let remaining = remaining_project_open_control(control, &rows[0].0).unwrap();
+            assert_eq!(
+                remaining.keys,
+                if keys.len() == 1 {
+                    vec![KeyPress::ch('l'), right]
+                } else {
+                    vec![right]
+                }
+            );
+            assert_eq!(remaining.label, "open");
+        }
+    }
 }

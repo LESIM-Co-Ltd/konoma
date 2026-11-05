@@ -182,6 +182,9 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
             ToChild::WatchPaths { .. } => {
                 panic!("fixture does not advertise session_watch")
             }
+            ToChild::TabClosed { .. } => {
+                panic!("fixture does not advertise session_tab_closed")
+            }
             ToChild::Open { rid, input, .. } => {
                 if mode.starts_with("chip") {
                     assert!(
@@ -385,6 +388,7 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
                                 }),
                                 "outcome-root" => outcome_to_wire(&Outcome::SwitchRoot {
                                     root: "/project".into(),
+                                    message: None,
                                 }),
                                 "outcome-tab" | "outcome-v1" => {
                                     outcome_to_wire(&Outcome::OpenTab {

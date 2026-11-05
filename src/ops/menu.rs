@@ -68,6 +68,13 @@ pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
 
 /// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
 pub fn find(app: &App, ctx: Context, id: LeaderId, kp: KeyPress) -> Option<Action> {
+    if app.project_active()
+        && ctx == Context::Canvas
+        && id == LeaderId::Copy
+        && konoma_plugin::keys::parse_key(&kp.label()).is_ok_and(konoma_plugin::keys::closes_menu)
+    {
+        return None;
+    }
     menu(app, ctx, id, View::Open)?
         .items
         .into_iter()
@@ -177,8 +184,11 @@ fn unkeyed(ctx: Context) -> Vec<Action> {
     let mut v: Vec<Action> = Vec::new();
     match ctx {
         Context::Bookmarks => v.push(Action::BookmarkDelete),
-        #[cfg(feature = "git")]
-        Context::Diff => v.extend([Action::ToggleFollowDiffScope, Action::CyclePathStyle]),
+        Context::Diff => {
+            #[cfg(feature = "git")]
+            v.push(Action::ToggleFollowDiffScope);
+            v.push(Action::CyclePathStyle);
+        }
         #[cfg(feature = "git")]
         Context::Screen(_, crate::keymap::Screen::Changes) => {
             v.extend([Action::GitOpenLog, Action::GitOpenGraph])

@@ -1163,6 +1163,8 @@ pub enum WOutcome {
     },
     SwitchRoot {
         root: WPath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<WTr>,
     },
     OpenTab {
         path: WPath,
@@ -1187,8 +1189,9 @@ pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
         Outcome::OpenDiff { path } => WOutcome::OpenDiff {
             path: path_to_wire(path),
         },
-        Outcome::SwitchRoot { root } => WOutcome::SwitchRoot {
+        Outcome::SwitchRoot { root, message } => WOutcome::SwitchRoot {
             root: path_to_wire(root),
+            message: message.as_ref().map(tr_to_wire),
         },
         Outcome::OpenTab { path } => WOutcome::OpenTab {
             path: path_to_wire(path),
@@ -1227,8 +1230,9 @@ pub fn outcome_from_wire_checked(o: WOutcome) -> Result<Outcome, WireError> {
         WOutcome::OpenDiff { path } => Outcome::OpenDiff {
             path: abs_path_from_wire(path, "diff path")?,
         },
-        WOutcome::SwitchRoot { root } => Outcome::SwitchRoot {
+        WOutcome::SwitchRoot { root, message } => Outcome::SwitchRoot {
             root: abs_path_from_wire(root, "new root")?,
+            message: message.map(tr_from_wire),
         },
         WOutcome::OpenTab { path } => Outcome::OpenTab {
             path: abs_path_from_wire(path, "tab path")?,
@@ -1580,6 +1584,10 @@ pub struct WImageView {
 /// ```
 #[non_exhaustive]
 pub struct WListRow {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub initial_selection: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub filter_fallback: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right: Option<WLine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2240,6 +2248,8 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 .iter()
                 .map(|r| {
                     Ok(WListRow {
+                        initial_selection: r.initial_selection,
+                        filter_fallback: r.filter_fallback,
                         right: r.right.as_ref().map(line_to_wire),
                         filter_text: r.filter_text.clone(),
                         name: r.name.clone(),
@@ -2411,10 +2421,12 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             let mut out = Vec::with_capacity(rows.len());
             for r in rows {
                 out.push(ListRow {
+                    initial_selection: r.initial_selection,
+                    filter_fallback: r.filter_fallback,
                     right: r.right.map(line_from_wire),
                     filter_text: r.filter_text,
                     name: r.name,
-                    selectable: r.selectable,
+                    selectable: r.selectable && !r.filter_fallback,
                     value: r.value,
                     cells: lines_from_wire(r.cells),
                     kind: r.kind,

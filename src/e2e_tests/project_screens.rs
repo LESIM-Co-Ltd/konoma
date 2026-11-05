@@ -35,6 +35,227 @@ fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
 }
 
 #[test]
+fn e2e_project_filter_shows_all_fallback_rows_without_action_selection() {
+    use konoma_plugin::{view::ListRow, Line};
+    let mut f = fixture_with_log(
+        "project_filter_fallbacks",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            list_rows: Some(vec![
+                ListRow::new("item", vec![Line::raw("alpha matching")]).value("ordinary"),
+                ListRow::new("item", vec![Line::raw("No matches")])
+                    .value("fallback-one")
+                    .filter_fallback(true),
+                ListRow::new("item", vec![Line::raw("Try another query")])
+                    .value("fallback-two")
+                    .filter_fallback(true),
+            ]),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    assert_eq!(f.sim.app.project_visible_rows(), [0]);
+    f.sim.key('/');
+    f.sim.keys("missing");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_visible_rows(), [1, 2]);
+    for _ in 0..2 {
+        assert!(f.sim.app.project_act_context().selected.is_none());
+        f.sim.key('j');
+    }
+    f.sim.see("No matches");
+    f.sim.see("Try another query");
+}
+
+#[test]
+fn e2e_project_help_multikey_push_row_leaves_only_uncovered_right_alias() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture_with_log(
+            &format!("project_multikey_open_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                push_help_alias: true,
+                ..Default::default()
+            },
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        crate::plugins::test_projects::bind_push_help_alias(&mut f.sim.app.plugin_keys);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        let plugin = sections
+            .iter()
+            .find(|section| section.title == "Project screens")
+            .unwrap();
+        let navigation = sections
+            .iter()
+            .find(|section| section.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        let open_rows = |section: &crate::ui::help::HelpSection| {
+            section
+                .rows
+                .iter()
+                .filter(|(_, description)| description == "push")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(open_rows(plugin), [("Enter / l".into(), "push".into())]);
+        assert_eq!(open_rows(navigation), [("→".into(), "push".into())]);
+    }
+}
+
+#[test]
+fn e2e_project_help_keeps_open_aliases_when_plugin_lists_only_enter() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture(
+            &format!("project_open_alias_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        assert!(sections
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(keys, desc)| keys == "Enter" && desc == "push"));
+        let navigation = sections
+            .iter()
+            .find(|s| s.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        assert!(
+            navigation
+                .rows
+                .iter()
+                .any(|(keys, desc)| keys == "l/→" && desc == "push"),
+            "{:?}",
+            navigation.rows
+        );
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let before = f.log.lock().unwrap().acts.len();
+            f.sim.press(code, KeyModifiers::NONE);
+            drain(&mut f.sim);
+            assert_eq!(
+                f.log.lock().unwrap().acts.len(),
+                before + 1,
+                "{lang:?} {code:?}: screen={:?}, flash={:?}",
+                f.sim.app.project_frame().map(|f| &f.key.screen),
+                f.sim.app.flash
+            );
+            assert_eq!(last_act(&f).0, "push");
+            f.sim.key('q');
+            drain(&mut f.sim);
+        }
+    }
+}
+
+#[test]
+fn e2e_project_footer_shared_key_keeps_act_label_with_two_spaces() {
+    use crate::i18n::Lang;
+    use crate::keymap::{Context, KeyPress};
+    for (lang, label) in [(Lang::En, "open  entry"), (Lang::Jp, "開く  対象")] {
+        let mut f = fixture_with_log(
+            "project_footer_structured_label",
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                open_label: Some(konoma_plugin::t!(en: "open  entry", ja: "開く  対象")),
+                ..Default::default()
+            },
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        let tokens = crate::ops::footer::render_tokens(
+            &f.sim.app,
+            Context::Canvas,
+            &crate::ops::footer::plan(&f.sim.app, Context::Canvas),
+        );
+        assert_eq!(
+            tokens.iter().filter(|t| t.text.contains(label)).count(),
+            1,
+            "{tokens:?}"
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.keys.contains(&KeyPress::key(KeyCode::Enter)))
+                .count(),
+            1,
+            "{tokens:?}"
+        );
+        assert!(tokens
+            .iter()
+            .any(|t| t.text.contains(&format!("↵/l/→:{label}"))));
+    }
+}
+
+#[test]
+fn e2e_project_markable_list_help_offers_v_and_the_key_toggles_marks() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture("project_markable_help", false, 1, None, None, None);
+        f.sim.app.lang = lang;
+        open(&mut f);
+        assert!(f.sim.app.project_marks_enabled());
+        let rows: Vec<_> = crate::ops::help::sections(&f.sim.app)
+            .into_iter()
+            .flat_map(|s| s.rows)
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|(keys, label)| keys == "V"
+                    && label == crate::i18n::tr(lang, crate::i18n::Msg::ProjectMark))
+                .count(),
+            1
+        );
+        let before = f.sim.app.project_frame().unwrap().marked.clone();
+        f.sim.key('V');
+        drain(&mut f.sim);
+        assert_ne!(f.sim.app.project_frame().unwrap().marked, before);
+        assert_eq!(
+            f.sim.app.project_frame().unwrap().marked.contains(&0),
+            !before.contains(&0)
+        );
+    }
+}
+
+#[test]
+fn e2e_project_new_tab_help_and_footer_follow_selected_row_target() {
+    let mut f = fixture("project_target_hints", false, 1, None, None, None);
+    f.sim.key('p');
+    drain(&mut f.sim);
+    for target in [true, false] {
+        let sections = crate::ops::help::sections(&f.sim.app);
+        assert_eq!(
+            sections
+                .iter()
+                .flat_map(|s| &s.rows)
+                .any(|(key, _)| key.contains("Ctrl-t")),
+            target,
+        );
+        assert_eq!(
+            f.sim.app.project_controls().unwrap().contains("Ctrl-t"),
+            target
+        );
+        f.sim.key('j');
+        drain(&mut f.sim);
+    }
+}
+
+#[test]
 fn e2e_project_list_right_uses_enter_row_action_and_disabled_gate() {
     for disabled in [false, true] {
         let mut f = fixture_with_log(
@@ -406,6 +627,7 @@ fn e2e_project_chip_tabs_roots_and_multiple_project_order() {
     open(&mut f);
     f.log.lock().unwrap().outcome = Some(Outcome::SwitchRoot {
         root: canon(&empty),
+        message: None,
     });
     press(&mut f, KeyCode::F(11));
     assert!(f.sim.app.project_chips().is_empty());
@@ -1252,7 +1474,6 @@ fn e2e_project_hints_help_menu_match_screen_row_tree_and_diff_contexts() {
     assert!(!advertised(&f, "diff-act"));
 }
 
-#[cfg(feature = "git")]
 #[test]
 fn e2e_project_host_diff_context_has_hints_help_menu_and_real_file_selection() {
     let mut f = navigate("project_host_diff_context", |root| Outcome::OpenDiff {
@@ -2475,6 +2696,7 @@ fn e2e_project_outcome_open_diff_uses_host_diff() {
 fn e2e_project_outcome_switch_root_uses_worktree_root_path() {
     let f = navigate("project_outcome_root", |root| Outcome::SwitchRoot {
         root: root.join("destination"),
+        message: None,
     });
     assert_eq!(f.sim.app.tab.root, canon(&f._dir.join("destination")));
     assert!(!f.sim.app.project_active());

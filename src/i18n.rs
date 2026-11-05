@@ -650,8 +650,6 @@ pub enum Msg {
     ProjectBusy,
     ProjectSelectionChanged,
     ProjectUnknownScreen,
-    ProjectControls,
-    ProjectTextControls,
     ProjectTitle,
     ProjectCycle,
     ProjectBack,
@@ -659,6 +657,7 @@ pub enum Msg {
     ProjectChoose,
     ProjectDialogKeys,
     ProjectConfirmCancel,
+    ProjectConfirmCancelStatus,
     PluginsHead,
     PluginKeyUnknownAction,
     PluginKeyBad,
@@ -1703,8 +1702,6 @@ fn en(msg: Msg) -> &'static str {
         ProjectBusy => "project action is still running",
         ProjectSelectionChanged => "selected project row changed; action cancelled",
         ProjectUnknownScreen => "project screen is not declared",
-        ProjectControls => "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help",
-        ProjectTextControls => "Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help",
         ProjectTitle => "Project",
         ProjectCycle => "Cycle project screens",
         ProjectBack => "Pop this screen or return to the previous view",
@@ -1712,6 +1709,7 @@ fn en(msg: Msg) -> &'static str {
         ProjectChoose => "Choose a project",
         ProjectDialogKeys => "Enter:choose  Esc:cancel",
         ProjectConfirmCancel => "n / Esc = cancel",
+        ProjectConfirmCancelStatus => "n/Esc:cancel",
         PluginsHead => CoreMsg::PluginsHead.en(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.en(),
         PluginKeyBad => CoreMsg::PluginKeyBad.en(),
@@ -2559,8 +2557,6 @@ fn jp(msg: Msg) -> &'static str {
         ProjectBusy => "プロジェクトの操作を実行中です",
         ProjectSelectionChanged => "選択した行が変わったため操作を中止しました",
         ProjectUnknownScreen => "プロジェクトの画面が宣言されていません",
-        ProjectControls => "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ",
-        ProjectTextControls => "Tab/Shift-Tab:画面  j/k:スクロール  q:戻る  ?:ヘルプ",
         ProjectTitle => "プロジェクト",
         ProjectCycle => "プロジェクトの画面を切り替える",
         ProjectBack => "画面を一つ戻るか元の表示に戻る",
@@ -2568,6 +2564,7 @@ fn jp(msg: Msg) -> &'static str {
         ProjectChoose => "プロジェクトを選択",
         ProjectDialogKeys => "Enter:選択  Esc:キャンセル",
         ProjectConfirmCancel => "n / Esc = 取消",
+        ProjectConfirmCancelStatus => "n/Esc:取消",
         PluginsHead => CoreMsg::PluginsHead.ja(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.ja(),
         PluginKeyBad => CoreMsg::PluginKeyBad.ja(),
@@ -3214,11 +3211,16 @@ mod tests {
     #[test]
     fn project_confirmation_cancel_hint_en() {
         assert_eq!(tr(Lang::En, Msg::ProjectConfirmCancel), "n / Esc = cancel");
+        assert_eq!(
+            tr(Lang::En, Msg::ProjectConfirmCancelStatus),
+            "n/Esc:cancel"
+        );
     }
 
     #[test]
     fn project_confirmation_cancel_hint_ja() {
         assert_eq!(tr(Lang::Jp, Msg::ProjectConfirmCancel), "n / Esc = 取消");
+        assert_eq!(tr(Lang::Jp, Msg::ProjectConfirmCancelStatus), "n/Esc:取消");
     }
 
     #[test]
@@ -3775,8 +3777,6 @@ mod tests {
         Msg::ProjectBusy,
         Msg::ProjectSelectionChanged,
         Msg::ProjectUnknownScreen,
-        Msg::ProjectControls,
-        Msg::ProjectTextControls,
         Msg::ProjectTitle,
         Msg::ProjectCycle,
         Msg::ProjectBack,
@@ -3784,6 +3784,7 @@ mod tests {
         Msg::ProjectChoose,
         Msg::ProjectDialogKeys,
         Msg::ProjectConfirmCancel,
+        Msg::ProjectConfirmCancelStatus,
         Msg::PluginsHead,
         Msg::PluginKeyUnknownAction,
         Msg::PluginKeyBad,

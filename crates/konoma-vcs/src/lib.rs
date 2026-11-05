@@ -6,12 +6,14 @@ use konoma_vcs_core::style::VcsColor;
 use konoma_vcs_core::vcs::Vcs;
 use std::path::PathBuf;
 mod actions;
+mod branches;
 mod detail;
 mod graph;
 #[cfg(test)]
 mod graph_cleanup_tests;
 mod log;
 mod paths;
+mod worktrees;
 
 pub struct Git;
 pub struct Jj;
@@ -32,6 +34,10 @@ macro_rules! plugin {
                                 .row_kind("commit").row_kind("empty"))
                             .screen(ProjectScreen::new("graph", t!(en: "Graph", ja: "グラフ"))
                                 .row_kind("commit").row_kind("worktree").row_kind("connector").row_kind("empty"))
+                            .screen(ProjectScreen::new("branches", if $id == "git" {
+                                t!(en: "Branches", ja: "ブランチ")
+                            } else { t!(en: "Bookmarks", ja: "ブックマーク") })
+                                .key('b').row_kind("branch").row_kind("current").row_kind("empty"))
                             .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed()),
                     )
                     .shows(ViewKind::List)
@@ -39,7 +45,7 @@ macro_rules! plugin {
                         t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
                     .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
                         t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
-                let manifest = actions::declare(manifest, $id == "git")
+                let manifest = actions::declare(worktrees::declare(manifest, $id == "git"), $id == "git")
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
@@ -48,13 +54,13 @@ macro_rules! plugin {
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
                         .project_context(ActContext::screen("log", ["commit"])));
-                log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj")
+                branches::declare(log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj"), $id == "git")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
                 let Input::Project { root, .. } = input else {
                     return Err(Failure::unsupported(t!(en: "Project required", ja: "プロジェクトが必要です")));
                 };
-                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), detail_meta: Default::default(), graphs: Default::default() }))
+                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, worktree_diff: None, detail_meta: Default::default(), graphs: Default::default() }))
             }
         }
     };
@@ -132,10 +138,14 @@ impl Backend {
 
 struct Changes {
     graphs: std::collections::HashMap<u64, graph::Graph>,
+    // The host can reopen cached detail views without calling view(), so each cached header
+    // needs its original metadata when that older detail becomes active again.
     detail_meta: std::collections::HashMap<String, konoma_vcs_core::git::CommitMeta>,
     root: PathBuf,
     backend: Backend,
     files: Vec<DisplayedFile>,
+    worktree_home: Option<PathBuf>,
+    worktree_diff: worktrees::PreparedDiff,
 }
 
 struct DisplayedFile {
@@ -179,6 +189,22 @@ impl Session for Changes {
                 cx,
             ));
         }
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktree_diff") {
+            if matches!(self.backend, Backend::Git) {
+                return Ok(worktrees::diff_view(
+                    &self.root,
+                    project,
+                    cx,
+                    &mut self.worktree_diff,
+                ));
+            }
+        }
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktrees") {
+            if matches!(self.backend, Backend::Git) {
+                self.worktree_home = project.home_dir.clone();
+                return Ok(worktrees::view(&self.root, project, cx));
+            }
+        }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
             let (view, meta) =
                 detail::read(&self.backend, &self.root, project.selection.as_deref());
@@ -193,6 +219,9 @@ impl Session for Changes {
         }
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
             return Ok(log::view(self.backend.log(&self.root), cx));
+        }
+        if req.project.as_ref().is_some_and(|p| p.screen == "branches") {
+            return Ok(branches::view(konoma_vcs_core::vcs::refs(&self.root), cx));
         }
         if req.project.as_ref().is_none_or(|p| p.screen != "changes") {
             return Err(Failure::unsupported(
@@ -281,6 +310,15 @@ impl Session for Changes {
             }
             return Ok(Outcome::Unhandled);
         }
+        if self.enabled(action) {
+            if let Some(context) = cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some("branches"))
+            {
+                return actions::branch_act(&self.root, action, context);
+            }
+        }
         if let Some((screen, field)) = copy_action(action).filter(|_| self.enabled(action)) {
             let Some(context) = cx
                 .project
@@ -334,6 +372,15 @@ impl Session for Changes {
         }
         if !self.enabled(action) {
             return Ok(Outcome::Unhandled);
+        }
+        if action.starts_with("worktree_") {
+            return worktrees::act(
+                &self.root,
+                action,
+                cx,
+                self.worktree_home.as_deref(),
+                &mut self.worktree_diff,
+            );
         }
         let Some(context) = cx
             .project
@@ -438,6 +485,16 @@ impl Session for Changes {
             "graph_set_base" | "graph_clear_base" => matches!(self.backend, Backend::Git),
             "graph_all" => matches!(self.backend, Backend::Jj),
             "detail" | "graph_detail" => true,
+            "branch_copy_name" => true,
+            "checkout"
+            | "create_branch"
+            | "delete_branch"
+            | "delete_current_branch"
+            | "worktree_switch"
+            | "worktree_create"
+            | "worktree_changes" => {
+                matches!(self.backend, Backend::Git)
+            }
             "diff" => !self.files.is_empty(),
             "stage" | "unstage" | "discard" => {
                 matches!(self.backend, Backend::Git) && !self.files.is_empty()

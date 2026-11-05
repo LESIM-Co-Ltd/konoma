@@ -8,6 +8,8 @@ fn graph_tab_closed_removes_only_the_closed_tabs_state() {
         root: dir.to_path_buf(),
         backend: Backend::Git,
         files: vec![],
+        worktree_home: None,
+        worktree_diff: None,
         graphs: Default::default(),
         detail_meta: Default::default(),
     };
