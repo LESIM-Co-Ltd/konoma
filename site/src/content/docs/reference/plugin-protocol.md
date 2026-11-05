@@ -95,6 +95,19 @@ represents a non-interactive message or heading, without selection reversal,
 marks or actions. For an empty list, return a styled non-selectable row whose
 text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
 
+`ListRow::initially_selected(true)` selects the first such selectable row when opening
+a list. Refreshes keep the user's cursor. `filter_fallback(true)` marks a
+non-selectable message shown only when no ordinary rows match the host's
+case-insensitive substring filter (the first fallback wins). Its text is not matched.
+Both flags default to false and are omitted on the wire for older rows.
+
+The `konoma-vcs` project tabs include `branches` after `log`: Git calls it Branches,
+jj Bookmarks (`b`). Git declares checkout, create and safe/force delete; jj only
+declares name copying. Checkout and creation stay on this tab, whereas the legacy
+hub returns to Changes. The host retains shared navigation/filter controls before
+plugin acts; its copy menu uses the generic Copy title. An empty or unmatched list
+shows a dim message; unlike the legacy empty hub list, the tab can always open.
+
 `ProjectView` carries optional absolute `tree_root`, `open_dir` and `home_dir`.
 The current tree root may differ from the detected root in `Input::Project`;
 `open_dir` is the tab's launch directory. The host passes these on every request
@@ -235,7 +248,7 @@ Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `write
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr }], setting?: string } | null
 text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -260,6 +273,11 @@ text with the invoked row's `name`, falling back to its `value`. Without a selec
 row it uses an empty string. The invocation captures the row, so moving the cursor
 or refreshing the list while the dialog is open does not change the prompt's name.
 There are no other placeholders or escaping; text without `{row}` is unchanged.
+
+`ConfirmChoice::status(Tr)` optionally supplies a concise status-line label; the host
+otherwise uses the choice's full label. The status line lists the declared keys and
+labels followed by localized cancellation keys, including non-letter keys such as
+`!`. The optional `status` field defaults to absent and preserves older JSON.
 
 `Confirmation::setting(key)` makes the confirmation conditional on a boolean setting
 in `[plugins.<id>]`, using the same settings as `cx.settings` and the declared default

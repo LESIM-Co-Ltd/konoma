@@ -6,6 +6,7 @@ use konoma_vcs_core::style::VcsColor;
 use konoma_vcs_core::vcs::Vcs;
 use std::path::PathBuf;
 mod actions;
+mod branches;
 mod detail;
 mod log;
 mod paths;
@@ -27,6 +28,10 @@ macro_rules! plugin {
                                 .key('p').row_kind("file").row_kind("empty"))
                             .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
                                 .row_kind("commit").row_kind("empty"))
+                            .screen(ProjectScreen::new("branches", if $id == "git" {
+                                t!(en: "Branches", ja: "ブランチ")
+                            } else { t!(en: "Bookmarks", ja: "ブックマーク") })
+                                .key('b').row_kind("branch").row_kind("current").row_kind("empty"))
                             .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed()),
                     )
                     .shows(ViewKind::List)
@@ -43,7 +48,7 @@ macro_rules! plugin {
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
                         .project_context(ActContext::screen("log", ["commit"])));
-                log::copy_declarations(manifest, $id == "jj")
+                branches::declare(log::copy_declarations(manifest, $id == "jj"), $id == "git")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
                 let Input::Project { root, .. } = input else {
@@ -177,6 +182,9 @@ impl Session for Changes {
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
             return Ok(log::view(self.backend.log(&self.root), cx));
         }
+        if req.project.as_ref().is_some_and(|p| p.screen == "branches") {
+            return Ok(branches::view(konoma_vcs_core::vcs::refs(&self.root), cx));
+        }
         if req.project.as_ref().is_none_or(|p| p.screen != "changes") {
             return Err(Failure::unsupported(
                 t!(en: "Unknown screen", ja: "不明な画面です"),
@@ -243,6 +251,15 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        if self.enabled(action) {
+            if let Some(context) = cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some("branches"))
+            {
+                return actions::branch_act(&self.root, action, context);
+            }
+        }
         if let Some((screen, field)) = copy_action(action).filter(|_| self.enabled(action)) {
             let Some(context) = cx
                 .project
@@ -395,6 +412,10 @@ impl Session for Changes {
             return true;
         }
         match action {
+            "branch_copy_name" => true,
+            "checkout" | "create_branch" | "delete_branch" | "delete_current_branch" => {
+                matches!(self.backend, Backend::Git)
+            }
             "detail" => true,
             "diff" => !self.files.is_empty(),
             "stage" | "unstage" | "discard" => {

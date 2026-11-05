@@ -289,6 +289,10 @@ pub(crate) struct ProjectInvocation {
 }
 
 impl ProjectInvocation {
+    pub(crate) fn destructive(&self) -> bool {
+        self.declaration.destructive
+    }
+
     pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
         let row = self.context.selected.as_ref();
         let name = row
@@ -320,6 +324,26 @@ pub(crate) enum ProjectDialog {
     },
 }
 
+/// Matching excludes fallback messages until all ordinary rows have been filtered out.
+fn visible_list_rows(list: &konoma_plugin::view::ListView, query: &str) -> Vec<usize> {
+    let rows: Vec<_> = list
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| !row.filter_fallback && row.matches_filter(query))
+        .map(|(index, _)| index)
+        .collect();
+    if rows.is_empty() {
+        list.rows
+            .iter()
+            .position(|row| row.filter_fallback)
+            .into_iter()
+            .collect()
+    } else {
+        rows
+    }
+}
+
 /// Refreshes keep the identity the user selected, even when the provider reorders its rows.
 fn remap_project_rows(
     tab: &mut PerTab,
@@ -337,13 +361,9 @@ fn remap_project_rows(
         .filter(|nav| &nav.project == project)
     {
         for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
-            let visible = |row: &konoma_plugin::view::ListRow| row.matches_filter(&frame.query);
-            let selected = old
-                .rows
-                .iter()
-                .filter(|row| visible(row))
-                .nth(frame.cursor)
-                .map(ProjectRow::from);
+            let selected = visible_list_rows(old, &frame.query)
+                .get(frame.cursor)
+                .map(|index| ProjectRow::from(&old.rows[*index]));
             let marked: Vec<_> = frame
                 .marked
                 .iter()
@@ -351,11 +371,9 @@ fn remap_project_rows(
                 .map(ProjectRow::from)
                 .collect();
             if let Some(selected) = selected {
-                if let Some(cursor) = new
-                    .rows
+                if let Some(cursor) = visible_list_rows(new, &frame.query)
                     .iter()
-                    .filter(|row| visible(row))
-                    .position(|row| ProjectRow::from(row) == selected)
+                    .position(|index| ProjectRow::from(&new.rows[*index]) == selected)
                 {
                     frame.cursor = cursor;
                 } else {
@@ -708,7 +726,7 @@ impl App {
         runtime.views.get(key).cloned()
     }
 
-    fn project_marks_enabled(&self) -> bool {
+    pub(crate) fn project_marks_enabled(&self) -> bool {
         self.tab
             .project_navigation
             .as_ref()
@@ -735,13 +753,7 @@ impl App {
             return Vec::new();
         };
         match content.as_ref() {
-            ProjectContent::List(list) => list
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| row.matches_filter(&frame.query))
-                .map(|(i, _)| i)
-                .collect(),
+            ProjectContent::List(list) => visible_list_rows(list, &frame.query),
             ProjectContent::Lines(lines) => (0..lines.len()).collect(),
             ProjectContent::Diff(diff) => {
                 (0..diff.row_count(self.diff_is_split(self.tab.preview_cols))).collect()
@@ -1715,6 +1727,13 @@ impl App {
                         .and_then(|r| r.views.get(&frame.key))
                     {
                         if let ProjectContent::List(list) = view.as_ref() {
+                            frame.cursor = visible_list_rows(list, &frame.query)
+                                .iter()
+                                .position(|index| {
+                                    list.rows[*index].selectable
+                                        && list.rows[*index].initially_selected
+                                })
+                                .unwrap_or(0);
                             let marks =
                                 self.project_runtimes
                                     .get(&nav.project)

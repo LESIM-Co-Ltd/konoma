@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[path = "vcs_writes.rs"]
 mod writes;
 
+#[path = "vcs_branches.rs"]
+mod branches;
+
 pub(super) fn drain(sim: &mut Sim) {
     for _ in 0..32 {
         sim.app.poll_projects();

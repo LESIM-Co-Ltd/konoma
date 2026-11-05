@@ -87,6 +87,19 @@ ProjectAct {
 表し、反転・印・操作の対象にしません。空の一覧には、`Tr` で翻訳してスタイルを
 付けた非選択行を返します。既定は true で、既存の一覧のバイト列を維持します。
 
+`ListRow::initially_selected(true)` は一覧を開く際、該当する選択可能な最初の行を
+初期選択します。再取得時は利用者のカーソルを保ちます。`filter_fallback(true)` は
+通常行が大文字小文字を区別しない部分一致フィルターに一致しない時だけ表示する
+非選択の案内行です。複数ある場合は最初の行を使い、案内文は検索しません。
+両フラグの既定は false で、線上では省略し、古い行との互換性を保ちます。
+
+`konoma-vcs` のタブには `log` の次に `branches` があり、Git は「ブランチ」、jj は
+「ブックマーク」と表示します（`b`）。Git は切替・作成・安全削除・強制削除を宣言し、
+jj は名前コピーだけを宣言します。切替と作成の後もこのタブに留まります。旧ハブは
+変更画面へ戻ります。フッターはホスト共通の移動・画面切替・戻る・絞り込みを先に
+表示し、その後にプラグイン操作を置きます。コピーのメニュー名は共通のものを使います。
+空または一致なしの一覧は薄い案内行を表示し、空でもタブを開けます。
+
 `ProjectView` は省略可能な絶対パス `tree_root`・`open_dir`・`home_dir` も持ちます。
 現在のツリーの root は `Input::Project` の根と違う場合もあり、`open_dir` はタブの
 起動ディレクトリです。ホストは毎回の要求に渡し、パスの文脈が変われば表示を
@@ -200,7 +213,7 @@ Act.hint_group: string | null
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr }], setting?: string } | null
 text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -224,6 +237,11 @@ Choice = { value: string, label: Tr }
 呼び出し時の行を保持するため、ダイアログを開いている間にカーソルが動いたり
 一覧が更新されたりしても、確認文の行名は変わりません。他の置換記法や
 エスケープはなく、`{row}` のない文はそのまま表示します。
+
+`ConfirmChoice::status(Tr)` はステータス行の短いラベルを指定します。省略時は
+選択肢の通常のラベルを使います。ホストは宣言されたキーとラベルを並べ、最後に
+翻訳済みの取消キーを表示します。`!` のような文字以外のキーも同じ扱いです。
+線上の `status` は省略可能で、古い JSON では未指定として扱います。
 
 `Confirmation::setting(key)` は `[plugins.<id>]` の真偽値設定で確認の有無を
 切り替えます。`cx.settings` と同じ設定を使い、未指定なら宣言された既定値を使います。

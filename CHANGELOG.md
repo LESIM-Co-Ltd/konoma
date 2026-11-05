@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: move the Git branch and read-only jj bookmark lists into a `konoma-vcs` tab alongside the legacy hub, with name copying and guarded Git checkout/create/safe-or-force delete. Checkout and create stay on the tab; empty lists can open. The shared project navigation/filter/back controls remain before plugin acts (checkout, new, delete), and the copy menu keeps its generic title. List rows can declare an initial selection and a filter fallback; confirmation choices can declare concise status labels.
+
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
 
 - Internal: move Git and jj commit detail into a pushed `konoma-vcs` screen alongside the legacy hub in tests; project diff views gain styled headers, file paths and cached unified/split drawing, with shared text scrolling and host-owned list opening through `l` / Right.

@@ -535,6 +535,10 @@ pub struct ListView {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
+    /// Select this row when the host first opens the list; refreshes keep the user's cursor.
+    pub initially_selected: bool,
+    /// Show this unselectable message only when no ordinary rows match the list filter.
+    pub filter_fallback: bool,
     /// Optional styled suffix aligned to the body's right edge by the host.
     pub right: Option<Line>,
     /// Filter matching text; absent means the displayed cells and optional right suffix.
@@ -557,6 +561,18 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn initially_selected(mut self, selected: bool) -> Self {
+        self.initially_selected = selected;
+        self
+    }
+
+    pub fn filter_fallback(mut self, fallback: bool) -> Self {
+        self.filter_fallback = fallback;
+        if fallback {
+            self.selectable = false;
+        }
+        self
+    }
     pub fn right(mut self, right: Line) -> Self {
         self.right = Some(right);
         self
@@ -616,6 +632,8 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
+            initially_selected: false,
+            filter_fallback: false,
             right: None,
             filter_text: None,
             name: None,

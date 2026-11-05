@@ -1567,6 +1567,10 @@ pub struct WImageView {
 /// ```
 #[non_exhaustive]
 pub struct WListRow {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub initially_selected: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub filter_fallback: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right: Option<WLine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2215,6 +2219,8 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 .iter()
                 .map(|r| {
                     Ok(WListRow {
+                        initially_selected: r.initially_selected,
+                        filter_fallback: r.filter_fallback,
                         right: r.right.as_ref().map(line_to_wire),
                         filter_text: r.filter_text.clone(),
                         name: r.name.clone(),
@@ -2362,6 +2368,8 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             let mut out = Vec::with_capacity(rows.len());
             for r in rows {
                 out.push(ListRow {
+                    initially_selected: r.initially_selected,
+                    filter_fallback: r.filter_fallback,
                     right: r.right.map(line_from_wire),
                     filter_text: r.filter_text,
                     name: r.name,

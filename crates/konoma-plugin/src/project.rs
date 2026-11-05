@@ -358,6 +358,8 @@ impl Choice {
 pub struct ConfirmChoice {
     pub key: char,
     pub choice: Choice,
+    /// Optional concise status-line label; otherwise the full choice label is used.
+    pub status: Option<Tr>,
 }
 
 impl ConfirmChoice {
@@ -365,7 +367,13 @@ impl ConfirmChoice {
         Self {
             key,
             choice: Choice::new(value, label),
+            status: None,
         }
+    }
+
+    pub fn status(mut self, label: impl Into<Tr>) -> Self {
+        self.status = Some(label.into());
+        self
     }
 }
 

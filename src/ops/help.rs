@@ -865,9 +865,14 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
                 crate::app::project_screens::ProjectContent::List(_)
             )
         }) {
+            if app.project_marks_enabled() {
+                navigation
+                    .rows
+                    .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+            }
             navigation
                 .rows
-                .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+                .push(("/".into(), tr(app.lang, Msg::ListFilterHelp).into()));
         }
         if let Some(nav) = &app.tab.project_navigation {
             if let Some(runtime) = app.project_runtimes.get(&nav.project) {

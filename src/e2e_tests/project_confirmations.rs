@@ -1,6 +1,41 @@
 //! Confirmation keys share the legacy host's cancellation contract at every prompt stage.
 
 use super::*;
+
+#[test]
+fn e2e_project_confirmation_status_is_generated_from_declared_choices() {
+    let mut f = fixture("project_confirmation_status", false, 1, None, None, None);
+    confirmation_stage(&mut f, 0);
+    f.sim.app.flash = None;
+    let text = crate::ui::status::footer_spans(&f.sim.app, 200)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>();
+    assert_eq!(
+        text,
+        "y:Accept  !:Force  a:Lowercase  A:Uppercase  n/Esc:cancel"
+    );
+    // A test provider with the same declared choices gets the same localized status line.
+    use konoma_plugin::{t, ConfirmChoice};
+    let Some(ProjectDialog::Act { prompts, stage, .. }) = &mut f.sim.app.project_dialog else {
+        panic!("confirmation required")
+    };
+    let ProjectPrompt::Confirmation(prompt) = &mut prompts[*stage] else {
+        panic!("confirmation required")
+    };
+    prompt.choices = vec![
+        ConfirmChoice::new('y', "safe", "Delete").status(t!(en: "delete(-d)", ja: "削除(-d)")),
+        ConfirmChoice::new('!', "force", "Force").status(t!(en: "force(-D)", ja: "強制(-D)")),
+    ];
+    for lang in [Lang::En, Lang::Jp] {
+        f.sim.app.lang = lang;
+        let text = crate::ui::status::footer_spans(&f.sim.app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text, crate::i18n::tr(lang, crate::i18n::Msg::StDeleteForce));
+    }
+}
 use crate::app::project_screens::{ProjectDialog, ProjectPrompt};
 use crate::i18n::Lang;
 
@@ -276,9 +311,9 @@ fn confirmation_cancel_line(name: &str, lang: Lang, expected: &str) {
         let screen = chip_screen(&f.sim);
         assert_eq!(drawn_dialog_hint(&f.sim), expected, "{screen}");
         assert!(screen.contains(if preceding == 0 {
-            "y: Accept"
+            "y = Accept"
         } else {
-            "y: Yes"
+            "y = Yes"
         }));
     }
 }

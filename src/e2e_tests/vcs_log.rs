@@ -540,7 +540,9 @@ fn e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open() {
     let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
     for (code, expected) in [
         (KeyCode::Tab, "log"),
+        (KeyCode::Tab, "branches"),
         (KeyCode::Tab, "changes"),
+        (KeyCode::BackTab, "branches"),
         (KeyCode::BackTab, "log"),
     ] {
         new.press(code, KeyModifiers::NONE);
