@@ -55,7 +55,7 @@ pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
             .label(t!(en: "branch name", ja: "ブランチ名"))
             .project_context(ActContext::screen("branches", ["branch", "current"])),
     );
-    if !git {
+    if !git || !cfg!(feature = "git") {
         return manifest;
     }
     manifest
@@ -104,7 +104,8 @@ pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
                         "force",
                         t!(en: "force delete (-D)", ja: "強制削除 (-D)"),
                     )
-                    .status(t!(en: "force(-D)", ja: "強制(-D)")),
+                    .status(t!(en: "force(-D)", ja: "強制(-D)"))
+                    .destructive(),
                 ],
             )),
         )

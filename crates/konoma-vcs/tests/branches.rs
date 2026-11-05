@@ -1,5 +1,46 @@
 use konoma_plugin::prelude::*;
 
+#[cfg(not(feature = "git"))]
+#[test]
+fn vcs_no_git_feature_declares_no_disabled_writes_on_any_screen() {
+    let dir = konoma_test_support::unique_tmp("vcs_no_git_writes");
+    for plugin in [&konoma_vcs::Git as &dyn Plugin, &konoma_vcs::Jj] {
+        let manifest = plugin.manifest();
+        let session = plugin
+            .open(
+                Input::Project {
+                    root: dir.to_path_buf(),
+                    marker: String::new(),
+                },
+                &OpenCx::bare(),
+            )
+            .unwrap();
+        for action in &manifest.actions {
+            assert!(!action.writes, "{} {}", manifest.id, action.id);
+        }
+        for id in [
+            "stage",
+            "stage_all",
+            "unstage",
+            "unstage_all",
+            "discard",
+            "commit",
+            "sync",
+            "checkout",
+            "create_branch",
+            "delete_branch",
+            "delete_current_branch",
+        ] {
+            assert!(!session.enabled(id));
+            assert!(
+                !manifest.actions.iter().any(|action| action.id == id),
+                "{} {id}",
+                manifest.id
+            );
+        }
+    }
+}
+
 #[test]
 fn branches_declaration_titles_order_and_read_only_bookmarks() {
     for (plugin, title, ja, writes) in [
@@ -13,6 +54,7 @@ fn branches_declaration_titles_order_and_read_only_bookmarks() {
     ] {
         let manifest = plugin.manifest();
         let screens = &manifest.project.as_ref().unwrap().screens;
+        let writes = if cfg!(feature = "git") { writes } else { 0 };
         assert_eq!(
             screens.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             ["changes", "log", "branches", "detail"]

@@ -406,13 +406,22 @@ mod wire {
     fn project_confirm_choice_round_trip() {
         for choice in [
             ConfirmChoice::new('y', "-d", t!(en: "Delete", ja: "削除")),
-            ConfirmChoice::new('!', "-D", t!(en: "Force", ja: "強制削除")),
+            ConfirmChoice::new('!', "-D", t!(en: "Force", ja: "強制削除")).destructive(),
         ] {
             assert_eq!(
                 confirm_choice_from_wire(bytes(&confirm_choice_to_wire(&choice))),
                 choice
             );
         }
+    }
+
+    #[test]
+    fn project_confirm_choice_old_json_defaults_to_non_destructive() {
+        let choice = ConfirmChoice::new('!', "ordinary", "Ordinary");
+        assert!(!choice.destructive);
+        let json = serde_json::to_value(confirm_choice_to_wire(&choice)).unwrap();
+        assert!(json.get("destructive").is_none());
+        assert!(!confirm_choice_from_wire(serde_json::from_value(json).unwrap()).destructive);
     }
 
     #[test]

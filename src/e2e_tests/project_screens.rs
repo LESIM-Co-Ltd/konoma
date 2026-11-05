@@ -7,6 +7,44 @@ mod scroll;
 mod confirmations;
 
 #[test]
+fn e2e_project_filter_shows_all_fallback_rows_without_action_selection() {
+    use konoma_plugin::{view::ListRow, Line};
+    let mut f = fixture_with_log(
+        "project_filter_fallbacks",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            list_rows: Some(vec![
+                ListRow::new("item", vec![Line::raw("alpha matching")]).value("ordinary"),
+                ListRow::new("item", vec![Line::raw("No matches")])
+                    .value("fallback-one")
+                    .filter_fallback(true),
+                ListRow::new("item", vec![Line::raw("Try another query")])
+                    .value("fallback-two")
+                    .filter_fallback(true),
+            ]),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    assert_eq!(f.sim.app.project_visible_rows(), [0]);
+    f.sim.key('/');
+    f.sim.keys("missing");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_visible_rows(), [1, 2]);
+    for _ in 0..2 {
+        assert!(f.sim.app.project_act_context().selected.is_none());
+        f.sim.key('j');
+    }
+    f.sim.see("No matches");
+    f.sim.see("Try another query");
+}
+
+#[test]
 fn e2e_project_list_right_uses_enter_row_action_and_disabled_gate() {
     for disabled in [false, true] {
         let mut f = fixture_with_log(

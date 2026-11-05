@@ -121,6 +121,8 @@ pub struct WChoice {
 pub struct WConfirmChoice {
     pub key: char,
     pub choice: WChoice,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub destructive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<WTr>,
 }
@@ -272,6 +274,7 @@ pub fn confirm_choice_to_wire(choice: &ConfirmChoice) -> WConfirmChoice {
     WConfirmChoice {
         key: choice.key,
         choice: choice_to_wire(&choice.choice),
+        destructive: choice.destructive,
         status: choice.status.as_ref().map(tr_to_wire),
     }
 }
@@ -280,6 +283,7 @@ pub fn confirm_choice_from_wire(choice: WConfirmChoice) -> ConfirmChoice {
     ConfirmChoice {
         key: choice.key,
         choice: choice_from_wire(choice.choice),
+        destructive: choice.destructive,
         status: choice.status.map(tr_from_wire),
     }
 }

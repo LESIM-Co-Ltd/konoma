@@ -2373,7 +2373,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                     right: r.right.map(line_from_wire),
                     filter_text: r.filter_text,
                     name: r.name,
-                    selectable: r.selectable,
+                    selectable: r.selectable && !r.filter_fallback,
                     value: r.value,
                     cells: lines_from_wire(r.cells),
                     kind: r.kind,

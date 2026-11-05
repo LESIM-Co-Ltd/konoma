@@ -20,6 +20,9 @@ fn yes() -> Vec<ConfirmChoice> {
 }
 
 pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
+    if !cfg!(feature = "git") {
+        return manifest;
+    }
     if !git {
         return manifest
             .setting(SettingDecl::new(

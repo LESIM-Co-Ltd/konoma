@@ -336,8 +336,9 @@ fn visible_list_rows(list: &konoma_plugin::view::ListView, query: &str) -> Vec<u
     if rows.is_empty() {
         list.rows
             .iter()
-            .position(|row| row.filter_fallback)
-            .into_iter()
+            .enumerate()
+            .filter(|(_, row)| row.filter_fallback)
+            .map(|(index, _)| index)
             .collect()
     } else {
         rows

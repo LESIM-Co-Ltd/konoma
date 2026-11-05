@@ -2,6 +2,205 @@
 
 use super::*;
 
+fn confirmation_choice_uses_declared_color(key: char, destructive: bool) {
+    use konoma_plugin::{
+        proc::wire::{confirm_choice_from_wire, confirm_choice_to_wire},
+        ConfirmChoice,
+    };
+    use ratatui::style::{Color, Modifier};
+    let mut f = fixture(
+        "project_confirmation_choice_color",
+        false,
+        1,
+        None,
+        None,
+        None,
+    );
+    confirmation_stage(&mut f, 0);
+    let mut json = serde_json::to_value(confirm_choice_to_wire(&ConfirmChoice::new(
+        key,
+        "value",
+        "Semantic choice",
+    )))
+    .unwrap();
+    json["destructive"] = destructive.into();
+    let choice = confirm_choice_from_wire(serde_json::from_value(json).unwrap());
+    let Some(ProjectDialog::Act { prompts, stage, .. }) = &mut f.sim.app.project_dialog else {
+        panic!("confirmation required")
+    };
+    let ProjectPrompt::Confirmation(prompt) = &mut prompts[*stage] else {
+        panic!("confirmation required")
+    };
+    prompt.choices = vec![choice];
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let buffer = terminal
+        .draw(|frame| crate::ui::dialog::render(frame, &f.sim.app, frame.area()))
+        .unwrap()
+        .buffer
+        .clone();
+    let y = (0..20)
+        .find(|y| {
+            (0..100)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("Semantic choice")
+        })
+        .unwrap();
+    let x = (0..100)
+        .find(|x| buffer[(*x, y)].symbol() == key.to_string())
+        .unwrap();
+    let cell = &buffer[(x, y)];
+    assert_eq!(
+        cell.fg,
+        if destructive {
+            Color::Red
+        } else {
+            Color::Reset
+        }
+    );
+    assert_eq!(cell.modifier.contains(Modifier::DIM), !destructive);
+}
+
+#[test]
+fn e2e_project_confirmation_bang_without_danger_is_dim() {
+    confirmation_choice_uses_declared_color('!', false);
+}
+
+#[test]
+fn e2e_project_confirmation_destructive_letter_choice_is_red() {
+    confirmation_choice_uses_declared_color('x', true);
+}
+
+fn malformed_confirmation_stage(surface: &str) {
+    for empty in [false, true] {
+        let mut f = fixture("project_confirmation_bad_stage", false, 1, None, None, None);
+        confirmation_stage(&mut f, 0);
+        let Some(ProjectDialog::Act { prompts, stage, .. }) = &mut f.sim.app.project_dialog else {
+            panic!("confirmation required")
+        };
+        if empty {
+            prompts.clear();
+            *stage = 0;
+        } else {
+            *stage = usize::MAX;
+        }
+        f.sim.app.flash = None;
+        match surface {
+            "status" => {
+                let text = crate::ui::status::footer_spans(&f.sim.app, 80)
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                assert!(text.contains("Esc"));
+            }
+            "render" => {
+                let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+                terminal
+                    .draw(|frame| crate::ui::dialog::render(frame, &f.sim.app, frame.area()))
+                    .unwrap();
+            }
+            "key" => {
+                handle_key(
+                    &mut f.sim.app,
+                    KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                )
+                .unwrap();
+                assert!(f.sim.app.project_dialog.is_none());
+                assert!(f.log.lock().unwrap().acts.is_empty());
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn e2e_project_confirmation_malformed_stage_status_is_safe() {
+    malformed_confirmation_stage("status");
+}
+
+#[test]
+fn e2e_project_confirmation_malformed_stage_render_is_safe() {
+    malformed_confirmation_stage("render");
+}
+
+#[test]
+fn e2e_project_confirmation_malformed_stage_key_dispatch_is_safe() {
+    malformed_confirmation_stage("key");
+}
+
+#[test]
+fn e2e_project_confirmation_status_fits_cjk_and_keeps_cancel_with_label_fallback() {
+    use konoma_plugin::{ConfirmChoice, Tr};
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        text::Line,
+        widgets::{Paragraph, Widget},
+    };
+    use unicode_width::UnicodeWidthStr;
+
+    for lang in [Lang::En, Lang::Jp] {
+        let mut f = fixture(
+            "project_confirmation_status_width",
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        f.sim.app.lang = lang;
+        confirmation_stage(&mut f, 0);
+        let long = "長い確認ラベル".repeat(30);
+        let fallback = Tr::new("fallback").with("ja", "候補日本");
+        let Some(ProjectDialog::Act { prompts, stage, .. }) = &mut f.sim.app.project_dialog else {
+            panic!("confirmation required")
+        };
+        let ProjectPrompt::Confirmation(prompt) = &mut prompts[*stage] else {
+            panic!("confirmation required")
+        };
+        prompt.choices = vec![
+            ConfirmChoice::new('a', "fallback", fallback.clone()),
+            ConfirmChoice::new('b', "long", "unused label").status(long.clone()),
+        ];
+        f.sim.app.flash = None;
+        let cancel = if lang == Lang::En {
+            "n/Esc:cancel"
+        } else {
+            "n/Esc:取消"
+        };
+        for width in [0, 1, 2, 3, 8, 12, 16, 24, 32, 80, 1024] {
+            let spans = crate::ui::status::footer_spans(&f.sim.app, width);
+            let text = spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert!(
+                text.width() <= usize::from(width),
+                "{lang:?} {width}: {text}"
+            );
+            if usize::from(width) >= cancel.width() {
+                assert!(text.ends_with(cancel), "{lang:?} {width}: {text}");
+                let area = Rect::new(0, 0, width, 1);
+                let mut actual = Buffer::empty(area);
+                Paragraph::new(Line::from(spans)).render(area, &mut actual);
+                let start = (text.width() - cancel.width()) as u16;
+                let tail = Rect::new(start, 0, cancel.width() as u16, 1);
+                let mut expected = Buffer::empty(area);
+                Paragraph::new(cancel).render(tail, &mut expected);
+                for x in tail.x..tail.right() {
+                    assert_eq!(actual[(x, 0)].symbol(), expected[(x, 0)].symbol());
+                }
+            }
+            if width == 32 || width == 1024 {
+                assert!(text.contains(&format!("a:{}", fallback.get(f.sim.app.plugin_lang()))));
+            }
+            if width == 1024 {
+                assert!(text.contains(&long));
+            }
+        }
+    }
+}
+
 #[test]
 fn e2e_project_confirmation_status_is_generated_from_declared_choices() {
     let mut f = fixture("project_confirmation_status", false, 1, None, None, None);

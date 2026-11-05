@@ -224,6 +224,27 @@ mod transport {
     }
 
     #[test]
+    fn project_filter_fallback_wire_cannot_be_selected() {
+        let dir = konoma_test_support::unique_tmp("project_fallback_wire");
+        let side = Side::new(dir.as_path(), 'h');
+        let mut view = View::List(ListView {
+            rows: vec![ListRow::new("empty", vec![Line::raw("No matches")]).filter_fallback(true)],
+        });
+        let mut wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
+        let WView::List(rows) = &mut wire else {
+            panic!("list required")
+        };
+        // A child may bypass the SDK's builder and send conflicting flags.
+        rows[0].selectable = true;
+        rows[0].initially_selected = true;
+        let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+            panic!("list required")
+        };
+        assert!(list.rows[0].filter_fallback);
+        assert!(!list.rows[0].selectable);
+    }
+
+    #[test]
     fn project_list_old_json_defaults_selection_and_filter_fallback() {
         let row: konoma_plugin::proc::wire::WListRow =
             serde_json::from_str(r#"{"cells":[],"kind":"file","target":null,"checked":null}"#)

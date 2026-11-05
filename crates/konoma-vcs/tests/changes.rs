@@ -254,7 +254,16 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), if id == "git" { 25 } else { 16 });
+        assert_eq!(
+            manifest.actions.len(),
+            if !cfg!(feature = "git") {
+                15
+            } else if id == "git" {
+                25
+            } else {
+                16
+            }
+        );
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
@@ -329,7 +338,7 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
                 }
             }
         }
-        if git {
+        if git && cfg!(feature = "git") {
             let commit = manifest.actions.iter().find(|a| a.id == "commit").unwrap();
             assert!(commit.text_input.as_ref().unwrap().keep_on_failure);
             let discard = manifest.actions.iter().find(|a| a.id == "discard").unwrap();
@@ -337,7 +346,7 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             assert_eq!(confirm.choices[0].key, 'y');
             assert_eq!(confirm.text.get("en"), "Discard changes to {row} ?");
             assert_eq!(confirm.text.get("ja"), "変更を破棄しますか: {row} ?");
-        } else {
+        } else if cfg!(feature = "git") {
             let sync = manifest.actions.iter().find(|a| a.id == "sync").unwrap();
             assert_eq!(
                 sync.confirmation.as_ref().unwrap().setting.as_deref(),

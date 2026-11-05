@@ -329,8 +329,10 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage, .. }) =
         &app.project_dialog
     {
-        if let crate::app::project_screens::ProjectPrompt::Confirmation(prompt) = &prompts[*stage] {
-            let mut choices: Vec<_> = prompt
+        if let Some(crate::app::project_screens::ProjectPrompt::Confirmation(prompt)) =
+            prompts.get(*stage)
+        {
+            let choices: Vec<_> = prompt
                 .choices
                 .iter()
                 .map(|choice| {
@@ -345,12 +347,18 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
                     )
                 })
                 .collect();
-            choices.push(
-                konoma_plugin::t!(en: "n/Esc:cancel", ja: "n/Esc:取消")
-                    .get(app.plugin_lang())
-                    .to_string(),
-            );
-            return vec![Span::raw(choices.join("  ")).dim()];
+            let cancel = tr(lang, Msg::ProjectConfirmCancelStatus);
+            let room = usize::from(width);
+            if room < cancel.width() {
+                return vec![Span::raw(fit_tokens(&["Esc".into()], width)).dim()];
+            }
+            let choices = fit_tokens(&choices, room.saturating_sub(cancel.width() + 2) as u16);
+            let text = if choices.is_empty() {
+                cancel.to_string()
+            } else {
+                format!("{choices}  {cancel}")
+            };
+            return vec![Span::raw(text).dim()];
         }
     }
     if app.project_dialog.is_some() {

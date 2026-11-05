@@ -98,7 +98,9 @@ text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
 `ListRow::initially_selected(true)` selects the first such selectable row when opening
 a list. Refreshes keep the user's cursor. `filter_fallback(true)` marks a
 non-selectable message shown only when no ordinary rows match the host's
-case-insensitive substring filter (the first fallback wins). Its text is not matched.
+case-insensitive substring filter. All fallback rows appear in declaration order;
+their text is not matched. On receipt from a child, a fallback row is always made
+non-selectable, even if the child also sends `selectable: true`.
 Both flags default to false and are omitted on the wire for older rows.
 
 The `konoma-vcs` project tabs include `branches` after `log`: Git calls it Branches,
@@ -109,7 +111,8 @@ plugin acts; its copy menu uses the generic Copy title. An empty or unmatched li
 shows a dim message; unlike the legacy empty hub list, the tab can always open.
 On jj, write keys that cannot act (`Enter`, `c`, `d`) are hidden, whereas the
 legacy hub displayed them and refused the write. All project confirmation dialogs
-now display `key = label` instead of `key: label`, show the `!` choice in red, and
+now display `key = label` instead of `key: label`, show explicitly destructive
+choices in red (including the branch's `!` force-delete choice), and
 use a red border for destructive actions.
 
 `ProjectView` carries optional absolute `tree_root`, `open_dir` and `home_dir`.
@@ -252,7 +255,7 @@ Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `write
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr }], setting?: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr, destructive?: boolean }], setting?: string } | null
 text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -282,6 +285,16 @@ There are no other placeholders or escaping; text without `{row}` is unchanged.
 otherwise uses the choice's full label. The status line lists the declared keys and
 labels followed by localized cancellation keys, including non-letter keys such as
 `!`. The optional `status` field defaults to absent and preserves older JSON.
+The host reserves space for the catalogue's cancellation hint before fitting whole
+choice tokens by display-cell width, including CJK. If the full cancel hint cannot
+fit, `Esc` remains when at least three cells are available. Invalid prompt stages
+draw no dialog and are canceled without invoking an action when input arrives.
+
+`ConfirmChoice::destructive()` marks a choice for red warning text independently
+of its key. Its optional wire field `destructive` defaults to false and is omitted
+when false, preserving old JSON. This presentation marker does not replace
+`Act::destructive()` or the action's write guard; the latter still declares the
+destructive dialog's red border and mandatory confirmation.
 
 `Confirmation::setting(key)` makes the confirmation conditional on a boolean setting
 in `[plugins.<id>]`, using the same settings as `cx.settings` and the declared default

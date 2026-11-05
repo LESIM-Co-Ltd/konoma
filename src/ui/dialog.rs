@@ -193,8 +193,8 @@ fn render_project(
             cursor,
             selected,
             ..
-        } => match &prompts[*stage] {
-            ProjectPrompt::Confirmation(prompt) => {
+        } => match prompts.get(*stage) {
+            Some(ProjectPrompt::Confirmation(prompt)) => {
                 lines.extend(
                     invocation
                         .confirmation_text(prompt, lang)
@@ -208,7 +208,7 @@ fn render_project(
                         choice.key,
                         choice.choice.label.get(lang)
                     ));
-                    lines.push(if choice.key == '!' {
+                    lines.push(if choice.destructive {
                         line.fg(Color::Red)
                     } else {
                         line.dim()
@@ -228,7 +228,7 @@ fn render_project(
                 );
                 return;
             }
-            ProjectPrompt::Text(prompt) => {
+            Some(ProjectPrompt::Text(prompt)) => {
                 lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
                 let chars: Vec<_> = buffer.chars().collect();
                 let at = (*cursor).min(chars.len());
@@ -240,7 +240,7 @@ fn render_project(
                 ]));
                 tr(app.lang, Msg::DlgInputTitle)
             }
-            ProjectPrompt::Choice(prompt) => {
+            Some(ProjectPrompt::Choice(prompt)) => {
                 selected_line = selected.saturating_add(1);
                 lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
                 for (index, choice) in prompt.choices.iter().enumerate() {
@@ -253,6 +253,7 @@ fn render_project(
                 }
                 tr(app.lang, Msg::ProjectChoose)
             }
+            None => return,
         },
     };
     lines.push(Line::raw(""));
