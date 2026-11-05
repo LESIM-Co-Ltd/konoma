@@ -68,6 +68,13 @@ pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
 
 /// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
 pub fn find(app: &App, ctx: Context, id: LeaderId, kp: KeyPress) -> Option<Action> {
+    if app.project_active()
+        && ctx == Context::Canvas
+        && id == LeaderId::Copy
+        && konoma_plugin::keys::parse_key(&kp.label()).is_ok_and(konoma_plugin::keys::closes_menu)
+    {
+        return None;
+    }
     menu(app, ctx, id, View::Open)?
         .items
         .into_iter()

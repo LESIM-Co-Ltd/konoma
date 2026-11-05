@@ -126,6 +126,8 @@ impl Backend {
 }
 
 struct Changes {
+    // The host can reopen cached detail views without calling view(), so each cached header
+    // needs its original metadata when that older detail becomes active again.
     detail_meta: std::collections::HashMap<String, konoma_vcs_core::git::CommitMeta>,
     root: PathBuf,
     backend: Backend,

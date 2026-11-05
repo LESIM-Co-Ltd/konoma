@@ -20,6 +20,65 @@ fn register(manifest: Manifest) -> Result<Registry, String> {
     Ok(registry)
 }
 
+fn copy_project() -> ProjectDecl {
+    ProjectDecl::new()
+        .marker(DetectionMarker::new(".copy-project", MarkerKind::File))
+        .screen(ProjectScreen::new("log", "Log").row_kind("commit"))
+        .screen(ProjectScreen::new("text", "Text"))
+        .screen(ProjectScreen::new("canvas", "Canvas"))
+}
+
+#[test]
+fn copy_manifest_rejects_menu_closing_keys_with_the_action_name() {
+    for key in ["q", "Esc", "\u{1b}"] {
+        let error = register(
+            Manifest::new("p", "1").project(copy_project()).action(
+                Act::new("copy-close")
+                    .copy()
+                    .key(key)
+                    .project_context(ActContext::screen("log", ["commit"])),
+            ),
+        )
+        .err()
+        .expect("menu closing keys must reject the manifest");
+        assert!(error.contains("copy-close"), "{error}");
+        assert!(error.contains("one plain character"), "{error}");
+        assert!(error.contains("menu closing keys"), "{error}");
+    }
+}
+
+#[test]
+fn copy_manifest_rejects_items_outside_project_screens() {
+    for context in [
+        None,
+        Some(ActContext::TreeSelection),
+        Some(ActContext::Diff),
+    ] {
+        for view in [None, Some("text"), Some("image")] {
+            let mut act = Act::new("copy-outside").copy().key("t");
+            act.project_context = context.clone();
+            act.screen = view.map(str::to_owned);
+            let error = register(Manifest::new("p", "1").project(copy_project()).action(act))
+                .err()
+                .expect("copy items belong to project screens");
+            assert!(error.contains("copy-outside"), "{error}");
+            assert!(
+                error.contains("copy items belong to a project screen"),
+                "{error}"
+            );
+        }
+    }
+    assert!(register(
+        Manifest::new("p", "1").project(copy_project()).action(
+            Act::new("copy-inside")
+                .copy()
+                .key("t")
+                .project_context(ActContext::screen("log", ["commit"]))
+        )
+    )
+    .is_ok());
+}
+
 #[test]
 fn copy_manifest_rejects_invalid_menu_keys_naming_the_act() {
     for key in [
@@ -43,8 +102,14 @@ fn copy_manifest_rejects_invalid_menu_keys_naming_the_act() {
 
 #[test]
 fn copy_manifest_rejects_duplicate_menu_keys_in_the_same_context() {
-    let item = |id: &str, context: &str| Act::new(id).copy().key("t").context(context);
+    let item = |id: &str, context: &str| {
+        Act::new(id)
+            .copy()
+            .key("t")
+            .project_context(ActContext::screen(context, Vec::<String>::new()))
+    };
     let manifest = Manifest::new("p", "1")
+        .project(copy_project())
         .action(item("first", "text"))
         .action(item("second", "text"));
     let error = register(manifest).err().expect("duplicate must reject");
@@ -54,6 +119,7 @@ fn copy_manifest_rejects_duplicate_menu_keys_in_the_same_context() {
     );
     assert!(register(
         Manifest::new("p", "1")
+            .project(copy_project())
             .action(item("first", "text"))
             .action(item("second", "canvas"))
     )
@@ -100,11 +166,26 @@ fn copy_manifest_rejects_duplicate_menu_keys_in_the_same_context() {
 #[test]
 fn copy_keys_are_not_direct_keys_and_survive_reserved_and_direct_collisions() {
     let manifest = Manifest::new("p", "1")
+        .project(copy_project())
         .shows(ViewKind::Text)
-        .action(Act::new("copy-hash").copy().key("h"))
+        .action(
+            Act::new("copy-hash")
+                .copy()
+                .key("h")
+                .project_context(ActContext::screen("log", ["commit"])),
+        )
         .action(Act::new("direct-h").key("h"))
-        .action(Act::new("copy-x").copy().key("x"))
-        .action(Act::new("direct-x").key("x"));
+        .action(
+            Act::new("copy-x")
+                .copy()
+                .key("x")
+                .project_context(ActContext::screen("log", ["commit"])),
+        )
+        .action(
+            Act::new("direct-x")
+                .key("x")
+                .project_context(ActContext::screen("log", ["commit"])),
+        );
     let registry = register(manifest).unwrap();
     let actions = &registry.manifest("p").unwrap().actions;
     assert_eq!(actions[0].key.as_deref(), Some("h"));

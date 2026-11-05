@@ -484,7 +484,8 @@ impl Act {
         self
     }
 
-    /// Offer this action in the host's copy menu instead of on a direct key or in `Space`.
+    /// Offer this action in a project screen's copy menu instead of on a direct key or in
+    /// `Space`. A screen project context is required; menu closing keys are reserved.
     pub fn copy(mut self) -> Act {
         self.copy = true;
         self

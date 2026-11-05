@@ -422,12 +422,17 @@ fn reserved_for_main_view(manifest: &Manifest) -> Vec<(KeySpec, Layer)> {
     all
 }
 
+/// Keys reserved for closing a menu, shared by declaration checks and host menu resolution.
+pub fn closes_menu(key: KeySpec) -> bool {
+    !key.ctrl && matches!(key.code, KeyName::Char('q') | KeyName::Esc)
+}
+
 pub(crate) fn copy_key_valid(key: Option<&str>) -> bool {
     key.is_some_and(|key| {
         let mut chars = key.chars();
         chars
             .next()
-            .is_some_and(|c| !c.is_control() && !c.is_whitespace())
+            .is_some_and(|c| !c.is_control() && !c.is_whitespace() && !closes_menu(KeySpec::ch(c)))
             && chars.next().is_none()
     })
 }
