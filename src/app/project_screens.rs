@@ -168,16 +168,7 @@ fn remap_project_rows(
         .filter(|nav| &nav.project == project)
     {
         for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
-            let visible = |row: &konoma_plugin::view::ListRow| {
-                frame.query.is_empty()
-                    || row
-                        .cells
-                        .iter()
-                        .map(konoma_plugin::style::Line::plain)
-                        .collect::<String>()
-                        .to_lowercase()
-                        .contains(&frame.query.to_lowercase())
-            };
+            let visible = |row: &konoma_plugin::view::ListRow| row.matches_filter(&frame.query);
             let selected = old
                 .rows
                 .iter()
@@ -406,17 +397,7 @@ impl App {
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| {
-                    frame.query.is_empty()
-                        || row
-                            .cells
-                            .iter()
-                            .flat_map(|c| &c.spans)
-                            .map(|s| s.text.as_str())
-                            .collect::<String>()
-                            .to_lowercase()
-                            .contains(&frame.query.to_lowercase())
-                })
+                .filter(|(_, row)| row.matches_filter(&frame.query))
                 .map(|(i, _)| i)
                 .collect(),
             ProjectContent::Lines(lines) | ProjectContent::Diff(lines) => {
@@ -830,6 +811,17 @@ impl App {
             return false;
         }
         match key.code {
+            KeyCode::Char('r') => {
+                let nav = self.tab.project_navigation.as_ref().unwrap();
+                let key = nav.stack.last().unwrap().key.clone();
+                if let Some(runtime) = self.project_runtimes.get_mut(&nav.project) {
+                    runtime.dirty.insert(key);
+                    runtime.invalidated |= runtime.busy;
+                    runtime.error = None;
+                }
+                self.ensure_project_view();
+                return true;
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.project_back();
                 return true;

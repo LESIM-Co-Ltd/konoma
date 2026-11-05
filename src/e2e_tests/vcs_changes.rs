@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[path = "vcs_writes.rs"]
 mod writes;
 
-fn drain(sim: &mut Sim) {
+pub(super) fn drain(sim: &mut Sim) {
     for _ in 0..32 {
         sim.app.poll_projects();
         sim.draw();
@@ -20,7 +20,7 @@ fn drain(sim: &mut Sim) {
     panic!("VCS project did not become idle");
 }
 
-fn plugin_config(id: &str, name: &str, lang: &str) -> Config {
+pub(super) fn plugin_config(id: &str, name: &str, lang: &str) -> Config {
     let plugin: Arc<dyn Plugin> = match id {
         "git" => Arc::new(konoma_vcs::Git),
         "jj" => Arc::new(konoma_vcs::Jj),
@@ -47,7 +47,7 @@ fn pair(
     pair_config(root, id, cfg, width, height)
 }
 
-fn pair_config(
+pub(super) fn pair_config(
     root: &std::path::Path,
     id: &str,
     cfg: Config,
@@ -171,7 +171,7 @@ fn git_repo(name: &str, changed: bool) -> crate::test_support::TmpDir {
     dir.into_canonical().unwrap()
 }
 
-fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16) -> Vec<String> {
+pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16) -> Vec<String> {
     // Compare logical frames. TestBackend retains old symbols in cells hidden under a wide
     // glyph; those terminal continuation cells are not the frame the renderer produced.
     let old = old
