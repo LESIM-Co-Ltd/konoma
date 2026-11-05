@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
+
 - Internal: move Git and jj commit detail into a pushed `konoma-vcs` screen alongside the legacy hub in tests; project diff views gain styled headers, file paths and cached unified/split drawing, with shared text scrolling and host-owned list opening through `l` / Right.
 
 - Internal: add Git and jj log screens alongside the legacy hub in tests, with no user-visible change; plugin list rows gain optional styled `ListRow::right` suffixes and `ListRow::filter_text` matching text, preserved by the child-process protocol.

@@ -284,6 +284,10 @@ impl ActCx<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Outcome {
+    /// Copy this exact text (including an empty string) through the host's clipboard and notice.
+    Copy {
+        text: String,
+    },
     /// Not an action of this session.
     Unhandled,
     /// Redraw the view.

@@ -6,22 +6,28 @@ use konoma_vcs_core::git::{CommitMeta, DiffLine as CoreLine, DiffLineKind};
 use konoma_vcs_core::vcs::Vcs;
 use std::path::Path;
 
-pub(super) fn read(backend: &super::Backend, root: &Path, id: Option<&str>) -> DiffView {
+pub(super) fn read(
+    backend: &super::Backend,
+    root: &Path,
+    id: Option<&str>,
+) -> (DiffView, Option<CommitMeta>) {
     let Some(id) = id else {
-        return DiffView::default();
+        return (DiffView::default(), None);
     };
     let vcs: &dyn Vcs = match backend {
         super::Backend::Git => &konoma_vcs_core::vcs::Git,
         #[cfg(feature = "git")]
         super::Backend::Jj => &konoma_vcs_core::vcs::Jj,
         #[cfg(not(feature = "git"))]
-        super::Backend::Jj => return DiffView::default(),
+        super::Backend::Jj => return (DiffView::default(), None),
     };
-    build(
-        vcs.commit_meta(root, id),
+    let meta = vcs.commit_meta(root, id);
+    let view = build(
+        meta.clone(),
         vcs.commit_diff(root, id),
         matches!(backend, super::Backend::Jj),
-    )
+    );
+    (view, meta)
 }
 
 fn build(meta: Option<CommitMeta>, lines: Vec<CoreLine>, jj: bool) -> DiffView {
