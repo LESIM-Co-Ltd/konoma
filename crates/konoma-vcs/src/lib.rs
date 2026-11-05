@@ -50,7 +50,7 @@ macro_rules! plugin {
                 let Input::Project { root, .. } = input else {
                     return Err(Failure::unsupported(t!(en: "Project required", ja: "プロジェクトが必要です")));
                 };
-                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, detail_meta: Default::default() }))
+                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, worktree_diff: None, detail_meta: Default::default() }))
             }
         }
     };
@@ -134,6 +134,7 @@ struct Changes {
     backend: Backend,
     files: Vec<DisplayedFile>,
     worktree_home: Option<PathBuf>,
+    worktree_diff: worktrees::PreparedDiff,
 }
 
 struct DisplayedFile {
@@ -168,7 +169,12 @@ impl Session for Changes {
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktree_diff") {
             if matches!(self.backend, Backend::Git) {
-                return Ok(worktrees::diff_view(&self.root, project, cx));
+                return Ok(worktrees::diff_view(
+                    &self.root,
+                    project,
+                    cx,
+                    &mut self.worktree_diff,
+                ));
             }
         }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktrees") {
@@ -311,7 +317,13 @@ impl Session for Changes {
             return Ok(Outcome::Unhandled);
         }
         if action.starts_with("worktree_") {
-            return worktrees::act(&self.root, action, cx, self.worktree_home.as_deref());
+            return worktrees::act(
+                &self.root,
+                action,
+                cx,
+                self.worktree_home.as_deref(),
+                &mut self.worktree_diff,
+            );
         }
         let Some(context) = cx
             .project

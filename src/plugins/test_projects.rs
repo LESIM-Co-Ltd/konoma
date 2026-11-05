@@ -12,6 +12,7 @@ pub(crate) struct VcsCalls {
     pub acts: Vec<String>,
     pub views: usize,
     pub chips: usize,
+    pub remove_switch_target: bool,
 }
 
 #[cfg(feature = "git")]
@@ -53,7 +54,14 @@ impl Session for ObservedVcsSession {
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
         self.calls.lock().unwrap().acts.push(action.into());
-        self.session.act(action, cx)
+        let outcome = self.session.act(action, cx)?;
+        if let (true, Outcome::SwitchRoot { root, .. }) =
+            (self.calls.lock().unwrap().remove_switch_target, &outcome)
+        {
+            // Remove it after the real plugin checked it and before the host sees the reply.
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        Ok(outcome)
     }
 
     fn chip(&mut self, cx: &ViewCx) -> Result<Option<Chip>, Failure> {
@@ -69,6 +77,7 @@ impl Session for ObservedVcsSession {
 #[derive(Default)]
 pub(crate) struct ProjectLog {
     pub open_label: Option<Tr>,
+    pub push_help_alias: bool,
     pub hint_groups: bool,
     pub rebound_hint_key: bool,
     pub act_failures: usize,
@@ -134,6 +143,15 @@ fn action(id: &'static str, key: &str, context: ActContext) -> Act {
         .help(id)
         .footer(1)
         .project_context(context)
+}
+
+pub(crate) fn bind_push_help_alias(keys: &mut crate::plugins::PluginKeys) {
+    // Project declarations reserve l. Reuse the existing binding seam after validation so the
+    // real help builder sees one grouped Enter/l row, without changing the product's key rules.
+    keys.share_key_for_test(
+        crate::plugins::PluginAct::new("project-screens", "push-alias-source"),
+        crate::plugins::PluginAct::new("project-screens", "push-alias"),
+    );
 }
 
 impl Plugin for Screens {
@@ -295,6 +313,17 @@ impl Plugin for Screens {
             .action(action("navigate", "F11", on()));
         if self.read_only {
             m = m.read_only();
+        }
+        if self.log.lock().unwrap().push_help_alias {
+            m = m
+                .hint_group(HintGroup::new("push-open", "push").help("push"))
+                .action(action("push-alias", "ctrl-F8", on()).hint_group("push-open"))
+                .action(Act::new("push-alias-source").key("l").context("canvas"));
+            for act in &mut m.actions {
+                if act.id == "push" {
+                    act.hint_group = Some("push-open".into());
+                }
+            }
         }
         if self.log.lock().unwrap().hint_groups {
             m = m
@@ -562,7 +591,7 @@ impl Session for ScreenSession {
             "retry-input" | "retry-confirmed" | "retry-refresh" => {
                 retry_outcome.unwrap_or(Outcome::Unhandled)
             }
-            "push" => Outcome::PushScreen {
+            "push" | "push-alias" => Outcome::PushScreen {
                 screen: "text".into(),
                 selection: context.selected.as_ref().map(|row| row.value.clone()),
             },

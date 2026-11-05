@@ -5,6 +5,8 @@ use konoma_plugin::view::{DiffHunk, DiffKind, DiffLine, DiffView, ListRow, ListV
 use konoma_vcs_core::git::{self, WorktreeInfo};
 use std::path::Path;
 
+pub(super) type PreparedDiff = Option<(String, DiffView)>;
+
 pub(super) fn kind(worktree: &WorktreeInfo) -> &'static str {
     if worktree.is_bare {
         "bare"
@@ -72,7 +74,7 @@ pub(super) fn view(root: &Path, project: &ProjectView, cx: &ViewCx) -> View {
                 )
                 .value(w.path.to_string_lossy())
                 .filter_text(format!(
-                    "{} {}",
+                    "{}\n{}",
                     w.branch.as_deref().unwrap_or(""),
                     w.path.display()
                 ));
@@ -128,6 +130,7 @@ pub(super) fn act(
     action: &str,
     cx: &ActCx,
     _home: Option<&Path>,
+    prepared: &mut PreparedDiff,
 ) -> Result<Outcome, Failure> {
     let Some(context) = cx
         .project
@@ -163,6 +166,7 @@ pub(super) fn act(
         });
     }
     if action == "worktree_changes" {
+        *prepared = None;
         if let Some(message) = refusal(kind(worktree), false) {
             return Ok(Outcome::Flash(message));
         }
@@ -170,6 +174,7 @@ pub(super) fn act(
         return Ok(if diff.hunks.is_empty() {
             Outcome::Flash(t!(en: "no changes", ja: "変更なし"))
         } else {
+            *prepared = Some((row.value.clone(), diff));
             Outcome::PushScreen {
                 screen: "worktree_diff".into(),
                 selection: Some(worktree.path.to_string_lossy().into_owned()),
@@ -179,7 +184,19 @@ pub(super) fn act(
     Ok(Outcome::Unhandled)
 }
 
-pub(super) fn diff_view(root: &Path, project: &ProjectView, cx: &ViewCx) -> View {
+pub(super) fn diff_view(
+    root: &Path,
+    project: &ProjectView,
+    cx: &ViewCx,
+    prepared: &mut PreparedDiff,
+) -> View {
+    // The first pushed view uses the exact snapshot checked by d, even if files changed meanwhile.
+    if let Some((_, diff)) = prepared
+        .take()
+        .filter(|(path, _)| Some(path.as_str()) == project.selection.as_deref())
+    {
+        return View::Diff(diff);
+    }
     let worktrees = git::worktrees(root);
     let diff = project
         .selection
@@ -197,7 +214,14 @@ pub(super) fn diff_view(root: &Path, project: &ProjectView, cx: &ViewCx) -> View
             )
         })
         .unwrap_or_default();
-    View::Diff(diff)
+    if diff.hunks.is_empty() {
+        View::text([Line::from(vec![Span::styled(
+            t!(en: "no changes", ja: "変更なし").get(cx.lang),
+            Style::new().dim(),
+        )])])
+    } else {
+        View::Diff(diff)
+    }
 }
 
 fn base(
@@ -244,6 +268,8 @@ fn changes(
     lang: &str,
     home: Option<&Path>,
 ) -> DiffView {
+    #[cfg(test)]
+    DIFF_COMPUTATIONS.with(|count| count.set(count.get() + 1));
     let branch = worktree
         .branch
         .as_deref()
@@ -294,6 +320,11 @@ fn changes(
     DiffView::new(hunks).header(vec![Line::raw(title)])
 }
 
+#[cfg(test)]
+thread_local! {
+    static DIFF_COMPUTATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
     if !git {
         return manifest;
@@ -329,4 +360,125 @@ pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
             .label(t!(en: "switch", ja: "切替"))
             .help(t!(en: "switch to it", ja: "切り替える"))
             .footer(0).project_context(ActContext::screen("worktrees", ["worktree", "current", "bare", "unavailable"])))
+}
+
+#[cfg(all(test, feature = "git"))]
+mod tests {
+    use super::*;
+    use konoma_vcs_core::git2;
+
+    #[test]
+    fn worktree_changes_computes_once_per_d_and_keeps_snapshot_when_files_turn_clean() {
+        let dir = konoma_test_support::unique_tmp("worktree_diff_once");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.into_canonical().unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "seed\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::new(
+            "Fixture",
+            "fixture@example.invalid",
+            &git2::Time::new(1_577_836_800, 0),
+        )
+        .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+            .unwrap();
+        let mut session = crate::Git
+            .open(
+                Input::Project {
+                    root: dir.to_path_buf(),
+                    marker: ".git".into(),
+                },
+                &OpenCx::bare(),
+            )
+            .unwrap();
+        let context = ProjectAct::new()
+            .screen("worktrees")
+            .selected(ProjectRow::new("current", dir.to_string_lossy()));
+        for lang in ["en", "ja"] {
+            for text in ["first change\n", "second change\n"] {
+                std::fs::write(dir.join("file.txt"), text).unwrap();
+                let before = DIFF_COMPUTATIONS.with(std::cell::Cell::get);
+                let outcome = session
+                    .act(
+                        "worktree_changes",
+                        &ActCx::new(Settings::empty(), lang).with_project(context.clone()),
+                    )
+                    .unwrap();
+                let Outcome::PushScreen { screen, selection } = outcome else {
+                    panic!("diff push required")
+                };
+                std::fs::write(dir.join("file.txt"), "seed\n").unwrap();
+                let view = session
+                    .view(
+                        &ViewReq::new(80, 20)
+                            .project(ProjectView::new(screen).selection(selection.unwrap())),
+                        &ViewCx::new(Settings::empty(), lang),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    DIFF_COMPUTATIONS.with(std::cell::Cell::get) - before,
+                    1,
+                    "one full computation per d"
+                );
+                let View::Diff(diff) = view else {
+                    panic!("snapshot diff required")
+                };
+                assert!(diff
+                    .hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .any(|l| l.text == text.trim_end()));
+                let refresh = session
+                    .view(
+                        &ViewReq::new(80, 20).project(
+                            ProjectView::new("worktree_diff").selection(dir.to_string_lossy()),
+                        ),
+                        &ViewCx::new(Settings::empty(), lang),
+                    )
+                    .unwrap();
+                let View::Text(text) = refresh else {
+                    panic!("empty refresh must show a message")
+                };
+                let konoma_plugin::view::TextSource::Lines(lines) = text.source else {
+                    panic!("message lines required")
+                };
+                assert_eq!(
+                    lines[0].plain(),
+                    if lang == "en" {
+                        "no changes"
+                    } else {
+                        "変更なし"
+                    }
+                );
+                assert_eq!(
+                    DIFF_COMPUTATIONS.with(std::cell::Cell::get) - before,
+                    2,
+                    "refresh reads current data once"
+                );
+            }
+            let before = DIFF_COMPUTATIONS.with(std::cell::Cell::get);
+            let outcome = session
+                .act(
+                    "worktree_changes",
+                    &ActCx::new(Settings::empty(), lang).with_project(context.clone()),
+                )
+                .unwrap();
+            let Outcome::Flash(message) = outcome else {
+                panic!("clean worktree must flash without pushing")
+            };
+            assert_eq!(
+                message.get(lang),
+                if lang == "en" {
+                    "no changes"
+                } else {
+                    "変更なし"
+                }
+            );
+            assert_eq!(DIFF_COMPUTATIONS.with(std::cell::Cell::get) - before, 1);
+        }
+    }
 }

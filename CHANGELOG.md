@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Worktree changes compute once per `d` and reuse that snapshot for the first diff view; empty refreshes show a message. Worktree filters match branch and path separately, and vanished switch targets keep the project screen. Project help keeps open-key aliases not covered by plugin help. Project list filters ignore control/Alt chords and control characters while preserving Shift text; the legacy hub already ignores Ctrl chords and is unchanged.
+
 - Project list help now lists `/` on log and changes screens, where it filters rows, and hides `V` on both because they do not enable marks. Markable project lists still show `V` and toggle row marks; the legacy hub help is unchanged.
 
 - Internal: move Git's worktree list into `konoma-vcs` alongside the unchanged legacy hub, with switch, new-tab, create and pushed changes. Accepted differences: project title/tabs/frame and navigation hints; empty lists show a message; Enter on the current worktree stays on the list; Ctrl-t is silent and unlisted for current/bare/unavailable rows; jj has no worktrees screen or w key; `/` is first in the footer. Settings live under `[plugins.git]` (legacy-name reading follows later). Project changes loses its duplicate Enter footer hint; log already had one. SDK rows gain initial selection and filter fallback, SwitchRoot gains an optional success message, and optional screen filter labels retain legacy wording without reordering shared project controls.

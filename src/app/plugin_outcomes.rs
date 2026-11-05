@@ -21,6 +21,7 @@ impl App {
             Outcome::OpenDiff { path } => self.open_git_diff(&path),
             Outcome::SwitchRoot { root, message } => {
                 if root.is_dir() {
+                    self.tab.project_navigation = None;
                     self.switch_worktree_root(root);
                     if let Some(message) = message {
                         self.flash = Some(message.get(self.plugin_lang()).into());

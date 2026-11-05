@@ -153,6 +153,27 @@ mod reading {
     }
 
     #[test]
+    fn worktrees_filter_does_not_match_across_fields_or_detached_leading_space() {
+        let dir = fixture();
+        let list = rows(&dir.join("main"), "en");
+        let linked = list
+            .rows
+            .iter()
+            .find(|r| r.name.as_deref() == Some("日本語"))
+            .unwrap();
+        assert!(!linked.matches_filter(&format!("日本語 {}", dir.display())));
+        assert!(linked.matches_filter("日本語"));
+        assert!(linked.matches_filter(&linked.value.to_uppercase()));
+        let detached = list
+            .rows
+            .iter()
+            .find(|r| r.value == dir.join("detached").to_string_lossy())
+            .unwrap();
+        assert!(!detached.matches_filter(&format!(" {}", detached.value)));
+        assert!(detached.matches_filter(&detached.value));
+    }
+
+    #[test]
     fn worktrees_rows_match_core_order_names_paths_suffixes_targets_and_filter_only_branch_or_path()
     {
         let dir = fixture();

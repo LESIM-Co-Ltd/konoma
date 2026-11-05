@@ -479,12 +479,7 @@ impl App {
         )
     }
 
-    pub(crate) fn project_open_hint(&self) -> Option<(String, String)> {
-        let entry = self.project_open_control()?;
-        Some((entry.rendered_keys(), entry.label))
-    }
-
-    fn project_open_control(&self) -> Option<ProjectControl> {
+    pub(crate) fn project_open_control(&self) -> Option<ProjectControl> {
         use crate::keymap::{Action, KeyPress, Motion};
         if !self
             .project_content()
@@ -1213,7 +1208,10 @@ impl App {
                     frame.query.pop();
                     frame.cursor = 0;
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char(c)
+                    if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+                        && !c.is_control() =>
+                {
                     frame.query.push(c);
                     frame.cursor = 0;
                 }
@@ -1887,7 +1885,6 @@ impl App {
                 crate::resolve_key_result(self, result.map(|()| false));
             }
             Some(outcome @ Outcome::SwitchRoot { .. }) => {
-                self.tab.project_navigation = None;
                 let result = self.apply_plugin_navigation(outcome);
                 crate::resolve_key_result(self, result.map(|()| false));
             }

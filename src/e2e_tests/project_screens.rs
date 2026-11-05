@@ -7,6 +7,94 @@ mod scroll;
 mod confirmations;
 
 #[test]
+fn e2e_project_help_multikey_push_row_leaves_only_uncovered_right_alias() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture_with_log(
+            &format!("project_multikey_open_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                push_help_alias: true,
+                ..Default::default()
+            },
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        crate::plugins::test_projects::bind_push_help_alias(&mut f.sim.app.plugin_keys);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        let plugin = sections
+            .iter()
+            .find(|section| section.title == "Project screens")
+            .unwrap();
+        let navigation = sections
+            .iter()
+            .find(|section| section.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        let open_rows = |section: &crate::ui::help::HelpSection| {
+            section
+                .rows
+                .iter()
+                .filter(|(_, description)| description == "push")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(open_rows(plugin), [("Enter / l".into(), "push".into())]);
+        assert_eq!(open_rows(navigation), [("→".into(), "push".into())]);
+    }
+}
+
+#[test]
+fn e2e_project_help_keeps_open_aliases_when_plugin_lists_only_enter() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture(
+            &format!("project_open_alias_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        assert!(sections
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(keys, desc)| keys == "Enter" && desc == "push"));
+        let navigation = sections
+            .iter()
+            .find(|s| s.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        assert!(
+            navigation
+                .rows
+                .iter()
+                .any(|(keys, desc)| keys == "l/→" && desc == "push"),
+            "{:?}",
+            navigation.rows
+        );
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let before = f.log.lock().unwrap().acts.len();
+            f.sim.press(code, KeyModifiers::NONE);
+            drain(&mut f.sim);
+            assert_eq!(
+                f.log.lock().unwrap().acts.len(),
+                before + 1,
+                "{lang:?} {code:?}: screen={:?}, flash={:?}",
+                f.sim.app.project_frame().map(|f| &f.key.screen),
+                f.sim.app.flash
+            );
+            assert_eq!(last_act(&f).0, "push");
+            f.sim.key('q');
+            drain(&mut f.sim);
+        }
+    }
+}
+
+#[test]
 fn e2e_project_footer_shared_key_keeps_act_label_with_two_spaces() {
     use crate::i18n::Lang;
     use crate::keymap::{Context, KeyPress};

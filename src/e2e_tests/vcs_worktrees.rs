@@ -389,6 +389,122 @@ fn e2e_vcs_worktrees_ctrl_t_directory_root_open_dir_preserves_original_and_file_
 }
 
 #[test]
+fn e2e_vcs_worktree_filter_ignores_control_chords_like_legacy_and_keeps_shift_text() {
+    use crate::app::list_filter::ListId;
+    let repo = repo();
+    for lang in ["en", "ja"] {
+        let (mut old, mut new) = pair(&repo.root, lang, 160);
+        select(&mut old, &mut new, &repo.linked);
+        old.key('/');
+        new.key('/');
+        for letter in ['t', 'c', 'x', 'w', 'q', 'a', 'd'] {
+            old.press(KeyCode::Char(letter), KeyModifiers::CONTROL);
+            new.press(KeyCode::Char(letter), KeyModifiers::CONTROL);
+            drain(&mut new);
+            assert_eq!(old.app.list_filter_query(ListId::Worktrees), "");
+            assert_eq!(
+                new.app.project_frame().unwrap().query,
+                "",
+                "Ctrl-{letter} is not text"
+            );
+            assert!(new.app.project_frame().unwrap().filtering);
+            assert_eq!(new.app.project_frame().unwrap().key.screen, "worktrees");
+            assert_eq!(new.app.tab_count(), 1);
+            assert_eq!(new.app.tab.root, repo.root);
+            assert!(new.app.project_dialog.is_none());
+        }
+        for (code, mods) in [
+            (KeyCode::Char('日'), KeyModifiers::NONE),
+            (KeyCode::Char('Q'), KeyModifiers::SHIFT),
+        ] {
+            old.press(code, mods);
+            new.press(code, mods);
+        }
+        assert_eq!(old.app.list_filter_query(ListId::Worktrees), "日Q");
+        assert_eq!(new.app.project_frame().unwrap().query, "日Q");
+        for (code, mods) in [
+            (KeyCode::Char('x'), KeyModifiers::ALT),
+            (KeyCode::Char('\n'), KeyModifiers::NONE),
+            (KeyCode::Char('\0'), KeyModifiers::NONE),
+        ] {
+            new.press(code, mods);
+            assert_eq!(new.app.project_frame().unwrap().query, "日Q");
+        }
+        new.press(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(new.app.project_frame().unwrap().query, "日");
+        new.enter();
+        assert!(!new.app.project_frame().unwrap().filtering);
+        assert_eq!(new.app.project_frame().unwrap().query, "日");
+        new.key('/');
+        new.esc();
+        assert!(new.app.project_frame().unwrap().query.is_empty());
+        assert!(!new.app.project_frame().unwrap().filtering);
+    }
+}
+
+#[test]
+fn e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root() {
+    use crate::plugins::{
+        test_plugins,
+        test_projects::{ObservedVcs, VcsCalls},
+    };
+    use std::sync::{Arc, Mutex};
+    for lang in ["en", "ja"] {
+        let repo = repo();
+        let calls = Arc::new(Mutex::new(VcsCalls {
+            remove_switch_target: true,
+            ..Default::default()
+        }));
+        let token = test_plugins::register(
+            &format!("vcs_switch_vanished_{lang}"),
+            Arc::new(ObservedVcs {
+                plugin: Arc::new(konoma_vcs::Git),
+                calls: calls.clone(),
+            }),
+        );
+        let mut cfg = test_plugins::marker_config(&token);
+        cfg.ui.lang = lang.into();
+        let (mut old, mut new) = pair_config(&repo.root, "git", cfg, 160, 20);
+        old.key('w');
+        new.key('w');
+        drain(&mut new);
+        select(&mut old, &mut new, &repo.linked);
+        let root = new.app.tab.root.clone();
+        let open_dir = new.app.tab.open_dir.clone();
+        let frame = new.app.project_frame().unwrap().clone();
+        new.enter();
+        drain(&mut new);
+        assert!(!repo.linked.exists());
+        assert!(calls
+            .lock()
+            .unwrap()
+            .acts
+            .iter()
+            .any(|a| a == "worktree_switch"));
+        assert_eq!(new.app.tab.root, root);
+        assert_eq!(new.app.tab.open_dir, open_dir);
+        assert!(
+            new.app.project_active(),
+            "a refused root switch must keep the worktree screen"
+        );
+        let after = new.app.project_frame().unwrap();
+        assert_eq!(after.key, frame.key);
+        assert_eq!(
+            (after.cursor, after.scroll, after.query.as_str()),
+            (frame.cursor, frame.scroll, frame.query.as_str())
+        );
+        assert_eq!(
+            new.app.flash,
+            Some(format!(
+                "{}{}",
+                crate::i18n::tr(new.app.lang, crate::i18n::Msg::NotFound),
+                repo.linked.display()
+            ))
+        );
+    }
+}
+
+#[test]
 fn e2e_vcs_worktrees_ctrl_t_without_target_does_nothing_and_has_no_help_or_footer_hint() {
     let repo = repo();
     git(&repo._dir, &["clone", "-q", "--bare", "main", "bare"]);
