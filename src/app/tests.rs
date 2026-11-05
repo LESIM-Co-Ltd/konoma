@@ -25936,3 +25936,10 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
     }
     assert!(t.elapsed() < std::time::Duration::from_secs(2));
 }
+#[cfg(feature = "git")]
+impl super::App {
+    pub(crate) fn show_empty_git_log_for_test(&mut self) {
+        self.tab.git_log = Some(Vec::new());
+        self.tab.git_view = false;
+    }
+}

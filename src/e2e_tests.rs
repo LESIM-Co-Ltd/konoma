@@ -21221,3 +21221,5 @@ mod table_parity;
 mod text_parity;
 #[cfg(feature = "git")]
 mod vcs_changes;
+#[cfg(feature = "git")]
+mod vcs_log;

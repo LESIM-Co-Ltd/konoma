@@ -250,7 +250,7 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), 1);
+        assert_eq!(project.screens.len(), 2);
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));

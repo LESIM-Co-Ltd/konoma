@@ -299,6 +299,19 @@ the empty string, omitted on the wire, so legacy rows keep their bytes.
 default `None`). The optional wire field is omitted when absent: older children
 produce `None` and older hosts ignore it. It also reaches selected and marked
 `ProjectRow`s; `ProjectRow::new(kind, value).name(name)` sets it directly.
+`ListRow::right(Line)` adds `right: Line | null` (SDK `Option<Line>`, default
+`None`), a styled, single-line suffix that the host aligns to the body's right
+edge. If its display width plus two exceeds the body width, the host hides it
+and ellipsizes the left cells. Otherwise it ellipsizes the left cells to leave
+one space, pads the gap, and preserves the suffix's styles. CJK display widths
+count; selection reverses the whole row.
+`ListRow::filter_text(text)` adds `filter_text: string | null` (SDK
+`Option<String>`, default `None`). Hosts use it for case-insensitive substring
+filtering, including selection remapping after refresh. When absent, matching
+uses the displayed cells and optional right suffix without alignment padding;
+an explicit empty string only matches an empty query. Both fields are omitted
+on the wire when absent: older children default to `None`, older hosts ignore
+them, and existing rows keep their encoding.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
 is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same
