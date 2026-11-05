@@ -251,6 +251,16 @@ fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
         #[cfg(feature = "git")]
         Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
+        #[cfg(not(feature = "git"))]
+        Context::Diff => (
+            Msg::PreviewGitDiff,
+            vec![
+                r(SCROLL),
+                r(ENDS),
+                r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds),
+                r(&[Action::CycleDiffLayout]),
+            ],
+        ),
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen_rows(b, s),
         // The overlays are never what the help is opened over (`help_context`), but a plan for
@@ -830,16 +840,25 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
         let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
-        navigation.rows.push((
-            "Tab / Shift-Tab".into(),
-            tr(app.lang, Msg::ProjectCycle).into(),
-        ));
-        navigation
-            .rows
-            .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
-        navigation
-            .rows
-            .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
+        if let Some(hints) = app.project_text_help() {
+            navigation.rows.extend(hints);
+        } else {
+            if let Some(hint) = app.project_open_hint() {
+                navigation.rows.push(hint);
+            }
+            if !app.project_pushed() {
+                navigation.rows.push((
+                    "Tab / Shift-Tab".into(),
+                    tr(app.lang, Msg::ProjectCycle).into(),
+                ));
+            }
+            navigation
+                .rows
+                .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
+            navigation
+                .rows
+                .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
+        }
         if app.project_content().is_some_and(|view| {
             matches!(
                 view.as_ref(),

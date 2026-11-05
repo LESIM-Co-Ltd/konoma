@@ -1,13 +1,13 @@
 use konoma_plugin::prelude::*;
 
 #[test]
-fn log_declaration_follows_changes_without_shortcut_or_actions() {
+fn log_declaration_follows_changes_with_enter_and_pushed_detail() {
     for plugin in [&konoma_vcs::Git as &dyn Plugin, &konoma_vcs::Jj] {
         let manifest = plugin.manifest();
         let screens = &manifest.project.as_ref().unwrap().screens;
         assert_eq!(
             screens.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            ["changes", "log"]
+            ["changes", "log", "detail"]
         );
         let log = &screens[1];
         assert_eq!(log.title.get("en"), "Log");
@@ -15,10 +15,16 @@ fn log_declaration_follows_changes_without_shortcut_or_actions() {
         assert_eq!(log.key, None);
         assert_eq!(log.row_kinds, ["commit", "empty"]);
         assert!(!log.marks && !log.checks);
-        assert!(
-            !manifest.actions.iter().any(|a| matches!(&a.project_context,
-            Some(ActContext::Screen { screen, .. }) if screen == "log"))
-        );
+        let acts: Vec<_> = manifest
+            .actions
+            .iter()
+            .filter(|a| {
+                matches!(&a.project_context,
+            Some(ActContext::Screen { screen, .. }) if screen == "log")
+            })
+            .collect();
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].key.as_deref(), Some("Enter"));
         let setting = manifest
             .settings
             .iter()
@@ -80,7 +86,7 @@ mod reading {
         else {
             panic!("list required")
         };
-        for action in ["diff", "stage", "commit", "copy", "detail"] {
+        for action in ["diff", "stage", "commit", "copy"] {
             assert_eq!(
                 session
                     .act(

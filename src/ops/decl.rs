@@ -147,7 +147,6 @@ pub fn decl(a: Action) -> Decl {
         // Preview: diff
         #[cfg(feature = "git")]
         A::GitDiffDiscard => d(Some(M::FtDiscard), Some(M::DiscardWholeFile)).writes("git"),
-        #[cfg(feature = "git")]
         A::CycleDiffLayout => d(Some(M::FtDiffLayout), Some(M::GitLayout)),
         #[cfg(feature = "git")]
         A::CycleDiffView => d(None, Some(M::DiffViewCycleHelp)),

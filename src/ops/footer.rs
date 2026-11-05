@@ -55,7 +55,6 @@ const PAGE_KEYS: &[Action] = &[
     Action::Navigate(Motion::PageDown),
     Action::Navigate(Motion::PageUp),
 ];
-#[cfg(feature = "git")]
 const HSCROLL: &[Action] = &[
     Action::Navigate(Motion::Left),
     Action::Navigate(Motion::Right),
@@ -146,6 +145,13 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
         Context::Bookmarks | Context::Tabs | Context::Outline => Vec::new(),
         #[cfg(feature = "git")]
         Context::Diff => diff(app),
+        #[cfg(not(feature = "git"))]
+        Context::Diff => vec![
+            Foot::Group(SCROLL, Msg::Scroll),
+            Foot::Group(HSCROLL, Msg::HintHscroll),
+            Foot::Op(Action::CycleDiffLayout),
+            Foot::Group(ENDS, Msg::HintEnds),
+        ],
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen(app, b, s),
     }

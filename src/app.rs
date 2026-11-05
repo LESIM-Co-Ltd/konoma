@@ -323,10 +323,10 @@ impl UiLayer {
     /// The keymap surface this layer owns.
     ///
     /// `None` means the layer has no surface **on this build** — only the git layers, and only when
-    /// the `git` feature is off, where `keymap::Surface` has no git variants at all. [`App::surface`]
+    /// the `git` feature is off (the shared diff surface is available in every build). [`App::surface`]
     /// then keeps walking to the layer behind it, which is exactly what the old hand-written cascade
     /// did by wrapping its whole git block in `#[cfg(feature = "git")]`. (Such state is unreachable
-    /// through the UI on a no-git build — every git opener bails out because the `git.rs` stubs
+    /// through the UI on a no-git build — native hub openers bail out because the `git.rs` stubs
     /// return empty/None — but the fall-through is characterized so it cannot change by accident.)
     pub fn surface(self) -> Option<crate::keymap::Surface> {
         use crate::keymap::Surface as S;
@@ -363,7 +363,6 @@ impl UiLayer {
             Self::GitWorktrees => S::GitWorktrees,
             #[cfg(feature = "git")]
             Self::GitChanges => S::GitChanges,
-            #[cfg(feature = "git")]
             Self::GitDiff => S::PreviewGitDiff,
             #[cfg(not(feature = "git"))]
             Self::GitDetail
@@ -377,8 +376,7 @@ impl UiLayer {
             | Self::GitBranches
             | Self::GitWorktreeFilter
             | Self::GitWorktrees
-            | Self::GitChanges
-            | Self::GitDiff => return None,
+            | Self::GitChanges => return None,
             Self::Filter => S::Filter,
             Self::Search => S::Search,
             Self::Mark => S::Mark,
@@ -505,7 +503,6 @@ impl crate::keymap::Surface {
             S::GitChanges => UiLayer::GitChanges,
             #[cfg(feature = "git")]
             S::GitWorktrees => UiLayer::GitWorktrees,
-            #[cfg(feature = "git")]
             S::PreviewGitDiff => UiLayer::GitDiff,
             S::Visual => UiLayer::Visual,
             S::Tree => base(BaseKind::Tree, false),

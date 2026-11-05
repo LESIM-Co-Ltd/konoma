@@ -1651,10 +1651,50 @@ pub enum WView {
     Table(WTable),
     Image(WImageView),
     List(Vec<WListRow>),
-    Diff(Vec<Vec<WDiffLine>>),
+    Diff(WDiffView),
     Canvas(WCanvas),
     Reopen(WReopen),
     Message(Vec<WLine>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WDiffHunk {
+    pub lines: Vec<WDiffLine>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "WDiffCompat")]
+pub struct WDiffView {
+    pub hunks: Vec<WDiffHunk>,
+    pub header: Vec<WLine>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WDiffCompat {
+    Current {
+        hunks: Vec<WDiffHunk>,
+        #[serde(default)]
+        header: Vec<WLine>,
+    },
+    Legacy(Vec<Vec<WDiffLine>>),
+}
+
+impl From<WDiffCompat> for WDiffView {
+    fn from(value: WDiffCompat) -> Self {
+        match value {
+            WDiffCompat::Current { hunks, header } => Self { hunks, header },
+            WDiffCompat::Legacy(hunks) => Self {
+                hunks: hunks
+                    .into_iter()
+                    .map(|lines| WDiffHunk { lines, path: None })
+                    .collect(),
+                header: Vec::new(),
+            },
+        }
+    }
 }
 
 const CONTINUATION: &str = "\u{0}";
@@ -2188,11 +2228,15 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 })
                 .collect::<Result<_, WireError>>()?,
         ),
-        View::Diff(d) => WView::Diff(
-            d.hunks
+        View::Diff(d) => WView::Diff(WDiffView {
+            header: lines_to_wire(&d.header),
+            hunks: d
+                .hunks
                 .iter()
-                .map(|h| {
-                    h.lines
+                .map(|h| WDiffHunk {
+                    path: h.path.clone(),
+                    lines: h
+                        .lines
                         .iter()
                         .map(|l| WDiffLine {
                             kind: match l.kind {
@@ -2204,10 +2248,10 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                             new_no: l.new_no.map(|n| n as u64),
                             text: l.text.clone(),
                         })
-                        .collect()
+                        .collect(),
                 })
                 .collect(),
-        ),
+        }),
         View::Canvas(c) => WView::Canvas(canvas_to_wire(c, enc)?),
         View::Reopen(r) => WView::Reopen(WReopen {
             content_type: r.content_type.clone(),
@@ -2330,11 +2374,11 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             }
             View::List(ListView { rows: out })
         }
-        WView::Diff(hunks) => {
-            let mut out = Vec::with_capacity(hunks.len());
-            for h in hunks {
-                let mut lines = Vec::with_capacity(h.len());
-                for l in h {
+        WView::Diff(diff) => {
+            let mut out = Vec::with_capacity(diff.hunks.len());
+            for h in diff.hunks {
+                let mut lines = Vec::with_capacity(h.lines.len());
+                for l in h.lines {
                     lines.push(DiffLine {
                         kind: match l.kind {
                             WDiffKind::Context => DiffKind::Context,
@@ -2352,9 +2396,15 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                         text: l.text,
                     });
                 }
-                out.push(DiffHunk { lines });
+                out.push(DiffHunk {
+                    lines,
+                    path: h.path,
+                });
             }
-            View::Diff(DiffView { hunks: out })
+            View::Diff(DiffView {
+                hunks: out,
+                header: lines_from_wire(diff.header),
+            })
         }
         WView::Canvas(c) => View::Canvas(canvas_from_wire(c, dec)?),
         WView::Reopen(r) => View::Reopen(Reopen {
