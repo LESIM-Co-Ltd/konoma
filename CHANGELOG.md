@@ -6,6 +6,10 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Project confirmations keep cancellation visible when fitting narrow/CJK status lines, safely cancel malformed prompt stages, and color choices by an explicit `ConfirmChoice::destructive()` declaration instead of their key. Child-process fallback rows are always non-selectable and all appear when filtering has no matches; VCS builds without the `git` feature omit write actions on every screen.
+
+- Internal: move the Git branch and read-only jj bookmark lists into a `konoma-vcs` tab alongside the legacy hub, with name copying and guarded Git checkout/create/safe-or-force delete. Checkout and create stay on the tab; empty lists can open. The shared project navigation/filter/back controls remain before plugin acts (checkout, new, delete), and the copy menu keeps its generic title. On jj, write keys that cannot act are hidden. All project confirmation dialogs now use `key = label` instead of `key: label`, show explicitly destructive choices (including branch force-delete on `!`) in red, and give destructive dialogs a red border. Confirmation choices can declare concise status labels.
+
 - Worktree changes compute once per `d` and reuse that snapshot for the first diff view; empty refreshes show a message. Worktree filters match branch and path separately, and vanished switch targets keep the project screen. Project help keeps open-key aliases not covered by plugin help. Project list filters ignore control/Alt chords and control characters while preserving Shift text; the legacy hub already ignores Ctrl chords and is unchanged.
 
 - Project list help now lists `/` on log and changes screens, where it filters rows, and hides `V` on both because they do not enable marks. Markable project lists still show `V` and toggle row marks; the legacy hub help is unchanged.

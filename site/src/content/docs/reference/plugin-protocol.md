@@ -100,6 +100,18 @@ represents a non-interactive message or heading, without selection reversal,
 marks or actions. For an empty list, return a styled non-selectable row whose
 text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
 
+The `konoma-vcs` project tabs include `branches` after `log`: Git calls it Branches,
+jj Bookmarks (`b`). Git declares checkout, create and safe/force delete; jj only
+declares name copying. Checkout and creation stay on this tab, whereas the legacy
+hub returns to Changes. The host retains shared navigation/filter controls before
+plugin acts; its copy menu uses the generic Copy title. An empty or unmatched list
+shows a dim message; unlike the legacy empty hub list, the tab can always open.
+On jj, write keys that cannot act (`Enter`, `c`, `d`) are hidden, whereas the
+legacy hub displayed them and refused the write. All project confirmation dialogs
+now display `key = label` instead of `key: label`, show explicitly destructive
+choices in red (including the branch's `!` force-delete choice), and
+use a red border for destructive actions.
+
 `ProjectView` carries optional absolute `tree_root`, `open_dir` and `home_dir`.
 The current tree root may differ from the detected root in `Input::Project`;
 `open_dir` is the tab's launch directory. The host passes these on every request
@@ -243,7 +255,7 @@ Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `write
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr, destructive?: boolean }], setting?: string } | null
 text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -268,6 +280,21 @@ text with the invoked row's `name`, falling back to its `value`. Without a selec
 row it uses an empty string. The invocation captures the row, so moving the cursor
 or refreshing the list while the dialog is open does not change the prompt's name.
 There are no other placeholders or escaping; text without `{row}` is unchanged.
+
+`ConfirmChoice::status(Tr)` optionally supplies a concise status-line label; the host
+otherwise uses the choice's full label. The status line lists the declared keys and
+labels followed by localized cancellation keys, including non-letter keys such as
+`!`. The optional `status` field defaults to absent and preserves older JSON.
+The host reserves space for the catalogue's cancellation hint before fitting whole
+choice tokens by display-cell width, including CJK. If the full cancel hint cannot
+fit, `Esc` remains when at least three cells are available. Invalid prompt stages
+draw no dialog and are canceled without invoking an action when input arrives.
+
+`ConfirmChoice::destructive()` marks a choice for red warning text independently
+of its key. Its optional wire field `destructive` defaults to false and is omitted
+when false, preserving old JSON. This presentation marker does not replace
+`Act::destructive()` or the action's write guard; the latter still declares the
+destructive dialog's red border and mandatory confirmation.
 
 `Confirmation::setting(key)` makes the confirmation conditional on a boolean setting
 in `[plugins.<id>]`, using the same settings as `cx.settings` and the declared default
@@ -347,7 +374,10 @@ them, and existing rows keep their encoding.
 row when a screen first opens. The first visible request wins; later refreshes
 preserve the selected identity. `ListRow::filter_fallback(true)` makes a message
 unselectable and shows it only when no ordinary row matches, including an empty
-query. `ListView::visible_rows(query)` implements that rule. Both wire fields
+query. All fallback rows appear in declaration order, and their text is not matched.
+`ListView::visible_rows(query)` implements that rule. On receipt from a child,
+a fallback row is always made non-selectable, even if it sends `selectable: true`.
+Both wire fields
 are booleans, default to false and are omitted when false, preserving old JSON
 and MessagePack rows. A fallback is never a selection or an action target.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`

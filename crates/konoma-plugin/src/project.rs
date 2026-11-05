@@ -365,6 +365,10 @@ impl Choice {
 pub struct ConfirmChoice {
     pub key: char,
     pub choice: Choice,
+    /// Warn with destructive styling independently of the choice's key character.
+    pub destructive: bool,
+    /// Optional concise status-line label; otherwise the full choice label is used.
+    pub status: Option<Tr>,
 }
 
 impl ConfirmChoice {
@@ -372,7 +376,19 @@ impl ConfirmChoice {
         Self {
             key,
             choice: Choice::new(value, label),
+            destructive: false,
+            status: None,
         }
+    }
+
+    pub fn status(mut self, label: impl Into<Tr>) -> Self {
+        self.status = Some(label.into());
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
     }
 }
 

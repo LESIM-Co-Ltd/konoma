@@ -325,6 +325,41 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
     }
+    if let Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage, .. }) =
+        &app.project_dialog
+    {
+        if let Some(crate::app::project_screens::ProjectPrompt::Confirmation(prompt)) =
+            prompts.get(*stage)
+        {
+            let choices: Vec<_> = prompt
+                .choices
+                .iter()
+                .map(|choice| {
+                    format!(
+                        "{}:{}",
+                        choice.key,
+                        choice
+                            .status
+                            .as_ref()
+                            .unwrap_or(&choice.choice.label)
+                            .get(app.plugin_lang())
+                    )
+                })
+                .collect();
+            let cancel = tr(lang, Msg::ProjectConfirmCancelStatus);
+            let room = usize::from(width);
+            if room < cancel.width() {
+                return vec![Span::raw(fit_tokens(&["Esc".into()], width)).dim()];
+            }
+            let choices = fit_tokens(&choices, room.saturating_sub(cancel.width() + 2) as u16);
+            let text = if choices.is_empty() {
+                cancel.to_string()
+            } else {
+                format!("{choices}  {cancel}")
+            };
+            return vec![Span::raw(text).dim()];
+        }
+    }
     if app.project_dialog.is_some() {
         return vec![Span::raw(tr(lang, crate::i18n::Msg::ProjectDialogKeys)).dim()];
     }

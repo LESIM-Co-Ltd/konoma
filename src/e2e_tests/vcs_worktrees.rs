@@ -588,7 +588,7 @@ fn e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key() {
     std::fs::write(repo.root.join("file.txt"), "changed\n").unwrap();
     let cfg = plugin_config("git", "vcs_footer_unique_keys", "en");
     let (_, mut new) = pair_config(&repo.root, "git", cfg, 160, 20);
-    for screen in ["changes", "log", "worktrees"] {
+    for screen in ["changes", "log", "branches", "worktrees"] {
         if screen != "changes" {
             new.press(KeyCode::Tab, KeyModifiers::NONE);
             drain(&mut new);

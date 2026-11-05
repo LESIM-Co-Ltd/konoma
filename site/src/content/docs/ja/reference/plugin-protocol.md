@@ -87,6 +87,18 @@ ProjectAct {
 表し、反転・印・操作の対象にしません。空の一覧には、`Tr` で翻訳してスタイルを
 付けた非選択行を返します。既定は true で、既存の一覧のバイト列を維持します。
 
+`konoma-vcs` のタブには `log` の次に `branches` があり、Git は「ブランチ」、jj は
+「ブックマーク」と表示します（`b`）。Git は切替・作成・安全削除・強制削除を宣言し、
+jj は名前コピーだけを宣言します。切替と作成の後もこのタブに留まります。旧ハブは
+変更画面へ戻ります。フッターはホスト共通の移動・画面切替・戻る・絞り込みを先に
+表示し、その後にプラグイン操作を置きます。コピーのメニュー名は共通のものを使います。
+空または一致なしの一覧は薄い案内行を表示し、空でもタブを開けます。
+jj では実行できない書き込みキー（`Enter`・`c`・`d`）を表示しません。旧ハブでは
+キーを表示した上で書き込みを拒否していました。すべてのプロジェクト確認ダイアログは、
+従来の `key: label` に代えて `key = label` で表示し、破壊的と宣言した選択肢
+（ブランチの `!` 強制削除を含む）を赤く、破壊的な
+操作のダイアログの枠も赤く表示します。
+
 `ProjectView` は省略可能な絶対パス `tree_root`・`open_dir`・`home_dir` も持ちます。
 現在のツリーの root は `Input::Project` の根と違う場合もあり、`open_dir` はタブの
 起動ディレクトリです。ホストは毎回の要求に渡し、パスの文脈が変われば表示を
@@ -200,7 +212,7 @@ Act.hint_group: string | null
 project_context:
   { "Screen": { screen: string, row_kinds: string[] } }
   | "TreeSelection" | "Diff" | null
-confirmation: { text: Tr, choices: [{ key: character, choice: Choice }], setting?: string } | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice, status?: Tr, destructive?: boolean }], setting?: string } | null
 text_input: { label: Tr, initial: string, keep_on_failure?: boolean } | null
 choice_input: { label: Tr, choices: Choice[] } | null
 refresh: RefreshTarget[]
@@ -224,6 +236,19 @@ Choice = { value: string, label: Tr }
 呼び出し時の行を保持するため、ダイアログを開いている間にカーソルが動いたり
 一覧が更新されたりしても、確認文の行名は変わりません。他の置換記法や
 エスケープはなく、`{row}` のない文はそのまま表示します。
+
+`ConfirmChoice::status(Tr)` はステータス行の短いラベルを指定します。省略時は
+選択肢の通常のラベルを使います。ホストは宣言されたキーとラベルを並べ、最後に
+翻訳済みの取消キーを表示します。`!` のような文字以外のキーも同じ扱いです。
+線上の `status` は省略可能で、古い JSON では未指定として扱います。
+ホストはカタログの取消案内の幅を先に確保し、CJK を含む表示セル幅で選択肢を
+トークン単位に収めます。取消案内全体が収まらない場合も、3セル以上あれば `Esc` を
+表示します。不正なプロンプト段階は描画せず、入力時に操作を呼ばず取り消します。
+
+`ConfirmChoice::destructive()` はキー文字に関係なく選択肢を警告の赤色にします。
+線上の `destructive` は省略可能で既定は false、false の場合は省略して古い JSON を
+維持します。この表示用の印は `Act::destructive()` や書き込みガードの代わりには
+なりません。破壊的なダイアログの赤い枠と確認必須の宣言は引き続き操作側で指定します。
 
 `Confirmation::setting(key)` は `[plugins.<id>]` の真偽値設定で確認の有無を
 切り替えます。`cx.settings` と同じ設定を使い、未指定なら宣言された既定値を使います。
@@ -290,7 +315,9 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 `ListRow::initial_selection(true)` は画面を初めて開く時のカーソル行を指定します。
 表示中かつ選択可能な行の最初の指定を使い、再読み込みでは選択した識別子を保ちます。
 `ListRow::filter_fallback(true)` は行を選択不能にし、通常の行が1つも一致しない時だけ
-表示します。空の検索にも適用され、`ListView::visible_rows(query)` がこの規則を実装します。
+宣言順にすべて表示し、案内文は検索しません。空の検索にも適用され、
+`ListView::visible_rows(query)` がこの規則を実装します。子から受信した fallback 行は、
+`selectable: true` が同時に指定されても非選択に正規化します。
 通信上の両フィールドは真偽値で、既定の `false` は省略されます。
 旧 JSON と MessagePack の行を維持し、fallback 行を選択や操作の対象にはしません。
 従来の行の種類・行き先・プラグインのチェック状態の意味を保ち、`marked` は独立した

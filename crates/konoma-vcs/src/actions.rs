@@ -20,6 +20,9 @@ fn yes() -> Vec<ConfirmChoice> {
 }
 
 pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
+    if !cfg!(feature = "git") {
+        return manifest;
+    }
     if !git {
         return manifest
             .setting(SettingDecl::new(
@@ -108,6 +111,61 @@ pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
 pub(super) fn failed(message: &str) -> Failure {
     // Project action failures are flashed verbatim by the host.
     Failure::external(t!(en: format!("failed: {message}"), ja: format!("失敗: {message}")))
+}
+
+pub(super) fn branch_act(
+    root: &std::path::Path,
+    action: &str,
+    context: &ProjectAct,
+) -> Result<Outcome, Failure> {
+    if action == "create_branch" {
+        let Some(name) = context.text.as_deref() else {
+            return Ok(Outcome::Unhandled);
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(Outcome::Flash(t!(en: "name is empty", ja: "名前が空です")));
+        }
+        konoma_vcs_core::git::create_branch(root, name)
+            .map_err(|e| Failure::external(e.to_string()))?;
+        return Ok(Outcome::Flash(
+            t!(en: format!("Created branch: {name}"), ja: format!("ブランチ作成: {name}")),
+        ));
+    }
+    let Some(row) = context
+        .selected
+        .as_ref()
+        .filter(|r| matches!(r.kind.as_str(), "branch" | "current"))
+    else {
+        return Ok(Outcome::Unhandled);
+    };
+    let name = &row.value;
+    match action {
+        "branch_copy_name" => Ok(Outcome::Copy { text: name.clone() }),
+        "checkout" => {
+            konoma_vcs_core::git::checkout(root, name)
+                .map_err(|e| Failure::external(e.to_string()))?;
+            Ok(Outcome::Flash(
+                t!(en: format!("Switched to: {name}"), ja: format!("切替: {name}")),
+            ))
+        }
+        "delete_current_branch" | "delete_branch" if row.kind == "current" => Ok(Outcome::Flash(
+            t!(en: "cannot delete the current branch", ja: "現在のブランチは削除できません"),
+        )),
+        "delete_branch" => {
+            let force = match context.confirmation.as_deref() {
+                Some("safe") => false,
+                Some("force") => true,
+                _ => return Ok(Outcome::Unhandled),
+            };
+            konoma_vcs_core::git::delete_branch(root, name, force)
+                .map_err(|e| Failure::external(e.to_string()))?;
+            Ok(Outcome::Flash(
+                t!(en: format!("Deleted branch: {name}"), ja: format!("ブランチ削除: {name}")),
+            ))
+        }
+        _ => Ok(Outcome::Unhandled),
+    }
 }
 
 #[cfg(feature = "git")]
