@@ -157,8 +157,11 @@ fn unkeyed(ctx: Context) -> Vec<Action> {
     let mut v: Vec<Action> = Vec::new();
     match ctx {
         Context::Bookmarks => v.push(Action::BookmarkDelete),
-        #[cfg(feature = "git")]
-        Context::Diff => v.extend([Action::ToggleFollowDiffScope, Action::CyclePathStyle]),
+        Context::Diff => {
+            #[cfg(feature = "git")]
+            v.push(Action::ToggleFollowDiffScope);
+            v.push(Action::CyclePathStyle);
+        }
         #[cfg(feature = "git")]
         Context::Screen(_, crate::keymap::Screen::Changes) => {
             v.extend([Action::GitOpenLog, Action::GitOpenGraph])

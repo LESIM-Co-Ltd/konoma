@@ -200,9 +200,9 @@ pub fn help_context(app: &App) -> Context {
         if let Some(s) = screen {
             return Context::Screen(backend, s);
         }
-        if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
-            return Context::Diff;
-        }
+    }
+    if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
+        return Context::Diff;
     }
     match app.tab.mode {
         crate::app::Mode::Tree => Context::Tree,
@@ -249,18 +249,7 @@ fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         Context::Image => (Msg::PreviewImage, image_rows()),
         Context::Table => (Msg::PreviewTable, table_rows()),
         Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
-        #[cfg(feature = "git")]
         Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
-        #[cfg(not(feature = "git"))]
-        Context::Diff => (
-            Msg::PreviewGitDiff,
-            vec![
-                r(SCROLL),
-                r(ENDS),
-                r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds),
-                r(&[Action::CycleDiffLayout]),
-            ],
-        ),
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen_rows(b, s),
         // The overlays are never what the help is opened over (`help_context`), but a plan for
@@ -454,7 +443,6 @@ fn table_rows() -> Vec<Row> {
     ]
 }
 
-#[cfg(feature = "git")]
 fn diff_rows(app: &App) -> Vec<Row> {
     // The media diff's side-by-side view and the binary-summary body have nothing to scroll.
     let media_or_summary = app.diff_footer_is_media_or_summary();
@@ -466,9 +454,12 @@ fn diff_rows(app: &App) -> Vec<Row> {
     }
     v.push(r(&[Action::CycleDiffLayout]));
     v.push(r(PAGE_TURN));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::CycleDiffView]));
     v.push(r(CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(DIFF_CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::ToggleFollowDiffScope]));
     v.push(r(&[Action::RequestEdit]));
     v.push(r(&[Action::OpenExternal]));
@@ -480,6 +471,7 @@ fn diff_rows(app: &App) -> Vec<Row> {
         v.push(r(PAGE_KEYS));
         v.push(r(HALF_KEYS));
     }
+    #[cfg(feature = "git")]
     v.push(r(&[Action::GitDiffDiscard]));
     v.push(r(BACK_PREVIEW).d(Msg::BackToGitView));
     v

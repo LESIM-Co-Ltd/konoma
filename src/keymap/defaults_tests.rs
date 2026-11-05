@@ -373,6 +373,7 @@ fn only_in_this_build(snapshot: &str) -> String {
 
 const NO_GIT_DIFF_VIM: &str = "diff | Space | leader:actions\n\
 diff | $ | navigate:line_end\n\
+diff | , | leader:options\n\
 diff | 0 | navigate:line_home\n\
 diff | 1 | tab_goto\n\
 diff | 2 | tab_goto\n\
@@ -391,13 +392,19 @@ diff | Q | quit\n\
 diff | T | toggle_tab_list\n\
 diff | [ | tab_prev\n\
 diff | ] | tab_next\n\
+diff | e | request_edit\n\
 diff | g | navigate:top\n\
 diff | h | navigate:left\n\
 diff | j | navigate:down\n\
 diff | k | navigate:up\n\
 diff | l | navigate:right\n\
+diff | o | open_external\n\
+diff | p | open_git_view\n\
+diff | q | preview_back\n\
+diff | r | refresh\n\
 diff | s | cycle_diff_layout\n\
 diff | t | tab_new_after\n\
+diff | y | leader:copy\n\
 diff | Ctrl-b | navigate:page_up\n\
 diff | Ctrl-d | navigate:half_down\n\
 diff | Ctrl-f | navigate:page_down\n\
@@ -453,7 +460,7 @@ fn the_default_menus_are_the_snapshot() {
             cfg!(feature = "git")
                 || !(l.starts_with("git_copy")
                     || l.starts_with("branch_copy")
-                    || l.starts_with("options@diff"))
+                    || *l == "options@diff | f | toggle_follow_diff_scope")
         })
         .map(|l| format!("{l}\n"))
         .collect();
@@ -1269,10 +1276,10 @@ fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
         (Context::Document, "document"),
         (Context::Image, "image"),
         (Context::Table, "table"),
+        (Context::Diff, "diff"),
     ];
     #[cfg(feature = "git")]
     {
-        contexts.push((Context::Diff, "diff"));
         for b in Backend::ALL {
             for s in Screen::ALL {
                 // The commit detail is a text view and the graph picker a small list of its own.

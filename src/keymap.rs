@@ -1426,35 +1426,33 @@ impl KeyMap {
         let pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
         contexts.insert(Context::Canvas, pcvs);
 
-        // Shared diff keys live in layer 2; native file operations add their own table below.
-        contexts.insert(Context::Diff, ContextMap::new());
-
-        // --- Version-control contexts (feature gate) ---
+        // The file diff is shared with project plugins in every build. Only native VCS
+        // operations depend on the git feature; leaving, reloading and file verbs do not.
+        let mut pgit: ContextMap = host_table(verbs_table());
+        pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
+        // The follow scope has no default key: it lives in the `,` menu when git is enabled.
+        pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
+        pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         #[cfg(feature = "git")]
         {
-            // Preview: gitdiff
-            let mut pgit: ContextMap = host_table(verbs_table());
-            pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            // `e` opens the editor at the change block on screen; `o` opens the file in another
-            // app; `p` / `!` reach the project's screen and tool; `r` reads the diff again.
-            pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
             pgit.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-            pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
             // `n` / `N` = the next / previous change block of this file (layer 1).
             pgit.insert(KeyPress::ch('n'), run(Action::DiffNextChange));
             pgit.insert(KeyPress::ch('N'), run(Action::DiffPrevChange));
-            // The follow scope (`toggle_follow_diff_scope`) has no default key: it lives in the
-            // `,` menu (its old `f` was the less-style page key).
-            pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
             // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
             // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
             // the next / previous change block within the file.
             pgit.insert(KeyPress::ctrl_ch('n'), run(Action::JumpNextChange));
             pgit.insert(KeyPress::ctrl_ch('p'), run(Action::JumpPrevChange));
-            pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-            contexts.insert(Context::Diff, pgit);
+        }
+        contexts.insert(Context::Diff, pgit);
 
+        // --- Version-control contexts (feature gate) ---
+        #[cfg(feature = "git")]
+        {
             // The version-control screens: git and jj start with the same tables.
             for backend in Backend::ALL {
                 // Changes hub. Enter→GitOpenSelectedDiff fires as a fixed key.
@@ -2394,7 +2392,6 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
         )
     };
     let path = || item('p', Action::CyclePathStyle);
-    #[cfg_attr(not(feature = "git"), allow(unused_mut))]
     let mut v = vec![menu(
         Context::Tree,
         vec![
@@ -2408,10 +2405,13 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
             item('h', Action::ToggleHidden),
         ],
     )];
-    #[cfg(feature = "git")]
     v.push(menu(
         Context::Diff,
-        vec![item('f', Action::ToggleFollowDiffScope), path()],
+        vec![
+            #[cfg(feature = "git")]
+            item('f', Action::ToggleFollowDiffScope),
+            path(),
+        ],
     ));
     v
 }

@@ -837,10 +837,7 @@ impl App {
     }
 
     pub(crate) fn project_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
-        #[cfg(feature = "git")]
         let host_diff = ctx == Context::Diff;
-        #[cfg(not(feature = "git"))]
-        let host_diff = false;
         let context_matches = if self.project_active() {
             ctx == Context::Canvas
         } else {
