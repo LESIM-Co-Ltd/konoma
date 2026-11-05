@@ -216,8 +216,11 @@ hub's enabled-member rule. The `Space` menu keeps each action's entry and label.
 
 `Act::copy()` declares an item of the context's host `y` menu. Its optional wire
 field is `copy: boolean` (absent means `false`, and `false` is omitted on output).
+Copy items belong to a project screen: `project_context` must be `Screen`.
+View-only, tree-selection and generic diff declarations are rejected with the action's name.
 Its `key` must be exactly one non-control, non-whitespace character; invalid or
 duplicate copy keys in the same context reject the manifest and name the action.
+Menu closing keys (`q` and `Esc`) are reserved and cannot be copy item keys.
 Copy keys do not participate in direct-key reservations or collisions. Copy items
 have no direct key, individual footer hint or `Space` entry, even if a footer
 priority is declared. Non-copy actions retain their existing behavior and wire data.
