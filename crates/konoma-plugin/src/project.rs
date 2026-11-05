@@ -220,6 +220,8 @@ impl DetectionMarker {
 pub struct ProjectScreen {
     pub id: String,
     pub title: Tr,
+    /// Optional label for the host's list filter hint; absent keeps the shared wording.
+    pub filter_label: Option<Tr>,
     /// An optional single character that jumps to this screen. The project entry key `p`
     /// may be reused here; other reserved host keys cannot be used as screen jumps.
     pub key: Option<char>,
@@ -237,6 +239,7 @@ impl ProjectScreen {
         Self {
             id: id.into(),
             title: title.into(),
+            filter_label: None,
             key: None,
             row_kinds: Vec::new(),
             marks: false,
@@ -247,6 +250,10 @@ impl ProjectScreen {
 
     pub fn key(mut self, key: char) -> Self {
         self.key = Some(key);
+        self
+    }
+    pub fn filter_label(mut self, label: impl Into<Tr>) -> Self {
+        self.filter_label = Some(label.into());
         self
     }
     pub fn pushed(mut self) -> Self {

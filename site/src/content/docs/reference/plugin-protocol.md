@@ -87,6 +87,11 @@ Use `ActCx::with_project(ProjectAct::new()...)` to attach this data.
 
 ### Screen presentation and path context
 
+`ProjectScreen::filter_label(Tr)` optionally supplies the footer's list-filter
+label. Its wire field `filter_label?: Tr` defaults to `None` and is omitted when
+absent, so existing screens keep the shared label and their previous encoding.
+It changes wording only; shared project keys keep their order before row actions.
+
 `ProjectScreen.marks(bool)` and `.checks(bool)` reserve fixed multi-selection
 and check columns. Both default to false (omitted on the wire). Row data never
 changes the column width; a missing check state reserves four blank cells.
@@ -338,6 +343,13 @@ uses the displayed cells and optional right suffix without alignment padding;
 an explicit empty string only matches an empty query. Both fields are omitted
 on the wire when absent: older children default to `None`, older hosts ignore
 them, and existing rows keep their encoding.
+`ListRow::initial_selection(true)` requests the initial cursor on that selectable
+row when a screen first opens. The first visible request wins; later refreshes
+preserve the selected identity. `ListRow::filter_fallback(true)` makes a message
+unselectable and shows it only when no ordinary row matches, including an empty
+query. `ListView::visible_rows(query)` implements that rule. Both wire fields
+are booleans, default to false and are omitted when false, preserving old JSON
+and MessagePack rows. A fallback is never a selection or an action target.
 `kind`, target and plugin-owned `checked` keep their existing meaning. `marked`
 is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same
@@ -378,13 +390,55 @@ without the Git feature. `r` rereads the active project screen.
 | `PushScreen` | `{ screen, selection: string \| null }` | Push this plugin's screen with an opaque row identifier |
 | `OpenFile` | `{ path: Path, line: integer \| null }` | Open a preview; line is 1-based |
 | `OpenDiff` | `{ path: Path }` | Open the host's full-screen diff |
-| `SwitchRoot` | `{ root: Path }` | Change the tree root |
+| `SwitchRoot` | `{ root: Path, message?: Tr }` | Change the tree root and launch directory; optionally override the success flash |
 | `OpenTab` | `{ path: Path }` | Open a new host tab |
 
 Navigation paths must be absolute, have no NUL bytes and fit the existing path
 limit. The host's **`q` pops one screen**; it is host behavior, not another plugin
 outcome or an action that bypasses the guard. The host applies navigation after
 the worker returns the outcome.
+
+`SwitchRoot.message` defaults to `None` and is omitted when absent, preserving
+the old encoding and default switch flash. The message is displayed only after
+a successful switch. For project lists, `Ctrl-t` uses the selected row's
+`target`: a directory becomes the new tab's root and launch directory, a file
+opens in preview, and the source tab and its screen remain intact. The footer
+and help offer it only when the selected row has a target. Project footer plans
+reconcile host open hints and declared actions to show each key once.
+
+### Bundled VCS worktree screen
+
+The git plugin declares `worktrees` (`w`), after branches when present, otherwise
+after log. It lists git's worktrees in order, including current, bare, detached,
+locked and prunable entries. Paths use the home-relative form; `/` matches only
+the branch or full path, ignoring case. `Enter` (also `l` / Right) switches the
+current tab, `Ctrl-t` opens an available non-current checkout in another tab,
+`c` creates from a new or existing branch, and `d` pushes a host-rendered diff.
+Creation trims the name, replaces `/` with `-` in the directory name, resolves
+placement from the main worktree, switches to the canonical path and flashes
+“Created worktree”. Blank names and git failures close the input without retry.
+Only creation is a write and is blocked by read-only mode.
+
+| `[plugins.git]` setting | Default | Meaning |
+|---|---|---|
+| `worktree_dir` | `"../"` | Placement relative to the main worktree |
+| `graph_base_branches` | `[]` | Ordered base candidates; the main worktree's branch is appended |
+
+Diffs exclude the worktree's own branch and choose the newest merge-base;
+ties keep the first candidate. They show committed and uncommitted changes
+since that base, falling back to uncommitted changes alone. With neither, the
+screen flashes “no changes”. `s` changes layout, text motions scroll, and
+`q` / Esc restores the list cursor. Reading the old `[git] worktree_dir` and
+`[ui] graph_base_branches` names is deferred to the renamed-settings unit.
+
+The legacy hub remains unchanged for comparison. Accepted differences are the
+project title/tabs/frame and navigation hints, an empty message instead of
+refusing to open an empty list, staying on the list after Enter on the current
+worktree, and silent `Ctrl-t` with no hint on current/bare/unavailable rows.
+jj declares neither this screen nor `w`, instead of the legacy refusal flash.
+`/` comes first in the footer, followed by the row operations in their declared
+order; its worktree label and help retain the legacy wording. A worktree diff's
+title uses the diff header and divider instead of the legacy outer frame.
 
 The checked examples live in
 `crates/konoma-plugin-test/tests/vectors/project-v2.json`, `project-calls-v2.msgpack.hex` and

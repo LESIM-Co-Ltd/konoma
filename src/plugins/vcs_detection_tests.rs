@@ -111,7 +111,6 @@ fn assert_late_overflow_fence(failed: bool) {
             .any(|project| project.plugin == "git" && project.root == root));
     }
 }
-
 impl ProjectDetection {
     pub(crate) fn inject_event_with_pending_watch_update(
         &self,

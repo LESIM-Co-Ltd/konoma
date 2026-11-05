@@ -7,6 +7,9 @@ use crate::app::project_screens::ProjectContent;
 use crate::test_support::{init_git_repo, TmpDir};
 use konoma_vcs_core::git2;
 
+#[path = "vcs_worktrees.rs"]
+mod worktrees;
+
 fn commit(root: &std::path::Path, i: usize) {
     let repo = git2::Repository::open(root).unwrap();
     let sig = git2::Signature::new(
@@ -262,15 +265,27 @@ fn e2e_vcs_copy_empty_log_and_screen_without_copy_acts_do_nothing_without_hints(
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
     let dir = repo(0);
     let cfg = plugin_config("git", "vcs_copy_empty", "en");
-    let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+    let (mut old, mut new) = pair_config(&dir, "git", cfg, 100, 12);
     new.press(KeyCode::Tab, KeyModifiers::NONE);
     drain(&mut new);
     assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
-    for changes in [false, true] {
-        if changes {
+    for screen in ["log", "changes", "worktrees"] {
+        if screen == "changes" {
             new.press(KeyCode::BackTab, KeyModifiers::NONE);
             drain(&mut new);
         }
+        if screen == "worktrees" {
+            old.app.open_git_worktrees();
+            old.draw();
+            assert!(old.app.is_git_worktrees());
+            clear_test_clipboard();
+            old.key('y');
+            assert_eq!(old.app.pending_leader, None);
+            assert_eq!(get_test_clipboard(), None);
+            new.key('w');
+            drain(&mut new);
+        }
+        assert_eq!(new.app.project_frame().unwrap().key.screen, screen);
         clear_test_clipboard();
         assert!(!crate::ops::menu::opens(
             &new.app,
@@ -586,7 +601,9 @@ fn e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open() {
     let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
     for (code, expected) in [
         (KeyCode::Tab, "log"),
+        (KeyCode::Tab, "worktrees"),
         (KeyCode::Tab, "changes"),
+        (KeyCode::BackTab, "worktrees"),
         (KeyCode::BackTab, "log"),
     ] {
         new.press(code, KeyModifiers::NONE);
