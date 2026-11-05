@@ -334,3 +334,34 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
         }
     }
 }
+
+#[cfg(feature = "git")]
+#[test]
+fn vcs_changes_jj_failed_sync_uses_legacy_messages() {
+    let dir = konoma_test_support::unique_tmp("vcs_sync_failure");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = konoma_vcs::Jj
+        .open(
+            Input::Project {
+                root: dir.to_path_buf(),
+                marker: ".jj".into(),
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    for lang in ["en", "ja"] {
+        let settings = Settings::new();
+        let cx = ActCx::new(&settings, lang).with_project(ProjectAct::new().screen("changes"));
+        let Outcome::Flash(message) = session.act("sync", &cx).unwrap() else {
+            panic!("missing failure flash")
+        };
+        assert_eq!(
+            message.get(lang),
+            if lang == "en" {
+                "jj could not snapshot the working copy"
+            } else {
+                "jj が作業コピーを取り込めませんでした"
+            }
+        );
+    }
+}
