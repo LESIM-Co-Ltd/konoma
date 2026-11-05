@@ -62,6 +62,7 @@ impl Plugin for ScrollPlugin {
                     .screen(ProjectScreen::new("lines", "Lines").key('z'))
                     .screen(ProjectScreen::new("diff", "Diff").key('d'))
                     .screen(ProjectScreen::new("wide", "Wide").key('w'))
+                    .screen(ProjectScreen::new("large", "Large").key('c'))
                     .screen(ProjectScreen::new("list", "List").key('i').row_kind("item")),
             )
             .shows(ViewKind::Text)
@@ -82,6 +83,20 @@ impl Session for ScrollPlugin {
             "hidden" => View::text(["hidden"]),
             "wide" => View::text((0..ROWS).map(|_| "日本語".repeat(80))),
             "lines" => View::text((0..ROWS).map(|i| Screen::Lines.label(i))),
+            "large" => View::Diff(
+                PluginDiffView::new(vec![DiffHunk::new(
+                    (0..6500)
+                        .map(|i| DiffLine {
+                            kind: DiffKind::Context,
+                            old_no: Some(i + 1),
+                            new_no: Some(i + 1),
+                            text: format!("let value = {i}; // 日本語 {}", "long ".repeat(50)),
+                        })
+                        .collect(),
+                )
+                .path("main.rs")])
+                .header(vec![Line::raw("commit large")]),
+            ),
             "diff" => View::Diff(PluginDiffView {
                 header: vec![],
                 hunks: vec![DiffHunk {
@@ -245,16 +260,67 @@ fn e2e_project_diff_scroll_keeps_top_line_and_last_page_full() {
 }
 
 #[test]
-fn e2e_project_diff_highlighter_reuses_unchanged_layout_and_vertical_scroll() {
+fn e2e_project_diff_highlighter_reuses_unchanged_window_and_bounds_vertical_scroll() {
     use crate::preview::gitdiff::highlight_calls_for_test;
     let mut f = ScrollFixture::new("project_diff_cache", Screen::Diff);
     let before = highlight_calls_for_test();
     f.body();
     f.body();
-    f.press(KeyCode::Char('j'));
     assert_eq!(highlight_calls_for_test(), before);
+    f.press(KeyCode::Char('j'));
+    let after_scroll = highlight_calls_for_test();
+    assert!(after_scroll > before && after_scroll - before <= usize::from(BODY_ROWS));
+    f.body();
+    assert_eq!(highlight_calls_for_test(), after_scroll);
     f.press(KeyCode::Char('s'));
-    assert!(highlight_calls_for_test() > before);
+    let after_layout = highlight_calls_for_test();
+    assert!(
+        after_layout > after_scroll && after_layout - after_scroll <= usize::from(BODY_ROWS) * 2
+    );
+}
+
+#[test]
+fn e2e_project_diff_large_draw_highlights_only_window_and_stacked_pan_reuses_it() {
+    use crate::preview::gitdiff::highlight_calls_for_test;
+    let mut f = ScrollFixture::new("project_large_diff_window", Screen::Lines);
+    let before = highlight_calls_for_test();
+    f.press(KeyCode::Char('c'));
+    let highlighted = highlight_calls_for_test() - before;
+    assert!(
+        highlighted > 0 && highlighted <= usize::from(BODY_ROWS),
+        "highlighted {highlighted} rows"
+    );
+    let content = f.sim.app.project_content().unwrap();
+    let ProjectContent::Diff(diff) = content.as_ref() else {
+        panic!("diff fixture")
+    };
+    let layouts = diff.layout_count();
+    let before = highlight_calls_for_test();
+    f.body();
+    f.press(KeyCode::Char('l'));
+    f.press(KeyCode::Right);
+    assert!(f.sim.app.project_frame().unwrap().hscroll > 0);
+    assert_eq!(highlight_calls_for_test(), before);
+    assert_eq!(diff.layout_count(), layouts);
+    for split in [false, true] {
+        if split {
+            f.press(KeyCode::Char('s'));
+        }
+        let before = highlight_calls_for_test();
+        let rows = f.sim.app.project_visible_rows();
+        assert_eq!(highlight_calls_for_test(), before);
+        assert_eq!(rows.len(), 6503);
+        f.press(KeyCode::Char('G'));
+        let highlighted = highlight_calls_for_test() - before;
+        assert!(
+            highlighted > 0 && highlighted <= usize::from(BODY_ROWS) * if split { 2 } else { 1 },
+            "split={split}, highlighted={highlighted}"
+        );
+        let before = highlight_calls_for_test();
+        f.body();
+        assert_eq!(highlight_calls_for_test(), before);
+        f.press(KeyCode::Char('g'));
+    }
 }
 
 #[test]

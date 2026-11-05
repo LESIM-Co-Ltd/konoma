@@ -209,7 +209,6 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::CycleDiffView => when(app.diff_view_cycle_hint().is_some()),
         #[cfg(feature = "git")]
         A::ToggleFollowDiffScope => when(app.follow_diff_scope_msg().is_some()),
-        #[cfg(feature = "git")]
         A::CycleDiffLayout => {
             if ctx == Context::Diff {
                 // The media diff cycles its own layout; the line diff has none while it is shown

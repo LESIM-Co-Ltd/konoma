@@ -118,13 +118,14 @@ impl ProjectControl {
         format!("{}:{}", self.rendered_keys(), self.label)
     }
 }
-
 /// Immutable diff data owns its layout cache, so a replacement view always invalidates it.
 pub(crate) struct ProjectDiff {
     pub lines: Vec<crate::git::DiffLine>,
     pub header: Vec<Line<'static>>,
     pub theme: String,
     pub no_changes: String,
+    split_rows: usize,
+    unified_width: usize,
     cache: std::sync::Mutex<Option<Arc<ProjectDiffLayout>>>,
     #[cfg(test)]
     layouts: std::sync::atomic::AtomicUsize,
@@ -132,11 +133,11 @@ pub(crate) struct ProjectDiff {
 
 pub(crate) struct ProjectDiffLayout {
     pub lines: Vec<Line<'static>>,
-    pub hscroll: u16,
-    pub paragraph_hscroll: u16,
-    pub max_hscroll: u16,
+    hscroll: u16,
     width: u16,
     split: bool,
+    start: usize,
+    count: usize,
 }
 
 impl ProjectDiff {
@@ -146,80 +147,131 @@ impl ProjectDiff {
         theme: String,
         no_changes: String,
     ) -> Self {
+        // This constructor runs on the project worker. Keep totals separate from highlighted
+        // rows so key handling and row queries never need to render the document.
+        let split_rows = crate::preview::gitdiff::side_by_side_row_count(&lines, "");
+        let unified_width = crate::preview::gitdiff::unified_max_hscroll(&lines, 0)
+            .max(header.iter().map(Line::width).max().unwrap_or(0));
         Self {
             lines,
             header,
             theme,
             no_changes,
+            split_rows,
+            unified_width,
             cache: Default::default(),
             #[cfg(test)]
             layouts: Default::default(),
         }
     }
 
-    pub fn layout(&self, width: u16, split: bool, offset: u16) -> Arc<ProjectDiffLayout> {
-        use crate::preview::gitdiff::{
-            diff_lines, diff_lines_side_by_side, side_by_side_max_hscroll,
+    fn header_rows(&self) -> usize {
+        self.header.len() + usize::from(!self.header.is_empty())
+    }
+
+    pub fn row_count(&self, split: bool) -> usize {
+        self.header_rows()
+            + if self.lines.is_empty() {
+                usize::from(!self.header.is_empty())
+            } else if split {
+                self.split_rows
+            } else {
+                self.lines.len()
+            }
+    }
+
+    pub fn metrics(&self, width: u16, split: bool) -> (usize, u16) {
+        let max_h = if self.lines.is_empty() {
+            0
+        } else if split {
+            crate::preview::gitdiff::side_by_side_max_hscroll(&self.lines, usize::from(width))
+        } else {
+            self.unified_width
+                .max(usize::from(!self.header.is_empty()))
+                .saturating_sub(usize::from(width))
         };
+        (self.row_count(split), max_h.min(u16::MAX as usize) as u16)
+    }
+
+    pub fn layout(
+        &self,
+        width: u16,
+        split: bool,
+        offset: u16,
+        start: usize,
+        count: usize,
+    ) -> Arc<ProjectDiffLayout> {
+        use crate::preview::gitdiff::{diff_lines_range, diff_lines_side_by_side_range};
         use ratatui::style::{Color, Style};
+        // Stacked panning only moves the Paragraph; it does not change its highlighted lines.
+        let offset = if split { offset } else { 0 };
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(cached) = cache
-            .as_ref()
-            .filter(|c| c.width == width && c.split == split && c.hscroll == offset)
-        {
+        if let Some(cached) = cache.as_ref().filter(|c| {
+            c.width == width
+                && c.split == split
+                && c.hscroll == offset
+                && c.start == start
+                && c.count == count
+        }) {
             return cached.clone();
         }
         #[cfg(test)]
         self.layouts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let iw = usize::from(width);
-        let mut lines = self.header.clone();
-        if !lines.is_empty() {
+        let end = start.saturating_add(count);
+        let mut lines: Vec<_> = self
+            .header
+            .iter()
+            .skip(start)
+            .take(count)
+            .cloned()
+            .collect();
+        if !self.header.is_empty() && start <= self.header.len() && self.header.len() < end {
             lines.push(Line::styled(
                 "─".repeat(iw.max(1)),
                 Style::new().fg(Color::DarkGray),
             ));
         }
-        let (hscroll, paragraph_hscroll, max_hscroll) = if self.lines.is_empty() {
-            if !lines.is_empty() {
+        let header_rows = self.header_rows();
+        let diff_start = start.saturating_sub(header_rows);
+        let diff_count = end.saturating_sub(header_rows.max(start));
+        if self.lines.is_empty() {
+            if !self.header.is_empty() && start <= header_rows && header_rows < end {
                 lines.push(Line::styled(
                     self.no_changes.clone(),
                     Style::new().fg(Color::DarkGray),
                 ));
             }
-            (0, 0, 0)
-        } else {
+        } else if diff_count > 0 {
             if split {
-                let max = side_by_side_max_hscroll(&self.lines, iw).min(u16::MAX as usize) as u16;
-                let h = offset.min(max);
-                lines.extend(diff_lines_side_by_side(
+                lines.extend(diff_lines_side_by_side_range(
                     &self.lines,
                     "",
                     &self.theme,
                     iw,
-                    usize::from(h),
+                    usize::from(offset),
+                    diff_start,
+                    diff_count,
                 ));
-                (h, 0, max)
             } else {
-                lines.extend(diff_lines(&self.lines, "", &self.theme, iw));
-                let max = lines
-                    .iter()
-                    .map(Line::width)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_sub(iw)
-                    .min(u16::MAX as usize) as u16;
-                let h = offset.min(max);
-                (h, h, max)
+                lines.extend(diff_lines_range(
+                    &self.lines,
+                    "",
+                    &self.theme,
+                    iw,
+                    diff_start,
+                    diff_count,
+                ));
             }
-        };
+        }
         let drawn = Arc::new(ProjectDiffLayout {
             lines,
-            hscroll,
-            paragraph_hscroll,
-            max_hscroll,
+            hscroll: offset,
             width,
             split,
+            start,
+            count,
         });
         *cache = Some(drawn.clone());
         drawn
@@ -519,9 +571,6 @@ impl App {
             return false;
         };
         let width = self.tab.preview_cols;
-        let Some(frame) = self.project_frame() else {
-            return false;
-        };
         let (total, max_h) = match content.as_ref() {
             ProjectContent::Lines(lines) => (
                 lines.len(),
@@ -533,10 +582,7 @@ impl App {
                     .saturating_sub(width as usize)
                     .min(u16::MAX as usize) as u16,
             ),
-            ProjectContent::Diff(diff) => {
-                let drawn = diff.layout(width, self.diff_is_split(width), frame.hscroll);
-                (drawn.lines.len(), drawn.max_hscroll)
-            }
+            ProjectContent::Diff(diff) => diff.metrics(width, self.diff_is_split(width)),
             ProjectContent::List(_) => return false,
         };
         let max_v = total
@@ -751,15 +797,9 @@ impl App {
         match content.as_ref() {
             ProjectContent::List(list) => list.visible_rows(&frame.query),
             ProjectContent::Lines(lines) => (0..lines.len()).collect(),
-            ProjectContent::Diff(diff) => (0..diff
-                .layout(
-                    self.tab.preview_cols,
-                    self.diff_is_split(self.tab.preview_cols),
-                    frame.hscroll,
-                )
-                .lines
-                .len())
-                .collect(),
+            ProjectContent::Diff(diff) => {
+                (0..diff.row_count(self.diff_is_split(self.tab.preview_cols))).collect()
+            }
         }
     }
 
@@ -867,10 +907,7 @@ impl App {
     }
 
     pub(crate) fn project_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
-        #[cfg(feature = "git")]
         let host_diff = ctx == Context::Diff;
-        #[cfg(not(feature = "git"))]
-        let host_diff = false;
         let context_matches = if self.project_active() {
             ctx == Context::Canvas
         } else {

@@ -12,6 +12,116 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 #[test]
+fn project_diff_window_cells_match_full_render_at_headers_and_inside_change_blocks() {
+    use crate::git::{DiffLine, DiffLineKind};
+    use crate::preview::gitdiff::{diff_lines, diff_lines_side_by_side};
+    use ratatui::{
+        backend::TestBackend,
+        layout::Rect,
+        style::{Color, Style},
+        text::Line,
+        widgets::Paragraph,
+        Terminal,
+    };
+    let mut data = Vec::new();
+    for path in ["main.rs", "data.json"] {
+        data.push(DiffLine {
+            kind: DiffLineKind::Context,
+            old_no: None,
+            new_no: None,
+            text: path.into(),
+        });
+        for kind in [
+            DiffLineKind::Context,
+            DiffLineKind::Removed,
+            DiffLineKind::Added,
+            DiffLineKind::Context,
+        ] {
+            for i in 0..12 {
+                data.push(DiffLine {
+                    kind,
+                    old_no: (!matches!(kind, DiffLineKind::Added)).then_some(i + 1),
+                    new_no: (!matches!(kind, DiffLineKind::Removed)).then_some(i + 1),
+                    text: format!("let value_{i} = {kind:?}; // 日本語 {}", "long ".repeat(25)),
+                });
+            }
+        }
+    }
+    let header = vec![
+        Line::styled(
+            "commit header 日本語 ".repeat(40),
+            Style::new().fg(Color::Yellow),
+        ),
+        Line::raw("subject"),
+        Line::raw(""),
+    ];
+    let diff = crate::app::project_screens::ProjectDiff::new(
+        data.clone(),
+        header.clone(),
+        "TwoDark".into(),
+        "No changes".into(),
+    );
+    for width in [30, 80, 180] {
+        for split in [false, true] {
+            for offset in [0, 8, u16::MAX] {
+                let (total, max_h) = diff.metrics(width, split);
+                let offset = offset.min(max_h);
+                let mut full = header.clone();
+                full.push(Line::styled(
+                    "─".repeat(usize::from(width)),
+                    Style::new().fg(Color::DarkGray),
+                ));
+                full.extend(if split {
+                    diff_lines_side_by_side(
+                        &data,
+                        "",
+                        "TwoDark",
+                        usize::from(width),
+                        usize::from(offset),
+                    )
+                } else {
+                    diff_lines(&data, "", "TwoDark", usize::from(width))
+                });
+                assert_eq!(total, full.len());
+                if !split {
+                    assert_eq!(
+                        usize::from(max_h),
+                        full.iter()
+                            .map(Line::width)
+                            .max()
+                            .unwrap()
+                            .saturating_sub(usize::from(width))
+                    );
+                }
+                // Every start includes windows straddling a file header, and starting inside
+                // either half of an unequal-in-view Removed/Added block.
+                for start in 0..=total {
+                    let window = diff.layout(width, split, offset, start, 9);
+                    let render = |lines, scroll| {
+                        let mut term = Terminal::new(TestBackend::new(width, 9)).unwrap();
+                        term.draw(|f| {
+                            f.render_widget(
+                                Paragraph::new(lines)
+                                    .scroll((scroll, if split { 0 } else { offset })),
+                                Rect::new(0, 0, width, 9),
+                            )
+                        })
+                        .unwrap()
+                        .buffer
+                        .clone()
+                    };
+                    assert_eq!(
+                        render(window.lines.clone(), 0),
+                        render(full.clone(), start as u16),
+                        "width={width}, split={split}, offset={offset}, start={start}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn project_diff_content_keeps_styled_header_and_one_marker_per_changed_path() {
     use konoma_plugin::view::{DiffHunk, DiffKind, DiffLine, DiffView};
     let hunks = ["main.rs", "main.rs", "data.json"]

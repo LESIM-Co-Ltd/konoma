@@ -73,6 +73,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines = Vec::new();
     let mut horizontal = active.hscroll;
     let mut kept_hscroll = horizontal;
+    let mut diff_scroll = None;
     let is_list = matches!(content.as_ref(), ProjectContent::List(_));
     let visible = if is_list {
         app.project_visible_rows()
@@ -166,14 +167,31 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
                 return;
             }
-            let drawn = diff.layout(body.width, app.diff_is_split(body.width), horizontal);
+            let split = app.diff_is_split(body.width);
+            let (total, max_h) = diff.metrics(body.width, split);
+            let scroll = usize::from(active.scroll)
+                .min(total.saturating_sub(usize::from(body.height)))
+                .min(u16::MAX as usize);
+            horizontal = horizontal.min(max_h);
+            kept_hscroll = horizontal;
+            let drawn = diff.layout(
+                body.width,
+                split,
+                horizontal,
+                scroll,
+                usize::from(body.height),
+            );
             lines.clone_from(&drawn.lines);
-            horizontal = drawn.paragraph_hscroll;
-            kept_hscroll = drawn.hscroll;
+            if split {
+                horizontal = 0;
+            }
+            diff_scroll = Some(scroll);
         }
     }
     let cursor = active.cursor.min(lines.len().saturating_sub(1));
-    let scroll = if !is_list {
+    let scroll = if let Some(scroll) = diff_scroll {
+        scroll
+    } else if !is_list {
         usize::from(active.scroll)
             .min(lines.len().saturating_sub(body.height as usize))
             .min(u16::MAX as usize)
@@ -196,7 +214,14 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if !is_list {
         frame.render_widget(
-            Paragraph::new(lines).scroll((scroll as u16, horizontal)),
+            Paragraph::new(lines).scroll((
+                if diff_scroll.is_some() {
+                    0
+                } else {
+                    scroll as u16
+                },
+                horizontal,
+            )),
             body,
         );
         return;

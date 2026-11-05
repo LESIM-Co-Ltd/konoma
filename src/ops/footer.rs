@@ -29,7 +29,6 @@ pub enum Foot {
     /// operations are zipped (`j/k`, `J/K/PgDn/PgUp`).
     Group(&'static [Action], Msg),
     /// Like `Group`, labelled as `decl::text` says for the first operation (`J/K:slide|sheet|page`).
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GroupOp(&'static [Action]),
     /// The keys of several operations merged (`Space/↵:toggle`).
     Union(&'static [Action], Msg),
@@ -69,12 +68,9 @@ const HJKL: &[Action] = &[
     Action::Navigate(Motion::Right),
 ];
 const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
-#[cfg_attr(not(feature = "git"), allow(dead_code))]
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
-#[cfg(feature = "git")]
 const NEXT_PREV_CHANGE: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
-#[cfg(feature = "git")]
 const BACK_ESC_PREVIEW: &[Action] = &[Action::PreviewBack, Action::Cancel];
 const CLOSE_INFO: &[Action] = &[Action::InfoClose, Action::Cancel];
 const CLOSE_CELL: &[Action] = &[Action::ToggleTableCell, Action::Cancel];
@@ -248,15 +244,7 @@ fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
         // The bookmark list, the tab list and the outline have no footer of their own: they show
         // the screen underneath (see `status::footer_spans`).
         Context::Bookmarks | Context::Tabs | Context::Outline => Vec::new(),
-        #[cfg(feature = "git")]
         Context::Diff => diff(app),
-        #[cfg(not(feature = "git"))]
-        Context::Diff => vec![
-            Foot::Group(SCROLL, Msg::Scroll),
-            Foot::Group(HSCROLL, Msg::HintHscroll),
-            Foot::Op(Action::CycleDiffLayout),
-            Foot::Group(ENDS, Msg::HintEnds),
-        ],
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen(app, b, s),
     }
@@ -395,7 +383,6 @@ pub(crate) fn copy_code_token(app: &App, ctx: Context) -> Option<String> {
     ))
 }
 
-#[cfg(feature = "git")]
 fn diff(app: &App) -> Vec<Foot> {
     // The media diff's side-by-side view, and the binary-summary body a non-picture binary kind
     // shows, use the reduced set: nothing to scroll or lay out as unified/split.
@@ -406,10 +393,12 @@ fn diff(app: &App) -> Vec<Foot> {
         v.push(Foot::Group(SCROLL, Msg::Scroll));
     }
     v.push(Foot::Group(NEXT_PREV_CHANGE, Msg::HintNextPrevFile));
+    #[cfg(feature = "git")]
     v.push(Foot::Group(DIFF_CHANGES, Msg::HintChange));
     if media {
         v.push(Foot::Op(Action::CycleDiffLayout));
         v.push(Foot::GroupOp(PAGE_TURN));
+        #[cfg(feature = "git")]
         v.push(Foot::Op(Action::CycleDiffView));
     } else {
         // `h/l` scroll is a no-op in the rendered presentation while lines wrap.
@@ -418,8 +407,10 @@ fn diff(app: &App) -> Vec<Foot> {
         }
         v.push(Foot::Op(Action::CycleDiffLayout));
     }
+    #[cfg(feature = "git")]
     v.push(Foot::Op(Action::GitDiffDiscard));
     v.push(Foot::Union(BACK_ESC_PREVIEW, Msg::GitBack));
+    #[cfg(feature = "git")]
     if !media {
         v.push(Foot::Op(Action::CycleDiffView));
     }

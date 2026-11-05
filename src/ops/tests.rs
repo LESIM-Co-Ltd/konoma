@@ -622,6 +622,65 @@ fn every_bound_operation_is_listed_in_the_help_or_the_footer() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The shared diff surface
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn diff_help_and_footer_describe_the_shared_surface_in_every_build() {
+    for scheme in ["vim", "less"] {
+        let mut cfg = config_with_scheme(scheme);
+        cfg.ui.lang = "en".into();
+        let (mut app, dir) = app_with(cfg);
+        app.open_git_diff(&dir.join("a.txt"));
+        app.show_help = true;
+        assert_eq!(super::help::help_context(&app), Context::Diff);
+        let rows = rows_for(&app, Context::Diff);
+        for action in [
+            Action::Navigate(Motion::PageDown),
+            Action::Navigate(Motion::PageUp),
+            Action::Navigate(Motion::HalfDown),
+            Action::Navigate(Motion::HalfUp),
+            Action::CycleDiffLayout,
+            Action::PreviewBack,
+            Action::RequestEdit,
+            Action::OpenExternal,
+            Action::Refresh,
+        ] {
+            assert!(
+                rows.iter().any(|r| r.actions.contains(&action)),
+                "{scheme}: missing diff help row for {action:?}"
+            );
+        }
+        app.show_help = false;
+        app.flash = None;
+        let spans = crate::ui::status::footer_spans(&app, 1000);
+        let footer: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        for token in super::footer::tokens(&app, Context::Diff) {
+            assert!(
+                footer.contains(&token),
+                "{scheme}: missing {token}: {footer}"
+            );
+        }
+        assert!(spans.iter().any(|s| s
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD)));
+        assert!(plan_actions(&plan(&app, Context::Diff)).contains(&Action::PreviewBack));
+        assert!(super::menu::declared_actions_menu(&app, Context::Diff)
+            .iter()
+            .any(|item| item.action == Action::CyclePathStyle));
+        assert_eq!(
+            text(&app, Context::Diff, Action::JumpNextChange).label,
+            Some(Msg::HintNextPrevFile)
+        );
+        assert_eq!(
+            super::decl::menu_label(&app, Context::Diff, Action::JumpPrevChange),
+            Some(Msg::MenuPrevChangedFile)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The text of a declaration
 // ---------------------------------------------------------------------------------------------
 

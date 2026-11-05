@@ -650,11 +650,6 @@ pub enum Msg {
     ProjectBusy,
     ProjectSelectionChanged,
     ProjectUnknownScreen,
-    // Retained catalog keys for the legacy combined strings; controls now render structured entries.
-    #[cfg_attr(not(test), allow(dead_code))]
-    ProjectControls,
-    #[cfg_attr(not(test), allow(dead_code))]
-    ProjectTextControls,
     ProjectTitle,
     ProjectCycle,
     ProjectBack,
@@ -1706,8 +1701,6 @@ fn en(msg: Msg) -> &'static str {
         ProjectBusy => "project action is still running",
         ProjectSelectionChanged => "selected project row changed; action cancelled",
         ProjectUnknownScreen => "project screen is not declared",
-        ProjectControls => "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help",
-        ProjectTextControls => "Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help",
         ProjectTitle => "Project",
         ProjectCycle => "Cycle project screens",
         ProjectBack => "Pop this screen or return to the previous view",
@@ -2562,8 +2555,6 @@ fn jp(msg: Msg) -> &'static str {
         ProjectBusy => "プロジェクトの操作を実行中です",
         ProjectSelectionChanged => "選択した行が変わったため操作を中止しました",
         ProjectUnknownScreen => "プロジェクトの画面が宣言されていません",
-        ProjectControls => "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ",
-        ProjectTextControls => "Tab/Shift-Tab:画面  j/k:スクロール  q:戻る  ?:ヘルプ",
         ProjectTitle => "プロジェクト",
         ProjectCycle => "プロジェクトの画面を切り替える",
         ProjectBack => "画面を一つ戻るか元の表示に戻る",
@@ -3778,8 +3769,6 @@ mod tests {
         Msg::ProjectBusy,
         Msg::ProjectSelectionChanged,
         Msg::ProjectUnknownScreen,
-        Msg::ProjectControls,
-        Msg::ProjectTextControls,
         Msg::ProjectTitle,
         Msg::ProjectCycle,
         Msg::ProjectBack,

@@ -1318,7 +1318,6 @@ fn e2e_project_hints_help_menu_match_screen_row_tree_and_diff_contexts() {
     assert!(!advertised(&f, "diff-act"));
 }
 
-#[cfg(feature = "git")]
 #[test]
 fn e2e_project_host_diff_context_has_hints_help_menu_and_real_file_selection() {
     let mut f = navigate("project_host_diff_context", |root| Outcome::OpenDiff {

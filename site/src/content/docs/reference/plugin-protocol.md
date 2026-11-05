@@ -347,8 +347,11 @@ the same path share that header. Both fields default to empty / `None`.
 The diff wire payload is `{ header?: Line[], hunks: [{ path?: string | null,
 lines: DiffLine[] }] }`. Readers also accept the old `DiffLine[][]` payload.
 Line encoding is unchanged. The host uses its shared unified/split/auto diff
-widget and caches the layout until data, width, layout or horizontal offset
-changes. With an empty diff, a header is followed by the divider and a dim
+widget and highlights only the visible window. Its cached rows depend on the
+data, width, layout and vertical window; split layout also includes the horizontal
+offset. Unified horizontal scrolling reuses those rows and moves the header with
+the diff. Row totals and horizontal limits are computed without highlighting.
+With an empty diff, a header is followed by the divider and a dim
 no-changes line; without a header the message is centred.
 
 Text and diff screens scroll the top line, keeping the final page full. Their
