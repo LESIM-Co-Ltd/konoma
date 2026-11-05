@@ -382,6 +382,76 @@ fn e2e_vcs_branches_read_only_guard_precedes_all_prompts_and_writes() {
 }
 
 #[test]
+fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration() {
+    use konoma_plugin::{Failure, Input, Manifest, OpenCx, Plugin, Session};
+
+    struct MarkedChanges;
+    impl Plugin for MarkedChanges {
+        fn manifest(&self) -> Manifest {
+            let mut manifest = konoma_vcs::Git.manifest();
+            // Exercise marking without changing the production VCS screen's declaration.
+            manifest
+                .project
+                .as_mut()
+                .unwrap()
+                .screens
+                .iter_mut()
+                .find(|screen| screen.id == "changes")
+                .unwrap()
+                .marks = true;
+            manifest
+        }
+
+        fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            konoma_vcs::Git.open(input, cx)
+        }
+    }
+
+    let dir = fixture("vcs_branch_help_marks_filter");
+    let token = test_plugins::register("vcs_branch_help_marks_filter", Arc::new(MarkedChanges));
+    for lang in ["en", "ja"] {
+        let mut cfg = test_plugins::marker_config(&token);
+        cfg.ui.lang = lang.into();
+        let mut new = Sim::with_config_sized(&dir, cfg, 160, 20);
+        new.app.tab.projects.wait_for_result();
+        new.app.poll_projects();
+        new.key('p');
+        drain(&mut new);
+        for (screen, marks) in [("changes", true), ("log", false), ("branches", false)] {
+            assert_eq!(new.app.project_frame().unwrap().key.screen, screen);
+            assert_eq!(new.app.project_marks_enabled(), marks);
+            assert!(matches!(
+                new.app.project_content().unwrap().as_ref(),
+                ProjectContent::List(_)
+            ));
+            let sections = crate::ops::help::sections_for(&new.app, Context::Canvas);
+            let project = sections
+                .iter()
+                .find(|section| section.title == tr(new.app.lang, Msg::ProjectTitle))
+                .unwrap();
+            assert_eq!(
+                project.rows.iter().any(|(key, _)| key == "V"),
+                marks,
+                "{lang} {screen}"
+            );
+            if marks {
+                assert!(project
+                    .rows
+                    .contains(&("V".into(), tr(new.app.lang, Msg::ProjectMark).into())));
+            }
+            assert!(
+                project
+                    .rows
+                    .contains(&("/".into(), tr(new.app.lang, Msg::ListFilterHelp).into())),
+                "{lang} {screen}"
+            );
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+    }
+}
+
+#[test]
 fn e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts() {
     use crate::ops::menu::{menu, View};
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};

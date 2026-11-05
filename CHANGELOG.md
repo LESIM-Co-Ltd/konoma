@@ -6,7 +6,7 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
-- Internal: move the Git branch and read-only jj bookmark lists into a `konoma-vcs` tab alongside the legacy hub, with name copying and guarded Git checkout/create/safe-or-force delete. Checkout and create stay on the tab; empty lists can open. The shared project navigation/filter/back controls remain before plugin acts (checkout, new, delete), and the copy menu keeps its generic title. List rows can declare an initial selection and a filter fallback; confirmation choices can declare concise status labels.
+- Internal: move the Git branch and read-only jj bookmark lists into a `konoma-vcs` tab alongside the legacy hub, with name copying and guarded Git checkout/create/safe-or-force delete. Checkout and create stay on the tab; empty lists can open. The shared project navigation/filter/back controls remain before plugin acts (checkout, new, delete), and the copy menu keeps its generic title. On jj, write keys that cannot act are hidden. All project confirmation dialogs now use `key = label` instead of `key: label`, show the `!` choice in red, and give destructive dialogs a red border. List rows can declare an initial selection and a filter fallback; confirmation choices can declare concise status labels.
 
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
 

@@ -107,6 +107,10 @@ declares name copying. Checkout and creation stay on this tab, whereas the legac
 hub returns to Changes. The host retains shared navigation/filter controls before
 plugin acts; its copy menu uses the generic Copy title. An empty or unmatched list
 shows a dim message; unlike the legacy empty hub list, the tab can always open.
+On jj, write keys that cannot act (`Enter`, `c`, `d`) are hidden, whereas the
+legacy hub displayed them and refused the write. All project confirmation dialogs
+now display `key = label` instead of `key: label`, show the `!` choice in red, and
+use a red border for destructive actions.
 
 `ProjectView` carries optional absolute `tree_root`, `open_dir` and `home_dir`.
 The current tree root may differ from the detected root in `Input::Project`;
