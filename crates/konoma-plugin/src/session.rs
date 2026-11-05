@@ -308,6 +308,8 @@ pub enum Outcome {
     },
     SwitchRoot {
         root: std::path::PathBuf,
+        /// Overrides the host's default switch message after a successful switch.
+        message: Option<Tr>,
     },
     OpenTab {
         path: std::path::PathBuf,

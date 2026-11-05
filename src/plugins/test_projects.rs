@@ -68,6 +68,7 @@ impl Session for ObservedVcsSession {
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub open_label: Option<Tr>,
     pub hint_groups: bool,
     pub rebound_hint_key: bool,
     pub act_failures: usize,
@@ -138,6 +139,13 @@ fn action(id: &'static str, key: &str, context: ActContext) -> Act {
 impl Plugin for Screens {
     fn manifest(&self) -> Manifest {
         self.log.lock().unwrap().manifests += 1;
+        let open_label = self
+            .log
+            .lock()
+            .unwrap()
+            .open_label
+            .clone()
+            .unwrap_or_else(|| Tr::new("push"));
         let on = || ActContext::screen("items", ["item"]);
         let any = || ActContext::screen("items", Vec::<String>::new());
         let mut m = Manifest::new("project-screens", "1")
@@ -212,7 +220,7 @@ impl Plugin for Screens {
                         vec![Choice::new("all", "All")],
                     )),
             )
-            .action(action("push", "Enter", on()))
+            .action(action("push", "Enter", on()).label(open_label))
             .action(action("capture", "x", on()))
             .action(action("screen", "a", any()))
             .action(action(

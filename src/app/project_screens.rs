@@ -14,7 +14,7 @@ use ratatui::text::Line;
 use super::project_worker::ProjectJob;
 use super::*;
 use crate::i18n::Msg;
-use crate::keymap::Context;
+use crate::keymap::{Context, KeyPress};
 use crate::plugins::{ActBinding, PluginAct};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +53,70 @@ pub(crate) enum ProjectContent {
     List(konoma_plugin::view::ListView),
     Lines(Vec<Line<'static>>),
     Diff(ProjectDiff),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectControlId {
+    Screens,
+    Move,
+    Mark,
+    Filter,
+    Back,
+    Help,
+    Open,
+    NewTab,
+    Actions,
+    Scroll,
+    Hscroll,
+    Ends,
+    DiffLayout,
+    Act,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectControl {
+    pub id: ProjectControlId,
+    pub keys: Vec<KeyPress>,
+    pub label: String,
+    shared_notation: bool,
+}
+
+impl ProjectControl {
+    pub(crate) fn new(id: ProjectControlId, keys: Vec<KeyPress>, label: impl Into<String>) -> Self {
+        Self {
+            id,
+            keys,
+            label: label.into(),
+            shared_notation: false,
+        }
+    }
+
+    fn shared(mut self) -> Self {
+        self.shared_notation = true;
+        self
+    }
+
+    pub(crate) fn rendered_keys(&self) -> String {
+        self.keys
+            .iter()
+            .map(|key| {
+                if self.shared_notation {
+                    if key.code == KeyCode::BackTab && !key.ctrl {
+                        "Shift-Tab".into()
+                    } else {
+                        crate::ops::keys::help_key(*key)
+                    }
+                } else {
+                    crate::ops::keys::footer_key(*key, true)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    pub(crate) fn render(&self) -> String {
+        format!("{}:{}", self.rendered_keys(), self.label)
+    }
 }
 
 /// Immutable diff data owns its layout cache, so a replacement view always invalidates it.
@@ -284,12 +348,10 @@ fn remap_project_rows(
         .filter(|nav| &nav.project == project)
     {
         for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
-            let visible = |row: &konoma_plugin::view::ListRow| row.matches_filter(&frame.query);
             let selected = old
-                .rows
-                .iter()
-                .filter(|row| visible(row))
-                .nth(frame.cursor)
+                .visible_rows(&frame.query)
+                .get(frame.cursor)
+                .and_then(|index| old.rows.get(*index))
                 .map(ProjectRow::from);
             let marked: Vec<_> = frame
                 .marked
@@ -299,10 +361,9 @@ fn remap_project_rows(
                 .collect();
             if let Some(selected) = selected {
                 if let Some(cursor) = new
-                    .rows
+                    .visible_rows(&frame.query)
                     .iter()
-                    .filter(|row| visible(row))
-                    .position(|row| ProjectRow::from(row) == selected)
+                    .position(|index| ProjectRow::from(&new.rows[*index]) == selected)
                 {
                     frame.cursor = cursor;
                 } else {
@@ -366,6 +427,11 @@ impl App {
     }
 
     pub(crate) fn project_open_hint(&self) -> Option<(String, String)> {
+        let entry = self.project_open_control()?;
+        Some((entry.rendered_keys(), entry.label))
+    }
+
+    fn project_open_control(&self) -> Option<ProjectControl> {
         use crate::keymap::{Action, KeyPress, Motion};
         if !self
             .project_content()
@@ -394,10 +460,7 @@ impl App {
             candidates.extend(table.keys().copied());
         }
         candidates.push(KeyPress::key(KeyCode::Right));
-        let mut keys = vec![crate::ops::keys::footer_key(
-            KeyPress::key(KeyCode::Enter),
-            true,
-        )];
+        let mut keys = vec![KeyPress::key(KeyCode::Enter)];
         for key in candidates {
             if self.project_list_right(KeyEvent::new(
                 key.code,
@@ -406,14 +469,12 @@ impl App {
                 } else {
                     KeyModifiers::NONE
                 },
-            )) {
-                let key = crate::ops::keys::footer_key(key, true);
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
+            )) && !keys.contains(&key)
+            {
+                keys.push(key);
             }
         }
-        Some((keys.join("/"), label))
+        Some(ProjectControl::new(ProjectControlId::Open, keys, label))
     }
 
     fn handle_project_text_key(&mut self, key: KeyEvent) -> bool {
@@ -661,7 +722,7 @@ impl App {
         runtime.views.get(key).cloned()
     }
 
-    fn project_marks_enabled(&self) -> bool {
+    pub(crate) fn project_marks_enabled(&self) -> bool {
         self.tab
             .project_navigation
             .as_ref()
@@ -688,13 +749,7 @@ impl App {
             return Vec::new();
         };
         match content.as_ref() {
-            ProjectContent::List(list) => list
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| row.matches_filter(&frame.query))
-                .map(|(i, _)| i)
-                .collect(),
+            ProjectContent::List(list) => list.visible_rows(&frame.query),
             ProjectContent::Lines(lines) => (0..lines.len()).collect(),
             ProjectContent::Diff(diff) => (0..diff
                 .layout(
@@ -715,7 +770,7 @@ impl App {
             .copied()?;
         if let Some(content) = self.project_content() {
             if let ProjectContent::List(list) = content.as_ref() {
-                if !list.rows.get(index)?.selectable {
+                if !list.rows.get(index)?.selectable || list.rows.get(index)?.filter_fallback {
                     return None;
                 }
             }
@@ -729,6 +784,22 @@ impl App {
             ProjectContent::List(list) => list.rows.get(index)?.target.clone(),
             _ => None,
         }
+    }
+
+    pub(crate) fn project_new_tab_hint(&self) -> Option<(String, String)> {
+        let entry = self.project_new_tab_control()?;
+        Some((entry.rendered_keys(), entry.label))
+    }
+
+    fn project_new_tab_control(&self) -> Option<ProjectControl> {
+        self.project_row_target().map(|_| {
+            ProjectControl::new(
+                ProjectControlId::NewTab,
+                vec![KeyPress::ctrl_ch('t')],
+                tr(self.lang, Msg::HintNewTab),
+            )
+            .shared()
+        })
     }
 
     fn action_project(&self, p: PluginAct) -> Option<&ProjectKey> {
@@ -1120,6 +1191,11 @@ impl App {
                 let result = crate::dispatch_action(self, action, self.surface());
                 crate::resolve_key_result(self, result);
             }
+            return true;
+        }
+        if crate::keymap::KeyPress::norm(&key) == crate::keymap::KeyPress::ctrl_ch('t') {
+            let result = self.tab_new_from_selection();
+            crate::resolve_key_result(self, result.map(|()| false));
             return true;
         }
         if key
@@ -1666,6 +1742,14 @@ impl App {
                         .and_then(|r| r.views.get(&frame.key))
                     {
                         if let ProjectContent::List(list) = view.as_ref() {
+                            if let Some(cursor) =
+                                list.visible_rows(&frame.query).iter().position(|index| {
+                                    let row = &list.rows[*index];
+                                    row.initial_selection && row.selectable && !row.filter_fallback
+                                })
+                            {
+                                frame.cursor = cursor;
+                            }
                             let marks =
                                 self.project_runtimes
                                     .get(&nav.project)
@@ -1768,42 +1852,105 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn project_controls(&self) -> Option<String> {
-        self.project_active().then(|| {
-            let mut controls = if let Some(hints) = self.project_text_hints() {
-                hints.into_iter().map(|(keys, label)| format!("{keys}:{label}")).collect::<Vec<_>>().join("  ")
-            } else { tr(
-                self.lang,
-                if self
-                    .project_content()
-                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)))
-                {
-                    Msg::ProjectControls
-                } else {
-                    Msg::ProjectTextControls
-                },
-            )
-            .to_string() };
-            if self.project_content().is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) && !self.project_marks_enabled() {
-                controls = konoma_plugin::t!(en: "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help", ja: "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ").get(self.plugin_lang()).to_string();
-            }
-            if let Some((keys, label)) = self.project_open_hint() {
-                controls.push_str(&format!("  {keys}:{label}"));
-            }
-            if self.project_acts_in(Context::Canvas).iter().any(|binding| {
-                crate::ops::action_enabled(
-                    self,
-                    Context::Canvas,
-                    crate::keymap::Action::Plugin(binding.act),
-                )
-            }) {
-                controls.push_str(&format!(
-                    "  Space:{}",
-                    tr(self.lang, Msg::WkActionsTitle).trim()
-                ));
-            }
+        Some(
+            self.project_control_entries()?
+                .iter()
+                .map(ProjectControl::render)
+                .collect::<Vec<_>>()
+                .join("  "),
+        )
+    }
+
+    pub(crate) fn project_control_entries(&self) -> Option<Vec<ProjectControl>> {
+        use ProjectControlId as Id;
+        if !self.project_active() {
+            return None;
+        }
+        let mut controls = if let Some(controls) = self.project_text_controls() {
             controls
-        })
+        } else {
+            let list = self
+                .project_content()
+                .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)));
+            let mut controls = vec![
+                ProjectControl::new(
+                    Id::Screens,
+                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
+                    tr(self.lang, Msg::FtScreens),
+                )
+                .shared(),
+                ProjectControl::new(
+                    Id::Move,
+                    vec![KeyPress::ch('j'), KeyPress::ch('k')],
+                    if list {
+                        konoma_plugin::t!(en: "move", ja: "移動")
+                            .get(self.plugin_lang())
+                            .to_string()
+                    } else {
+                        tr(self.lang, Msg::Scroll).into()
+                    },
+                )
+                .shared(),
+            ];
+            if list && self.project_marks_enabled() {
+                controls.push(
+                    ProjectControl::new(
+                        Id::Mark,
+                        vec![KeyPress::ch('V')],
+                        konoma_plugin::t!(en: "mark", ja: "マーク").get(self.plugin_lang()),
+                    )
+                    .shared(),
+                );
+            }
+            if list {
+                controls.push(
+                    ProjectControl::new(
+                        Id::Filter,
+                        vec![KeyPress::ch('/')],
+                        tr(self.lang, Msg::HintFilter),
+                    )
+                    .shared(),
+                );
+            }
+            controls.push(
+                ProjectControl::new(
+                    Id::Back,
+                    vec![KeyPress::ch('q')],
+                    konoma_plugin::t!(en: "back", ja: "戻る").get(self.plugin_lang()),
+                )
+                .shared(),
+            );
+            controls.push(
+                ProjectControl::new(
+                    Id::Help,
+                    vec![KeyPress::ch('?')],
+                    tr(self.lang, Msg::HintHelp),
+                )
+                .shared(),
+            );
+            controls
+        };
+        controls.extend(self.project_open_control());
+        controls.extend(self.project_new_tab_control());
+        if self.project_acts_in(Context::Canvas).iter().any(|binding| {
+            crate::ops::action_enabled(
+                self,
+                Context::Canvas,
+                crate::keymap::Action::Plugin(binding.act),
+            )
+        }) {
+            controls.push(
+                ProjectControl::new(
+                    Id::Actions,
+                    vec![KeyPress::ch(' ')],
+                    tr(self.lang, Msg::WkActionsTitle).trim(),
+                )
+                .shared(),
+            );
+        }
+        Some(controls)
     }
 
     pub(crate) fn project_pushed(&self) -> bool {
@@ -1824,26 +1971,38 @@ impl App {
     }
 
     pub(crate) fn project_text_hints(&self) -> Option<Vec<(String, String)>> {
+        Some(
+            self.project_text_controls()?
+                .into_iter()
+                .map(|entry| (entry.rendered_keys(), entry.label))
+                .collect(),
+        )
+    }
+
+    fn project_text_controls(&self) -> Option<Vec<ProjectControl>> {
         use crate::keymap::{Action, Motion};
+        use ProjectControlId as Id;
         let content = self.project_content()?;
         if matches!(content.as_ref(), ProjectContent::List(_)) {
             return None;
         }
         let groups = [
-            (vec![Motion::Down, Motion::Up], Msg::Scroll),
-            (vec![Motion::Left, Motion::Right], Msg::HintHscroll),
-            (vec![Motion::Top, Motion::Bottom], Msg::HintEnds),
+            (Id::Scroll, vec![Motion::Down, Motion::Up], Msg::Scroll),
+            (
+                Id::Hscroll,
+                vec![Motion::Left, Motion::Right],
+                Msg::HintHscroll,
+            ),
+            (Id::Ends, vec![Motion::Top, Motion::Bottom], Msg::HintEnds),
         ];
         let mut hints = Vec::new();
-        for (motions, label) in groups {
+        for (id, motions, label) in groups {
             let keys = motions
                 .into_iter()
                 .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
-                .map(|key| crate::ops::keys::footer_key(key, true))
-                .collect::<Vec<_>>()
-                .join("/");
+                .collect::<Vec<_>>();
             if !keys.is_empty() {
-                hints.push((keys, tr(self.lang, label).into()));
+                hints.push(ProjectControl::new(id, keys, tr(self.lang, label)));
             }
         }
         if matches!(content.as_ref(), ProjectContent::Diff(_)) {
@@ -1851,24 +2010,40 @@ impl App {
                 .keymaps
                 .keys_of(Context::Diff, Action::CycleDiffLayout)
                 .into_iter()
-                .map(|key| crate::ops::keys::footer_key(key, true))
-                .collect::<Vec<_>>()
-                .join("/");
+                .collect::<Vec<_>>();
             if !keys.is_empty() {
                 hints.insert(
                     hints.len().min(2),
-                    (keys, tr(self.lang, Msg::FtDiffLayout).into()),
+                    ProjectControl::new(Id::DiffLayout, keys, tr(self.lang, Msg::FtDiffLayout)),
                 );
             }
         }
         if !self.project_pushed() {
-            hints.push((
-                "Tab/Shift-Tab".into(),
-                tr(self.lang, Msg::ProjectCycle).into(),
-            ));
+            hints.push(
+                ProjectControl::new(
+                    Id::Screens,
+                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
+                    tr(self.lang, Msg::ProjectCycle),
+                )
+                .shared(),
+            );
         }
-        hints.push(("q/Esc".into(), tr(self.lang, Msg::ProjectBack).into()));
-        hints.push(("?".into(), tr(self.lang, Msg::HintHelp).into()));
+        hints.push(
+            ProjectControl::new(
+                Id::Back,
+                vec![KeyPress::ch('q'), KeyPress::key(KeyCode::Esc)],
+                tr(self.lang, Msg::ProjectBack),
+            )
+            .shared(),
+        );
+        hints.push(
+            ProjectControl::new(
+                Id::Help,
+                vec![KeyPress::ch('?')],
+                tr(self.lang, Msg::HintHelp),
+            )
+            .shared(),
+        );
         Some(hints)
     }
 

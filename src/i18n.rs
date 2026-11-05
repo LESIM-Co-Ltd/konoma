@@ -650,7 +650,10 @@ pub enum Msg {
     ProjectBusy,
     ProjectSelectionChanged,
     ProjectUnknownScreen,
+    // Retained catalog keys for the legacy combined strings; controls now render structured entries.
+    #[cfg_attr(not(test), allow(dead_code))]
     ProjectControls,
+    #[cfg_attr(not(test), allow(dead_code))]
     ProjectTextControls,
     ProjectTitle,
     ProjectCycle,

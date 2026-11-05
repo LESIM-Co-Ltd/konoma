@@ -84,7 +84,10 @@ fn project_v2_input_outcomes_and_list_vectors() {
         Outcome::OpenDiff {
             path: "/p/f".into(),
         },
-        Outcome::SwitchRoot { root: "/p".into() },
+        Outcome::SwitchRoot {
+            root: "/p".into(),
+            message: None,
+        },
         Outcome::OpenTab { path: "/p".into() },
     ] {
         let w = outcome_to_wire(&o);

@@ -840,10 +840,20 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
         let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
+        if let Some((keys, _)) = app.project_new_tab_hint() {
+            navigation
+                .rows
+                .push((keys, tr(app.lang, Msg::OpenInNewTabHelp).into()));
+        }
         if let Some(hints) = app.project_text_help() {
             navigation.rows.extend(hints);
         } else {
-            if let Some(hint) = app.project_open_hint() {
+            if let Some(hint) = app.project_open_hint().filter(|_| {
+                !sections
+                    .iter()
+                    .flat_map(|s| &s.rows)
+                    .any(|(keys, _)| keys == "Enter")
+            }) {
                 navigation.rows.push(hint);
             }
             if !app.project_pushed() {
@@ -867,7 +877,12 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
         }) {
             navigation
                 .rows
-                .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+                .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
+            if app.project_marks_enabled() {
+                navigation
+                    .rows
+                    .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+            }
         }
         if let Some(nav) = &app.tab.project_navigation {
             if let Some(runtime) = app.project_runtimes.get(&nav.project) {

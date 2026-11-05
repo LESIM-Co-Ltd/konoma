@@ -3389,6 +3389,7 @@ mod reopen_state_tests {
             },
             Outcome::SwitchRoot {
                 root: "/root".into(),
+                message: None,
             },
             Outcome::OpenTab {
                 path: "/file".into(),
