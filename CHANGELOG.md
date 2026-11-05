@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: move the Git/jj commit graph into `konoma-vcs` alongside the legacy hub, with styled lanes, a fixed legend, per-tab base/branch/range state and shared detail/copy actions. The SDK carries list titles/strips and tab/icon contexts. The project host supplies the tabs, frame, title and footer; `g` keeps its reserved top-of-list meaning, git omits the no-op `a`, `b` awaits the branch-panel unit, empty repositories show a non-selectable message, worktree-row copy is silent, and `q` follows project-screen navigation. Graph preferences live under `[plugins.git]` / `[plugins.jj]`; legacy `[ui]` aliases follow in PR 5.
+
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
 
 - Internal: move Git and jj commit detail into a pushed `konoma-vcs` screen alongside the legacy hub in tests; project diff views gain styled headers, file paths and cached unified/split drawing, with shared text scrolling and host-owned list opening through `l` / Right.

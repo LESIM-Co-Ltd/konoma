@@ -506,19 +506,29 @@ fn content(
 
 impl super::App {
     pub(super) fn project_request(&self, key: &ScreenKey) -> ViewReq {
+        let tab = if self.tab.id == key.tab {
+            &self.tab
+        } else {
+            self.tabs
+                .iter()
+                .find(|tab| tab.id == key.tab)
+                .unwrap_or(&self.tab)
+        };
         let mut project = ProjectView::new(&key.screen)
-            .paths(&self.tab.root, &self.tab.open_dir)
+            .tab(key.tab)
+            .icons(self.cfg.ui.icons)
+            .paths(&tab.root, &tab.open_dir)
             .home_dir(crate::plugins::read_scope::home_dir());
         if let Some(selection) = &key.selection {
             project = project.selection(selection);
         }
         ViewReq::new(
-            if self.tab.preview_cols == 0 {
+            if tab.preview_cols == 0 {
                 80
             } else {
-                self.tab.preview_cols
+                tab.preview_cols
             },
-            self.tab.preview_viewport.max(1),
+            tab.preview_viewport.max(1),
         )
         .project(project)
     }

@@ -112,6 +112,8 @@ impl Session for ScrollPlugin {
                 }],
             }),
             "list" => View::List(ListView {
+                title: None,
+                bottom: None,
                 rows: (0..ROWS)
                     .map(|i| {
                         ListRow::new("item", vec![Line::raw(Screen::List.label(i))])

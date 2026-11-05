@@ -1660,6 +1660,17 @@ pub enum WView {
     Canvas(WCanvas),
     Reopen(WReopen),
     Message(Vec<WLine>),
+    ListDecorated {
+        rows: Vec<WListRow>,
+        title: Option<WLine>,
+        bottom: Option<WListStrip>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WListStrip {
+    pub chips: Vec<WLine>,
+    pub estimated_width: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2210,8 +2221,9 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
             sharp_zoom: i.sharp_zoom,
             raster_max_px: i.raster_max_px,
         }),
-        View::List(l) => WView::List(
-            l.rows
+        View::List(l) => {
+            let rows = l
+                .rows
                 .iter()
                 .map(|r| {
                     Ok(WListRow {
@@ -2231,8 +2243,20 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                         marked: r.marked,
                     })
                 })
-                .collect::<Result<_, WireError>>()?,
-        ),
+                .collect::<Result<_, WireError>>()?;
+            if l.title.is_none() && l.bottom.is_none() {
+                WView::List(rows)
+            } else {
+                WView::ListDecorated {
+                    rows,
+                    title: l.title.as_ref().map(line_to_wire),
+                    bottom: l.bottom.as_ref().map(|strip| WListStrip {
+                        chips: lines_to_wire(&strip.chips),
+                        estimated_width: strip.estimated_width,
+                    }),
+                }
+            }
+        }
         View::Diff(d) => WView::Diff(WDiffView {
             header: lines_to_wire(&d.header),
             hunks: d
@@ -2317,7 +2341,12 @@ pub fn view_side_names(v: &WView) -> Vec<String> {
                 }
             }
         }
-        WView::Text(_) | WView::Table(_) | WView::List(_) | WView::Diff(_) | WView::Message(_) => {}
+        WView::Text(_)
+        | WView::Table(_)
+        | WView::List(_)
+        | WView::ListDecorated { .. }
+        | WView::Diff(_)
+        | WView::Message(_) => {}
     }
     out
 }
@@ -2377,7 +2406,24 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                     marked: r.marked,
                 });
             }
-            View::List(ListView { rows: out })
+            View::List(ListView {
+                rows: out,
+                ..Default::default()
+            })
+        }
+        WView::ListDecorated {
+            rows,
+            title,
+            bottom,
+        } => {
+            let View::List(mut list) = view_from_wire(WView::List(rows), dec)? else {
+                unreachable!()
+            };
+            list.title = title.map(line_from_wire);
+            list.bottom = bottom.map(|strip| {
+                crate::view::ListStrip::new(lines_from_wire(strip.chips), strip.estimated_width)
+            });
+            View::List(list)
         }
         WView::Diff(diff) => {
             let mut out = Vec::with_capacity(diff.hunks.len());

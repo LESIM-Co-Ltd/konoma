@@ -103,6 +103,29 @@ omit them. Display preferences remain plugin settings: Git and jj declare
 `[plugins.git]` / `[plugins.jj] path_style = "relative" | "home" | "full"`.
 Without an override, the host uses its existing path display setting.
 
+### Tab contexts and list strips
+
+Project requests also carry `ProjectView::tab(u64)` and `ProjectView::icons(bool)`.
+`ProjectAct::tab(u64)` identifies the invoking tab. Sessions are shared per project;
+use this opaque identity for per-tab screen state. Cached project views are keyed by
+tab as well. Missing wire fields default to `tab = 0`, `icons = true`; default
+values are omitted. Icons follow the host's `ui.icons` preference.
+
+`ListView.title: Option<Line>` adds a styled title beside the screen tabs.
+`ListView.bottom: Option<ListStrip>` adds a stationary divider and chip strip below
+the scrolling list. `ListStrip::new(chips: Vec<Line>, estimated_width: usize)` uses
+two spaces between chips and wraps with trimmed whitespace. The host reserves one
+chip line if the estimate fits the body width, otherwise two; it shows the strip
+only with at least `3 + chip_lines` body rows. Both list fields default to `None`.
+Decorated lists require protocol 2 and use
+`{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`.
+Undecorated lists retain the old `{"List":[…]}` bytes; old JSON yields absent decorations.
+
+Git/jj graph preferences are plugin-owned: `[plugins.git]` / `[plugins.jj]`
+`graph_max_branches = 12` (`0` means unlimited), `graph_base_branches = []`, and
+`commit_meta_align = "right"` (`"inline"` places metadata after the subject).
+Legacy `[ui]` aliases are wired when the VCS plugins are registered in PR 5.
+
 ### Session watch paths
 
 `Session::watch_paths(&ViewCx) -> Result<Option<Vec<PathBuf>>, Failure>` returns

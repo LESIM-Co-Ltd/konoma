@@ -946,6 +946,8 @@ fn last_act(f: &Fixture) -> (String, ProjectAct) {
 
 fn view_context(f: &Fixture, screen: &str) -> ProjectView {
     ProjectView::new(screen)
+        .tab(f.sim.app.tab.id)
+        .icons(f.sim.app.cfg.ui.icons)
         .paths(&f.sim.app.tab.root, &f.sim.app.tab.open_dir)
         .home_dir(crate::plugins::read_scope::home_dir())
 }
@@ -2225,7 +2227,11 @@ fn e2e_project_no_implicit_refresh_and_one_owner_per_project_across_tabs() {
     drain(&mut f.sim);
     let log = f.log.lock().unwrap();
     assert_eq!(log.opens, 1);
-    assert!(log.views.is_empty(), "Flash must not refresh a view");
+    assert_eq!(
+        log.views,
+        [view_context(&f, "items")],
+        "only the new tab's initial view is fetched; Flash must not refresh it"
+    );
 }
 
 #[test]

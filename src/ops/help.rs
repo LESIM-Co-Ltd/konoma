@@ -839,6 +839,58 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
+        if let Some(jj) = app.project_graph_jj() {
+            let mut graph = sections.pop().unwrap_or_else(|| HelpSection::new(""));
+            graph.title = tr(
+                app.lang,
+                if jj {
+                    Msg::JjGraphLabel
+                } else {
+                    Msg::GitGraphLabel
+                },
+            )
+            .into();
+            graph.rows.splice(
+                0..0,
+                [
+                    ("j/k / ↑/↓".into(), tr(app.lang, Msg::GitMoveCommit).into()),
+                    ("g/G".into(), tr(app.lang, Msg::HintEnds).into()),
+                ],
+            );
+            graph.rows.extend([
+                ("/".into(), tr(app.lang, Msg::ListFilterHelp).into()),
+                ("r".into(), tr(app.lang, Msg::Refresh).into()),
+                (
+                    "Tab / Shift-Tab".into(),
+                    tr(
+                        app.lang,
+                        if jj {
+                            Msg::JjScreensHelp
+                        } else {
+                            Msg::GitScreensHelp
+                        },
+                    )
+                    .into(),
+                ),
+                ("h/q/Esc".into(), tr(app.lang, Msg::BackToChanges).into()),
+            ]);
+            sections.push(graph);
+            for (key, id) in app.keymaps.leader_keys_of(ctx) {
+                if id == LeaderId::Copy {
+                    if let Some(section) =
+                        crate::ui::help::leader_section(app, ctx, id, &help_key(key))
+                    {
+                        sections.push(section);
+                    }
+                }
+            }
+            if let Some(section) =
+                crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
+            {
+                sections.push(section);
+            }
+            return sections;
+        }
         let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
         if let Some(hints) = app.project_text_help() {
             navigation.rows.extend(hints);

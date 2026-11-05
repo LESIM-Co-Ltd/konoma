@@ -99,6 +99,8 @@ impl Session for ApiPlugin {
                 Some(ProjectView::new("branches").selection("branch-2"))
             );
             Ok(View::List(ListView {
+                title: None,
+                bottom: None,
                 rows: vec![ListRow::new("branch", vec![]).value("branch-2")],
             }))
         } else {

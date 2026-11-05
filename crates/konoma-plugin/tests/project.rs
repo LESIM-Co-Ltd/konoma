@@ -8,6 +8,8 @@ use std::sync::Arc;
 mod chip;
 #[path = "project/detail.rs"]
 mod detail;
+#[path = "project/graph.rs"]
+mod graph;
 #[path = "project/host_api.rs"]
 mod host_api;
 #[path = "project/presentation.rs"]
@@ -616,7 +618,10 @@ mod wire {
             ProjectRow::from(&row).name.as_deref(),
             Some("short file name")
         );
-        let expected = ListView { rows: vec![row] };
+        let expected = ListView {
+            rows: vec![row],
+            ..Default::default()
+        };
         let mut v = View::List(expected.clone());
         let w = view_to_wire(&mut v, &mut Enc::new(&side)).unwrap();
         let View::List(back) = view_from_wire(bytes(&w), &mut Dec::new(&side)).unwrap() else {
@@ -679,6 +684,8 @@ mod wire {
                 row.marked = marked;
                 row.target = Some("/project/file".into());
                 let mut view = View::List(ListView {
+                    title: None,
+                    bottom: None,
                     rows: vec![row.clone()],
                 });
                 let WView::List(mut rows) = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap()
@@ -961,7 +968,10 @@ mod wire {
         fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
             let mut row = ListRow::new("commit", vec![Line::raw("commit")]);
             row.marked = true;
-            Ok(View::List(ListView { rows: vec![row] }))
+            Ok(View::List(ListView {
+                rows: vec![row],
+                ..Default::default()
+            }))
         }
         fn act(&mut self, a: &str, _: &ActCx) -> Result<Outcome, Failure> {
             Ok(match a {

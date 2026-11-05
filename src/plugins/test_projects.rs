@@ -447,6 +447,8 @@ impl Session for ScreenSession {
             "items" => {
                 use konoma_plugin::style::{Color, Line, Span, Style};
                 View::List(ListView {
+                    title: None,
+                    bottom: None,
                     rows: vec![
                         ListRow::new(
                             "item",

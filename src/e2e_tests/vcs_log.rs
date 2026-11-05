@@ -7,6 +7,9 @@ use crate::app::project_screens::ProjectContent;
 use crate::test_support::{init_git_repo, TmpDir};
 use konoma_vcs_core::git2;
 
+#[path = "vcs_graph.rs"]
+mod graph;
+
 fn commit(root: &std::path::Path, i: usize) {
     let repo = git2::Repository::open(root).unwrap();
     let sig = git2::Signature::new(
@@ -540,7 +543,9 @@ fn e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open() {
     let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
     for (code, expected) in [
         (KeyCode::Tab, "log"),
+        (KeyCode::Tab, "graph"),
         (KeyCode::Tab, "changes"),
+        (KeyCode::BackTab, "graph"),
         (KeyCode::BackTab, "log"),
     ] {
         new.press(code, KeyModifiers::NONE);

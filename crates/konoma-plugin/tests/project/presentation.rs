@@ -29,6 +29,8 @@ impl Session for Project {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         assert_eq!(req.project, Some(context()));
         Ok(View::List(ListView {
+            title: None,
+            bottom: None,
             rows: vec![
                 ListRow::new("empty", vec![Line::raw("empty")]).selectable(false),
                 ListRow::new("commit", vec![Line::raw("subject")])
@@ -197,6 +199,8 @@ mod transport {
             ListRow::new("file", vec![Line::raw("legacy")]),
         ] {
             let mut view = View::List(ListView {
+                title: None,
+                bottom: None,
                 rows: vec![row.clone()],
             });
             let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();

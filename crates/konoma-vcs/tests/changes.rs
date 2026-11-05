@@ -250,11 +250,11 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), 3);
+        assert_eq!(project.screens.len(), 4);
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), if id == "git" { 20 } else { 15 });
+        assert_eq!(manifest.actions.len(), if id == "git" { 29 } else { 23 });
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
@@ -305,10 +305,25 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             .filter(|a| !["diff", "detail"].contains(&a.id.as_str()))
         {
             if a.copy {
-                assert!(a.id.starts_with("log_copy_") || a.id.starts_with("detail_copy_"));
+                assert!(
+                    a.id.starts_with("log_copy_")
+                        || a.id.starts_with("detail_copy_")
+                        || a.id.starts_with("graph_copy_")
+                );
                 assert!(!a.writes && !a.destructive);
                 assert!(a.refresh.is_empty());
                 assert_eq!(session.enabled(&a.id), cfg!(feature = "git"));
+            } else if a.id.starts_with("graph_") {
+                assert!(!a.writes && !a.destructive);
+                assert_eq!(
+                    session.enabled(&a.id),
+                    cfg!(feature = "git")
+                        && match a.id.as_str() {
+                            "graph_set_base" | "graph_clear_base" => git,
+                            "graph_all" => !git,
+                            _ => true,
+                        }
+                );
             } else {
                 assert!(a.writes);
                 assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));

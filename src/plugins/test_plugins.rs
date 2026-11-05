@@ -103,6 +103,8 @@ impl Session for ProjectFixtureSession {
     fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         if self.project {
             Ok(View::List(konoma_plugin::view::ListView {
+                title: None,
+                bottom: None,
                 rows: vec![konoma_plugin::view::ListRow::new(
                     "item",
                     vec![konoma_plugin::style::Line::raw("project item")],

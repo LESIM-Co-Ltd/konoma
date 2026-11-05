@@ -95,6 +95,27 @@ git と jj は `[plugins.git]` / `[plugins.jj]` の
 `path_style = "relative" | "home" | "full"` を宣言します。
 指定がない場合、ホストの既存のパス表示設定を使います。
 
+### タブの文脈と一覧の凡例
+
+プロジェクトの要求は `ProjectView::tab(u64)` と `ProjectView::icons(bool)` も持ちます。
+`ProjectAct::tab(u64)` は操作元のタブを示します。セッションはプロジェクトごとに共有されるため、
+タブ固有の画面状態にはこの不透明な識別子を使います。表示キャッシュもタブごとに分かれます。
+wire で省略された時は `tab = 0`、`icons = true` です。既定値は送信時に省略します。
+icons はホストの `ui.icons` に従います。
+
+`ListView.title: Option<Line>` は画面タブの横にスタイル付きタイトルを加えます。
+`ListView.bottom: Option<ListStrip>` はスクロールする一覧の下に固定の区切りと凡例を加えます。
+`ListStrip::new(chips: Vec<Line>, estimated_width: usize)` のチップ間は空白2個で、
+折り返しの空白は除きます。幅の見積もりが本文幅に収まれば1行、そうでなければ2行を確保し、
+本文の高さが `3 + chip_lines` 以上の時だけ表示します。両フィールドの既定は `None` です。
+装飾付き一覧はプロトコル2の
+`{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`
+を使います。装飾なしの `{"List":[…]}` は従来のバイト列を保ち、旧 JSON では装飾なしになります。
+
+グラフの設定は `[plugins.git]` / `[plugins.jj]` の `graph_max_branches = 12`
+（`0` は無制限）、`graph_base_branches = []`、`commit_meta_align = "right"`
+（`"inline"` は件名の後ろに配置）です。旧 `[ui]` 名の接続は PR 5 の VCS 登録で行います。
+
 ### セッションの監視パス
 
 `Session::watch_paths(&ViewCx) -> Result<Option<Vec<PathBuf>>, Failure>` は絶対パスを
