@@ -99,6 +99,7 @@ pub fn bind_actions<H>(
     let mut keys: Vec<(String, Option<String>)> = manifest
         .actions
         .iter()
+        .filter(|a| !a.copy)
         .map(|a| (a.id.clone(), a.key.clone()))
         .collect();
     if let Some(user) = user {
@@ -108,18 +109,25 @@ pub fn bind_actions<H>(
         .actions
         .iter()
         .map(|a| ActBinding {
+            copy_key: a
+                .copy
+                .then(|| a.key.as_deref()?.chars().next().map(KeyPress::ch))
+                .flatten(),
             hint_group: a
                 .hint_group
                 .as_ref()
                 .and_then(|id| manifest.hint_groups.iter().find(|g| g.id == *id))
                 .map(|group| (id.to_string(), group.clone())),
             act: handle(&a.id),
-            key: keys
-                .iter()
-                .find(|(i, _)| *i == a.id)
-                .and_then(|(_, k)| k.as_deref())
-                .and_then(|k| keys::parse_key(k).ok())
-                .map(keypress_of),
+            key: (!a.copy)
+                .then(|| {
+                    keys.iter()
+                        .find(|(i, _)| *i == a.id)
+                        .and_then(|(_, k)| k.as_deref())
+                        .and_then(|k| keys::parse_key(k).ok())
+                        .map(keypress_of)
+                })
+                .flatten(),
             context: a.screen.clone(),
             label: a.label.clone(),
             help: a.help.clone(),
@@ -193,7 +201,7 @@ fn apply_user_table(
     // fails is dropped (the action stays in the `Space` menu).
     if !chosen.is_empty() {
         let mut probe = manifest.clone();
-        for act in &mut probe.actions {
+        for act in probe.actions.iter_mut().filter(|a| !a.copy) {
             act.key = keys
                 .iter()
                 .find(|(i, _)| *i == act.id)

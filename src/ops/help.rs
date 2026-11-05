@@ -881,6 +881,14 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
             }
         }
         sections.push(navigation);
+        for (key, id) in app.keymaps.leader_keys_of(ctx) {
+            if id == LeaderId::Copy {
+                if let Some(section) = crate::ui::help::leader_section(app, ctx, id, &help_key(key))
+                {
+                    sections.push(section);
+                }
+            }
+        }
         if let Some(section) = crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
         {
             sections.push(section);

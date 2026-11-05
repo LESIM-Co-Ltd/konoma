@@ -418,15 +418,19 @@ impl HintGroup {
 /// ```
 #[non_exhaustive]
 pub struct Act {
+    /// This action is an item of its context's `y` menu; `key` is its plain menu character.
+    pub copy: bool,
     pub refresh: Vec<crate::project::RefreshTarget>,
     pub id: String,
-    /// The default key (see [`crate::keys::parse_key`]). `None` means menu-only.
+    /// The default direct key (see [`crate::keys::parse_key`]), or the plain menu character
+    /// for a copy item. `None` means `Space`-only for a non-copy action.
     pub key: Option<String>,
-    /// Short label for the footer.
+    /// Short label for menus and the footer.
     pub label: Tr,
     /// Description for the help screen.
     pub help: Tr,
-    /// Footer priority (smaller shows first). `None` keeps it out of the footer.
+    /// Footer priority (smaller shows first). `None` keeps it out of the footer; copy items
+    /// never have an individual footer hint.
     pub footer: Option<u8>,
     /// A declared [`HintGroup`] for the footer and help; the menu still lists this action.
     pub hint_group: Option<String>,
@@ -452,6 +456,7 @@ impl Act {
     pub fn new(id: impl Into<String>) -> Act {
         let id = id.into();
         Act {
+            copy: false,
             refresh: Vec::new(),
             label: Tr::new(id.clone()),
             help: Tr::new(""),
@@ -476,6 +481,12 @@ impl Act {
 
     pub fn key(mut self, key: impl Into<String>) -> Act {
         self.key = Some(key.into());
+        self
+    }
+
+    /// Offer this action in the host's copy menu instead of on a direct key or in `Space`.
+    pub fn copy(mut self) -> Act {
+        self.copy = true;
         self
     }
 

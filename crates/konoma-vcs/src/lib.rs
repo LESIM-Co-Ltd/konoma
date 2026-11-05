@@ -34,7 +34,7 @@ macro_rules! plugin {
                         t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
                     .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
                         t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
-                actions::declare(manifest, $id == "git")
+                let manifest = actions::declare(manifest, $id == "git")
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
@@ -42,13 +42,14 @@ macro_rules! plugin {
                         .project_context(ActContext::screen("changes", ["file"])))
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
-                        .project_context(ActContext::screen("log", ["commit"])))
+                        .project_context(ActContext::screen("log", ["commit"])));
+                log::copy_declarations(manifest, $id == "jj")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
                 let Input::Project { root, .. } = input else {
                     return Err(Failure::unsupported(t!(en: "Project required", ja: "プロジェクトが必要です")));
                 };
-                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new() }))
+                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), detail_meta: Default::default() }))
             }
         }
     };
@@ -90,6 +91,19 @@ enum Backend {
 }
 
 impl Backend {
+    fn commit_meta(
+        &self,
+        root: &std::path::Path,
+        id: &str,
+    ) -> Option<konoma_vcs_core::git::CommitMeta> {
+        match self {
+            Self::Git => konoma_vcs_core::vcs::Git.commit_meta(root, id),
+            #[cfg(feature = "git")]
+            Self::Jj => konoma_vcs_core::vcs::Jj.commit_meta(root, id),
+            #[cfg(not(feature = "git"))]
+            Self::Jj => None,
+        }
+    }
     fn log(&self, root: &std::path::Path) -> Vec<konoma_vcs_core::git::CommitInfo> {
         match self {
             Self::Git => konoma_vcs_core::vcs::Git.log(root, 200),
@@ -112,6 +126,7 @@ impl Backend {
 }
 
 struct Changes {
+    detail_meta: std::collections::HashMap<String, konoma_vcs_core::git::CommitMeta>,
     root: PathBuf,
     backend: Backend,
     files: Vec<DisplayedFile>,
@@ -148,11 +163,16 @@ impl Session for Changes {
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
-            return Ok(View::Diff(detail::read(
-                &self.backend,
-                &self.root,
-                project.selection.as_deref(),
-            )));
+            let (view, meta) =
+                detail::read(&self.backend, &self.root, project.selection.as_deref());
+            if let Some(id) = &project.selection {
+                if let Some(meta) = meta {
+                    self.detail_meta.insert(id.clone(), meta);
+                } else {
+                    self.detail_meta.remove(id);
+                }
+            }
+            return Ok(View::Diff(view));
         }
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
             return Ok(log::view(self.backend.log(&self.root), cx));
@@ -223,6 +243,42 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        if let Some((screen, field)) = copy_action(action).filter(|_| self.enabled(action)) {
+            let Some(context) = cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some(screen))
+            else {
+                return Ok(Outcome::Unhandled);
+            };
+            let Some(row) = context
+                .selected
+                .as_ref()
+                .filter(|r| screen == "detail" || r.kind == "commit")
+            else {
+                return Ok(Outcome::Unhandled);
+            };
+            let meta = if screen == "detail" {
+                self.detail_meta.get(&row.value).cloned()
+            } else {
+                self.backend.commit_meta(&self.root, &row.value)
+            };
+            let Some(meta) = meta else {
+                return Ok(Outcome::Flash(
+                    t!(en: "no commit to copy", ja: "コピーするコミットがありません"),
+                ));
+            };
+            let text = match field {
+                "short_hash" => meta.short,
+                "full_hash" => meta.id,
+                "subject" => meta.message.lines().next().unwrap_or("").to_string(),
+                "message" => meta.message,
+                "author" => meta.author,
+                "date" => meta.date,
+                _ => return Ok(Outcome::Unhandled),
+            };
+            return Ok(Outcome::Copy { text });
+        }
         if action == "detail" {
             return Ok(cx
                 .project
@@ -335,6 +391,9 @@ impl Session for Changes {
         if !cfg!(feature = "git") {
             return false;
         }
+        if copy_action(action).is_some() {
+            return true;
+        }
         match action {
             "detail" => true,
             "diff" => !self.files.is_empty(),
@@ -346,6 +405,16 @@ impl Session for Changes {
             _ => false,
         }
     }
+}
+
+fn copy_action(action: &str) -> Option<(&str, &str)> {
+    let (screen, field) = action.split_once("_copy_")?;
+    (matches!(screen, "log" | "detail")
+        && matches!(
+            field,
+            "short_hash" | "full_hash" | "subject" | "message" | "author" | "date"
+        ))
+    .then_some((screen, field))
 }
 
 fn vcs_color(color: VcsColor) -> Color {

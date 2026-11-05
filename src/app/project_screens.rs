@@ -1340,7 +1340,15 @@ impl App {
         if !self.project_act_enabled(action).unwrap_or(false) {
             return true;
         }
-        let context = self.project_act_context();
+        let mut context = self.project_act_context();
+        if decl.copy && context.selected.is_none() {
+            if let Some(selection) = self
+                .project_frame()
+                .and_then(|frame| frame.key.selection.as_ref())
+            {
+                context = context.selected(ProjectRow::new("selection", selection));
+            }
+        }
         let effect = ProjectEffect {
             project: project.clone(),
             tab: self.tab.id,
@@ -1759,6 +1767,7 @@ impl App {
             return;
         }
         match effect.outcome {
+            Some(Outcome::Copy { text }) => self.set_clipboard_flash(&text),
             Some(Outcome::Flash(message)) => {
                 self.flash = Some(message.get(self.plugin_lang()).into())
             }
@@ -1831,13 +1840,16 @@ impl App {
             if let Some((keys, label)) = self.project_open_hint() {
                 controls.push_str(&format!("  {keys}:{label}"));
             }
-            if self.project_acts_in(Context::Canvas).iter().any(|binding| {
-                crate::ops::action_enabled(
-                    self,
-                    Context::Canvas,
-                    crate::keymap::Action::Plugin(binding.act),
-                )
-            }) {
+            if crate::ops::menu::opens(self, Context::Canvas, crate::keymap::LeaderId::Copy) {
+                let keys = self.keymaps.leader_keys_of(Context::Canvas).into_iter()
+                    .filter(|(_, id)| *id == crate::keymap::LeaderId::Copy)
+                    .map(|(key, _)| crate::ops::keys::footer_key(key, true))
+                    .collect::<Vec<_>>().join("/");
+                if !keys.is_empty() {
+                    controls.push_str(&format!("  {keys}:{}", tr(self.lang, Msg::CopyHint)));
+                }
+            }
+            if crate::ops::menu::opens(self, Context::Canvas, crate::keymap::LeaderId::Actions) {
                 controls.push_str(&format!(
                     "  Space:{}",
                     tr(self.lang, Msg::WkActionsTitle).trim()

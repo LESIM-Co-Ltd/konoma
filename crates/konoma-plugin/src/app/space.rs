@@ -99,6 +99,7 @@ pub(super) fn items(
         .iter()
         .enumerate()
         .map(|(i, b)| ActBinding {
+            copy_key: b.copy_key,
             hint_group: b.hint_group.clone(),
             act: i,
             key: b.key,

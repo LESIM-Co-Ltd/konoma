@@ -214,6 +214,20 @@ hub's enabled-member rule. The `Space` menu keeps each action's entry and label.
 
 ## Actions and dialogs (version 2)
 
+`Act::copy()` declares an item of the context's host `y` menu. Its optional wire
+field is `copy: boolean` (absent means `false`, and `false` is omitted on output).
+Its `key` must be exactly one non-control, non-whitespace character; invalid or
+duplicate copy keys in the same context reject the manifest and name the action.
+Copy keys do not participate in direct-key reservations or collisions. Copy items
+have no direct key, individual footer hint or `Space` entry, even if a footer
+priority is declared. Non-copy actions retain their existing behavior and wire data.
+
+On project screens the host offers enabled items in declaration order, using their
+declared menu keys and localized labels. It uses the generic localized copy title.
+The help lists the `y` entries and the footer hints `y` only while the menu can open.
+With no enabled items, `y` does nothing. On a pushed non-list screen, a copy action's
+context's selected row carries the pushed selection as its value, with kind `selection`.
+
 Existing action fields (`id`, `key`, `label`, `help`, `footer`, `screen`, `writes`,
 `destructive`) keep their meaning. Four optional fields are added:
 
@@ -357,6 +371,7 @@ without the Git feature. `r` rereads the active project screen.
 
 | Variant | Payload | Host behavior |
 |---|---|---|
+| `Copy` | `{ text: string }` | Copy the exact text, including an empty string, and show the standard clipboard success preview or failure notice |
 | `PushScreen` | `{ screen, selection: string \| null }` | Push this plugin's screen with an opaque row identifier |
 | `OpenFile` | `{ path: Path, line: integer \| null }` | Open a preview; line is 1-based |
 | `OpenDiff` | `{ path: Path }` | Open the host's full-screen diff |
