@@ -19,6 +19,8 @@ pub const VIEW_CONTEXTS: [&str; 5] = ["text", "document", "table", "image", "can
 /// (konoma: a `Copy` pair of interned ids; the standalone app: whatever names it).
 #[derive(Debug, Clone)]
 pub struct ActBinding<H> {
+    /// A key inside the copy menu. Copy items have no direct `key`.
+    pub copy_key: Option<KeyPress>,
     /// The declaring plugin and its group; ids are local to one plugin.
     pub hint_group: Option<(String, crate::HintGroup)>,
     pub act: H,
@@ -57,6 +59,7 @@ pub fn footer_order<'a, H>(acts: &[&'a ActBinding<H>]) -> Vec<&'a ActBinding<H>>
     let mut v: Vec<_> = acts
         .iter()
         .copied()
+        .filter(|b| b.copy_key.is_none())
         .filter_map(|b| b.footer.map(|p| (p, b)))
         .collect();
     v.sort_by_key(|(p, _)| *p);
@@ -131,7 +134,7 @@ pub fn footer_hints<'a, H>(acts: &[&'a ActBinding<H>]) -> Vec<Hint<'a, H>> {
     let eligible: Vec<_> = acts
         .iter()
         .copied()
-        .filter(|b| b.footer.is_some())
+        .filter(|b| b.footer.is_some() && b.copy_key.is_none())
         .collect();
     let mut out = hints(&eligible);
     let ordered = footer_order(&eligible);
@@ -182,7 +185,7 @@ pub fn help_rows<'a, H>(
         .collect()
 }
 
-/// The `Space` menu candidates of the plugin: **every** declared action, keyed or not (the menu is
+/// The `Space` menu candidates of the plugin: every non-copy action, keyed or not (the menu is
 /// how an action that lost its key to a collision or a rebinding is still reachable), each with
 /// the key the menu may use for it -- a plain character other than `q` and the space, else none --
 /// in declaration order. They are the shape [`konoma_host_core::menu::build_items`] takes, after
@@ -190,7 +193,9 @@ pub fn help_rows<'a, H>(
 pub fn menu_candidates<H: Copy + PartialEq>(acts: &[&ActBinding<H>]) -> Vec<(H, Option<KeyPress>)> {
     let mut out = Vec::new();
     for b in acts {
-        add_candidate(&mut out, b.act, b.key.and_then(plain_key));
+        if b.copy_key.is_none() {
+            add_candidate(&mut out, b.act, b.key.and_then(plain_key));
+        }
     }
     out
 }
@@ -271,6 +276,7 @@ mod tests {
         footer: Option<u8>,
     ) -> ActBinding<&'static str> {
         ActBinding {
+            copy_key: None,
             hint_group: None,
             act,
             key,

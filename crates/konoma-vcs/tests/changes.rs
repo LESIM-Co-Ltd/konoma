@@ -254,7 +254,7 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), if id == "git" { 8 } else { 3 });
+        assert_eq!(manifest.actions.len(), if id == "git" { 20 } else { 15 });
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
@@ -304,15 +304,22 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             .iter()
             .filter(|a| !["diff", "detail"].contains(&a.id.as_str()))
         {
-            assert!(a.writes);
-            assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
-            assert!(a.refresh.contains(&RefreshTarget::TreeStatus));
-            assert_eq!(a.destructive, a.id == "discard");
-            if a.id == "commit" || a.id == "sync" {
-                assert!(a.refresh.contains(&RefreshTarget::Chip));
-            }
-            if ["stage", "stage_all", "unstage", "unstage_all"].contains(&a.id.as_str()) {
-                assert!(a.hint_group.is_some());
+            if a.copy {
+                assert!(a.id.starts_with("log_copy_") || a.id.starts_with("detail_copy_"));
+                assert!(!a.writes && !a.destructive);
+                assert!(a.refresh.is_empty());
+                assert_eq!(session.enabled(&a.id), cfg!(feature = "git"));
+            } else {
+                assert!(a.writes);
+                assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
+                assert!(a.refresh.contains(&RefreshTarget::TreeStatus));
+                assert_eq!(a.destructive, a.id == "discard");
+                if a.id == "commit" || a.id == "sync" {
+                    assert!(a.refresh.contains(&RefreshTarget::Chip));
+                }
+                if ["stage", "stage_all", "unstage", "unstage_all"].contains(&a.id.as_str()) {
+                    assert!(a.hint_group.is_some());
+                }
             }
         }
         if git {

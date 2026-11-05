@@ -8,7 +8,8 @@ pub fn manifest_protocol(m: &WManifest) -> u32 {
     if m.read_only
         || m.project.is_some()
         || m.actions.iter().any(|a| {
-            !a.refresh.is_empty()
+            a.copy
+                || !a.refresh.is_empty()
                 || a.project_context.is_some()
                 || a.confirmation.is_some()
                 || a.text_input.is_some()

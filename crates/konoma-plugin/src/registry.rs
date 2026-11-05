@@ -164,6 +164,13 @@ impl ManifestCount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestReason {
+    InvalidCopyKey {
+        action: String,
+    },
+    DuplicateCopyKey {
+        action: String,
+        other: String,
+    },
     UnknownHintGroup {
         action: String,
         group: String,
@@ -278,6 +285,8 @@ pub enum ManifestReason {
 impl fmt::Display for ManifestReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCopyKey { action } => write!(f, "copy action `{action}` must have one plain character as its key"),
+            Self::DuplicateCopyKey { action, other } => write!(f, "copy action `{action}` has the same key and context as `{other}`"),
             Self::UnknownHintGroup { action, group } => write!(f, "action `{action}` names unknown hint group `{group}`"),
             Self::DuplicateHintGroup { group, action } => {
                 write!(f, "hint group `{group}` is declared twice")?;
@@ -427,7 +436,31 @@ fn manifest_problem(m: &Manifest) -> Option<ManifestReason> {
                 .and_then(|g| name(ManifestName::WorkGroup, g))
         })
         .or_else(|| hint_group_problem(m))
+        .or_else(|| copy_problem(m))
         .or_else(|| project_problem(m))
+}
+
+fn copy_problem(m: &Manifest) -> Option<ManifestReason> {
+    for (index, action) in m.actions.iter().enumerate() {
+        if action.copy && !crate::keys::copy_key_valid(action.key.as_deref()) {
+            return Some(ManifestReason::InvalidCopyKey {
+                action: action.id.clone(),
+            });
+        }
+        if action.copy {
+            if let Some(other) = m.actions[..index].iter().find(|other| {
+                other.copy
+                    && other.key == action.key
+                    && crate::keys::copy_contexts_overlap(m, action, other)
+            }) {
+                return Some(ManifestReason::DuplicateCopyKey {
+                    action: action.id.clone(),
+                    other: other.id.clone(),
+                });
+            }
+        }
+    }
+    None
 }
 
 fn hint_group_problem(m: &Manifest) -> Option<ManifestReason> {

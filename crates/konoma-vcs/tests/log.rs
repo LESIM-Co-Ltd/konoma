@@ -23,7 +23,7 @@ fn log_declaration_follows_changes_with_enter_and_pushed_detail() {
             Some(ActContext::Screen { screen, .. }) if screen == "log")
             })
             .collect();
-        assert_eq!(acts.len(), 1);
+        assert_eq!(acts.len(), 7);
         assert_eq!(acts[0].key.as_deref(), Some("Enter"));
         let setting = manifest
             .settings
