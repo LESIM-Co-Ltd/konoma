@@ -471,7 +471,9 @@ impl Session for ScreenSession {
                 project.selection.as_deref().unwrap_or("none")
             )]),
             "diff" => View::Diff(DiffView {
+                header: vec![],
                 hunks: vec![DiffHunk {
+                    path: None,
                     lines: vec![
                         DiffLine {
                             kind: DiffKind::Added,

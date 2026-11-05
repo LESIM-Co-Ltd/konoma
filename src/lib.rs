@@ -2053,7 +2053,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         }
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => app.git_diff_start_discard(),
-        #[cfg(feature = "git")]
         Action::CycleDiffLayout => app.cycle_diff_layout(),
         #[cfg(feature = "git")]
         Action::CycleDiffView => app.cycle_diff_view(),

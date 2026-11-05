@@ -58,8 +58,10 @@ impl Plugin for ScrollPlugin {
                 ProjectDecl::new()
                     .marker(DetectionMarker::new("*.scroll-project", MarkerKind::File))
                     .watch("metadata/index")
+                    .screen(ProjectScreen::new("hidden", "Hidden").pushed())
                     .screen(ProjectScreen::new("lines", "Lines").key('z'))
                     .screen(ProjectScreen::new("diff", "Diff").key('d'))
+                    .screen(ProjectScreen::new("wide", "Wide").key('w'))
                     .screen(ProjectScreen::new("list", "List").key('i').row_kind("item")),
             )
             .shows(ViewKind::Text)
@@ -77,9 +79,13 @@ impl Session for ScrollPlugin {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         // Return the whole content, independent of the viewport: scrolling belongs to the host.
         Ok(match req.project.as_ref().unwrap().screen.as_str() {
+            "hidden" => View::text(["hidden"]),
+            "wide" => View::text((0..ROWS).map(|_| "日本語".repeat(80))),
             "lines" => View::text((0..ROWS).map(|i| Screen::Lines.label(i))),
             "diff" => View::Diff(PluginDiffView {
+                header: vec![],
                 hunks: vec![DiffHunk {
+                    path: None,
                     lines: (0..ROWS)
                         .map(|i| DiffLine {
                             kind: DiffKind::Added,
@@ -116,6 +122,10 @@ struct ScrollFixture {
 
 impl ScrollFixture {
     fn new(name: &str, screen: Screen) -> Self {
+        Self::with_config(name, screen, |_| {})
+    }
+
+    fn with_config(name: &str, screen: Screen, configure: impl FnOnce(&mut Config)) -> Self {
         let dir = sandbox(name);
         std::fs::write(dir.join("fixture.scroll-project"), "project").unwrap();
         let marker = test_plugins::register(name, Arc::new(ScrollPlugin));
@@ -124,12 +134,14 @@ impl ScrollFixture {
         cfg.ui.statusbar = "split".into();
         cfg.ui.tabbar = "hidden".into();
         cfg.external.git = false;
+        configure(&mut cfg);
         let mut sim = Sim::with_config_sized(&canon(&dir), cfg, WIDTH, BODY_ROWS + CHROME_ROWS);
         sim.app.tab.projects.wait_for_result();
         assert!(sim.app.tab.projects.uses_injected_events());
         sim.app.poll_projects();
         sim.key('p');
         drain(&mut sim);
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, "lines");
         sim.key(screen.key());
         drain(&mut sim);
         assert!(sim.app.project_active());
@@ -199,13 +211,13 @@ impl ScrollFixture {
 }
 
 #[test]
-fn e2e_project_lines_scroll_follows_hidden_cursor_and_page_keys() {
+fn e2e_project_lines_scroll_keeps_top_line_and_page_keys() {
     let mut f = ScrollFixture::new("project_scroll_lines", Screen::Lines);
     f.expect_window(0, 0);
     for _ in 0..=BODY_ROWS {
         f.press(KeyCode::Char('j'));
     }
-    f.expect_window(2, 5);
+    f.expect_window(5, 0);
     assert!(!f.body().iter().any(|row| row.text.contains("lines-000")));
     f.press(KeyCode::Char('G'));
     f.expect_window(ROWS - usize::from(BODY_ROWS), ROWS - 1);
@@ -218,18 +230,259 @@ fn e2e_project_lines_scroll_follows_hidden_cursor_and_page_keys() {
 }
 
 #[test]
-fn e2e_project_diff_scroll_follows_hidden_cursor_and_last_row() {
+fn e2e_project_diff_scroll_keeps_top_line_and_last_page_full() {
     let mut f = ScrollFixture::new("project_scroll_diff", Screen::Diff);
     f.expect_window(0, 0);
     for _ in 0..=BODY_ROWS {
         f.press(KeyCode::Char('j'));
     }
-    f.expect_window(2, 5);
+    f.expect_window(5, 0);
     assert!(!f.body().iter().any(|row| row.text.contains("diff-000")));
     f.press(KeyCode::Char('G'));
     f.expect_window(ROWS - usize::from(BODY_ROWS), ROWS - 1);
     f.press(KeyCode::Char('g'));
     f.expect_window(0, 0);
+}
+
+#[test]
+fn e2e_project_diff_highlighter_reuses_unchanged_layout_and_vertical_scroll() {
+    use crate::preview::gitdiff::highlight_calls_for_test;
+    let mut f = ScrollFixture::new("project_diff_cache", Screen::Diff);
+    let before = highlight_calls_for_test();
+    f.body();
+    f.body();
+    f.press(KeyCode::Char('j'));
+    assert_eq!(highlight_calls_for_test(), before);
+    f.press(KeyCode::Char('s'));
+    assert!(highlight_calls_for_test() > before);
+}
+
+#[test]
+fn e2e_project_diff_key_after_hscroll_clamp_reuses_layout() {
+    let mut f = ScrollFixture::new("project_diff_clamp_cache", Screen::Diff);
+    let content = f.sim.app.project_content().unwrap();
+    let ProjectContent::Diff(diff) = content.as_ref() else {
+        panic!("diff fixture")
+    };
+    let before = diff.layout_count();
+    f.body();
+    let draw_alone = diff.layout_count() - before;
+    assert_eq!(draw_alone, 0);
+    f.sim
+        .app
+        .tab
+        .project_navigation
+        .as_mut()
+        .unwrap()
+        .stack
+        .last_mut()
+        .unwrap()
+        .hscroll = u16::MAX;
+    let before = diff.layout_count();
+    f.press(KeyCode::Char('j'));
+    f.body();
+    assert!(diff.layout_count() - before <= draw_alone + 1);
+    assert_eq!(f.sim.app.project_frame().unwrap().hscroll, 0);
+    let after = diff.layout_count();
+    f.body();
+    assert_eq!(diff.layout_count(), after);
+}
+
+#[test]
+fn e2e_project_diff_and_text_hints_follow_their_actual_motions() {
+    for screen in [Screen::Lines, Screen::Diff] {
+        let f = ScrollFixture::new("project_scroll_hints", screen);
+        let hints = f.sim.app.project_controls().unwrap();
+        assert_eq!(hints.contains("s:"), screen == Screen::Diff, "{hints}");
+        assert!(hints.contains("h/l") && hints.contains("g/G"), "{hints}");
+        let help = crate::ops::help::sections(&f.sim.app);
+        assert_eq!(
+            help.iter().flat_map(|s| &s.rows).any(|(k, _)| k == "s"),
+            screen == Screen::Diff
+        );
+    }
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_diff_layout_is_independent_of_rendered_and_picture_origin() {
+    for picture in [false, true] {
+        let mut f = ScrollFixture::new(&format!("project_diff_origin_{picture}"), Screen::Diff);
+        f.press(KeyCode::Char('q'));
+        init_git_repo(&f._dir);
+        let path = f._dir.join(if picture { "picture.png" } else { "doc.md" });
+        if picture {
+            write_solid_png(&path, 8, 8, [10, 20, 30]);
+        } else {
+            std::fs::write(&path, "# Title\n\nOriginal.\n").unwrap();
+        }
+        run_git(&f._dir, &["add", "-A"]);
+        run_git(&f._dir, &["commit", "-q", "-m", "base"]);
+        if picture {
+            write_solid_png(&path, 8, 8, [30, 20, 10]);
+        } else {
+            std::fs::write(&path, "# Title\n\nChanged.\n").unwrap();
+        }
+        f.sim = f.sim.with_picker();
+        f.sim.app.open_git_diff(&path);
+        f.sim.draw();
+        assert!(f.sim.app.diff_rendered_active());
+        assert_eq!(f.sim.app.media_diff_showing_pictures(), picture);
+        let media_layout = f.sim.app.media_diff_layout();
+        let view = f.sim.app.diff_view_for_test();
+        f.press(KeyCode::Char('p'));
+        f.press(KeyCode::Char('d'));
+        assert!(f.sim.app.project_active());
+        assert!(f.sim.app.diff_rendered_active());
+        assert_eq!(f.sim.app.media_diff_showing_pictures(), picture);
+        assert!(!f.sim.app.diff_is_split(WIDTH - 2));
+        f.press(KeyCode::Char('s'));
+        assert!(f.sim.app.diff_is_split(WIDTH - 2));
+        assert_eq!(f.sim.app.media_diff_layout(), media_layout);
+        assert_eq!(f.sim.app.diff_view_for_test(), view);
+        assert!(f.sim.app.project_controls().unwrap().contains("s:"));
+        f.press(KeyCode::Char('q'));
+        assert!(!f.sim.app.project_active());
+        assert!(f.sim.app.is_git_diff_preview());
+        assert_eq!(f.sim.app.tab.preview_path.as_ref(), Some(&path));
+        assert_eq!(f.sim.app.diff_view_for_test(), view);
+        assert_eq!(f.sim.app.media_diff_layout(), media_layout);
+    }
+}
+
+#[test]
+fn e2e_project_diff_layout_remap_drives_keys_footer_and_help() {
+    for remapped in [false, true] {
+        let mut f = ScrollFixture::with_config(
+            &format!("project_layout_structural_{remapped}"),
+            Screen::Diff,
+            |cfg| {
+                // Layout belongs to the diff layer, independently of the text motion table.
+                cfg.keys.surfaces.insert(
+                    "text".into(),
+                    [("S".into(), "noop".into()), ("s".into(), "noop".into())].into(),
+                );
+                if remapped {
+                    cfg.keys.surfaces.insert(
+                        "diff".into(),
+                        [
+                            ("S".into(), "cycle_diff_layout".into()),
+                            ("s".into(), "noop".into()),
+                        ]
+                        .into(),
+                    );
+                }
+            },
+        );
+        let (active, inactive) = if remapped { ('S', 's') } else { ('s', 'S') };
+        assert!(!f.sim.app.diff_is_split(WIDTH - 2));
+        f.press(KeyCode::Char(inactive));
+        assert!(!f.sim.app.diff_is_split(WIDTH - 2));
+        f.press(KeyCode::Char(active));
+        assert!(f.sim.app.diff_is_split(WIDTH - 2));
+        let hints = f.sim.app.project_controls().unwrap();
+        assert!(hints.contains(&format!("{active}:")), "{hints}");
+        assert!(!hints.contains(&format!("{inactive}:")), "{hints}");
+        let help = crate::ops::help::sections(&f.sim.app);
+        assert!(help
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(key, _)| key == &active.to_string()));
+        assert!(!help
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(key, _)| key == &inactive.to_string()));
+    }
+}
+
+#[test]
+fn e2e_project_list_right_without_enter_act_does_nothing_and_has_no_hint() {
+    let mut f = ScrollFixture::new("project_list_no_enter", Screen::List);
+    for code in [KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter] {
+        f.press(code);
+        assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "list");
+        assert_eq!(f.sim.app.project_frame().unwrap().cursor, 0);
+    }
+    assert!(!f.sim.app.project_controls().unwrap().contains("l:"));
+}
+
+#[test]
+fn e2e_project_text_motion_steps_horizontal_caps_less_and_remapped_keys() {
+    for less in [false, true] {
+        let mut f = ScrollFixture::with_config(
+            &format!("project_text_motions_{less}"),
+            Screen::Lines,
+            |cfg| {
+                cfg.ui.keys = if less { "less" } else { "vim" }.into();
+                cfg.keys.surfaces.insert(
+                    "text".into(),
+                    [
+                        ("Z".into(), "navigate:down".into()),
+                        ("j".into(), "noop".into()),
+                    ]
+                    .into(),
+                );
+            },
+        );
+        f.press(KeyCode::Char('w'));
+        f.press(KeyCode::Char('j'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 0);
+        f.press(KeyCode::Char('Z'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 1);
+        let modifiers = if less {
+            KeyModifiers::NONE
+        } else {
+            KeyModifiers::CONTROL
+        };
+        f.sim.press(KeyCode::Char('d'), modifiers);
+        drain(&mut f.sim);
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 11);
+        f.sim.press(KeyCode::Char('f'), modifiers);
+        drain(&mut f.sim);
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 31);
+        f.press(KeyCode::Char('G'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 36);
+        f.press(KeyCode::Char('g'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 0);
+        f.press(KeyCode::Char('l'));
+        assert_eq!(f.sim.app.project_frame().unwrap().hscroll, 4);
+        f.press(KeyCode::Char('$'));
+        assert_eq!(
+            f.sim.app.project_frame().unwrap().hscroll,
+            480 - (WIDTH - 2)
+        );
+        f.press(KeyCode::Char('h'));
+        assert_eq!(
+            f.sim.app.project_frame().unwrap().hscroll,
+            480 - (WIDTH - 2) - 4
+        );
+        f.press(KeyCode::Char('0'));
+        assert_eq!(f.sim.app.project_frame().unwrap().hscroll, 0);
+        let split = f.sim.app.diff_is_split(WIDTH - 2);
+        f.press(KeyCode::Char('s'));
+        assert_eq!(f.sim.app.diff_is_split(WIDTH - 2), split);
+        assert!(!f.sim.app.project_controls().unwrap().contains("j/"));
+    }
+}
+
+#[test]
+fn e2e_project_text_motion_remap_moves_lines_and_diffs() {
+    for screen in [Screen::Lines, Screen::Diff] {
+        let mut f = ScrollFixture::with_config("project_motion_layer", screen, |cfg| {
+            cfg.keys.surfaces.insert(
+                "text".into(),
+                [
+                    ("Z".into(), "navigate:down".into()),
+                    ("j".into(), "noop".into()),
+                ]
+                .into(),
+            );
+        });
+        f.press(KeyCode::Char('j'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 0);
+        f.press(KeyCode::Char('Z'));
+        assert_eq!(f.sim.app.project_frame().unwrap().scroll, 1);
+    }
 }
 
 #[test]
@@ -257,7 +510,14 @@ fn e2e_project_scroll_zero_one_and_two_body_rows() {
             f.press(KeyCode::Char('g'));
             f.expect_window(0, 0);
             f.press(KeyCode::Char('j'));
-            f.expect_window(usize::from(body_rows == 1), 1);
+            f.expect_window(
+                if screen == Screen::List {
+                    usize::from(body_rows == 1)
+                } else {
+                    1
+                },
+                1,
+            );
             f.press(KeyCode::Char('G'));
             if body_rows > 0 {
                 f.expect_window(ROWS - usize::from(body_rows), ROWS - 1);

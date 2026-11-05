@@ -20997,9 +20997,7 @@ fn layer_cases_git() -> Vec<LayerCase> {
     ]
 }
 
-/// On a no-git build `keymap::Surface` has no git variants, so `surface()` skips its whole git
-/// block and the keys land on whatever is behind the git state, while `internal_mode()` still
-/// reports the git chip. Characterized so the merge cannot quietly "fix" it.
+/// Native hub surfaces remain git-only; the shared diff surface exists in every build.
 #[cfg(not(feature = "git"))]
 fn layer_cases_git() -> Vec<LayerCase> {
     use crate::keymap::Surface as S;
@@ -21027,13 +21025,12 @@ fn layer_cases_git() -> Vec<LayerCase> {
             internal: Some(InternalMode::GitDetail),
         },
         LayerCase {
-            name:
-                "PreviewText / GitDiff (no-git: a GitDiff kind is not windowed, so it stays text)",
+            name: "PreviewGitDiff / GitDiff (no-git: shared diff surface)",
             setup: |a| {
                 a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
                 a.tab.mode = Mode::Preview;
             },
-            surface: S::PreviewText,
+            surface: S::PreviewGitDiff,
             internal: Some(InternalMode::GitDiff),
         },
         LayerCase {
@@ -21277,7 +21274,6 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::PreviewTable,
         S::PreviewCanvas,
         S::PluginInput,
-        #[cfg(feature = "git")]
         S::PreviewGitDiff,
     ]
 }
@@ -21295,6 +21291,15 @@ fn surface_round_trips_through_its_layer() {
             "{s:?} does not come back from the layer it claims to belong to"
         );
     }
+}
+
+#[test]
+fn project_diff_surface_is_produced_by_open_diff_in_every_build() {
+    let dir = layer_fixture();
+    let mut app = layer_app(&dir);
+    app.open_git_diff(&dir.join("a.txt"));
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewGitDiff);
+    assert_eq!(app.key_context(), Some(crate::keymap::Context::Diff));
 }
 
 /// The general form of the `?` help bug: whatever is in front decides **both** what the chip and

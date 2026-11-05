@@ -93,6 +93,343 @@ fn same(old: &mut Sim, new: &mut Sim, width: u16, height: u16) {
     );
 }
 
+fn detail_repo() -> TmpDir {
+    let dir = repo(1);
+    for (path, text) in [
+        ("main.rs", "let value = 123;"),
+        ("data.json", "{\"value\":123}"),
+    ] {
+        let body = (0..70)
+            .map(|i| format!("{text} // {i} 日本語 {}\n", "long ".repeat(45)))
+            .collect::<String>();
+        std::fs::write(dir.join(path), body).unwrap();
+    }
+    let repository = git2::Repository::open(&dir).unwrap();
+    let mut index = repository.index().unwrap();
+    index.add_path(std::path::Path::new("main.rs")).unwrap();
+    index.add_path(std::path::Path::new("data.json")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repository.find_tree(tree_id).unwrap();
+    for (i, message) in [
+        "Subject 日本語\n\nBody one\n\nBody three",
+        "Empty subject\n\nEmpty body",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let message = if i == 0 {
+            format!("{message} {}", "long message ".repeat(45))
+        } else {
+            message.to_string()
+        };
+        let sig = git2::Signature::new(
+            "作者 Author",
+            "fixture@example.invalid",
+            &git2::Time::new(1_577_836_860 + i as i64 * 60, 0),
+        )
+        .unwrap();
+        let parent = repository.head().unwrap().peel_to_commit().unwrap();
+        repository
+            .commit(Some("HEAD"), &sig, &sig, &message, &tree, &[&parent])
+            .unwrap();
+    }
+    dir
+}
+
+#[test]
+fn e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy() {
+    let dir = detail_repo();
+    for width in [80, 180] {
+        for layout in ["unified", "auto"] {
+            for empty in [false, true] {
+                for scheme in ["vim", "less"] {
+                    let height = 14;
+                    let mut cfg = plugin_config("git", "vcs_detail_cells", "en");
+                    cfg.ui.keys = scheme.into();
+                    cfg.git.diff = layout.into();
+                    let (mut old, mut new) = pair_config(&dir, "git", cfg, width, height);
+                    for sim in [&mut old, &mut new] {
+                        sim.press(KeyCode::Tab, KeyModifiers::NONE);
+                    }
+                    drain(&mut new);
+                    if !empty {
+                        old.key('j');
+                        new.key('j');
+                    }
+                    let cursor = new.app.project_frame().unwrap().cursor;
+                    old.enter();
+                    new.enter();
+                    drain(&mut new);
+                    assert_eq!(new.app.project_frame().unwrap().key.screen, "detail");
+                    let content = new.app.project_content().unwrap();
+                    let ProjectContent::Diff(diff) = content.as_ref() else {
+                        panic!("diff required")
+                    };
+                    assert_eq!(diff.lines.is_empty(), empty);
+                    if !empty {
+                        assert_eq!(diff.lines.len(), 142);
+                    }
+                    same(&mut old, &mut new, width, height);
+                    for (code, modifiers) in [
+                        (KeyCode::Char('j'), KeyModifiers::NONE),
+                        (KeyCode::Char('j'), KeyModifiers::NONE),
+                        (KeyCode::Char('j'), KeyModifiers::NONE),
+                        (KeyCode::Char('d'), KeyModifiers::CONTROL),
+                        (KeyCode::Char('G'), KeyModifiers::NONE),
+                        (KeyCode::Char('l'), KeyModifiers::NONE),
+                        (KeyCode::Char('l'), KeyModifiers::NONE),
+                        (KeyCode::Char('s'), KeyModifiers::NONE),
+                        (KeyCode::Char('l'), KeyModifiers::NONE),
+                        (KeyCode::Char('0'), KeyModifiers::NONE),
+                        (KeyCode::Char('$'), KeyModifiers::NONE),
+                        (KeyCode::Char('h'), KeyModifiers::NONE),
+                        (KeyCode::Char('g'), KeyModifiers::NONE),
+                        (KeyCode::PageDown, KeyModifiers::NONE),
+                        (KeyCode::PageUp, KeyModifiers::NONE),
+                        (
+                            KeyCode::Char('d'),
+                            if scheme == "less" {
+                                KeyModifiers::NONE
+                            } else {
+                                KeyModifiers::CONTROL
+                            },
+                        ),
+                        (
+                            KeyCode::Char('u'),
+                            if scheme == "less" {
+                                KeyModifiers::NONE
+                            } else {
+                                KeyModifiers::CONTROL
+                            },
+                        ),
+                        (
+                            KeyCode::Char('f'),
+                            if scheme == "less" {
+                                KeyModifiers::NONE
+                            } else {
+                                KeyModifiers::CONTROL
+                            },
+                        ),
+                        (
+                            KeyCode::Char('b'),
+                            if scheme == "less" {
+                                KeyModifiers::NONE
+                            } else {
+                                KeyModifiers::CONTROL
+                            },
+                        ),
+                    ] {
+                        old.press(code, modifiers);
+                        new.press(code, modifiers);
+                        drain(&mut new);
+                        if code == KeyCode::Char('s') {
+                            assert_eq!(new.app.flash, old.app.flash);
+                            assert_eq!(new.app.project_frame().unwrap().hscroll, 0);
+                        }
+                        same(&mut old, &mut new, width, height);
+                    }
+                    for code in [KeyCode::Tab, KeyCode::BackTab] {
+                        new.press(code, KeyModifiers::NONE);
+                        drain(&mut new);
+                        assert_eq!(new.app.project_frame().unwrap().key.screen, "detail");
+                    }
+                    new.key('q');
+                    drain(&mut new);
+                    assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
+                    assert_eq!(new.app.project_frame().unwrap().cursor, cursor);
+                    new.key('l');
+                    drain(&mut new);
+                    assert_eq!(new.app.project_frame().unwrap().key.screen, "detail");
+                    new.press(KeyCode::Esc, KeyModifiers::NONE);
+                    drain(&mut new);
+                    assert_eq!(new.app.project_frame().unwrap().cursor, cursor);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open() {
+    let dir = repo(0);
+    let cfg = plugin_config("git", "vcs_detail_tabs", "en");
+    let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+    for (code, expected) in [
+        (KeyCode::Tab, "log"),
+        (KeyCode::Tab, "changes"),
+        (KeyCode::BackTab, "log"),
+    ] {
+        new.press(code, KeyModifiers::NONE);
+        drain(&mut new);
+        assert_eq!(new.app.project_frame().unwrap().key.screen, expected);
+        let buffer = new.term.backend().buffer();
+        let tabs = (0..100)
+            .map(|x| buffer[(x, 1)].symbol())
+            .collect::<String>();
+        assert!(!tabs.contains("Detail"), "{tabs}");
+    }
+    assert!(new.app.project_act_context().selected.is_none());
+    assert!(!new.app.project_controls().unwrap().contains("/l/"));
+    for code in [KeyCode::Enter, KeyCode::Char('l'), KeyCode::Right] {
+        new.press(code, KeyModifiers::NONE);
+        drain(&mut new);
+        assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
+    }
+}
+
+#[test]
+fn e2e_vcs_detail_missing_commit_empty_without_header_matches_legacy_and_r_reloads() {
+    for width in [80, 180] {
+        for layout in ["unified", "auto"] {
+            let dir = detail_repo();
+            let mut cfg = plugin_config("git", "vcs_detail_missing", "en");
+            cfg.git.diff = layout.into();
+            let (mut old, mut new) = pair_config(&dir, "git", cfg, width, 12);
+            old.press(KeyCode::Tab, KeyModifiers::NONE);
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+            let id = new.app.project_act_context().selected.unwrap().value;
+            old.enter();
+            new.enter();
+            drain(&mut new);
+            let before = new.app.project_content().unwrap();
+            std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
+            old.app.close_git_detail();
+            old.enter();
+            new.key('r');
+            drain(&mut new);
+            let after = new.app.project_content().unwrap();
+            assert!(!std::sync::Arc::ptr_eq(&before, &after));
+            let ProjectContent::Diff(diff) = after.as_ref() else {
+                panic!("diff required")
+            };
+            assert!(diff.lines.is_empty() && diff.header.is_empty());
+            same(&mut old, &mut new, width, 12);
+            for (code, modifiers) in [
+                (KeyCode::Char('j'), KeyModifiers::NONE),
+                (KeyCode::Char('j'), KeyModifiers::NONE),
+                (KeyCode::Char('j'), KeyModifiers::NONE),
+                (KeyCode::Char('d'), KeyModifiers::CONTROL),
+                (KeyCode::Char('G'), KeyModifiers::NONE),
+                (KeyCode::Char('l'), KeyModifiers::NONE),
+                (KeyCode::Char('l'), KeyModifiers::NONE),
+                (KeyCode::Char('s'), KeyModifiers::NONE),
+                (KeyCode::Char('l'), KeyModifiers::NONE),
+                (KeyCode::Char('0'), KeyModifiers::NONE),
+            ] {
+                old.press(code, modifiers);
+                new.press(code, modifiers);
+                drain(&mut new);
+                same(&mut old, &mut new, width, 12);
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_project_list_right_opens_changes_like_enter_and_respects_remaps() {
+    let dir = detail_repo();
+    std::fs::write(dir.join("main.rs"), "changed\n").unwrap();
+    for (code, remap) in [
+        (KeyCode::Char('l'), false),
+        (KeyCode::Right, false),
+        (KeyCode::Char('Z'), true),
+    ] {
+        let mut cfg = plugin_config("git", "vcs_list_right", "en");
+        if remap {
+            cfg.keys.surfaces.insert(
+                "text".into(),
+                [
+                    ("Z".into(), "navigate:right".into()),
+                    ("l".into(), "noop".into()),
+                ]
+                .into(),
+            );
+        }
+        let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+        if remap {
+            new.key('l');
+            drain(&mut new);
+            assert!(new.app.project_active());
+        }
+        new.press(code, KeyModifiers::NONE);
+        drain(&mut new);
+        assert!(new.app.is_git_diff_preview(), "code={code:?}");
+    }
+}
+
+#[test]
+fn e2e_vcs_detail_layout_remap_uses_diff_context_for_detail_changes_and_file() {
+    let dir = detail_repo();
+    std::fs::write(dir.join("main.rs"), "changed\n").unwrap();
+    for table in ["git.detail", "text"] {
+        let mut cfg = plugin_config("git", "vcs_detail_layout_remap", "en");
+        cfg.keys.surfaces.insert(
+            "diff".into(),
+            [
+                ("S".into(), "cycle_diff_layout".into()),
+                ("s".into(), "noop".into()),
+            ]
+            .into(),
+        );
+        cfg.keys.surfaces.insert(
+            table.into(),
+            [
+                ("S".into(), "noop".into()),
+                ("s".into(), "cycle_diff_layout".into()),
+            ]
+            .into(),
+        );
+        let (mut old, mut new) = pair_config(&dir, "git", cfg, 80, 12);
+        old.press(KeyCode::Tab, KeyModifiers::NONE);
+        new.press(KeyCode::Tab, KeyModifiers::NONE);
+        drain(&mut new);
+        old.enter();
+        new.enter();
+        drain(&mut new);
+        new.key('s');
+        drain(&mut new);
+        assert!(!new.app.diff_is_split(78), "{table}");
+        new.key('S');
+        drain(&mut new);
+        assert!(new.app.diff_is_split(78), "{table}");
+        assert!(new.app.project_controls().unwrap().contains("S:"));
+        assert!(crate::ops::help::sections(&new.app)
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(key, _)| key == "S"));
+        new.key('q');
+        drain(&mut new);
+        new.press(KeyCode::BackTab, KeyModifiers::NONE);
+        drain(&mut new);
+        new.enter();
+        drain(&mut new);
+        assert!(new.app.is_git_diff_preview() && !new.app.project_active());
+        old.key('q');
+        old.key('q');
+        old.app.open_git_diff(&dir.join("main.rs"));
+        old.draw();
+        for sim in [&mut old, &mut new] {
+            assert_eq!(sim.app.key_context(), Some(crate::keymap::Context::Diff));
+            let before = sim.app.diff_is_split(78);
+            sim.key('s');
+            assert_eq!(sim.app.diff_is_split(78), before);
+            sim.key('S');
+            assert_ne!(sim.app.diff_is_split(78), before);
+            assert!(
+                crate::ops::footer::tokens(&sim.app, crate::keymap::Context::Diff)
+                    .iter()
+                    .any(|token| token.starts_with("S:"))
+            );
+            assert!(crate::ops::help::sections(&sim.app)
+                .iter()
+                .flat_map(|s| &s.rows)
+                .any(|(key, _)| key == "S"));
+        }
+    }
+}
+
 #[test]
 fn e2e_vcs_log_git_cells_alignments_boundaries_cjk_ellipsis_and_scrolling() {
     use unicode_width::UnicodeWidthStr;
@@ -277,12 +614,12 @@ fn e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order() {
 }
 
 #[test]
-fn e2e_vcs_log_exit_returns_to_origin_and_unimplemented_keys_do_nothing() {
+fn e2e_vcs_log_exit_returns_to_origin_and_h_does_nothing() {
     let dir = repo(3);
     for code in [KeyCode::Char('q'), KeyCode::Esc] {
         let (mut old, mut new) = pair(&dir, "git", "en", "right", 80, 8);
-        for key in [KeyCode::Enter, KeyCode::Char('l'), KeyCode::Char('h')] {
-            new.press(key, KeyModifiers::NONE);
+        {
+            new.press(KeyCode::Char('h'), KeyModifiers::NONE);
             drain(&mut new);
             assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
             assert!(new.app.pending_leader.is_none());
@@ -393,6 +730,18 @@ fn e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend(
             vec!["jj"]
         } {
             let _preference = Preference::pin(id);
+            if id == "jj" {
+                let (mut old, mut new) = pair(&dir, id, "en", "right", 80, 12);
+                old.enter();
+                new.enter();
+                drain(&mut new);
+                let content = new.app.project_content().unwrap();
+                let ProjectContent::Diff(diff) = content.as_ref() else {
+                    panic!("diff required")
+                };
+                assert!(diff.header[0].spans[0].content.starts_with("change "));
+                same(&mut old, &mut new, 80, 12);
+            }
             for align in ["right", "inline", "unknown"] {
                 for lang in ["en", "ja"] {
                     let (mut old, mut new) = pair(&dir, id, lang, align, 72, 7);

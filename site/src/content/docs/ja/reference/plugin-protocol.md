@@ -119,7 +119,7 @@ git と jj は `[plugins.git]` / `[plugins.jj]` の
 ```text
 ProjectDecl {
   markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
-  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean, pushed?: boolean }],
   chip: Tr | null,
   watch_paths: Path[],
   version_control: boolean
@@ -292,7 +292,33 @@ SDK の型付き理由をホストが英語・日本語に翻訳します。名�
 `Line { spans: [[text, Style], …], style: Style }` で、グラフの罫線もこの span で表せます。
 通信上の各 span は2要素の配列です。`Style` は `fg`、`bg`、`add`、`sub` を持ち、
 後ろの2つは文字修飾のビットマスクです。
-差分の hunk と行の符号化は変わりません。
+`ProjectScreen::pushed()` は `pushed: true` を設定します（未指定は `false`）。
+この画面は `PushScreen` だけで開き、タブの表示と巡回から除外します。
+表示中の `Tab` / `Shift-Tab` は何もせず、ジャンプ用の `key` を宣言すると
+画面名付きの検証エラーになります。`q` / `Esc` は下の画面のカーソルを保って戻ります。
+リストの Right 移動（既定は `l` / 右矢印、テキスト層のキー変更を反映）は、
+カーソル行の `Enter` アクションを同じガード経由で実行します。
+プラグインは `Enter` だけを宣言し、その行で実行できなければ開くヒントも表示しません。
+
+`DiffView::new(hunks).header(lines)` は差分の上に装飾付きの `header: Line[]` を表示し、
+空でなければ直後に薄い全幅の `─` 区切りを描きます。
+`DiffHunk::new(lines).path(path)` はファイルを指定し、前の hunk とパスが異なる時に
+ファイル見出しを描き、その拡張子で構文を色付けします。同じパスの連続する hunk は
+見出しを共有します。既定は空のヘッダーと `None` のパスです。
+
+差分の通信データは `{ header?: Line[], hunks: [{ path?: string | null,
+lines: DiffLine[] }] }` です。従来の `DiffLine[][]` も読み取れ、行の符号化は変わりません。
+ホスト共通の縦／横／Auto 描画を使い、内容・幅・並び・横位置が同じ間は描画結果を再利用します。
+空の差分では、ヘッダーがあれば区切りの後に薄い変更なしの行、なければ中央に変更なしを表示します。
+
+テキストと差分画面は先頭行をスクロールし、最終ページを埋めて止めます。
+テキスト層のキー（less 方式と `[keys.text]` の変更を含む）で、1行、半ページ（10行）、
+ページ（20行）、先頭／末尾、横4桁、行頭／行末へ移動します。リストのカーソル移動は従来どおりです。
+差分画面の `s` は共通の並びを巡回して横位置を0に戻します。テキスト画面にはありません。
+`cycle_diff_layout` のキーは差分ビューのキー文脈で解決します。
+`[keys.diff]` の変更はファイル差分プレビューとすべてのプロジェクト差分画面に適用され、
+フッターとヘルプにも解決後のキーを表示します。Git機能なしのプロジェクト差分でも使えます。
+`r` は表示中のプロジェクト画面を読み直します。
 
 従来の `Unhandled`、`Redraw`、`Flash(Tr)`、`Reload` に、次の結果を追加します。
 

@@ -689,8 +689,10 @@ fn list_diff_message_reopen_round_trip() {
     assert_eq!(dbg(&rt_ok(list)), s);
 
     let diff = View::Diff(DiffView {
+        header: vec![],
         hunks: vec![
             DiffHunk {
+                path: None,
                 lines: vec![
                     DiffLine {
                         kind: DiffKind::Context,
@@ -712,7 +714,10 @@ fn list_diff_message_reopen_round_trip() {
                     },
                 ],
             },
-            DiffHunk { lines: vec![] },
+            DiffHunk {
+                lines: vec![],
+                path: None,
+            },
         ],
     });
     let s = dbg(&diff);

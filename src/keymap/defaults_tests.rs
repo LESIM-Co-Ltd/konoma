@@ -38,6 +38,7 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::PreviewCanvas,
         Surface::PluginInput,
         Surface::ListFilter,
+        Surface::PreviewGitDiff,
     ];
     #[cfg(feature = "git")]
     v.extend([
@@ -50,7 +51,6 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::GitBranches,
         Surface::GitChanges,
         Surface::GitWorktrees,
-        Surface::PreviewGitDiff,
     ]);
     v
 }
@@ -99,7 +99,6 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::GitChanges => 31,
         #[cfg(feature = "git")]
         Surface::GitWorktrees => 32,
-        #[cfg(feature = "git")]
         Surface::PreviewGitDiff => 33,
     }
 }
@@ -112,7 +111,7 @@ fn the_surface_list_is_complete() {
     let expected: Vec<usize> = if cfg!(feature = "git") {
         (0..34).collect()
     } else {
-        (0..24).collect()
+        (0..24).chain([33]).collect()
     };
     assert_eq!(ords, expected, "all_surfaces() misses or repeats a Surface");
 }
@@ -336,9 +335,8 @@ fn print_the_default_snapshots() {
 }
 
 fn only_in_this_build(snapshot: &str) -> String {
-    // Lines of the version-control contexts are in the snapshot of a build with `git`; a build
-    // without it has none of them.
-    snapshot
+    // Native hub contexts are git-only. The no-git diff context has shared keys only.
+    let mut expected: String = snapshot
         .lines()
         .filter(|l| {
             // (a line of the less difference starts with `- ` or `+ `)
@@ -352,8 +350,69 @@ fn only_in_this_build(snapshot: &str) -> String {
                     || l.ends_with("| git_launch_tool"))
         })
         .map(|l| format!("{l}\n"))
-        .collect()
+        .collect();
+    if !cfg!(feature = "git") {
+        if snapshot == VIM {
+            expected.push_str(NO_GIT_DIFF_VIM);
+        } else if snapshot == LESS_DIFF {
+            expected.push_str(NO_GIT_DIFF_LESS);
+        }
+        let mut lines: Vec<_> = expected.lines().collect();
+        lines.sort_by_key(|line| {
+            let context = line.split(" | ").next().unwrap_or("");
+            // Preserve each context's snapshot order, including the +/- paging groups.
+            (
+                u8::from(line.starts_with('+')),
+                context.trim_start_matches(['-', '+', ' ']).to_owned(),
+            )
+        });
+        expected = lines.into_iter().map(|line| format!("{line}\n")).collect();
+    }
+    expected
 }
+
+const NO_GIT_DIFF_VIM: &str = "diff | Space | leader:actions\n\
+diff | $ | navigate:line_end\n\
+diff | 0 | navigate:line_home\n\
+diff | 1 | tab_goto\n\
+diff | 2 | tab_goto\n\
+diff | 3 | tab_goto\n\
+diff | 4 | tab_goto\n\
+diff | 5 | tab_goto\n\
+diff | 6 | tab_goto\n\
+diff | 7 | tab_goto\n\
+diff | 8 | tab_goto\n\
+diff | 9 | tab_goto\n\
+diff | ? | toggle_help\n\
+diff | F | toggle_follow\n\
+diff | G | navigate:bottom\n\
+diff | P | paste_jump\n\
+diff | Q | quit\n\
+diff | T | toggle_tab_list\n\
+diff | [ | tab_prev\n\
+diff | ] | tab_next\n\
+diff | g | navigate:top\n\
+diff | h | navigate:left\n\
+diff | j | navigate:down\n\
+diff | k | navigate:up\n\
+diff | l | navigate:right\n\
+diff | s | cycle_diff_layout\n\
+diff | t | tab_new_after\n\
+diff | Ctrl-b | navigate:page_up\n\
+diff | Ctrl-d | navigate:half_down\n\
+diff | Ctrl-f | navigate:page_down\n\
+diff | Ctrl-u | navigate:half_up\n\
+diff | PageDown | navigate:page_down\n\
+diff | PageUp | navigate:page_up\n";
+
+const NO_GIT_DIFF_LESS: &str = "- diff | Ctrl-b | navigate:page_up\n\
+- diff | Ctrl-d | navigate:half_down\n\
+- diff | Ctrl-f | navigate:page_down\n\
+- diff | Ctrl-u | navigate:half_up\n\
++ diff | b | navigate:page_up\n\
++ diff | d | navigate:half_down\n\
++ diff | f | navigate:page_down\n\
++ diff | u | navigate:half_up\n";
 
 fn same(what: &str, got: &str, want: &str) {
     if got != want {

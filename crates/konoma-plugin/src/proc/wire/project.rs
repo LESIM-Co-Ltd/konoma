@@ -83,6 +83,8 @@ pub struct WProjectScreen {
     pub marks: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub checks: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub pushed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +185,7 @@ pub fn project_screen_to_wire(screen: &ProjectScreen) -> WProjectScreen {
         row_kinds: screen.row_kinds.clone(),
         marks: screen.marks,
         checks: screen.checks,
+        pushed: screen.pushed,
     }
 }
 
@@ -194,6 +197,7 @@ pub fn project_screen_from_wire(screen: WProjectScreen) -> ProjectScreen {
         row_kinds: screen.row_kinds,
         marks: screen.marks,
         checks: screen.checks,
+        pushed: screen.pushed,
     }
 }
 

@@ -250,11 +250,11 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), 2);
+        assert_eq!(project.screens.len(), 3);
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
-        assert_eq!(manifest.actions.len(), if id == "git" { 7 } else { 2 });
+        assert_eq!(manifest.actions.len(), if id == "git" { 8 } else { 3 });
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
         assert_eq!(action.id, "diff");
         assert_eq!(
@@ -299,7 +299,11 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             assert_eq!(session.enabled(id), git && cfg!(feature = "git"));
         }
         assert_eq!(session.enabled("sync"), !git && cfg!(feature = "git"));
-        for a in manifest.actions.iter().filter(|a| a.id != "diff") {
+        for a in manifest
+            .actions
+            .iter()
+            .filter(|a| !["diff", "detail"].contains(&a.id.as_str()))
+        {
             assert!(a.writes);
             assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));
             assert!(a.refresh.contains(&RefreshTarget::TreeStatus));

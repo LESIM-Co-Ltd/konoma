@@ -12,6 +12,53 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 #[test]
+fn project_diff_content_keeps_styled_header_and_one_marker_per_changed_path() {
+    use konoma_plugin::view::{DiffHunk, DiffKind, DiffLine, DiffView};
+    let hunks = ["main.rs", "main.rs", "data.json"]
+        .into_iter()
+        .map(|path| {
+            DiffHunk::new(vec![DiffLine {
+                kind: DiffKind::Added,
+                old_no: None,
+                new_no: Some(1),
+                text: "body".into(),
+            }])
+            .path(path)
+        })
+        .collect();
+    let header = konoma_plugin::Line::from(vec![konoma_plugin::Span::styled(
+        "header",
+        konoma_plugin::Style::new().bold(),
+    )]);
+    let view = content(
+        View::Diff(DiffView::new(hunks).header(vec![header.clone()])),
+        &ViewReq::new(80, 20),
+        &ReadScope::unrestricted(),
+        "base16-ocean.dark",
+        "en",
+    )
+    .unwrap();
+    let ProjectContent::Diff(diff) = view else {
+        panic!("diff required")
+    };
+    assert_eq!(
+        diff.header,
+        vec![konoma_plugin::ratatui_draw::into_line(header)]
+    );
+    assert_eq!(
+        diff.lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>(),
+        ["main.rs", "body", "body", "data.json", "body"]
+    );
+    for index in [0, 3] {
+        assert_eq!(diff.lines[index].old_no, None);
+        assert_eq!(diff.lines[index].new_no, None);
+    }
+}
+
+#[test]
 fn project_initial_watch_and_chip_failures_are_independent_and_chip_job_skips_watch() {
     use crate::plugins::test_projects::{ProjectLog, Screens};
     use std::sync::Mutex;

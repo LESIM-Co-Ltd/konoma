@@ -36,7 +36,13 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let marks = screen.is_some_and(|s| s.marks);
     let checks = screen.is_some_and(|s| s.checks);
     let mut tabs = Vec::new();
-    for screen in &runtime.project.declaration.screens {
+    for screen in runtime
+        .project
+        .declaration
+        .screens
+        .iter()
+        .filter(|s| !s.pushed)
+    {
         let label = match screen.key {
             Some(key) => format!(" {key}:{} ", screen.title.get(app.plugin_lang())),
             None => format!(" {} ", screen.title.get(app.plugin_lang())),
@@ -65,7 +71,14 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let mut lines = Vec::new();
-    let visible = app.project_visible_rows();
+    let mut horizontal = active.hscroll;
+    let mut kept_hscroll = horizontal;
+    let is_list = matches!(content.as_ref(), ProjectContent::List(_));
+    let visible = if is_list {
+        app.project_visible_rows()
+    } else {
+        Vec::new()
+    };
     match content.as_ref() {
         ProjectContent::List(list) => {
             for (cursor, index) in visible.iter().enumerate() {
@@ -119,10 +132,52 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 });
             }
         }
-        ProjectContent::Lines(text) | ProjectContent::Diff(text) => lines.clone_from(text),
+        ProjectContent::Lines(text) => {
+            lines.clone_from(text);
+            let max = lines
+                .iter()
+                .map(Line::width)
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(body.width as usize)
+                .min(u16::MAX as usize) as u16;
+            horizontal = horizontal.min(max);
+            kept_hscroll = horizontal;
+        }
+        ProjectContent::Diff(diff) => {
+            if diff.lines.is_empty() && diff.header.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(diff.no_changes.clone())
+                        .alignment(ratatui::layout::Alignment::Center),
+                    Rect {
+                        y: body.y + body.height / 2,
+                        height: body.height.min(1),
+                        ..body
+                    },
+                );
+                if let Some(active) = app
+                    .tab
+                    .project_navigation
+                    .as_mut()
+                    .and_then(|nav| nav.stack.last_mut())
+                {
+                    active.scroll = 0;
+                    active.hscroll = 0;
+                }
+                return;
+            }
+            let drawn = diff.layout(body.width, app.diff_is_split(body.width), horizontal);
+            lines.clone_from(&drawn.lines);
+            horizontal = drawn.paragraph_hscroll;
+            kept_hscroll = drawn.hscroll;
+        }
     }
     let cursor = active.cursor.min(lines.len().saturating_sub(1));
-    let scroll = if body.height == 0 {
+    let scroll = if !is_list {
+        usize::from(active.scroll)
+            .min(lines.len().saturating_sub(body.height as usize))
+            .min(u16::MAX as usize)
+    } else if body.height == 0 {
         0
     } else {
         cursor.saturating_sub(usize::from(body.height - 1))
@@ -134,6 +189,17 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|nav| nav.stack.last_mut())
     {
         frame.cursor = cursor;
+        if !is_list {
+            frame.scroll = scroll as u16;
+            frame.hscroll = kept_hscroll;
+        }
+    }
+    if !is_list {
+        frame.render_widget(
+            Paragraph::new(lines).scroll((scroll as u16, horizontal)),
+            body,
+        );
+        return;
     }
     super::list::render(
         frame,

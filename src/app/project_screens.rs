@@ -52,13 +52,127 @@ impl ScreenKey {
 pub(crate) enum ProjectContent {
     List(konoma_plugin::view::ListView),
     Lines(Vec<Line<'static>>),
-    Diff(Vec<Line<'static>>),
+    Diff(ProjectDiff),
+}
+
+/// Immutable diff data owns its layout cache, so a replacement view always invalidates it.
+pub(crate) struct ProjectDiff {
+    pub lines: Vec<crate::git::DiffLine>,
+    pub header: Vec<Line<'static>>,
+    pub theme: String,
+    pub no_changes: String,
+    cache: std::sync::Mutex<Option<Arc<ProjectDiffLayout>>>,
+    #[cfg(test)]
+    layouts: std::sync::atomic::AtomicUsize,
+}
+
+pub(crate) struct ProjectDiffLayout {
+    pub lines: Vec<Line<'static>>,
+    pub hscroll: u16,
+    pub paragraph_hscroll: u16,
+    pub max_hscroll: u16,
+    width: u16,
+    split: bool,
+}
+
+impl ProjectDiff {
+    pub fn new(
+        lines: Vec<crate::git::DiffLine>,
+        header: Vec<Line<'static>>,
+        theme: String,
+        no_changes: String,
+    ) -> Self {
+        Self {
+            lines,
+            header,
+            theme,
+            no_changes,
+            cache: Default::default(),
+            #[cfg(test)]
+            layouts: Default::default(),
+        }
+    }
+
+    pub fn layout(&self, width: u16, split: bool, offset: u16) -> Arc<ProjectDiffLayout> {
+        use crate::preview::gitdiff::{
+            diff_lines, diff_lines_side_by_side, side_by_side_max_hscroll,
+        };
+        use ratatui::style::{Color, Style};
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(cached) = cache
+            .as_ref()
+            .filter(|c| c.width == width && c.split == split && c.hscroll == offset)
+        {
+            return cached.clone();
+        }
+        #[cfg(test)]
+        self.layouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let iw = usize::from(width);
+        let mut lines = self.header.clone();
+        if !lines.is_empty() {
+            lines.push(Line::styled(
+                "─".repeat(iw.max(1)),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
+        let (hscroll, paragraph_hscroll, max_hscroll) = if self.lines.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::styled(
+                    self.no_changes.clone(),
+                    Style::new().fg(Color::DarkGray),
+                ));
+            }
+            (0, 0, 0)
+        } else {
+            if split {
+                let max = side_by_side_max_hscroll(&self.lines, iw).min(u16::MAX as usize) as u16;
+                let h = offset.min(max);
+                lines.extend(diff_lines_side_by_side(
+                    &self.lines,
+                    "",
+                    &self.theme,
+                    iw,
+                    usize::from(h),
+                ));
+                (h, 0, max)
+            } else {
+                lines.extend(diff_lines(&self.lines, "", &self.theme, iw));
+                let max = lines
+                    .iter()
+                    .map(Line::width)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_sub(iw)
+                    .min(u16::MAX as usize) as u16;
+                let h = offset.min(max);
+                (h, h, max)
+            }
+        };
+        let drawn = Arc::new(ProjectDiffLayout {
+            lines,
+            hscroll,
+            paragraph_hscroll,
+            max_hscroll,
+            width,
+            split,
+        });
+        *cache = Some(drawn.clone());
+        drawn
+    }
+
+    #[cfg(test)]
+    pub fn layout_count(&self) -> usize {
+        self.layouts.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct ProjectFrame {
     pub key: ScreenKey,
     pub cursor: usize,
+    pub scroll: u16,
+    pub hscroll: u16,
     pub marked: BTreeSet<usize>,
     pub query: String,
     pub filtering: bool,
@@ -77,6 +191,8 @@ impl ProjectFrame {
         Self {
             key,
             cursor: 0,
+            scroll: 0,
+            hscroll: 0,
             marked: BTreeSet::new(),
             query: String::new(),
             filtering: false,
@@ -208,6 +324,185 @@ fn remap_project_rows(
 }
 
 impl App {
+    fn project_frame_mut(&mut self) -> Option<&mut ProjectFrame> {
+        self.tab.project_navigation.as_mut()?.stack.last_mut()
+    }
+
+    fn project_list_right(&self, key: KeyEvent) -> bool {
+        use crate::keymap::{Action, Binding, KeyPress, Motion, Resolution};
+        if !self
+            .project_content()
+            .is_some_and(|v| matches!(v.as_ref(), ProjectContent::List(_)))
+        {
+            return false;
+        }
+        if key.code == KeyCode::Right {
+            return true;
+        }
+        let kp = KeyPress::norm(&key);
+        #[cfg(feature = "git")]
+        let binding = self
+            .keymaps
+            .types
+            .get(&crate::keymap::ViewType::List)
+            .and_then(|t| t.get(&kp));
+        #[cfg(not(feature = "git"))]
+        let binding = None;
+        match binding {
+            Some(Binding::Run(Action::Navigate(Motion::Right))) => true,
+            Some(_) => false,
+            None => {
+                self.keymaps.resolve(Context::Text, None, kp)
+                    == Resolution::Action(Action::Navigate(Motion::Right))
+            }
+        }
+    }
+
+    fn project_enter_action(&self) -> Option<crate::keymap::Action> {
+        self.plugin_action_for_key(
+            Context::Canvas,
+            crate::keymap::KeyPress::key(KeyCode::Enter),
+        )
+    }
+
+    pub(crate) fn project_open_hint(&self) -> Option<(String, String)> {
+        use crate::keymap::{Action, KeyPress, Motion};
+        if !self
+            .project_content()
+            .is_some_and(|v| matches!(v.as_ref(), ProjectContent::List(_)))
+        {
+            return None;
+        }
+        let action = self.project_enter_action()?;
+        if !crate::ops::action_enabled(self, Context::Canvas, action) {
+            return None;
+        }
+        let Action::Plugin(act) = action else {
+            return None;
+        };
+        let label = self
+            .plugin_keys
+            .declaration(act)?
+            .label
+            .get(self.plugin_lang())
+            .to_string();
+        let mut candidates = self
+            .keymaps
+            .keys_of(Context::Text, Action::Navigate(Motion::Right));
+        #[cfg(feature = "git")]
+        if let Some(table) = self.keymaps.types.get(&crate::keymap::ViewType::List) {
+            candidates.extend(table.keys().copied());
+        }
+        candidates.push(KeyPress::key(KeyCode::Right));
+        let mut keys = vec![crate::ops::keys::footer_key(
+            KeyPress::key(KeyCode::Enter),
+            true,
+        )];
+        for key in candidates {
+            if self.project_list_right(KeyEvent::new(
+                key.code,
+                if key.ctrl {
+                    KeyModifiers::CONTROL
+                } else {
+                    KeyModifiers::NONE
+                },
+            )) {
+                let key = crate::ops::keys::footer_key(key, true);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        Some((keys.join("/"), label))
+    }
+
+    fn handle_project_text_key(&mut self, key: KeyEvent) -> bool {
+        use crate::keymap::{Action, KeyPress, Motion, Resolution};
+        let Some(content) = self.project_content() else {
+            return false;
+        };
+        let is_diff = matches!(content.as_ref(), ProjectContent::Diff(_));
+        if matches!(content.as_ref(), ProjectContent::List(_)) {
+            return false;
+        }
+        if is_diff
+            && self
+                .keymaps
+                .resolve(Context::Diff, None, KeyPress::norm(&key))
+                == Resolution::Action(Action::CycleDiffLayout)
+        {
+            let Some(frame) = self.project_frame_mut() else {
+                return false;
+            };
+            frame.hscroll = 0;
+            // Project diffs always show raw lines, independent of the origin preview's presentation.
+            self.diff_layout = self.diff_layout.next();
+            self.tab.preview_hscroll = 0;
+            self.tab.git_detail_hscroll = 0;
+            let label = match self.diff_layout {
+                DiffLayout::Unified => Msg::DiffUnified,
+                DiffLayout::Split => Msg::DiffSideBySide,
+                DiffLayout::Auto => Msg::DiffAuto,
+            };
+            self.flash = Some(tr(self.lang, label).into());
+            return true;
+        }
+        let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
+            .keymaps
+            .resolve(Context::Text, None, KeyPress::norm(&key))
+        {
+            Resolution::Action(action) => Some(action),
+            _ => None,
+        });
+        let Some(Action::Navigate(motion)) = action else {
+            return false;
+        };
+        let width = self.tab.preview_cols;
+        let Some(frame) = self.project_frame() else {
+            return false;
+        };
+        let (total, max_h) = match content.as_ref() {
+            ProjectContent::Lines(lines) => (
+                lines.len(),
+                lines
+                    .iter()
+                    .map(Line::width)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_sub(width as usize)
+                    .min(u16::MAX as usize) as u16,
+            ),
+            ProjectContent::Diff(diff) => {
+                let drawn = diff.layout(width, self.diff_is_split(width), frame.hscroll);
+                (drawn.lines.len(), drawn.max_hscroll)
+            }
+            ProjectContent::List(_) => return false,
+        };
+        let max_v = total
+            .saturating_sub(self.tab.preview_viewport as usize)
+            .min(u16::MAX as usize) as u16;
+        let Some(frame) = self.project_frame_mut() else {
+            return false;
+        };
+        frame.scroll = frame.scroll.min(max_v);
+        frame.hscroll = frame.hscroll.min(max_h);
+        match motion {
+            Motion::Up => frame.scroll = frame.scroll.saturating_sub(1),
+            Motion::Down => frame.scroll = frame.scroll.saturating_add(1).min(max_v),
+            Motion::HalfUp => frame.scroll = frame.scroll.saturating_sub(10),
+            Motion::HalfDown => frame.scroll = frame.scroll.saturating_add(10).min(max_v),
+            Motion::PageUp => frame.scroll = frame.scroll.saturating_sub(20),
+            Motion::PageDown => frame.scroll = frame.scroll.saturating_add(20).min(max_v),
+            Motion::Top => frame.scroll = 0,
+            Motion::Bottom => frame.scroll = max_v,
+            Motion::Left => frame.hscroll = frame.hscroll.saturating_sub(4),
+            Motion::Right => frame.hscroll = frame.hscroll.saturating_add(4).min(max_h),
+            Motion::LineHome => frame.hscroll = 0,
+            Motion::LineEnd => frame.hscroll = max_h,
+        }
+        true
+    }
+
     pub(crate) fn project_active(&self) -> bool {
         self.tab.project_navigation.is_some()
     }
@@ -400,9 +695,16 @@ impl App {
                 .filter(|(_, row)| row.matches_filter(&frame.query))
                 .map(|(i, _)| i)
                 .collect(),
-            ProjectContent::Lines(lines) | ProjectContent::Diff(lines) => {
-                (0..lines.len()).collect()
-            }
+            ProjectContent::Lines(lines) => (0..lines.len()).collect(),
+            ProjectContent::Diff(diff) => (0..diff
+                .layout(
+                    self.tab.preview_cols,
+                    self.diff_is_split(self.tab.preview_cols),
+                    frame.hscroll,
+                )
+                .lines
+                .len())
+                .collect(),
         }
     }
 
@@ -608,7 +910,13 @@ impl App {
         let Some(runtime) = self.project_runtimes.get(&key) else {
             return;
         };
-        let Some(screen) = runtime.project.declaration.screens.first() else {
+        let Some(screen) = runtime
+            .project
+            .declaration
+            .screens
+            .iter()
+            .find(|s| !s.pushed)
+        else {
             return;
         };
         let screen = ScreenKey::new(&screen.id);
@@ -804,6 +1112,16 @@ impl App {
             }
             return true;
         }
+        if self.handle_project_text_key(key) {
+            return true;
+        }
+        if self.project_list_right(key) {
+            if let Some(action) = self.project_enter_action() {
+                let result = crate::dispatch_action(self, action, self.surface());
+                crate::resolve_key_result(self, result);
+            }
+            return true;
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -827,12 +1145,23 @@ impl App {
                 return true;
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                let nav = self.tab.project_navigation.as_mut().unwrap();
-                let screens = &self.project_runtimes[&nav.project]
-                    .project
-                    .declaration
-                    .screens;
-                let frame = nav.stack.last_mut().unwrap();
+                let Some(nav) = self.tab.project_navigation.as_mut() else {
+                    return false;
+                };
+                let Some(runtime) = self.project_runtimes.get(&nav.project) else {
+                    return false;
+                };
+                let screens = &runtime.project.declaration.screens;
+                let Some(frame) = nav.stack.last_mut() else {
+                    return false;
+                };
+                if screens.iter().any(|s| s.id == frame.key.screen && s.pushed) {
+                    return true;
+                }
+                let screens: Vec<_> = screens.iter().filter(|s| !s.pushed).collect();
+                if screens.is_empty() {
+                    return true;
+                }
                 let at = screens
                     .iter()
                     .position(|s| s.id == frame.key.screen)
@@ -894,7 +1223,11 @@ impl App {
             | KeyCode::Char('G')
             | KeyCode::End
             | KeyCode::PageDown
-            | KeyCode::PageUp => {
+            | KeyCode::PageUp
+                if self
+                    .project_content()
+                    .is_some_and(|v| matches!(v.as_ref(), ProjectContent::List(_))) =>
+            {
                 let len = self.project_visible_rows().len();
                 let frame = self
                     .tab
@@ -1437,7 +1770,9 @@ impl App {
 
     pub(crate) fn project_controls(&self) -> Option<String> {
         self.project_active().then(|| {
-            let mut controls = tr(
+            let mut controls = if let Some(hints) = self.project_text_hints() {
+                hints.into_iter().map(|(keys, label)| format!("{keys}:{label}")).collect::<Vec<_>>().join("  ")
+            } else { tr(
                 self.lang,
                 if self
                     .project_content()
@@ -1448,9 +1783,12 @@ impl App {
                     Msg::ProjectTextControls
                 },
             )
-            .to_string();
+            .to_string() };
             if self.project_content().is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) && !self.project_marks_enabled() {
                 controls = konoma_plugin::t!(en: "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help", ja: "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ").get(self.plugin_lang()).to_string();
+            }
+            if let Some((keys, label)) = self.project_open_hint() {
+                controls.push_str(&format!("  {keys}:{label}"));
             }
             if self.project_acts_in(Context::Canvas).iter().any(|binding| {
                 crate::ops::action_enabled(
@@ -1466,6 +1804,93 @@ impl App {
             }
             controls
         })
+    }
+
+    pub(crate) fn project_pushed(&self) -> bool {
+        self.tab.project_navigation.as_ref().is_some_and(|nav| {
+            self.project_runtimes
+                .get(&nav.project)
+                .is_some_and(|runtime| {
+                    nav.stack.last().is_some_and(|f| {
+                        runtime
+                            .project
+                            .declaration
+                            .screens
+                            .iter()
+                            .any(|s| s.id == f.key.screen && s.pushed)
+                    })
+                })
+        })
+    }
+
+    pub(crate) fn project_text_hints(&self) -> Option<Vec<(String, String)>> {
+        use crate::keymap::{Action, Motion};
+        let content = self.project_content()?;
+        if matches!(content.as_ref(), ProjectContent::List(_)) {
+            return None;
+        }
+        let groups = [
+            (vec![Motion::Down, Motion::Up], Msg::Scroll),
+            (vec![Motion::Left, Motion::Right], Msg::HintHscroll),
+            (vec![Motion::Top, Motion::Bottom], Msg::HintEnds),
+        ];
+        let mut hints = Vec::new();
+        for (motions, label) in groups {
+            let keys = motions
+                .into_iter()
+                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
+                .map(|key| crate::ops::keys::footer_key(key, true))
+                .collect::<Vec<_>>()
+                .join("/");
+            if !keys.is_empty() {
+                hints.push((keys, tr(self.lang, label).into()));
+            }
+        }
+        if matches!(content.as_ref(), ProjectContent::Diff(_)) {
+            let keys = self
+                .keymaps
+                .keys_of(Context::Diff, Action::CycleDiffLayout)
+                .into_iter()
+                .map(|key| crate::ops::keys::footer_key(key, true))
+                .collect::<Vec<_>>()
+                .join("/");
+            if !keys.is_empty() {
+                hints.insert(
+                    hints.len().min(2),
+                    (keys, tr(self.lang, Msg::FtDiffLayout).into()),
+                );
+            }
+        }
+        if !self.project_pushed() {
+            hints.push((
+                "Tab/Shift-Tab".into(),
+                tr(self.lang, Msg::ProjectCycle).into(),
+            ));
+        }
+        hints.push(("q/Esc".into(), tr(self.lang, Msg::ProjectBack).into()));
+        hints.push(("?".into(), tr(self.lang, Msg::HintHelp).into()));
+        Some(hints)
+    }
+
+    pub(crate) fn project_text_help(&self) -> Option<Vec<(String, String)>> {
+        use crate::keymap::{Action, Motion};
+        let mut hints = self.project_text_hints()?;
+        for (motions, label) in [
+            ([Motion::HalfDown, Motion::HalfUp], Msg::HelpHalfPage),
+            ([Motion::PageDown, Motion::PageUp], Msg::HintPage),
+            ([Motion::LineHome, Motion::LineEnd], Msg::HintLineEnds),
+        ] {
+            let keys = motions
+                .into_iter()
+                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
+                .map(crate::ops::keys::help_key)
+                .collect::<Vec<_>>()
+                .join(" / ");
+            if !keys.is_empty() {
+                hints.push((keys, tr(self.lang, label).into()));
+            }
+        }
+        Some(hints)
     }
 
     pub(crate) fn project_chips(&self) -> Vec<Line<'static>> {
