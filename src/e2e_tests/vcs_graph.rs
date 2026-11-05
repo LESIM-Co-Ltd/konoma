@@ -41,6 +41,31 @@ fn fixture() -> TmpDir {
     dir
 }
 
+fn picker_fixture() -> TmpDir {
+    let dir = fixture();
+    let repository = git2::Repository::open(&dir).unwrap();
+    let head = repository.head().unwrap().peel_to_commit().unwrap();
+    let base = head.parent(0).unwrap().parent(0).unwrap();
+    let tree = base.tree().unwrap();
+    let signature = git2::Signature::new(
+        "Fixture",
+        "fixture@example.invalid",
+        &git2::Time::new(1_577_837_040, 0),
+    )
+    .unwrap();
+    repository
+        .commit(
+            Some("refs/heads/日本語-branch"),
+            &signature,
+            &signature,
+            "Unmerged 日本語",
+            &tree,
+            &[&base],
+        )
+        .unwrap();
+    dir
+}
+
 fn graph_pair(
     root: &std::path::Path,
     lang: &str,
@@ -90,6 +115,388 @@ fn graph_pair(
     assert!(old.app.is_git_graph());
     assert_eq!(new.app.project_frame().unwrap().key.screen, "graph");
     (old, new)
+}
+
+#[test]
+fn e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells() {
+    let dir = picker_fixture();
+    for icons in [false, true] {
+        let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, false, icons);
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        assert!(new.app.project_pushed());
+        assert_eq!(new.app.project_frame().unwrap().key.screen, "graph_picker");
+        picker_title_matches(&old, &new);
+        same(&mut old, &mut new, 160, 16);
+        old.key('q');
+        new.key('q');
+        drain(&mut new);
+        // Opening the panel refreshes the priority order even before a watch event arrives.
+        let repository = git2::Repository::open(&dir).unwrap();
+        let head = repository.head().unwrap().peel_to_commit().unwrap();
+        repository
+            .branch(&format!("added-{icons}"), &head, false)
+            .unwrap();
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        picker_title_matches(&old, &new);
+        same(&mut old, &mut new, 160, 16);
+    }
+    for screen in ["changes", "log"] {
+        let cfg = plugin_config("git", "vcs_picker_shared_key", "en");
+        let (_, mut new) = pair_config(&dir, "git", cfg, 160, 16);
+        if screen == "log" {
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        new.key('b');
+        drain(&mut new);
+        assert_eq!(new.app.project_frame().unwrap().key.screen, "branches");
+        assert!(!new.app.project_pushed());
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy() {
+    let dir = picker_fixture();
+    for lang in ["en", "ja"] {
+        for icons in [false, true] {
+            let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, true, icons);
+            for key in ['b', 'x', 'j', 'x', 'a', 'c', 'J', 'K', 'G', 'k', 'g'] {
+                old.key(key);
+                new.key(key);
+                drain(&mut new);
+                let differences = compare_body(&mut old, &mut new, 160, 16);
+                assert!(differences.is_empty(), "{lang} {key}: {differences:?}");
+                assert_eq!(new.app.flash, old.app.flash, "{lang} {key}");
+                picker_title_matches(&old, &new);
+            }
+            for key in [
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            ] {
+                old.press(key.code, key.modifiers);
+                new.press(key.code, key.modifiers);
+                drain(&mut new);
+                let differences = compare_body(&mut old, &mut new, 160, 16);
+                assert!(
+                    differences.is_empty(),
+                    "{key:?}: {:?}",
+                    differences.iter().take(8).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_picker_has_no_filter() {
+    let dir = picker_fixture();
+    let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, false, true);
+    old.key('b');
+    new.key('b');
+    drain(&mut new);
+    let before = new.app.project_content().unwrap();
+    old.key('/');
+    new.key('/');
+    drain(&mut new);
+    assert!(!new.app.project_frame().unwrap().filtering);
+    let after = new.app.project_content().unwrap();
+    let (ProjectContent::List(before), ProjectContent::List(after)) =
+        (before.as_ref(), after.as_ref())
+    else {
+        panic!("lists required")
+    };
+    assert_eq!(after, before);
+    same(&mut old, &mut new, 160, 16);
+    let hints = crate::ops::footer::tokens(&new.app, crate::keymap::Context::Canvas);
+    assert!(!hints.iter().any(|hint| hint.starts_with("/:")));
+    old.key('b');
+    new.key('b');
+    drain(&mut new);
+    assert!(old.app.is_git_graph_picker());
+    assert!(
+        new.app.project_picker(),
+        "shared screen jumps cannot replace a modal panel"
+    );
+    same(&mut old, &mut new, 160, 16);
+}
+
+#[test]
+fn e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base() {
+    let dir = picker_fixture();
+    for apply in [KeyCode::Char('l'), KeyCode::Enter] {
+        for reorder in [false, true] {
+            let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, true, true);
+            old.key('j');
+            new.key('j');
+            for key in ['b', 'x'] {
+                old.key(key);
+                new.key(key);
+                drain(&mut new);
+            }
+            if reorder {
+                old.key('J');
+                new.key('J');
+                drain(&mut new);
+            }
+            old.press(apply, KeyModifiers::NONE);
+            new.press(apply, KeyModifiers::NONE);
+            drain(&mut new);
+            assert!(!new.app.project_pushed());
+            same(&mut old, &mut new, 160, 16);
+            let title = graph_list(&new).title.unwrap().plain();
+            if let Some(label) = old.app.git_graph_base_label() {
+                assert!(title.contains(&format!("base: {label}")));
+            } else {
+                assert!(!title.contains("base:"));
+            }
+            old.key('b');
+            new.key('b');
+            drain(&mut new);
+            same(&mut old, &mut new, 160, 16);
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order() {
+    let dir = picker_fixture();
+    for cancel in [KeyCode::Char('h'), KeyCode::Char('q'), KeyCode::Esc] {
+        let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, true, true);
+        for key in ['b', 'x'] {
+            old.key(key);
+            new.key(key);
+            drain(&mut new);
+        }
+        old.press(cancel, KeyModifiers::NONE);
+        new.press(cancel, KeyModifiers::NONE);
+        drain(&mut new);
+        assert!(!new.app.project_pushed(), "{cancel:?}");
+        same(&mut old, &mut new, 160, 16);
+        for key in ['b', 'J'] {
+            old.key(key);
+            new.key(key);
+            drain(&mut new);
+        }
+        old.press(cancel, KeyModifiers::NONE);
+        new.press(cancel, KeyModifiers::NONE);
+        drain(&mut new);
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        // Legacy cancel retains priority order but discards the tentative set.
+        same(&mut old, &mut new, 160, 16);
+    }
+}
+
+fn picker_hints_match(old: &Sim, new: &Sim) {
+    use crate::keymap::Context;
+    let legacy = crate::ops::help::sections_for(&old.app, old.app.key_context().unwrap());
+    let actual = crate::ops::help::sections_for(&new.app, Context::Canvas);
+    let title = crate::i18n::tr(old.app.lang, crate::i18n::Msg::GraphPickerTitle);
+    let expected = legacy
+        .iter()
+        .find(|section| section.title == title)
+        .unwrap();
+    let actual = actual
+        .iter()
+        .find(|section| section.title == title)
+        .unwrap_or_else(|| panic!("missing {title}"));
+    let movement = legacy
+        .iter()
+        .flat_map(|section| &section.rows)
+        .find(|(_, desc)| desc == crate::i18n::tr(old.app.lang, crate::i18n::Msg::GitMove))
+        .unwrap();
+    let expected_rows: Vec<_> = std::iter::once(&movement.1)
+        .chain(expected.rows.iter().map(|(_, desc)| desc))
+        .collect();
+    assert_eq!(
+        actual.rows.iter().map(|(_, desc)| desc).collect::<Vec<_>>(),
+        expected_rows
+    );
+    let expected_keys: Vec<_> = std::iter::once(&movement.0)
+        .chain(expected.rows.iter().map(|(keys, _)| keys))
+        .map(|keys| keys.split_whitespace().collect::<String>())
+        .collect();
+    assert_eq!(
+        actual
+            .rows
+            .iter()
+            .map(|(keys, _)| keys.split_whitespace().collect::<String>())
+            .collect::<Vec<_>>(),
+        expected_keys
+    );
+    let expected = crate::ops::footer::render_tokens(
+        &old.app,
+        old.app.key_context().unwrap(),
+        &crate::ops::footer::plan(&old.app, old.app.key_context().unwrap()),
+    );
+    let actual = crate::ops::footer::tokens(&new.app, Context::Canvas);
+    assert_eq!(
+        actual,
+        expected
+            .iter()
+            .map(|token| token.text.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+fn picker_title_matches(old: &Sim, new: &Sim) {
+    let items = old.app.git_graph_picker_items();
+    let shown = items.iter().filter(|(_, _, on)| *on).count();
+    assert_eq!(
+        graph_list(new).title.unwrap().plain(),
+        format!(
+            "{}  ({shown}/{})",
+            crate::i18n::tr(old.app.lang, crate::i18n::Msg::GraphPickerTitle),
+            items.len()
+        )
+    );
+}
+
+#[test]
+fn e2e_vcs_graph_picker_footer_and_help_match_legacy_in_both_languages() {
+    let dir = picker_fixture();
+    for lang in ["en", "ja"] {
+        let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        picker_hints_match(&old, &new);
+    }
+}
+
+fn new_graph_tab(sim: &mut Sim) {
+    sim.app.tab_new().unwrap();
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim.key('p');
+    drain(sim);
+    for _ in 0..2 {
+        sim.press(KeyCode::Tab, KeyModifiers::NONE);
+        drain(sim);
+    }
+}
+
+fn graph_list(sim: &Sim) -> konoma_plugin::view::ListView {
+    let content = sim.app.project_content().unwrap();
+    let ProjectContent::List(list) = content.as_ref() else {
+        panic!("list required")
+    };
+    list.clone()
+}
+
+#[test]
+fn e2e_vcs_graph_picker_applied_visible_set_is_per_tab() {
+    let dir = picker_fixture();
+    let (_, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, false, true);
+    let original = graph_list(&new);
+    for key in ['b', 'j', 'x', 'l'] {
+        new.key(key);
+        drain(&mut new);
+    }
+    let filtered = graph_list(&new);
+    // The legend and decorations change even when HEAD reaches every side commit.
+    assert_ne!(filtered, original);
+    new_graph_tab(&mut new);
+    assert_eq!(graph_list(&new), original);
+    new.app.tab_goto(0);
+    drain(&mut new);
+    assert_eq!(graph_list(&new), filtered);
+}
+
+#[test]
+fn e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy() {
+    let dir = picker_fixture();
+    let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, true, true);
+    for key in ['b', 'x', 'J'] {
+        old.key(key);
+        new.key(key);
+        drain(&mut new);
+    }
+    old.app.tab_new().unwrap();
+    new_graph_tab(&mut new);
+    assert!(!old.app.is_git_graph_picker());
+    assert!(!new.app.project_pushed());
+    old.app.tab_goto(0);
+    new.app.tab_goto(0);
+    drain(&mut new);
+    assert!(!old.app.is_git_graph_picker());
+    assert!(!new.app.project_pushed());
+    same(&mut old, &mut new, 160, 16);
+    old.key('b');
+    new.key('b');
+    drain(&mut new);
+    same(&mut old, &mut new, 160, 16);
+}
+
+#[test]
+fn e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    for colocated in [false, true] {
+        let dir = crate::test_support::unique_tmp("vcs_picker_jj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.into_canonical().unwrap();
+        jj(
+            &dir,
+            &[
+                "git",
+                "init",
+                if colocated {
+                    "--colocate"
+                } else {
+                    "--no-colocate"
+                },
+                ".",
+            ],
+        );
+        jj(&dir, &["commit", "-m", "Graph 日本語"]);
+        jj(&dir, &["bookmark", "create", "-r", "@-", "日本語"]);
+        let _preference = Preference::pin("jj");
+        for lang in ["en", "ja"] {
+            let cfg = plugin_config("jj", "vcs_picker_jj", lang);
+            let (mut old, mut new) = pair_config(&dir, "jj", cfg, 160, 16);
+            old.app.open_git_graph();
+            for _ in 0..2 {
+                new.press(KeyCode::Tab, KeyModifiers::NONE);
+                drain(&mut new);
+            }
+            hints_match(&old, &new, true);
+            old.key('b');
+            new.key('b');
+            drain(&mut new);
+            let items = old.app.git_graph_picker_items();
+            picker_title_matches(&old, &new);
+            let source = crate::git::branches_by_recency(&dir);
+            assert_eq!(items.len(), source.len());
+            if !colocated {
+                assert!(items.is_empty());
+            } else {
+                assert!(!items.is_empty());
+            }
+            same(&mut old, &mut new, 160, 16);
+            picker_hints_match(&old, &new);
+            old.key('/');
+            new.key('/');
+            drain(&mut new);
+            assert!(!new.app.project_frame().unwrap().filtering);
+            same(&mut old, &mut new, 160, 16);
+            old.enter();
+            new.enter();
+            drain(&mut new);
+            assert!(!new.app.project_pushed());
+            same(&mut old, &mut new, 160, 16);
+        }
+    }
 }
 
 #[test]
@@ -296,7 +703,7 @@ fn e2e_vcs_graph_base_visible_order_and_view_cache_are_per_tab() {
 
 fn hints_match(old: &Sim, new: &Sim, jj: bool) {
     use crate::i18n::{tr, Msg};
-    use crate::keymap::{Action, Context};
+    use crate::keymap::Context;
     let legacy = crate::ops::help::sections_for(&old.app, old.app.key_context().unwrap());
     let actual = crate::ops::help::sections_for(&new.app, Context::Canvas);
     let title = tr(
@@ -312,7 +719,9 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         "{title}"
     );
     let mut expected_help = Vec::new();
-    for section in &legacy {
+    for section in legacy.iter().filter(|section| {
+        section.title == title || section.title == tr(old.app.lang, Msg::HelpMove)
+    }) {
         for (_, description) in &section.rows {
             if [
                 Msg::GitMoveCommit,
@@ -321,6 +730,8 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
                 Msg::GraphSetBaseHelp,
                 Msg::GraphClearBaseHelp,
                 Msg::JjGraphAllRow,
+                Msg::GraphBranchesHelp,
+                Msg::JjBookmarksRow,
                 Msg::ListFilterHelp,
                 Msg::Refresh,
                 Msg::GitScreensHelp,
@@ -374,10 +785,7 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
     );
     let actual = crate::ops::footer::tokens(&new.app, Context::Canvas);
     let mut expected_footer = Vec::new();
-    for token in legacy
-        .iter()
-        .filter(|token| !token.actions.contains(&Action::GitGraphOpenPicker))
-    {
+    for token in &legacy {
         let label = token.text.split_once(':').unwrap().1;
         expected_footer.push(label.to_string());
     }
@@ -396,7 +804,7 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
                 .is_some_and(|(keys, _)| keys.split('/').any(|candidate| candidate == key))
         })
     };
-    assert!(!has_key("b"));
+    assert!(has_key("b"));
     if jj {
         assert!(!has_key("s") && !has_key("x"));
     }
@@ -539,16 +947,112 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
     for name in [
         "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
         "e2e_vcs_graph_jj_h_and_left_return_like_the_old_hub",
+        "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
     ] {
-        let (_, body) = source.split_once(&format!("fn {name}() {{")).unwrap();
-        let setup = body.split("let dir").next().unwrap();
         assert!(
-            setup.contains("if !crate::vcs::jj::available()")
-                && setup.contains("return;")
-                && !setup.contains("assert!"),
+            jj_test_is_guarded(source, name),
             "{name} must skip when jj is absent"
         );
     }
+    // Whitespace, comments, strings and local variable names do not delimit a function.
+    assert!(jj_test_is_guarded("fn example ( ) { let unrelated = \"let dir { }\"; /* { */ if ! crate :: vcs :: jj :: available ( ) { return ; } jj (root); }", "example"));
+    assert!(!jj_test_is_guarded(
+        "fn example() { jj(root); if !crate::vcs::jj::available() { return; } }",
+        "example"
+    ));
+    assert!(!jj_test_is_guarded(
+        "fn example() { if crate::vcs::jj::available() { return; } jj(root); }",
+        "example"
+    ));
+}
+
+/// Tokenize just enough Rust to inspect these test bodies, ignoring comments and literals.
+fn rust_tokens(source: &str) -> Vec<String> {
+    let mut chars = source.chars().peekable();
+    let mut tokens = Vec::new();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {}
+            '/' if chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut depth = 1;
+                while let Some(c) = chars.next() {
+                    if c == '/' && chars.peek() == Some(&'*') {
+                        chars.next();
+                        depth += 1;
+                    }
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+            '"' => {
+                while let Some(c) = chars.next() {
+                    if c == '\\' {
+                        chars.next();
+                    } else if c == '"' {
+                        break;
+                    }
+                }
+                tokens.push("literal".into());
+            }
+            c if c.is_alphanumeric() || c == '_' => {
+                let mut word = c.to_string();
+                while chars
+                    .peek()
+                    .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+                {
+                    word.push(chars.next().unwrap());
+                }
+                tokens.push(word);
+            }
+            c => tokens.push(c.to_string()),
+        }
+    }
+    tokens
+}
+
+fn jj_test_is_guarded(source: &str, name: &str) -> bool {
+    let tokens = rust_tokens(source);
+    let Some(start) = tokens.windows(2).position(|t| t == ["fn", name]) else {
+        return false;
+    };
+    let Some(open) = tokens[start..]
+        .iter()
+        .position(|t| t == "{")
+        .map(|i| start + i)
+    else {
+        return false;
+    };
+    let mut depth = 1;
+    let end = tokens[open + 1..]
+        .iter()
+        .position(|t| {
+            if t == "{" {
+                depth += 1;
+            }
+            if t == "}" {
+                depth -= 1;
+            }
+            depth == 0
+        })
+        .map_or(tokens.len(), |i| open + 1 + i);
+    let body = &tokens[open + 1..end];
+    let guard = rust_tokens("if !crate::vcs::jj::available() { return; }");
+    let guarded = body.windows(guard.len()).position(|t| t == guard);
+    let setup = body.windows(2).position(|t| t == ["jj", "("]);
+    matches!((guarded, setup), (Some(guard), Some(setup)) if guard < setup)
 }
 
 #[test]
@@ -561,6 +1065,7 @@ fn e2e_vcs_graph_changelog_records_tab_cache_and_shared_list_differences() {
         .split("\n## [")
         .next()
         .unwrap();
+    let unreleased = unreleased.split_whitespace().collect::<Vec<_>>().join(" ");
     for difference in [
         "second tab",
         "non-selectable rows",
