@@ -311,11 +311,12 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         actual.iter().any(|section| section.title == title),
         "{title}"
     );
+    let mut expected_help = Vec::new();
     for section in &legacy {
         for (_, description) in &section.rows {
             if [
                 Msg::GitMoveCommit,
-                Msg::HintEnds,
+                Msg::TopBottom,
                 Msg::GitDetail,
                 Msg::GraphSetBaseHelp,
                 Msg::GraphClearBaseHelp,
@@ -329,34 +330,65 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
             .into_iter()
             .any(|msg| description == tr(old.app.lang, msg))
             {
-                assert!(
-                    actual
-                        .iter()
-                        .flat_map(|s| &s.rows)
-                        .any(|(_, text)| text == description),
-                    "missing {description}"
-                );
+                expected_help.push(description.clone());
             }
         }
     }
+    let graph_help = actual
+        .iter()
+        .find(|section| section.title == title)
+        .unwrap();
+    let mut expected_titles = vec![title.to_string()];
+    for (leader, key) in [
+        (crate::keymap::LeaderId::Copy, "y"),
+        (crate::keymap::LeaderId::Actions, "Space"),
+    ] {
+        if let Some(section) =
+            crate::ui::help::leader_section(&new.app, Context::Canvas, leader, key)
+        {
+            expected_titles.push(section.title);
+        }
+    }
+    assert_eq!(
+        actual
+            .iter()
+            .map(|section| section.title.clone())
+            .collect::<Vec<_>>(),
+        expected_titles
+    );
+    let mut actual_help: Vec<_> = graph_help
+        .rows
+        .iter()
+        .map(|(_, text)| text.clone())
+        .collect();
+    expected_help.sort();
+    actual_help.sort();
+    assert_eq!(
+        actual_help, expected_help,
+        "graph help must have neither missing nor extra rows"
+    );
     let legacy = crate::ops::footer::render_tokens(
         &old.app,
         old.app.key_context().unwrap(),
         &crate::ops::footer::plan(&old.app, old.app.key_context().unwrap()),
     );
     let actual = crate::ops::footer::tokens(&new.app, Context::Canvas);
-    let mut at = 0;
+    let mut expected_footer = Vec::new();
     for token in legacy
         .iter()
         .filter(|token| !token.actions.contains(&Action::GitGraphOpenPicker))
     {
         let label = token.text.split_once(':').unwrap().1;
-        let offset = actual[at..]
-            .iter()
-            .position(|token| token.split_once(':').is_some_and(|(_, text)| text == label))
-            .unwrap_or_else(|| panic!("missing ordered {label}: {actual:?}"));
-        at += offset + 1;
+        expected_footer.push(label.to_string());
     }
+    let actual_footer: Vec<_> = actual
+        .iter()
+        .map(|token| token.split_once(':').unwrap().1.to_string())
+        .collect();
+    assert_eq!(
+        actual_footer, expected_footer,
+        "footer must have neither missing nor extra tokens"
+    );
     let has_key = |key: &str| {
         actual.iter().any(|token| {
             token
@@ -381,10 +413,9 @@ fn e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_lan
 
 #[test]
 fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
-    assert!(
-        crate::vcs::jj::available(),
-        "local jj is required for this comparison"
-    );
+    if !crate::vcs::jj::available() {
+        return;
+    }
     let dir = crate::test_support::unique_tmp("vcs_graph_jj");
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.into_canonical().unwrap();
@@ -454,5 +485,147 @@ fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
             drain(&mut new);
             assert_eq!(rows(&new), before);
         }
+    }
+}
+
+fn graph_left_returns(root: &std::path::Path, id: &str) {
+    let _preference = Preference::pin(id);
+    for key in [KeyCode::Char('h'), KeyCode::Left] {
+        let cfg = plugin_config(id, &format!("vcs_graph_left_{id}"), "en");
+        let (mut old, mut new) = pair_config(root, id, cfg, 100, 16);
+        let previous = new.app.tab.mode;
+        old.app.open_git_graph();
+        for _ in 0..2 {
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        old.press(key, KeyModifiers::NONE);
+        if key == KeyCode::Left {
+            // At 7f02d00 the old hub's fixed Left is a no-op; compare its h back action.
+            assert!(old.app.is_git_graph());
+            old.key('h');
+        }
+        new.press(key, KeyModifiers::NONE);
+        drain(&mut new);
+        assert!(!old.app.is_git_graph());
+        assert!(old.app.is_git_view());
+        assert!(!new.app.project_active(), "{id} {key:?}");
+        assert_eq!(new.app.tab.mode, previous);
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_git_h_and_left_return_like_the_old_hub() {
+    let dir = fixture();
+    graph_left_returns(&dir, "git");
+}
+
+#[test]
+fn e2e_vcs_graph_jj_h_and_left_return_like_the_old_hub() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = crate::test_support::unique_tmp("vcs_graph_left_jj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.into_canonical().unwrap();
+    jj(&dir, &["git", "init", "--no-colocate", "."]);
+    jj(&dir, &["describe", "-m", "Graph 日本語"]);
+    graph_left_returns(&dir, "jj");
+}
+
+#[test]
+fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
+    let source = include_str!("vcs_graph.rs");
+    for name in [
+        "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+        "e2e_vcs_graph_jj_h_and_left_return_like_the_old_hub",
+    ] {
+        let (_, body) = source.split_once(&format!("fn {name}() {{")).unwrap();
+        let setup = body.split("let dir").next().unwrap();
+        assert!(
+            setup.contains("if !crate::vcs::jj::available()")
+                && setup.contains("return;")
+                && !setup.contains("assert!"),
+            "{name} must skip when jj is absent"
+        );
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_changelog_records_tab_cache_and_shared_list_differences() {
+    let notes = include_str!("../../CHANGELOG.md");
+    let unreleased = notes
+        .split_once("## [Unreleased]")
+        .unwrap()
+        .1
+        .split("\n## [")
+        .next()
+        .unwrap();
+    for difference in [
+        "second tab",
+        "non-selectable rows",
+        "uses the keymap",
+        "Closing an active or inactive tab",
+    ] {
+        assert!(
+            unreleased.contains(difference),
+            "missing graph difference: {difference}"
+        );
+    }
+}
+
+#[test]
+fn e2e_vcs_graph_tab_close_discards_only_closed_tabs_cached_views() {
+    let dir = fixture();
+    for inactive in [false, true] {
+        use crate::plugins::test_projects::{ObservedVcs, VcsCalls};
+        use std::sync::{Arc, Mutex};
+        let calls = Arc::new(Mutex::new(VcsCalls::default()));
+        let token = crate::plugins::test_plugins::register(
+            &format!("vcs_graph_close_{inactive}"),
+            Arc::new(ObservedVcs {
+                plugin: Arc::new(konoma_vcs::Git),
+                calls: calls.clone(),
+            }),
+        );
+        let mut cfg = crate::plugins::test_plugins::marker_config(&token);
+        cfg.ui.lang = "en".into();
+        let (_, mut new) = pair_config(&dir, "git", cfg, 160, 16);
+        for _ in 0..2 {
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        let a = new.app.tab.id;
+        let original = rows(&new);
+        new.app.tab_new().unwrap();
+        new.app.tab.projects.wait_for_result();
+        new.app.poll_projects();
+        new.key('p');
+        drain(&mut new);
+        for _ in 0..2 {
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        let b = new.app.tab.id;
+        assert!(new.app.project_cached_tabs_for_test().contains(&a));
+        assert!(new.app.project_cached_tabs_for_test().contains(&b));
+        if inactive {
+            new.app.tab_goto(0);
+            new.app.toggle_tab_list();
+            new.app.tab_list_move(1);
+            new.app.tab_list_close_selected();
+            new.app.toggle_tab_list();
+        } else {
+            new.app.tab_close();
+        }
+        drain(&mut new);
+        assert_eq!(calls.lock().unwrap().closed_tabs, [b]);
+        let tabs = new.app.project_cached_tabs_for_test();
+        assert!(tabs.contains(&a));
+        assert!(!tabs.contains(&b));
+        assert_eq!(rows(&new), original);
+        new.key('r');
+        drain(&mut new);
+        assert!(!new.app.project_cached_tabs_for_test().contains(&b));
     }
 }

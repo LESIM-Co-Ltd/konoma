@@ -103,6 +103,15 @@ git と jj は `[plugins.git]` / `[plugins.jj]` の
 wire で省略された時は `tab = 0`、`icons = true` です。既定値は送信時に省略します。
 icons はホストの `ui.icons` に従います。
 
+アクティブ／非アクティブのタブを閉じると、ホストはそのタブの表示・文脈・再取得待ちの
+キャッシュを削除し、遅れて返った表示も破棄します。先行ジョブの終了後、所有ワーカーで
+`Session::tab_closed(tab: u64)` を呼びます。既定の実装は何もしません。
+状態を持つプラグインはそのタブの状態だけを解放し、共有セッションと他のタブは残します。
+プロトコル2のプロジェクト用サーバーは `session_tab_closed: true` を通知します。
+未指定は false で、false は送信時に省略します。対応する子だけに、返答なしの
+`{"TabClosed":{"sid":N,"tab":N}}` を送ります。古い子には未知の通知を送らず、
+従来の `Close { sid }` はセッション全体を閉じる意味のままです。
+
 `ListView.title: Option<Line>` は画面タブの横にスタイル付きタイトルを加えます。
 `ListView.bottom: Option<ListStrip>` はスクロールする一覧の下に固定の区切りと凡例を加えます。
 `ListStrip::new(chips: Vec<Line>, estimated_width: usize)` のチップ間は空白2個で、
@@ -111,6 +120,9 @@ icons はホストの `ui.icons` に従います。
 装飾付き一覧はプロトコル2の
 `{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`
 を使います。装飾なしの `{"List":[…]}` は従来のバイト列を保ち、旧 JSON では装飾なしになります。
+wire の送受信は、`LIST_STRIP_MAX_CHIPS`（1024個）または `LIST_STRIP_MAX_WIDTH`
+（見積もり幅1,048,576セル）を超える凡例を、行へ変換する前に `WireError::TooLarge`
+で拒みます。上限ちょうどの値は受け付けます。
 
 グラフの設定は `[plugins.git]` / `[plugins.jj]` の `graph_max_branches = 12`
 （`0` は無制限）、`graph_base_branches = []`、`commit_meta_align = "right"`

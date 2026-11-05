@@ -854,7 +854,7 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
                 0..0,
                 [
                     ("j/k / ↑/↓".into(), tr(app.lang, Msg::GitMoveCommit).into()),
-                    ("g/G".into(), tr(app.lang, Msg::HintEnds).into()),
+                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
                 ],
             );
             graph.rows.extend([

@@ -8,6 +8,8 @@ use std::path::PathBuf;
 mod actions;
 mod detail;
 mod graph;
+#[cfg(test)]
+mod graph_cleanup_tests;
 mod log;
 mod paths;
 
@@ -143,6 +145,9 @@ struct DisplayedFile {
 }
 
 impl Session for Changes {
+    fn tab_closed(&mut self, tab: u64) {
+        self.graphs.remove(&tab);
+    }
     fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<PathBuf>>, Failure> {
         let mut paths: Vec<_> = declaration(match self.backend {
             Backend::Git => "git",

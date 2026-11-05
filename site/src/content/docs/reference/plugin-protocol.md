@@ -111,6 +111,16 @@ use this opaque identity for per-tab screen state. Cached project views are keye
 tab as well. Missing wire fields default to `tab = 0`, `icons = true`; default
 values are omitted. Icons follow the host's `ui.icons` preference.
 
+On active or inactive tab closure, the host removes that tab's view, context and dirty
+cache entries and discards late replies for it. It then calls
+`Session::tab_closed(tab: u64)` on the session owner after earlier jobs finish.
+The default implementation does nothing; a stateful project plugin should release
+only that tab's state. Shared sessions and other tabs remain alive.
+Protocol-2 project servers advertise `session_tab_closed: true`; missing means false
+and default false is omitted. Only an advertising child receives the no-reply notice
+`{"TabClosed":{"sid":N,"tab":N}}`. Older children receive no unknown notice;
+the existing `Close { sid }` still closes the entire session.
+
 `ListView.title: Option<Line>` adds a styled title beside the screen tabs.
 `ListView.bottom: Option<ListStrip>` adds a stationary divider and chip strip below
 the scrolling list. `ListStrip::new(chips: Vec<Line>, estimated_width: usize)` uses
@@ -120,6 +130,9 @@ only with at least `3 + chip_lines` body rows. Both list fields default to `None
 Decorated lists require protocol 2 and use
 `{"ListDecorated":{"rows":[…],"title":Line|null,"bottom":{"chips":[Line,…],"estimated_width":N}|null}}`.
 Undecorated lists retain the old `{"List":[…]}` bytes; old JSON yields absent decorations.
+The wire encoder and decoder reject strips over `LIST_STRIP_MAX_CHIPS` (1024 chips)
+or `LIST_STRIP_MAX_WIDTH` (1,048,576 estimated cells) with `WireError::TooLarge`,
+before converting their lines. Values at the limits are accepted.
 
 Git/jj graph preferences are plugin-owned: `[plugins.git]` / `[plugins.jj]`
 `graph_max_branches = 12` (`0` means unlimited), `graph_base_branches = []`, and

@@ -6,6 +6,34 @@ mod scroll;
 #[path = "project_confirmations.rs"]
 mod confirmations;
 
+#[path = "project_left.rs"]
+mod left;
+
+#[test]
+fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
+    let mut f = fixture("project_close_inflight", false, 1, None, None, None);
+    open(&mut f);
+    let a = f.sim.app.tab.id;
+    f.sim.app.tab_new().unwrap();
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    drain(&mut f.sim);
+    let b = f.sim.app.tab.id;
+    let hold = ViewHold::new("items");
+    f.log.lock().unwrap().view_hold = Some(hold.clone());
+    f.sim.key('r');
+    f.sim.app.wait_project_view_request("items");
+    hold.entered.wait();
+    f.sim.app.tab_close();
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+    hold.release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().closed_tabs, [b]);
+    assert!(f.sim.app.project_cached_tabs_for_test().contains(&a));
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+}
+
 #[test]
 fn e2e_project_list_right_uses_enter_row_action_and_disabled_gate() {
     for disabled in [false, true] {

@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Internal: full-screen project views now refetch on a second tab because their cache keys include the tab; movement on every project list now skips non-selectable rows and uses the keymap. Graph Left returns like `h` (legacy Left was a no-op); non-graph lists retain the prior fallback and detail keeps horizontal panning. Closing an active or inactive tab evicts its cached project views and notifies shared sessions to release only that tab's state; late view replies cannot recreate those entries. Protocol-2 children opt into `TabClosed` notices, and list-strip wire data has explicit chip and width limits.
+
 - Internal: move the Git/jj commit graph into `konoma-vcs` alongside the legacy hub, with styled lanes, a fixed legend, per-tab base/branch/range state and shared detail/copy actions. The SDK carries list titles/strips and tab/icon contexts. The project host supplies the tabs, frame, title and footer; `g` keeps its reserved top-of-list meaning, git omits the no-op `a`, `b` awaits the branch-panel unit, empty repositories show a non-selectable message, worktree-row copy is silent, and `q` follows project-screen navigation. Graph preferences live under `[plugins.git]` / `[plugins.jj]`; legacy `[ui]` aliases follow in PR 5.
 
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.

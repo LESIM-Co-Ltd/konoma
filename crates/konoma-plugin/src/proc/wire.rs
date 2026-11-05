@@ -83,6 +83,19 @@ pub const VALUE_MAX_DEPTH: usize = 32;
 /// The most distinct side files and resources in one message (a bound on the loop, not a design
 /// limit).
 pub const MAX_RESOURCES: usize = 100_000;
+/// Maximum chips in a stationary list strip, in either wire direction.
+pub const LIST_STRIP_MAX_CHIPS: usize = 1024;
+/// Maximum width estimate in a stationary list strip, in either wire direction.
+pub const LIST_STRIP_MAX_WIDTH: usize = 1 << 20;
+
+fn check_list_strip(chips: usize, width: usize) -> Result<(), WireError> {
+    if chips > LIST_STRIP_MAX_CHIPS || width > LIST_STRIP_MAX_WIDTH {
+        return Err(WireError::too_large(
+            "list strip exceeds its chip or width limit",
+        ));
+    }
+    Ok(())
+}
 
 /// Why a value could not be converted.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2250,10 +2263,17 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                 WView::ListDecorated {
                     rows,
                     title: l.title.as_ref().map(line_to_wire),
-                    bottom: l.bottom.as_ref().map(|strip| WListStrip {
-                        chips: lines_to_wire(&strip.chips),
-                        estimated_width: strip.estimated_width,
-                    }),
+                    bottom: l
+                        .bottom
+                        .as_ref()
+                        .map(|strip| -> Result<_, WireError> {
+                            check_list_strip(strip.chips.len(), strip.estimated_width)?;
+                            Ok(WListStrip {
+                                chips: lines_to_wire(&strip.chips),
+                                estimated_width: strip.estimated_width,
+                            })
+                        })
+                        .transpose()?,
                 }
             }
         }
@@ -2416,6 +2436,9 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             title,
             bottom,
         } => {
+            if let Some(strip) = &bottom {
+                check_list_strip(strip.chips.len(), strip.estimated_width)?;
+            }
             let View::List(mut list) = view_from_wire(WView::List(rows), dec)? else {
                 unreachable!()
             };
@@ -2595,6 +2618,9 @@ pub struct WManifest {
     /// Protocol 2 session watch calls; absent in older children.
     #[serde(default, skip_serializing_if = "is_false")]
     pub session_watch: bool,
+    /// Protocol 2 per-tab cleanup notices; absent in older children.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_tab_closed: bool,
     /// Session chip calls are supported. Advertised by the protocol-2 server only for projects.
     /// Absent in older children: hosts must use the declared chip without sending a call.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -2632,6 +2658,7 @@ pub fn manifest_to_wire(m: &Manifest) -> Result<WManifest, WireError> {
             })
             .collect(),
         session_watch: false,
+        session_tab_closed: false,
         session_chip: false,
         read_only: m.read_only,
         project: m.project.as_ref().map(project_to_wire),

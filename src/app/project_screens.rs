@@ -578,8 +578,9 @@ impl App {
         if motion == Motion::Left {
             if self.project_graph_jj().is_some() {
                 self.project_back();
+                return true;
             }
-            return true;
+            return false;
         }
         let visible = self.project_visible_rows();
         let selectable: Vec<_> = visible
@@ -1633,6 +1634,10 @@ impl App {
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {
+        let live_tabs: std::collections::HashSet<_> = std::iter::once(&self.tab)
+            .chain(self.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
         let retained: std::collections::HashSet<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
             .flat_map(|tab| tab.projects.projects.iter().map(ProjectKey::from))
@@ -1674,8 +1679,17 @@ impl App {
                     runtime.enabled = reply.enabled;
                 }
                 if !runtime.invalidated {
-                    runtime.contexts.extend(reply.contexts);
-                    for (screen, view) in reply.views {
+                    runtime.contexts.extend(
+                        reply
+                            .contexts
+                            .into_iter()
+                            .filter(|(screen, _)| live_tabs.contains(&screen.tab)),
+                    );
+                    for (screen, view) in reply
+                        .views
+                        .into_iter()
+                        .filter(|(screen, _)| live_tabs.contains(&screen.tab))
+                    {
                         let old = runtime.views.get(&screen).map(Arc::as_ref);
                         remap_project_rows(&mut self.tab, key, &screen, old, &view);
                         for tab in &mut self.tabs {
@@ -1709,6 +1723,21 @@ impl App {
                     {
                         errors.push(error.clone());
                     }
+                }
+            }
+            if !runtime.busy && !runtime.closed_tabs.is_empty() {
+                match runtime.tx.try_send(ProjectJob::TabsClosed {
+                    tabs: runtime.closed_tabs.iter().copied().collect(),
+                }) {
+                    Ok(()) => {
+                        runtime.closed_tabs.clear();
+                        runtime.busy = true;
+                    }
+                    // A failed open has no session left to notify.
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        runtime.closed_tabs.clear()
+                    }
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                 }
             }
             if let Some(paths) = &runtime.watch_paths {
@@ -1938,7 +1967,7 @@ impl App {
         })
     }
 
-    /// Legacy VCS wording during the side-by-side screen migration.
+    /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_graph_jj(&self) -> Option<bool> {
         let nav = self.tab.project_navigation.as_ref()?;
         if nav.stack.last()?.key.screen != "graph" {
@@ -2078,7 +2107,40 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn project_jobs_pending(&self) -> bool {
-        self.project_runtimes.values().any(|r| r.busy)
+        self.project_runtimes
+            .values()
+            .any(|r| r.busy || !r.closed_tabs.is_empty())
+    }
+
+    pub(super) fn project_tab_closed(&mut self, tab: u64) {
+        for runtime in self.project_runtimes.values_mut() {
+            runtime.views.retain(|key, _| key.tab != tab);
+            runtime.contexts.retain(|key, _| key.tab != tab);
+            runtime.dirty.retain(|key| key.tab != tab);
+            runtime.closed_tabs.insert(tab);
+            if runtime
+                .pending_retry
+                .as_ref()
+                .is_some_and(|act| act.effect.tab == tab)
+            {
+                runtime.pending_retry = None;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_cached_tabs_for_test(&self) -> BTreeSet<u64> {
+        self.project_runtimes
+            .values()
+            .flat_map(|runtime| {
+                runtime
+                    .views
+                    .keys()
+                    .chain(runtime.contexts.keys())
+                    .chain(runtime.dirty.iter())
+                    .map(|key| key.tab)
+            })
+            .collect()
     }
 
     #[cfg(test)]

@@ -16,6 +16,9 @@ use super::project_screens::{
 use super::PathStyle;
 
 pub(super) enum ProjectJob {
+    TabsClosed {
+        tabs: Vec<u64>,
+    },
     Watch,
     Chip,
     View {
@@ -62,6 +65,7 @@ impl ProjectReply {
 }
 
 pub(crate) struct ProjectRuntime {
+    pub(super) closed_tabs: std::collections::BTreeSet<u64>,
     pub(super) watch_paths: Option<Vec<PathBuf>>,
     pub(super) refresh_watch: bool,
     pub(crate) project: crate::plugins::projects::MatchedProject,
@@ -186,6 +190,11 @@ impl ProjectRuntime {
                         .with_read_scope(scope.clone());
                     let mut reply = ProjectReply::empty();
                     match job {
+                        ProjectJob::TabsClosed { tabs } => {
+                            for tab in tabs {
+                                session.tab_closed(tab);
+                            }
+                        }
                         ProjectJob::Watch => {
                             reply.watch_paths = Some(resolved_watch_paths(
                                 session.watch_paths(&cx)?,
@@ -310,6 +319,7 @@ impl ProjectRuntime {
         });
         Self {
             watch_paths: None,
+            closed_tabs: Default::default(),
             refresh_watch: false,
             project,
             views: HashMap::new(),

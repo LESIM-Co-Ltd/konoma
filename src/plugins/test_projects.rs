@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "git")]
 #[derive(Default)]
 pub(crate) struct VcsCalls {
+    pub closed_tabs: Vec<u64>,
     pub acts: Vec<String>,
     pub views: usize,
     pub chips: usize,
@@ -42,6 +43,10 @@ struct ObservedVcsSession {
 
 #[cfg(feature = "git")]
 impl Session for ObservedVcsSession {
+    fn tab_closed(&mut self, tab: u64) {
+        self.calls.lock().unwrap().closed_tabs.push(tab);
+        self.session.tab_closed(tab);
+    }
     fn enabled(&self, action: &str) -> bool {
         self.session.enabled(action)
     }
@@ -68,6 +73,7 @@ impl Session for ObservedVcsSession {
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub closed_tabs: Vec<u64>,
     pub hint_groups: bool,
     pub rebound_hint_key: bool,
     pub act_failures: usize,
@@ -363,6 +369,9 @@ struct ScreenSession {
 }
 
 impl Session for ScreenSession {
+    fn tab_closed(&mut self, tab: u64) {
+        self.log.lock().unwrap().closed_tabs.push(tab);
+    }
     fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
         let mut log = self.log.lock().unwrap();
         log.watch_threads.push(std::thread::current().id());

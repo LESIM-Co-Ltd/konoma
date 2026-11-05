@@ -87,6 +87,7 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 /// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
 /// here, in one function per screen.
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
+    // Remove this graph-only bridge when the old hub is removed.
     if ctx == Context::Canvas && app.project_graph_jj().is_some() {
         let mut v = vec![
             Foot::Dyn(|app, _| {
