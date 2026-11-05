@@ -1683,13 +1683,11 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
         // are inert in media mode") and PageDown/PageUp turn the PDF page instead of the ordinary
         // text scroll they mean everywhere else (`J`/`K` do the same thing via a dedicated keymap
         // binding — `App::media_diff_page_turn` itself is the single no-op gate either way).
-        #[cfg(feature = "git")]
         Surface::PreviewGitDiff if app.diff_media_active() => match m {
             Motion::PageUp => app.media_diff_page_turn(-1),
             Motion::PageDown => app.media_diff_page_turn(1),
             _ => {}
         },
-        #[cfg(feature = "git")]
         Surface::PreviewGitDiff => match m {
             Motion::Up => app.preview_scroll(-1),
             Motion::Down => app.preview_scroll(1),
@@ -2053,7 +2051,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         }
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => app.git_diff_start_discard(),
-        #[cfg(feature = "git")]
         Action::CycleDiffLayout => app.cycle_diff_layout(),
         #[cfg(feature = "git")]
         Action::CycleDiffView => app.cycle_diff_view(),
@@ -2424,7 +2421,6 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
                 app.list_filter_clear(app::list_filter::ListId::Changes);
             }
         }
-        #[cfg(feature = "git")]
         Surface::PreviewGitDiff => app.close_git_diff(),
         _ => {}
     }

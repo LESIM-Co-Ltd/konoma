@@ -142,6 +142,56 @@ fn e2e_a_binding_fires_only_in_its_own_context() {
     }
 }
 
+#[test]
+fn e2e_diff_navigation_and_back_work_without_a_repository() {
+    let dir = sandbox("diff_shared_navigation");
+    std::fs::write(dir.join("file.txt"), "plain\n").unwrap();
+    let root = canon(&dir);
+    for scheme in ["vim", "less"] {
+        for back in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut cfg = cfg_en();
+            cfg.ui.keys = scheme.into();
+            let mut s = Sim::with_config(&root, cfg);
+            s.app.open_git_diff(&root.join("file.txt"));
+            assert_eq!(s.app.key_context(), Some(Context::Diff));
+            s.app.tab.preview_viewport = 20;
+            let half_mod = if scheme == "vim" {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            };
+            // Inspect the dispatch before rendering clamps the empty non-repo diff's scroll.
+            for (code, modifiers, scroll, hscroll) in [
+                (KeyCode::Char('j'), KeyModifiers::NONE, 1, 0),
+                (KeyCode::Char('k'), KeyModifiers::NONE, 0, 0),
+                (KeyCode::PageDown, KeyModifiers::NONE, 19, 0),
+                (KeyCode::PageUp, KeyModifiers::NONE, 0, 0),
+                (KeyCode::Char('d'), half_mod, 10, 0),
+                (KeyCode::Char('u'), half_mod, 0, 0),
+                (KeyCode::Char('l'), KeyModifiers::NONE, 0, 4),
+                (KeyCode::Char('h'), KeyModifiers::NONE, 0, 0),
+                (KeyCode::End, KeyModifiers::NONE, u16::MAX, 0),
+                (KeyCode::Home, KeyModifiers::NONE, 0, 0),
+                (KeyCode::Char('$'), KeyModifiers::NONE, 0, u16::MAX),
+                (KeyCode::Char('0'), KeyModifiers::NONE, 0, 0),
+            ] {
+                handle_key(&mut s.app, KeyEvent::new(code, modifiers)).unwrap();
+                assert_eq!(s.app.tab.preview_scroll, scroll, "{scheme}: {code:?}");
+                assert_eq!(s.app.tab.preview_hscroll, hscroll, "{scheme}: {code:?}");
+            }
+            let path_style = s.app.path_style;
+            s.keys(",p");
+            assert_ne!(s.app.path_style, path_style, "{scheme}: diff options menu");
+            s.press(back, KeyModifiers::NONE);
+            assert_eq!(
+                s.app.key_context(),
+                Some(Context::Tree),
+                "{scheme}: {back:?}"
+            );
+        }
+    }
+}
+
 #[cfg(feature = "git")]
 mod git {
     use super::*;

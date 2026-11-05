@@ -194,6 +194,9 @@ pub enum ManifestReason {
     InvalidScreenKey {
         key: String,
     },
+    PushedScreenKey {
+        screen: String,
+    },
     InvalidConfirmationKey {
         action: String,
         key: String,
@@ -287,6 +290,7 @@ impl fmt::Display for ManifestReason {
             Self::InvalidWatchPath { index } => write!(f, "project watch path {index} must be nonempty and relative without parent components"),
             Self::InvalidMarker { index, limit } => write!(f, "project detection marker {index} must be one nonempty file name other than . or .. (at most {limit} bytes)"),
             Self::InvalidScreenKey { key } => write!(f, "screen key `{key}` is a control character or reserved by the host"),
+            Self::PushedScreenKey { screen } => write!(f, "pushed screen `{screen}` cannot declare a jump key"),
             Self::InvalidConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is a control character or reserved by the host"),
             Self::DuplicateConfirmationKey { action, key } => write!(f, "confirmation key `{key}` of action `{action}` is declared twice"),
             Self::EmptyConfirmation { action } => write!(f, "confirmation of action `{action}` must declare at least one choice"),
@@ -535,6 +539,11 @@ fn project_problem(m: &Manifest) -> Option<ManifestReason> {
     }
     for s in project.into_iter().flat_map(|p| &p.screens) {
         if let Some(key) = s.key {
+            if s.pushed {
+                return Some(ManifestReason::PushedScreenKey {
+                    screen: display_name(&s.id),
+                });
+            }
             if !keys.insert(key) {
                 return Some(ManifestReason::DuplicateScreenKey {
                     key: key.escape_default().to_string(),

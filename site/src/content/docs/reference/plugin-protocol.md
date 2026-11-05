@@ -128,12 +128,21 @@ default-valued fields retain their bytes.
 ```text
 ProjectDecl {
   markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
-  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[], marks?: boolean, checks?: boolean, pushed?: boolean }],
   chip: Tr | null,
   watch_paths: Path[],
   version_control: boolean
 }
 ```
+
+`ProjectScreen::pushed()` sets `pushed: true` (absent means `false`). Such a screen
+is reached only through `PushScreen`, is omitted from the tabs and their cycle,
+and ignores `Tab` / `Shift-Tab` while active. It cannot declare a jump `key`;
+validation names the offending screen. `q` / `Esc` pop it and preserve the
+underlying screen's cursor. On lists, the host's Right motion (`l` / Right arrow
+by default, following the text keymap and its remaps) runs the cursor row's
+`Enter` action through the same guard. Plugins declare only `Enter`; no opening
+hint is shown when that action cannot run on the row.
 
 Markers are case-sensitive file-name globs, matched at the tree root and then
 each ancestor. Several markers and project plugins may match. A marker describes
@@ -317,7 +326,31 @@ is independent host multi-selection. Cells already contain styled spans:
 `Line { spans: [[text, Style], …], style: Style }`; graph strokes use these same
 spans. Each span is a two-element array on the wire. A `Style` has `fg`, `bg`,
 `add` and `sub` fields; the last two are modifier bit masks.
-Diff views retain their existing hunks and lines without a new encoding.
+`DiffView::new(hunks).header(lines)` carries styled `header: Line[]` above the
+diff. A nonempty header is followed by a dim, full-width `─` divider.
+`DiffHunk::new(lines).path(path)` identifies the file: a changed path produces a
+file header and selects syntax colours by its extension; consecutive hunks with
+the same path share that header. Both fields default to empty / `None`.
+
+The diff wire payload is `{ header?: Line[], hunks: [{ path?: string | null,
+lines: DiffLine[] }] }`. Readers also accept the old `DiffLine[][]` payload.
+Line encoding is unchanged. The host uses its shared unified/split/auto diff
+widget and highlights only the visible window. Its cached rows depend on the
+data, width, layout and vertical window; split layout also includes the horizontal
+offset. Unified horizontal scrolling reuses those rows and moves the header with
+the diff. Row totals and horizontal limits are computed without highlighting.
+With an empty diff, a header is followed by the divider and a dim
+no-changes line; without a header the message is centred.
+
+Text and diff screens scroll the top line, keeping the final page full. Their
+text keymap (including the less scheme and `[keys.text]` remaps) supplies line,
+half-page (10), page (20), top/bottom, horizontal (4 columns) and line-start/end
+motions. Lists keep their cursor navigation. Diff screens additionally offer
+`s` to cycle the shared layout and reset the horizontal offset; text screens do
+not. The `cycle_diff_layout` binding uses the diff view's keymap context,
+so `[keys.diff]` remaps apply to file diff previews and every project diff screen.
+The footer and help show the resolved keys. This also works for project diffs
+without the Git feature. `r` rereads the active project screen.
 
 `Acted.outcome` accepts the existing `Unhandled`, `Redraw`, `Flash(Tr)` and
 `Reload`, plus:

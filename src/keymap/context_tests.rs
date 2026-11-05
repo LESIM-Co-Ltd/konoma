@@ -25,6 +25,35 @@ fn run(a: Action) -> Resolution {
 }
 
 #[test]
+fn project_diff_context_uses_the_diff_type_in_every_build() {
+    let m = KeyMap::defaults(KeyScheme::Vim);
+    assert_eq!(Context::from_name("diff"), Some(Context::Diff));
+    assert_eq!(Context::Diff.view_types(), &[ViewType::Diff]);
+    assert_eq!(at(&m, Context::Diff, 's'), run(Action::CycleDiffLayout));
+    #[cfg(not(feature = "git"))]
+    assert_eq!(at(&m, Context::Diff, 'R'), Resolution::Unbound);
+}
+
+#[test]
+fn project_text_unbind_preserves_base_global_layer_and_inherited_removal() {
+    let m = KeyMap::from_config(
+        KeyScheme::Vim,
+        &cfg_of(&[("text", &[("Q", "noop"), ("s", "noop"), ("g", "noop")])]),
+    );
+    assert_eq!(at(&m, Context::Text, 'Q'), run(Action::Quit));
+    assert_eq!(
+        m.layer_of_key(Context::Text, KeyPress::ch('Q')),
+        Some(KeyLayer::Global)
+    );
+    assert_eq!(at(&m, Context::Text, 's'), Resolution::Unbound);
+    assert_eq!(at(&m, Context::Text, 'g'), Resolution::Unbound);
+    assert_eq!(
+        at(&m, Context::Text, 'j'),
+        run(Action::Navigate(Motion::Down))
+    );
+}
+
+#[test]
 fn context_names_are_the_documented_ones() {
     let mut names: Vec<String> = Context::all().iter().map(|c| c.name()).collect();
     names.sort();
@@ -32,6 +61,7 @@ fn context_names_are_the_documented_ones() {
     let mut expected: Vec<&str> = vec![
         "bookmarks",
         "canvas",
+        "diff",
         "document",
         "help",
         "image",
@@ -47,7 +77,6 @@ fn context_names_are_the_documented_ones() {
     ];
     #[cfg(feature = "git")]
     expected.extend([
-        "diff",
         "git.branches",
         "git.changes",
         "git.detail",

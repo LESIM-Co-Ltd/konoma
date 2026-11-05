@@ -216,6 +216,8 @@ struct Slot {
     ready: Condvar,
     #[cfg(test)]
     injected: AtomicBool,
+    #[cfg(test)]
+    checkpoints: Mutex<Option<vcs_detection_tests::WorkerCheckpoints>>,
 }
 
 struct Update {
@@ -272,6 +274,7 @@ fn enqueue_event(
     overflow: &AtomicBool,
     failed: &AtomicBool,
     event: notify::Result<notify::Event>,
+    #[cfg(test)] before_overflow: impl FnOnce(),
 ) {
     if matches!(&event, Ok(event) if matches!(&event.kind, notify::EventKind::Access(_))) {
         return;
@@ -283,6 +286,8 @@ fn enqueue_event(
         tx.try_send(WatchMessage::Event(event)),
         Err(mpsc::TrySendError::Full(_))
     ) {
+        #[cfg(test)]
+        before_overflow();
         // A burst occupies one event slot. Losing a named path invalidates everything,
         // so coalescing cannot miss a relevant marker or declared watch change.
         overflow.store(true, Ordering::Relaxed);
@@ -302,7 +307,14 @@ impl ProjectWatcher {
             return Ok(Self::Injected);
         }
         notify::recommended_watcher(move |event| {
-            enqueue_event(&events.tx, &events.overflow, &events.failed, event);
+            enqueue_event(
+                &events.tx,
+                &events.overflow,
+                &events.failed,
+                event,
+                #[cfg(test)]
+                || {},
+            );
         })
         .map(Self::Native)
     }
@@ -392,6 +404,13 @@ fn run(
         Ordering::Relaxed,
     );
     let mut watched = BTreeSet::new();
+    #[cfg(test)]
+    let mut pending_fence = None;
+    #[cfg(test)]
+    let acknowledge = |tx: mpsc::SyncSender<()>| {
+        let _ = tx.send(());
+        slot.checkpoint(vcs_detection_tests::WorkerCheckpoint::AfterFence);
+    };
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return;
@@ -400,6 +419,10 @@ fn run(
             Ok(found) => found,
             Err(_) => {
                 slot.publish(None, true);
+                #[cfg(test)]
+                if let Some(tx) = pending_fence.take() {
+                    acknowledge(tx);
+                }
                 return;
             }
         };
@@ -417,6 +440,10 @@ fn run(
             };
             if watcher.watch(path, mode).is_err() {
                 slot.publish(Some(projects), true);
+                #[cfg(test)]
+                if let Some(tx) = pending_fence.take() {
+                    acknowledge(tx);
+                }
                 return;
             }
         }
@@ -427,6 +454,10 @@ fn run(
             continue;
         }
         slot.publish(Some(projects.clone()), false);
+        #[cfg(test)]
+        if let Some(tx) = pending_fence.take() {
+            acknowledge(tx);
+        }
         loop {
             if watches.dirty.swap(false, Ordering::AcqRel) {
                 watches.apply(&mut projects);
@@ -462,6 +493,8 @@ fn run(
             if overflow.swap(false, Ordering::Relaxed) {
                 break;
             }
+            #[cfg(test)]
+            slot.checkpoint(vcs_detection_tests::WorkerCheckpoint::BeforeReceive);
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(WatchMessage::PathsChanged) => {}
                 Ok(WatchMessage::Event(Ok(event))) => {
@@ -477,7 +510,18 @@ fn run(
                 }
                 #[cfg(test)]
                 Ok(WatchMessage::Settled(tx)) => {
-                    let _ = tx.send(());
+                    // The sender stores these flags before sending the fence. They may
+                    // have changed after our pre-receive checks, so check again here.
+                    if watch_failed.swap(false, Ordering::Relaxed) {
+                        slot.publish(Some(projects), true);
+                        acknowledge(tx);
+                        return;
+                    }
+                    if overflow.swap(false, Ordering::Relaxed) {
+                        pending_fence = Some(tx);
+                        break;
+                    }
+                    acknowledge(tx);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -628,7 +672,7 @@ impl ProjectDetection {
             .as_ref()
             .and_then(|worker| worker.events.as_ref())
             .expect("project tests must use injected events");
-        enqueue_event(&events.tx, &events.overflow, &events.failed, event);
+        enqueue_event(&events.tx, &events.overflow, &events.failed, event, || {});
         let (tx, rx) = mpsc::sync_channel(1);
         events
             .tx
@@ -896,6 +940,7 @@ mod tests {
             Ok(notify::Event::new(notify::EventKind::Access(
                 notify::event::AccessKind::Any,
             ))),
+            || {},
         );
         assert!(rx.try_recv().is_err(), "reads do not trigger detection");
         for name in ["unrelated", "project.marker"] {
@@ -904,6 +949,7 @@ mod tests {
                 &overflow,
                 &failed,
                 Ok(notify::Event::new(notify::EventKind::Any).add_path(name.into())),
+                || {},
             );
         }
         assert!(
@@ -915,6 +961,7 @@ mod tests {
             &overflow,
             &failed,
             Err(notify::Error::generic("fixture watch failure")),
+            || {},
         );
         assert!(
             failed.load(Ordering::Relaxed),
