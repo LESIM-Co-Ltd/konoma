@@ -577,6 +577,7 @@ fn prompts_run_after_answers_while_guarded_acts_and_unwired_keys_stay_inert() {
         let mut terminal = Terminal::new(TestBackend::new(54, 14)).unwrap();
         events.keys = [
             key("?"),
+            key("?"),
             key("y"),
             key(" "),
             key("e"),
@@ -653,11 +654,40 @@ fn prompts_run_after_answers_while_guarded_acts_and_unwired_keys_stay_inert() {
             &terminal,
             &reference()["stages"][if matches!(mode, 0 | 4 | 5) { 5 } else { 0 }],
         );
-        for y in [0, 13] {
-            assert!(
-                (0..54).all(|x| terminal.backend().buffer()[(x, y)].symbol() == " "),
-                "unwired UI is not advertised"
-            );
+        let header = "                                    Project   path:rel";
+        let footer = if mode == 2 {
+            "this plugin is set to read-only ([plugins.<id>] read_only = true)"
+        } else {
+            ""
+        };
+        for (y, text) in [(0, header), (13, footer)] {
+            for (x, symbol) in text
+                .chars()
+                .chain(std::iter::repeat(' '))
+                .take(54)
+                .enumerate()
+            {
+                use ratatui::style::{Color, Modifier};
+                let cell = &terminal.backend().buffer()[(x as u16, y)];
+                assert_eq!(
+                    cell.symbol(),
+                    symbol.to_string(),
+                    "chrome cell ({x}, {y}), mode {mode}"
+                );
+                let chip = y == 0 && (35..44).contains(&x);
+                assert_eq!(cell.fg, if chip { Color::Black } else { Color::Reset });
+                assert_eq!(cell.bg, if chip { Color::Cyan } else { Color::Reset });
+                assert_eq!(
+                    cell.modifier,
+                    if chip || y == 13 && !footer.is_empty() {
+                        Modifier::BOLD
+                    } else if y == 0 && x >= 44 {
+                        Modifier::DIM
+                    } else {
+                        Modifier::empty()
+                    }
+                );
+            }
         }
     }
 }

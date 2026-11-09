@@ -62,8 +62,18 @@ impl ProjectLoopState {
                     }
                 }
                 ProjectEvent::EnsureView => self.ensure(info),
-                ProjectEvent::Error(error) | ProjectEvent::ChipError(_, error) => {
+                ProjectEvent::Error(error) => {
                     prepared.notice = Some(error.message.get(prepared.lang).into());
+                }
+                ProjectEvent::ChipError(key, error) => {
+                    if prepared
+                        .detection
+                        .projects
+                        .iter()
+                        .any(|p| ProjectKey::from(p) == key)
+                    {
+                        prepared.notice = Some(error.message.get(prepared.lang).into());
+                    }
                 }
                 ProjectEvent::Retry(invocation) => {
                     let Some(nav) = &self.screen else { continue };
@@ -118,7 +128,7 @@ impl ProjectLoopState {
                     ProjectNotice::ReadOnly => crate::t!(en: "this plugin is set to read-only ([plugins.<id>] read_only = true)", ja: "このプラグインは読み取り専用です([plugins.<id>] read_only = true)"),
                     ProjectNotice::SelectionChanged => crate::t!(en: "selected project row changed; action cancelled", ja: "選択した行が変わったため操作を中止しました"),
                 }.get(prepared.lang).into()),
-                // No tree-status owner or tab/menu executor exists on this surface.
+                // No tree-status owner or new-tab executor exists on this surface.
                 ProjectCommand::TreeStatus | ProjectCommand::NewTab => {}
             }
         }

@@ -2,13 +2,11 @@
 
 use super::*;
 use crate::host::project::actions::{action_key, acts_in};
-use crate::host::project::draw::{
-    draw_project_dialog, present_project_dialog, ProjectDialogLabel, ProjectDialogWords,
-};
+use crate::host::project::draw::{present_project_dialog, ProjectDialogLabel, ProjectDialogWords};
 use crate::project::ProjectAct;
 
 impl ProjectLoopState {
-    fn actions(
+    pub(super) fn actions(
         &self,
         prepared: &PreparedProjects,
         info: &ProjectContextInfo<StandaloneSurface>,
@@ -41,7 +39,6 @@ impl ProjectLoopState {
         let actions: Vec<_> = manifest
             .actions
             .iter()
-            .filter(|a| !a.copy)
             .map(|a| {
                 let key = bound
                     .bindings
@@ -64,7 +61,7 @@ impl ProjectLoopState {
         acts_in(&scope, &actions).into_iter().cloned().collect()
     }
 
-    fn act_facts(
+    pub(super) fn act_facts(
         &self,
         prepared: &PreparedProjects,
         info: &ProjectContextInfo<StandaloneSurface>,
@@ -165,10 +162,17 @@ impl ProjectLoopState {
         key: KeyEvent,
     ) -> bool {
         // Dialogs get the raw key first, just as in konoma's dispatcher.
+        prepared.notice = None;
         if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
             return true;
         }
         if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('t') {
+            return false;
+        }
+        if self.dialog.is_none()
+            && (self.help.is_some() || self.menu.is_some())
+            && self.presentation_key(prepared, info, key)
+        {
             return false;
         }
         let kp = KeyPress::norm(&key);
@@ -194,6 +198,10 @@ impl ProjectLoopState {
             .find(|a| a.key == Some(kp))
             .map(|a| a.id.clone());
         let facts = ProjectKeyFacts {
+            // An already open menu was handled above. Its trigger must still pass through
+            // the shared filter/pending-input transitions before opening a new menu.
+            global: self.keys.layer_of_key(CoreContext::Canvas, kp)
+                == Some(konoma_host_core::help::KeyLayer::Global),
             motion,
             cycle_layout: self.keys.resolve(CoreContext::Diff, kp)
                 == CoreResolution::Action(CoreAction::CycleDiffLayout),
@@ -222,6 +230,9 @@ impl ProjectLoopState {
             return true;
         }
         if unhandled {
+            if self.presentation_key(prepared, info, key) {
+                return false;
+            }
             if let Some(id) = facts.action {
                 self.dispatch_act(prepared, info, id);
             }
@@ -258,13 +269,11 @@ impl ProjectLoopState {
         quit
     }
 
-    pub(super) fn draw_dialog(
+    pub(super) fn dialog_presentation(
         &self,
         prepared: &PreparedProjects,
-        buffer: &mut ratatui::buffer::Buffer,
-        area: Rect,
-    ) {
-        let Some(dialog) = &self.dialog else { return };
+    ) -> Option<crate::host::project::draw::ProjectDialogPresentation> {
+        let dialog = self.dialog.as_ref()?;
         let labels = match dialog {
             ProjectDialog::Projects { projects, .. } => projects
                 .iter()
@@ -294,7 +303,7 @@ impl ProjectLoopState {
                 confirm_cancel_status: text("n/Esc:cancel", "n/Esc:取消"),
             },
         );
-        draw_project_dialog(buffer, area, &presentation);
+        Some(presentation)
     }
 }
 

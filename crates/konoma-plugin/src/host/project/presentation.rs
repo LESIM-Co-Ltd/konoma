@@ -482,6 +482,11 @@ impl ProjectPresentation {
     pub fn controls(&self) -> &[ProjectControl] {
         &self.controls
     }
+    /// Resolved host facts for cross-host bridge tests with explicit capability differences.
+    #[cfg(feature = "test-hooks")]
+    pub fn facts_for_test(&self) -> &ProjectPresentationFacts {
+        &self.facts
+    }
     pub fn copy_menu(&self) -> &[Item<usize, String>] {
         &self.copy_menu
     }

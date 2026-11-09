@@ -20,10 +20,14 @@ use crate::{Key, KeyMods};
 
 use super::PreparedProjects;
 
+#[path = "chrome.rs"]
+mod chrome;
 #[path = "effects.rs"]
 mod delivery;
 #[path = "input.rs"]
 mod input;
+#[path = "presentation.rs"]
+mod presentation;
 use input::key_event;
 
 /// Context supplied without reading the process environment on the UI thread.
@@ -71,6 +75,9 @@ struct ProjectLoopState {
     pending_acts: VecDeque<StandaloneInvocation>,
     viewport: ProjectViewport,
     keys: CoreKeys,
+    help: Option<u16>,
+    menu: Option<konoma_host_core::keymap::CoreMenu>,
+    presentation: Option<presentation::Presentation>,
 }
 
 impl ProjectLoopState {
@@ -185,9 +192,9 @@ impl ProjectLoopState {
     }
 }
 
-/// Run project acts, prompts, navigation and body drawing. The caller owns terminal entry/teardown.
+/// Run project acts, prompts, navigation and presentation. The caller owns terminal entry/teardown.
 /// Preparation is borrowed so its owners and corrected navigation survive an injected input
-/// source ending. No terminal entry, watcher wakes, menus or launch executor are started here.
+/// source ending. No terminal entry, watcher wakes or launch executor are started here.
 pub fn run_project_with<B: Backend, E: EventSource>(
     terminal: &mut Terminal<B>,
     prepared: &mut PreparedProjects,
@@ -206,6 +213,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             scheme_from_str(&prepared.config.ui.keys),
             &prepared.config.keys,
         ),
+        help: None,
+        menu: None,
+        presentation: None,
     };
     let result = (|| {
         if state.screen.is_none() && state.dialog.is_none() && state.runtimes.len() == 1 {
@@ -220,7 +230,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             let size = terminal
                 .size()
                 .map_err(|e| AppError::Terminal(e.to_string()))?;
-            // Reserve the host's header/footer rows without advertising their later contents.
+            // Match the host's split status rows; tabs and source-screen context stay there.
             let area = Rect::new(0, 1, size.width, size.height.saturating_sub(2));
             let body = project_body_area(area);
             let previous = state.viewport;
@@ -247,8 +257,14 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             terminal
                 .draw(|frame| {
                     let whole = frame.area();
+                    if let Some(bg) = prepared.display.bg() {
+                        frame
+                            .buffer_mut()
+                            .set_style(whole, ratatui::style::Style::new().bg(bg));
+                    }
                     state.draw(prepared, &info, frame.buffer_mut(), area);
-                    state.draw_dialog(prepared, frame.buffer_mut(), whole);
+                    state.presentation = state.presentation(prepared, &info);
+                    state.draw_chrome(prepared, frame.buffer_mut(), whole);
                 })
                 .map_err(|e| AppError::Terminal(e.to_string()))?;
             let pending = state

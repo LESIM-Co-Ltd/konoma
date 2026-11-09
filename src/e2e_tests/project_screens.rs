@@ -15,6 +15,9 @@ mod navigation_bridge;
 #[path = "project_actions_bridge.rs"]
 mod actions_bridge;
 
+#[path = "project_presentation_bridge.rs"]
+mod presentation_bridge;
+
 #[test]
 fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
     let mut f = fixture("project_close_inflight", false, 1, None, None, None);

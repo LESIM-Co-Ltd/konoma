@@ -77,6 +77,6 @@ pub struct PreparedProjects {
     pub display: Display,
     /// Still unreported, as in `Prepared`.
     pub load_error: Option<String>,
-    /// Latest delivered status. Header/footer presentation is connected in U6d.
+    /// Latest delivered status, shown until the next key.
     pub notice: Option<String>,
 }
