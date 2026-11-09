@@ -22,6 +22,7 @@ pub mod detection;
 pub mod diff;
 pub mod effects;
 pub mod input;
+pub mod presentation;
 pub mod prompt;
 pub mod runtime;
 pub mod state;
@@ -38,6 +39,8 @@ mod actions_tests;
 mod effects_tests;
 #[cfg(test)]
 mod input_tests;
+#[cfg(test)]
+mod presentation_tests;
 
 pub use prompt::{
     ProjectActionId, ProjectDialog, ProjectInvocation, ProjectOrigin, ProjectPrompt,

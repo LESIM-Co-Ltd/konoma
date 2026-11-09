@@ -6,7 +6,6 @@
 // (config applied, layers followed), joined with `/`. A token is shown only while its operation
 // acts (`ops::gate`), so the footer never offers a key that would refuse.
 
-use crate::app::project_screens::{ProjectControl, ProjectControlId};
 use crate::app::App;
 use crate::i18n::{tr, Msg};
 use crate::keymap::{Action, Context, KeyPress, LeaderId, Motion};
@@ -86,54 +85,6 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 /// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
 /// here, in one function per screen.
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
-    if ctx == Context::Canvas && app.project_picker() {
-        let mut v: Vec<_> = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(ctx))
-            .into_iter()
-            .filter(|hint| {
-                app.plugin_keys
-                    .declaration(hint.members[0].act)
-                    .is_none_or(|act| act.key.as_deref() != Some("Enter"))
-            })
-            .map(|hint| Foot::Plugin(hint.members[0].act))
-            .collect();
-        v.push(Foot::Dyn(|app, _| {
-            app.project_open_control()
-                .map(|_| format!("l/Enter:{}", tr(app.lang, Msg::FtApply)))
-        }));
-        v.push(Foot::Dyn(|app, _| {
-            Some(format!("h/q:{}", tr(app.lang, Msg::FtCancel)))
-        }));
-        return v;
-    }
-    // Remove this graph-only bridge when the old hub is removed.
-    if ctx == Context::Canvas && app.project_graph_jj().is_some() {
-        let mut v = vec![
-            Foot::Dyn(|app, _| {
-                Some(format!(
-                    "{}:{}",
-                    join_keys(app, Context::Text, SCROLL),
-                    tr(app.lang, Msg::FtNav)
-                ))
-            }),
-            Foot::Dyn(|app, _| app.project_open_control().map(|control| control.render())),
-        ];
-        v.extend(
-            konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(ctx))
-                .into_iter()
-                .filter(|hint| {
-                    app.plugin_keys
-                        .declaration(hint.members[0].act)
-                        .is_none_or(|act| act.key.as_deref() != Some("Enter"))
-                })
-                .map(|hint| Foot::Plugin(hint.members[0].act)),
-        );
-        v.extend([
-            Foot::Dyn(|app, _| Some(format!("/:{}", tr(app.lang, Msg::HintSearch)))),
-            Foot::Dyn(|app, _| Some(format!("Tab/⇧Tab:{}", tr(app.lang, Msg::FtScreens)))),
-            Foot::Dyn(|app, _| Some(format!("h/q/Esc:{}", tr(app.lang, Msg::GitBack)))),
-        ]);
-        return v;
-    }
     if app.project_active() && ctx == Context::Canvas {
         return project_plan(app, ctx);
     }
@@ -152,106 +103,16 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
 }
 
 fn project_plan(app: &App, ctx: Context) -> Vec<Foot> {
-    let bindings = app.plugin_context_bindings(ctx);
-    let mut hints = konoma_plugin::host::acts::footer_hints(&bindings.iter().collect::<Vec<_>>());
-    // Keep declaration order between project actions, including grouped hints.
-    hints.sort_by_key(|hint| bindings.iter().position(|b| b.act == hint.members[0].act));
-    let filter_label = app.tab.project_navigation.as_ref().and_then(|nav| {
-        let screen = &nav.stack.last()?.key.screen;
-        app.project_runtimes
-            .get(&nav.project)?
-            .project
-            .declaration
-            .screens
-            .iter()
-            .find(|decl| &decl.id == screen)?
-            .filter_label
-            .as_ref()
-    });
-    let controls = app.project_control_entries().unwrap_or_default();
-    let mut entries = Vec::new();
-    for mut control in controls {
-        if let Some(label) = filter_label.filter(|_| control.id == ProjectControlId::Filter) {
-            control.label = label.get(app.plugin_lang()).into();
-        }
-        project_entry(
-            &mut entries,
-            ProjectFooterEntry {
-                control,
-                actions: vec![],
-            },
-        );
-    }
-    let shared = entries.len();
-    for hint in hints {
-        let keys = hint.keys(|b| action_enabled(app, ctx, Action::Plugin(b.act)));
-        if keys.is_empty() {
-            continue;
-        }
-        project_entry(
-            &mut entries,
-            ProjectFooterEntry {
-                control: ProjectControl::new(
-                    ProjectControlId::Act,
-                    keys,
-                    hint.label(app.plugin_lang()),
-                ),
-                actions: hint.members.iter().map(|b| Action::Plugin(b.act)).collect(),
-            },
-        );
-    }
-    // Preserve the shared controls' existing token and keep plugin tokens independently fitted.
-    let mut entries = entries.into_iter();
-    let mut controls = Token {
-        text: String::new(),
-        keys: vec![],
-        actions: vec![],
+    debug_assert_eq!(ctx, Context::Canvas);
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
     };
-    for entry in entries.by_ref().take(shared) {
-        if !controls.text.is_empty() {
-            controls.text.push_str("  ");
-        }
-        controls.text.push_str(&entry.control.render());
-        controls.keys.extend(entry.control.keys);
-        controls.actions.extend(entry.actions);
-    }
-    std::iter::once(Foot::Project(controls))
-        .chain(entries.map(|entry| {
-            Foot::Project(Token {
-                text: entry.control.render(),
-                keys: entry.control.keys,
-                actions: entry.actions,
-            })
-        }))
-        .collect()
-}
-
-struct ProjectFooterEntry {
-    control: ProjectControl,
-    actions: Vec<Action>,
-}
-
-fn project_entry(entries: &mut Vec<ProjectFooterEntry>, mut entry: ProjectFooterEntry) {
-    let mut kept = Vec::new();
-    for key in entry.control.keys.iter().copied() {
-        let duplicate = entries
-            .iter()
-            .position(|previous| previous.control.keys.contains(&key));
-        if let Some(index) = duplicate {
-            for action in &entry.actions {
-                if !entries[index].actions.contains(action) {
-                    entries[index].actions.push(*action);
-                }
-            }
-        } else if !kept.contains(&key) {
-            kept.push(key);
-        }
-    }
-    if kept.is_empty() {
-        return;
-    }
-    entry.control.keys = kept;
-    entries.push(entry);
+    presentation.footer_tokens().iter().map(|token| Foot::Project(Token {
+        text: token.text.clone(), keys: token.keys.clone(),
+        actions: token.ops.iter().map(|op| match op {
+            konoma_plugin::host::project::presentation::PresentationOp::ProjectAction(index) => Action::Plugin(actions[*index]),
+        }).collect(),
+    })).collect()
 }
 
 fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
@@ -567,6 +428,19 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
 /// operation can appear more than once (`J` and `K` are one group); `Leader` and `Dyn` entries
 /// name no single operation and are left out.
 pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
+    if ctx == Context::Canvas {
+        if let Some((presentation, actions)) = app.project_presentation() {
+            return presentation
+                .footer_priority()
+                .iter()
+                .map(|op| match op {
+                    konoma_plugin::host::project::presentation::PresentationOp::ProjectAction(
+                        index,
+                    ) => (Action::Plugin(actions[*index]), None),
+                })
+                .collect();
+        }
+    }
     // The overlay lists have no footer (they show the screen underneath); their order of
     // importance is the line of keys at the bottom of their own popup.
     match ctx {

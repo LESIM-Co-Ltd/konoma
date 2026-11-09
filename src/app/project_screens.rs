@@ -38,70 +38,14 @@ type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation
 pub(crate) use konoma_plugin::host::project::ProjectDiff;
 pub(crate) use konoma_plugin::host::project::{ProjectContent, ScreenKey};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectControlId {
-    Screens,
-    Move,
-    Mark,
-    Filter,
-    Back,
-    Help,
-    Open,
-    NewTab,
-    Copy,
-    Actions,
-    Scroll,
-    Hscroll,
-    Ends,
-    DiffLayout,
-    Act,
-}
-
-#[derive(Clone)]
-pub(crate) struct ProjectControl {
-    pub id: ProjectControlId,
-    pub keys: Vec<KeyPress>,
-    pub label: String,
-    shared_notation: bool,
-}
-
-impl ProjectControl {
-    pub(crate) fn new(id: ProjectControlId, keys: Vec<KeyPress>, label: impl Into<String>) -> Self {
-        Self {
-            id,
-            keys,
-            label: label.into(),
-            shared_notation: false,
-        }
-    }
-
-    fn shared(mut self) -> Self {
-        self.shared_notation = true;
-        self
-    }
-
-    pub(crate) fn rendered_keys(&self) -> String {
-        self.keys
-            .iter()
-            .map(|key| {
-                if self.shared_notation {
-                    if key.code == KeyCode::BackTab && !key.ctrl {
-                        "Shift-Tab".into()
-                    } else {
-                        crate::ops::keys::help_key(*key)
-                    }
-                } else {
-                    crate::ops::keys::footer_key(*key, true)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-
-    pub(crate) fn render(&self) -> String {
-        format!("{}:{}", self.rendered_keys(), self.label)
-    }
-}
+pub(crate) use konoma_plugin::host::project::presentation::ProjectControl;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::presentation::ProjectControlId;
+use konoma_plugin::host::project::presentation::{
+    ProjectCapabilities, ProjectMotionKeys, ProjectOpenFacts, ProjectPresentation,
+    ProjectPresentationBinding, ProjectPresentationContent, ProjectPresentationFacts,
+    ProjectPresentationWords,
+};
 #[derive(Clone)]
 pub(crate) struct ProjectNavigation {
     state: ProjectScreenState<ProjectInvocation>,
@@ -236,6 +180,10 @@ impl App {
     }
 
     pub(crate) fn project_open_control(&self) -> Option<ProjectControl> {
+        self.project_presentation()?.0.open_control().cloned()
+    }
+
+    fn project_open_facts(&self) -> Option<ProjectOpenFacts> {
         use crate::keymap::{Action, KeyPress, Motion};
         if !self
             .project_content()
@@ -264,7 +212,7 @@ impl App {
             candidates.extend(table.keys().copied());
         }
         candidates.push(KeyPress::key(KeyCode::Right));
-        let mut keys = vec![KeyPress::key(KeyCode::Enter)];
+        let mut keys = Vec::new();
         for key in candidates {
             if self.project_list_right(KeyEvent::new(
                 key.code,
@@ -278,7 +226,10 @@ impl App {
                 keys.push(key);
             }
         }
-        Some(ProjectControl::new(ProjectControlId::Open, keys, label))
+        Some(ProjectOpenFacts {
+            right_aliases: keys,
+            label,
+        })
     }
 
     fn project_viewport(&self) -> ProjectViewport {
@@ -450,14 +401,7 @@ impl App {
     }
 
     fn project_new_tab_control(&self) -> Option<ProjectControl> {
-        self.project_row_target().map(|_| {
-            ProjectControl::new(
-                ProjectControlId::NewTab,
-                vec![KeyPress::ctrl_ch('t')],
-                tr(self.lang, Msg::HintNewTab),
-            )
-            .shared()
-        })
+        self.project_presentation()?.0.new_tab_control().cloned()
     }
 
     fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {
@@ -1083,114 +1027,151 @@ impl App {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn project_control_entries(&self) -> Option<Vec<ProjectControl>> {
-        use ProjectControlId as Id;
+        Some(self.project_presentation()?.0.controls().to_vec())
+    }
+
+    pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
+        use crate::keymap::{Action, LeaderId, Motion};
         if !self.project_active() {
             return None;
         }
-        let mut controls = if let Some(controls) = self.project_text_controls() {
-            controls
-        } else {
-            let list = self
-                .project_content()
-                .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)));
-            let mut controls = vec![
-                ProjectControl::new(
-                    Id::Screens,
-                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
-                    tr(self.lang, Msg::FtScreens),
-                )
-                .shared(),
-                ProjectControl::new(
-                    Id::Move,
-                    vec![KeyPress::ch('j'), KeyPress::ch('k')],
-                    if list {
-                        konoma_plugin::t!(en: "move", ja: "移動")
-                            .get(self.plugin_lang())
-                            .to_string()
-                    } else {
-                        tr(self.lang, Msg::Scroll).into()
-                    },
-                )
-                .shared(),
-            ];
-            if list && self.project_marks_enabled() {
-                controls.push(
-                    ProjectControl::new(
-                        Id::Mark,
-                        vec![KeyPress::ch('V')],
-                        konoma_plugin::t!(en: "mark", ja: "マーク").get(self.plugin_lang()),
-                    )
-                    .shared(),
-                );
-            }
-            if list && self.project_filter_enabled() {
-                controls.push(
-                    ProjectControl::new(
-                        Id::Filter,
-                        vec![KeyPress::ch('/')],
-                        tr(self.lang, Msg::HintFilter),
-                    )
-                    .shared(),
-                );
-            }
-            controls.push(
-                ProjectControl::new(
-                    Id::Back,
-                    vec![KeyPress::ch('q')],
-                    konoma_plugin::t!(en: "back", ja: "戻る").get(self.plugin_lang()),
-                )
-                .shared(),
-            );
-            controls.push(
-                ProjectControl::new(
-                    Id::Help,
-                    vec![KeyPress::ch('?')],
-                    tr(self.lang, Msg::HintHelp),
-                )
-                .shared(),
-            );
-            controls
+        let motion_keys = |motions: &[Motion]| {
+            motions
+                .iter()
+                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(*m)))
+                .collect()
         };
-        controls.extend(self.project_open_control());
-        controls.extend(self.project_new_tab_control());
-        if crate::ops::menu::opens(self, Context::Canvas, crate::keymap::LeaderId::Copy) {
-            let keys = self
-                .keymaps
-                .leader_keys_of(Context::Canvas)
-                .into_iter()
-                .filter(|(_, id)| *id == crate::keymap::LeaderId::Copy)
-                .map(|(key, _)| key)
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                controls.push(ProjectControl::new(
-                    Id::Copy,
-                    keys,
-                    tr(self.lang, Msg::CopyHint),
-                ));
+        let filter_label = self.tab.project_navigation.as_ref().and_then(|nav| {
+            let screen = &nav.stack.last()?.key.screen;
+            self.project_runtimes
+                .get(&nav.project)?
+                .project
+                .declaration
+                .screens
+                .iter()
+                .find(|decl| &decl.id == screen)?
+                .filter_label
+                .as_ref()
+                .map(|label| label.get(self.plugin_lang()).to_string())
+        });
+        let mut graph_scroll = Vec::new();
+        let enabled: Vec<_> = [Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)]
+            .into_iter()
+            .filter(|a| crate::ops::action_enabled(self, Context::Text, *a))
+            .collect();
+        let (columns, _) = crate::ops::keys::columns(self, Context::Text, &enabled);
+        for key in columns.into_iter().flatten() {
+            if !graph_scroll.contains(&key) {
+                graph_scroll.push(key);
             }
         }
-        let bindings = self.project_acts_in(Context::Canvas);
-        if konoma_plugin::host::acts::menu_candidates(&bindings)
-            .iter()
-            .any(|(act, _)| {
-                crate::ops::action_enabled(
-                    self,
-                    Context::Canvas,
-                    crate::keymap::Action::Plugin(*act),
-                )
+        let facts = ProjectPresentationFacts {
+            content: self
+                .project_content()
+                .map(|content| match content.as_ref() {
+                    ProjectContent::List(_) => ProjectPresentationContent::List,
+                    ProjectContent::Lines(_) => ProjectPresentationContent::Lines,
+                    ProjectContent::Diff(_) => ProjectPresentationContent::Diff,
+                }),
+            marks: self.project_marks_enabled(),
+            filter: self.project_filter_enabled(),
+            pushed: self.project_pushed(),
+            picker: self.project_picker(),
+            graph_jj: self.project_graph_jj(),
+            row_target: self.project_row_target().is_some(),
+            open: self.project_open_facts(),
+            motions: ProjectMotionKeys {
+                scroll: motion_keys(&[Motion::Down, Motion::Up]),
+                hscroll: motion_keys(&[Motion::Left, Motion::Right]),
+                ends: motion_keys(&[Motion::Top, Motion::Bottom]),
+                diff_layout: self.keymaps.keys_of(Context::Diff, Action::CycleDiffLayout),
+                half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
+                page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
+                line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+            },
+            graph_scroll,
+            copy_keys: if crate::ops::menu::opens(self, Context::Canvas, LeaderId::Copy) {
+                self.keymaps
+                    .leader_keys_of(Context::Canvas)
+                    .into_iter()
+                    .filter(|(_, id)| *id == LeaderId::Copy)
+                    .map(|(key, _)| key)
+                    .collect()
+            } else {
+                vec![]
+            },
+            filter_label,
+        };
+        let mut actions = Vec::new();
+        let bindings: Vec<_> = self
+            .plugin_context_bindings(Context::Canvas)
+            .into_iter()
+            .enumerate()
+            .map(|(index, b)| {
+                actions.push(b.act);
+                ProjectPresentationBinding {
+                    enabled: crate::ops::action_enabled(
+                        self,
+                        Context::Canvas,
+                        Action::Plugin(b.act),
+                    ),
+                    declared_enter: self
+                        .plugin_keys
+                        .declaration(b.act)
+                        .is_some_and(|a| a.key.as_deref() == Some("Enter")),
+                    binding: konoma_plugin::host::acts::ActBinding {
+                        act: index,
+                        copy_key: b.copy_key,
+                        hint_group: b.hint_group,
+                        key: b.key,
+                        context: b.context,
+                        label: b.label,
+                        help: b.help,
+                        footer: b.footer,
+                        writes: b.writes,
+                    },
+                }
             })
-        {
-            controls.push(
-                ProjectControl::new(
-                    Id::Actions,
-                    vec![KeyPress::ch(' ')],
-                    tr(self.lang, Msg::WkActionsTitle).trim(),
-                )
-                .shared(),
-            );
-        }
-        Some(controls)
+            .collect();
+        let move_list = konoma_plugin::t!(en: "move", ja: "移動");
+        let mark = konoma_plugin::t!(en: "mark", ja: "マーク");
+        let back = konoma_plugin::t!(en: "back", ja: "戻る");
+        let words = ProjectPresentationWords {
+            language: self.plugin_lang(),
+            screens: tr(self.lang, Msg::FtScreens),
+            move_list: move_list.get(self.plugin_lang()),
+            scroll: tr(self.lang, Msg::Scroll),
+            mark: mark.get(self.plugin_lang()),
+            filter: tr(self.lang, Msg::HintFilter),
+            back: back.get(self.plugin_lang()),
+            help: tr(self.lang, Msg::HintHelp),
+            new_tab: tr(self.lang, Msg::HintNewTab),
+            copy: tr(self.lang, Msg::CopyHint),
+            actions: tr(self.lang, Msg::WkActionsTitle),
+            hscroll: tr(self.lang, Msg::HintHscroll),
+            ends: tr(self.lang, Msg::HintEnds),
+            diff_layout: tr(self.lang, Msg::FtDiffLayout),
+            cycle: tr(self.lang, Msg::ProjectCycle),
+            pop: tr(self.lang, Msg::ProjectBack),
+            apply: tr(self.lang, Msg::FtApply),
+            cancel: tr(self.lang, Msg::FtCancel),
+            nav: tr(self.lang, Msg::FtNav),
+            search: tr(self.lang, Msg::HintSearch),
+            half_page: tr(self.lang, Msg::HelpHalfPage),
+            page: tr(self.lang, Msg::HintPage),
+            line_ends: tr(self.lang, Msg::HintLineEnds),
+        };
+        Some((
+            ProjectPresentation::build(
+                &facts,
+                ProjectCapabilities { can_open_tab: true },
+                &bindings,
+                &words,
+            ),
+            actions,
+        ))
     }
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
@@ -1236,91 +1217,12 @@ impl App {
     }
 
     fn project_text_controls(&self) -> Option<Vec<ProjectControl>> {
-        use crate::keymap::{Action, Motion};
-        use ProjectControlId as Id;
-        let content = self.project_content()?;
-        if matches!(content.as_ref(), ProjectContent::List(_)) {
-            return None;
-        }
-        let groups = [
-            (Id::Scroll, vec![Motion::Down, Motion::Up], Msg::Scroll),
-            (
-                Id::Hscroll,
-                vec![Motion::Left, Motion::Right],
-                Msg::HintHscroll,
-            ),
-            (Id::Ends, vec![Motion::Top, Motion::Bottom], Msg::HintEnds),
-        ];
-        let mut hints = Vec::new();
-        for (id, motions, label) in groups {
-            let keys = motions
-                .into_iter()
-                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                hints.push(ProjectControl::new(id, keys, tr(self.lang, label)));
-            }
-        }
-        if matches!(content.as_ref(), ProjectContent::Diff(_)) {
-            let keys = self
-                .keymaps
-                .keys_of(Context::Diff, Action::CycleDiffLayout)
-                .into_iter()
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                hints.insert(
-                    hints.len().min(2),
-                    ProjectControl::new(Id::DiffLayout, keys, tr(self.lang, Msg::FtDiffLayout)),
-                );
-            }
-        }
-        if !self.project_pushed() {
-            hints.push(
-                ProjectControl::new(
-                    Id::Screens,
-                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
-                    tr(self.lang, Msg::ProjectCycle),
-                )
-                .shared(),
-            );
-        }
-        hints.push(
-            ProjectControl::new(
-                Id::Back,
-                vec![KeyPress::ch('q'), KeyPress::key(KeyCode::Esc)],
-                tr(self.lang, Msg::ProjectBack),
-            )
-            .shared(),
-        );
-        hints.push(
-            ProjectControl::new(
-                Id::Help,
-                vec![KeyPress::ch('?')],
-                tr(self.lang, Msg::HintHelp),
-            )
-            .shared(),
-        );
-        Some(hints)
+        Some(self.project_presentation()?.0.text_controls()?.to_vec())
     }
 
     pub(crate) fn project_text_help(&self) -> Option<Vec<(String, String)>> {
-        use crate::keymap::{Action, Motion};
         let mut hints = self.project_text_hints()?;
-        for (motions, label) in [
-            ([Motion::HalfDown, Motion::HalfUp], Msg::HelpHalfPage),
-            ([Motion::PageDown, Motion::PageUp], Msg::HintPage),
-            ([Motion::LineHome, Motion::LineEnd], Msg::HintLineEnds),
-        ] {
-            let keys = motions
-                .into_iter()
-                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
-                .map(crate::ops::keys::help_key)
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if !keys.is_empty() {
-                hints.push((keys, tr(self.lang, label).into()));
-            }
-        }
+        hints.extend_from_slice(self.project_presentation()?.0.additional_text_help()?);
         Some(hints)
     }
 
