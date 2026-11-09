@@ -515,52 +515,8 @@ impl crate::keymap::Surface {
     }
 }
 
-/// diff layout (config `git.diff`; cycle at runtime with `s`). Auto picks vertical/horizontal automatically from the terminal width.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffLayout {
-    /// Vertical (unified).
-    Unified,
-    /// Side-by-side.
-    Split,
-    /// Horizontal if wide, vertical if narrow.
-    Auto,
-}
-
-impl DiffLayout {
-    /// Parse a config value. "split"/"horizontal"/"side-by-side"=horizontal / "auto"=auto / otherwise=vertical.
-    pub fn parse(s: &str) -> Self {
-        let n: String = s
-            .chars()
-            .filter(|c| !matches!(c, ' ' | '-' | '_'))
-            .flat_map(|c| c.to_lowercase())
-            .collect();
-        match n.as_str() {
-            "split" | "horizontal" | "sidebyside" | "side" => Self::Split,
-            "auto" => Self::Auto,
-            _ => Self::Unified, // "unified" / "vertical" / unknown
-        }
-    }
-    /// Resolve whether to lay out side-by-side at the actual display width `width`. Auto decides by a threshold.
-    pub fn is_split(self, width: u16) -> bool {
-        match self {
-            DiffLayout::Unified => false,
-            DiffLayout::Split => true,
-            DiffLayout::Auto => width >= DIFF_AUTO_MIN_WIDTH,
-        }
-    }
-    /// Cycle to the next layout (vertical→horizontal→Auto→vertical). For `s`.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn next(self) -> Self {
-        match self {
-            DiffLayout::Unified => DiffLayout::Split,
-            DiffLayout::Split => DiffLayout::Auto,
-            DiffLayout::Auto => DiffLayout::Unified,
-        }
-    }
-}
-
-/// Minimum inner width for side-by-side under Auto (below this, vertical). A guideline so two-column code is not cramped.
-const DIFF_AUTO_MIN_WIDTH: u16 = 90;
+/// The diff layout lives in `konoma_host_core::project` (shared with the standalone app).
+pub use konoma_host_core::project::DiffLayout;
 
 /// Layout of the status chrome (config `ui.statusbar`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

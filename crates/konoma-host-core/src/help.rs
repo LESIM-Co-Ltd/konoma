@@ -451,6 +451,20 @@ pub fn rows_of(ctx: CoreContext) -> &'static [CoreRow] {
             R::Help,
             R::Quit,
         ],
+        CoreContext::Diff => &[
+            R::Scroll,
+            R::Ends,
+            R::HScroll,
+            R::LineEnds,
+            R::PageTurn,
+            R::Edit,
+            R::Open,
+            R::PageKeys,
+            R::HalfKeys,
+            R::Back,
+            R::Help,
+            R::Quit,
+        ],
         CoreContext::Canvas => &[
             R::PageTurn,
             R::Outline,
@@ -470,6 +484,7 @@ pub fn view_title(ctx: CoreContext) -> CoreMsg {
         CoreContext::Image => CoreMsg::PreviewImage,
         CoreContext::Table => CoreMsg::PreviewTable,
         CoreContext::Canvas => CoreMsg::PreviewCanvas,
+        CoreContext::Diff => CoreMsg::PreviewGitDiff,
     }
 }
 

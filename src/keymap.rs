@@ -31,6 +31,8 @@ mod defaults_snapshot;
 #[cfg(test)]
 mod defaults_tests;
 #[cfg(test)]
+mod diff_list_agreement;
+#[cfg(test)]
 mod host_op_agreement;
 #[cfg(test)]
 mod menu_agreement;
@@ -77,6 +79,7 @@ impl From<CoreAction> for Action {
             CoreAction::CopyCodeBlock => Action::CopyCodeBlock,
             CoreAction::CyclePathStyle => Action::CyclePathStyle,
             CoreAction::ToggleWrap => Action::ToggleWrap,
+            CoreAction::CycleDiffLayout => Action::CycleDiffLayout,
         }
     }
 }
@@ -111,6 +114,7 @@ impl Action {
             Action::CopyCodeBlock => CoreAction::CopyCodeBlock,
             Action::CyclePathStyle => CoreAction::CyclePathStyle,
             Action::ToggleWrap => CoreAction::ToggleWrap,
+            Action::CycleDiffLayout => CoreAction::CycleDiffLayout,
             _ => return None,
         })
     }
@@ -1251,10 +1255,6 @@ impl KeyMap {
         let nav = |m: Motion| Binding::Run(Action::Navigate(m));
         let run = |a: Action| Binding::Run(a);
 
-        // The movement every scrolling view shares (text, table, diff). Paging follows `ui.keys`.
-        let scroll =
-            || -> ContextMap { host_table(konoma_host_core::keymap::scroll_table(scheme)) };
-
         // =====================================================================
         // Layer 1: the same in every context that has a cursor (`inherits_basic`).
         // =====================================================================
@@ -1288,18 +1288,20 @@ impl KeyMap {
             host_table(type_table(CoreViewType::Image, scheme)),
         );
 
-        // Every diff view shares scrolling and the layout switch.
-        let mut diff = scroll();
-        diff.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
+        // Every diff view shares scrolling, the layout switch and the page turn (the shared
+        // table). J/K turn a media diff's PDF page (both sides at once): a no-op outside a
+        // multi-page PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/
+        // PageUp are *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them
+        // to the same handler only while the media diff is active, and keeps their ordinary
+        // scroll meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
+        let mut diff: ContextMap = host_table(type_table(CoreViewType::Diff, scheme));
         #[cfg(feature = "git")]
+        diff.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
+        // Without the git feature the host has never had the page turn on a diff.
+        #[cfg(not(feature = "git"))]
         {
-            diff.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
-            // J/K: turn a media diff's PDF page (both sides at once). No-op outside a multi-page
-            // PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/PageUp are
-            // *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them to the
-            // same handler only while the media diff is active, and keeps their ordinary scroll
-            // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
-            diff.extend(host_table(konoma_host_core::keymap::page_turn_table()));
+            diff.remove(&KeyPress::ch('J'));
+            diff.remove(&KeyPress::ch('K'));
         }
         types.insert(ViewType::Diff, diff);
         #[cfg(feature = "git")]
@@ -1428,13 +1430,11 @@ impl KeyMap {
 
         // The file diff is shared with project plugins in every build. Only native VCS
         // operations depend on the git feature; leaving, reloading and file verbs do not.
-        let mut pgit: ContextMap = host_table(verbs_table());
-        pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
-        pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
-        pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
+        // Leaving, the file verbs, `p`, `r`, the `,` menu and `y` are the shared table's
+        // (`own_table(CoreContext::Diff)`); what follows is only the host's.
         // The follow scope has no default key: it lives in the `,` menu when git is enabled.
-        pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
-        pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut pgit: ContextMap = host_table(own_table(CoreContext::Diff));
         #[cfg(feature = "git")]
         {
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
@@ -1903,8 +1903,12 @@ impl KeyMap {
         }
         for ((cc, cm), menu) in &self.preview_menus.per_context {
             let id = leader_id(*cm);
-            self.ctx_menus
-                .insert((Context::from(*cc), id), leader_menu(id, menu));
+            let hc = host_context(*cc);
+            // The host's diff keeps its own `,` menu: it adds the follow scope (`f`) in front of
+            // the shared items, and `core_context` leaves the diff out so edits stay on it.
+            if core_context(hc).is_some() {
+                self.ctx_menus.insert((hc, id), leader_menu(id, menu));
+            }
         }
     }
 
@@ -2275,15 +2279,15 @@ fn core_context(c: Context) -> Option<CoreContext> {
     })
 }
 
-impl From<CoreContext> for Context {
-    fn from(c: CoreContext) -> Context {
-        match c {
-            CoreContext::Text => Context::Text,
-            CoreContext::Document => Context::Document,
-            CoreContext::Image => Context::Image,
-            CoreContext::Table => Context::Table,
-            CoreContext::Canvas => Context::Canvas,
-        }
+/// The host context a shared context is.
+fn host_context(c: CoreContext) -> Context {
+    match c {
+        CoreContext::Text => Context::Text,
+        CoreContext::Document => Context::Document,
+        CoreContext::Image => Context::Image,
+        CoreContext::Table => Context::Table,
+        CoreContext::Canvas => Context::Canvas,
+        CoreContext::Diff => Context::Diff,
     }
 }
 

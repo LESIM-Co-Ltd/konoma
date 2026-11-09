@@ -254,6 +254,10 @@ pub struct SharedExternal {
     /// Fetching `http(s)://` images a document names (`curl`): the only network call. Off marks
     /// every remote image failed without asking.
     pub remote_images: bool,
+    /// The legacy master switch of the git integration (konoma's `external.git`).
+    pub git: bool,
+    /// Whether `!` may launch the external git/jj tool (konoma's `external.git_tool`).
+    pub git_tool: bool,
 }
 
 impl Default for SharedExternal {
@@ -262,6 +266,47 @@ impl Default for SharedExternal {
             open_links: true,
             office_apps: true,
             remote_images: true,
+            git: true,
+            git_tool: true,
+        }
+    }
+}
+
+/// The `[git]` settings the project screens read (konoma's `GitConfig` has the same names and
+/// defaults for these).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SharedGit {
+    /// External git tool launched with `!` (command and arguments).
+    pub tool: String,
+    /// Initial diff layout: "unified" | "split" | "auto".
+    pub diff: String,
+    /// Where a new linked worktree is placed, relative to the main worktree.
+    pub worktree_dir: String,
+}
+
+impl Default for SharedGit {
+    fn default() -> Self {
+        Self {
+            tool: "lazygit".into(),
+            diff: "unified".into(),
+            worktree_dir: "../".into(),
+        }
+    }
+}
+
+/// The `[jj]` settings the project screens read.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SharedJj {
+    /// External jj tool launched with `!` (command and arguments).
+    pub tool: String,
+}
+
+impl Default for SharedJj {
+    fn default() -> Self {
+        Self {
+            tool: "lazyjj".into(),
         }
     }
 }
@@ -275,6 +320,8 @@ pub struct SharedConfig {
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub external: SharedExternal,
+    pub git: SharedGit,
+    pub jj: SharedJj,
     /// The `[plugins.<id>]` tables as written (the host reads `enabled`; the rest is the plugin's
     /// own settings, converted by `konoma_plugin::config`).
     pub plugins: std::collections::BTreeMap<String, toml::Table>,

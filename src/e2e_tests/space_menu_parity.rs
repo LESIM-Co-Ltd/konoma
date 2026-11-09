@@ -1049,11 +1049,11 @@ fn matrix(kind: Kind) {
         t.variants, t.changed, t.items, t.hidden, t.helps
     );
     let expected = match kind {
-        Kind::Canvas => (1258, 2520, 348, 20176, 32788, 2520),
-        Kind::Document => (1216, 2436, 248, 21928, 46300, 2436),
-        Kind::Image => (1306, 2616, 280, 28780, 31424, 2616),
-        Kind::Table => (1282, 2568, 244, 23124, 38540, 2568),
-        Kind::Text => (1222, 2448, 254, 22036, 44080, 2448),
+        Kind::Canvas => (1268, 2540, 352, 20336, 33052, 2540),
+        Kind::Document => (1226, 2456, 248, 22108, 46684, 2456),
+        Kind::Image => (1316, 2636, 280, 29000, 31668, 2636),
+        Kind::Table => (1292, 2588, 244, 23304, 38844, 2588),
+        Kind::Text => (1232, 2468, 254, 22216, 44444, 2468),
     };
     assert_eq!(
         (rewrites_n, t.variants, t.changed, t.items, t.hidden, t.helps),

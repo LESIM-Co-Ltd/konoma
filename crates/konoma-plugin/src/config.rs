@@ -155,6 +155,183 @@ pub fn plugin_settings(
     settings
 }
 
+/// One setting of the project screens that moved: where it was (`[old_section] old_key`) and where
+/// it is now (`[plugins.<plugin>] new_key`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MovedProjectSetting {
+    pub old_section: &'static str,
+    pub old_key: &'static str,
+    pub plugin: &'static str,
+    pub new_key: &'static str,
+}
+
+/// The project-screen settings that moved into the git and jj plugins' tables. Both hosts read
+/// the old names through the readers below; konoma's startup message names the moves.
+pub const MOVED_PROJECT_SETTINGS: &[MovedProjectSetting] = &[
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "confirm_jj_sync",
+        plugin: "jj",
+        new_key: "confirm_sync",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "commit_meta_align",
+        plugin: "git",
+        new_key: "commit_meta_align",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "commit_meta_align",
+        plugin: "jj",
+        new_key: "commit_meta_align",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "graph_base_branches",
+        plugin: "git",
+        new_key: "graph_base_branches",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "graph_base_branches",
+        plugin: "jj",
+        new_key: "graph_base_branches",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "graph_max_branches",
+        plugin: "git",
+        new_key: "graph_max_branches",
+    },
+    MovedProjectSetting {
+        old_section: "ui",
+        old_key: "graph_max_branches",
+        plugin: "jj",
+        new_key: "graph_max_branches",
+    },
+    MovedProjectSetting {
+        old_section: "git",
+        old_key: "worktree_dir",
+        plugin: "git",
+        new_key: "worktree_dir",
+    },
+];
+
+/// A value read through an old name: the value in effect and, when the file still uses the old
+/// name, the rename to tell the user (`(what is written, what to write instead)`, the form of
+/// konoma's `old_setting_names`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OldNameReading<T> {
+    pub value: T,
+    pub renamed: Option<(String, String)>,
+}
+
+/// Read one moved setting from the config's root table. The new name wins when it is set (even
+/// with a value of the wrong type: the setting then takes `default`, as a plugin's setting of the
+/// wrong type does); otherwise the old name is read, and a value of the wrong type there is the
+/// default too (konoma refuses such a file and runs on defaults). The rename is reported when the
+/// old name is written and the new one is not, whatever the old value's type.
+fn read_moved<T>(
+    root: &toml::Table,
+    moved: MovedProjectSetting,
+    convert: fn(&toml::Value) -> Option<T>,
+    default: T,
+) -> OldNameReading<T> {
+    let new = root
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .and_then(|p| p.get(moved.plugin))
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get(moved.new_key));
+    if let Some(v) = new {
+        return OldNameReading {
+            value: convert(v).unwrap_or(default),
+            renamed: None,
+        };
+    }
+    let old = root
+        .get(moved.old_section)
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get(moved.old_key));
+    match old {
+        Some(v) => OldNameReading {
+            value: convert(v).unwrap_or(default),
+            renamed: Some((
+                format!("[{}] {}", moved.old_section, moved.old_key),
+                format!("[plugins.{}] {}", moved.plugin, moved.new_key),
+            )),
+        },
+        None => OldNameReading {
+            value: default,
+            renamed: None,
+        },
+    }
+}
+
+fn moved(old_key: &str, plugin: &str) -> MovedProjectSetting {
+    *MOVED_PROJECT_SETTINGS
+        .iter()
+        .find(|m| m.old_key == old_key && m.plugin == plugin)
+        .expect("a moved project setting that is listed")
+}
+
+fn as_bool(v: &toml::Value) -> Option<bool> {
+    v.as_bool()
+}
+
+fn as_string(v: &toml::Value) -> Option<String> {
+    v.as_str().map(str::to_string)
+}
+
+/// `[ui] confirm_jj_sync` / `[plugins.jj] confirm_sync` (default on).
+pub fn confirm_jj_sync(root: &toml::Table) -> OldNameReading<bool> {
+    read_moved(root, moved("confirm_jj_sync", "jj"), as_bool, true)
+}
+
+/// `[ui] commit_meta_align` / `[plugins.<git|jj>] commit_meta_align` (default `"right"`).
+/// `plugin` is `"git"` or `"jj"`.
+pub fn commit_meta_align(root: &toml::Table, plugin: &str) -> OldNameReading<String> {
+    read_moved(
+        root,
+        moved("commit_meta_align", plugin),
+        as_string,
+        "right".to_string(),
+    )
+}
+
+/// `[ui] graph_base_branches` / `[plugins.<git|jj>] graph_base_branches` (default none). A list
+/// with an item that is not a string is of the wrong type as a whole.
+pub fn graph_base_branches(root: &toml::Table, plugin: &str) -> OldNameReading<Vec<String>> {
+    read_moved(
+        root,
+        moved("graph_base_branches", plugin),
+        |v| v.as_array()?.iter().map(as_string).collect(),
+        Vec::new(),
+    )
+}
+
+/// `[ui] graph_max_branches` / `[plugins.<git|jj>] graph_max_branches` (default 12; 0 is
+/// unlimited). A negative number is of the wrong type, as it is for konoma's `usize`.
+pub fn graph_max_branches(root: &toml::Table, plugin: &str) -> OldNameReading<usize> {
+    read_moved(
+        root,
+        moved("graph_max_branches", plugin),
+        |v| usize::try_from(v.as_integer()?).ok(),
+        12,
+    )
+}
+
+/// `[git] worktree_dir` / `[plugins.git] worktree_dir` (default `"../"`).
+pub fn worktree_dir(root: &toml::Table) -> OldNameReading<String> {
+    read_moved(
+        root,
+        moved("worktree_dir", "git"),
+        as_string,
+        "../".to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +492,243 @@ mod tests {
             Some(&Value::Bool(false)),
             "old [ui] name flows through csv"
         );
+    }
+
+    // ---- the readers of the moved project settings ----
+
+    /// What one reader gives for `text`, with the value shown as text so every reader fits one table.
+    type Reader = fn(&toml::Table) -> (String, Option<(String, String)>);
+
+    fn show<T: std::fmt::Debug>(r: OldNameReading<T>) -> (String, Option<(String, String)>) {
+        (format!("{:?}", r.value), r.renamed)
+    }
+
+    /// One row per moved setting: the reader, the old and new places, a value written in the old
+    /// place, a different one in the new place, a value of the wrong type, the default (all as
+    /// they show), and the rename the file earns.
+    struct Row {
+        reader: Reader,
+        old_section: &'static str,
+        old_key: &'static str,
+        plugin: &'static str,
+        new_key: &'static str,
+        old_value: &'static str,
+        old_shown: &'static str,
+        new_value: &'static str,
+        new_shown: &'static str,
+        wrong: &'static str,
+        default_shown: &'static str,
+    }
+
+    fn rows() -> Vec<Row> {
+        let mut rows = Vec::new();
+        for plugin in ["git", "jj"] {
+            let (align, base, max): (Reader, Reader, Reader) = if plugin == "git" {
+                (
+                    |t| show(commit_meta_align(t, "git")),
+                    |t| show(graph_base_branches(t, "git")),
+                    |t| show(graph_max_branches(t, "git")),
+                )
+            } else {
+                (
+                    |t| show(commit_meta_align(t, "jj")),
+                    |t| show(graph_base_branches(t, "jj")),
+                    |t| show(graph_max_branches(t, "jj")),
+                )
+            };
+            rows.push(Row {
+                reader: align,
+                old_section: "ui",
+                old_key: "commit_meta_align",
+                plugin,
+                new_key: "commit_meta_align",
+                old_value: "\"inline\"",
+                old_shown: "\"inline\"",
+                new_value: "\"left\"",
+                new_shown: "\"left\"",
+                wrong: "7",
+                default_shown: "\"right\"",
+            });
+            rows.push(Row {
+                reader: base,
+                old_section: "ui",
+                old_key: "graph_base_branches",
+                plugin,
+                new_key: "graph_base_branches",
+                old_value: "[\"main\", \"dev\"]",
+                old_shown: "[\"main\", \"dev\"]",
+                new_value: "[\"trunk\"]",
+                new_shown: "[\"trunk\"]",
+                wrong: "[\"main\", 3]",
+                default_shown: "[]",
+            });
+            rows.push(Row {
+                reader: max,
+                old_section: "ui",
+                old_key: "graph_max_branches",
+                plugin,
+                new_key: "graph_max_branches",
+                old_value: "5",
+                old_shown: "5",
+                new_value: "0",
+                new_shown: "0",
+                wrong: "-1",
+                default_shown: "12",
+            });
+        }
+        rows.push(Row {
+            reader: |t| show(confirm_jj_sync(t)),
+            old_section: "ui",
+            old_key: "confirm_jj_sync",
+            plugin: "jj",
+            new_key: "confirm_sync",
+            old_value: "false",
+            old_shown: "false",
+            new_value: "false",
+            new_shown: "false",
+            wrong: "\"no\"",
+            default_shown: "true",
+        });
+        rows.push(Row {
+            reader: |t| show(worktree_dir(t)),
+            old_section: "git",
+            old_key: "worktree_dir",
+            plugin: "git",
+            new_key: "worktree_dir",
+            old_value: "\"/old\"",
+            old_shown: "\"/old\"",
+            new_value: "\"/new\"",
+            new_shown: "\"/new\"",
+            wrong: "true",
+            default_shown: "\"../\"",
+        });
+        rows
+    }
+
+    fn root(s: &str) -> toml::Table {
+        table(s)
+    }
+
+    #[test]
+    fn every_moved_setting_has_a_reader_row_and_the_rows_cover_the_list() {
+        let rows = rows();
+        assert_eq!(rows.len(), MOVED_PROJECT_SETTINGS.len());
+        for m in MOVED_PROJECT_SETTINGS {
+            assert!(
+                rows.iter()
+                    .any(|r| (r.old_section, r.old_key, r.plugin, r.new_key)
+                        == (m.old_section, m.old_key, m.plugin, m.new_key)),
+                "{m:?} has no row"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_gives_the_default_and_no_rename() {
+        for r in rows() {
+            assert_eq!(
+                (r.reader)(&root("")),
+                (r.default_shown.to_string(), None),
+                "{}",
+                r.old_key
+            );
+            // Other tables and keys do not matter.
+            assert_eq!(
+                (r.reader)(&root("[ui]\nwrap = false\n[plugins.other]\nx = 1\n[plugins]\nkeep_build_cache = true\n")),
+                (r.default_shown.to_string(), None),
+                "{}",
+                r.old_key
+            );
+        }
+    }
+
+    #[test]
+    fn the_old_name_alone_is_read_and_reported() {
+        for r in rows() {
+            let text = format!("[{}]\n{} = {}\n", r.old_section, r.old_key, r.old_value);
+            assert_eq!(
+                (r.reader)(&root(&text)),
+                (
+                    r.old_shown.to_string(),
+                    Some((
+                        format!("[{}] {}", r.old_section, r.old_key),
+                        format!("[plugins.{}] {}", r.plugin, r.new_key)
+                    ))
+                ),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_name_alone_is_read_and_nothing_is_reported() {
+        for r in rows() {
+            let text = format!("[plugins.{}]\n{} = {}\n", r.plugin, r.new_key, r.new_value);
+            assert_eq!(
+                (r.reader)(&root(&text)),
+                (r.new_shown.to_string(), None),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_name_wins_when_both_are_set_and_the_rename_is_not_reported() {
+        for r in rows() {
+            let text = format!(
+                "[{}]\n{} = {}\n[plugins.{}]\n{} = {}\n",
+                r.old_section, r.old_key, r.old_value, r.plugin, r.new_key, r.new_value
+            );
+            assert_eq!(
+                (r.reader)(&root(&text)),
+                (r.new_shown.to_string(), None),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrong_type_falls_back_to_the_default_and_the_old_one_is_still_reported() {
+        for r in rows() {
+            let old = format!("[{}]\n{} = {}\n", r.old_section, r.old_key, r.wrong);
+            assert_eq!(
+                (r.reader)(&root(&old)),
+                (
+                    r.default_shown.to_string(),
+                    Some((
+                        format!("[{}] {}", r.old_section, r.old_key),
+                        format!("[plugins.{}] {}", r.plugin, r.new_key)
+                    ))
+                ),
+                "wrong old: {old:?}"
+            );
+            // A wrong new value masks a good old one: the setting is the default, as for a plugin.
+            let new = format!(
+                "[{}]\n{} = {}\n[plugins.{}]\n{} = {}\n",
+                r.old_section, r.old_key, r.old_value, r.plugin, r.new_key, r.wrong
+            );
+            assert_eq!(
+                (r.reader)(&root(&new)),
+                (r.default_shown.to_string(), None),
+                "wrong new: {new:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_plugins_are_read_apart() {
+        let t = root(
+            "[plugins.jj]\ncommit_meta_align = \"left\"\n[ui]\ncommit_meta_align = \"inline\"\n",
+        );
+        assert_eq!(commit_meta_align(&t, "jj").value, "left");
+        let git = commit_meta_align(&t, "git");
+        assert_eq!(
+            git.value, "inline",
+            "git has no table of its own: the old name stands"
+        );
+        assert!(git.renamed.is_some());
+        let t = root("[plugins.git]\ngraph_max_branches = 3\n");
+        assert_eq!(graph_max_branches(&t, "git").value, 3);
+        assert_eq!(graph_max_branches(&t, "jj").value, 12);
     }
 }

@@ -264,6 +264,34 @@ pub fn gate<H>(binding: Option<&ActBinding<H>>, enabled: bool, read_only: bool) 
     ActGate::On
 }
 
+/// The verdict of the write policy on one operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteVerdict {
+    /// The operation may run (as far as the plugin policy goes).
+    Allowed,
+    /// The plugin is read-only, by its own declaration or by `read_only = true` in its table.
+    PluginReadOnly,
+}
+
+/// The plugin-level write policy, the one rule konoma and the standalone app share. `writes` is
+/// whether the operation writes (a reading one always passes, even for a read-only plugin);
+/// `declared_read_only` is the plugin's own manifest declaration, which configuration cannot
+/// override; `configured` is the `read_only` value of its `[plugins.<id>]` table. Only a boolean
+/// `true` there refuses: any other value (absent, `false`, a string) leaves the operation allowed.
+pub fn write_policy(
+    writes: bool,
+    declared_read_only: bool,
+    configured: Option<&toml::Value>,
+) -> WriteVerdict {
+    if !writes {
+        return WriteVerdict::Allowed;
+    }
+    if declared_read_only || matches!(configured, Some(toml::Value::Boolean(true))) {
+        return WriteVerdict::PluginReadOnly;
+    }
+    WriteVerdict::Allowed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +522,37 @@ mod tests {
         assert_eq!(gate(Some(&all[1]), true, true), ActGate::On);
         // Off wins over the refusal: a hint that does not act is not explained.
         assert_eq!(gate(Some(&all[0]), false, true), ActGate::Off);
+    }
+
+    #[test]
+    fn the_write_policy_over_every_read_only_value_and_both_kinds_of_action() {
+        let configured = [
+            None,
+            Some(toml::Value::Boolean(false)),
+            Some(toml::Value::Boolean(true)),
+            Some(toml::Value::String("true".into())),
+            Some(toml::Value::Integer(1)),
+        ];
+        let mut refused = 0;
+        for declared in [false, true] {
+            for value in &configured {
+                for writes in [false, true] {
+                    let blocked = declared || value == &Some(toml::Value::Boolean(true));
+                    let want = if writes && blocked {
+                        refused += 1;
+                        WriteVerdict::PluginReadOnly
+                    } else {
+                        WriteVerdict::Allowed
+                    };
+                    assert_eq!(
+                        write_policy(writes, declared, value.as_ref()),
+                        want,
+                        "declared={declared} configured={value:?} writes={writes}"
+                    );
+                }
+            }
+        }
+        // declared (5 values) + configured true with no declaration (1) = 6 refusals.
+        assert_eq!(refused, 6);
     }
 }

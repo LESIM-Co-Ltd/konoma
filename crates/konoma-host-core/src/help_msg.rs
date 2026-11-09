@@ -129,6 +129,12 @@ pub enum CoreMsg {
     OfficeOpenedDefault,
     OfficeOpenFailed,
     NoFileToOpenApp,
+    PreviewGitDiff,
+    ProjectTitle,
+    FtDiffLayout,
+    DiffAuto,
+    DiffSideBySide,
+    DiffUnified,
 }
 impl CoreMsg {
     /// Every message, for the tests that walk the whole set.
@@ -256,6 +262,12 @@ impl CoreMsg {
         CoreMsg::OfficeOpenedDefault,
         CoreMsg::OfficeOpenFailed,
         CoreMsg::NoFileToOpenApp,
+        CoreMsg::PreviewGitDiff,
+        CoreMsg::ProjectTitle,
+        CoreMsg::FtDiffLayout,
+        CoreMsg::DiffAuto,
+        CoreMsg::DiffSideBySide,
+        CoreMsg::DiffUnified,
     ];
     pub fn en(self) -> &'static str {
         match self {
@@ -399,6 +411,12 @@ impl CoreMsg {
             CoreMsg::OfficeOpenedDefault => "opened with the default app",
             CoreMsg::OfficeOpenFailed => "could not open: ",
             CoreMsg::NoFileToOpenApp => "no file to open in an app",
+            CoreMsg::PreviewGitDiff => "Preview: git diff",
+            CoreMsg::ProjectTitle => "Project",
+            CoreMsg::FtDiffLayout => "unified/split/auto",
+            CoreMsg::DiffAuto => "diff: auto",
+            CoreMsg::DiffSideBySide => "diff: side-by-side",
+            CoreMsg::DiffUnified => "diff: unified",
         }
     }
     pub fn ja(self) -> &'static str {
@@ -540,6 +558,12 @@ impl CoreMsg {
             CoreMsg::OfficeOpenedDefault => "既定のアプリで開きました",
             CoreMsg::OfficeOpenFailed => "開けませんでした: ",
             CoreMsg::NoFileToOpenApp => "アプリで開く対象がありません",
+            CoreMsg::PreviewGitDiff => "プレビュー: git 差分",
+            CoreMsg::ProjectTitle => "プロジェクト",
+            CoreMsg::FtDiffLayout => "縦/横/Auto",
+            CoreMsg::DiffAuto => "diff: 自動(幅で縦/横)",
+            CoreMsg::DiffSideBySide => "diff: 横並び",
+            CoreMsg::DiffUnified => "diff: 縦(unified)",
         }
     }
     pub fn tr(self, lang: Lang) -> &'static str {
