@@ -1,157 +1,32 @@
-use super::project_screens::{ProjectDialog, ProjectPrompt};
 use super::*;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
 impl App {
     pub(super) fn project_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.project_dialog.take() else {
-            return;
-        };
-        if matches!(&dialog, ProjectDialog::Act { prompts, stage, .. } if prompts.get(*stage).is_none())
-        {
-            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
-            return;
-        }
-        if matches!(
-            &dialog,
-            ProjectDialog::Act { prompts, stage, .. }
-                if matches!(prompts.get(*stage), Some(ProjectPrompt::Confirmation(_)))
-        ) && matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc)
-        {
-            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
-            return;
-        }
-        if key.code == KeyCode::Esc {
-            return;
-        }
-        match dialog {
-            ProjectDialog::Projects {
-                projects,
-                mut selected,
-            } => {
-                match key.code {
-                    KeyCode::Enter => {
-                        if let Some(project) = projects.get(selected) {
-                            self.open_project(project.clone());
-                        }
-                        return;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        selected = selected
-                            .saturating_add(1)
-                            .min(projects.len().saturating_sub(1))
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => selected = selected.saturating_sub(1),
-                    _ => {}
-                }
-                self.project_dialog = Some(ProjectDialog::Projects { projects, selected });
+        let update =
+            konoma_plugin::host::project::prompt::handle_key(&mut self.project_dialog, key);
+        self.apply_project_prompt_update(update);
+    }
+
+    pub(super) fn apply_project_prompt_update(
+        &mut self,
+        update: konoma_plugin::host::project::prompt::ProjectPromptUpdate<
+            project_screens::ProjectInvocation,
+        >,
+    ) {
+        use konoma_plugin::host::project::prompt::ProjectPromptUpdate;
+        match update {
+            ProjectPromptUpdate::ChosenProject(project) => self.open_project(project),
+            ProjectPromptUpdate::InvocationReady(invocation) => {
+                self.execute_project_act(invocation)
             }
-            ProjectDialog::Act {
-                mut invocation,
-                prompts,
-                mut stage,
-                mut buffer,
-                mut cursor,
-                mut selected,
-            } => {
-                let mut answer = None;
-                let Some(prompt) = prompts.get(stage) else {
-                    return;
-                };
-                match prompt {
-                    ProjectPrompt::Confirmation(prompt) => {
-                        let choice = match key.code {
-                            KeyCode::Char(c) => prompt
-                                .choices
-                                .iter()
-                                .find(|choice| choice.key == c)
-                                .or_else(|| {
-                                    if c.is_ascii_uppercase() {
-                                        prompt
-                                            .choices
-                                            .iter()
-                                            .find(|choice| choice.key == c.to_ascii_lowercase())
-                                    } else {
-                                        None
-                                    }
-                                }),
-                            _ => None,
-                        };
-                        if let Some(choice) = choice {
-                            invocation.context.confirmation = Some(choice.choice.value.clone());
-                            answer = Some(());
-                        }
-                    }
-                    ProjectPrompt::Text(_) => match key.code {
-                        KeyCode::Enter => {
-                            invocation.context.text = Some(buffer.clone());
-                            answer = Some(());
-                        }
-                        KeyCode::Char(c)
-                            if !key
-                                .modifiers
-                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                        {
-                            buffer.insert(char_byte(&buffer, cursor), c);
-                            cursor += 1;
-                        }
-                        KeyCode::Backspace if cursor > 0 => {
-                            let start = char_byte(&buffer, cursor - 1);
-                            let end = char_byte(&buffer, cursor);
-                            buffer.replace_range(start..end, "");
-                            cursor -= 1;
-                        }
-                        KeyCode::Delete if cursor < buffer.chars().count() => {
-                            let start = char_byte(&buffer, cursor);
-                            let end = char_byte(&buffer, cursor + 1);
-                            buffer.replace_range(start..end, "");
-                        }
-                        KeyCode::Left => cursor = cursor.saturating_sub(1),
-                        KeyCode::Right => cursor = (cursor + 1).min(buffer.chars().count()),
-                        KeyCode::Home => cursor = 0,
-                        KeyCode::End => cursor = buffer.chars().count(),
-                        _ => {}
-                    },
-                    ProjectPrompt::Choice(prompt) => match key.code {
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            selected = (selected + 1).min(prompt.choices.len().saturating_sub(1))
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => selected = selected.saturating_sub(1),
-                        KeyCode::Enter => {
-                            if let Some(choice) = prompt.choices.get(selected) {
-                                invocation.context.choice = Some(choice.value.clone());
-                                answer = Some(());
-                            }
-                        }
-                        _ => {}
-                    },
-                }
-                if answer.is_some() {
-                    stage += 1;
-                    if stage == prompts.len() {
-                        self.execute_project_act(*invocation);
-                        return;
-                    }
-                    buffer = match prompts.get(stage) {
-                        Some(ProjectPrompt::Text(input)) => input.initial.clone(),
-                        _ => String::new(),
-                    };
-                    cursor = buffer.chars().count();
-                    selected = 0;
-                }
-                self.project_dialog = Some(ProjectDialog::Act {
-                    invocation,
-                    prompts,
-                    stage,
-                    buffer,
-                    cursor,
-                    selected,
-                });
+            ProjectPromptUpdate::Cancelled { notice: true } => {
+                self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
             }
+            _ => {}
         }
     }
 }
-
 impl App {
     /// A mutable reference to the (buffer, cursor) being edited. None if not an input dialog.
     fn dialog_input_mut(&mut self) -> Option<(&mut String, &mut usize)> {

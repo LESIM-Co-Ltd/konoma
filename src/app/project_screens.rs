@@ -5,10 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use konoma_plugin::project::{
-    ActContext, ChoiceInput, Confirmation, ProjectAct, ProjectRow, RefreshTarget, TextInput,
-};
-use konoma_plugin::{Act, Outcome};
+use konoma_plugin::project::{ActContext, Confirmation, ProjectAct, ProjectRow, RefreshTarget};
+use konoma_plugin::Outcome;
 use ratatui::text::Line;
 
 use super::project_worker::ProjectJob;
@@ -17,7 +15,14 @@ use crate::i18n::Msg;
 use crate::keymap::{Context, KeyPress};
 use crate::plugins::{ActBinding, PluginAct};
 
+pub(crate) use konoma_plugin::host::project::prompt::ProjectPrompt;
+use konoma_plugin::host::project::prompt::{
+    self, ProjectActionId, ProjectOrigin, ProjectPromptBlockers, ProjectPromptUpdate,
+    PromptInvocation,
+};
 pub(crate) use konoma_plugin::host::project::ProjectKey;
+type SharedInvocation = prompt::ProjectInvocation<ProjectSurface>;
+pub(crate) type ProjectDialog = prompt::ProjectDialog<ProjectInvocation>;
 use konoma_plugin::host::project::{ProjectMotionResult, ProjectScreenState, ProjectViewport};
 pub(crate) type ProjectFrame = konoma_plugin::host::project::ProjectFrame<ProjectInvocation>;
 type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation>;
@@ -125,51 +130,49 @@ pub(crate) struct ProjectEffect {
     pub label: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProjectSurface {
+    mode: Mode,
+    path: Option<PathBuf>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ProjectInvocation {
-    project: ProjectKey,
-    action: PluginAct,
-    declaration: Act,
-    pub(super) context: ProjectAct,
+    shared: SharedInvocation,
     effect: ProjectEffect,
-    origin_mode: Mode,
-    origin_path: Option<PathBuf>,
+}
+
+impl std::ops::Deref for ProjectInvocation {
+    type Target = SharedInvocation;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl std::ops::DerefMut for ProjectInvocation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shared
+    }
+}
+
+impl PromptInvocation for ProjectInvocation {
+    type Surface = ProjectSurface;
+    fn prompt_invocation(&self) -> &SharedInvocation {
+        &self.shared
+    }
+    fn prompt_invocation_mut(&mut self) -> &mut SharedInvocation {
+        &mut self.shared
+    }
 }
 
 impl ProjectInvocation {
     pub(crate) fn destructive(&self) -> bool {
-        self.declaration.destructive
+        self.shared.destructive()
     }
 
     pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
-        let row = self.context.selected.as_ref();
-        let name = row
-            .map(|row| row.name.as_deref().unwrap_or(&row.value))
-            .unwrap_or("");
-        prompt.text.get(lang).replace("{row}", name)
+        self.shared.confirmation_text(prompt, lang)
     }
-}
-
-#[derive(Clone)]
-pub(crate) enum ProjectPrompt {
-    Confirmation(Confirmation),
-    Text(TextInput),
-    Choice(ChoiceInput),
-}
-
-pub(crate) enum ProjectDialog {
-    Projects {
-        projects: Vec<ProjectKey>,
-        selected: usize,
-    },
-    Act {
-        invocation: Box<ProjectInvocation>,
-        prompts: Vec<ProjectPrompt>,
-        stage: usize,
-        buffer: String,
-        cursor: usize,
-        selected: usize,
-    },
 }
 
 /// Refreshes keep the identity the user selected, even when the provider reorders its rows.
@@ -535,7 +538,7 @@ impl App {
                 let invocation = self.tab.project_pending_acts.front()?;
                 if self
                     .project_runtimes
-                    .get(&invocation.project)
+                    .get(&invocation.origin.project)
                     .is_some_and(|runtime| runtime.busy)
                 {
                     return None;
@@ -793,20 +796,10 @@ impl App {
             .filter(|p| !p.declaration.screens.is_empty())
             .map(ProjectKey::from)
             .collect();
-        match projects.as_slice() {
-            [] => false,
-            [project] => {
-                self.open_project(project.clone());
-                true
-            }
-            _ => {
-                self.project_dialog = Some(ProjectDialog::Projects {
-                    projects,
-                    selected: 0,
-                });
-                true
-            }
-        }
+        let update = prompt::choose_projects(&mut self.project_dialog, projects);
+        let handled = !matches!(update, ProjectPromptUpdate::Unchanged);
+        self.apply_project_prompt_update(update);
+        handled
     }
 
     pub(super) fn open_project(&mut self, key: ProjectKey) {
@@ -1155,15 +1148,14 @@ impl App {
         };
         let settings = crate::plugins::effective_settings(&self.cfg, plugin);
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
-        let value = settings.get(key).or_else(|| {
-            registry
-                .manifest(plugin)?
+        let default = registry.manifest(plugin).and_then(|manifest| {
+            manifest
                 .settings
                 .iter()
                 .find(|setting| &setting.name == key)
                 .map(|setting| &setting.default)
         });
-        !matches!(value, Some(konoma_plugin::Value::Bool(false)))
+        prompt::confirmation_enabled(prompt, settings.get(key), default)
     }
 
     pub(crate) fn request_project_act(&mut self, action: PluginAct) -> bool {
@@ -1200,65 +1192,52 @@ impl App {
             tree_status: false,
             label: decl.label.get(self.plugin_lang()).into(),
         };
-        let mut prompts = Vec::new();
-        if let Some(prompt) = decl
+        let confirmation = decl
             .confirmation
             .as_ref()
-            .filter(|prompt| self.project_confirmation_enabled(action.plugin(), prompt))
-        {
-            prompts.push(ProjectPrompt::Confirmation(prompt.clone()));
-        }
-        if let Some(prompt) = &decl.text_input {
-            prompts.push(ProjectPrompt::Text(prompt.clone()));
-        }
-        if let Some(prompt) = &decl.choice_input {
-            prompts.push(ProjectPrompt::Choice(prompt.clone()));
-        }
+            .is_none_or(|prompt| self.project_confirmation_enabled(action.plugin(), prompt));
         let invocation = ProjectInvocation {
-            project,
-            action,
-            declaration: decl,
-            context,
+            shared: SharedInvocation {
+                action: ProjectActionId {
+                    plugin: action.plugin().into(),
+                    action: action.act().into(),
+                },
+                declaration: decl,
+                context,
+                origin: ProjectOrigin {
+                    context: self.tab.id,
+                    project,
+                    root: self.tab.root.clone(),
+                    screen: self.project_frame().map(|frame| frame.key.clone()),
+                    surface: ProjectSurface {
+                        mode: self.tab.mode,
+                        path: self.tab.preview_path.clone(),
+                    },
+                },
+            },
             effect,
-            origin_mode: self.tab.mode,
-            origin_path: self.tab.preview_path.clone(),
         };
-        if prompts.is_empty() {
-            self.execute_project_act(invocation);
-        } else {
-            let buffer = match &prompts[0] {
-                ProjectPrompt::Text(input) => input.initial.clone(),
-                _ => String::new(),
-            };
-            let cursor = buffer.chars().count();
-            self.project_dialog = Some(ProjectDialog::Act {
-                invocation: Box::new(invocation),
-                prompts,
-                stage: 0,
-                buffer,
-                cursor,
-                selected: 0,
-            });
-        }
+        let update = prompt::begin_act(&mut self.project_dialog, invocation, confirmation);
+        self.apply_project_prompt_update(update);
         true
     }
 
     pub(super) fn execute_project_act(&mut self, mut invocation: ProjectInvocation) {
         if invocation.effect.tree_root != self.tab.root
-            || invocation.origin_mode != self.tab.mode
-            || invocation.origin_path != self.tab.preview_path
+            || invocation.origin.surface.mode != self.tab.mode
+            || invocation.origin.surface.path != self.tab.preview_path
             || invocation.effect.view.as_ref() != self.project_frame().map(|frame| &frame.key)
         {
             return;
         }
         if !self.allow_write(
-            invocation.action.plugin(),
+            &invocation.action.plugin,
             invocation.declaration.writes,
             false,
         ) {
             return;
         }
-        let Some(runtime) = self.project_runtimes.get(&invocation.project) else {
+        let Some(runtime) = self.project_runtimes.get(&invocation.origin.project) else {
             return;
         };
         if runtime.busy && !runtime.acting {
@@ -1271,7 +1250,7 @@ impl App {
         }
         if !runtime
             .enabled
-            .get(invocation.action.act())
+            .get(invocation.action.action.as_str())
             .copied()
             .unwrap_or(false)
         {
@@ -1284,7 +1263,7 @@ impl App {
         if self
             .plugin_binding_in(
                 self.key_context().unwrap_or_else(|| self.base_context()),
-                invocation.action,
+                PluginAct::new(&invocation.action.plugin, &invocation.action.action),
             )
             .is_none()
         {
@@ -1294,7 +1273,7 @@ impl App {
         let mut chip = false;
         // Actions can change the gitdir; only a chip-only refresh skips watch discovery.
         let mut watch = invocation.declaration.refresh.is_empty();
-        for target in &invocation.declaration.refresh {
+        for target in &invocation.shared.declaration.refresh {
             watch |= !matches!(target, RefreshTarget::Chip);
             match target {
                 RefreshTarget::CurrentScreen => {
@@ -1341,10 +1320,13 @@ impl App {
             .as_ref()
             .filter(|input| input.keep_on_failure)
             .map(|_| Box::new(invocation.clone()));
-        let runtime = self.project_runtimes.get_mut(&invocation.project).unwrap();
+        let runtime = self
+            .project_runtimes
+            .get_mut(&invocation.origin.project)
+            .unwrap();
         let job = ProjectJob::Act {
-            action: invocation.action.act().into(),
-            context: invocation.context,
+            action: invocation.action.action.as_str().into(),
+            context: invocation.shared.context,
             refresh,
             chip,
             watch,
@@ -1366,37 +1348,25 @@ impl App {
     }
 
     fn reopen_project_input(&mut self, invocation: ProjectInvocation) {
-        if invocation.effect.tab != self.tab.id
-            || invocation.effect.tree_root != self.tab.root
-            || !self.tab.project_navigation.as_ref().is_some_and(|nav| {
-                nav.project == invocation.project
-                    && nav
-                        .stack
-                        .last()
-                        .is_some_and(|frame| Some(&frame.key) == invocation.effect.view.as_ref())
-            })
-            || self.dialog.is_some()
-            || self.project_dialog.is_some()
-            || self.is_text_input_active()
-            || self.project_frame().is_some_and(|frame| frame.filtering)
-        {
-            return;
-        }
-        let Some(prompt) = invocation.declaration.text_input.clone() else {
+        let Some(nav) = self.tab.project_navigation.as_ref() else {
             return;
         };
-        let Some(buffer) = invocation.context.text.clone() else {
-            return;
+        let current = ProjectOrigin {
+            context: self.tab.id,
+            project: nav.project.clone(),
+            root: self.tab.root.clone(),
+            screen: nav.frame().map(|frame| frame.key.clone()),
+            surface: ProjectSurface {
+                mode: self.tab.mode,
+                path: self.tab.preview_path.clone(),
+            },
         };
-        let cursor = buffer.chars().count();
-        self.project_dialog = Some(ProjectDialog::Act {
-            invocation: Box::new(invocation),
-            prompts: vec![ProjectPrompt::Text(prompt)],
-            stage: 0,
-            buffer,
-            cursor,
-            selected: 0,
-        });
+        let blockers = ProjectPromptBlockers {
+            dialog: self.dialog.is_some(),
+            text_input: self.is_text_input_active(),
+            filtering: self.project_frame().is_some_and(|frame| frame.filtering),
+        };
+        prompt::reopen_text(&mut self.project_dialog, invocation, &current, blockers);
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {

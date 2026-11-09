@@ -12,12 +12,22 @@
 //!   as values, with opaque action effects and pending invocations.
 //! - [`content`] and [`diff`]: the shared widgets' prepared content and windowed diff layout cache.
 //! - [`state`]: per-context frames, row identity, filters, marks and resolved screen motions.
+//! - [`prompt`]: project choosers, prompt answers and failed-act text retries.
 
 pub mod content;
 pub mod detection;
 pub mod diff;
+pub mod prompt;
 pub mod runtime;
 pub mod state;
+
+pub use prompt::{
+    ProjectActionId, ProjectDialog, ProjectInvocation, ProjectOrigin, ProjectPrompt,
+    ProjectPromptBlockers, ProjectPromptUpdate, PromptInvocation,
+};
+
+#[cfg(test)]
+mod prompt_tests;
 
 pub use state::{
     ProjectFrame, ProjectInput, ProjectKey, ProjectMotionResult, ProjectScreenState,
