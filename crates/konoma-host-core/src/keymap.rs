@@ -550,10 +550,16 @@ pub enum HostOp {
     LinkFocusPrev,
     /// Enter / Space on a focused item (a fixed key): open or fold it.
     ToggleFocusedItem,
+    /// Optional file-diff commands, read only by an explicitly extended keymap.
+    CycleDiffView,
+    DiffNextChange,
+    DiffPrevChange,
+    JumpNextChange,
+    JumpPrevChange,
 }
 
 impl HostOp {
-    /// Every operation, once: for tests that walk the whole set.
+    /// Every default-readable operation, once. File-diff extensions require opt-in.
     pub const ALL: [HostOp; 19] = [
         HostOp::SearchStart,
         HostOp::SearchNext,
@@ -598,11 +604,16 @@ impl HostOp {
             HostOp::LinkFocusNext => "link_focus_next",
             HostOp::LinkFocusPrev => "link_focus_prev",
             HostOp::ToggleFocusedItem => "toggle_focused_item",
+            HostOp::CycleDiffView => "cycle_diff_view",
+            HostOp::DiffNextChange => "diff_next_change",
+            HostOp::DiffPrevChange => "diff_prev_change",
+            HostOp::JumpNextChange => "jump_next_change",
+            HostOp::JumpPrevChange => "jump_prev_change",
         }
     }
 
-    /// The inverse of [`HostOp::name`]. The old name `toggle_markdown_raw` is an alias of
-    /// `cycle_representation`.
+    /// Read a default host operation name. Optional file-diff names are read only by
+    /// [`CoreKeys::with_config`]. The old `toggle_markdown_raw` aliases `cycle_representation`.
     pub fn from_name(s: &str) -> Option<HostOp> {
         if s == "toggle_markdown_raw" {
             return Some(HostOp::CycleRepresentation);
@@ -1343,8 +1354,20 @@ impl CoreKeys {
 
     /// As [`CoreKeys::from_keys_config`], from the raw tables.
     pub fn from_config(scheme: KeyScheme, cfg: &KeysFileConfig) -> CoreKeys {
-        let mut keys = CoreKeys::defaults(scheme);
-        let defaults = CoreKeys::defaults(scheme);
+        Self::defaults(scheme).with_config(cfg, &[], &[])
+    }
+
+    /// Apply overrides to supplied defaults, then validate against those same defaults.
+    /// Additional host operations and legacy context aliases are recognized only at this
+    /// opt-in entry point. Aliases retain the old-before-global-before-current ordering.
+    pub fn with_config(
+        self,
+        cfg: &KeysFileConfig,
+        additional_ops: &[HostOp],
+        context_aliases: &[(&str, CoreContext)],
+    ) -> CoreKeys {
+        let defaults = self.clone();
+        let mut keys = self;
 
         // Sorted, so the result is the same on every run.
         let mut names: Vec<&String> = cfg.surfaces.keys().collect();
@@ -1362,6 +1385,11 @@ impl CoreKeys {
                 new_tables.push((vec![Target::Context(c)], table));
             } else if let Some(cs) = old_surface_contexts(name) {
                 old_tables.push((cs.iter().map(|&c| Target::Context(c)).collect(), table));
+            } else if let Some((_, context)) = context_aliases
+                .iter()
+                .find(|(alias, _)| *alias == name.as_str())
+            {
+                old_tables.push((vec![Target::Context(*context)], table));
             }
             // Any other table belongs to a context this module does not have.
         }
@@ -1372,7 +1400,7 @@ impl CoreKeys {
             let mut entries: Vec<(&String, &String)> = table.iter().collect();
             entries.sort();
             for (chord, action) in entries {
-                keys.apply_one(&targets, chord, action);
+                keys.apply_one(&targets, chord, action, additional_ops);
             }
         }
         keys.validate(&defaults);
@@ -1382,7 +1410,13 @@ impl CoreKeys {
     /// Apply one (key string -> action string) to every target. A chord (`"y x"`) is an entry of
     /// a menu. Anything this module cannot honour is ignored: an invalid or fixed key, a chord
     /// whose prefix opens no menu, `tab_goto`, a name that is no core action.
-    fn apply_one(&mut self, targets: &[Target], key: &str, action: &str) {
+    fn apply_one(
+        &mut self,
+        targets: &[Target],
+        key: &str,
+        action: &str,
+        additional_ops: &[HostOp],
+    ) {
         let tokens: Vec<&str> = key.split_whitespace().collect();
         let keys: Vec<KeyPress> = match tokens.iter().map(|t| KeyPress::parse(t)).collect() {
             Ok(k) => k,
@@ -1392,7 +1426,9 @@ impl CoreKeys {
             None
         } else if let Some(a) = CoreAction::from_name(action) {
             Some(CoreBinding::Run(a))
-        } else if let Some(o) = HostOp::from_name(action) {
+        } else if let Some(o) = HostOp::from_name(action)
+            .or_else(|| additional_ops.iter().copied().find(|o| o.name() == action))
+        {
             Some(CoreBinding::Host(o))
         } else {
             return;

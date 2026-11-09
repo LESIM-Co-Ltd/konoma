@@ -1,6 +1,7 @@
 //! The standalone app: the loop on ratatui's `TestBackend`, and the choice of the plugin.
 
 mod config;
+mod diff_screen;
 mod help;
 mod keys;
 mod launch;

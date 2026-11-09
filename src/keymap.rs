@@ -32,6 +32,8 @@ mod defaults_snapshot;
 mod defaults_tests;
 #[cfg(test)]
 mod diff_list_agreement;
+#[cfg(all(test, feature = "git"))]
+mod file_diff_keys_bridge;
 #[cfg(test)]
 mod host_op_agreement;
 #[cfg(test)]
@@ -146,6 +148,16 @@ pub(crate) fn host_op_action(o: HostOp) -> Option<Action> {
         HostOp::LinkFocusNext => Action::LinkFocusNext,
         HostOp::LinkFocusPrev => Action::LinkFocusPrev,
         HostOp::ToggleFocusedItem => Action::ToggleFocusedItem,
+        #[cfg(feature = "git")]
+        HostOp::CycleDiffView => Action::CycleDiffView,
+        #[cfg(feature = "git")]
+        HostOp::DiffNextChange => Action::DiffNextChange,
+        #[cfg(feature = "git")]
+        HostOp::DiffPrevChange => Action::DiffPrevChange,
+        #[cfg(not(feature = "git"))]
+        HostOp::CycleDiffView | HostOp::DiffNextChange | HostOp::DiffPrevChange => return None,
+        HostOp::JumpNextChange => Action::JumpNextChange,
+        HostOp::JumpPrevChange => Action::JumpPrevChange,
     })
 }
 
@@ -1296,7 +1308,9 @@ impl KeyMap {
         // scroll meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
         let mut diff: ContextMap = host_table(type_table(CoreViewType::Diff, scheme));
         #[cfg(feature = "git")]
-        diff.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
+        diff.extend(host_table(
+            konoma_plugin::host::project::diff_keys::file_diff_type_keys(),
+        ));
         // Without the git feature the host has never had the page turn on a diff.
         #[cfg(not(feature = "git"))]
         {
@@ -1438,15 +1452,9 @@ impl KeyMap {
         #[cfg(feature = "git")]
         {
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            pgit.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-            // `n` / `N` = the next / previous change block of this file (layer 1).
-            pgit.insert(KeyPress::ch('n'), run(Action::DiffNextChange));
-            pgit.insert(KeyPress::ch('N'), run(Action::DiffPrevChange));
-            // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
-            // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
-            // the next / previous change block within the file.
-            pgit.insert(KeyPress::ctrl_ch('n'), run(Action::JumpNextChange));
-            pgit.insert(KeyPress::ctrl_ch('p'), run(Action::JumpPrevChange));
+            pgit.extend(host_table(
+                konoma_plugin::host::project::diff_keys::file_diff_own_keys(),
+            ));
         }
         contexts.insert(Context::Diff, pgit);
 

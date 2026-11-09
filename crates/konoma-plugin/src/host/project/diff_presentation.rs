@@ -37,6 +37,36 @@ pub enum DiffUiOp {
 }
 
 impl DiffUiOp {
+    /// Project a resolved file-diff key. No fixed-key fallback may revive a remap or noop.
+    pub fn resolve_file_diff(
+        keys: &konoma_host_core::keymap::CoreKeys,
+        key: KeyPress,
+    ) -> Option<Self> {
+        use konoma_host_core::keymap::{CoreContext, CoreResolution, HostOp};
+        if let Some(op) = keys.host_op(CoreContext::Diff, key) {
+            return Some(match op {
+                HostOp::CycleDiffView => Self::View,
+                HostOp::DiffNextChange => Self::NextBlock,
+                HostOp::DiffPrevChange => Self::PrevBlock,
+                HostOp::JumpNextChange => Self::NextFile,
+                HostOp::JumpPrevChange => Self::PrevFile,
+                HostOp::GitLaunchTool => Self::Tool,
+                HostOp::OpenGitView => Self::Project,
+                HostOp::Refresh => Self::Refresh,
+                _ => return None,
+            });
+        }
+        match keys.resolve(CoreContext::Diff, key) {
+            CoreResolution::Action(action) => {
+                Self::from_core(konoma_host_core::help::HelpOp::Act(action))
+            }
+            CoreResolution::Menu(menu) => {
+                Self::from_core(konoma_host_core::help::HelpOp::Menu(menu))
+            }
+            CoreResolution::Unbound => None,
+        }
+    }
+
     pub fn core(self) -> Option<konoma_host_core::help::HelpOp> {
         use konoma_host_core::{
             help::HelpOp as H,
