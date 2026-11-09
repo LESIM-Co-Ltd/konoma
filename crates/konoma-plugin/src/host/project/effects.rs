@@ -340,18 +340,6 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         live: &[ProjectContextInfo<I::Surface>],
         retained: &[ProjectKey],
     ) -> ProjectUpdate<I> {
-        self.poll_with_reply(contexts, live, retained, |_| {})
-    }
-
-    /// Let a host with a partial executor suppress unsupported act deliveries before row
-    /// remapping and content adoption. The ordinary host adopts every reply unchanged.
-    pub fn poll_with_reply(
-        &mut self,
-        contexts: &mut [ProjectContextMut<'_, I>],
-        live: &[ProjectContextInfo<I::Surface>],
-        retained: &[ProjectKey],
-        mut adopt: impl FnMut(&mut ProjectReply<I::Effect>),
-    ) -> ProjectUpdate<I> {
         self.runtimes.retain(|key, _| retained.contains(key));
         let mut update = ProjectUpdate::handled();
         let mut effects = Vec::new();
@@ -359,12 +347,11 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let mut chip_errors = Vec::new();
         let mut retries = Vec::new();
         for (key, runtime) in self.runtimes.iter_mut() {
-            while let Some(mut reply) = runtime
+            while let Some(reply) = runtime
                 .pending
                 .take()
                 .or_else(|| runtime.rx.try_recv().ok())
             {
-                adopt(&mut reply);
                 update.changed = true;
                 runtime.busy = false;
                 runtime.acting = false;

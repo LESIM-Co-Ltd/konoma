@@ -29,6 +29,8 @@ struct Log {
     chips: bool,
     refresh: bool,
     prompt: bool,
+    confirm: bool,
+    choice: bool,
     disabled: bool,
 }
 
@@ -42,6 +44,21 @@ impl Plugin for Screens {
             .project_context(ActContext::screen("items", ["item"]));
         if log.prompt {
             action = action.text_input(TextInput::new("unwired prompt", ""));
+        }
+        if log.confirm {
+            action = action.confirmation(Confirmation::new(
+                "Proceed?",
+                vec![ConfirmChoice::new('y', "accepted", "Yes")],
+            ));
+        }
+        if log.choice {
+            action = action.choice_input(ChoiceInput::new(
+                "Target",
+                vec![
+                    Choice::new("first", "First"),
+                    Choice::new("second", "Second"),
+                ],
+            ));
         }
         if log.refresh {
             action = action.refresh(RefreshTarget::CurrentScreen);
@@ -177,7 +194,7 @@ fn list_right_alias_and_real_pop_outcome_use_the_shared_executor() {
     }
 }
 
-struct Services;
+pub(super) struct Services;
 impl ProjectServices for Services {
     fn inspect(
         &self,
@@ -474,7 +491,8 @@ fn project_resize_draws_shared_content_and_adopts_clamps() {
 }
 
 #[test]
-fn unsupported_project_outcomes_and_their_refresh_are_inert() {
+fn project_outcomes_and_their_refresh_are_adopted() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
     for outcome in [
         Outcome::Copy {
             text: "copy must not run".into(),
@@ -495,6 +513,17 @@ fn unsupported_project_outcomes_and_their_refresh_are_inert() {
             message: None,
         },
     ] {
+        clear_test_clipboard();
+        let expected_copy = if let Outcome::Copy { text } = &outcome {
+            Some(text.clone())
+        } else {
+            None
+        };
+        let expected_flash = if let Outcome::Flash(message) = &outcome {
+            Some(message.get("en").to_string())
+        } else {
+            None
+        };
         let (_dir, mut prepared, mut events, log) = fixture_with(Log {
             outcome: Some(outcome),
             refresh: true,
@@ -503,17 +532,31 @@ fn unsupported_project_outcomes_and_their_refresh_are_inert() {
         let mut terminal = Terminal::new(TestBackend::new(54, 14)).unwrap();
         run_keys(&mut terminal, &mut prepared, &mut events, &["Enter"]);
         assert_eq!(log.lock().unwrap().acts.len(), 1);
-        assert_cells(&terminal, &reference()["stages"][0]);
+        assert_eq!(get_test_clipboard(), expected_copy);
+        if let Some(flash) = expected_flash {
+            assert_eq!(prepared.notice.as_deref(), Some(flash.as_str()));
+        }
+        assert!(prepared.notice.is_some());
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("changed"), "outcome refresh must be visible");
         assert_eq!(prepared.screen.as_ref().unwrap().stack.len(), 1);
         assert!(prepared.dialog.is_none());
     }
 }
 
 #[test]
-fn unwired_keys_prompts_and_guarded_acts_stay_inert_and_unadvertised() {
-    for mode in 0..4 {
+fn prompts_run_after_answers_while_guarded_acts_and_unwired_keys_stay_inert() {
+    for mode in 0..6 {
         let (_dir, mut prepared, mut events, log) = fixture_with(Log {
             prompt: mode == 0,
+            confirm: mode == 4,
+            choice: mode == 5,
             disabled: mode == 1,
             ..Default::default()
         });
@@ -557,6 +600,46 @@ fn unwired_keys_prompts_and_guarded_acts_stay_inert_and_unadvertised() {
             log.lock().unwrap().acts.is_empty(),
             "guard/prompt mode {mode}"
         );
+        if matches!(mode, 0 | 4 | 5) {
+            use konoma_plugin::host::project::{ProjectDialog, ProjectPrompt};
+            let Some(ProjectDialog::Act {
+                prompts,
+                stage,
+                buffer,
+                ..
+            }) = &prepared.dialog
+            else {
+                panic!("prompt must open: {mode}");
+            };
+            match mode {
+                0 => {
+                    assert!(
+                        matches!(&prompts[*stage], ProjectPrompt::Text(p) if p.label.get("en") == "unwired prompt")
+                    );
+                    assert!(buffer.is_empty());
+                }
+                4 => assert!(
+                    matches!(&prompts[*stage], ProjectPrompt::Confirmation(p) if p.text.get("en") == "Proceed?")
+                ),
+                5 => assert!(
+                    matches!(&prompts[*stage], ProjectPrompt::Choice(p) if p.label.get("en") == "Target")
+                ),
+                _ => unreachable!(),
+            }
+            let answers: &[&str] = match mode {
+                0 => &["追", "Enter"],
+                4 => &["y"],
+                _ => &["j", "Enter"],
+            };
+            run_keys(&mut terminal, &mut prepared, &mut events, answers);
+            let acts = &log.lock().unwrap().acts;
+            assert_eq!(acts.len(), 1, "act runs only after its prompt is answered");
+            match mode {
+                0 => assert_eq!(acts[0].text.as_deref(), Some("追")),
+                4 => assert_eq!(acts[0].confirmation.as_deref(), Some("accepted")),
+                _ => assert_eq!(acts[0].choice.as_deref(), Some("second")),
+            }
+        }
         assert!(prepared.dialog.is_none());
         assert!(prepared
             .screen
@@ -566,7 +649,10 @@ fn unwired_keys_prompts_and_guarded_acts_stay_inert_and_unadvertised() {
             .unwrap()
             .pending
             .is_empty());
-        assert_cells(&terminal, &reference()["stages"][0]);
+        assert_cells(
+            &terminal,
+            &reference()["stages"][if matches!(mode, 0 | 4 | 5) { 5 } else { 0 }],
+        );
         for y in [0, 13] {
             assert!(
                 (0..54).all(|x| terminal.backend().buffer()[(x, y)].symbol() == " "),

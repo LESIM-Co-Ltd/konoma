@@ -175,6 +175,7 @@ fn prepare(
         term,
         display,
         load_error: None,
+        notice: None,
     })
 }
 
