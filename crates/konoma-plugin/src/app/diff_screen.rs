@@ -21,6 +21,9 @@ use crate::view::DocOptions;
 mod chrome;
 mod media;
 mod rendered;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod test_hooks;
 use crate::host::project::diff_blocks::{source_diff_blocks, step_change_block, DiffBlockCursor};
 use crate::host::project::diff_files::{changed_path_position, step_changed_path};
 use crate::host::project::diff_frame::{
@@ -77,6 +80,9 @@ pub enum DiffScreenAction {
     Stay,
     Back,
     Quit,
+    Edit,
+    Open,
+    Tool,
 }
 
 /// Reserved navigation boundary. Preview is not an executable capability yet.
@@ -97,6 +103,7 @@ pub struct DiffScreenReturn {
 }
 
 pub struct DiffScreenState {
+    pub(in crate::app) launch_enabled: bool,
     pub(super) closed: bool,
     pub request: FileDiffRequest,
     pub choice: DiffView,
@@ -153,6 +160,7 @@ impl DiffScreenState {
     ) -> Result<Self, Failure> {
         let pending = services.clone().spawn_file_diff(request.clone())?;
         let mut state = Self {
+            launch_enabled: false,
             closed: false,
             request,
             services,
@@ -231,7 +239,7 @@ impl DiffScreenState {
         self.pending_first_change = None;
     }
 
-    fn reload(&mut self) -> Result<(), Failure> {
+    pub(super) fn reload(&mut self) -> Result<(), Failure> {
         self.markdown.invalidate();
         self.media.worker.invalidate();
         self.media.page = 1;
@@ -299,6 +307,9 @@ impl DiffScreenState {
         use DiffUiOp as O;
         let mut notice = None;
         match op {
+            O::Edit if self.launch_enabled => return Ok((DiffScreenAction::Edit, None)),
+            O::OpenExternal if self.launch_enabled => return Ok((DiffScreenAction::Open, None)),
+            O::Tool if self.launch_enabled => return Ok((DiffScreenAction::Tool, None)),
             O::Global(1) => self.help = Some(0),
             O::Options => self.menu = !self.options_menu().is_empty(),
             O::PathStyle => self.display.path_style = self.display.path_style.next(),
@@ -467,6 +478,21 @@ impl DiffScreenState {
         )
     }
 
+    /// The current Source block's new-side line; rendered/media have no source caret.
+    pub(in crate::app) fn edit_line(&self) -> Option<usize> {
+        if self.media_active() || self.effective != DiffView::Source {
+            return None;
+        }
+        crate::host::project::diff_blocks::source_diff_edit_line(
+            &self.data.as_ref()?.lines,
+            &self.blocks(),
+            DiffBlockCursor {
+                scroll: self.scroll as usize,
+                block: self.block,
+            },
+        )
+    }
+
     pub(super) fn draw(&mut self, buf: &mut Buffer, area: Rect) {
         self.viewport = Block::bordered().inner(area).height;
         if self.media_active() {
@@ -523,7 +549,7 @@ impl DiffScreenState {
         self.split_drawn = update.diff_split_drawn;
     }
 
-    pub fn presentation(&self) -> DiffPresentation {
+    fn presentation(&self) -> DiffPresentation {
         let lookup = CoreLookup {
             keys: &self.keys,
             ctx: CoreContext::Diff,

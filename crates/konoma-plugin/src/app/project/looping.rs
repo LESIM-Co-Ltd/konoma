@@ -34,6 +34,7 @@ use input::key_event;
 #[derive(Default)]
 pub struct ProjectLoopCx {
     pub home: Option<PathBuf>,
+    pub launch: Option<crate::app::LaunchCx>,
 }
 
 /// The standalone project surface; it carries no konoma tab or preview state.
@@ -68,6 +69,8 @@ impl ProjectActionInvocation for StandaloneInvocation {
 type Runtime = ProjectRuntime<ProjectEffect<StandaloneSurface>, StandaloneInvocation>;
 
 struct ProjectLoopState {
+    launch_enabled: bool,
+    launch: super::launch::LaunchState,
     diff: Option<crate::app::diff_screen::DiffScreenState>,
     diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
     runtimes: HashMap<ProjectKey, Runtime>,
@@ -225,6 +228,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
     let mut state = ProjectLoopState {
+        launch_enabled: cx.launch.is_some(),
+        launch: super::launch::LaunchState::default(),
         diff: prepared.diff.take(),
         diff_return: prepared.diff_return.take(),
         runtimes: std::mem::take(&mut prepared.runtimes),
@@ -304,6 +309,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 redraw |= p.take_doc_relayout() | p.take_doc_redraw();
             }
             if let Some(diff) = state.diff.as_mut().filter(|d| !d.closed) {
+                diff.launch_enabled = state.launch_enabled;
                 if let Some(p) = pictures.as_mut() {
                     p.doc_pics().set_path(&diff.request.path);
                 }
@@ -329,6 +335,28 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             redraw |= replayed;
             if quit {
                 break;
+            }
+            redraw |= state
+                .launch
+                .poll(terminal, prepared, cx, pictures.as_mut())?;
+            if state.launch.take_refresh() {
+                if let Some(project) = state
+                    .screen
+                    .as_ref()
+                    .or(state.diff_return.as_ref())
+                    .map(|nav| nav.project.clone())
+                {
+                    state.with_host(&info, |host, _| {
+                        host.invalidate(&project, ProjectInvalidation::Detection)
+                    });
+                }
+                if let Some(diff) = state.diff.as_mut().filter(|diff| !diff.closed) {
+                    if let Err(error) = diff.reload() {
+                        prepared
+                            .notice
+                            .get_or_insert_with(|| error.message.get(prepared.lang).into());
+                    }
+                }
             }
             state.ensure(&info);
             if redraw {
@@ -408,8 +436,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             }
             let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
             let picture_wake = pictures.as_ref().and_then(Pictures::wake_in);
-            let owner_wake =
-                (pending || prepared.detection.pending()).then_some(Duration::from_millis(16));
+            let owner_wake = (pending || prepared.detection.pending() || state.launch.pending())
+                .then_some(Duration::from_millis(16));
             let watch_wake = prepared
                 .detection
                 .watching()

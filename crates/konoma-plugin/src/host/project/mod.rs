@@ -28,6 +28,7 @@ pub mod diff_presentation;
 pub mod draw;
 pub mod effects;
 pub mod input;
+pub mod launch;
 pub mod presentation;
 pub mod prompt;
 pub mod runtime;

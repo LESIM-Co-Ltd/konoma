@@ -166,6 +166,12 @@ impl ProjectLoopState {
         if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
             return true;
         }
+        if self.help.is_some()
+            && self.keys.help_resolve(KeyPress::norm(&key))
+                == CoreResolution::Action(CoreAction::Quit)
+        {
+            return true;
+        }
         if self.diff_return.is_some() {
             use crate::app::diff_screen::DiffScreenAction;
             let diff = self.diff.as_mut().unwrap();
@@ -178,6 +184,18 @@ impl ProjectLoopState {
                 }
                 Ok((DiffScreenAction::Quit, _)) => return true,
                 Ok((DiffScreenAction::Stay, notice)) => prepared.notice = notice,
+                Ok((which @ (DiffScreenAction::Edit | DiffScreenAction::Open), _)) => {
+                    let verb = if which == DiffScreenAction::Edit {
+                        crate::Verb::Edit
+                    } else {
+                        crate::Verb::Open
+                    };
+                    self.launch
+                        .file(prepared, verb, diff.request.path.clone(), diff.edit_line());
+                }
+                Ok((DiffScreenAction::Tool, _)) => {
+                    self.launch.tool(prepared, &diff.request.info.clone())
+                }
                 Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
             }
             return false;
@@ -251,6 +269,49 @@ impl ProjectLoopState {
             }
             if let Some(id) = facts.action {
                 self.dispatch_act(prepared, info, id);
+            } else if self.launch_enabled {
+                use crate::host::project::diff_presentation::DiffUiOp;
+                let op = DiffUiOp::resolve_file_diff(
+                    &crate::host::project::diff_keys::file_diff_keys(
+                        scheme_from_str(&prepared.config.ui.keys),
+                        &prepared.config.keys,
+                    ),
+                    kp,
+                );
+                match op {
+                    Some(DiffUiOp::Edit | DiffUiOp::OpenExternal) => {
+                        let target = self.screen.as_ref().and_then(|nav| {
+                            nav.selected_target(
+                                self.content(info)?.as_ref(),
+                                self.viewport,
+                                prepared.settings.diff_layout,
+                            )
+                        });
+                        if let Some(path) = target {
+                            self.launch.file(
+                                prepared,
+                                if op == Some(DiffUiOp::Edit) {
+                                    crate::Verb::Edit
+                                } else {
+                                    crate::Verb::Open
+                                },
+                                path,
+                                None,
+                            );
+                        }
+                    }
+                    Some(DiffUiOp::Tool) => {
+                        if let Some(info) = self
+                            .screen
+                            .as_ref()
+                            .and_then(|nav| prepared.service_info.get(&nav.project))
+                            .cloned()
+                        {
+                            self.launch.tool(prepared, &info);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         false

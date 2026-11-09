@@ -360,6 +360,16 @@ impl<I> ProjectScreenState<I> {
         Some(index)
     }
 
+    /// The real target under the cursor, accounting for filters and non-selectable rows.
+    pub fn selected_target(
+        &self,
+        content: &ProjectContent,
+        viewport: ProjectViewport,
+        layout: DiffLayout,
+    ) -> Option<PathBuf> {
+        self.row_target(content, self.selected_index(content, viewport, layout)?)
+    }
+
     /// Resolve a selected original row index, as returned by `selected_index`.
     pub fn row_target(&self, content: &ProjectContent, index: usize) -> Option<PathBuf> {
         match content {

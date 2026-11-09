@@ -1,5 +1,6 @@
 //! Project preparation, terminal entry and the act, prompt and navigation loop.
 
+mod launch;
 mod looping;
 mod prepare;
 
@@ -19,6 +20,7 @@ use crate::{Failure, TermCaps};
 
 use super::{AppKeys, Display};
 
+pub use launch::ProjectLaunchTarget;
 pub use looping::{run_project_with, ProjectLoopCx, StandaloneInvocation, StandaloneSurface};
 pub use prepare::prepare_projects;
 
@@ -48,6 +50,23 @@ pub struct ProjectServiceInfo {
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
 pub trait ProjectServices: Send + Sync + 'static {
+    /// Resolve the selected file on a worker. A host can wrap reply publication with a fence.
+    fn spawn_launch_target(
+        self: Arc<Self>,
+        path: PathBuf,
+        line: Option<usize>,
+        registry: Arc<Registry>,
+    ) -> std::sync::mpsc::Receiver<Option<ProjectLaunchTarget>> {
+        ProjectLaunchTarget::spawn(path, line, self, registry)
+    }
+
+    /// Full file classification and verb lookup, called only by the launch worker.
+    fn launch_verbs(&self, path: &Path, registry: &Registry) -> Vec<crate::VerbDecl> {
+        super::pick_in(registry, path)
+            .ok()
+            .and_then(|(id, _)| registry.manifest(&id).map(|m| m.verbs.clone()))
+            .unwrap_or_default()
+    }
     fn inspect(
         &self,
         project: &MatchedProject,
@@ -158,6 +177,14 @@ pub fn run_projects(
     }
     let cx = ProjectLoopCx {
         home: std::env::var_os("HOME").map(PathBuf::from),
+        launch: Some(
+            super::LaunchCx::new(
+                prepared.config.editor.clone(),
+                &prepared.config.external,
+                Vec::new(),
+            )
+            .live(),
+        ),
     };
     term::install_exit_signals();
     let mut guard = term::TerminalGuard::enter()?;

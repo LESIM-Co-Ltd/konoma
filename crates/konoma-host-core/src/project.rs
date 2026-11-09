@@ -223,13 +223,38 @@ impl ProjectSettings {
     /// trimmed, or the well-known default when it is empty or only whitespace. Returns
     /// `(command line, default tool name)`.
     pub fn tool_command(&self, jj: bool) -> (String, &'static str) {
-        let (tool, fallback) = if jj {
-            (self.jj_tool.trim(), DEFAULT_JJ_TOOL)
-        } else {
-            (self.git_tool.trim(), DEFAULT_GIT_TOOL)
-        };
-        let resolved = if tool.is_empty() { fallback } else { tool };
-        (resolved.to_string(), fallback)
+        tool_command(&self.git_tool, &self.jj_tool, jj)
+    }
+}
+
+/// Backend command selection shared with hosts that keep their own config representation.
+pub fn tool_command(git: &str, jj: &str, use_jj: bool) -> (String, &'static str) {
+    let (tool, fallback) = if use_jj {
+        (jj.trim(), DEFAULT_JJ_TOOL)
+    } else {
+        (git.trim(), DEFAULT_GIT_TOOL)
+    };
+    let resolved = if tool.is_empty() { fallback } else { tool };
+    (resolved.to_string(), fallback)
+}
+
+/// The existing host's disabled-tool notice.
+pub fn tool_disabled_notice(lang: crate::lang::Lang) -> &'static str {
+    match lang {
+        crate::lang::Lang::En => {
+            "external git tool is disabled (config: [external] git_tool = false)"
+        }
+        crate::lang::Lang::Jp => "外部 git ツールは無効です(設定: [external] git_tool = false)",
+    }
+}
+
+/// The existing host's tool failure prefix.
+pub fn tool_failed_prefix(lang: crate::lang::Lang, jj: bool) -> &'static str {
+    match (lang, jj) {
+        (crate::lang::Lang::En, false) => "git tool failed: ",
+        (crate::lang::Lang::En, true) => "jj tool failed: ",
+        (crate::lang::Lang::Jp, false) => "git ツール起動失敗: ",
+        (crate::lang::Lang::Jp, true) => "jj ツール起動失敗: ",
     }
 }
 

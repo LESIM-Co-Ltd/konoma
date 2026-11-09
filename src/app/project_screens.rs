@@ -665,20 +665,12 @@ impl App {
         nav.visible_rows(&content, self.project_viewport(), self.diff_layout)
     }
 
-    fn project_selected_index(&self) -> Option<usize> {
-        self.tab.project_navigation.as_ref()?.selected_index(
+    pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
+        self.tab.project_navigation.as_ref()?.selected_target(
             self.project_content()?.as_ref(),
             self.project_viewport(),
             self.diff_layout,
         )
-    }
-
-    pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
-        let index = self.project_selected_index()?;
-        self.tab
-            .project_navigation
-            .as_ref()?
-            .row_target(self.project_content()?.as_ref(), index)
     }
 
     fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {

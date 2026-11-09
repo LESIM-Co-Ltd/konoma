@@ -1,3 +1,4 @@
+use konoma_plugin::app::diff_screen::test_hooks::DiffScreenTestHooks;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 

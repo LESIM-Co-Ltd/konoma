@@ -1526,15 +1526,19 @@ fn run_terminal_chain(
 /// previously unreachable from a test. Returns `(resolved command line, default tool name)`; the
 /// default name is echoed back mainly so tests can assert it directly rather than re-deriving it.
 fn tool_command(vcs: crate::vcs::VcsKind, cfg: &config::Config) -> (String, &'static str) {
-    // `!` launches the tool for whichever system owns the directory: lazygit knows nothing about a
-    // jj repository, and running it there would show a repository the user is not working in.
-    let (tmpl, fallback) = match vcs {
-        crate::vcs::VcsKind::Git => (cfg.git.tool.trim(), "lazygit"),
+    let jj = match vcs {
+        crate::vcs::VcsKind::Git => false,
         #[cfg(feature = "git")]
-        crate::vcs::VcsKind::Jj => (cfg.jj.tool.trim(), "lazyjj"),
+        crate::vcs::VcsKind::Jj => true,
     };
-    let resolved = if tmpl.is_empty() { fallback } else { tmpl };
-    (resolved.to_string(), fallback)
+    konoma_host_core::project::tool_command(&cfg.git.tool, &cfg.jj.tool, jj)
+}
+
+fn git_tool_plan(app: &App) -> Option<konoma_plugin::host::project::launch::ProjectToolLaunch> {
+    konoma_plugin::host::project::launch::project_tool_launch(
+        &tool_command(app.git_vcs, &app.cfg).0,
+        &git_workdir(&app.tab.root),
+    )
 }
 
 /// Launch the backend's own external tool synchronously in the repo workdir -- `[git] tool`
@@ -1542,14 +1546,11 @@ fn tool_command(vcs: crate::vcs::VcsKind, cfg: &config::Config) -> (String, &'st
 /// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
 fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    let (tmpl, _fallback) = tool_command(app.git_vcs, &app.cfg);
-    let mut parts = tmpl.split_whitespace().map(|s| s.to_string());
-    let Some(prog) = parts.next() else {
+    let Some(plan) = git_tool_plan(app) else {
         return Ok(());
     };
-    let args: Vec<String> = parts.collect();
-    let cwd = git_workdir(&app.tab.root);
-    let status = run_external(terminal, app, &prog, &args, &cwd)?;
+    let prog = &plan.attempt.prog;
+    let status = run_external(terminal, app, prog, &plan.attempt.args, &plan.cwd)?;
     if let Err(e) = status {
         app.flash = Some(format!(
             "{}{prog}: {e}",

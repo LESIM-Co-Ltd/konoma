@@ -1981,6 +1981,7 @@ dependencies = [
  "konoma-base",
  "konoma-host-core",
  "konoma-media-core",
+ "konoma-plugin",
  "konoma-svg",
  "konoma-test-support",
  "konoma-vcs-core",
