@@ -34,28 +34,9 @@ impl From<&crate::plugins::projects::MatchedProject> for ProjectKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ScreenKey {
-    pub tab: u64,
-    pub screen: String,
-    pub selection: Option<String>,
-}
-
-impl ScreenKey {
-    fn new(screen: impl Into<String>, tab: u64) -> Self {
-        Self {
-            tab,
-            screen: screen.into(),
-            selection: None,
-        }
-    }
-}
-
-pub(crate) enum ProjectContent {
-    List(konoma_plugin::view::ListView),
-    Lines(Vec<Line<'static>>),
-    Diff(ProjectDiff),
-}
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::ProjectDiff;
+pub(crate) use konoma_plugin::host::project::{ProjectContent, ScreenKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectControlId {
@@ -121,171 +102,6 @@ impl ProjectControl {
         format!("{}:{}", self.rendered_keys(), self.label)
     }
 }
-/// Immutable diff data owns its layout cache, so a replacement view always invalidates it.
-pub(crate) struct ProjectDiff {
-    pub lines: Vec<crate::git::DiffLine>,
-    pub header: Vec<Line<'static>>,
-    pub theme: String,
-    pub no_changes: String,
-    split_rows: usize,
-    unified_width: usize,
-    cache: std::sync::Mutex<Option<Arc<ProjectDiffLayout>>>,
-    #[cfg(test)]
-    layouts: std::sync::atomic::AtomicUsize,
-}
-
-pub(crate) struct ProjectDiffLayout {
-    pub lines: Vec<Line<'static>>,
-    hscroll: u16,
-    width: u16,
-    split: bool,
-    start: usize,
-    count: usize,
-}
-
-impl ProjectDiff {
-    pub fn new(
-        lines: Vec<crate::git::DiffLine>,
-        header: Vec<Line<'static>>,
-        theme: String,
-        no_changes: String,
-    ) -> Self {
-        // This constructor runs on the project worker. Keep totals separate from highlighted
-        // rows so key handling and row queries never need to render the document.
-        let split_rows = crate::preview::gitdiff::side_by_side_row_count(&lines, "");
-        let unified_width = crate::preview::gitdiff::unified_max_hscroll(&lines, 0)
-            .max(header.iter().map(Line::width).max().unwrap_or(0));
-        Self {
-            lines,
-            header,
-            theme,
-            no_changes,
-            split_rows,
-            unified_width,
-            cache: Default::default(),
-            #[cfg(test)]
-            layouts: Default::default(),
-        }
-    }
-
-    fn header_rows(&self) -> usize {
-        self.header.len() + usize::from(!self.header.is_empty())
-    }
-
-    pub fn row_count(&self, split: bool) -> usize {
-        self.header_rows()
-            + if self.lines.is_empty() {
-                usize::from(!self.header.is_empty())
-            } else if split {
-                self.split_rows
-            } else {
-                self.lines.len()
-            }
-    }
-
-    pub fn metrics(&self, width: u16, split: bool) -> (usize, u16) {
-        let max_h = if self.lines.is_empty() {
-            0
-        } else if split {
-            crate::preview::gitdiff::side_by_side_max_hscroll(&self.lines, usize::from(width))
-        } else {
-            self.unified_width
-                .max(usize::from(!self.header.is_empty()))
-                .saturating_sub(usize::from(width))
-        };
-        (self.row_count(split), max_h.min(u16::MAX as usize) as u16)
-    }
-
-    pub fn layout(
-        &self,
-        width: u16,
-        split: bool,
-        offset: u16,
-        start: usize,
-        count: usize,
-    ) -> Arc<ProjectDiffLayout> {
-        use crate::preview::gitdiff::{diff_lines_range, diff_lines_side_by_side_range};
-        use ratatui::style::{Color, Style};
-        // Stacked panning only moves the Paragraph; it does not change its highlighted lines.
-        let offset = if split { offset } else { 0 };
-        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(cached) = cache.as_ref().filter(|c| {
-            c.width == width
-                && c.split == split
-                && c.hscroll == offset
-                && c.start == start
-                && c.count == count
-        }) {
-            return cached.clone();
-        }
-        #[cfg(test)]
-        self.layouts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let iw = usize::from(width);
-        let end = start.saturating_add(count);
-        let mut lines: Vec<_> = self
-            .header
-            .iter()
-            .skip(start)
-            .take(count)
-            .cloned()
-            .collect();
-        if !self.header.is_empty() && start <= self.header.len() && self.header.len() < end {
-            lines.push(Line::styled(
-                "─".repeat(iw.max(1)),
-                Style::new().fg(Color::DarkGray),
-            ));
-        }
-        let header_rows = self.header_rows();
-        let diff_start = start.saturating_sub(header_rows);
-        let diff_count = end.saturating_sub(header_rows.max(start));
-        if self.lines.is_empty() {
-            if !self.header.is_empty() && start <= header_rows && header_rows < end {
-                lines.push(Line::styled(
-                    self.no_changes.clone(),
-                    Style::new().fg(Color::DarkGray),
-                ));
-            }
-        } else if diff_count > 0 {
-            if split {
-                lines.extend(diff_lines_side_by_side_range(
-                    &self.lines,
-                    "",
-                    &self.theme,
-                    iw,
-                    usize::from(offset),
-                    diff_start,
-                    diff_count,
-                ));
-            } else {
-                lines.extend(diff_lines_range(
-                    &self.lines,
-                    "",
-                    &self.theme,
-                    iw,
-                    diff_start,
-                    diff_count,
-                ));
-            }
-        }
-        let drawn = Arc::new(ProjectDiffLayout {
-            lines,
-            hscroll: offset,
-            width,
-            split,
-            start,
-            count,
-        });
-        *cache = Some(drawn.clone());
-        drawn
-    }
-
-    #[cfg(test)]
-    pub fn layout_count(&self) -> usize {
-        self.layouts.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct ProjectFrame {
     pub key: ScreenKey,
@@ -2419,10 +2235,7 @@ impl App {
 
     pub(super) fn project_tab_closed(&mut self, tab: u64) {
         for runtime in self.project_runtimes.values_mut() {
-            runtime.views.retain(|key, _| key.tab != tab);
-            runtime.contexts.retain(|key, _| key.tab != tab);
-            runtime.dirty.retain(|key| key.tab != tab);
-            runtime.closed_tabs.insert(tab);
+            runtime.tab_closed(tab);
             if runtime
                 .pending_retry
                 .as_ref()

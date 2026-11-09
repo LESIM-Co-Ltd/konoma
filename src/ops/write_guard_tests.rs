@@ -171,7 +171,7 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
         1,
         "one guarded project action dispatcher"
     );
-    let worker = include_str!("../app/project_worker.rs");
+    let worker = include_str!("../../crates/konoma-plugin/src/host/project/runtime.rs");
     assert_eq!(
         worker.matches("ProjectJob::Act {").count(),
         1,

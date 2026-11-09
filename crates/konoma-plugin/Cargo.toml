@@ -32,11 +32,9 @@ test-hooks = ["konoma-base?/test-hooks"]
 # (`host`): the one rule konoma and the standalone app share. Needs the shared key type
 # (`config`) and the terminal's key event (crossterm).
 host = ["config", "dep:crossterm"]
-# Project discovery and watching (`host::project`): the worker that finds the projects a directory
-# belongs to and watches their markers, written once for konoma and the standalone app. Needs the
-# file-watching library and `konoma-base` (a test seam acts only outside the application's own
-# process).
-project-host = ["host", "dep:notify", "dep:konoma-base"]
+# Project discovery, watching and session ownership (`host::project`), shared by konoma and the
+# standalone app. The owner prepares content with the shared widgets and VCS data types.
+project-host = ["host", "dep:notify", "dep:konoma-base", "widgets", "ratatui", "dep:konoma-vcs-core"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
 # host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
 # pictures, so it includes `pictures`). Off by
@@ -84,6 +82,8 @@ crossterm = { workspace = true, optional = true }
 konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional = true }
 # Native file notifications of the project watcher (`project-host` feature).
 notify = { workspace = true, optional = true }
+# Shared diff data used by the project owner (`project-host` feature).
+konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
