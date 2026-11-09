@@ -3,6 +3,10 @@
 use super::list_filter::{step_visible, ListId};
 use super::*;
 
+#[cfg(all(test, feature = "git"))]
+#[path = "diff_source_test_adapter.rs"]
+mod diff_source_test_adapter;
+
 /// How a diff is being opened — the input `App::open_git_diff_with` needs *before* it decides
 /// `diff_follow_scope`/`came_from_git_view`/the presentation and validates that presentation
 /// exactly once. `Default` is the ordinary "fresh open, from a tree/hub selection" shape that plain

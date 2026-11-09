@@ -68,6 +68,8 @@ impl ProjectActionInvocation for StandaloneInvocation {
 type Runtime = ProjectRuntime<ProjectEffect<StandaloneSurface>, StandaloneInvocation>;
 
 struct ProjectLoopState {
+    diff: Option<crate::app::diff_screen::DiffScreenState>,
+    diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
     runtimes: HashMap<ProjectKey, Runtime>,
     screen: Option<ProjectScreenState<StandaloneInvocation>>,
     dialog: Option<ProjectDialog<StandaloneInvocation>>,
@@ -135,7 +137,7 @@ impl ProjectLoopState {
         let mut context = ProjectContextMut {
             id: info.id,
             active: self.screen.as_mut(),
-            returned: None,
+            returned: self.diff_return.as_mut(),
             pending_acts: &mut self.pending_acts,
             request,
         };
@@ -223,6 +225,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     _pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
     let mut state = ProjectLoopState {
+        diff: prepared.diff.take(),
+        diff_return: prepared.diff_return.take(),
         runtimes: std::mem::take(&mut prepared.runtimes),
         screen: prepared.screen.take(),
         dialog: prepared.dialog.take(),
@@ -238,7 +242,12 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         presentation: None,
     };
     let result = (|| {
-        if state.screen.is_none() && state.dialog.is_none() && state.runtimes.len() == 1 {
+        if state.screen.is_none()
+            && state.diff_return.is_none()
+            && state.diff.is_none()
+            && state.dialog.is_none()
+            && state.runtimes.len() == 1
+        {
             let project = state.runtimes.keys().next().unwrap().clone();
             let info = state.info(prepared, cx);
             let first = state.with_host(&info, |host, _| host.first_screen(&project, info.id));
@@ -268,6 +277,25 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 host.resize(context, previous, info.viewport)
             });
             redraw |= state.poll_detection(prepared, &info);
+            if let Some(diff) = &mut state.diff {
+                match diff.poll() {
+                    Ok(true) => {
+                        if state.diff_return.is_none() {
+                            state.diff_return = state.screen.take();
+                        }
+                        redraw = true;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        prepared.notice = Some(error.message.get(prepared.lang).into());
+                        state.diff = None;
+                        if state.screen.is_none() {
+                            state.screen = state.diff_return.take();
+                        }
+                        redraw = true;
+                    }
+                }
+            }
             let retained: Vec<_> = state.runtimes.keys().cloned().collect();
             let update = state.with_host(&info, |host, context| {
                 host.poll(
@@ -295,9 +323,41 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .buffer_mut()
                                 .set_style(whole, ratatui::style::Style::new().bg(bg));
                         }
-                        state.draw(prepared, &info, frame.buffer_mut(), area);
-                        state.presentation = state.presentation(prepared, &info);
-                        state.draw_chrome(prepared, frame.buffer_mut(), whole);
+                        if state.diff_return.is_some() {
+                            let diff = state.diff.as_mut().unwrap();
+                            let tokens: Vec<_> = diff
+                                .presentation()
+                                .footer_tokens()
+                                .iter()
+                                .map(|t| t.text.clone())
+                                .collect();
+                            let footer = if let Some(note) = &prepared.notice {
+                                konoma_widgets::footer_line::flash_spans(note)
+                            } else {
+                                use ratatui::style::Stylize;
+                                vec![ratatui::text::Span::raw(
+                                    konoma_widgets::help_panel::fit_tokens(&tokens, whole.width),
+                                )
+                                .bold()]
+                            };
+                            let mut borrowed = crate::app::draw::Frame::Diff(diff);
+                            crate::app::draw::draw_in(
+                                frame,
+                                &mut borrowed,
+                                &footer,
+                                prepared.display.bg(),
+                                area,
+                            );
+                            state
+                                .diff
+                                .as_ref()
+                                .unwrap()
+                                .draw_header(frame.buffer_mut(), whole);
+                        } else {
+                            state.draw(prepared, &info, frame.buffer_mut(), area);
+                            state.presentation = state.presentation(prepared, &info);
+                            state.draw_chrome(prepared, frame.buffer_mut(), whole);
+                        }
                     })
                     .map_err(|e| AppError::Terminal(e.to_string()))?;
                 redraw = false;
@@ -318,7 +378,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             {
                 continue;
             }
-            let frame_work_pending = pending || prepared.detection.pending();
+            let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
+            let frame_work_pending = pending || prepared.detection.pending() || diff_wake.is_some();
             let wake_in = if frame_work_pending {
                 Some(Duration::from_millis(16))
             } else {
@@ -344,6 +405,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         Ok(())
     })();
     prepared.runtimes = state.runtimes;
+    prepared.diff = state.diff;
+    prepared.diff_return = state.diff_return;
     prepared.screen = state.screen;
     prepared.dialog = state.dialog;
     result

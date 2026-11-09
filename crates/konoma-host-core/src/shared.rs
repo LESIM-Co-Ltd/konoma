@@ -197,6 +197,8 @@ pub struct SharedUi {
     pub lang: String,
     /// Preview paging key style: "vim" | "less".
     pub keys: String,
+    /// File-diff representation as written; resolved by `DiffView::parse` at use.
+    pub diff_view: String,
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
@@ -232,6 +234,7 @@ impl Default for SharedUi {
         Self {
             lang: "auto".into(),
             keys: "vim".into(),
+            diff_view: "rendered".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
             wrap: true,
             path_style: "relative".into(),

@@ -3,7 +3,7 @@
 use super::*;
 use crate::Outcome;
 
-/// The two later project executors have distinct, typed entry points.
+/// Typed navigation entries keep unsupported executors at the service boundary.
 enum ProjectNavigation {
     OpenDiff {
         path: PathBuf,
@@ -15,10 +15,35 @@ enum ProjectNavigation {
 }
 
 impl ProjectNavigation {
-    fn dispatch(self, prepared: &mut PreparedProjects) {
+    fn dispatch(self, state: &mut ProjectLoopState, prepared: &mut PreparedProjects) {
         match self {
             Self::OpenDiff { path } => {
-                let _ = path;
+                let Some(info) = state
+                    .screen
+                    .as_ref()
+                    .and_then(|s| prepared.service_info.get(&s.project))
+                else {
+                    return;
+                };
+                let request = crate::app::diff_screen::FileDiffRequest {
+                    root: prepared.open_dir.clone(),
+                    path,
+                    info: info.clone(),
+                };
+                match crate::app::diff_screen::DiffScreenState::open(
+                    request,
+                    prepared.services.clone(),
+                    &prepared.config,
+                    prepared.settings.diff_layout,
+                    None,
+                ) {
+                    Ok(mut diff) => {
+                        diff.set_lang(prepared.keys.lang());
+                        state.diff = Some(diff);
+                    }
+                    Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
+                }
+                return;
             }
             Self::SwitchRoot { root, message } => {
                 let _ = (root, message);
@@ -118,8 +143,8 @@ impl ProjectLoopState {
                 }
                 ProjectCommand::Navigation { outcome, .. } => match outcome {
                     Outcome::OpenFile { .. } | Outcome::OpenTab { .. } => unsupported(prepared),
-                    Outcome::OpenDiff { path } => ProjectNavigation::OpenDiff { path }.dispatch(prepared),
-                    Outcome::SwitchRoot { root, message } => ProjectNavigation::SwitchRoot { root, message }.dispatch(prepared),
+                    Outcome::OpenDiff { path } => ProjectNavigation::OpenDiff { path }.dispatch(self, prepared),
+                    Outcome::SwitchRoot { root, message } => ProjectNavigation::SwitchRoot { root, message }.dispatch(self, prepared),
                     // The shared effect adapter only emits these four navigation outcomes.
                     _ => unreachable!("shared project navigation command"),
                 },

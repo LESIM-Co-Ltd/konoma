@@ -46,7 +46,9 @@ pub struct TextBorder {
 }
 
 /// What is drawn in the body.
-pub enum Frame {
+pub enum Frame<'a> {
+    /// Borrow the persistent file-diff state for this draw only.
+    Diff(&'a mut super::diff_screen::DiffScreenState),
     /// Lines from the top of the body.
     Lines(Vec<Line>),
     /// The lines of a file's text: wrapped at the edge (`ui.wrap`), or cut `hscroll` cells from
@@ -277,6 +279,18 @@ pub fn draw(
     footer: &[ratatui::text::Span<'static>],
     bg: Option<ratatui::style::Color>,
 ) {
+    let body = body_of(f.area());
+    draw_in(f, frame, footer, bg, body);
+}
+
+/// Project file diffs reserve the host's header as well as its footer.
+pub(super) fn draw_in(
+    f: &mut ratatui::Frame,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
+    body: Rect,
+) {
     let area = f.area();
     if let Some(bg) = bg {
         f.buffer_mut().set_style(area, RStyle::default().bg(bg));
@@ -284,8 +298,8 @@ pub fn draw(
     if area.height == 0 {
         return;
     }
-    let body = body_of(area);
     match frame {
+        Frame::Diff(state) => state.draw(f.buffer_mut(), body),
         Frame::Lines(lines) => {
             let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();
             Paragraph::new(text).render(body, f.buffer_mut());

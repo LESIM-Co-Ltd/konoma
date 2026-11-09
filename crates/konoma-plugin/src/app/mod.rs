@@ -17,6 +17,7 @@
 
 mod acts;
 mod copy;
+pub mod diff_screen;
 mod display;
 mod doc_pictures;
 mod document;

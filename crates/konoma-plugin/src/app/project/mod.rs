@@ -47,7 +47,7 @@ pub struct ProjectServiceInfo {
 /// Backend I/O for the small project host. `inspect` runs during preparation; retrieval methods
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
-pub trait ProjectServices: Send + Sync {
+pub trait ProjectServices: Send + Sync + 'static {
     fn inspect(
         &self,
         project: &MatchedProject,
@@ -56,6 +56,18 @@ pub trait ProjectServices: Send + Sync {
     fn file_diff(&self, info: &ProjectServiceInfo, path: &Path) -> Vec<DiffLine>;
     fn changed_files(&self, info: &ProjectServiceInfo) -> Vec<ChangeEntry>;
     fn base_contents(&self, info: &ProjectServiceInfo, path: &Path) -> Option<Vec<u8>>;
+
+    /// Opt in to file-diff execution. Existing project-only services retain their notice;
+    /// executors use `FileDiffRequest::spawn`, optionally adding a reply-publication fence.
+    fn spawn_file_diff(
+        self: Arc<Self>,
+        _: super::diff_screen::FileDiffRequest,
+    ) -> Result<super::diff_screen::FileDiffReply, Failure> {
+        Err(Failure::unsupported(crate::t!(
+            en: "this action is not supported in the standalone app",
+            ja: "この操作は単体アプリでは使えません",
+        )))
+    }
 }
 
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
@@ -87,6 +99,9 @@ pub struct PreparedProjects {
     pub load_error: Option<String>,
     /// Latest delivered status, shown until the next key.
     pub notice: Option<String>,
+    /// File diff ownership survives a caller's injected event source ending.
+    pub diff: Option<super::diff_screen::DiffScreenState>,
+    pub diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
 }
 
 /// Prepare and run statically registered projects, refusing input before taking the terminal.

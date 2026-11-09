@@ -99,6 +99,15 @@ impl ProjectLoopState {
             format!(" {} ", CoreMsg::ProjectTitle.tr(prepared.keys.lang())),
             Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
         )];
+        if self.diff.as_ref().is_some_and(|d| d.closed) {
+            header.extend([
+                Span::raw(" "),
+                Span::styled(
+                    format!(" {} ", t("DIFF", "差分")),
+                    Style::new().fg(Color::White).bg(Color::Blue).bold(),
+                ),
+            ]);
+        }
         if self.help.is_some() {
             header.extend([
                 Span::raw(" "),

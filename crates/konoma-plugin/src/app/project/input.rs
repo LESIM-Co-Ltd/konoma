@@ -166,6 +166,22 @@ impl ProjectLoopState {
         if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
             return true;
         }
+        if self.diff_return.is_some() {
+            use crate::app::diff_screen::DiffScreenAction;
+            let diff = self.diff.as_mut().unwrap();
+            let action = diff.handle_key(KeyPress::norm(&key));
+            prepared.settings.diff_layout = diff.layout;
+            match action {
+                Ok((DiffScreenAction::Back, _)) => {
+                    self.diff.as_mut().unwrap().close();
+                    self.screen = self.diff_return.take();
+                }
+                Ok((DiffScreenAction::Quit, _)) => return true,
+                Ok((DiffScreenAction::Stay, notice)) => prepared.notice = notice,
+                Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
+            }
+            return false;
+        }
         if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('t') {
             return false;
         }

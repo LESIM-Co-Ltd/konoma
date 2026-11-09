@@ -842,14 +842,12 @@ impl App {
     /// The sorted list of files with a git status under the current root (the review work-list).
     /// Deleted files have a status but no longer exist, so they are excluded (nothing to preview/select).
     pub(super) fn changed_paths(&self) -> Vec<PathBuf> {
-        let mut v: Vec<PathBuf> = self
+        let paths = self
             .git_status
             .keys()
             .filter(|p| p.starts_with(&self.tab.root) && p.is_file())
-            .cloned()
-            .collect();
-        v.sort();
-        v
+            .cloned();
+        konoma_plugin::host::project::diff_files::ordered_changed_paths(&self.tab.root, paths)
     }
 
     /// `C`: toggle the changed-files-only view. ON shows the flat list of changed files (like the `/`
@@ -1011,19 +1009,11 @@ impl App {
         let Some(crate::preview::PreviewKind::GitDiff(cur)) = self.tab.preview_kind.clone() else {
             return;
         };
-        let len = paths.len() as i64;
-        let idx = match paths.iter().position(|p| *p == cur) {
-            Some(i) => (i as i64 + dir).rem_euclid(len) as usize,
-            // The currently shown file isn't in the set (e.g. it was just committed): start from the first/last.
-            None => {
-                if dir > 0 {
-                    0
-                } else {
-                    (len - 1) as usize
-                }
-            }
+        let Some(target) =
+            konoma_plugin::host::project::diff_files::step_changed_path(&paths, &cur, dir)
+        else {
+            return;
         };
-        let target = paths[idx].clone();
         if target == cur {
             return; // only one target
         }
@@ -1096,8 +1086,7 @@ impl App {
         } else {
             self.changed_paths()
         };
-        let i = paths.iter().position(|q| q == p)?;
-        Some((i + 1, paths.len()))
+        konoma_plugin::host::project::diff_files::changed_path_position(&paths, p)
     }
 
     /// Refetch git status if root changed (called just before rendering). Does nothing if root is unchanged.

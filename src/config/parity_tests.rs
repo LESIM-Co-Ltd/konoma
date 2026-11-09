@@ -787,6 +787,102 @@ fn cfg_ui_diff_view_default_and_parse() {
 }
 
 #[test]
+fn shared_config_diff_view_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::{project::DiffView, shared::SharedConfig};
+
+    let dir = unique_tmp("shared_diff_view_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for (name, text, raw, resolved) in [
+        ("absent", "", "rendered", DiffView::Rendered),
+        ("absent-in-ui", "[ui]\n", "rendered", DiffView::Rendered),
+        (
+            "source",
+            "[ui]\ndiff_view='source'\n",
+            "source",
+            DiffView::Source,
+        ),
+        (
+            "rendered",
+            "[ui]\ndiff_view='rendered'\n",
+            "rendered",
+            DiffView::Rendered,
+        ),
+        (
+            "preview",
+            "[ui]\ndiff_view='preview'\n",
+            "preview",
+            DiffView::Preview,
+        ),
+        (
+            "typo",
+            "[ui]\ndiff_view='sideways'\n",
+            "sideways",
+            DiffView::Rendered,
+        ),
+    ] {
+        let config: Config = toml::from_str(text).unwrap();
+        let shared = SharedConfig::parse(text).unwrap();
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared ui.diff_view");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: stored value"
+        );
+        assert_eq!(
+            DiffView::parse(&config.ui.diff_view),
+            resolved,
+            "{name}: host resolution"
+        );
+        assert_eq!(
+            DiffView::parse(&shared.ui.diff_view),
+            resolved,
+            "{name}: shared resolution"
+        );
+
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None, "{name}: host load");
+        assert_eq!(shared_error, None, "{name}: shared load");
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared loaded value");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: loaded value"
+        );
+    }
+
+    let wrong_type = "[ui]\ndiff_view=17\nwrap=false\n";
+    assert!(
+        toml::from_str::<Config>(wrong_type).is_err(),
+        "host rejects a non-string view"
+    );
+    assert!(
+        SharedConfig::parse(wrong_type).is_err(),
+        "shared reader rejects a non-string view"
+    );
+    std::fs::write(&path, wrong_type).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some(), "wrong type reports a load error");
+    assert_eq!(
+        host_error, shared_error,
+        "wrong type reports the same load error"
+    );
+    assert_eq!(
+        config.ui.diff_view, "rendered",
+        "host falls back to defaults"
+    );
+    assert_eq!(
+        shared.ui.diff_view, config.ui.diff_view,
+        "shared reader falls back to the same view"
+    );
+    assert!(
+        config.ui.wrap && shared.ui.wrap,
+        "a broken config falls back as a whole"
+    );
+}
+
+#[test]
 fn cfg_ui_tree_cursor_default_and_parse() {
     assert_eq!(
         toml::from_str::<Config>("[ui]\n").unwrap().ui.tree_cursor,

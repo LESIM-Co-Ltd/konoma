@@ -1,6 +1,9 @@
 //! Backend I/O for the standalone project app, independent of the host's global VCS preference.
 
 use std::path::Path;
+use std::sync::Arc;
+
+use konoma_plugin::app::diff_screen::{FileDiffReply, FileDiffRequest};
 
 use konoma_plugin::app::project::{
     ProjectBackend, ProjectServiceInfo, ProjectServices, ProjectSettings,
@@ -15,6 +18,13 @@ use konoma_vcs_core::vcs::{Git, Vcs};
 pub struct VcsServices;
 
 impl ProjectServices for VcsServices {
+    fn spawn_file_diff(
+        self: Arc<Self>,
+        request: FileDiffRequest,
+    ) -> Result<FileDiffReply, Failure> {
+        request.spawn(self)
+    }
+
     fn inspect(
         &self,
         project: &MatchedProject,

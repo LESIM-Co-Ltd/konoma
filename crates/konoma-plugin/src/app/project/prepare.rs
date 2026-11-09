@@ -176,6 +176,8 @@ fn prepare(
         display,
         load_error: None,
         notice: None,
+        diff: None,
+        diff_return: None,
     })
 }
 

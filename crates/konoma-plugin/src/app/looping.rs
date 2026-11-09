@@ -1690,7 +1690,7 @@ fn retitle(frame: &mut Frame, name: &str) {
         Frame::Table(t) => t.name = name.to_string(),
         Frame::Image(i) => i.name = name.to_string(),
         Frame::Document(d) => d.name = name.to_string(),
-        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) => {}
+        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) | Frame::Diff(_) => {}
     }
 }
 
@@ -2987,7 +2987,7 @@ fn frame_of(
     (lang_code, lang): (&str, Lang),
     name: &str,
     pictures: Option<&mut Pictures>,
-) -> (Frame, Option<Duration>) {
+) -> (Frame<'static>, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
     st.caret_on = false;
@@ -3208,7 +3208,7 @@ fn failure_frame(
     lang: Lang,
     rows: usize,
     st: &mut State,
-) -> Frame {
+) -> Frame<'static> {
     use crate::canvas_pictures::{raw_file_body, unavailable_text};
     st.failed_body = None;
     // A converted document (Word, a presentation) that did not load is told as konoma tells it, with
@@ -3273,7 +3273,7 @@ fn set_failed_paging(st: &mut State, rows: usize) -> usize {
 /// The kept text of a failed page, scrolled as the host scrolls it: the whole text is drawn
 /// and moved up by the scroll, which counts drawn rows (the wrapped rows while wrapping, so a
 /// long line takes several), clamped against the same count the host uses.
-fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame {
+fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame<'static> {
     let rows = set_failed_paging(st, rows);
     let body = st.failed_body.take();
     let all: Vec<Line> = body
@@ -3338,7 +3338,7 @@ fn text_frame(
     lines: Vec<Line>,
     framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
     caret: bool,
-) -> Frame {
+) -> Frame<'static> {
     // The tabs become the host's mark and tab stops (the one function it uses, with the same
     // `[ui] tab_width`), before the width of the widest line is measured.
     let lines = konoma_widgets::text::expand_tabs(
@@ -3586,7 +3586,7 @@ mod windowed_text_tests {
     use super::*;
     use crate::app::draw::{TextBorder, TextFrame};
 
-    fn text(border: bool) -> Frame {
+    fn text(border: bool) -> Frame<'static> {
         Frame::Text(TextFrame {
             lines: Vec::new(),
             wrap: false,

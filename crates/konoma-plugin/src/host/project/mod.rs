@@ -21,6 +21,7 @@ pub mod content;
 pub mod detection;
 pub mod diff;
 pub mod diff_blocks;
+pub mod diff_files;
 pub mod diff_frame;
 pub mod diff_keys;
 pub mod diff_presentation;

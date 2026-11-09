@@ -21,6 +21,10 @@ mod presentation_bridge;
 #[path = "project_wake_bridge.rs"]
 mod wake_bridge;
 
+#[cfg(feature = "git")]
+#[path = "diff_source_bridge.rs"]
+mod diff_source_bridge;
+
 #[test]
 fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
     let mut f = fixture("project_close_inflight", false, 1, None, None, None);
