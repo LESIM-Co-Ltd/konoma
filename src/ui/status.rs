@@ -315,7 +315,17 @@ fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
 }
 
 /// Footer: flash → which-key leader → in-progress input guide → priority-ordered key hints (as many as fit in `width`).
+#[cfg(test)]
 pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
+    let presentation = super::dialog::project_presentation(app);
+    footer_spans_with_project_dialog(app, width, presentation.as_ref())
+}
+
+fn footer_spans_with_project_dialog(
+    app: &App,
+    width: u16,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) -> Vec<Span<'static>> {
     let lang = app.lang;
     if let Some(msg) = &app.flash {
         return konoma_widgets::footer_line::flash_spans(msg);
@@ -325,43 +335,8 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
     }
-    if let Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage, .. }) =
-        &app.project_dialog
-    {
-        if let Some(crate::app::project_screens::ProjectPrompt::Confirmation(prompt)) =
-            prompts.get(*stage)
-        {
-            let choices: Vec<_> = prompt
-                .choices
-                .iter()
-                .map(|choice| {
-                    format!(
-                        "{}:{}",
-                        choice.key,
-                        choice
-                            .status
-                            .as_ref()
-                            .unwrap_or(&choice.choice.label)
-                            .get(app.plugin_lang())
-                    )
-                })
-                .collect();
-            let cancel = tr(lang, Msg::ProjectConfirmCancelStatus);
-            let room = usize::from(width);
-            if room < cancel.width() {
-                return vec![Span::raw(fit_tokens(&["Esc".into()], width)).dim()];
-            }
-            let choices = fit_tokens(&choices, room.saturating_sub(cancel.width() + 2) as u16);
-            let text = if choices.is_empty() {
-                cancel.to_string()
-            } else {
-                format!("{choices}  {cancel}")
-            };
-            return vec![Span::raw(text).dim()];
-        }
-    }
-    if app.project_dialog.is_some() {
-        return vec![Span::raw(tr(lang, crate::i18n::Msg::ProjectDialogKeys)).dim()];
+    if let Some(presentation) = presentation {
+        return konoma_plugin::host::project::draw::project_dialog_footer(presentation, width);
     }
     if app.project_active()
         && app.key_context() == Some(crate::keymap::Context::Canvas)
@@ -480,11 +455,26 @@ pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
 }
 
 /// Render everything on one line (for statusbar="bottom"/"top"). Concatenates context + footer.
+#[cfg(test)]
 pub fn render_combined(frame: &mut Frame, app: &App, area: Rect) {
+    let presentation = super::dialog::project_presentation(app);
+    render_combined_with_project_dialog(frame, app, area, presentation.as_ref());
+}
+
+pub(super) fn render_combined_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
     let mut spans = context_spans(app);
     spans.push(Span::from("  "));
     let rest = combined_footer_width(app, usize::from(area.width));
-    spans.extend(footer_spans(app, rest as u16));
+    spans.extend(footer_spans_with_project_dialog(
+        app,
+        rest as u16,
+        presentation,
+    ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -509,9 +499,18 @@ pub fn render_context(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the footer only (key hints, etc.) (for the bottom row of the split).
-pub fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_footer_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
     frame.render_widget(
-        Paragraph::new(Line::from(footer_spans(app, area.width))),
+        Paragraph::new(Line::from(footer_spans_with_project_dialog(
+            app,
+            area.width,
+            presentation,
+        ))),
         area,
     );
 }

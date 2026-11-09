@@ -1,5 +1,9 @@
 //! Project navigation, action contexts and the shared prompts. Session ownership is on workers.
 
+#[cfg(test)]
+#[path = "project_draw_tests.rs"]
+mod draw_tests;
+
 #[cfg(all(test, feature = "git"))]
 #[path = "diff_presentation_tests.rs"]
 mod diff_host_tests;
@@ -244,6 +248,7 @@ use crate::i18n::Msg;
 use crate::keymap::{Context, KeyPress};
 use crate::plugins::{ActBinding, PluginAct};
 
+#[cfg(test)]
 pub(crate) use konoma_plugin::host::project::prompt::ProjectPrompt;
 use konoma_plugin::host::project::prompt::{
     self, ProjectActionId, ProjectOrigin, ProjectPromptBlockers, ProjectPromptUpdate,
@@ -408,16 +413,6 @@ impl ProjectActionInvocation for ProjectInvocation {
     fn into_effect(mut self, tree_status: bool) -> ProjectEffect {
         self.effect.tree_status = tree_status;
         self.effect
-    }
-}
-
-impl ProjectInvocation {
-    pub(crate) fn destructive(&self) -> bool {
-        self.shared.destructive()
-    }
-
-    pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
-        self.shared.confirmation_text(prompt, lang)
     }
 }
 

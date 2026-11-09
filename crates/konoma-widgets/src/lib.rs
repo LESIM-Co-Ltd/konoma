@@ -8,6 +8,7 @@
 
 pub mod caret;
 pub mod colors;
+pub mod dialog;
 pub mod footer_line;
 pub mod gif_player;
 pub mod gitdiff;

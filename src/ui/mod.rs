@@ -13,7 +13,7 @@ pub mod info;
 mod list;
 pub mod outline;
 pub mod preview;
-mod project;
+pub(crate) mod project;
 pub mod status;
 pub mod tab_list;
 pub mod tabbar;
@@ -160,10 +160,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // The vertical layout preserves the frame's width; use the actual row for later resizes.
     let footer_width = notice_footer_width(app, usize::from(bottom.width));
     app.refit_notice_flash(footer_width);
+    let project_dialog = dialog::project_presentation(app);
     if split {
-        status::render_footer(frame, app, bottom);
+        status::render_footer_with_project_dialog(frame, app, bottom, project_dialog.as_ref());
     } else {
-        status::render_combined(frame, app, bottom);
+        status::render_combined_with_project_dialog(frame, app, bottom, project_dialog.as_ref());
     }
 
     // The bookmark list overlay also sits on top.
@@ -193,7 +194,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     // A confirm/input dialog has top priority (it also intercepts keys), so it sits on top of everything.
     if app.is_dialog() || app.project_dialog.is_some() {
-        dialog::render(frame, app, frame.area());
+        dialog::render_with_project_dialog(frame, app, frame.area(), project_dialog.as_ref());
     }
     // If an inline image moved/disappeared since the previous frame, the run loop fully redraws the
     // terminal once to clean up kitty placeholder debris (the old ID's colored row).

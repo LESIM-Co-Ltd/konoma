@@ -10,9 +10,24 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::i18n::tr;
 
+#[cfg(test)]
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(dialog) = &app.project_dialog {
-        render_project(frame, app, area, dialog);
+    let presentation = project_presentation(app);
+    render_with_project_dialog(frame, app, area, presentation.as_ref());
+}
+
+pub(super) fn render_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
+    if let Some(presentation) = presentation {
+        konoma_plugin::host::project::draw::draw_project_dialog(
+            frame.buffer_mut(),
+            area,
+            presentation,
+        );
         return;
     }
     // The batch-rename preview uses dedicated rendering (an old → new list + scrolling).
@@ -109,156 +124,48 @@ fn render_box(
     title: &str,
     accent: Color,
 ) {
-    render_box_selected(frame, area, lines, title, accent, 0);
+    konoma_widgets::dialog::draw_dialog_box(frame.buffer_mut(), area, lines, title, accent, 0);
 }
 
-fn render_box_selected(
-    frame: &mut Frame,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    title: &str,
-    accent: Color,
-    selected: usize,
-) {
-    // The legacy dialogs and project prompts share exactly the same frame.
-    let w = 66.min(area.width.saturating_sub(2)).max(24);
-    let h = (lines.len() as u16 + 2)
-        .min(area.height.saturating_sub(2))
-        .max(3);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    };
-
-    let block = Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(accent));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((
-            selected
-                .saturating_sub(usize::from(h.saturating_sub(3)))
-                .min(u16::MAX as usize) as u16,
-            0,
-        ))
-        .alignment(Alignment::Left);
-
-    konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
-    frame.render_widget(para, popup);
-}
-
-fn render_project(
-    frame: &mut Frame,
+/// Resolve paths and plugin names on the host; prompt drawing only sees values.
+pub(super) fn project_presentation(
     app: &App,
-    area: Rect,
-    dialog: &crate::app::project_screens::ProjectDialog,
-) {
-    use crate::app::project_screens::{ProjectDialog, ProjectPrompt};
+) -> Option<konoma_plugin::host::project::draw::ProjectDialogPresentation> {
+    use crate::app::project_screens::ProjectDialog;
     use crate::i18n::Msg;
+    use konoma_plugin::host::project::draw::{
+        present_project_dialog, ProjectDialogLabel, ProjectDialogWords,
+    };
+    let dialog = app.project_dialog.as_ref()?;
     let lang = app.plugin_lang();
-    let mut lines = Vec::new();
-    let mut selected_line = 0;
-    let keys = Msg::ProjectDialogKeys;
-    let title = match dialog {
-        ProjectDialog::Projects { projects, selected } => {
-            selected_line = *selected;
-            for (index, project) in projects.iter().enumerate() {
-                let name = app
+    let labels = match dialog {
+        ProjectDialog::Projects { projects, .. } => projects
+            .iter()
+            .map(|project| ProjectDialogLabel {
+                name: app
                     .plugin_keys
                     .name_of(&project.plugin)
                     .map(|n| n.get(lang))
-                    .unwrap_or(&project.plugin);
-                let line = Line::raw(format!(
-                    "{name}  {} ({})",
-                    app.format_path(&project.root),
-                    project.marker
-                ));
-                lines.push(if index == *selected {
-                    line.reversed()
-                } else {
-                    line
-                });
-            }
-            tr(app.lang, Msg::ProjectChoose)
-        }
-        ProjectDialog::Act {
-            invocation,
-            prompts,
-            stage,
-            buffer,
-            cursor,
-            selected,
-            ..
-        } => match prompts.get(*stage) {
-            Some(ProjectPrompt::Confirmation(prompt)) => {
-                lines.extend(
-                    invocation
-                        .confirmation_text(prompt, lang)
-                        .lines()
-                        .map(|l| Line::raw(l.to_string()).bold()),
-                );
-                lines.push(Line::raw(""));
-                for choice in &prompt.choices {
-                    let line = Line::raw(format!(
-                        "{} = {}",
-                        choice.key,
-                        choice.choice.label.get(lang)
-                    ));
-                    lines.push(if choice.destructive {
-                        line.fg(Color::Red)
-                    } else {
-                        line.dim()
-                    });
-                }
-                lines.push(Line::raw(tr(app.lang, Msg::ProjectConfirmCancel)).dim());
-                render_box(
-                    frame,
-                    area,
-                    lines,
-                    tr(app.lang, Msg::DlgConfirmTitle),
-                    if invocation.destructive() {
-                        Color::Red
-                    } else {
-                        Color::Cyan
-                    },
-                );
-                return;
-            }
-            Some(ProjectPrompt::Text(prompt)) => {
-                lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
-                let chars: Vec<_> = buffer.chars().collect();
-                let at = (*cursor).min(chars.len());
-                lines.push(Line::from(vec![
-                    Span::raw("> "),
-                    Span::raw(chars[..at].iter().collect::<String>()),
-                    Span::raw(chars.get(at).unwrap_or(&' ').to_string()).reversed(),
-                    Span::raw(chars.iter().skip(at + 1).collect::<String>()),
-                ]));
-                tr(app.lang, Msg::DlgInputTitle)
-            }
-            Some(ProjectPrompt::Choice(prompt)) => {
-                selected_line = selected.saturating_add(1);
-                lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());
-                for (index, choice) in prompt.choices.iter().enumerate() {
-                    let line = Line::raw(choice.label.get(lang).to_string());
-                    lines.push(if index == *selected {
-                        line.reversed()
-                    } else {
-                        line
-                    });
-                }
-                tr(app.lang, Msg::ProjectChoose)
-            }
-            None => return,
-        },
+                    .unwrap_or(&project.plugin)
+                    .to_string(),
+                path: app.format_path(&project.root),
+            })
+            .collect(),
+        _ => Vec::new(),
     };
-    lines.push(Line::raw(""));
-    lines.push(Line::raw(tr(app.lang, keys)).dim());
-    render_box_selected(frame, area, lines, title, Color::Cyan, selected_line);
+    Some(present_project_dialog(
+        dialog,
+        &labels,
+        &ProjectDialogWords {
+            lang,
+            choose: tr(app.lang, Msg::ProjectChoose),
+            confirm_title: tr(app.lang, Msg::DlgConfirmTitle),
+            input_title: tr(app.lang, Msg::DlgInputTitle),
+            keys: tr(app.lang, Msg::ProjectDialogKeys),
+            confirm_cancel: tr(app.lang, Msg::ProjectConfirmCancel),
+            confirm_cancel_status: tr(app.lang, Msg::ProjectConfirmCancelStatus),
+        },
+    ))
 }
 
 /// Batch-rename preview (old → new list). Cyan border, scrollable, applied with y.
