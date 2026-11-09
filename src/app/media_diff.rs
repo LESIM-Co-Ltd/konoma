@@ -3,12 +3,14 @@ use super::*;
 #[cfg(test)]
 use crate::preview::media_diff::MediaDiffSide as KeySide;
 use konoma_plugin::host::project::media_diff as worker;
+use worker::is_jj;
 pub(crate) use worker::media_format;
 #[cfg(all(test, feature = "git"))]
 use worker::resolve_old_bytes;
 #[cfg(test)]
+use worker::MediaDiffSideDecoded;
+#[cfg(test)]
 use worker::MediaDiffWorker;
-use worker::{is_jj, live_cache_keys};
 
 impl App {
     pub fn attach_media_diff_loader(&mut self, tx: std::sync::mpsc::Sender<MediaDiffResult>) {
@@ -96,11 +98,7 @@ impl App {
         let mut worker = std::mem::take(&mut self.media_diff);
         let applied = worker.apply(res, |computed| {
             let outcome = self.materialize_media_diff(computed);
-            let live = live_cache_keys(&outcome);
-            self.md_images.cache.retain(|k, _| {
-                let s = k.to_string_lossy();
-                !crate::preview::media_diff::is_media_diff_url(&s) || live.contains(k)
-            });
+            worker::prune_media_diff_picture_cache(&mut self.md_images.cache, Some(&outcome));
             outcome
         });
         self.media_diff = worker;
@@ -110,36 +108,9 @@ impl App {
         applied
     }
 
-    /// Move a computed outcome's pixel data into `md_image_cache`, returning the pixel-free stored
-    /// form.
+    /// Host cache ownership stays here; outcome conversion is shared with standalone hosts.
     fn materialize_media_diff(&mut self, computed: MediaDiffComputed) -> MediaDiffOutcome {
-        match computed {
-            MediaDiffComputed::Ready {
-                kind,
-                base,
-                same_bytes,
-                old,
-                new,
-            } => MediaDiffOutcome::Ready {
-                kind,
-                base,
-                same_bytes,
-                old: self.materialize_side(old),
-                new: self.materialize_side(new),
-            },
-            MediaDiffComputed::Summary {
-                base,
-                same_bytes,
-                old_len,
-                new_len,
-            } => MediaDiffOutcome::Summary {
-                base,
-                same_bytes,
-                old_len,
-                new_len,
-            },
-            MediaDiffComputed::Unavailable => MediaDiffOutcome::Unavailable,
-        }
+        worker::materialize_media_diff(computed, |p| self.store_media_picture(p))
     }
 
     /// Test-only: the picture an entry holds, and the same SVG drawn again as the application
@@ -157,51 +128,31 @@ impl App {
         Some((first, again))
     }
 
-    /// One side's move-into-cache — a no-op for every non-`Picture` variant.
+    #[cfg(test)]
     fn materialize_side(&mut self, side: MediaDiffSideDecoded) -> MediaDiffSide {
-        match side {
-            MediaDiffSideDecoded::Absent => MediaDiffSide::Absent,
-            MediaDiffSideDecoded::Failed { reason } => MediaDiffSide::Failed { reason },
-            MediaDiffSideDecoded::PageMissing => MediaDiffSide::PageMissing,
-            MediaDiffSideDecoded::Picture(p) => {
-                // Pre-place the entry, exactly like `ensure_mermaid_fence_render` does before handing
-                // its result to `apply_md_image` — that fn drops any result whose key isn't already
-                // present (its own guard against reviving an evicted entry), so the insert has to
-                // happen here, not inside it.
-                // The SVG it keeps is a file's (git's old version, the working file): drawn again
-                // only by the supervised child process.
-                // Drawn again from the same base as the first drawing (`decode_svg_side`).
-                self.md_images
-                    .cache
-                    .entry(p.cache_key.clone())
-                    .or_default()
-                    .svg_trust = match &p.svg_base {
-                    Some(base) => SvgTrust::File(base.clone()),
-                    None => SvgTrust::Embedded,
-                };
-                let request = self.begin_md_request(&p.cache_key);
-                // No transparency handling here: each side draws with exactly the same pixels the
-                // ordinary preview would for that kind — a PDF's own renderer composites its pages
-                // onto opaque white before this ever sees them (`preview::pdf::pixmap_to_dynamic_
-                // image`), and SVG stays exactly as transparent as the ordinary preview renders it, on
-                // every protocol including kitty. So this diff never special-cases a picture kind
-                // differently from how the ordinary preview already draws it.
-                self.apply_md_image(MdImageResult {
-                    path: p.cache_key.clone(),
-                    image: Ok(p.image),
-                    svg: p.svg,
-                    reraster: false,
-                    frames: p.frames,
-                    request,
-                });
-                MediaDiffSide::Picture(MediaDiffPicture {
-                    natural_px: p.natural_px,
-                    bytes: p.bytes,
-                    page_count: p.page_count,
-                    cache_key: p.cache_key,
-                })
-            }
-        }
+        worker::materialize_side(side, |p| self.store_media_picture(p))
+    }
+
+    fn store_media_picture(&mut self, p: worker::MediaDiffPictureDecoded) {
+        // Pre-place before applying: stale results must never revive an evicted entry.
+        self.md_images
+            .cache
+            .entry(p.cache_key.clone())
+            .or_default()
+            .svg_trust = match &p.svg_base {
+            Some(base) => SvgTrust::File(base.clone()),
+            None => SvgTrust::Embedded,
+        };
+        let request = self.begin_md_request(&p.cache_key);
+        // Preserve the ordinary preview's pixels and transparency handling.
+        self.apply_md_image(MdImageResult {
+            path: p.cache_key,
+            image: Ok(p.image),
+            svg: p.svg,
+            reraster: false,
+            frames: p.frames,
+            request,
+        });
     }
 
     pub(crate) fn invalidate_media_diff(&mut self) {
@@ -226,9 +177,7 @@ impl App {
     /// memory-vs-recompute behavior, not a bug: at most one tab's media-diff pixels are ever resident
     /// at a time.
     pub(crate) fn prune_media_diff_picture_cache(&mut self) {
-        self.md_images
-            .cache
-            .retain(|k, _| !crate::preview::media_diff::is_media_diff_url(&k.to_string_lossy()));
+        worker::prune_media_diff_picture_cache(&mut self.md_images.cache, None);
     }
 
     /// `PerTab::diff_media_page`, floored at `1` (a fresh tab/diff starts there; nothing should
@@ -581,6 +530,10 @@ pub(super) fn is_video_file(path: &Path) -> bool {
 #[cfg(test)]
 #[path = "media_diff_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "media_diff_cache_bridge.rs"]
+mod cache_bridge;
 
 #[cfg(all(test, feature = "git"))]
 #[path = "media_diff_draw_tests.rs"]

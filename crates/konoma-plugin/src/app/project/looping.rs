@@ -299,6 +299,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             if let Some(p) = pictures.as_mut() {
                 p.poll();
                 redraw |= p.take_doc_relayout();
+                if state.diff_return.is_none() {
+                    p.doc_pics().prune_media_diff_picture_cache();
+                }
             }
             if let Some(diff) = &mut state.diff {
                 if let Some(p) = pictures.as_mut() {
@@ -442,6 +445,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         }
         Ok(())
     })();
+    if let Some(p) = pictures.as_mut() {
+        p.doc_pics().prune_media_diff_picture_cache();
+    }
     prepared.runtimes = state.runtimes;
     prepared.diff = state.diff;
     prepared.diff_return = state.diff_return;

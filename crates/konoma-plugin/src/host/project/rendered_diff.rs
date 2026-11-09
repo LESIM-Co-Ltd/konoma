@@ -10,6 +10,11 @@ use crate::document_render::{
 };
 use crate::view::DocOptions;
 
+/// Change gutter colours shared by Rendered diffs and the hosts' other gutters.
+pub const GUTTER_ADDED: ratatui::style::Color = ratatui::style::Color::Rgb(87, 171, 90);
+pub const GUTTER_MODIFIED: ratatui::style::Color = ratatui::style::Color::Rgb(216, 166, 74);
+pub const GUTTER_DELETED: ratatui::style::Color = ratatui::style::Color::Rgb(199, 84, 80);
+
 /// The final gutter pass on a visible logical slice. Removed blocks keep their dim spans.
 /// An unchanged document gains no gutter column.
 pub fn with_diff_gutter(
@@ -32,9 +37,9 @@ pub fn with_diff_gutter(
                 .find(|(range, _)| range.contains(&row))
                 .map(|(_, m)| *m);
             let (glyph, color) = match mark {
-                Some(DiffMark::Added) => ("▌", Color::Rgb(87, 171, 90)),
-                Some(DiffMark::Modified) => ("▌", Color::Rgb(216, 166, 74)),
-                Some(DiffMark::Removed) => ("▌", Color::Rgb(199, 84, 80)),
+                Some(DiffMark::Added) => ("▌", GUTTER_ADDED),
+                Some(DiffMark::Modified) => ("▌", GUTTER_MODIFIED),
+                Some(DiffMark::Removed) => ("▌", GUTTER_DELETED),
                 None => (" ", Color::Reset),
             };
             let style = line.style;

@@ -58,6 +58,7 @@ use crate::document_pictures::{
 use crate::document_render::{
     render_document, PictureRequests, PictureSlots, RenderSettings, RenderedDocument,
 };
+use crate::host::project::media_diff::{self, MediaDiffComputed, MediaDiffOutcome};
 use crate::host::project::rendered_diff::{
     render_diff_document, RenderedDiffBody, RenderedDiffInput,
 };
@@ -153,6 +154,8 @@ pub struct DocPics {
     path: PathBuf,
     raster_px: u32,
     svg: Arc<dyn SvgDraw + Send + Sync>,
+    /// Media files must use a host's supervised drawer, never the ordinary in-process default.
+    media_svg: Option<Arc<dyn SvgDraw + Send + Sync>>,
     generation: Arc<AtomicU64>,
     /// Counts the results that change what the page reserves: a cached layout of an older epoch
     /// is built again.
@@ -182,6 +185,29 @@ fn same_resources(a: &Resources, b: &Resources) -> bool {
 }
 
 impl DocPics {
+    /// Supply the host's supervised child-process drawer for retained media SVGs.
+    pub fn with_media_svg(mut self, svg: Arc<dyn SvgDraw + Send + Sync>) -> Self {
+        self.media_svg = Some(svg);
+        self
+    }
+
+    /// Leave the media diff, releasing only its pictures from the shared document cache.
+    pub fn prune_media_diff_picture_cache(&mut self) {
+        media_diff::prune_media_diff_picture_cache(&mut self.cache.cache, None);
+    }
+
+    /// Adopt a worker's pixels into the ordinary document cache before its normal encode pass.
+    pub fn materialize_media_diff(&mut self, computed: MediaDiffComputed) -> MediaDiffOutcome {
+        let outcome = media_diff::materialize_media_diff(computed, |p| {
+            let applied = self.dp().place_media_diff_picture(p);
+            if applied.pixels {
+                self.cache.evict_to(MD_IMAGE_CACHE_BYTES);
+            }
+        });
+        media_diff::prune_media_diff_picture_cache(&mut self.cache.cache, Some(&outcome));
+        outcome
+    }
+
     /// Retarget relative picture paths, dropping the previous file's in-flight results.
     pub fn set_path(&mut self, path: &std::path::Path) {
         if self.path != path {
@@ -231,6 +257,7 @@ impl DocPics {
             path: path.to_path_buf(),
             raster_px,
             svg,
+            media_svg: None,
             generation: Arc::new(AtomicU64::new(0)),
             epoch: 0,
             relayout: false,
@@ -244,13 +271,13 @@ impl DocPics {
 
     /// Hold the pictures `resources` name (the document on screen's). The very same resources as
     /// before change nothing; others mean another document (or the same one read again), so
-    /// everything of the old one goes through `reset` (decodes cancelled, kitty images deleted,
-    /// every cached picture dropped).
+    /// the old document is reset (decodes cancelled, kitty images deleted, cached document
+    /// pictures dropped). Worker-adopted media diff keys belong to their own lifecycle.
     fn sync_resources(&mut self, resources: &Resources) {
         if same_resources(&self.resources, resources) {
             return;
         }
-        self.reset();
+        self.reset_document(true);
         self.render_truncated = Arc::new(AtomicBool::new(false));
         self.pictures = DocPicture::from_resources(resources, &self.render_truncated);
         self.resources = resources.clone();
@@ -260,6 +287,16 @@ impl DocPics {
     #[cfg(feature = "test-hooks")]
     pub fn cache_for_test(&mut self) -> &mut InlineImageCache {
         &mut self.cache
+    }
+
+    /// Adopt one decode at a deterministic result-channel fence in adapter tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn await_decode_for_test(&mut self) {
+        let res = self
+            .res_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("decode result");
+        self.apply_decoded(res);
     }
 
     /// Inspect the signature recorded by the real draw entry point in adapter tests.
@@ -459,13 +496,7 @@ impl DocPics {
             self.bump();
         }
         while let Ok(res) = self.res_rx.try_recv() {
-            let applied = self.dp().apply_result(res);
-            if applied.relayout {
-                self.bump();
-            }
-            if applied.pixels {
-                self.cache.evict_to(MD_IMAGE_CACHE_BYTES);
-            }
+            self.apply_decoded(res);
         }
         self.cache.advance_gifs_if_due();
     }
@@ -475,6 +506,20 @@ impl DocPics {
     /// send lands on nothing), the cached pictures are dropped with the kitty images they pinned,
     /// and the page is laid out again.
     pub fn reset(&mut self) {
+        self.reset_document(false);
+    }
+
+    fn apply_decoded(&mut self, res: DecodedImage) {
+        let applied = self.dp().apply_result(res);
+        if applied.relayout {
+            self.bump();
+        }
+        if applied.pixels {
+            self.cache.evict_to(MD_IMAGE_CACHE_BYTES);
+        }
+    }
+
+    fn reset_document(&mut self, keep_media: bool) {
         let old = std::mem::replace(&mut self.generation, Arc::new(AtomicU64::new(0)));
         old.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         (self.res_tx, self.res_rx) = channel();
@@ -483,15 +528,27 @@ impl DocPics {
         self.remote_failed.clear();
         self.resources = Resources::new();
         self.pictures.clear();
+        let retained = |key: &PathBuf| {
+            keep_media && konoma_widgets::media_diff::is_media_diff_url(&key.to_string_lossy())
+        };
         let pinned: HashSet<u32> = self
             .cache
             .kitty_ids
-            .values()
-            .flat_map(|slots| slots.iter().flatten().copied())
+            .iter()
+            .filter(|(key, _)| !retained(key))
+            .flat_map(|(_, slots)| slots.iter().flatten().copied())
             .collect();
         self.cache.kitty_deletes.extend(pinned);
-        self.cache.kitty_ids.clear();
-        self.cache.cache.clear();
+        self.cache.kitty_ids.retain(|key, _| retained(key));
+        self.cache.cache.retain(|key, entry| {
+            if !retained(key) {
+                return false;
+            }
+            // The old result channel was dropped; an evicted SVG can request its child again.
+            entry.rebuilding = false;
+            entry.reraster_inflight = false;
+            true
+        });
         self.bump();
     }
 
@@ -521,7 +578,7 @@ impl DocPics {
                 .cache
                 .cache
                 .values()
-                .any(|e| e.decoded.is_none() && !e.failed && !e.evicted)
+                .any(|e| e.rebuilding || (e.decoded.is_none() && !e.failed && !e.evicted))
     }
 
     /// How long the loop may wait: a short poll while something is out, the next GIF frame while
@@ -693,8 +750,21 @@ impl DocPics {
             return;
         }
         self.cache.stamp_drawn(&path);
+        if konoma_widgets::media_diff::is_media_diff_url(url) {
+            self.rebuild_media_svg(&path);
+        }
         self.cache
             .ensure_encode(&path, r.cols, r.rows, r.row_offset, r.visible_rows, None);
+    }
+
+    fn rebuild_media_svg(&mut self, path: &std::path::Path) {
+        let Some(drawer) = self.media_svg.clone() else {
+            return;
+        };
+        let generation = self.generation.clone();
+        let max_px = self.raster_px;
+        self.dp()
+            .rebuild_media_svg(path, max_px, drawer, (0, generation));
     }
 }
 

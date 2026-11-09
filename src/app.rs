@@ -1044,10 +1044,11 @@ pub(crate) use konoma_plugin::host::project::md_diff::{
     DiffBaseline, MdDiffKind, MdDiffOutcome, MdDiffRequest,
 };
 
+#[cfg(all(test, feature = "git"))]
+pub(crate) use konoma_plugin::host::project::media_diff::MediaDiffPicture;
 pub use konoma_plugin::host::project::media_diff::MediaDiffResult;
 pub(crate) use konoma_plugin::host::project::media_diff::{
-    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffPicture,
-    MediaDiffRequest, MediaDiffSide, MediaDiffSideDecoded,
+    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffRequest, MediaDiffSide,
 };
 
 /// Which long-running filesystem operation a background job is performing.
@@ -5230,9 +5231,7 @@ enum GutterMark {
 }
 
 // Gutter marker colors, matching Zed: green added, amber modified, red deleted.
-const GUTTER_ADDED: ratatui::style::Color = ratatui::style::Color::Rgb(87, 171, 90);
-const GUTTER_MODIFIED: ratatui::style::Color = ratatui::style::Color::Rgb(216, 166, 74);
-const GUTTER_DELETED: ratatui::style::Color = ratatui::style::Color::Rgb(199, 84, 80);
+use konoma_plugin::host::project::rendered_diff::{GUTTER_ADDED, GUTTER_DELETED, GUTTER_MODIFIED};
 
 /// Derive a per-new-line git gutter map from a file's working-tree diff. Keyed by 1-based new-file line
 /// number. A change block is a maximal run of Added/Removed lines (Context breaks it): with additions it

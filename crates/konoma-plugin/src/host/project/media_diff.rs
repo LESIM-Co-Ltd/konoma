@@ -272,6 +272,74 @@ pub fn live_cache_keys(outcome: &MediaDiffOutcome) -> HashSet<PathBuf> {
     set
 }
 
+/// Move decoded pixels into the host's existing picture cache, keeping only drawing metadata.
+/// The host owns request numbering and the trust of any retained SVG.
+pub fn materialize_media_diff(
+    computed: MediaDiffComputed,
+    mut sink: impl FnMut(MediaDiffPictureDecoded),
+) -> MediaDiffOutcome {
+    match computed {
+        MediaDiffComputed::Ready {
+            kind,
+            base,
+            same_bytes,
+            old,
+            new,
+        } => MediaDiffOutcome::Ready {
+            kind,
+            base,
+            same_bytes,
+            old: materialize_side(old, &mut sink),
+            new: materialize_side(new, &mut sink),
+        },
+        MediaDiffComputed::Summary {
+            base,
+            same_bytes,
+            old_len,
+            new_len,
+        } => MediaDiffOutcome::Summary {
+            base,
+            same_bytes,
+            old_len,
+            new_len,
+        },
+        MediaDiffComputed::Unavailable => MediaDiffOutcome::Unavailable,
+    }
+}
+
+/// Materialize a single side through the same sink as a complete outcome.
+pub fn materialize_side(
+    side: MediaDiffSideDecoded,
+    mut sink: impl FnMut(MediaDiffPictureDecoded),
+) -> MediaDiffSide {
+    match side {
+        MediaDiffSideDecoded::Absent => MediaDiffSide::Absent,
+        MediaDiffSideDecoded::Failed { reason } => MediaDiffSide::Failed { reason },
+        MediaDiffSideDecoded::PageMissing => MediaDiffSide::PageMissing,
+        MediaDiffSideDecoded::Picture(p) => {
+            let stored = MediaDiffPicture {
+                natural_px: p.natural_px,
+                bytes: p.bytes,
+                page_count: p.page_count,
+                cache_key: p.cache_key.clone(),
+            };
+            sink(*p);
+            MediaDiffSide::Picture(stored)
+        }
+    }
+}
+
+/// Retain ordinary pictures and the adopted outcome's media keys. `None` leaves the diff.
+pub fn prune_media_diff_picture_cache<V>(
+    cache: &mut std::collections::HashMap<PathBuf, V>,
+    outcome: Option<&MediaDiffOutcome>,
+) {
+    let live = outcome.map(live_cache_keys).unwrap_or_default();
+    cache.retain(|key, _| {
+        !konoma_widgets::media_diff::is_media_diff_url(&key.to_string_lossy()) || live.contains(key)
+    });
+}
+
 /// Raster images and summaries ignore the requested raster box.
 pub fn normalize_raster_px(kind: Option<MediaDiffKind>, raster_px: (u32, u32)) -> (u32, u32) {
     match kind {
