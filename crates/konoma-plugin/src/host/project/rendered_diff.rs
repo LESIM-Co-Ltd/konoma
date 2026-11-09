@@ -10,6 +10,49 @@ use crate::document_render::{
 };
 use crate::view::DocOptions;
 
+/// The final gutter pass on a visible logical slice. Removed blocks keep their dim spans.
+/// An unchanged document gains no gutter column.
+pub fn with_diff_gutter(
+    lines: Vec<Line<'static>>,
+    lo: usize,
+    marks: &[(Range<usize>, DiffMark)],
+) -> Vec<Line<'static>> {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Span;
+    if marks.is_empty() {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let row = lo + i;
+            let mark = marks
+                .iter()
+                .find(|(range, _)| range.contains(&row))
+                .map(|(_, m)| *m);
+            let (glyph, color) = match mark {
+                Some(DiffMark::Added) => ("▌", Color::Rgb(87, 171, 90)),
+                Some(DiffMark::Modified) => ("▌", Color::Rgb(216, 166, 74)),
+                Some(DiffMark::Removed) => ("▌", Color::Rgb(199, 84, 80)),
+                None => (" ", Color::Reset),
+            };
+            let style = line.style;
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+            spans.push(Span::styled(glyph, Style::new().fg(color)));
+            if mark == Some(DiffMark::Removed) {
+                spans.extend(line.spans.into_iter().map(|s| {
+                    let st = s.style.add_modifier(Modifier::DIM);
+                    Span::styled(s.content, st)
+                }));
+            } else {
+                spans.extend(line.spans);
+            }
+            Line::from(spans).style(style)
+        })
+        .collect()
+}
+
 /// The worker's capped, preprocessed text and its already-computed block alignment.
 /// Parsing borrows that text; neither preprocessing nor block alignment is repeated here.
 pub struct RenderedDiffInput<'a> {

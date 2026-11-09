@@ -15,7 +15,10 @@ use konoma_vcs_core::git::DiffLine;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Block};
 
 use super::project::{ProjectServiceInfo, ProjectServices};
-use super::Display;
+use super::{doc_pictures::DocPics, Display};
+use crate::host::project::md_diff::{MdDiffResult, MdDiffWorker};
+use crate::view::DocOptions;
+mod rendered;
 use crate::host::project::diff_blocks::{source_diff_blocks, step_change_block, DiffBlockCursor};
 use crate::host::project::diff_files::{changed_path_position, step_changed_path};
 use crate::host::project::diff_frame::{
@@ -24,6 +27,7 @@ use crate::host::project::diff_frame::{
 use crate::host::project::diff_keys::file_diff_keys;
 use crate::host::project::diff_presentation::*;
 use crate::Failure;
+use rendered::RenderedCache;
 
 #[derive(Clone, Debug)]
 pub struct FileDiffRequest {
@@ -73,11 +77,28 @@ pub enum DiffScreenAction {
     Quit,
 }
 
+/// Reserved navigation boundary. Preview is not an executable capability yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffScreenCommand {
+    OpenPreview { path: PathBuf },
+}
+
+/// Context an eventual Preview executor must retain when returning to the file diff.
+#[derive(Clone, Debug)]
+pub struct DiffScreenReturn {
+    pub path: PathBuf,
+    pub choice: DiffView,
+    pub effective: DiffView,
+    pub layout: DiffLayout,
+    pub scroll: u16,
+    pub hscroll: u16,
+}
+
 pub struct DiffScreenState {
     pub(super) closed: bool,
     pub request: FileDiffRequest,
     pub choice: DiffView,
-    /// X3b offers Source only; rounding must never overwrite the requested view.
+    /// The executable representation; fallback never overwrites the user's requested view.
     pub effective: DiffView,
     pub layout: DiffLayout,
     pub scroll: u16,
@@ -91,6 +112,13 @@ pub struct DiffScreenState {
     lang: Lang,
     block: Option<usize>,
     viewport: u16,
+    rendered: Option<RenderedCache>,
+    /// The first-change reservation belongs to one file, including while it computes.
+    pub pending_first_change: Option<PathBuf>,
+    markdown: MdDiffWorker,
+    markdown_rx: mpsc::Receiver<MdDiffResult>,
+    options: DocOptions,
+    notice: Option<String>,
 }
 
 impl DiffScreenState {
@@ -101,8 +129,24 @@ impl DiffScreenState {
         layout: DiffLayout,
         choice: Option<DiffView>,
     ) -> Result<Self, Failure> {
+        let (tx, rx) = mpsc::channel();
+        let mut worker = MdDiffWorker::default();
+        worker.attach(tx);
+        Self::open_with_markdown_worker(request, services, config, layout, choice, worker, rx)
+    }
+
+    /// Use an attached worker and its receiver, allowing a host's publication fence.
+    pub fn open_with_markdown_worker(
+        request: FileDiffRequest,
+        services: Arc<dyn ProjectServices>,
+        config: &SharedConfig,
+        layout: DiffLayout,
+        choice: Option<DiffView>,
+        markdown: MdDiffWorker,
+        markdown_rx: mpsc::Receiver<MdDiffResult>,
+    ) -> Result<Self, Failure> {
         let pending = services.clone().spawn_file_diff(request.clone())?;
-        Ok(Self {
+        let mut state = Self {
             closed: false,
             request,
             services,
@@ -119,7 +163,19 @@ impl DiffScreenState {
             lang: Lang::parse(&config.ui.lang),
             block: None,
             viewport: 0,
-        })
+            rendered: None,
+            pending_first_change: None,
+            markdown,
+            markdown_rx,
+            options: DocOptions::from_settings(&crate::config::plugin_settings(
+                &config.plugins,
+                &config.ui.moved(),
+                "markdown",
+            )),
+            notice: None,
+        };
+        state.choose_effective();
+        Ok(state)
     }
 
     /// Adopt only this receiver's reply. Replacing the receiver drops a stale refresh/open.
@@ -140,7 +196,8 @@ impl DiffScreenState {
     }
 
     pub fn wake_in(&self) -> Option<Duration> {
-        self.pending.as_ref().map(|_| Duration::from_millis(16))
+        (self.pending.is_some() || self.markdown.pending_for(&self.request.path))
+            .then_some(Duration::from_millis(16))
     }
 
     pub(super) fn set_lang(&mut self, lang: Lang) {
@@ -152,9 +209,15 @@ impl DiffScreenState {
         self.closed = true;
         self.data = None;
         self.pending = None;
+        self.markdown.invalidate();
+        self.rendered = None;
+        self.pending_first_change = None;
     }
 
     fn reload(&mut self) -> Result<(), Failure> {
+        self.markdown.invalidate();
+        self.rendered = None;
+        self.choose_effective();
         self.data = None;
         self.pending = Some(
             self.services
@@ -186,6 +249,9 @@ impl DiffScreenState {
             O::Back | O::Cancel => return Ok((DiffScreenAction::Back, None)),
             O::Global(2) => return Ok((DiffScreenAction::Quit, None)),
             O::Layout => {
+                if self.effective != DiffView::Source {
+                    return Ok((DiffScreenAction::Stay, None));
+                }
                 self.layout = self.layout.next();
                 self.hscroll = 0;
                 notice = Some(
@@ -197,6 +263,17 @@ impl DiffScreenState {
                     .tr(self.lang)
                     .into(),
                 );
+            }
+            O::View => {
+                if let Some(next) = crate::host::project::diff_keys::next_diff_view(
+                    self.effective,
+                    &self.representations(),
+                ) {
+                    self.choice = next;
+                    self.scroll = 0;
+                    self.block = None;
+                    self.choose_effective();
+                }
             }
             O::NextBlock | O::PrevBlock => {
                 let blocks = self.blocks();
@@ -285,6 +362,13 @@ impl DiffScreenState {
     }
 
     fn blocks(&self) -> crate::host::project::diff_blocks::DiffBlocks {
+        if self.effective == DiffView::Rendered {
+            return self
+                .rendered
+                .as_ref()
+                .map(|c| c.blocks(self.viewport))
+                .unwrap_or_default();
+        }
         source_diff_blocks(
             self.data
                 .as_ref()
@@ -302,6 +386,10 @@ impl DiffScreenState {
 
     pub(super) fn draw(&mut self, buf: &mut Buffer, area: Rect) {
         self.viewport = Block::bordered().inner(area).height;
+        if self.effective == DiffView::Rendered {
+            self.draw_rendered(buf, area);
+            return;
+        }
         let path = self
             .display
             .path_style
@@ -377,6 +465,7 @@ impl DiffScreenState {
             })
             .collect();
         for (op, en, ja) in [
+            (DiffUiOp::View, "view", "表現"),
             (DiffUiOp::NextFile, "file", "ファイル"),
             (DiffUiOp::PrevFile, "file", "ファイル"),
             (DiffUiOp::NextBlock, "change", "変更"),
@@ -416,11 +505,27 @@ impl DiffScreenState {
         });
         DiffPresentation::build(
             &DiffPresentationState {
+                surface: if self.effective == DiffView::Rendered {
+                    DiffSurface::Rendered
+                } else {
+                    DiffSurface::Source
+                },
+                wrap: self.display.wrap,
+                next_representation: crate::host::project::diff_keys::next_diff_view(
+                    self.effective,
+                    &self.representations(),
+                )
+                .map(|v| match v {
+                    DiffView::Source => DiffRepresentation::Source,
+                    DiffView::Rendered => DiffRepresentation::Rendered,
+                    DiffView::Preview => DiffRepresentation::Preview,
+                }),
+                representation_count: self.representations().len(),
                 change_blocks: !self.blocks().rows.is_empty(),
                 ..Default::default()
             },
             DiffCapabilities {
-                view: false,
+                view: true,
                 project: false,
                 discard: false,
                 ..Default::default()
@@ -446,7 +551,24 @@ impl DiffScreenState {
                         DiffMsg::GitHScrollEnds.tr(self.lang).into(),
                     ),
                 ],
-                dynamic: vec![],
+                dynamic: vec![
+                    (
+                        DiffTextId::Representation(DiffRepresentation::Source),
+                        self.word("source", "ソース").into(),
+                    ),
+                    (
+                        DiffTextId::Representation(DiffRepresentation::Rendered),
+                        self.word("rendered", "整形").into(),
+                    ),
+                    (
+                        DiffTextId::CyclePair,
+                        self.word(
+                            "cycle diff view (source ⇄ rendered)",
+                            "表現を切り替え（ソース ⇄ 整形）",
+                        )
+                        .into(),
+                    ),
+                ],
             },
         )
     }

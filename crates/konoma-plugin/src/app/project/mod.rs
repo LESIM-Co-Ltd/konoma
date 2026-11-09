@@ -140,15 +140,35 @@ pub fn run_projects(
     term::install_exit_signals();
     let mut guard = term::TerminalGuard::enter()?;
     let konoma_widgets::term_query::Startup {
-        typed, late_reply, ..
+        picker,
+        typed,
+        late_reply,
     } = konoma_widgets::term_query::picker_from_terminal();
+    let pictures = picker.map(|picker| {
+        let config = prepared.config.clone();
+        let env = super::DocEnv::from_registry(
+            prepared.registry.clone(),
+            prepared.lang,
+            Box::new(move |id| {
+                crate::config::plugin_settings(&config.plugins, &config.ui.moved(), id)
+            }),
+            prepared.config.external.remote_images,
+        );
+        super::Pictures::new(
+            picker,
+            "markdown",
+            &prepared.open_dir,
+            prepared.config.ui.svg_max_px,
+        )
+        .with_documents(env)
+    });
     // Project Document content is currently prepared as Lines by the shared owner.
     let result = run_project_with(
         guard.terminal(),
         &mut prepared,
         &mut term::CrosstermEvents::after_query(&typed, late_reply),
         &cx,
-        None,
+        pictures,
     );
     guard.leave();
     let _ = super::write_load_error(&mut std::io::stderr(), prepared.load_error.as_deref());

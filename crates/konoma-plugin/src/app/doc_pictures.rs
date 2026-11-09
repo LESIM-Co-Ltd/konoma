@@ -182,6 +182,21 @@ fn same_resources(a: &Resources, b: &Resources) -> bool {
 }
 
 impl DocPics {
+    /// Retarget relative picture paths, dropping the previous file's in-flight results.
+    pub fn set_path(&mut self, path: &std::path::Path) {
+        if self.path != path {
+            self.reset();
+            self.path = path.to_path_buf();
+        }
+    }
+
+    /// Use a supplied cache and encode receiver, for hosts that own the encoder externally.
+    pub fn with_cache(mut self, cache: InlineImageCache, enc_rx: Receiver<MdEncodeResult>) -> Self {
+        self.cache = cache;
+        self.enc_rx = enc_rx;
+        self
+    }
+
     pub fn new(
         picker: &Picker,
         plugin_id: &str,

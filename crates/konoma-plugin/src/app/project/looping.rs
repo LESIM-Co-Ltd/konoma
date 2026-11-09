@@ -222,7 +222,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     prepared: &mut PreparedProjects,
     events: &mut E,
     cx: &ProjectLoopCx,
-    _pictures: Option<Pictures>,
+    mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
     let mut state = ProjectLoopState {
         diff: prepared.diff.take(),
@@ -296,6 +296,20 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     }
                 }
             }
+            if let Some(p) = pictures.as_mut() {
+                p.poll();
+                redraw |= p.take_doc_relayout();
+            }
+            if let Some(diff) = &mut state.diff {
+                if let Some(p) = pictures.as_mut() {
+                    p.doc_pics().set_path(&diff.request.path);
+                }
+                redraw |= diff.prepare_frame(area, pictures.as_mut().map(Pictures::doc_pics));
+                if let Some(note) = diff.take_notice() {
+                    prepared.notice = Some(note);
+                    redraw = true;
+                }
+            }
             let retained: Vec<_> = state.runtimes.keys().cloned().collect();
             let update = state.with_host(&info, |host, context| {
                 host.poll(
@@ -348,18 +362,38 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 prepared.display.bg(),
                                 area,
                             );
+                            if let Some(p) = pictures.as_mut() {
+                                state.diff.as_ref().unwrap().draw_overlay(
+                                    p.doc_pics(),
+                                    frame.buffer_mut(),
+                                    area,
+                                );
+                            }
                             state
                                 .diff
                                 .as_ref()
                                 .unwrap()
                                 .draw_header(frame.buffer_mut(), whole);
                         } else {
+                            if let Some(p) = pictures.as_mut() {
+                                p.doc_pics().draw(frame.buffer_mut(), area, None);
+                            }
                             state.draw(prepared, &info, frame.buffer_mut(), area);
                             state.presentation = state.presentation(prepared, &info);
                             state.draw_chrome(prepared, frame.buffer_mut(), whole);
                         }
                     })
                     .map_err(|e| AppError::Terminal(e.to_string()))?;
+                if let Some(p) = pictures.as_mut() {
+                    if p.take_moved() {
+                        terminal
+                            .clear()
+                            .map_err(|e| AppError::Terminal(e.to_string()))?;
+                        redraw = true;
+                        continue;
+                    }
+                    p.flush_deletes();
+                }
                 redraw = false;
             }
             let pending = state
@@ -379,7 +413,11 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 continue;
             }
             let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
-            let frame_work_pending = pending || prepared.detection.pending() || diff_wake.is_some();
+            let picture_wake = pictures.as_ref().and_then(Pictures::wake_in);
+            let frame_work_pending = pending
+                || prepared.detection.pending()
+                || diff_wake.is_some()
+                || picture_wake.is_some();
             let wake_in = if frame_work_pending {
                 Some(Duration::from_millis(16))
             } else {

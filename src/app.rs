@@ -5334,40 +5334,7 @@ fn with_diff_gutter(
     lo: usize,
     marks: &[(std::ops::Range<usize>, crate::preview::markdown::DiffMark)],
 ) -> Vec<Line<'static>> {
-    use crate::preview::markdown::DiffMark;
-    use ratatui::style::{Color, Modifier, Style};
-    if marks.is_empty() {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let row = lo + i;
-            let mark = marks
-                .iter()
-                .find(|(range, _)| range.contains(&row))
-                .map(|(_, m)| *m);
-            let (glyph, color) = match mark {
-                Some(DiffMark::Added) => ("▌", GUTTER_ADDED),
-                Some(DiffMark::Modified) => ("▌", GUTTER_MODIFIED),
-                Some(DiffMark::Removed) => ("▌", GUTTER_DELETED),
-                None => (" ", Color::Reset),
-            };
-            let style = line.style;
-            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::styled(glyph, Style::new().fg(color)));
-            if mark == Some(DiffMark::Removed) {
-                spans.extend(line.spans.into_iter().map(|s| {
-                    let st = s.style.add_modifier(Modifier::DIM);
-                    Span::styled(s.content, st)
-                }));
-            } else {
-                spans.extend(line.spans);
-            }
-            Line::from(spans).style(style)
-        })
-        .collect()
+    konoma_plugin::host::project::rendered_diff::with_diff_gutter(lines, lo, marks)
 }
 
 /// The **ordinary** decorated Markdown preview's own change gutter (`docs/FEATURE-MD-RENDERED-DIFF.md`

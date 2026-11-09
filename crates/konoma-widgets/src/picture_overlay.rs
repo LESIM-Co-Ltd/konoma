@@ -80,6 +80,22 @@ pub struct PicturePaintRequest {
     pub kind: PicturePaintKind,
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static PAINTS: std::cell::RefCell<Option<Vec<(String, PicturePaintRequest)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Observe the requests of the real shared overlay, without replacing its painter.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn record_inline_paints_for_test<T>(
+    draw: impl FnOnce() -> T,
+) -> (T, Vec<(String, PicturePaintRequest)>) {
+    PAINTS.with(|p| *p.borrow_mut() = Some(Vec::new()));
+    let result = draw();
+    let paints = PAINTS.with(|p| p.borrow_mut().take().unwrap_or_default());
+    (result, paints)
+}
+
 /// Paint visible reservations and return their signature, even while their protocols are pending.
 /// The painter prepares images and draws a protocol, returning whether one was available. A
 /// missing zoom protocol causes a normal request here, so both hosts use the same fallback order.
@@ -89,6 +105,15 @@ pub fn draw_inline_pictures<'a>(
     values: InlineOverlayValues<'_>,
     mut painter: impl FnMut(&str, PicturePaintRequest, &mut Buffer) -> bool,
 ) -> Option<u64> {
+    let mut paint = |url: &str, request: PicturePaintRequest, buf: &mut Buffer| {
+        #[cfg(any(test, feature = "test-hooks"))]
+        PAINTS.with(|p| {
+            if let Some(paints) = p.borrow_mut().as_mut() {
+                paints.push((url.to_string(), request));
+            }
+        });
+        painter(url, request, buf)
+    };
     let InlineOverlayValues {
         inner,
         scroll,
@@ -158,20 +183,20 @@ pub fn draw_inline_pictures<'a>(
         };
         if mermaid {
             request.kind = PicturePaintKind::Density;
-            painter(p.url, request, buf);
+            paint(p.url, request, buf);
         }
         if focused && zoom > 1.001 && row_offset == 0 && visible_rows >= p.rows {
             request.kind = PicturePaintKind::Zoom;
-            if painter(p.url, request, buf) {
+            if paint(p.url, request, buf) {
                 continue;
             }
             request.kind = PicturePaintKind::UnzoomedFallback;
-            if painter(p.url, request, buf) {
+            if paint(p.url, request, buf) {
                 continue;
             }
         }
         request.kind = PicturePaintKind::Normal;
-        painter(p.url, request, buf);
+        paint(p.url, request, buf);
     }
     (drawn > 0).then(|| sig.finish())
 }

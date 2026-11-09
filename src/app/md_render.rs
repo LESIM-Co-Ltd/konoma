@@ -9,6 +9,12 @@ mod inline_overlay_tests;
 #[cfg(test)]
 #[path = "rendered_diff_body_tests.rs"]
 mod rendered_diff_body_tests;
+#[cfg(test)]
+#[path = "rendered_diff_fallback_tests.rs"]
+mod rendered_diff_fallback_tests;
+#[cfg(all(test, feature = "git"))]
+#[path = "rendered_diff_screen_bridge.rs"]
+mod rendered_diff_screen_bridge;
 use crate::preview::image::ImageFailureMessage;
 use konoma_plugin::host::project::rendered_diff::{render_diff_document, RenderedDiffInput};
 

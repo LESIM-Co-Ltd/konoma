@@ -216,14 +216,11 @@ impl App {
             return;
         };
         let reps = self.diff_representations(&path);
-        if reps.len() < 2 {
+        let Some(next) =
+            konoma_plugin::host::project::diff_keys::next_diff_view(self.tab.diff_view, &reps)
+        else {
             return;
-        }
-        let idx = reps
-            .iter()
-            .position(|&v| v == self.tab.diff_view)
-            .unwrap_or(0);
-        let next = reps[(idx + 1) % reps.len()];
+        };
         self.tab.diff_view_choice = next;
         if next == DiffView::Preview {
             #[cfg(feature = "git")]
@@ -297,18 +294,16 @@ impl App {
             return None;
         };
         let reps = self.diff_representations(path);
-        if reps.len() < 2 {
-            return None;
-        }
-        let idx = reps
-            .iter()
-            .position(|&v| v == self.tab.diff_view)
-            .unwrap_or(0);
-        Some(match reps[(idx + 1) % reps.len()] {
-            DiffView::Source => crate::i18n::Msg::DiffViewSource,
-            DiffView::Rendered => crate::i18n::Msg::DiffViewRendered,
-            DiffView::Preview => crate::i18n::Msg::DiffViewPreview,
-        })
+        Some(
+            match konoma_plugin::host::project::diff_keys::next_diff_view(
+                self.tab.diff_view,
+                &reps,
+            )? {
+                DiffView::Source => crate::i18n::Msg::DiffViewSource,
+                DiffView::Rendered => crate::i18n::Msg::DiffViewRendered,
+                DiffView::Preview => crate::i18n::Msg::DiffViewPreview,
+            },
+        )
     }
 
     /// `R`'s **description** for the `?` help row in `Surface::PreviewGitDiff` — unlike
