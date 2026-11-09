@@ -42,7 +42,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
-use super::doc_pictures::{DocEnv, DocPics};
+use super::doc_pictures::{DocEnv, DocPics, DocPictureFocus};
 use super::document::Laid;
 use super::still::{Still, StillShape};
 use crate::canvas_pictures::{
@@ -251,9 +251,16 @@ impl Pictures {
 
     /// Draw the pictures of a document over the cells in `inner` (`None`: the frame is not a
     /// document).
-    pub fn draw_document(&mut self, buf: &mut Buffer, inner: Rect, doc: Option<(&Laid, usize)>) {
+    pub fn draw_document(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        doc: Option<(&Laid, usize)>,
+        gutter: u16,
+        focus: Option<DocPictureFocus<'_>>,
+    ) {
         if let Some(d) = self.doc.as_mut() {
-            d.draw(buf, inner, doc);
+            d.draw_with(buf, inner, doc, gutter, focus);
         }
     }
 

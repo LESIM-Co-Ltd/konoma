@@ -40,7 +40,9 @@ use crate::{Input, Manifest, Settings};
 
 pub use acts::AppActs;
 pub use display::Display;
-pub use doc_pictures::DocEnv;
+pub use doc_pictures::{DocEnv, DocPics, DocPictureFocus};
+#[cfg(feature = "test-hooks")]
+pub use document::Laid;
 pub use edit_line::edit_line;
 pub use launch::{HandOff, LaunchCx, LaunchFacts};
 pub use looping::{

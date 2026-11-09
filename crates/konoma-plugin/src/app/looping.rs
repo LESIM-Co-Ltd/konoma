@@ -3,6 +3,10 @@
 #[path = "../host/project/diff_app.rs"]
 mod diff_app;
 
+#[cfg(test)]
+#[path = "inline_overlay_loop_tests.rs"]
+mod inline_overlay_loop_tests;
+
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
@@ -2861,7 +2865,13 @@ fn draw_frame<B: Backend>(
                         Frame::Document(d) => Some((&*d.laid, d.scroll)),
                         _ => None,
                     };
-                    p.draw_document(f.buffer_mut(), super::document::DocFrame::inner(body), doc);
+                    p.draw_document(
+                        f.buffer_mut(),
+                        super::document::DocFrame::inner(body),
+                        doc,
+                        0,
+                        None,
+                    );
                 }
                 if let Some(lang) = image {
                     let inner = draw::image_inner(body);

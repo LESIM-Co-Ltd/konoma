@@ -851,6 +851,12 @@ impl OverlayMoved {
     pub fn take_moved(&mut self) -> bool {
         std::mem::take(&mut self.moved)
     }
+
+    /// The completed frame's signature, exposed only for adapter regression tests.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn last_signature_for_test(&self) -> Option<u64> {
+        self.last
+    }
 }
 
 /// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in

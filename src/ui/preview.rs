@@ -877,188 +877,90 @@ fn render_decorated_body(
 /// Draw decoded inline Markdown images over their reserved rows. While an image is still decoding,
 /// its placeholder rows remain visible. A partially-scrolled image is drawn clipped to the viewport
 /// (its visible vertical band is cropped and encoded), so large images are not hidden while scrolling.
-fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
-    let placements = app.md_images();
-    if placements.is_empty() {
+pub(crate) fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
+    use konoma_widgets::picture_overlay::{
+        draw_inline_pictures, InlineOverlayValues, InlinePicturePlacement, PicturePaintKind,
+    };
+    let images = app.md_images();
+    if images.is_empty() {
         return;
     }
-    // `App::md_slice` prepends a 1-cell change-gutter column to every line whenever the current
-    // cache carries any mark at all (`App::md_gutter_active` — `docs/FEATURE-MD-RENDERED-DIFF.md`
-    // §2/§3), which shifts the whole text body one column right; `p.col` was measured against the
-    // *un-shifted* layout (`render_doc`'s own placeholder text has no notion of a gutter), so every
-    // placement needs the identical +1 to land back under its own placeholder row.
-    let gutter = if app.md_gutter_active() { 1 } else { 0 };
-    // One pass = one "frame" for inline-image slot bookkeeping. Every `ensure_md_image` below
-    // stamps this number onto the slot it wants, which is how `reserve_proto_slot` tells a slot the
-    // picture on screen right now needs (never recycle it) from one left over at an old size.
-    app.begin_md_image_frame();
-    // A signature of the draw position + focus state (for change detection). Hash only the
-    // on-screen rects of images **actually drawn in this frame**: while every image is off-screen,
-    // record no signature = don't trigger a full redraw (placeholder debris cleanup) on every
-    // scroll key over the text portion. Cleanup is only needed on the frames where a placeholder
-    // did/does exist in the grid (appearing, moving, leaving). Trigger it not just on position
-    // changes but also **on focus/zoom changes**: in Ghostty, the frame that draws the focus border
-    // can disturb the compositing of an adjacent placeholder row, so the grid is rebuilt on the very
-    // frame the state changes (an immediate fix).
-    use std::hash::{Hash, Hasher};
-    let mut sig = std::collections::hash_map::DefaultHasher::new();
-    (inner.x, inner.y, inner.width, inner.height).hash(&mut sig);
-    let focused_mermaid = app.focused_mermaid_ordinal();
-    focused_mermaid.hash(&mut sig);
-    ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut sig);
-    let mut drawn = 0usize;
-    // Resolved once per frame, not per image: the focus frame below reads it, and re-parsing two
-    // config strings inside the draw loop would be needless work on every redraw.
-    let image_align = app.doc_block_aligns().image;
-    let scroll = app.tab.preview_scroll as i32;
-    let top_bound = inner.y as i32;
-    let bottom_bound = (inner.y + inner.height) as i32;
-    for p in placements {
-        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&p.url);
-        // Match focus using the **source ordinal** (fence_ord) carried by the placement. Counting
-        // by draw order drifts from focused_mermaid_ordinal when a loading/text-degraded fence
-        // exists upstream.
-        let this_focused = is_mermaid && p.fence_ord.is_some() && focused_mermaid == p.fence_ord;
-        // p.line is the (logical) index of a decorated line, while preview_scroll is the visual row
-        // after wrapping. While wrapping, the image would shift up by exactly the upstream wrap
-        // count (= a megacell would overlap the inverted caption line and the placeholder row would
-        // become an ID-color bar), so always convert to a visual row before subtracting.
-        let vis_line = app.md_visual_span(p.line).0 as i32;
-        let top = top_bound + vis_line - scroll; // block's first row on screen
-                                                 // Visible screen band for this image (clipped to the viewport top/bottom).
-        let vis_top = top.max(top_bound);
-        let vis_bottom = (top + p.rows as i32).min(bottom_bound);
-        if vis_bottom <= vis_top {
-            continue; // fully off-screen
-        }
-        let row_off = (vis_top - top) as u16; // image rows scrolled above the viewport
-        let vis_rows = (vis_bottom - vis_top) as u16;
-        let cols = p.cols.min(inner.width);
-        if cols == 0 || vis_rows == 0 {
-            continue;
-        }
-        // `p.col` is the offset `render_doc` baked into the placeholder text (see
-        // `ImagePlacement.col`'s own doc comment): at the top level this is measured from the same
-        // origin as `inner.x` — the only call site (`App::ensure_md_cache`, via
-        // `App::md_layout(inner.width)`) always renders at `width == inner.width`. Several images
-        // sharing one row (the badge-row idiom) are packed left to right by `render_image_group`, so
-        // `p.col` already places each one at its own column within that shared row; clamped against
-        // `inner.width - cols` the same defensive way the old always-centered formula was implicitly
-        // bounded, in case a placement's own `cols` alone already exceeds the pane (a very narrow pane
-        // or an unusually wide single image).
-        let x = inner.x + gutter + p.col.min(inner.width.saturating_sub(cols));
-        let target = Rect {
-            x,
-            y: vis_top as u16,
-            width: cols,
-            height: vis_rows,
-        };
-        // Reaching here = an image actually drawn in this frame. Record its on-screen rect into the signature.
-        (
-            p.url.as_str(),
-            target.x,
-            target.y,
-            target.width,
-            target.height,
+    let placements: Vec<_> = images
+        .iter()
+        .map(|p| InlinePicturePlacement {
+            url: &p.url,
+            visual_row: app.md_visual_span(p.line).0,
+            col: p.col,
+            cols: p.cols,
+            rows: p.rows,
+            fence_ord: p.fence_ord,
+        })
+        .collect();
+    let zoom = app.fence_zoom_level();
+    // Translation and title formatting remain host-owned.
+    let title = if zoom > 1.001 {
+        format!(
+            " ◇ mermaid  x{zoom:.1} — {} ",
+            tr(app.lang, crate::i18n::Msg::MermaidPanAffordance)
         )
-            .hash(&mut sig);
-        drawn += 1;
-        // kitty's placeholder row assumes it's "printed in a clean SGR state" (a megacell only
-        // embeds fg=ID and does not clear reverse/dim). If a cell inherits the underlying text's
-        // style, a reversed cell exposes an ID-color bar as its background, so the image region's
-        // cells always have their **attributes and fg** reset to plain. The background color is
-        // preserved: a transparent diagram is composited over the cell background, so clearing it
-        // would float a panel in the terminal's default color — rather than the theme
-        // background — behind the diagram.
-        {
-            let buf = frame.buffer_mut();
-            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
-        }
-        // For a focused fence diagram, draw the selection border **outside the image** (the caption
-        // line is the top edge, the bottom margin row is the bottom edge, and the sides are blank
-        // columns). Since kitty graphics overlays the image on top of the text, the border sits
-        // outside the image region = it's always visible even on a real terminal. Only when the
-        // whole block is on-screen (no partial border; when focus moves, md_focus_move scrolls the
-        // whole block into the visible range).
-        if this_focused {
-            let btop = top - 1; // caption line
-            let bbot = top + p.rows as i32 + 1; // the row after the bottom margin row (exclusive)
-                                                // Border width = whichever is wider, the image width or the title width (+corners).
-                                                // Fully covers the text layer's (centered) caption = the title never overflows
-                                                // the border, and the text below never leaks past its right edge.
-            let z = app.fence_zoom_level();
-            let lang = app.lang;
-            // The border title covers the text layer's caption (prevents overflow). The affordance is also i18n'd.
-            let title = if z > 1.001 {
-                format!(
-                    " ◇ mermaid  x{z:.1} — {} ",
-                    tr(lang, crate::i18n::Msg::MermaidPanAffordance)
-                )
-            } else {
-                format!(
-                    " ◇ mermaid — {}  {} ",
-                    tr(lang, crate::i18n::Msg::MermaidCaption),
-                    tr(lang, crate::i18n::Msg::MermaidZoomAffordance)
-                )
-            };
-            let tw = Span::from(title.as_str()).width() as u16 + 2;
-            let bw = (cols + 2).max(tw).min(inner.width);
-            // The frame is placed by the **same** rule the diagram itself was
-            // (`[ui] md_image_align`, via `markdown::mermaid_diagram_col` in the renderer), never by
-            // a second centering formula of its own — see `mermaid_focus_border_x`. For the default
-            // `center` this is the identical `(inner.width - bw) / 2` this line always computed;
-            // `mermaid_diagram_col` keeps one column free on the aligned side for a left/right
-            // diagram, so the frame never lands under the picture.
-            let bx = inner.x
-                + crate::preview::markdown::mermaid_focus_border_x(image_align, inner.width, bw);
-            if btop >= top_bound && bbot <= bottom_bound {
-                use ratatui::style::{Color as C, Modifier as M, Style as S};
-                // A four-sided selection border (the caption line = top edge/title, the margin row
-                // = bottom edge, the sides = blank columns outside the image). The border is
-                // unrelated to the "colored bar" issue (see the vis_line conversion above and the
-                // image region's Style::reset for that bar's root cause).
-                let brect = Rect {
-                    x: bx,
-                    y: btop as u16,
-                    width: bw,
-                    height: (bbot - btop) as u16,
-                };
-                let border = Block::bordered()
-                    .border_style(S::new().fg(C::Cyan))
-                    .title(title)
-                    .title_style(S::new().fg(C::Cyan).add_modifier(M::REVERSED));
-                frame.render_widget(border, brect);
+    } else {
+        format!(
+            " ◇ mermaid — {}  {} ",
+            tr(app.lang, crate::i18n::Msg::MermaidCaption),
+            tr(app.lang, crate::i18n::Msg::MermaidZoomAffordance)
+        )
+    };
+    let values = InlineOverlayValues {
+        inner,
+        scroll: usize::from(app.tab.preview_scroll),
+        gutter: u16::from(app.md_gutter_active()),
+        focused_ordinal: app.focused_mermaid_ordinal(),
+        zoom,
+        image_align: app.doc_block_aligns().image,
+        focus_title: &title,
+    };
+    app.begin_md_image_frame();
+    let sig = draw_inline_pictures(
+        frame.buffer_mut(),
+        placements,
+        values,
+        |url, r, buf| match r.kind {
+            PicturePaintKind::Density => {
+                app.ensure_md_fence_density(url, r.cols, r.rows);
+                false
             }
-        }
-        // In-place zoom for a focused fence: keep the reserved area as-is and draw a zoomed crop
-        // inside it (only when the whole block is on-screen; falls back to normal display while
-        // partially scrolled).
-        let zoomed =
-            this_focused && app.fence_zoom_level() > 1.001 && row_off == 0 && vis_rows >= p.rows;
-        // If the display size (mermaid_rows) is larger than the base raster, follow up to a higher density (even while not zoomed).
-        if is_mermaid {
-            app.ensure_md_fence_density(&p.url, cols, p.rows);
-        }
-        // On a kitty terminal this is konoma's own compressed transmit on a fixed image id (so a
-        // GIF re-encoding every frame *replaces* its picture in the terminal instead of piling up
-        // one per frame); everywhere else it is the ratatui-image protocol, unchanged.
-        if zoomed {
-            app.ensure_md_fence_zoom(&p.url, cols, p.rows);
-            if let Some(img) = app.md_fence_zoom_proto(&p.url, cols, p.rows) {
-                img.render(target, frame.buffer_mut());
-                continue;
+            PicturePaintKind::Zoom => {
+                app.ensure_md_fence_zoom(url, r.cols, r.rows);
+                if let Some(img) = app.md_fence_zoom_only_proto(url, r.cols, r.rows) {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
             }
-        }
-        app.ensure_md_image(&p.url, cols, p.rows, row_off, vis_rows);
-        if let Some(img) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
-            img.render(target, frame.buffer_mut());
-        }
-    }
-    // A frame that drew nothing at all is not recorded (None) = only when something was drawn up
-    // until just before does the finish side fire cleanup once as a "departure", and it does not
-    // fire again for further off-screen scrolling.
-    if drawn > 0 {
-        app.note_md_overlay(sig.finish());
+            PicturePaintKind::UnzoomedFallback => {
+                if let Some(img) = app.md_fence_unzoomed_proto(url) {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
+            }
+            PicturePaintKind::Normal => {
+                app.ensure_md_image(url, r.cols, r.rows, r.row_offset, r.visible_rows);
+                if let Some(img) =
+                    app.md_image_proto(url, r.cols, r.rows, r.row_offset, r.visible_rows)
+                {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
+            }
+        },
+    );
+    if let Some(sig) = sig {
+        app.note_md_overlay(sig);
     }
 }
 

@@ -156,7 +156,19 @@ impl App {
     /// The image for the focused inline diagram's current zoom, if encoded for this (cols, rows).
     /// While a fresh crop is still encoding, the previous zoom crop (or the unzoomed full image)
     /// stays visible instead of blinking out.
+    #[cfg(test)]
     pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&InlineImage> {
+        self.md_fence_zoom_only_proto(url, cols, rows)
+            .or_else(|| self.md_fence_unzoomed_proto(url))
+    }
+
+    /// Only the zoom protocol; the shared overlay selects the unzoomed fallback separately.
+    pub(crate) fn md_fence_zoom_only_proto(
+        &self,
+        url: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Option<&InlineImage> {
         let entry = self.md_images.cache.get(&PathBuf::from(url))?;
         entry
             .zoom
@@ -170,7 +182,11 @@ impl App {
             })
             .max_by_key(|s| s.used)
             .and_then(|s| s.image.as_ref())
-            .or_else(|| entry.newest_full())
+    }
+
+    /// Full-image fallback for the shared overlay's zoom request.
+    pub(crate) fn md_fence_unzoomed_proto(&self, url: &str) -> Option<&InlineImage> {
+        self.md_images.cache.get(&PathBuf::from(url))?.newest_full()
     }
 
     /// Kick a sharpening re-raster of a fence diagram when `needed_px` exceeds the current raster

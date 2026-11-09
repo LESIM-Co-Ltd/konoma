@@ -1,4 +1,8 @@
 use super::*;
+
+#[cfg(test)]
+#[path = "inline_overlay_tests.rs"]
+mod inline_overlay_tests;
 use crate::preview::image::ImageFailureMessage;
 
 /// Which document(s) `App::build_decorated` renders from — the seam that lets the diff's

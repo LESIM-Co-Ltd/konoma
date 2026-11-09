@@ -22,6 +22,9 @@ pub mod loading;
 pub mod markdown;
 pub mod media_diff;
 pub mod overlay;
+pub mod picture_overlay;
+#[cfg(test)]
+mod picture_overlay_tests;
 pub mod scroll;
 pub mod table;
 pub mod term_query;

@@ -38,15 +38,17 @@ use konoma_widgets::inline_images::{
     md_encode_worker, DecodedImage, InlineImageCache, MdEncodeResult, OverlayMoved,
     MD_IMAGE_CACHE_BYTES,
 };
-use konoma_widgets::markdown::{is_office_image_url, is_synthetic_md_url, ImagePlacement};
+use konoma_widgets::markdown::{is_office_image_url, is_synthetic_md_url, BlockAlign};
+use konoma_widgets::picture_overlay::{
+    draw_inline_pictures, InlineOverlayValues, InlinePicturePlacement, PicturePaintKind,
+    PicturePaintRequest,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
 use super::document::Laid;
-use crate::canvas_pictures::{
-    embed_render_for, image_failure_message, overlay::OverlaySig, EmbedRender, SvgDraw,
-};
+use crate::canvas_pictures::{embed_render_for, image_failure_message, EmbedRender, SvgDraw};
 use crate::document_pictures::{
     fetch_remote_image, live_synthetic_keys, mermaid_fit_rows, mermaid_rows_cap,
     office_pictures_in_flight, resolve_md_image_path, DecodeJob, DocPicture, DocPictures, Fetcher,
@@ -58,6 +60,10 @@ use crate::input::{Resource, Resources};
 use crate::registry::{PluginOrigin, Registry};
 use crate::view::DocumentView;
 use crate::Settings;
+
+#[cfg(test)]
+#[path = "inline_overlay_tests.rs"]
+pub(super) mod inline_overlay_tests;
 
 /// Finds the plugin that draws an embedded kind (`None`: no enabled plugin takes it).
 /// The drawer for the SVGs that are not drawn in this process is the pictures' own.
@@ -113,6 +119,17 @@ impl Default for DocEnv {
             fetcher: fetch_remote_image,
         }
     }
+}
+
+/// The host's optional inline fence focus; source ordinals survive loading/text fallbacks.
+#[derive(Clone, Copy, Debug)]
+pub struct DocPictureFocus<'a> {
+    pub ordinal: usize,
+    pub zoom: f64,
+    pub center: (f64, f64),
+    pub image_align: BlockAlign,
+    /// Already translated and formatted by the host.
+    pub title: &'a str,
 }
 
 /// The document's picture state.
@@ -217,6 +234,18 @@ impl DocPics {
         self.render_truncated = Arc::new(AtomicBool::new(false));
         self.pictures = DocPicture::from_resources(resources, &self.render_truncated);
         self.resources = resources.clone();
+    }
+
+    /// Seed ready protocols without scheduling worker jobs in cross-host adapter tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn cache_for_test(&mut self) -> &mut InlineImageCache {
+        &mut self.cache
+    }
+
+    /// Inspect the signature recorded by the real draw entry point in adapter tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn overlay_for_test(&self) -> &OverlayMoved {
+        &self.overlay
     }
 
     pub fn set_env(&mut self, env: DocEnv) {
@@ -467,11 +496,23 @@ impl DocPics {
     /// inside of the frame's border). `doc` is the page and its scroll in display rows; `None`
     /// is a frame that is not the document, which reports that the pictures left.
     pub fn draw(&mut self, buf: &mut Buffer, inner: Rect, doc: Option<(&Laid, usize)>) {
+        self.draw_with(buf, inner, doc, 0, None);
+    }
+
+    /// Draw with the host's gutter and optional source-fence focus. File apps use `draw`'s defaults.
+    pub fn draw_with(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        doc: Option<(&Laid, usize)>,
+        gutter: u16,
+        focus: Option<DocPictureFocus<'_>>,
+    ) {
         self.on_document = doc.is_some();
         self.overlay.begin();
         if let Some((laid, scroll)) = doc {
             if inner.width > 0 && inner.height > 0 && !laid.images.is_empty() {
-                if let Some(sig) = self.draw_images(buf, inner, laid, scroll) {
+                if let Some(sig) = self.draw_images(buf, inner, laid, scroll, gutter, focus) {
                     self.overlay.note(sig);
                 }
             }
@@ -485,50 +526,58 @@ impl DocPics {
         inner: Rect,
         laid: &Laid,
         scroll: usize,
+        gutter: u16,
+        focus: Option<DocPictureFocus<'_>>,
     ) -> Option<u64> {
-        // One pass = one frame for the slot bookkeeping.
         self.cache.begin_pass();
-        let mut sig = OverlaySig::new(inner);
-        let mut drawn = 0usize;
-        let top_bound = inner.y as i32;
-        let bottom_bound = (inner.y + inner.height) as i32;
-        for (n, p) in laid.images.iter().enumerate() {
-            // `p.line` is a logical line; the scroll is in display rows.
-            let vis_line = laid.first_row_of(p.line) as i32;
-            let top = top_bound + vis_line - scroll as i32;
-            let vis_top = top.max(top_bound);
-            let vis_bottom = (top + i32::from(p.rows)).min(bottom_bound);
-            if vis_bottom <= vis_top {
-                continue;
+        let placements = laid.images.iter().map(|p| InlinePicturePlacement {
+            url: &p.url,
+            visual_row: laid.first_row_of(p.line),
+            col: p.col,
+            cols: p.cols,
+            rows: p.rows,
+            fence_ord: p.fence_ord,
+        });
+        let values = InlineOverlayValues {
+            inner,
+            scroll,
+            gutter,
+            focused_ordinal: focus.map(|f| f.ordinal),
+            zoom: focus.map_or(1.0, |f| f.zoom),
+            image_align: focus.map_or(BlockAlign::Center, |f| f.image_align),
+            focus_title: focus.map_or("", |f| f.title),
+        };
+        draw_inline_pictures(buf, placements, values, |url, r, buf| match r.kind {
+            PicturePaintKind::Density | PicturePaintKind::Zoom => false,
+            PicturePaintKind::UnzoomedFallback => {
+                if let Some(img) = self
+                    .cache
+                    .cache
+                    .get(&PathBuf::from(url))
+                    .and_then(|e| e.newest_full())
+                {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
             }
-            let row_off = (vis_top - top) as u16;
-            let vis_rows = (vis_bottom - vis_top) as u16;
-            let cols = p.cols.min(inner.width);
-            if cols == 0 || vis_rows == 0 {
-                continue;
+            PicturePaintKind::Normal => {
+                self.ensure_image(url, r);
+                let Some(path) = self.path_of(url) else {
+                    return false;
+                };
+                if let Some(img) =
+                    self.cache
+                        .proto(&path, r.cols, r.rows, r.row_offset, r.visible_rows)
+                {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
             }
-            let x = inner.x + p.col.min(inner.width.saturating_sub(cols));
-            let target = Rect {
-                x,
-                y: vis_top as u16,
-                width: cols,
-                height: vis_rows,
-            };
-            self.ensure_image(p, row_off, vis_rows);
-            let Some(path) = self.path_of(&p.url) else {
-                continue;
-            };
-            let Some(img) = self.cache.proto(&path, cols, p.rows, row_off, vis_rows) else {
-                continue;
-            };
-            // A kitty placeholder assumes a clean SGR state: reset the attributes and the
-            // foreground of the cells under the picture, keeping the background.
-            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
-            img.render(target, buf);
-            sig.add(n as u64, target);
-            drawn += 1;
-        }
-        (drawn > 0).then(|| sig.finish())
+        })
     }
 
     /// The cache key of a placement's picture: a fence or an expression is filed under its
@@ -563,20 +612,20 @@ impl DocPics {
         self.dp().begin_resource_decode(key, job);
     }
 
-    /// Make the picture of `p` ready to be drawn: start its decode the first time it is drawn,
+    /// Make the picture ready to be drawn: start its decode the first time it is drawn,
     /// stamp it as wanted by this pass, and ask for the encode of this placement.
-    fn ensure_image(&mut self, p: &ImagePlacement, row_off: u16, vis_rows: u16) {
-        let Some(path) = self.path_of(&p.url) else {
+    fn ensure_image(&mut self, url: &str, r: PicturePaintRequest) {
+        let Some(path) = self.path_of(url) else {
             return;
         };
         if !self.cache.cache.contains_key(&path) {
             // A picture the document carries: decoded from the bytes it holds, never from a file.
-            if is_office_image_url(&p.url) {
-                self.begin_office_decode(&p.url, path);
+            if is_office_image_url(url) {
+                self.begin_office_decode(url, path);
                 return;
             }
             // A synthetic picture is filed by its layout request: never decode `math://` as a file.
-            if is_synthetic_md_url(&p.url) {
+            if is_synthetic_md_url(url) {
                 return;
             }
             let job = DecodeJob {
@@ -591,7 +640,7 @@ impl DocPics {
         }
         self.cache.stamp_drawn(&path);
         self.cache
-            .ensure_encode(&path, p.cols, p.rows, row_off, vis_rows, None);
+            .ensure_encode(&path, r.cols, r.rows, r.row_offset, r.visible_rows, None);
     }
 }
 
