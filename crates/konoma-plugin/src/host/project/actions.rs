@@ -131,6 +131,19 @@ pub enum ProjectNotice {
 }
 
 pub enum ProjectCommand {
+    TreeStatus,
+    Label(String),
+    Copy(String),
+    Flash(crate::Tr),
+    UnknownScreen,
+    StartScreen {
+        project: ProjectKey,
+        screen: ScreenKey,
+    },
+    Navigation {
+        outcome: crate::Outcome,
+        save_return: bool,
+    },
     EnsureView,
     Dispatch(ProjectActionId),
     NewTab,
@@ -138,15 +151,20 @@ pub enum ProjectCommand {
     Notice(ProjectNotice),
 }
 
-pub struct ProjectUpdate<I> {
+pub struct ProjectUpdate<I: ProjectActionInvocation> {
+    pub changed: bool,
+    /// Lifecycle deliveries in order; effects return individually through `apply_effect`.
+    pub events: Vec<ProjectEvent<I>>,
     pub dispatch: ProjectDispatch,
     pub commands: Vec<ProjectCommand>,
     pub prompt: Option<ProjectPromptUpdate<I>>,
 }
 
-impl<I> ProjectUpdate<I> {
+impl<I: ProjectActionInvocation> ProjectUpdate<I> {
     pub fn new(dispatch: ProjectDispatch) -> Self {
         Self {
+            changed: false,
+            events: Vec::new(),
             dispatch,
             commands: Vec::new(),
             prompt: None,
@@ -162,7 +180,7 @@ impl<I> ProjectUpdate<I> {
     }
 }
 
-/// The host may keep its effects envelope until effects move into the shared controller.
+/// Connects a host's invocation wrapper to the effect carried by its serial owner.
 pub trait ProjectActionInvocation: PromptInvocation + Clone {
     type Effect: Send + 'static;
     fn into_effect(self, tree_status: bool) -> Self::Effect;

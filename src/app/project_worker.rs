@@ -1,13 +1,16 @@
 //! Host inputs and App glue for the SDK's serial project owner.
 
 use konoma_plugin::host::project::{ProjectEnv, ProjectMessages};
-use konoma_plugin::project::{Chip, ProjectView};
+use konoma_plugin::project::Chip;
+#[cfg(test)]
+use konoma_plugin::project::ProjectView;
 use konoma_plugin::view::ViewReq;
 use konoma_plugin::TermCaps;
 
 use super::project_screens::{ProjectEffect, ProjectInvocation, ProjectKey, ScreenKey};
 use super::PathStyle;
 
+#[cfg(test)]
 pub(super) type ProjectJob = konoma_plugin::host::project::ProjectJob<ProjectEffect>;
 pub(crate) type ProjectRuntime =
     konoma_plugin::host::project::ProjectRuntime<ProjectEffect, ProjectInvocation>;
@@ -36,32 +39,30 @@ fn project_messages(lang: crate::i18n::Lang) -> ProjectMessages {
 }
 
 impl super::App {
-    pub(super) fn project_request(&self, key: &ScreenKey) -> ViewReq {
-        let tab = if self.tab.id == key.tab {
-            &self.tab
-        } else {
-            self.tabs
-                .iter()
-                .find(|tab| tab.id == key.tab)
-                .unwrap_or(&self.tab)
-        };
-        let mut project = ProjectView::new(&key.screen)
-            .tab(key.tab)
-            .icons(self.cfg.ui.icons)
-            .paths(&tab.root, &tab.open_dir)
-            .home_dir(crate::plugins::read_scope::home_dir());
-        if let Some(selection) = &key.selection {
-            project = project.selection(selection);
-        }
-        ViewReq::new(
-            if tab.preview_cols == 0 {
-                80
-            } else {
-                tab.preview_cols
+    pub(super) fn project_context_info(
+        &self,
+        tab: &super::PerTab,
+    ) -> konoma_plugin::host::project::ProjectContextInfo<super::project_screens::ProjectSurface>
+    {
+        konoma_plugin::host::project::ProjectContextInfo {
+            id: tab.id,
+            root: tab.root.clone(),
+            open_dir: tab.open_dir.clone(),
+            home: crate::plugins::read_scope::home_dir(),
+            icons: self.cfg.ui.icons,
+            viewport: konoma_plugin::host::project::ProjectViewport {
+                cols: tab.preview_cols,
+                rows: tab.preview_viewport,
             },
-            tab.preview_viewport.max(1),
-        )
-        .project(project)
+            surface: super::project_screens::ProjectSurface::from_tab(tab),
+        }
+    }
+
+    pub(super) fn project_request(&self, key: &ScreenKey) -> Option<ViewReq> {
+        let tab = std::iter::once(&self.tab)
+            .chain(self.tabs.iter())
+            .find(|tab| tab.id == key.tab)?;
+        konoma_plugin::host::project::effects::request(&self.project_context_info(tab), key)
     }
 
     pub(super) fn start_project_runtime(
@@ -124,7 +125,12 @@ impl super::App {
             },
             |effect, outcome| effect.outcome = Some(outcome),
         );
-        self.project_runtimes.insert(key, runtime);
+        konoma_plugin::host::project::ProjectHost::new(
+            &mut self.project_runtimes,
+            &mut self.project_dialog,
+            &mut self.project_replaying,
+        )
+        .ensure_project(project, runtime);
     }
 }
 

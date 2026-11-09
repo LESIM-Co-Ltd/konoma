@@ -11,8 +11,8 @@
 //! - [`typing`]: the state machine of the text input a canvas can ask for -- how a key is made,
 //!   when `Esc` leaves, when the typing is taken back, and the bounded line of keys and actions
 //!   that wait for a session a job holds.
-//! - `project` (`project-host`): discovery, watching and the serial session owner that prepares
-//!   project content off the UI thread, using policy and translated messages supplied by the host.
+//! - `project` (`project-host`): discovery, serial session ownership, screen lifecycle and ordered
+//!   reply/effect adoption, using context paths, policy and translated messages from the host.
 
 pub mod acts;
 pub mod bind;

@@ -14,11 +14,13 @@
 //! - [`state`]: per-context frames, row identity, filters, marks and resolved screen motions.
 //! - [`prompt`]: project choosers, prompt answers and failed-act text retries.
 //! - [`input`] and [`actions`]: ordered keys, incremental replay, action scopes and guarded jobs.
+//! - [`effects`]: origin-bearing outcomes, reply adoption and the context/view lifecycle.
 
 pub mod actions;
 pub mod content;
 pub mod detection;
 pub mod diff;
+pub mod effects;
 pub mod input;
 pub mod prompt;
 pub mod runtime;
@@ -27,10 +29,13 @@ pub use actions::{
     ProjectActFacts, ProjectAction, ProjectActionInvocation, ProjectActionScope, ProjectCommand,
     ProjectDispatch, ProjectHost, ProjectNotice, ProjectUpdate, ProjectWritePolicy,
 };
+pub use effects::{ProjectContextInfo, ProjectEffect, ProjectEvent, ProjectInvalidation};
 pub use input::{ProjectContextMut, ProjectKeyFacts, ProjectReplay, ProjectReplayState};
 
 #[cfg(test)]
 mod actions_tests;
+#[cfg(test)]
+mod effects_tests;
 #[cfg(test)]
 mod input_tests;
 

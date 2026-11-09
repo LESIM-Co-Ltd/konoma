@@ -6,10 +6,8 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use konoma_plugin::project::{Confirmation, ProjectAct, ProjectRow};
-use konoma_plugin::Outcome;
 use ratatui::text::Line;
 
-use super::project_worker::ProjectJob;
 use super::*;
 use crate::i18n::Msg;
 use crate::keymap::{Context, KeyPress};
@@ -27,8 +25,11 @@ use konoma_plugin::host::project::actions::{
     self, ProjectActFacts, ProjectAction, ProjectActionScope, ProjectCommand, ProjectDispatch,
     ProjectNotice, ProjectUpdate, ProjectWritePolicy,
 };
+use konoma_plugin::host::project::effects;
 use konoma_plugin::host::project::input::{self, ProjectKeyFacts};
-use konoma_plugin::host::project::{ProjectActionInvocation, ProjectContextMut, ProjectHost};
+use konoma_plugin::host::project::{
+    ProjectActionInvocation, ProjectContextMut, ProjectEvent, ProjectHost,
+};
 use konoma_plugin::host::project::{ProjectMotionResult, ProjectScreenState, ProjectViewport};
 pub(crate) type ProjectFrame = konoma_plugin::host::project::ProjectFrame<ProjectInvocation>;
 type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation>;
@@ -125,21 +126,21 @@ impl std::ops::DerefMut for ProjectNavigation {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct ProjectEffect {
-    pub project: ProjectKey,
-    pub tab: u64,
-    pub tree_root: PathBuf,
-    pub view: Option<ScreenKey>,
-    pub outcome: Option<Outcome>,
-    pub tree_status: bool,
-    pub label: String,
-}
+pub(crate) type ProjectEffect = effects::ProjectEffect<ProjectSurface>;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProjectSurface {
     mode: Mode,
     path: Option<PathBuf>,
+}
+
+impl ProjectSurface {
+    pub(super) fn from_tab(tab: &PerTab) -> Self {
+        Self {
+            mode: tab.mode,
+            path: tab.preview_path.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -189,20 +190,13 @@ impl ProjectInvocation {
     }
 }
 
-/// Refreshes keep the identity the user selected, even when the provider reorders its rows.
-fn remap_project_rows(
-    tab: &mut PerTab,
-    project: &ProjectKey,
-    screen: &ScreenKey,
-    old: Option<&ProjectContent>,
-    new: &ProjectContent,
-) {
-    for nav in [&mut tab.project_navigation, &mut tab.project_return]
-        .into_iter()
-        .flatten()
-        .filter(|nav| &nav.project == project)
-    {
-        nav.remap_rows(screen, old, new);
+fn project_context(tab: &mut PerTab) -> ProjectContextMut<'_, ProjectInvocation> {
+    ProjectContextMut {
+        id: tab.id,
+        active: tab.project_navigation.as_mut().map(|nav| &mut nav.state),
+        returned: tab.project_return.as_mut().map(|nav| &mut nav.state),
+        pending_acts: &mut tab.project_pending_acts,
+        request: None,
     }
 }
 
@@ -326,7 +320,7 @@ impl App {
     fn project_waiting_for_view(&self) -> bool {
         let request = self
             .project_frame()
-            .map(|frame| self.project_request(&frame.key));
+            .and_then(|frame| self.project_request(&frame.key));
         input::waiting(
             self.tab.project_navigation.as_ref().map(|nav| &nav.state),
             &self.project_runtimes,
@@ -343,7 +337,8 @@ impl App {
     ) -> T {
         let request = self
             .project_frame()
-            .and_then(|frame| self.project_request(&frame.key).project);
+            .and_then(|frame| self.project_request(&frame.key))
+            .and_then(|req| req.project);
         let mut host = ProjectHost::new(
             &mut self.project_runtimes,
             &mut self.project_dialog,
@@ -402,7 +397,12 @@ impl App {
         let nav = self.tab.project_navigation.as_ref()?;
         let key = &nav.stack.last()?.key;
         let runtime = self.project_runtimes.get(&nav.project)?;
-        if runtime.contexts.get(key) != self.project_request(key).project.as_ref() {
+        if runtime.contexts.get(key)
+            != self
+                .project_request(key)
+                .as_ref()
+                .and_then(|req| req.project.as_ref())
+        {
             return None;
         }
         runtime.views.get(key).cloned()
@@ -659,25 +659,17 @@ impl App {
         {
             self.start_project_runtime(project);
         }
-        let Some(runtime) = self.project_runtimes.get(&key) else {
-            return;
-        };
-        let Some(screen) = runtime
-            .project
-            .declaration
-            .screens
-            .iter()
-            .find(|s| !s.pushed)
+        let Some(screen) =
+            self.with_project_host(|host, context| host.first_screen(&key, context.id))
         else {
             return;
         };
-        let screen = ScreenKey::new(&screen.id, self.tab.id);
         self.show_project_screen(key, screen);
     }
 
     fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
         self.tab.project_navigation = Some(ProjectNavigation {
-            state: ProjectScreenState::new(key, screen),
+            state: ProjectHost::<ProjectInvocation>::start_screen(key, screen),
             origin_mode: self.tab.mode,
             origin_path: self.tab.preview_path.clone(),
             origin_kind: self.tab.preview_kind.clone(),
@@ -688,52 +680,18 @@ impl App {
     }
 
     fn ensure_project_view(&mut self) {
-        self.initialize_project_frame();
-        let Some(nav) = &self.tab.project_navigation else {
-            return;
-        };
-        let Some(frame) = nav.stack.last() else {
-            return;
-        };
-        let req = self.project_request(&frame.key);
-        let Some(runtime) = self.project_runtimes.get_mut(&nav.project) else {
-            return;
-        };
-        if runtime.busy
-            || !runtime.ready
-            || runtime.error.is_some()
-            || (runtime.views.contains_key(&frame.key)
-                && !runtime.dirty.contains(&frame.key)
-                && runtime.contexts.get(&frame.key) == req.project.as_ref())
-        {
-            return;
-        }
-        if runtime
-            .tx
-            .try_send(ProjectJob::View {
-                key: frame.key.clone(),
-                req,
-            })
-            .is_ok()
-        {
-            runtime.busy = true;
-            #[cfg(test)]
-            {
-                runtime.view_request = Some(frame.key.clone());
-            }
-        }
+        let info = self.project_context_info(&self.tab);
+        self.with_project_host(|host, context| host.ensure_view(context, &info));
     }
 
     fn project_back(&mut self) {
-        let Some(mut nav) = self.tab.project_navigation.take() else {
-            return;
-        };
-        if nav.stack.len() > 1 {
-            nav.stack.pop();
-            self.tab.project_navigation = Some(nav);
+        if self.with_project_host(|host, context| host.pop_screen(context)) {
             self.ensure_project_view();
             return;
         }
+        let Some(nav) = self.tab.project_navigation.take() else {
+            return;
+        };
         match (nav.origin_mode, nav.origin_path) {
             (Mode::Preview, Some(path)) => {
                 if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
@@ -834,6 +792,28 @@ impl App {
         }
         for command in update.commands {
             match command {
+                ProjectCommand::TreeStatus => self.git_status_dirty = true,
+                ProjectCommand::Label(label) => self.flash = Some(label),
+                ProjectCommand::Copy(text) => self.set_clipboard_flash(&text),
+                ProjectCommand::Flash(message) => {
+                    self.flash = Some(message.get(self.plugin_lang()).into())
+                }
+                ProjectCommand::UnknownScreen => {
+                    self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into())
+                }
+                ProjectCommand::StartScreen { project, screen } => {
+                    self.show_project_screen(project, screen)
+                }
+                ProjectCommand::Navigation {
+                    outcome,
+                    save_return,
+                } => {
+                    if save_return {
+                        self.tab.project_return = self.tab.project_navigation.take();
+                    }
+                    let result = self.apply_plugin_navigation(outcome);
+                    crate::resolve_key_result(self, result.map(|()| false));
+                }
                 ProjectCommand::EnsureView => self.ensure_project_view(),
                 ProjectCommand::Dispatch(id) => {
                     let action =
@@ -943,15 +923,10 @@ impl App {
             .as_ref()
             .is_none_or(|prompt| self.project_confirmation_enabled(action.plugin(), prompt));
         let facts = self.project_act_facts(&declaration.id, project.clone(), confirmation);
-        let effect = ProjectEffect {
-            project,
-            tab: self.tab.id,
-            tree_root: self.tab.root.clone(),
-            view: self.project_frame().map(|f| f.key.clone()),
-            outcome: None,
-            tree_status: false,
-            label: declaration.declaration.label.get(self.plugin_lang()).into(),
-        };
+        let effect = ProjectEffect::new(
+            facts.origin.clone(),
+            declaration.declaration.label.get(self.plugin_lang()),
+        );
         let update = self.with_project_host(|host, context| {
             host.request_act(context, &declaration, &facts, |shared| ProjectInvocation {
                 shared,
@@ -969,19 +944,14 @@ impl App {
             .map(|nav| nav.project.clone())
             .unwrap_or_else(|| invocation.origin.project.clone());
         let facts = self.project_act_facts(&invocation.action, project, true);
-        // Prepare one immutable value per live context before borrowing its shared screen state.
-        let requests: std::collections::HashMap<_, _> = std::iter::once(&self.tab)
+        // Snapshot every live context before borrowing the shared screen states.
+        let live: Vec<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
-            .map(|tab| (tab.id, self.project_request(&ScreenKey::new("", tab.id))))
+            .map(|tab| self.project_context_info(tab))
             .collect();
         let update = self.with_project_host(|host, context| {
             host.execute_act(context, invocation, &facts, |key| {
-                let mut req = requests.get(&key.tab)?.clone();
-                let project = req.project.as_mut()?;
-                project.tab = key.tab;
-                project.screen.clone_from(&key.screen);
-                project.selection.clone_from(&key.selection);
-                Some(req)
+                effects::request_for(&live, key)
             })
         });
         self.apply_project_update(update);
@@ -1005,284 +975,101 @@ impl App {
             text_input: self.is_text_input_active(),
             filtering: self.project_frame().is_some_and(|frame| frame.filtering),
         };
-        prompt::reopen_text(&mut self.project_dialog, invocation, &current, blockers);
+        self.with_project_host(|host, _| host.reopen_retry(invocation, &current, blockers));
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {
-        let live_tabs: std::collections::HashSet<_> = std::iter::once(&self.tab)
+        let live: Vec<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
-            .map(|tab| tab.id)
+            .map(|tab| self.project_context_info(tab))
             .collect();
-        let retained: std::collections::HashSet<_> = std::iter::once(&self.tab)
+        let retained: Vec<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
             .flat_map(|tab| tab.projects.projects.iter().map(ProjectKey::from))
             .collect();
-        self.project_runtimes
-            .retain(|key, _| retained.contains(key));
+        // Registry, settings and ReadScope remain host-owned.
         for project in self.tab.projects.projects.clone() {
             self.start_project_runtime(project);
         }
-        let mut changed = false;
-        let mut effects = Vec::new();
-        let mut watches = Vec::new();
-        let mut chip_errors = Vec::new();
-        let mut errors = Vec::new();
-        let mut retries = Vec::new();
-        for (key, runtime) in &mut self.project_runtimes {
-            while let Some(reply) = runtime
-                .pending
-                .take()
-                .or_else(|| runtime.rx.try_recv().ok())
-            {
-                changed = true;
-                runtime.busy = false;
-                runtime.acting = false;
-                if let Some(invocation) = runtime.pending_retry.take().filter(|_| reply.act_failed)
-                {
-                    retries.push(*invocation);
+        let update = {
+            let mut host = ProjectHost::new(
+                &mut self.project_runtimes,
+                &mut self.project_dialog,
+                &mut self.project_replaying,
+            );
+            let mut contexts: Vec<_> = std::iter::once(&mut self.tab)
+                .chain(self.tabs.iter_mut())
+                .map(project_context)
+                .collect();
+            host.poll(&mut contexts, &live, &retained)
+        };
+        let mut changed = update.changed;
+        for event in update.events {
+            match event {
+                ProjectEvent::Watch(key, paths) => {
+                    for tab in std::iter::once(&mut self.tab).chain(self.tabs.iter_mut()) {
+                        tab.projects.set_watch_paths(
+                            &key.plugin,
+                            &key.root,
+                            &key.marker,
+                            paths.clone(),
+                        );
+                    }
                 }
-                #[cfg(test)]
-                {
-                    runtime.view_request = None;
-                }
-                runtime.ready |= reply.error.is_none();
-                runtime.error = reply.error;
-                if let Some(paths) = reply.watch_paths {
-                    runtime.watch_paths = Some(paths);
-                }
-                if !reply.enabled.is_empty() {
-                    runtime.enabled = reply.enabled;
-                }
-                if !runtime.invalidated {
-                    runtime.contexts.extend(
-                        reply
-                            .contexts
-                            .into_iter()
-                            .filter(|(screen, _)| live_tabs.contains(&screen.tab)),
-                    );
-                    for (screen, view) in reply
-                        .views
-                        .into_iter()
-                        .filter(|(screen, _)| live_tabs.contains(&screen.tab))
+                ProjectEvent::Effect(effect) => {
+                    if effect.tree_status && self.tab.root.starts_with(&effect.origin.project.root)
                     {
-                        let old = runtime.views.get(&screen).map(Arc::as_ref);
-                        remap_project_rows(&mut self.tab, key, &screen, old, &view);
-                        for tab in &mut self.tabs {
-                            remap_project_rows(tab, key, &screen, old, &view);
+                        self.git_status_dirty = true;
+                    }
+                    if effect.origin.context == self.tab.id {
+                        self.apply_project_effect(effect);
+                    } else if let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|tab| tab.id == effect.origin.context)
+                    {
+                        tab.project_effects.push(effect);
+                    }
+                }
+                ProjectEvent::EnsureView => {
+                    for effect in std::mem::take(&mut self.tab.project_effects) {
+                        self.apply_project_effect(effect);
+                        changed = true;
+                    }
+                    if self.tab.project_enter_pending && !self.tab.projects.pending() {
+                        self.tab.project_enter_pending = false;
+                        if !self.enter_project() {
+                            self.open_git_view();
                         }
-                        runtime.dirty.remove(&screen);
-                        runtime.views.insert(screen, view);
+                        changed = true;
                     }
+                    self.ensure_project_view();
                 }
-                if let Some(chip) = reply.chip {
-                    if !runtime.chip_dirty {
-                        runtime.chip = chip;
-                    }
+                ProjectEvent::Error(error) => {
+                    self.flash = Some(error.message.get(self.plugin_lang()).into())
                 }
-                if let Some(error) = reply.chip_error {
-                    chip_errors.push((key.clone(), error));
-                }
-                if runtime.invalidated {
-                    runtime.dirty.extend(runtime.views.keys().cloned());
-                    runtime.invalidated = false;
-                }
-                if let Some(effect) = reply.effect {
-                    effects.push(effect);
-                }
-                if let Some(error) = &runtime.error {
+                ProjectEvent::ChipError(key, error) => {
                     if self
                         .tab
-                        .project_navigation
-                        .as_ref()
-                        .is_some_and(|nav| &nav.project == key)
+                        .projects
+                        .projects
+                        .iter()
+                        .any(|p| ProjectKey::from(p) == key)
                     {
-                        errors.push(error.clone());
+                        self.flash = Some(error.message.get(self.plugin_lang()).into());
                     }
                 }
+                ProjectEvent::Retry(invocation) => self.reopen_project_input(invocation),
             }
-            if !runtime.busy && !runtime.closed_tabs.is_empty() {
-                match runtime.tx.try_send(ProjectJob::TabsClosed {
-                    tabs: runtime.closed_tabs.iter().copied().collect(),
-                }) {
-                    Ok(()) => {
-                        runtime.closed_tabs.clear();
-                        runtime.busy = true;
-                    }
-                    // A failed open has no session left to notify.
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        runtime.closed_tabs.clear()
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                }
-            }
-            if let Some(paths) = &runtime.watch_paths {
-                watches.push((key.clone(), paths.clone()));
-            }
-            if runtime.refresh_watch
-                && !runtime.busy
-                && runtime.ready
-                && runtime.tx.try_send(ProjectJob::Watch).is_ok()
-            {
-                runtime.refresh_watch = false;
-                runtime.chip_dirty = false;
-                runtime.busy = true;
-            }
-            if runtime.chip_dirty
-                && runtime.ready
-                && !runtime.busy
-                && runtime.tx.try_send(ProjectJob::Chip).is_ok()
-            {
-                runtime.chip_dirty = false;
-                runtime.busy = true;
-            }
-        }
-        for (key, paths) in watches {
-            for tab in std::iter::once(&mut self.tab).chain(self.tabs.iter_mut()) {
-                tab.projects
-                    .set_watch_paths(&key.plugin, &key.root, &key.marker, paths.clone());
-            }
-        }
-        for effect in effects {
-            if effect.tree_status && self.tab.root.starts_with(&effect.project.root) {
-                self.git_status_dirty = true;
-            }
-            if effect.tab == self.tab.id {
-                self.apply_project_effect(effect);
-            } else if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == effect.tab) {
-                tab.project_effects.push(effect);
-            }
-        }
-        for effect in std::mem::take(&mut self.tab.project_effects) {
-            self.apply_project_effect(effect);
-            changed = true;
-        }
-        if self.tab.project_enter_pending && !self.tab.projects.pending() {
-            self.tab.project_enter_pending = false;
-            if !self.enter_project() {
-                self.open_git_view();
-            }
-            changed = true;
-        }
-        self.ensure_project_view();
-        for error in errors {
-            self.flash = Some(error.message.get(self.plugin_lang()).into());
-        }
-        for (key, error) in chip_errors {
-            if self
-                .tab
-                .projects
-                .projects
-                .iter()
-                .any(|p| ProjectKey::from(p) == key)
-            {
-                self.flash = Some(error.message.get(self.plugin_lang()).into());
-            }
-        }
-        for invocation in retries {
-            self.reopen_project_input(invocation);
         }
         changed
     }
 
-    fn initialize_project_frame(&mut self) {
-        if let Some(nav) = self.tab.project_navigation.as_mut() {
-            if let Some(runtime) = self.project_runtimes.get(&nav.project) {
-                if let Some(view) = nav.frame().and_then(|frame| runtime.views.get(&frame.key)) {
-                    nav.initialize_frame(view, &runtime.project.declaration);
-                }
-            }
-        }
-    }
-
     fn apply_project_effect(&mut self, effect: ProjectEffect) {
-        if self.tab.root != effect.tree_root || matches!(effect.outcome, Some(Outcome::Unhandled)) {
-            return;
-        }
-        if effect.tree_status {
-            self.git_status_dirty = true;
-        }
-        if !matches!(
-            effect.outcome,
-            Some(Outcome::Redraw | Outcome::PushScreen { .. } | Outcome::PopScreen)
-        ) {
-            self.flash = Some(effect.label);
-        }
-        if matches!(
-            &effect.outcome,
-            Some(
-                Outcome::PushScreen { .. }
-                    | Outcome::PopScreen
-                    | Outcome::OpenFile { .. }
-                    | Outcome::OpenDiff { .. }
-                    | Outcome::SwitchRoot { .. }
-                    | Outcome::OpenTab { .. }
-            )
-        ) && effect.view.is_some()
-            && !self.tab.project_navigation.as_ref().is_some_and(|nav| {
-                nav.project == effect.project
-                    && nav.stack.last().map(|frame| &frame.key) == effect.view.as_ref()
-            })
-        {
-            return;
-        }
-        match effect.outcome {
-            Some(Outcome::PopScreen) => {
-                if self.project_pushed() {
-                    self.project_back();
-                }
-            }
-            Some(Outcome::Copy { text }) => self.set_clipboard_flash(&text),
-            Some(Outcome::Flash(message)) => {
-                self.flash = Some(message.get(self.plugin_lang()).into())
-            }
-            Some(Outcome::PushScreen { screen, selection }) => {
-                if !self
-                    .project_runtimes
-                    .get(&effect.project)
-                    .is_some_and(|runtime| {
-                        runtime
-                            .project
-                            .declaration
-                            .screens
-                            .iter()
-                            .any(|s| s.id == screen)
-                    })
-                {
-                    self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into());
-                    return;
-                }
-                let target = ScreenKey {
-                    screen,
-                    selection,
-                    tab: effect.tab,
-                };
-                if self.tab.project_navigation.is_none() && effect.view.is_none() {
-                    self.show_project_screen(effect.project, target);
-                    return;
-                }
-                let Some(nav) = self.tab.project_navigation.as_mut().filter(|nav| {
-                    nav.project == effect.project
-                        && nav.stack.last().map(|f| &f.key) == effect.view.as_ref()
-                }) else {
-                    return;
-                };
-                nav.stack.push(ProjectFrame::new(target));
-            }
-            Some(outcome @ (Outcome::OpenFile { .. } | Outcome::OpenDiff { .. })) => {
-                self.tab.project_return = self.tab.project_navigation.take();
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            Some(outcome @ Outcome::SwitchRoot { .. }) => {
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            Some(outcome @ Outcome::OpenTab { .. }) => {
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            _ => {}
-        }
+        let current = self.project_context_info(&self.tab);
+        let update =
+            self.with_project_host(|host, context| host.apply_effect(context, &current, effect));
+        self.apply_project_update(update);
     }
 
     #[cfg(test)]
@@ -1553,25 +1340,26 @@ impl App {
     }
 
     pub(crate) fn return_to_project(&mut self) -> bool {
-        let Some(nav) = self.tab.project_return.take() else {
+        if !ProjectHost::<ProjectInvocation>::restore_return(
+            &mut self.tab.project_navigation,
+            &mut self.tab.project_return,
+        ) {
             return false;
-        };
-        self.tab.project_navigation = Some(nav);
+        }
         self.ensure_project_view();
         true
     }
 
     pub(crate) fn resize_project(&mut self, cols: u16, rows: u16) {
-        if self.tab.preview_cols != cols || self.tab.preview_viewport != rows {
-            self.tab.preview_cols = cols;
-            self.tab.preview_viewport = rows;
-            if let Some(nav) = &self.tab.project_navigation {
-                if let Some(runtime) = self.project_runtimes.get_mut(&nav.project) {
-                    runtime.dirty.extend(runtime.views.keys().cloned());
-                    runtime.invalidated |= runtime.busy;
-                }
-            }
-        }
+        let previous = ProjectViewport {
+            cols: self.tab.preview_cols,
+            rows: self.tab.preview_viewport,
+        };
+        self.tab.preview_cols = cols;
+        self.tab.preview_viewport = rows;
+        self.with_project_host(|host, context| {
+            host.resize(context, previous, ProjectViewport { cols, rows })
+        });
         self.ensure_project_view();
     }
 
@@ -1583,16 +1371,7 @@ impl App {
     }
 
     pub(super) fn project_tab_closed(&mut self, tab: u64) {
-        for runtime in self.project_runtimes.values_mut() {
-            runtime.tab_closed(tab);
-            if runtime
-                .pending_retry
-                .as_ref()
-                .is_some_and(|act| act.effect.tab == tab)
-            {
-                runtime.pending_retry = None;
-            }
-        }
+        self.with_project_host(|host, _| host.close_context(tab));
     }
 
     #[cfg(test)]

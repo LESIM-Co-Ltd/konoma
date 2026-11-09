@@ -1,7 +1,7 @@
 //! Project owner worker contracts, including independent watch and chip replies.
 
 use super::*;
-use konoma_plugin::host::project::{content, ProjectContent};
+use konoma_plugin::host::project::{content, ProjectContent, ProjectOrigin};
 use konoma_plugin::proc::{
     client::{Config, ProcPlugin, Spawned},
     frame,
@@ -245,15 +245,16 @@ fn project_initial_watch_and_chip_failures_are_independent_and_chip_job_skips_wa
             let context = ProjectView::new("text").paths(&dir, &dir);
             let act_paths = vec![dir.join("after-act/index")];
             log.lock().unwrap().watch_paths = Some(act_paths.clone());
-            let effect = ProjectEffect {
-                project: ProjectKey::from(&runtime.project),
-                tab: 0,
-                tree_root: dir.to_path_buf(),
-                view: None,
-                outcome: None,
-                tree_status: false,
-                label: "current".into(),
-            };
+            let effect = ProjectEffect::new(
+                ProjectOrigin {
+                    project: ProjectKey::from(&runtime.project),
+                    context: 0,
+                    root: dir.to_path_buf(),
+                    screen: None,
+                    surface: Default::default(),
+                },
+                "current",
+            );
             runtime
                 .tx
                 .send(ProjectJob::Act {

@@ -17,16 +17,15 @@ impl App {
         let detection = self.tab.projects.poll();
         if previously_ready && detection == Some(false) {
             for project in &self.tab.projects.projects {
-                if let Some(runtime) = self
-                    .project_runtimes
-                    .get_mut(&super::project_screens::ProjectKey::from(project))
-                {
-                    runtime.dirty.extend(runtime.views.keys().cloned());
-                    runtime.refresh_watch = true;
-                    runtime.error = None;
-                    runtime.chip_dirty = true;
-                    runtime.invalidated |= runtime.busy;
-                }
+                konoma_plugin::host::project::ProjectHost::new(
+                    &mut self.project_runtimes,
+                    &mut self.project_dialog,
+                    &mut self.project_replaying,
+                )
+                .invalidate(
+                    &super::project_screens::ProjectKey::from(project),
+                    konoma_plugin::host::project::ProjectInvalidation::Detection,
+                );
             }
         }
         let changed = match detection {
