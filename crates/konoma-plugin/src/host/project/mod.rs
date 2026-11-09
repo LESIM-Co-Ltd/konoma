@@ -11,11 +11,21 @@
 //! - [`runtime`]: one serial session owner per project, taking host policy and localized messages
 //!   as values, with opaque action effects and pending invocations.
 //! - [`content`] and [`diff`]: the shared widgets' prepared content and windowed diff layout cache.
+//! - [`state`]: per-context frames, row identity, filters, marks and resolved screen motions.
 
 pub mod content;
 pub mod detection;
 pub mod diff;
 pub mod runtime;
+pub mod state;
+
+pub use state::{
+    ProjectFrame, ProjectInput, ProjectKey, ProjectMotionResult, ProjectScreenState,
+    ProjectViewport,
+};
+
+#[cfg(test)]
+mod state_tests;
 
 pub use content::{content, ProjectContent};
 pub use diff::{ProjectDiff, ProjectDiffLayout};

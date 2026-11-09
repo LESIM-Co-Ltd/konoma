@@ -17,22 +17,10 @@ use crate::i18n::Msg;
 use crate::keymap::{Context, KeyPress};
 use crate::plugins::{ActBinding, PluginAct};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ProjectKey {
-    pub plugin: String,
-    pub root: PathBuf,
-    pub marker: String,
-}
-
-impl From<&crate::plugins::projects::MatchedProject> for ProjectKey {
-    fn from(p: &crate::plugins::projects::MatchedProject) -> Self {
-        Self {
-            plugin: p.plugin.clone(),
-            root: p.root.clone(),
-            marker: p.marker.clone(),
-        }
-    }
-}
+pub(crate) use konoma_plugin::host::project::ProjectKey;
+use konoma_plugin::host::project::{ProjectMotionResult, ProjectScreenState, ProjectViewport};
+pub(crate) type ProjectFrame = konoma_plugin::host::project::ProjectFrame<ProjectInvocation>;
+type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation>;
 
 #[cfg(test)]
 pub(crate) use konoma_plugin::host::project::ProjectDiff;
@@ -103,51 +91,27 @@ impl ProjectControl {
     }
 }
 #[derive(Clone)]
-pub(crate) struct ProjectFrame {
-    pub key: ScreenKey,
-    pub cursor: usize,
-    pub scroll: u16,
-    pub hscroll: u16,
-    pub marked: BTreeSet<usize>,
-    pub query: String,
-    pub filtering: bool,
-    filter_anchor: usize,
-    initialized: bool,
-    pending: std::collections::VecDeque<ProjectInput>,
-}
-
-#[derive(Clone)]
-enum ProjectInput {
-    Key(KeyEvent),
-    Act(Box<ProjectInvocation>),
-}
-
-impl ProjectFrame {
-    fn new(key: ScreenKey) -> Self {
-        Self {
-            key,
-            cursor: 0,
-            scroll: 0,
-            hscroll: 0,
-            marked: BTreeSet::new(),
-            query: String::new(),
-            filtering: false,
-            filter_anchor: 0,
-            initialized: false,
-            pending: Default::default(),
-        }
-    }
-}
-
-#[derive(Clone)]
 pub(crate) struct ProjectNavigation {
-    pub project: ProjectKey,
-    pub stack: Vec<ProjectFrame>,
+    state: ProjectScreenState<ProjectInvocation>,
     origin_mode: Mode,
     origin_path: Option<PathBuf>,
     origin_kind: Option<PreviewKind>,
     origin_scroll: u16,
     origin_hscroll: u16,
+}
+
+impl std::ops::Deref for ProjectNavigation {
+    type Target = ProjectScreenState<ProjectInvocation>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for ProjectNavigation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 #[derive(Clone)]
@@ -216,54 +180,18 @@ fn remap_project_rows(
     old: Option<&ProjectContent>,
     new: &ProjectContent,
 ) {
-    let (Some(ProjectContent::List(old)), ProjectContent::List(new)) = (old, new) else {
-        return;
-    };
     for nav in [&mut tab.project_navigation, &mut tab.project_return]
         .into_iter()
         .flatten()
         .filter(|nav| &nav.project == project)
     {
-        for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
-            let selected = old
-                .visible_rows(&frame.query)
-                .get(frame.cursor)
-                .and_then(|index| old.rows.get(*index))
-                .map(ProjectRow::from);
-            let marked: Vec<_> = frame
-                .marked
-                .iter()
-                .filter_map(|index| old.rows.get(*index))
-                .map(ProjectRow::from)
-                .collect();
-            if let Some(selected) = selected {
-                if let Some(cursor) = new
-                    .visible_rows(&frame.query)
-                    .iter()
-                    .position(|index| ProjectRow::from(&new.rows[*index]) == selected)
-                {
-                    frame.cursor = cursor;
-                } else {
-                    frame.cursor = 0;
-                    frame
-                        .pending
-                        .retain(|input| matches!(input, ProjectInput::Act(_)));
-                }
-            }
-            frame.marked = new
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| marked.contains(&ProjectRow::from(*row)))
-                .map(|(index, _)| index)
-                .collect();
-        }
+        nav.remap_rows(screen, old, new);
     }
 }
 
 impl App {
     fn project_frame_mut(&mut self) -> Option<&mut ProjectFrame> {
-        self.tab.project_navigation.as_mut()?.stack.last_mut()
+        self.tab.project_navigation.as_mut()?.frame_mut()
     }
 
     fn project_list_right(&self, key: KeyEvent) -> bool {
@@ -350,7 +278,7 @@ impl App {
     }
 
     fn handle_project_text_key(&mut self, key: KeyEvent) -> bool {
-        use crate::keymap::{Action, KeyPress, Motion, Resolution};
+        use crate::keymap::{Action, KeyPress, Resolution};
         let Some(content) = self.project_content() else {
             return false;
         };
@@ -364,21 +292,14 @@ impl App {
                 .resolve(Context::Diff, None, KeyPress::norm(&key))
                 == Resolution::Action(Action::CycleDiffLayout)
         {
-            let Some(frame) = self.project_frame_mut() else {
-                return false;
-            };
-            frame.hscroll = 0;
-            // Project diffs always show raw lines, independent of the origin preview's presentation.
-            self.diff_layout = self.diff_layout.next();
-            self.tab.preview_hscroll = 0;
-            self.tab.git_detail_hscroll = 0;
-            let label = match self.diff_layout {
-                DiffLayout::Unified => Msg::DiffUnified,
-                DiffLayout::Split => Msg::DiffSideBySide,
-                DiffLayout::Auto => Msg::DiffAuto,
-            };
-            self.flash = Some(tr(self.lang, label).into());
-            return true;
+            let layout = self.diff_layout;
+            let result = self
+                .tab
+                .project_navigation
+                .as_mut()
+                .map(|nav| nav.cycle_layout(&content, layout))
+                .unwrap_or(ProjectMotionResult::Unhandled);
+            return self.apply_project_motion_result(result);
         }
         let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
             .keymaps
@@ -390,52 +311,15 @@ impl App {
         let Some(Action::Navigate(motion)) = action else {
             return false;
         };
-        let width = self.tab.preview_cols;
-        let (total, max_h) = match content.as_ref() {
-            ProjectContent::Lines(lines) => (
-                lines.len(),
-                lines
-                    .iter()
-                    .map(Line::width)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_sub(width as usize)
-                    .min(u16::MAX as usize) as u16,
-            ),
-            ProjectContent::Diff(diff) => diff.metrics(width, self.diff_is_split(width)),
-            ProjectContent::List(_) => return false,
-        };
-        let max_v = total
-            .saturating_sub(self.tab.preview_viewport as usize)
-            .min(u16::MAX as usize) as u16;
-        let Some(frame) = self.project_frame_mut() else {
-            return false;
-        };
-        frame.scroll = frame.scroll.min(max_v);
-        frame.hscroll = frame.hscroll.min(max_h);
-        match motion {
-            Motion::Up => frame.scroll = frame.scroll.saturating_sub(1),
-            Motion::Down => frame.scroll = frame.scroll.saturating_add(1).min(max_v),
-            Motion::HalfUp => frame.scroll = frame.scroll.saturating_sub(10),
-            Motion::HalfDown => frame.scroll = frame.scroll.saturating_add(10).min(max_v),
-            Motion::PageUp => frame.scroll = frame.scroll.saturating_sub(20),
-            Motion::PageDown => frame.scroll = frame.scroll.saturating_add(20).min(max_v),
-            Motion::Top => frame.scroll = 0,
-            Motion::Bottom => frame.scroll = max_v,
-            Motion::Left => frame.hscroll = frame.hscroll.saturating_sub(4),
-            Motion::Right => frame.hscroll = frame.hscroll.saturating_add(4).min(max_h),
-            Motion::LineHome => frame.hscroll = 0,
-            Motion::LineEnd => frame.hscroll = max_h,
-        }
-        true
+        self.apply_project_motion(&content, motion, key.code)
     }
 
     fn handle_project_list_motion(&mut self, key: KeyEvent) -> bool {
-        use crate::keymap::{Action, KeyPress, Motion, Resolution};
+        use crate::keymap::{Action, KeyPress, Resolution};
         let Some(content) = self.project_content() else {
             return false;
         };
-        let ProjectContent::List(list) = content.as_ref() else {
+        let ProjectContent::List(_) = content.as_ref() else {
             return false;
         };
         let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
@@ -448,81 +332,71 @@ impl App {
         let Some(Action::Navigate(motion)) = action else {
             return false;
         };
-        if motion == Motion::Right {
+        self.apply_project_motion(&content, motion, key.code)
+    }
+
+    fn project_viewport(&self) -> ProjectViewport {
+        ProjectViewport {
+            cols: self.tab.preview_cols,
+            rows: self.tab.preview_viewport,
+        }
+    }
+
+    fn apply_project_motion(
+        &mut self,
+        content: &ProjectContent,
+        motion: crate::keymap::Motion,
+        key: KeyCode,
+    ) -> bool {
+        let viewport = self.project_viewport();
+        let layout = self.diff_layout;
+        let Some(nav) = self.tab.project_navigation.as_mut() else {
             return false;
-        }
-        // The legacy branch panel consumes page motions without moving its cursor.
-        if self.project_picker()
-            && matches!(
-                motion,
-                Motion::HalfUp | Motion::HalfDown | Motion::PageUp | Motion::PageDown
-            )
-        {
-            return true;
-        }
-        if motion == Motion::Left {
-            if self.project_graph_jj().is_some() || self.project_pushed() {
+        };
+        let declaration = self
+            .project_runtimes
+            .get(&nav.project)
+            .map(|runtime| &runtime.project.declaration);
+        let result = nav.apply_motion(content, motion, key, viewport, layout, declaration);
+        self.apply_project_motion_result(result)
+    }
+
+    fn apply_project_motion_result(&mut self, result: ProjectMotionResult) -> bool {
+        match result {
+            ProjectMotionResult::Unhandled => false,
+            ProjectMotionResult::Handled => true,
+            ProjectMotionResult::Back => {
                 self.project_back();
-                return true;
+                true
             }
-            return false;
+            ProjectMotionResult::LayoutChanged(layout) => {
+                // Project diffs always show raw lines, independent of the origin preview's presentation.
+                self.diff_layout = layout;
+                self.tab.preview_hscroll = 0;
+                self.tab.git_detail_hscroll = 0;
+                let label = match layout {
+                    DiffLayout::Unified => Msg::DiffUnified,
+                    DiffLayout::Split => Msg::DiffSideBySide,
+                    DiffLayout::Auto => Msg::DiffAuto,
+                };
+                self.flash = Some(tr(self.lang, label).into());
+                true
+            }
         }
-        let visible = self.project_visible_rows();
-        let selectable: Vec<_> = visible
-            .iter()
-            .enumerate()
-            .filter(|(_, index)| list.rows[**index].selectable)
-            .map(|(cursor, _)| cursor)
-            .collect();
-        let Some(frame) = self.project_frame_mut() else {
-            return false;
-        };
-        let at = selectable
-            .iter()
-            .position(|cursor| *cursor == frame.cursor)
-            .unwrap_or(0);
-        let last = selectable.len().saturating_sub(1);
-        let next = match motion {
-            Motion::Up => at.saturating_sub(1),
-            Motion::Down => at.saturating_add(1).min(last),
-            Motion::HalfUp => at.saturating_sub(10),
-            Motion::HalfDown => at.saturating_add(10).min(last),
-            Motion::PageUp => at.saturating_sub(if key.code == KeyCode::PageUp { 10 } else { 20 }),
-            Motion::PageDown => at
-                .saturating_add(if key.code == KeyCode::PageDown {
-                    10
-                } else {
-                    20
-                })
-                .min(last),
-            Motion::Top => 0,
-            Motion::Bottom => last,
-            _ => at,
-        };
-        frame.cursor = selectable.get(next).copied().unwrap_or(0);
-        true
     }
 
     fn project_filter_anchor(&self) -> usize {
-        self.project_frame()
-            .map(|frame| {
-                self.project_visible_rows()
-                    .get(frame.cursor)
-                    .copied()
-                    .unwrap_or(frame.filter_anchor)
-            })
+        self.tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| nav.filter_anchor(self.project_content().as_deref()))
             .unwrap_or(0)
     }
 
     fn project_filter_changed(&mut self, anchor: usize) {
-        let visible = self.project_visible_rows();
-        let cursor = visible
-            .iter()
-            .position(|index| *index >= anchor)
-            .unwrap_or(visible.len().saturating_sub(1));
-        if let Some(frame) = self.project_frame_mut() {
-            frame.cursor = cursor;
-            frame.filter_anchor = visible.get(cursor).copied().unwrap_or(anchor);
+        let content = self.project_content();
+        if let Some(nav) = self.tab.project_navigation.as_mut() {
+            nav.filter_changed(content.as_deref(), anchor);
         }
     }
 
@@ -688,7 +562,7 @@ impl App {
     }
 
     pub(crate) fn project_frame(&self) -> Option<&ProjectFrame> {
-        self.tab.project_navigation.as_ref()?.stack.last()
+        self.tab.project_navigation.as_ref()?.frame()
     }
 
     pub(crate) fn project_content(&self) -> Option<Arc<ProjectContent>> {
@@ -702,61 +576,39 @@ impl App {
     }
 
     pub(crate) fn project_marks_enabled(&self) -> bool {
-        self.tab
-            .project_navigation
-            .as_ref()
-            .and_then(|nav| {
-                let frame = nav.stack.last()?;
-                Some(
-                    self.project_runtimes
-                        .get(&nav.project)?
-                        .project
-                        .declaration
-                        .screens
-                        .iter()
-                        .any(|s| s.id == frame.key.screen && s.marks),
-                )
-            })
-            .unwrap_or(false)
+        self.tab.project_navigation.as_ref().is_some_and(|nav| {
+            nav.marks_enabled(
+                self.project_runtimes
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
+        })
     }
 
     pub(crate) fn project_visible_rows(&self) -> Vec<usize> {
-        let Some(frame) = self.project_frame() else {
+        let Some(nav) = self.tab.project_navigation.as_ref() else {
             return Vec::new();
         };
         let Some(content) = self.project_content() else {
             return Vec::new();
         };
-        match content.as_ref() {
-            ProjectContent::List(list) => list.visible_rows(&frame.query),
-            ProjectContent::Lines(lines) => (0..lines.len()).collect(),
-            ProjectContent::Diff(diff) => {
-                (0..diff.row_count(self.diff_is_split(self.tab.preview_cols))).collect()
-            }
-        }
+        nav.visible_rows(&content, self.project_viewport(), self.diff_layout)
     }
 
     fn project_selected_index(&self) -> Option<usize> {
-        let index = self
-            .project_visible_rows()
-            .get(self.project_frame()?.cursor)
-            .copied()?;
-        if let Some(content) = self.project_content() {
-            if let ProjectContent::List(list) = content.as_ref() {
-                if !list.rows.get(index)?.selectable || list.rows.get(index)?.filter_fallback {
-                    return None;
-                }
-            }
-        }
-        Some(index)
+        self.tab.project_navigation.as_ref()?.selected_index(
+            self.project_content()?.as_ref(),
+            self.project_viewport(),
+            self.diff_layout,
+        )
     }
 
     pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
         let index = self.project_selected_index()?;
-        match self.project_content()?.as_ref() {
-            ProjectContent::List(list) => list.rows.get(index)?.target.clone(),
-            _ => None,
-        }
+        self.tab
+            .project_navigation
+            .as_ref()?
+            .row_target(self.project_content()?.as_ref(), index)
     }
 
     pub(crate) fn project_new_tab_hint(&self) -> Option<(String, String)> {
@@ -797,24 +649,13 @@ impl App {
     }
 
     pub(crate) fn project_act_context(&self) -> ProjectAct {
-        if let Some(frame) = self.project_frame() {
-            let mut context = ProjectAct::new().screen(&frame.key.screen).tab(self.tab.id);
-            if let Some(content) = self.project_content() {
-                if let ProjectContent::List(list) = content.as_ref() {
-                    if let Some(row) = self.project_selected_index().and_then(|i| list.rows.get(i))
-                    {
-                        context = context.selected(ProjectRow::from(row));
-                    }
-                    context = context.marked(
-                        frame
-                            .marked
-                            .iter()
-                            .filter_map(|i| list.rows.get(*i))
-                            .map(ProjectRow::from),
-                    );
-                }
-            }
-            return context;
+        if let Some(nav) = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .filter(|nav| nav.frame().is_some())
+        {
+            return nav.act_context(self.project_content().as_deref());
         }
         if self.is_git_diff_preview() {
             return self
@@ -997,8 +838,7 @@ impl App {
 
     fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
         self.tab.project_navigation = Some(ProjectNavigation {
-            project: key,
-            stack: vec![ProjectFrame::new(screen)],
+            state: ProjectScreenState::new(key, screen),
             origin_mode: self.tab.mode,
             origin_path: self.tab.preview_path.clone(),
             origin_kind: self.tab.preview_kind.clone(),
@@ -1165,34 +1005,13 @@ impl App {
             return false;
         }
         if self.project_frame().is_some_and(|f| f.filtering) {
-            let anchor = self.project_filter_anchor();
-            let frame = self
+            let content = self.project_content();
+            return self
                 .tab
                 .project_navigation
                 .as_mut()
                 .unwrap()
-                .stack
-                .last_mut()
-                .unwrap();
-            match key.code {
-                KeyCode::Esc => {
-                    frame.query.clear();
-                    frame.filtering = false;
-                }
-                KeyCode::Enter => frame.filtering = false,
-                KeyCode::Backspace => {
-                    frame.query.pop();
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
-                        && !c.is_control() =>
-                {
-                    frame.query.push(c);
-                }
-                _ => {}
-            }
-            self.project_filter_changed(anchor);
-            return true;
+                .handle_filter_key(content.as_deref(), key);
         }
         if self.handle_project_text_key(key) || self.handle_project_list_motion(key) {
             return true;
@@ -1232,11 +1051,10 @@ impl App {
                     .project_frame()
                     .is_some_and(|frame| !frame.query.is_empty()) =>
             {
-                let anchor = self.project_filter_anchor();
-                if let Some(frame) = self.project_frame_mut() {
-                    frame.query.clear();
+                let content = self.project_content();
+                if let Some(nav) = self.tab.project_navigation.as_mut() {
+                    nav.clear_filter(content.as_deref());
                 }
-                self.project_filter_changed(anchor);
                 return true;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -1281,16 +1099,8 @@ impl App {
                     && self.project_filter_enabled() =>
             {
                 let anchor = self.project_filter_anchor();
-                self.tab
-                    .project_navigation
-                    .as_mut()
-                    .unwrap()
-                    .stack
-                    .last_mut()
-                    .unwrap()
-                    .filtering = true;
                 if let Some(frame) = self.project_frame_mut() {
-                    frame.query.clear();
+                    frame.start_filter();
                 }
                 self.project_filter_changed(anchor);
                 return true;
@@ -1300,21 +1110,10 @@ impl App {
                     .project_content()
                     .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
             {
-                if !self.project_marks_enabled() {
-                    return true;
-                }
-                if let Some(index) = self.project_selected_index() {
-                    let marks = &mut self
-                        .tab
-                        .project_navigation
-                        .as_mut()
-                        .unwrap()
-                        .stack
-                        .last_mut()
-                        .unwrap()
-                        .marked;
-                    if !marks.remove(&index) {
-                        marks.insert(index);
+                if let Some(content) = self.project_content() {
+                    let nav = self.tab.project_navigation.as_mut().unwrap();
+                    if let Some(runtime) = self.project_runtimes.get(&nav.project) {
+                        nav.toggle_mark(&content, &runtime.project.declaration);
                     }
                 }
                 return true;
@@ -1778,43 +1577,9 @@ impl App {
 
     fn initialize_project_frame(&mut self) {
         if let Some(nav) = self.tab.project_navigation.as_mut() {
-            if let Some(frame) = nav.stack.last_mut() {
-                if !frame.initialized {
-                    if let Some(view) = self
-                        .project_runtimes
-                        .get(&nav.project)
-                        .and_then(|r| r.views.get(&frame.key))
-                    {
-                        if let ProjectContent::List(list) = view.as_ref() {
-                            if let Some(cursor) =
-                                list.visible_rows(&frame.query).iter().position(|index| {
-                                    let row = &list.rows[*index];
-                                    row.initial_selection && row.selectable && !row.filter_fallback
-                                })
-                            {
-                                frame.cursor = cursor;
-                            }
-                            let marks =
-                                self.project_runtimes
-                                    .get(&nav.project)
-                                    .is_some_and(|runtime| {
-                                        runtime
-                                            .project
-                                            .declaration
-                                            .screens
-                                            .iter()
-                                            .any(|s| s.id == frame.key.screen && s.marks)
-                                    });
-                            frame.marked.extend(
-                                list.rows
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, row)| marks && row.marked && row.selectable)
-                                    .map(|(i, _)| i),
-                            );
-                        }
-                        frame.initialized = true;
-                    }
+            if let Some(runtime) = self.project_runtimes.get(&nav.project) {
+                if let Some(view) = nav.frame().and_then(|frame| runtime.views.get(&frame.key)) {
+                    nav.initialize_frame(view, &runtime.project.declaration);
                 }
             }
         }
@@ -2034,59 +1799,34 @@ impl App {
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_picker(&self) -> bool {
-        self.project_frame()
-            .is_some_and(|frame| frame.key.screen == "graph_picker")
-            && self
-                .tab
-                .project_navigation
-                .as_ref()
-                .is_some_and(|nav| matches!(nav.project.plugin.as_str(), "git" | "jj"))
-    }
-
-    pub(crate) fn project_filter_enabled(&self) -> bool {
         self.tab
             .project_navigation
             .as_ref()
-            .and_then(|nav| {
-                let frame = nav.stack.last()?;
+            .is_some_and(|nav| nav.picker())
+    }
+
+    pub(crate) fn project_filter_enabled(&self) -> bool {
+        self.tab.project_navigation.as_ref().is_none_or(|nav| {
+            nav.filter_enabled(
                 self.project_runtimes
-                    .get(&nav.project)?
-                    .project
-                    .declaration
-                    .screens
-                    .iter()
-                    .find(|screen| screen.id == frame.key.screen)
-            })
-            .is_none_or(|screen| screen.filter)
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
+        })
     }
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_graph_jj(&self) -> Option<bool> {
-        let nav = self.tab.project_navigation.as_ref()?;
-        if nav.stack.last()?.key.screen != "graph" {
-            return None;
-        }
-        match nav.project.plugin.as_str() {
-            "git" => Some(false),
-            "jj" => Some(true),
-            _ => None,
-        }
+        self.tab.project_navigation.as_ref()?.graph_jj()
     }
 
     pub(crate) fn project_pushed(&self) -> bool {
         self.tab.project_navigation.as_ref().is_some_and(|nav| {
-            self.project_runtimes
-                .get(&nav.project)
-                .is_some_and(|runtime| {
-                    nav.stack.last().is_some_and(|f| {
-                        runtime
-                            .project
-                            .declaration
-                            .screens
-                            .iter()
-                            .any(|s| s.id == f.key.screen && s.pushed)
-                    })
-                })
+            nav.pushed(
+                self.project_runtimes
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
         })
     }
 
