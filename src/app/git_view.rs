@@ -814,6 +814,10 @@ impl App {
     pub fn diff_is_split(&self, width: u16) -> bool {
         self.diff_layout.is_split(width)
     }
+
+    pub(crate) fn source_diff_layout(&self) -> konoma_widgets::diff_frame::SourceDiffLayout {
+        konoma_plugin::host::project::diff_frame::source_diff_layout(self.diff_layout)
+    }
     /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
     /// detail view. While the media diff's side-by-side view is actually **showing pictures**
     /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary body

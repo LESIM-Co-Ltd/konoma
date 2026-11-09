@@ -9,6 +9,9 @@
 pub mod caret;
 pub mod colors;
 pub mod dialog;
+pub mod diff_frame;
+#[cfg(test)]
+mod diff_frame_tests;
 pub mod footer_line;
 pub mod gif_player;
 pub mod gitdiff;

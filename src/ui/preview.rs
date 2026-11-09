@@ -8,7 +8,9 @@
 
 use std::path::Path;
 
-use ratatui::layout::{Alignment, Rect};
+#[cfg(feature = "git")]
+use ratatui::layout::Alignment;
+use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -19,6 +21,7 @@ use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
 use crate::preview::image::ImageFailureMessage;
 use crate::preview::PreviewKind;
+use konoma_plugin::host::project::diff_frame;
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
 pub fn context(app: &App) -> Vec<Span<'static>> {
@@ -390,19 +393,14 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(feature = "git")]
 fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
     render_decorated_body(frame, app, area, |app| {
-        let pos = app
-            .diff_change_position()
-            .map(|(i, n)| format!(" ({i}/{n})"))
-            .unwrap_or_default();
-        let scope = app
-            .follow_diff_scope_msg()
-            .map(|m| format!(" · {}", tr(app.lang, m)))
-            .unwrap_or_default();
-        app.tab
-            .preview_path
-            .clone()
-            .map(|p| format!(" diff ⟨rendered⟩: {}{pos}{scope} ", app.format_path(&p)))
-            .unwrap_or_else(|| " diff ".to_string())
+        let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+        diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: Some("rendered"),
+        }
+        .title(false)
     });
 }
 
@@ -826,48 +824,36 @@ fn render_decorated_body(
         }
     }
 
-    // The end of the scroll range: the last page, or for a presentation the last slide's heading.
-    let max_v = app
-        .slide_scroll_limit(total_rows, inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+    let update = diff_frame::clamp_decorated_scroll(diff_frame::DecoratedScrollValues {
+        vertical_limit: app.slide_scroll_limit(total_rows, inner.height as usize),
+        max_line_cols,
+        inner_width: inner.width,
+        viewport: inner.height,
+        scroll: app.tab.preview_scroll,
+        hscroll: app.tab.preview_hscroll,
+        wrap,
+    });
+    app.tab.preview_scroll = update.scroll;
+    app.tab.preview_hscroll = update.hscroll;
     app.tab.preview_viewport = inner.height;
-    // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
-    // line (preview_edit_line). Same value preview_scroll is clamped against, so the fraction lines up.
+    // The wrapped total maps the scroll position back to a source line for preview editing.
     app.md_view_rows = total_rows;
 
-    // Horizontal scroll: unneeded while wrapping. Only while not wrapping, up to where the longest line fits.
-    let max_h = if wrap {
-        0
-    } else {
-        max_line_cols.saturating_sub(inner.width as usize) as u16
-    };
-    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-
-    // Everything here counts wrapped display rows, the unit this view scrolls in.
-    let extent = ScrollExtent::new(
-        app.tab.preview_scroll as u64,
-        max_v as u64,
-        inner.height as u64,
-    );
     let title = title_for(app);
-    let block = Block::bordered()
-        .title(title)
-        .title(scroll_title(app.lang, extent));
-
-    // The visible slice (with focus already inverted) + the remaining scroll from the slice's
-    // start. Wrapping is independent per line (ratatui's Wrap does not span lines), so the slice's
-    // rendered result matches the whole document.
     let (lines, local_scroll) = app.md_slice(app.tab.preview_scroll, inner.height);
-    let mut para = Paragraph::new(Text::from(lines)).block(block);
-    if wrap {
-        para = para.wrap(Wrap { trim: false });
-    }
-    let para = para.scroll((local_scroll, app.tab.preview_hscroll));
-    frame.render_widget(para, area);
-    // Before the inline images: the bar lives on the border column, which is outside every image
-    // rect (they are centered inside `inner`), so the two never share a cell in either order.
-    render_scrollbar(frame, area, extent);
+    diff_frame::draw_decorated_frame(
+        frame.buffer_mut(),
+        area,
+        diff_frame::DecoratedFrameValues {
+            lines,
+            local_scroll,
+            hscroll: app.tab.preview_hscroll,
+            wrap,
+            extent: update.extent,
+            title: &title,
+            scroll_words: scroll_words(app.lang),
+        },
+    );
 
     // Overlay block-level inline images (kitty graphics) over their reserved placeholder rows.
     // A partially-scrolled image is clipped to the viewport (only its visible band is drawn).
@@ -989,116 +975,39 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     render_gitdiff_source(frame, app, area);
 }
 
-/// The classic unified/split diff — `render_gitdiff`'s pre-existing body, extracted so
-/// `render_diff_rendered` can fall back into it directly (same frame) when the `Rendered`
-/// presentation's own cache build has to give up and round down to `Source` (§5).
+/// The Source dispatch builds drawing values and applies scroll corrections. Rendered has its
+/// own decorated dispatch; it never falls back to Source in the same frame.
 fn render_gitdiff_source(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Auto is resolved by the inner width. Estimate the frame's inner width first.
-    let split = app.diff_is_split(Block::bordered().inner(area).width);
-    app.diff_split_drawn = split;
-    let mode_tag = if split { " ⇆" } else { "" };
-    // The position `(2/5)` within the set of changed files (the current spot for n/N cycling; not shown if outside the set).
-    let pos = app
-        .diff_change_position()
-        .map(|(i, n)| format!(" ({i}/{n})"))
-        .unwrap_or_default();
-    // For a follow-opened diff, make the "since follow-start / full" range explicit (prevents confusion since the boundary is invisible).
-    let scope = app
-        .follow_diff_scope_msg()
-        .map(|m| format!(" · {}", tr(app.lang, m)))
-        .unwrap_or_default();
-    // The title carries the scroll label, which isn't known until the row count below has been
-    // computed, so build the title last. The inner rect doesn't depend on it (the title is drawn on
-    // the top border row).
     let inner = Block::bordered().inner(area);
-    let titled = |app: &App, e: ScrollExtent| {
-        let title = app
-            .tab
-            .preview_path
-            .clone()
-            .map(|p| format!(" diff{mode_tag}: {}{pos}{scope} ", app.format_path(&p)))
-            .unwrap_or_else(|| " diff ".to_string());
-        Block::bordered()
-            .title(title)
-            .title(scroll_title(app.lang, e))
-    };
     app.tab.preview_viewport = inner.height;
-
-    let diff = app.git_diff_lines();
-    if diff.is_empty() {
-        // Nothing to scroll: `All` + a full-length thumb, exactly like any content that fits.
-        let extent = ScrollExtent::new(0, 0, inner.height as u64);
-        frame.render_widget(titled(app, extent), area);
-        let msg = empty_diff_body_text(app, inner);
-        let y = inner.y + inner.height / 2;
-        let line_area = Rect {
-            x: inner.x,
-            y,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(msg).alignment(Alignment::Center), line_area);
-        render_scrollbar(frame, area, extent);
-        return;
-    }
-
-    // Syntax-color the body by extension. Reuse the code theme from config.
-    let ext = app.current_preview_ext().to_string();
-    let theme = app.cfg.ui.theme.code_theme.clone();
-    let iw = inner.width as usize;
-    let ih = inner.height as usize;
-    // Horizontal scroll: stacked layout uses Paragraph's horizontal offset; side-by-side shifts
-    // **each column's body text only** internally (the gutter/separator stay fixed). Both use the
-    // same preview_hscroll, operated with h/l·0/$.
-    //
-    // Only the rows actually on screen are ever syntax-highlighted (`highlight_line_by_ext`, via
-    // `diff_lines_range`/`diff_lines_side_by_side_range`) — that's the expensive step (measured
-    // ~60µs/row; ~400–760ms for a real 6,500-row diff when the whole document was highlighted on
-    // every keypress, vs. a ~60ms render budget). The total row count (needed to clamp vertical
-    // scroll *before* slicing which rows to render) and the horizontal scroll ceiling both come
-    // from highlight-free layout passes (`side_by_side_row_count`/`unified_max_hscroll`/
-    // `side_by_side_max_hscroll`), so per-frame cost stays O(viewport) instead of O(diff size).
-    let (lines, para_hscroll, max_v) = if split {
-        let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(&diff, iw) as u16;
-        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-        let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
-        let max_v = total_rows.saturating_sub(ih) as u16;
-        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-        let lines = crate::preview::gitdiff::diff_lines_side_by_side_range(
-            &diff,
-            &ext,
-            &theme,
-            iw,
-            app.tab.preview_hscroll as usize,
-            app.tab.preview_scroll as usize,
-            ih,
-        );
-        (lines, 0, max_v)
+    let lines = app.git_diff_lines();
+    // Polling an empty diff's worker remains on the host, before the pure drawing call.
+    let empty_text = if lines.is_empty() {
+        empty_diff_body_text(app, inner)
     } else {
-        let total_rows = diff.len(); // one DiffLine = one unified row, headers included
-        let max_v = total_rows.saturating_sub(ih) as u16;
-        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-        let max_h = crate::preview::gitdiff::unified_max_hscroll(&diff, iw) as u16;
-        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-        let lines = crate::preview::gitdiff::diff_lines_range(
-            &diff,
-            &ext,
-            &theme,
-            iw,
-            app.tab.preview_scroll as usize,
-            ih,
-        );
-        (lines, app.tab.preview_hscroll, max_v)
+        String::new()
     };
-
-    // Vertical scroll is already applied by slicing to the visible window above (unlike before,
-    // when the full document was handed to Paragraph and Paragraph's own scroll clipped it).
-    let extent = ScrollExtent::new(app.tab.preview_scroll as u64, max_v as u64, ih as u64);
-    let para = Paragraph::new(Text::from(lines))
-        .block(titled(app, extent))
-        .scroll((0, para_hscroll));
-    frame.render_widget(para, area);
-    render_scrollbar(frame, area, extent);
+    let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+    let values = diff_frame::SourceDiffValues {
+        lines: &lines,
+        extension: app.current_preview_ext(),
+        theme: &app.cfg.ui.theme.code_theme,
+        layout: app.source_diff_layout(),
+        scroll: app.tab.preview_scroll,
+        hscroll: app.tab.preview_hscroll,
+        title: diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: None,
+        },
+        empty_text: &empty_text,
+        scroll_words: scroll_words(app.lang),
+    };
+    let update = diff_frame::draw_source_diff(frame.buffer_mut(), area, values);
+    app.tab.preview_scroll = update.scroll;
+    app.tab.preview_hscroll = update.hscroll;
+    app.diff_split_drawn = update.diff_split_drawn;
 }
 
 /// Round `px` up to the next multiple of `step` (never below `step`) — used to quantize the media-
@@ -1126,85 +1035,22 @@ fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
 /// call for one at all: a genuine "(no changes)" (either shape with `same_bytes`), or `Unavailable`
 /// (the worker panicked/gave up — the caller keeps its own existing "(no changes)" text rather than
 /// claiming a binary change it can't actually back up with sizes).
-fn media_summary_line(
+pub(crate) fn media_summary_line(
     lang: crate::i18n::Lang,
     outcome: &crate::app::MediaDiffOutcome,
 ) -> Option<String> {
-    use crate::app::{MediaDiffOutcome, MediaDiffSide};
-    let (same_bytes, old_len, new_len) = match outcome {
-        MediaDiffOutcome::Summary {
-            same_bytes,
-            old_len,
-            new_len,
-            ..
-        } => (*same_bytes, *old_len, *new_len),
-        MediaDiffOutcome::Ready {
-            same_bytes,
-            old,
-            new,
-            ..
-        } => {
-            let side_len = |s: &MediaDiffSide| match s {
-                MediaDiffSide::Picture(p) => Some(p.bytes),
-                _ => None,
-            };
-            (*same_bytes, side_len(old), side_len(new))
-        }
-        MediaDiffOutcome::Unavailable => return None,
-    };
-    if same_bytes {
-        return None;
-    }
-    let fmt = |n: Option<u64>| match n {
-        Some(b) => crate::fileops::human_size(b),
-        None => tr(lang, crate::i18n::Msg::MediaDiffNone).to_string(),
-    };
-    // The rounded `human_size` alone can make a real, confirmed-different (`!same_bytes`) change
-    // read as "unchanged" — a 2-byte-larger 81.3 KB file still prints "81.3 KB → 81.3 KB" (real bug:
-    // the byte-for-byte comparison already *knows* it changed; the display just never said how).
-    // Appended only when both sides' sizes are known — with one side `Absent`, there is nothing to
-    // take a delta *of*, and the bare "(なし) → 22.3 KB" already says everything a delta could.
-    let delta = match (old_len, new_len) {
-        (Some(o), Some(n)) if o == n => {
-            Some(tr(lang, crate::i18n::Msg::MediaDiffSameSizeDifferentContent).to_string())
-        }
-        (Some(o), Some(n)) => Some(format_byte_delta(lang, n as i64 - o as i64)),
-        _ => None,
-    };
-    let mut line = format!(
-        "{}: {} → {}",
-        tr(lang, crate::i18n::Msg::MediaDiffBinaryFile),
-        fmt(old_len),
-        fmt(new_len)
-    );
-    if let Some(delta) = delta {
-        line.push_str(&format!(" ({delta})"));
-    }
-    Some(line)
-}
-
-/// The signed byte delta for `media_summary_line`'s "(+2 B)"/"(-2 B)" suffix — thousands-separated
-/// so a large delta (a multi-MB binary change) stays readable, e.g. "+1,234,567 B".
-fn format_byte_delta(lang: crate::i18n::Lang, delta: i64) -> String {
-    let sign = if delta >= 0 { '+' } else { '-' };
-    format!(
-        "{sign}{} {}",
-        thousands_separated(delta.unsigned_abs()),
-        tr(lang, crate::i18n::Msg::MediaDiffByteUnit)
+    use crate::i18n::Msg;
+    let values = diff_frame::binary_summary_values(outcome)?;
+    diff_frame::binary_summary(
+        values,
+        diff_frame::BinarySummaryWords {
+            binary_file: tr(lang, Msg::MediaDiffBinaryFile),
+            none: tr(lang, Msg::MediaDiffNone),
+            same_size_different_content: tr(lang, Msg::MediaDiffSameSizeDifferentContent),
+            byte_unit: tr(lang, Msg::MediaDiffByteUnit),
+        },
+        crate::fileops::human_size,
     )
-}
-
-/// `1234567` → `"1,234,567"`.
-fn thousands_separated(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
 }
 
 /// The centered body text for `render_gitdiff_source`'s empty-diff branch — the plain "(no changes)"

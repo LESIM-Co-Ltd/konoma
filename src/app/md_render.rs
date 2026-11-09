@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(test)]
+#[path = "diff_frame_tests.rs"]
+mod diff_frame_tests;
+#[cfg(test)]
 #[path = "inline_overlay_tests.rs"]
 mod inline_overlay_tests;
 use crate::preview::image::ImageFailureMessage;

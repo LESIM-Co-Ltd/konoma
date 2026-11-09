@@ -20,6 +20,7 @@ pub mod actions;
 pub mod content;
 pub mod detection;
 pub mod diff;
+pub mod diff_frame;
 pub mod diff_presentation;
 pub mod draw;
 pub mod effects;
