@@ -1,5 +1,6 @@
-//! Project-app preparation. No terminal, input loop or drawing is started here.
+//! Project preparation and the injected-terminal navigation/body loop.
 
+mod looping;
 mod prepare;
 
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use crate::{Failure, TermCaps};
 
 use super::{AppKeys, Display};
 
+pub use looping::{run_project_with, ProjectLoopCx, StandaloneInvocation, StandaloneSurface};
 pub use prepare::prepare_projects;
 
 /// Explicit backend selection, independent of process-wide VCS preference and feature flags.
@@ -49,18 +51,24 @@ pub trait ProjectServices: Send + Sync {
 }
 
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
-/// The unit invocation/effect types are preparation-only; no action executor is connected here.
+/// Preparation does not take the terminal or start the input loop.
 pub struct PreparedProjects {
     pub registry: Arc<Registry>,
     pub open_dir: PathBuf,
     pub detection: ProjectDetection,
     /// Detection succeeded, but watching failed. The entry can warn and continue as konoma does.
     pub watch_failed: bool,
-    pub runtimes: HashMap<ProjectKey, ProjectRuntime<()>>,
+    pub runtimes: HashMap<
+        ProjectKey,
+        ProjectRuntime<
+            crate::host::project::ProjectEffect<StandaloneSurface>,
+            StandaloneInvocation,
+        >,
+    >,
     pub service_info: HashMap<ProjectKey, ProjectServiceInfo>,
     pub services: Arc<dyn ProjectServices>,
-    pub screen: Option<ProjectScreenState<()>>,
-    pub dialog: Option<ProjectDialog<()>>,
+    pub screen: Option<ProjectScreenState<StandaloneInvocation>>,
+    pub dialog: Option<ProjectDialog<StandaloneInvocation>>,
     pub config: SharedConfig,
     pub settings: ProjectSettings,
     pub keys: AppKeys,

@@ -9,6 +9,9 @@ mod confirmations;
 #[path = "project_left.rs"]
 mod left;
 
+#[path = "project_navigation_bridge.rs"]
+mod navigation_bridge;
+
 #[test]
 fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
     let mut f = fixture("project_close_inflight", false, 1, None, None, None);

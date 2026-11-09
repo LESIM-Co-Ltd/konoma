@@ -127,7 +127,10 @@ fn prepare(
                 read_scope: ReadScope::unrestricted(),
                 messages: messages(lang),
             },
-            |_, _| {},
+            |effect: &mut crate::host::project::ProjectEffect<super::StandaloneSurface>,
+             outcome| {
+                effect.outcome = Some(outcome);
+            },
         );
         let reply = runtime
             .rx
