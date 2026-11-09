@@ -702,6 +702,11 @@ impl ProjectDetection {
         self.worker.is_some() && !self.ready
     }
 
+    /// Whether a resident detection/watch worker exists, including after its first answer.
+    pub fn watching(&self) -> bool {
+        self.worker.is_some()
+    }
+
     /// Preparation only: wait for the first scan before taking the terminal. `Ok(true)` keeps
     /// the detected projects with a watch warning, like the host's nonblocking `poll`; `Err`
     /// means there is no scan answer. UI loops must use `poll` instead.
@@ -783,6 +788,7 @@ impl ProjectDetection {
     /// publishing an update.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn inject_event(&self, event: notify::Result<notify::Event>) {
+        let failed = event.is_err();
         let events = self
             .worker
             .as_ref()
@@ -797,12 +803,22 @@ impl ProjectDetection {
             || {},
         );
         let (tx, rx) = mpsc::sync_channel(1);
-        events
-            .tx
-            .send(WatchMessage::Settled(tx))
-            .expect("project event worker");
-        rx.recv_timeout(Duration::from_secs(30))
-            .expect("project event processed");
+        let sent = events.tx.send(WatchMessage::Settled(tx));
+        if failed {
+            // A watch failure publishes and exits, possibly before receiving the fence.
+            // Channel disconnection is then the exit fence; publication must already exist.
+            if sent.is_ok() {
+                match rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(error) => panic!("project failure processed: {error}"),
+                }
+            }
+            self.wait_for_result();
+        } else {
+            sent.expect("project event worker");
+            rx.recv_timeout(Duration::from_secs(30))
+                .expect("project event processed");
+        }
     }
 
     /// Test hook: like [`inject_event`](Self::inject_event), after a watch-path update that is

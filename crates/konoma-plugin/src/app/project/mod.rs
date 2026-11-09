@@ -1,4 +1,4 @@
-//! Project preparation and the injected-terminal act, prompt and navigation loop.
+//! Project preparation, terminal entry and the act, prompt and navigation loop.
 
 mod looping;
 mod prepare;
@@ -21,6 +21,14 @@ use super::{AppKeys, Display};
 
 pub use looping::{run_project_with, ProjectLoopCx, StandaloneInvocation, StandaloneSurface};
 pub use prepare::prepare_projects;
+
+fn watch_warning(lang: &str) -> &'static str {
+    if lang == "ja" {
+        "プロジェクトの検出または監視に失敗しました"
+    } else {
+        "could not detect or watch projects"
+    }
+}
 
 /// Explicit backend selection, independent of process-wide VCS preference and feature flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,4 +87,55 @@ pub struct PreparedProjects {
     pub load_error: Option<String>,
     /// Latest delivered status, shown until the next key.
     pub notice: Option<String>,
+}
+
+/// Prepare and run statically registered projects, refusing input before taking the terminal.
+pub fn run_projects(
+    plugins: Vec<Arc<dyn crate::Plugin>>,
+    dir: &Path,
+    services: Arc<dyn ProjectServices>,
+) -> Result<(), super::AppError> {
+    use super::{term, AppError, PrepareFailure};
+    use std::io::IsTerminal;
+
+    let colors = super::colors_of(
+        &std::env::var("COLORTERM").unwrap_or_default(),
+        &std::env::var("TERM").unwrap_or_default(),
+    );
+    let mut prepared = match prepare_projects(
+        plugins,
+        dir,
+        TermCaps::new().colors(colors),
+        SharedConfig::load_default(),
+        services,
+    ) {
+        Ok(prepared) => prepared,
+        Err(failure) => return Err(failure.report(&mut std::io::stderr())),
+    };
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(PrepareFailure {
+            error: AppError::NoTerminal,
+            load_error: prepared.load_error,
+        }
+        .report(&mut std::io::stderr()));
+    }
+    let cx = ProjectLoopCx {
+        home: std::env::var_os("HOME").map(PathBuf::from),
+    };
+    term::install_exit_signals();
+    let mut guard = term::TerminalGuard::enter()?;
+    let konoma_widgets::term_query::Startup {
+        typed, late_reply, ..
+    } = konoma_widgets::term_query::picker_from_terminal();
+    // Project Document content is currently prepared as Lines by the shared owner.
+    let result = run_project_with(
+        guard.terminal(),
+        &mut prepared,
+        &mut term::CrosstermEvents::after_query(&typed, late_reply),
+        &cx,
+        None,
+    );
+    guard.leave();
+    let _ = super::write_load_error(&mut std::io::stderr(), prepared.load_error.as_deref());
+    result
 }

@@ -199,17 +199,16 @@ enum Step {
 }
 impl EventSource for Events {
     fn next(&mut self, wait: Option<Duration>) -> Next {
-        while self
-            .steps
-            .front()
-            .is_some_and(|s| wait.is_none() || matches!(s, Step::BusyKey(_) | Step::BusyHook(_)))
-        {
+        while self.steps.front().is_some_and(|s| {
+            wait != Some(Duration::from_millis(16))
+                || matches!(s, Step::BusyKey(_) | Step::BusyHook(_))
+        }) {
             match self.steps.pop_front().unwrap() {
                 Step::Key(k) | Step::BusyKey(k) => return Next::Event(k),
                 Step::IdleHook(f) | Step::BusyHook(f) => f(),
             }
         }
-        if wait.is_some() {
+        if wait == Some(Duration::from_millis(16)) {
             self.replies
                 .recv_timeout(Duration::from_secs(10))
                 .expect("owner reply fence");

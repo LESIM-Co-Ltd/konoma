@@ -81,6 +81,26 @@ struct ProjectLoopState {
 }
 
 impl ProjectLoopState {
+    fn poll_detection(
+        &mut self,
+        prepared: &mut PreparedProjects,
+        info: &ProjectContextInfo<StandaloneSurface>,
+    ) -> bool {
+        let previously_ready = !prepared.detection.pending();
+        let detection = prepared.detection.poll();
+        if previously_ready && detection == Some(false) {
+            for project in &prepared.detection.projects {
+                self.with_host(info, |host, _| {
+                    host.invalidate(&ProjectKey::from(project), ProjectInvalidation::Detection)
+                });
+            }
+        }
+        if detection == Some(true) {
+            prepared.notice = Some(super::watch_warning(prepared.lang).into());
+        }
+        detection.is_some()
+    }
+
     fn info(
         &self,
         prepared: &PreparedProjects,
@@ -194,7 +214,7 @@ impl ProjectLoopState {
 
 /// Run project acts, prompts, navigation and presentation. The caller owns terminal entry/teardown.
 /// Preparation is borrowed so its owners and corrected navigation survive an injected input
-/// source ending. No terminal entry, watcher wakes or launch executor are started here.
+/// source ending. The caller supplies terminal entry and launch capabilities.
 pub fn run_project_with<B: Backend, E: EventSource>(
     terminal: &mut Terminal<B>,
     prepared: &mut PreparedProjects,
@@ -226,6 +246,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 state.screen = Some(ProjectHost::start_screen(project, first));
             }
         }
+        let mut redraw = true;
+        if prepared.watch_failed {
+            prepared.notice = Some(super::watch_warning(prepared.lang).into());
+        }
         loop {
             let size = terminal
                 .size()
@@ -239,9 +263,11 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 rows: body.height,
             };
             let info = state.info(prepared, cx);
+            redraw |= previous != state.viewport;
             state.with_host(&info, |host, context| {
                 host.resize(context, previous, info.viewport)
             });
+            redraw |= state.poll_detection(prepared, &info);
             let retained: Vec<_> = state.runtimes.keys().cloned().collect();
             let update = state.with_host(&info, |host, context| {
                 host.poll(
@@ -250,23 +276,32 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     &retained,
                 )
             });
-            if state.apply(prepared, &info, update) || state.replay_keys(prepared, &info) {
+            redraw |= update.changed;
+            if state.apply(prepared, &info, update) {
+                break;
+            }
+            let (quit, replayed) = state.replay_keys(prepared, &info);
+            redraw |= replayed;
+            if quit {
                 break;
             }
             state.ensure(&info);
-            terminal
-                .draw(|frame| {
-                    let whole = frame.area();
-                    if let Some(bg) = prepared.display.bg() {
-                        frame
-                            .buffer_mut()
-                            .set_style(whole, ratatui::style::Style::new().bg(bg));
-                    }
-                    state.draw(prepared, &info, frame.buffer_mut(), area);
-                    state.presentation = state.presentation(prepared, &info);
-                    state.draw_chrome(prepared, frame.buffer_mut(), whole);
-                })
-                .map_err(|e| AppError::Terminal(e.to_string()))?;
+            if redraw {
+                terminal
+                    .draw(|frame| {
+                        let whole = frame.area();
+                        if let Some(bg) = prepared.display.bg() {
+                            frame
+                                .buffer_mut()
+                                .set_style(whole, ratatui::style::Style::new().bg(bg));
+                        }
+                        state.draw(prepared, &info, frame.buffer_mut(), area);
+                        state.presentation = state.presentation(prepared, &info);
+                        state.draw_chrome(prepared, frame.buffer_mut(), whole);
+                    })
+                    .map_err(|e| AppError::Terminal(e.to_string()))?;
+                redraw = false;
+            }
             let pending = state
                 .runtimes
                 .values()
@@ -283,16 +318,27 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             {
                 continue;
             }
-            match events.next(pending.then_some(Duration::from_millis(16))) {
+            let frame_work_pending = pending || prepared.detection.pending();
+            let wake_in = if frame_work_pending {
+                Some(Duration::from_millis(16))
+            } else {
+                prepared
+                    .detection
+                    .watching()
+                    .then_some(Duration::from_millis(100))
+            };
+            match events.next(wake_in) {
                 Next::End => break,
                 Next::Event(AppEvent::Key(key)) => {
+                    redraw = true;
                     if let Some(key) = key_event(&key) {
                         if state.key(prepared, &info, key) {
                             break;
                         }
                     }
                 }
-                Next::Event(AppEvent::Resize | AppEvent::Paste(_)) | Next::Timeout => {}
+                Next::Event(AppEvent::Resize) => redraw = true,
+                Next::Event(AppEvent::Paste(_)) | Next::Timeout => {}
             }
         }
         Ok(())

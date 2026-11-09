@@ -244,15 +244,17 @@ impl ProjectLoopState {
         &mut self,
         prepared: &mut PreparedProjects,
         info: &ProjectContextInfo<StandaloneSurface>,
-    ) -> bool {
+    ) -> (bool, bool) {
         if !self.with_host(info, |host, _| host.begin_replay()) {
-            return false;
+            return (false, false);
         }
         let mut quit = false;
+        let mut changed = false;
         loop {
             let input = self.with_host(info, |host, context| host.next_replay(context));
             match input {
                 Some(ProjectInput::Key(key)) => {
+                    changed = true;
                     // Rebuild the key facts after every intermediate dialog or navigation change.
                     if self.key(prepared, info, key) {
                         quit = true;
@@ -260,13 +262,14 @@ impl ProjectLoopState {
                     }
                 }
                 Some(ProjectInput::Act(invocation)) => {
+                    changed = true;
                     self.execute_act(prepared, info, *invocation)
                 }
                 None => break,
             }
         }
         self.with_host(info, |host, _| host.end_replay());
-        quit
+        (quit, changed)
     }
 
     pub(super) fn dialog_presentation(

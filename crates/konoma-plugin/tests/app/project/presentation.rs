@@ -34,7 +34,7 @@ impl EventSource for Events {
             );
             self.last_build = count;
         }
-        if wait.is_some() {
+        if wait == Some(Duration::from_millis(16)) {
             self.replies
                 .recv_timeout(Duration::from_secs(10))
                 .expect("owner reply fence");

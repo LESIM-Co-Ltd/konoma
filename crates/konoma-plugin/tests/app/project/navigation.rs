@@ -223,7 +223,7 @@ struct Events {
 }
 impl EventSource for Events {
     fn next(&mut self, wait: Option<Duration>) -> Next {
-        if wait.is_some() {
+        if wait == Some(Duration::from_millis(16)) {
             self.replies
                 .recv_timeout(Duration::from_secs(10))
                 .expect("an actual owner reply, not a sleep");
