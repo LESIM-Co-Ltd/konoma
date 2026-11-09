@@ -1174,7 +1174,7 @@ pub struct App {
     pub(crate) project_runtimes:
         std::collections::HashMap<project_screens::ProjectKey, project_worker::ProjectRuntime>,
     pub(crate) project_dialog: Option<project_screens::ProjectDialog>,
-    project_replaying: bool,
+    project_replaying: konoma_plugin::host::project::ProjectReplayState,
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
@@ -2421,7 +2421,7 @@ impl App {
         let mut app = Self {
             project_runtimes: std::collections::HashMap::new(),
             project_dialog: None,
-            project_replaying: false,
+            project_replaying: Default::default(),
             launch_dir: root.clone(),
             path_style,
             lang,

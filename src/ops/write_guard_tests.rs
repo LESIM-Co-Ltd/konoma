@@ -161,11 +161,12 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
     let body = method(policy, "allow_plugin_write");
     assert!(body.contains("b.act.act() == action && b.writes"));
     assert!(body.contains("self.allow_write(&id, writes, false)"));
-    let project = include_str!("../app/project_screens.rs");
-    let execute = method(project, "execute_project_act");
-    assert!(execute.contains("invocation.declaration.writes"));
+    let project = include_str!("../../crates/konoma-plugin/src/host/project/actions.rs");
+    let execute = method(project, "execute_act");
+    assert!(execute.contains("shared.declaration.writes"));
     assert!(execute.find("allow_write(").unwrap() < execute.find("ProjectJob::Act {").unwrap());
-    assert!(method(project, "request_project_act").contains("allow_write("));
+    assert!(execute.find("ProjectJob::Act {").unwrap() < execute.find("try_send(job)").unwrap());
+    assert!(method(project, "request_act").contains("allow_write("));
     assert_eq!(
         project.matches("ProjectJob::Act {").count(),
         1,
@@ -269,8 +270,29 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
     );
     assert!(jj_calls >= 1, "the jj snapshot write must be scanned");
     assert!(plugin_calls >= 1, "the plugin act executor must be scanned");
-    let project = include_str!("../app/project_screens.rs");
+    let project = include_str!("../../crates/konoma-plugin/src/host/project/actions.rs");
     assert_eq!(project.matches("ProjectJob::Act {").count(), 1);
-    assert!(method(project, "execute_project_act").contains("allow_write("));
+    let execute = method(project, "execute_act");
+    assert!(execute.find("allow_write(").unwrap() < execute.find("ProjectJob::Act {").unwrap());
+    assert!(execute.find("ProjectJob::Act {").unwrap() < execute.find("try_send(job)").unwrap());
+    let sdk = src
+        .parent()
+        .unwrap()
+        .join("crates/konoma-plugin/src/host/project");
+    let mut files = Vec::new();
+    sources(&sdk, &mut files);
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let count = text.matches("ProjectJob::Act {").count();
+        let expected =
+            usize::from(path == sdk.join("actions.rs") || path == sdk.join("runtime.rs"));
+        assert_eq!(
+            count,
+            expected,
+            "one guarded send point and one serial owner: {}",
+            path.display()
+        );
+    }
+    assert!(!include_str!("../app/project_screens.rs").contains("ProjectJob::Act {"));
     eprintln!("guarded write paths: git={git_calls}, jj={jj_calls}, plugin={plugin_calls}, project=1; lower bound=13");
 }
