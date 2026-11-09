@@ -9,7 +9,7 @@
 
 use crossterm::event::KeyCode;
 
-use crate::help_msg::CoreMsg;
+use crate::help_msg::{CoreMsg, DiffMsg};
 use crate::keymap::{
     CoreAction, CoreBinding, CoreContext, CoreKeys, CoreMenu, CoreResolution, KeyPress, Motion,
 };
@@ -137,7 +137,10 @@ pub fn default_help(ctx: CoreContext, a: CoreAction) -> Option<CoreMsg> {
         A::PageNext | A::PagePrev => Some(M::HintPage),
         A::ToggleOutline => Some(M::HintOutline),
         A::RequestEdit => Some(
-            if matches!(ctx, CoreContext::Text | CoreContext::Document) {
+            if matches!(
+                ctx,
+                CoreContext::Text | CoreContext::Document | CoreContext::Diff
+            ) {
                 M::EditExternalEnv
             } else {
                 M::EditExternal
@@ -278,6 +281,10 @@ pub enum CoreRow {
     Ends,
     /// `h / l` in a text.
     HScroll,
+    /// Horizontal scrolling and line ends, as two groups on the diff's single row.
+    DiffHScrollEnds,
+    /// `s`: unified / split / auto.
+    CycleDiffLayout,
     /// `0 / $` in a text.
     LineEnds,
     /// `h j k l` in a table: between cells.
@@ -322,6 +329,13 @@ const HSCROLL: &[HelpOp] = &[
     HelpOp::Act(CoreAction::Navigate(Motion::Left)),
     HelpOp::Act(CoreAction::Navigate(Motion::Right)),
 ];
+const DIFF_HSCROLL_ENDS: &[HelpOp] = &[
+    HelpOp::Act(CoreAction::Navigate(Motion::Left)),
+    HelpOp::Act(CoreAction::Navigate(Motion::Right)),
+    HelpOp::Act(CoreAction::Navigate(Motion::LineHome)),
+    HelpOp::Act(CoreAction::Navigate(Motion::LineEnd)),
+];
+const DIFF_LAYOUT: &[HelpOp] = &[HelpOp::Act(CoreAction::CycleDiffLayout)];
 const LINE_ENDS: &[HelpOp] = &[
     HelpOp::Act(CoreAction::Navigate(Motion::LineHome)),
     HelpOp::Act(CoreAction::Navigate(Motion::LineEnd)),
@@ -363,6 +377,8 @@ impl CoreRow {
             CoreRow::Scroll => SCROLL,
             CoreRow::Ends => ENDS,
             CoreRow::HScroll => HSCROLL,
+            CoreRow::DiffHScrollEnds => DIFF_HSCROLL_ENDS,
+            CoreRow::CycleDiffLayout => DIFF_LAYOUT,
             CoreRow::LineEnds | CoreRow::TableCols => LINE_ENDS,
             CoreRow::TableMove | CoreRow::Pan => HJKL,
             CoreRow::Zoom => ZOOM,
@@ -454,8 +470,8 @@ pub fn rows_of(ctx: CoreContext) -> &'static [CoreRow] {
         CoreContext::Diff => &[
             R::Scroll,
             R::Ends,
-            R::HScroll,
-            R::LineEnds,
+            R::DiffHScrollEnds,
+            R::CycleDiffLayout,
             R::PageTurn,
             R::Edit,
             R::Open,
@@ -515,46 +531,64 @@ pub fn render_row(
     lookup: &dyn KeyLookup,
     lang: Lang,
 ) -> Option<CoreRowOut> {
-    let acts: Vec<HelpOp> = row
-        .ops()
-        .iter()
-        .copied()
-        .filter(|a| facts.is_on(*a))
-        .collect();
-    if acts.is_empty() {
-        return None;
-    }
-    let (cols, zipped) = columns(lookup, &acts);
-    if cols.is_empty() {
-        return None;
-    }
-    let lead = acts[0];
-    let first_key = cols.first().and_then(|c| c.first()).copied();
-    let keys: Vec<KeyPress> = cols.iter().flatten().copied().collect();
-    // A key is written once per row even if two columns hold it.
-    let mut seen: Vec<String> = Vec::new();
-    let rendered: Vec<String> = cols
-        .iter()
-        .map(|c| {
-            let mut one: Vec<String> = Vec::new();
-            for k in c {
-                let s = help_key(*k);
-                if !seen.contains(&s) {
-                    seen.push(s.clone());
-                    one.push(s);
+    let groups = if row == CoreRow::DiffHScrollEnds {
+        vec![HSCROLL, LINE_ENDS]
+    } else {
+        vec![row.ops()]
+    };
+    let mut parts = Vec::new();
+    let mut keys = Vec::new();
+    let mut acts = Vec::new();
+    let mut lead = None;
+    let mut first_key = None;
+    for group in groups {
+        let enabled: Vec<_> = group.iter().copied().filter(|a| facts.is_on(*a)).collect();
+        if enabled.is_empty() {
+            continue;
+        }
+        let (cols, zipped) = columns(lookup, &enabled);
+        if cols.is_empty() {
+            continue;
+        }
+        if lead.is_none() {
+            lead = enabled.first().copied();
+            first_key = cols.first().and_then(|c| c.first()).copied();
+        }
+        acts.extend(enabled);
+        keys.extend(cols.iter().flatten().copied());
+        // A key is written once per group even if two columns hold it.
+        let mut seen: Vec<String> = Vec::new();
+        let rendered: Vec<String> = cols
+            .iter()
+            .map(|c| {
+                let mut one = Vec::new();
+                for k in c {
+                    let s = help_key(*k);
+                    if !seen.contains(&s) {
+                        seen.push(s.clone());
+                        one.push(s);
+                    }
                 }
-            }
-            one.join(" / ")
-        })
-        .filter(|s| !s.is_empty())
-        .collect();
-    let mut keys_text = rendered.join(if zipped { "  ·  " } else { " / " });
+                one.join(" / ")
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        parts.push(rendered.join(if zipped { "  ·  " } else { " / " }));
+    }
+    let lead = lead?;
+    let mut keys_text = parts.join("  ");
     if let Some(l) = row.lit() {
         keys_text = format!("{keys_text} / {l}");
     }
-    let desc = match row.fixed_desc() {
-        Some(m) => m,
-        None => facts.help_of(ctx, lead)?,
+    let desc = match row {
+        CoreRow::DiffHScrollEnds => DiffMsg::GitHScrollEnds.tr(lang),
+        CoreRow::CycleDiffLayout => DiffMsg::GitLayout.tr(lang),
+        CoreRow::Back if ctx == CoreContext::Diff => DiffMsg::BackToGitView.tr(lang),
+        _ => match row.fixed_desc() {
+            Some(m) => m,
+            None => facts.help_of(ctx, lead)?,
+        }
+        .tr(lang),
     };
     let sec = row.forced_sec().unwrap_or_else(|| {
         if is_launch(lead) {
@@ -570,7 +604,7 @@ pub fn render_row(
     Some(CoreRowOut {
         sec,
         keys_text,
-        desc: desc.tr(lang).to_string(),
+        desc: desc.to_string(),
         keys,
         ops: acts,
     })
@@ -734,6 +768,10 @@ pub enum CoreFoot {
     PageKeys,
     /// `q:back`.
     Back,
+    /// `q/Esc:back`, as the diff's footer writes it.
+    BackWithEsc,
+    /// `s:unified/split/auto`.
+    DiffLayout,
     /// `?:help`.
     Help,
     /// `e:edit`.
@@ -780,6 +818,8 @@ impl CoreFoot {
             CoreFoot::Outline => FootKind::Op(CoreAction::ToggleOutline),
             CoreFoot::PageKeys => FootKind::Group(PAGE_KEYS, CoreMsg::HintPage),
             CoreFoot::Back => FootKind::Op(CoreAction::PreviewBack),
+            CoreFoot::BackWithEsc => FootKind::Group(BACK, CoreMsg::GitBack),
+            CoreFoot::DiffLayout => FootKind::Group(DIFF_LAYOUT, CoreMsg::FtDiffLayout),
             CoreFoot::Help => FootKind::Op(CoreAction::ToggleHelp),
             CoreFoot::Edit => FootKind::Op(CoreAction::RequestEdit),
             CoreFoot::Open => FootKind::Op(CoreAction::OpenExternal),

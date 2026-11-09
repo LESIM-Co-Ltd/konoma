@@ -2,6 +2,28 @@
 // The host's `Msg` delegates these strings here, so there is one copy of each.
 use crate::lang::Lang;
 
+/// Diff-only help wording, copied from the host. Kept separate from `CoreMsg`, whose host
+/// adapter is exhaustive, so sharing these rows does not require changing that adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMsg {
+    BackToGitView,
+    GitHScrollEnds,
+    GitLayout,
+}
+
+impl DiffMsg {
+    pub fn tr(self, lang: Lang) -> &'static str {
+        match (self, lang) {
+            (Self::BackToGitView, Lang::En) => "back to Git view",
+            (Self::BackToGitView, Lang::Jp) => "Git ビューへ戻る",
+            (Self::GitHScrollEnds, Lang::En) => "hscroll / line ends",
+            (Self::GitHScrollEnds, Lang::Jp) => "横スクロール / 行頭・行末",
+            (Self::GitLayout, Lang::En) => "layout: unified / split / auto",
+            (Self::GitLayout, Lang::Jp) => "並び: 縦 / 横 / Auto",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreMsg {
     HelpMove,

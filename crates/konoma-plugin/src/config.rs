@@ -584,8 +584,8 @@ mod tests {
             new_key: "confirm_sync",
             old_value: "false",
             old_shown: "false",
-            new_value: "false",
-            new_shown: "false",
+            new_value: "true",
+            new_shown: "true",
             wrong: "\"no\"",
             default_shown: "true",
         });
@@ -675,6 +675,11 @@ mod tests {
     #[test]
     fn the_new_name_wins_when_both_are_set_and_the_rename_is_not_reported() {
         for r in rows() {
+            assert_ne!(
+                r.old_value, r.new_value,
+                "{}: precedence needs distinct values",
+                r.old_key
+            );
             let text = format!(
                 "[{}]\n{} = {}\n[plugins.{}]\n{} = {}\n",
                 r.old_section, r.old_key, r.old_value, r.plugin, r.new_key, r.new_value
@@ -683,6 +688,22 @@ mod tests {
                 (r.reader)(&root(&text)),
                 (r.new_shown.to_string(), None),
                 "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_jj_sync_prefers_the_new_name_in_both_boolean_directions() {
+        for (old, new) in [(false, true), (true, false)] {
+            let text =
+                format!("[ui]\nconfirm_jj_sync = {old}\n[plugins.jj]\nconfirm_sync = {new}\n");
+            assert_eq!(
+                confirm_jj_sync(&root(&text)),
+                OldNameReading {
+                    value: new,
+                    renamed: None
+                },
+                "{text}"
             );
         }
     }

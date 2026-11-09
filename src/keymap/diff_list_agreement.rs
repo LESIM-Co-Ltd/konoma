@@ -272,9 +272,14 @@ mod list {
                     );
                 }
             }
-            // 2 keys x (2 backends x 4 list screens); no screen binds `g` / `G` itself.
+            // 2 keys x (2 backends x 6 list screens); no screen binds `g` / `G` itself.
             assert_eq!(overridden, 0, "{scheme:?}: a screen overrides g/G");
             assert_eq!(compared, 2 * list_screens().len());
+            assert!(
+                list_screens().len() >= 12,
+                "{scheme:?}: missing list screens"
+            );
+            assert!(compared >= 24, "{scheme:?}: too few list comparisons");
         }
     }
 
@@ -297,5 +302,224 @@ mod list {
             ),
             Resolution::Action(Action::Navigate(Motion::Top))
         );
+    }
+}
+
+#[cfg(feature = "git")]
+mod diff_help_footer {
+    use super::*;
+    use crate::app::App;
+    use crate::config::Config;
+    use konoma_host_core::help::{self, CoreLookup, HelpFacts};
+    use konoma_host_core::preview_plan::{footer_plan, PreviewState, PvFoot};
+    use konoma_vcs_core::git2;
+
+    /// The exact exclusions from the host's rendered diff help and footer. Some shell controls
+    /// have shared key bindings, but belong to the full host's tabs, clipboard and follow UI.
+    struct HostOnly {
+        actions: &'static [Action],
+        literal: Option<&'static str>,
+        reason: &'static str,
+    }
+
+    const HOST_ONLY: &[HostOnly] = &[
+        HostOnly {
+            actions: &[Action::GitDiffDiscard],
+            literal: None,
+            reason: "x: Discarding a working-copy change belongs to the host's write workflow.",
+        },
+        HostOnly {
+            actions: &[Action::GitLaunchTool],
+            literal: None,
+            reason: "!: Launching the external VCS tool requires the host's process integration.",
+        },
+        HostOnly {
+            actions: &[Action::JumpNextChange, Action::JumpPrevChange],
+            literal: None,
+            reason: "n/N: Changed-file navigation requires the host's repository and tree state.",
+        },
+        HostOnly {
+            actions: &[Action::CycleDiffView],
+            literal: None,
+            reason: "R: Representation cycling requires the host's file preview pipeline.",
+        },
+        HostOnly {
+            actions: &[Action::DiffNextChange, Action::DiffPrevChange],
+            literal: None,
+            reason: "Ctrl-n/Ctrl-p: Hunk navigation requires the host's diff cursor state.",
+        },
+        HostOnly {
+            actions: &[Action::OpenGitView],
+            literal: None,
+            reason: "p: Opening the VCS hub requires the host's screen stack.",
+        },
+        HostOnly {
+            actions: &[Action::Refresh],
+            literal: None,
+            reason: "r: Refreshing the current file requires the host's reload pipeline.",
+        },
+        HostOnly {
+            actions: &[Action::ToggleFollowDiffScope],
+            literal: None,
+            reason:
+                "Unbound follow scope: Switching follow scope requires the host's tree watcher.",
+        },
+        HostOnly {
+            actions: &[Action::TabNew],
+            literal: None,
+            reason: "Ctrl-t: Opening a new tab requires the host's tab manager.",
+        },
+        HostOnly {
+            actions: &[Action::TabNewAfter],
+            literal: None,
+            reason: "t: Inserting a tab requires the host's tab manager.",
+        },
+        HostOnly {
+            actions: &[Action::TabPrev, Action::TabNext],
+            literal: None,
+            reason: "[/]: Switching tabs requires the host's tab manager.",
+        },
+        HostOnly {
+            actions: &[],
+            literal: Some("1 - 9"),
+            reason: "1-9: Direct tab selection requires the host's tab manager.",
+        },
+        HostOnly {
+            actions: &[Action::ToggleTabList],
+            literal: None,
+            reason: "T: Listing tabs requires the host's tab manager.",
+        },
+        HostOnly {
+            actions: &[Action::PasteJump],
+            literal: None,
+            reason: "P: Opening a clipboard path requires the host's clipboard navigation.",
+        },
+        HostOnly {
+            actions: &[Action::ToggleFollow],
+            literal: None,
+            reason: "F: Following file updates requires the host's tree watcher.",
+        },
+    ];
+
+    fn excluded(actions: &[Action], keys: &str) -> bool {
+        if actions.is_empty() {
+            return HOST_ONLY.iter().any(|op| op.literal == Some(keys));
+        }
+        let count = actions
+            .iter()
+            .filter(|a| HOST_ONLY.iter().any(|op| op.actions.contains(a)))
+            .count();
+        assert!(
+            count == 0 || count == actions.len(),
+            "mixed shared/host-only row: {keys}"
+        );
+        count != 0
+    }
+
+    #[test]
+    fn the_shared_diff_help_and_footer_equal_the_host_reference() {
+        assert_eq!(
+            HOST_ONLY.len(),
+            15,
+            "the exclusion list must not grow silently"
+        );
+        assert_eq!(
+            HOST_ONLY.iter().map(|op| op.actions.len()).sum::<usize>(),
+            17
+        );
+        assert!(HOST_ONLY.iter().all(|op| !op.reason.is_empty()));
+        let dir = crate::test_support::unique_tmp("diff_help_footer_agreement");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::test_support::init_git_repo(&dir);
+        let path = dir.join("ordinary.txt");
+        std::fs::write(&path, "before\n").unwrap();
+        let repo = git2::Repository::open(&dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("ordinary.txt"))
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature =
+            git2::Signature::new("Test", "test@example.invalid", &git2::Time::new(0, 0)).unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "seed", &tree, &[])
+            .unwrap();
+        std::fs::write(&path, "after\n").unwrap();
+        let root = std::fs::canonicalize(&dir).unwrap();
+
+        for lang in ["en", "jp"] {
+            for scheme in ["vim", "less"] {
+                let mut config = Config::default();
+                config.ui.lang = lang.into();
+                config.ui.keys = scheme.into();
+                config.ui.diff_view = "source".into();
+                config.git.diff = "unified".into();
+                let shared = CoreKeys::from_keys_config(scheme_from_str(scheme), &config.keys);
+                let mut app = App::new(root.clone(), config).unwrap();
+                app.open_git_diff(&root.join("ordinary.txt"));
+                assert_eq!(app.surface(), Surface::PreviewGitDiff);
+                assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Source);
+                assert!(!app.diff_is_split(u16::MAX));
+                assert!(!app.diff_footer_is_media_or_summary());
+                assert!(
+                    app.diff_view_cycle_hint().is_some(),
+                    "R switches source to preview"
+                );
+
+                let lookup = CoreLookup {
+                    keys: &shared,
+                    ctx: CoreContext::Diff,
+                };
+                // Ordinary source text has no media pages; J/K do not act in this state.
+                let facts = HelpFacts {
+                    off: vec![
+                        help::HelpOp::Act(konoma_host_core::keymap::CoreAction::PageNext),
+                        help::HelpOp::Act(konoma_host_core::keymap::CoreAction::PagePrev),
+                    ],
+                    ..HelpFacts::default()
+                };
+                let host_rows: Vec<_> = crate::ops::help::rows_for(&app, Context::Diff)
+                    .into_iter()
+                    .filter(|r| !excluded(&r.actions, &r.keys_text))
+                    .map(|r| (r.keys_text, r.desc))
+                    .collect();
+                let shared_rows: Vec<_> = help::rows_of(CoreContext::Diff)
+                    .iter()
+                    .filter_map(|r| {
+                        help::render_row(*r, CoreContext::Diff, &facts, &lookup, app.lang)
+                    })
+                    .map(|r| (r.keys_text, r.desc))
+                    .collect();
+                assert_eq!(shared_rows, host_rows, "{lang}/{scheme}: diff help");
+                assert!(host_rows.len() >= 11, "{lang}/{scheme}: too few help rows");
+
+                let host_footer: Vec<_> = crate::ops::footer::render_tokens(
+                    &app,
+                    Context::Diff,
+                    &crate::ops::footer::plan(&app, Context::Diff),
+                )
+                .into_iter()
+                .filter(|t| !excluded(&t.actions, ""))
+                .map(|t| t.text)
+                .collect();
+                let plan: Vec<_> = footer_plan(CoreContext::Diff, &PreviewState::default())
+                    .into_iter()
+                    .map(|f| match f {
+                        PvFoot::Core(c) => c,
+                        other => panic!("unexpected diff footer entry {other:?}"),
+                    })
+                    .collect();
+                let shared_footer: Vec<_> =
+                    help::footer_tokens(&plan, CoreContext::Diff, &facts, &lookup, app.lang)
+                        .into_iter()
+                        .map(|t| t.text)
+                        .collect();
+                assert!(
+                    host_footer.len() >= 7,
+                    "{lang}/{scheme}: too few footer hints"
+                );
+                assert_eq!(shared_footer, host_footer, "{lang}/{scheme}: diff footer");
+            }
+        }
     }
 }
