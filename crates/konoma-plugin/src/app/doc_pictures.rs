@@ -55,10 +55,15 @@ use crate::document_pictures::{
     PictureLookup, RemoteFetch, Requested, ResourceJob, ResourceSlots, DEFAULT_MERMAID_ROWS,
     FENCE_MERMAID, MATH, MATH_PX, MAX_SYNTHETIC_RENDERS_IN_FLIGHT, SLIDE_CHROME_ROWS,
 };
-use crate::document_render::{render_document, RenderSettings, RenderedDocument};
+use crate::document_render::{
+    render_document, PictureRequests, PictureSlots, RenderSettings, RenderedDocument,
+};
+use crate::host::project::rendered_diff::{
+    render_diff_document, RenderedDiffBody, RenderedDiffInput,
+};
 use crate::input::{Resource, Resources};
 use crate::registry::{PluginOrigin, Registry};
-use crate::view::DocumentView;
+use crate::view::{DocOptions, DocumentView};
 use crate::Settings;
 
 #[cfg(test)]
@@ -292,6 +297,42 @@ impl DocPics {
         settings: &RenderSettings<'_>,
     ) -> RenderedDocument {
         self.sync_resources(&dv.resources);
+        self.render_with(
+            width,
+            rows,
+            lang,
+            |slots| render_document(markdown, &dv.options, settings, slots),
+            RenderedDocument::requests,
+        )
+    }
+
+    /// Lay out a worker-prepared diff through the ordinary document's slot and request loop.
+    /// Both versions' requests participate in the same sweep, resync and background workers.
+    pub fn render_diff(
+        &mut self,
+        input: &RenderedDiffInput<'_>,
+        options: &DocOptions,
+        settings: &RenderSettings<'_>,
+        rows: u16,
+        lang: Lang,
+    ) -> RenderedDiffBody {
+        self.render_with(
+            settings.width,
+            rows,
+            lang,
+            |slots| render_diff_document(input, options, settings, slots),
+            RenderedDiffBody::requests,
+        )
+    }
+
+    fn render_with<T>(
+        &mut self,
+        width: u16,
+        rows: u16,
+        lang: Lang,
+        render: impl Fn(&PictureSlots<'_>) -> T,
+        requests: for<'a> fn(&'a T) -> PictureRequests<'a>,
+    ) -> T {
         let fence = (self.env.embed)(FENCE_MERMAID, &self.svg);
         let math = (self.env.embed)(MATH, &self.svg);
         let image_mode = |e: &Option<EmbedRender>| {
@@ -331,12 +372,10 @@ impl DocPics {
                     message: &message,
                     other: &|url, max_cols| resource_slots.slot(url, max_cols),
                 };
-                lookup.with_slots(true, |slots| {
-                    render_document(markdown, &dv.options, settings, slots)
-                })
+                lookup.with_slots(true, &render)
             };
             pass += 1;
-            let resync = self.request_all(&rendered, fence.clone(), math.clone());
+            let resync = self.request_all(requests(&rendered), fence.clone(), math.clone());
             if !resync || pass >= 2 {
                 return rendered;
             }
@@ -346,7 +385,7 @@ impl DocPics {
     /// The requests a laid-out page makes. True when one was answered at once.
     fn request_all(
         &mut self,
-        r: &RenderedDocument,
+        r: PictureRequests<'_>,
         fence: Option<EmbedRender>,
         math: Option<EmbedRender>,
     ) -> bool {
@@ -363,10 +402,10 @@ impl DocPics {
             remote_images,
             fetcher,
         };
-        for url in &r.remote_urls {
+        for url in r.remote_urls {
             resync |= dp.request_remote(url);
         }
-        for code in &r.mermaid_fences {
+        for code in r.mermaid_fences {
             if code.trim().is_empty() {
                 continue;
             }
@@ -377,7 +416,7 @@ impl DocPics {
             resync |= dp.request_fence(code.clone(), fence.clone(), FENCE_MERMAID, raster_px)
                 == Requested::Done;
         }
-        for (latex, display) in &r.math_exprs {
+        for (latex, display) in r.math_exprs {
             if latex.trim().is_empty() {
                 continue;
             }
@@ -389,7 +428,7 @@ impl DocPics {
                 == Requested::Done;
         }
         // A fence or an expression that left the document is dropped (its key is a content hash).
-        dp.sweep(&live_synthetic_keys(&r.mermaid_fences, &r.math_exprs));
+        dp.sweep(&live_synthetic_keys(r.mermaid_fences, r.math_exprs));
         resync
     }
 
@@ -832,5 +871,79 @@ mod tests {
         );
         assert_eq!(d.cache.cache.len(), 1);
         assert!(d.loading(), "a decode is out");
+    }
+
+    #[test]
+    fn rendered_diff_uses_the_document_request_loop_for_both_versions_and_resyncs() {
+        use crate::document_pictures::{
+            clear_test_cache_root, get_test_cache_root, set_test_cache_root,
+        };
+        use konoma_widgets::markdown::diff_align;
+        struct RestoreCache(Option<PathBuf>);
+        impl Drop for RestoreCache {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => set_test_cache_root(path),
+                    None => clear_test_cache_root(),
+                }
+            }
+        }
+        let dir = konoma_test_support::unique_tmp("rendered_diff_picture_requests");
+        let _cache = RestoreCache(get_test_cache_root());
+        set_test_cache_root(dir.to_path_buf());
+        let old = "![old](https://invalid.test/old.png)\n";
+        let new = "![new](https://invalid.test/new.png)\n";
+        let (old_doc, new_doc, ops) = diff_align(old, new);
+        let input = RenderedDiffInput {
+            old_pre: old,
+            new_pre: new,
+            old: old_doc,
+            new: new_doc,
+            ops: &ops,
+        };
+        let mut d = pics(None);
+        d.set_env(DocEnv {
+            remote_images: false,
+            fetcher: |_, _| panic!("disabled images must never reach the network"),
+            ..DocEnv::default()
+        });
+        let details = HashMap::new();
+        let settings = RenderSettings {
+            width: 32,
+            code: Default::default(),
+            code_theme: "base16-ocean.dark",
+            icons: false,
+            mermaid_caption: "diagram",
+            details_open: &details,
+        };
+        let body = d.render_diff(&input, &DocOptions::default(), &settings, 12, Lang::En);
+        assert_eq!(
+            body.remote_urls,
+            [
+                "https://invalid.test/old.png",
+                "https://invalid.test/new.png"
+            ]
+        );
+        assert_eq!(
+            d.remote_failed.len(),
+            2,
+            "both requests reached the ordinary loop"
+        );
+        assert!(body
+            .remote_urls
+            .iter()
+            .all(|url| d.remote_failed.contains(url)));
+        assert!(d.remote_inflight.is_empty());
+        assert!(!d.loading());
+        assert!(
+            !body
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("loading")),
+            "synchronous refusal resyncs the body"
+        );
+        // A later identical body uses the same failures without issuing another request.
+        let next = d.render_diff(&input, &DocOptions::default(), &settings, 12, Lang::En);
+        assert_eq!(body.lines, next.lines);
     }
 }

@@ -90,7 +90,7 @@ pub mod canvas_pictures;
 pub mod config;
 #[cfg(feature = "pictures")]
 pub mod document_pictures;
-#[cfg(feature = "pictures")]
+#[cfg(all(feature = "widgets", feature = "ratatui"))]
 pub mod document_render;
 pub mod hints;
 #[cfg(feature = "host")]

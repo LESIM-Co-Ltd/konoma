@@ -6,7 +6,11 @@ mod diff_frame_tests;
 #[cfg(test)]
 #[path = "inline_overlay_tests.rs"]
 mod inline_overlay_tests;
+#[cfg(test)]
+#[path = "rendered_diff_body_tests.rs"]
+mod rendered_diff_body_tests;
 use crate::preview::image::ImageFailureMessage;
+use konoma_plugin::host::project::rendered_diff::{render_diff_document, RenderedDiffInput};
 
 /// Which document(s) `App::build_decorated` renders from — the seam that lets the diff's
 /// `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) share the **entire** decorated-
@@ -37,11 +41,7 @@ enum GutterAlign<'a> {
     },
     /// `Diff` source: the parsed `Doc`s are kept alive too — the later use is the actual render
     /// (`preview::markdown::render_markdown_diff_from_parts`), which needs them, not just `ops`.
-    Diff {
-        old: crate::preview::markdown::model::Doc<'a>,
-        new: crate::preview::markdown::model::Doc<'a>,
-        ops: Vec<crate::preview::markdown::BlockOp>,
-    },
+    Diff(RenderedDiffInput<'a>),
 }
 
 impl GutterAlign<'_> {
@@ -50,9 +50,8 @@ impl GutterAlign<'_> {
     fn is_active(&self) -> bool {
         match self {
             GutterAlign::None => false,
-            GutterAlign::File { ops } | GutterAlign::Diff { ops, .. } => {
-                crate::preview::markdown::ops_has_any_change(ops)
-            }
+            GutterAlign::File { ops } => crate::preview::markdown::ops_has_any_change(ops),
+            GutterAlign::Diff(input) => input.has_changes(),
         }
     }
 }
@@ -242,12 +241,16 @@ impl App {
         } else {
             decorated
         };
-        let (lines, targets) = konoma_plugin::document_render::postprocess(
-            decorated.lines,
-            &mut decorated.images,
-            &self.doc_options(),
-            self.cfg.ui.icons,
-        );
+        let (lines, targets) = match cache_source {
+            // The shared diff adapter already ran the post-pass, including math columns.
+            MdCacheSource::Diff => (decorated.lines, Vec::new()),
+            MdCacheSource::File => konoma_plugin::document_render::postprocess(
+                decorated.lines,
+                &mut decorated.images,
+                &self.doc_options(),
+                self.cfg.ui.icons,
+            ),
+        };
         // Re-resolve every inline math placement's own `col` against these **decorated** lines — see
         // `render_inline_math`'s own doc comment ("`col` recorded here is *provisional*") for the full
         // reasoning and the real, confirmed bug this closes (a link/checkbox/emoji/autolink earlier on
@@ -372,18 +375,12 @@ impl App {
     /// `File` sources reach this match arm with anything other than `Ready`.
     fn compute_gutter_align<'a>(
         source: &DecoratedSource<'a>,
-        outcome: Option<&MdDiffOutcome>,
+        outcome: Option<&'a MdDiffOutcome>,
     ) -> GutterAlign<'a> {
         match source {
             DecoratedSource::Diff { old_pre, new_pre } => match outcome {
                 Some(MdDiffOutcome::Ready { ops, .. }) => {
-                    let old = crate::preview::markdown::model::Doc::parse(old_pre);
-                    let new = crate::preview::markdown::model::Doc::parse(new_pre);
-                    GutterAlign::Diff {
-                        old,
-                        new,
-                        ops: ops.clone(),
-                    }
+                    GutterAlign::Diff(RenderedDiffInput::new(old_pre, new_pre, ops))
                 }
                 _ => GutterAlign::None,
             },
@@ -546,23 +543,19 @@ impl App {
         let Some(c) = &self.md_cache else {
             return (Vec::new(), 0);
         };
-        let s = scroll as usize;
-        let h = height.max(1) as usize;
-        let (lo, hi, local) = if self.cfg.ui.wrap && c.row_prefix.len() == c.lines.len() + 1 {
-            // The logical-line range spanning the visible display rows [s, s+h). `prefix` is each
-            // line's starting display row (monotonically increasing).
-            let lo = c.row_prefix.partition_point(|&p| p <= s).saturating_sub(1);
-            let hi = c
-                .row_prefix
-                .partition_point(|&p| p < s + h)
-                .min(c.lines.len());
-            (lo, hi.max(lo), (s - c.row_prefix[lo]) as u16)
+        let prefix = if self.cfg.ui.wrap {
+            c.row_prefix.as_slice()
         } else {
-            let lo = s.min(c.lines.len());
-            let hi = (s + h).min(c.lines.len());
-            (lo, hi, 0)
+            &[]
         };
-        let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
+        let (range, local) = konoma_plugin::document_render::visible_line_range(
+            c.lines.len(),
+            prefix,
+            scroll.into(),
+            height,
+        );
+        let (lo, hi) = (range.start, range.end);
+        let mut out: Vec<Line<'static>> = c.lines[range].to_vec();
         // While searching, emphasize matches on visible lines (the current match = orange / others
         // = yellow), using the same look and the same function as windowed reads. Since it only
         // touches the visible range, this is O(viewport) regardless of document size.
@@ -609,7 +602,7 @@ impl App {
         // the other is a no-op via each helper's own "no marks = no column" early return.
         let out = with_diff_gutter(out, lo, &c.diff_marks);
         let out = with_preview_diff_gutter(out, lo, &c.preview_gutter_marks);
-        (out, local)
+        (out, local as u16)
     }
 
     /// Test-only view of the cached decorated lines (link-collapsed form, the same lines the
@@ -748,99 +741,56 @@ impl App {
                 &math_slot,
             ),
             DecoratedSource::Diff { old_pre, new_pre } => {
-                // The rendered diff is drawn with the Markdown settings (no document is open).
-                let opts = self.doc_options();
-                let aligns = super::markdown_plugin::block_aligns(&opts);
-                // No per-ordinal `<details>` overrides make sense across two documents whose own
-                // block alignment isn't known until `render_markdown_diff_aligned` runs — every
-                // `<details>` block in either version simply falls back to its own `open`
-                // attribute (`next_details_open`'s own "missing entries default to expanded, via
-                // the attribute" contract), matching this presentation's read-only nature (there is
-                // no `Space`/`Enter` toggle to persist an override for in the first place — `items`
-                // is empty, so a `<details>` summary is never even focusable here).
-                crate::preview::markdown::set_details_open(Vec::new());
-                // `align` is always `GutterAlign::Diff` here (`ensure_md_cache`'s own
-                // `compute_gutter_align` mirrors `source` exactly — a `Diff` source always
-                // produces a `Diff` alignment) — render straight from its already-parsed `Doc`s +
-                // `block_ops` (`render_markdown_diff_from_parts`) instead of re-parsing/re-aligning
-                // `old_pre`/`new_pre` a second time. The `render_markdown_diff_aligned` fallback
-                // (a fresh parse+align) only matters if that invariant is ever broken; it degrades
-                // rather than panics.
-                let (lines, images, _extras, marks) = match align {
-                    GutterAlign::Diff { old, new, ops } => {
-                        crate::preview::markdown::render_markdown_diff_from_parts(
-                            old,
+                let fallback_ops;
+                let fallback_input;
+                let input = match align {
+                    GutterAlign::Diff(input) => input,
+                    // Preserve the old fallback if the caller has no landed alignment.
+                    _ => {
+                        let (old, new, ops) =
+                            crate::preview::markdown::diff_align(old_pre, new_pre);
+                        fallback_ops = ops;
+                        fallback_input = RenderedDiffInput {
                             old_pre,
-                            new,
                             new_pre,
-                            ops,
-                            width,
-                            code,
-                            &theme.code_theme,
-                            self.cfg.ui.icons,
-                            &opts.task_states,
-                            &slot_of,
-                            &mermaid_slot,
-                            tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                            opts.alerts,
-                            &math_slot,
-                            math_on,
-                            aligns,
-                        )
+                            old,
+                            new,
+                            ops: &fallback_ops,
+                        };
+                        &fallback_input
                     }
-                    _ => crate::preview::markdown::render_markdown_diff_aligned(
-                        old_pre,
-                        new_pre,
+                };
+                let body = render_diff_document(
+                    input,
+                    &self.doc_options(),
+                    &konoma_plugin::document_render::RenderSettings {
                         width,
                         code,
-                        &theme.code_theme,
-                        self.cfg.ui.icons,
-                        &opts.task_states,
-                        &slot_of,
-                        &mermaid_slot,
-                        tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        opts.alerts,
-                        &math_slot,
+                        code_theme: &theme.code_theme,
+                        icons: self.cfg.ui.icons,
+                        mermaid_caption: tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                        details_open: &self.details_open,
+                    },
+                    &konoma_plugin::document_render::PictureSlots {
+                        image: &slot_of,
+                        mermaid: &mermaid_slot,
+                        math: &math_slot,
+                        mermaid_on,
                         math_on,
-                        aligns,
-                    ),
-                };
-                // Collected from **both** versions' text — a diagram/image/equation that only
-                // exists in the old (removed) or new (added) side still needs its own encode
-                // request; `ensure_md_cache`'s resync loop dedups nothing, but re-requesting an
-                // already-cached/in-flight key is a cheap no-op on every one of those call sites.
-                let remote = if font.is_some() {
-                    let mut v = crate::preview::markdown::collect_remote_image_urls(old_pre);
-                    v.extend(crate::preview::markdown::collect_remote_image_urls(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
-                let fences = if mermaid_on {
-                    let mut v = crate::preview::markdown::collect_mermaid_fences(old_pre);
-                    v.extend(crate::preview::markdown::collect_mermaid_fences(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
-                let math = if math_on {
-                    let mut v = crate::preview::markdown::collect_math_exprs(old_pre);
-                    v.extend(crate::preview::markdown::collect_math_exprs(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
+                        remote_on: font.is_some(),
+                    },
+                );
                 DecoratedMarkdown {
-                    lines,
-                    images,
-                    remote_urls: remote,
-                    mermaid_fences: fences,
-                    math_exprs: math,
-                    src_lines: new_pre.lines().count(),
-                    pre_src: new_pre.to_string(),
+                    lines: body.lines,
+                    images: body.images,
+                    remote_urls: body.remote_urls,
+                    mermaid_fences: body.mermaid_fences,
+                    math_exprs: body.math_exprs,
+                    src_lines: body.src_lines,
+                    pre_src: body.pre_src,
                     pre_origin: Vec::new(),
                     extras: crate::preview::markdown::MdRenderExtras::default(),
-                    diff_marks: marks,
+                    diff_marks: body.diff_marks,
                 }
             }
         }

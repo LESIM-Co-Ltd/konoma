@@ -27,7 +27,8 @@ use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use super::display::Display;
 use super::doc_pictures::DocPics;
 use crate::document_render::{
-    postprocess, render_document, wrap_row_prefix, PictureSlots, RenderSettings, TRUNCATED_NOTE,
+    postprocess, render_document, visible_line_range, wrap_row_prefix, PictureSlots,
+    RenderSettings, TRUNCATED_NOTE,
 };
 use crate::input::Origin;
 use crate::view::{DocOptions, DocumentView};
@@ -259,20 +260,12 @@ impl DocFrame {
     /// the first one that are scrolled off (the host's `md_slice`).
     fn slice(&self, height: u16) -> (Vec<RLine<'static>>, u16) {
         let s = self.scroll;
-        let h = usize::from(height.max(1));
         let (lines, pre) = (&self.laid.lines, &self.laid.row_prefix);
-        let (lo, hi, local) = if pre.len() == lines.len() + 1 {
-            let lo = pre.partition_point(|&p| p <= s).saturating_sub(1);
-            let hi = pre.partition_point(|&p| p < s + h).min(lines.len());
-            (
-                lo,
-                hi.max(lo),
-                u16::try_from(s - pre[lo]).unwrap_or(u16::MAX),
-            )
-        } else {
-            (s.min(lines.len()), (s + h).min(lines.len()), 0)
-        };
-        (lines[lo..hi].to_vec(), local)
+        let (range, local) = visible_line_range(lines.len(), pre, s, height);
+        (
+            lines[range].to_vec(),
+            u16::try_from(local).unwrap_or(u16::MAX),
+        )
     }
 
     /// The cells inside the frame's border.
