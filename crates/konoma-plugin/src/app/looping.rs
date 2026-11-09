@@ -1,5 +1,8 @@
 //! The loop: ask the session for its view, draw it, wait for a key.
 
+#[path = "../host/project/diff_app.rs"]
+mod diff_app;
+
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
@@ -282,6 +285,18 @@ impl AppKeys {
 
     /// [`AppKeys::footer_hints_paged`] over the text screen of key context `ctx`.
     pub fn footer_hints_in(&self, ctx: CoreContext, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        if ctx == CoreContext::Diff {
+            return self
+                .source_diff(paged, scrolls)
+                .footer_tokens()
+                .iter()
+                .map(|token| CoreToken {
+                    text: token.text.clone(),
+                    keys: token.keys.clone(),
+                    ops: token.ops.iter().filter_map(|op| op.core()).collect(),
+                })
+                .collect();
+        }
         let facts = self.facts_in(ctx, paged, true);
         let look = CoreLookup {
             keys: &self.keys,
@@ -412,6 +427,10 @@ impl AppKeys {
         paged: bool,
         scrolls: bool,
     ) -> Vec<CoreSection> {
+        if ctx == CoreContext::Diff {
+            let p = self.source_diff(paged, scrolls);
+            return p.help_sections(&[], &self.diff_help_menus(&p));
+        }
         let look = CoreLookup {
             keys: &self.keys,
             ctx,
@@ -469,6 +488,38 @@ impl AppKeys {
     /// The copy menu as the which-key line and the help list it (no code block is focused here,
     /// so `c` is not offered).
     fn copy_menu_view(&self, ctx: CoreContext, menu: CoreMenu) -> Option<MenuView> {
+        if ctx == CoreContext::Diff && menu == CoreMenu::Options {
+            let p = self.source_diff(false, true);
+            let view = menu_view(&self.keys, ctx, menu, self.lang, false)?;
+            let declaration: Vec<_> = view
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| konoma_host_core::menu::Item {
+                    key: item.key,
+                    action: crate::host::project::diff_presentation::DiffUiOp::from_core(
+                        HelpOp::Act(item.action),
+                    )
+                    .unwrap_or(
+                        crate::host::project::diff_presentation::DiffUiOp::Host(index),
+                    ),
+                    label: crate::host::acts::FixedMenuLabel {
+                        declared: Some(item.label.clone()),
+                        fallback: None,
+                    },
+                })
+                .collect();
+            let items = p
+                .options_menu(&declaration)
+                .into_iter()
+                .filter_map(|item| view.items.iter().find(|i| i.key == item.key).cloned())
+                .collect();
+            return Some(MenuView {
+                title: view.title,
+                items,
+            })
+            .filter(|v| !v.items.is_empty());
+        }
         menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
     }
 

@@ -1,5 +1,236 @@
 //! Project navigation, action contexts and the shared prompts. Session ownership is on workers.
 
+#[cfg(all(test, feature = "git"))]
+#[path = "diff_presentation_tests.rs"]
+mod diff_host_tests;
+
+use konoma_plugin::host::project::diff_presentation::{
+    DiffBinding, DiffCapabilities, DiffHelpSection, DiffPresentation, DiffPresentationState,
+    DiffPresentationValues, DiffPresentationWords, DiffRepresentation, DiffSurface, DiffTextId,
+    DiffUiOp, DiffWord,
+};
+
+impl App {
+    pub(crate) fn diff_presentation_capabilities(&self) -> DiffCapabilities {
+        DiffCapabilities {
+            global: true,
+            tabs: true,
+            follow: cfg!(feature = "git"),
+            discard: cfg!(feature = "git"),
+            tool: cfg!(feature = "git"),
+            project: true,
+            view: cfg!(feature = "git"),
+            blocks: cfg!(feature = "git"),
+        }
+    }
+    pub(crate) fn diff_presentation_state(&self) -> DiffPresentationState {
+        #[cfg(feature = "git")]
+        let jj = self.git_vcs == crate::vcs::VcsKind::Jj;
+        #[cfg(not(feature = "git"))]
+        let jj = false;
+        let next_representation = self.diff_view_cycle_hint().map(|message| match message {
+            Msg::DiffViewSource => DiffRepresentation::Source,
+            Msg::DiffViewRendered => DiffRepresentation::Rendered,
+            _ => DiffRepresentation::Preview,
+        });
+        DiffPresentationState {
+            surface: if self.diff_media_active() {
+                DiffSurface::Media
+            } else if self.diff_footer_is_media_or_summary() {
+                DiffSurface::Summary
+            } else if self.diff_rendered_active() {
+                DiffSurface::Rendered
+            } else {
+                DiffSurface::Source
+            },
+            wrap: self.cfg.ui.wrap,
+            media_pictures: self.media_diff_showing_pictures(),
+            can_page: self.media_diff_can_page(),
+            next_representation,
+            representation_count: match self.diff_view_help_hint() {
+                None => 1,
+                Some(Msg::DiffViewCycleHelpPair) => 2,
+                _ => 3,
+            },
+            next_media_layout: match self.media_diff_layout_next_msg() {
+                Msg::MediaLayoutSide => MediaDiffLayout::Side,
+                Msg::MediaLayoutStack => MediaDiffLayout::Stack,
+                _ => MediaDiffLayout::Auto,
+            },
+            change_blocks: self.diff_has_change_blocks(),
+            change_files: true,
+            follow_scope: self.follow_diff_scope_msg().is_some(),
+            jj,
+            read_only: self
+                .cfg
+                .plugins
+                .get("git")
+                .and_then(|table| table.get("read_only"))
+                .and_then(toml::Value::as_bool)
+                == Some(true),
+        }
+    }
+    pub(crate) fn diff_presentation_values(&self) -> DiffPresentationValues {
+        use crate::keymap::{Action as A, LeaderId, Motion as M};
+        use crate::ops::{action_enabled, decl, keys};
+        let state = self.diff_presentation_state();
+        let mut actions = vec![
+            A::CycleDiffLayout,
+            A::PageNext,
+            A::PagePrev,
+            A::JumpNextChange,
+            A::JumpPrevChange,
+            A::RequestEdit,
+            A::OpenExternal,
+            A::OpenGitView,
+            A::Refresh,
+            A::PreviewBack,
+            A::Cancel,
+            A::CyclePathStyle,
+            A::TabNew,
+            A::TabNewAfter,
+            A::TabPrev,
+            A::TabNext,
+            A::ToggleTabList,
+            A::PasteJump,
+            A::ToggleHelp,
+            A::Quit,
+            A::ToggleFollow,
+        ];
+        actions.extend(
+            [
+                M::Down,
+                M::Up,
+                M::Top,
+                M::Bottom,
+                M::Left,
+                M::Right,
+                M::LineHome,
+                M::LineEnd,
+                M::PageDown,
+                M::PageUp,
+                M::HalfDown,
+                M::HalfUp,
+            ]
+            .map(A::Navigate),
+        );
+        #[cfg(feature = "git")]
+        actions.extend([
+            A::CycleDiffView,
+            A::DiffNextChange,
+            A::DiffPrevChange,
+            A::ToggleFollowDiffScope,
+            A::GitLaunchTool,
+            A::GitDiffDiscard,
+        ]);
+        let mut bindings: Vec<_> = actions
+            .into_iter()
+            .filter_map(|action| Some((decl::diff_op(action)?, action)))
+            .collect();
+        if let Some(menu) = self.keymaps.menu(Context::Diff, LeaderId::Options) {
+            for (index, item) in menu.items.iter().enumerate() {
+                let op = decl::diff_op(item.action).unwrap_or(DiffUiOp::Host(index));
+                if !bindings.iter().any(|(previous, _)| *previous == op) {
+                    bindings.push((op, item.action));
+                }
+            }
+        }
+        let mut bindings: Vec<_> = bindings
+            .into_iter()
+            .map(|(op, action)| {
+                let text = decl::text(self, Context::Diff, action);
+                let keys = keys::keys_of(self, Context::Diff, action);
+                let layers = keys
+                    .iter()
+                    .map(|key| {
+                        (
+                            *key,
+                            match self.keymaps.layer_of_key(Context::Diff, *key) {
+                                Some(konoma_host_core::help::KeyLayer::Basic) => {
+                                    DiffHelpSection::Move
+                                }
+                                Some(konoma_host_core::help::KeyLayer::Global) => {
+                                    DiffHelpSection::Global
+                                }
+                                _ => DiffHelpSection::View,
+                            },
+                        )
+                    })
+                    .collect();
+                DiffBinding {
+                    op,
+                    keys,
+                    enabled: action_enabled(self, Context::Diff, action),
+                    label: text.label.map(|m| tr(self.lang, m).into()),
+                    help: text.help.map(|m| tr(self.lang, m).into()),
+                    launch: decl::decl(action).launch,
+                    layers,
+                }
+            })
+            .collect();
+        bindings.push(DiffBinding {
+            op: DiffUiOp::Options,
+            keys: self
+                .keymaps
+                .leader_keys_of(Context::Diff)
+                .into_iter()
+                .filter(|(_, id)| *id == LeaderId::Options)
+                .map(|(key, _)| key)
+                .collect(),
+            enabled: true,
+            label: None,
+            help: None,
+            launch: false,
+            layers: vec![],
+        });
+        let words = DiffPresentationWords {
+            view: tr(self.lang, Msg::PreviewGitDiff).into(),
+            movement: tr(self.lang, Msg::HelpMove).into(),
+            launch: tr(self.lang, Msg::HelpLaunch).into(),
+            tabs: tr(self.lang, Msg::HelpTabs).into(),
+            global: tr(self.lang, Msg::HelpGlobal).into(),
+            words: [
+                DiffWord::Scroll,
+                DiffWord::Files,
+                DiffWord::Change,
+                DiffWord::Hscroll,
+                DiffWord::Back,
+                DiffWord::Options,
+                DiffWord::HorizontalEnds,
+                DiffWord::BackHelp,
+                DiffWord::ToolHelp,
+            ]
+            .into_iter()
+            .map(|id| (id, tr(self.lang, decl::diff_word_msg(id)).into()))
+            .collect(),
+            dynamic: [
+                DiffTextId::MediaLayout(MediaDiffLayout::Auto),
+                DiffTextId::MediaLayout(MediaDiffLayout::Side),
+                DiffTextId::MediaLayout(MediaDiffLayout::Stack),
+                DiffTextId::MediaLayoutHelp,
+                DiffTextId::Representation(DiffRepresentation::Source),
+                DiffTextId::Representation(DiffRepresentation::Rendered),
+                DiffTextId::Representation(DiffRepresentation::Preview),
+                DiffTextId::CyclePair,
+                DiffTextId::CycleAll,
+                DiffTextId::Files,
+            ]
+            .into_iter()
+            .map(|id| (id, tr(self.lang, decl::diff_text_msg(id)).into()))
+            .collect(),
+        };
+        DiffPresentationValues {
+            state,
+            capabilities: self.diff_presentation_capabilities(),
+            bindings,
+            words,
+        }
+    }
+    pub(crate) fn diff_presentation(&self) -> DiffPresentation {
+        self.diff_presentation_values().build()
+    }
+}
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;

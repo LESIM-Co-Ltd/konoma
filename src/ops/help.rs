@@ -38,7 +38,8 @@ enum Sec {
 /// One help row: the keys of one or more operations and what they do.
 #[derive(Clone)]
 struct Row {
-    groups: Vec<&'static [Action]>,
+    groups: Vec<Vec<Action>>,
+    resolved: Option<Option<RowOut>>,
     lit: Option<&'static str>,
     /// Keys written out by hand (not rebindable and not an operation: `1 - 9`, the drop of a file).
     lit_only: Option<&'static str>,
@@ -54,7 +55,8 @@ struct Row {
 
 fn r(acts: &'static [Action]) -> Row {
     Row {
-        groups: vec![acts],
+        groups: vec![acts.to_vec()],
+        resolved: None,
         lit: None,
         lit_only: None,
         lit_msg: None,
@@ -68,6 +70,7 @@ fn r(acts: &'static [Action]) -> Row {
 fn lit_row(keys: &'static str, desc: Msg, sec: Sec) -> Row {
     Row {
         groups: Vec::new(),
+        resolved: None,
         lit: None,
         lit_only: Some(keys),
         lit_msg: None,
@@ -89,7 +92,7 @@ fn lit_msg_row(keys: Msg, desc: Msg, sec: Sec) -> Row {
 impl Row {
     /// A second group of operations, written after the first (`/  n / N`).
     fn then(mut self, acts: &'static [Action]) -> Row {
-        self.groups.push(acts);
+        self.groups.push(acts.to_vec());
         self
     }
     /// Keys that cannot be rebound, written after the generated ones (`↑ ↓`).
@@ -152,8 +155,6 @@ const ZOOM_ALL: &[Action] = &[
     Action::ImageZoomReset,
 ];
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
-#[cfg(feature = "git")]
-const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
 #[cfg(feature = "git")]
 const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
 const CHANGES: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
@@ -444,37 +445,130 @@ fn table_rows() -> Vec<Row> {
 }
 
 fn diff_rows(app: &App) -> Vec<Row> {
-    // The media diff's side-by-side view and the binary-summary body have nothing to scroll.
-    let media_or_summary = app.diff_footer_is_media_or_summary();
-    let mut v = Vec::new();
-    if !media_or_summary {
-        v.push(r(SCROLL).lit("↑ ↓"));
-        v.push(r(ENDS));
-        v.push(r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds));
+    diff_rows_with(&app.diff_presentation())
+}
+
+fn diff_rows_with(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> Vec<Row> {
+    use konoma_plugin::host::project::diff_presentation::DiffHelpSection as S;
+    p.row_declarations()
+        .iter()
+        .zip(p.resolved_rows())
+        .map(|(decl, output)| {
+            let mut row = r(&[]);
+            row.groups = decl
+                .groups
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect()
+                })
+                .collect();
+            row.resolved = Some(output.as_ref().map(|o| {
+                RowOut {
+                    keys_text: o.keys_text.clone(),
+                    desc: o.description.clone(),
+                    keys: o.keys.clone(),
+                    actions: o
+                        .ops
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect(),
+                    ungated: o.ungated,
+                    sec: match o.section {
+                        S::View => Sec::View,
+                        S::Move => Sec::Move,
+                        S::Launch => Sec::Launch,
+                        S::Tabs => Sec::Tabs,
+                        S::Global => Sec::Global,
+                    },
+                }
+            }));
+            row
+        })
+        .collect()
+}
+
+pub(crate) fn diff_declared_groups(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (Vec<Action>, Vec<Action>) {
+    let own = p
+        .row_declarations()
+        .iter()
+        .flat_map(|r| r.groups.iter().flatten())
+        .filter_map(|op| crate::ops::decl::diff_action(*op))
+        .collect();
+    let global = global_rows()
+        .into_iter()
+        .flat_map(|r| r.groups.into_iter().flatten())
+        .collect();
+    (own, global)
+}
+
+pub(crate) fn diff_help_parts(
+    app: &App,
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpRow>,
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpMenu>,
+) {
+    use konoma_plugin::host::project::diff_presentation::{
+        DiffHelpMenu, DiffHelpRow, DiffHelpSection as S, DiffUiOp,
+    };
+    let facts = core_help::facts_for(app, Context::Diff);
+    let extra = global_rows()
+        .iter()
+        .filter_map(|r| render_row(app, Context::Diff, r, &facts))
+        .map(|r| DiffHelpRow {
+            keys_text: r.keys_text,
+            description: r.desc,
+            keys: r.keys,
+            ops: r
+                .actions
+                .iter()
+                .filter_map(|a| crate::ops::decl::diff_op(*a))
+                .collect(),
+            section: match r.sec {
+                Sec::Tabs => S::Tabs,
+                Sec::Global => S::Global,
+                Sec::Move => S::Move,
+                Sec::Launch => S::Launch,
+                _ => S::View,
+            },
+            ungated: r.ungated,
+        })
+        .collect();
+    let mut menus = Vec::new();
+    let mut seen = Vec::new();
+    for (key, id) in app.keymaps.leader_keys_of(Context::Diff) {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(menu) =
+            crate::ops::menu::menu_with_diff(app, id, crate::ops::menu::View::Help, p)
+        {
+            menus.push(DiffHelpMenu {
+                title: menu.title,
+                prefix: help_key(key),
+                items: menu
+                    .items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, i)| konoma_host_core::menu::Item {
+                        key: i.key,
+                        action: crate::ops::decl::diff_op(i.action)
+                            .unwrap_or(DiffUiOp::Host(index)),
+                        label: i.label,
+                    })
+                    .collect(),
+            });
+        }
     }
-    v.push(r(&[Action::CycleDiffLayout]));
-    v.push(r(PAGE_TURN));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::CycleDiffView]));
-    v.push(r(CHANGES));
-    #[cfg(feature = "git")]
-    v.push(r(DIFF_CHANGES));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::ToggleFollowDiffScope]));
-    v.push(r(&[Action::RequestEdit]));
-    v.push(r(&[Action::OpenExternal]));
-    v.push(r(&[Action::OpenGitView]));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
-    v.push(r(&[Action::Refresh]));
-    if !media_or_summary {
-        v.push(r(PAGE_KEYS));
-        v.push(r(HALF_KEYS));
-    }
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::GitDiffDiscard]));
-    v.push(r(BACK_PREVIEW).d(Msg::BackToGitView));
-    v
+    (extra, menus)
 }
 
 #[cfg(feature = "git")]
@@ -673,6 +767,9 @@ impl std::fmt::Debug for Sec {
 
 /// The keys of a row as the help writes them, and the description. `None` = nothing to list.
 fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<RowOut> {
+    if let Some(output) = &row.resolved {
+        return output.clone();
+    }
     if let (Some(core), Some(cctx)) = (row.core, core_ctx(ctx)) {
         let lookup = core_help::HostLookup { app, ctx };
         let o = konoma_host_core::help::render_row(core, cctx, facts, &lookup, app.lang)?;
@@ -918,6 +1015,27 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         return project_sections(app);
+    }
+    if ctx == Context::Diff {
+        let p = app.diff_presentation();
+        let (extra, menus) = diff_help_parts(app, &p);
+        let mut sections: Vec<_> = p
+            .help_sections(&extra, &menus)
+            .into_iter()
+            .map(|s| HelpSection {
+                title: s.title,
+                rows: s.rows,
+            })
+            .collect();
+        if let Some(plugin) = plugin_section(app, ctx) {
+            let at = usize::from(
+                sections
+                    .first()
+                    .is_some_and(|s| s.title == tr(app.lang, Msg::PreviewGitDiff)),
+            );
+            sections.insert(at, plugin);
+        }
+        return sections;
     }
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());

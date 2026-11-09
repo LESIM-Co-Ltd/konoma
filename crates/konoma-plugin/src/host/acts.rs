@@ -11,6 +11,35 @@ use konoma_host_core::menu::{add_candidate, plain_key};
 
 use crate::text::Tr;
 
+/// Translated words supplied by the host. An explicit menu label takes precedence over the
+/// operation's current short label; missing words retain the existing empty-label fallback.
+#[derive(Clone, Debug)]
+pub struct FixedMenuLabel {
+    pub declared: Option<String>,
+    pub fallback: Option<String>,
+}
+
+/// Filter and name a resolved fixed declaration in its own order. Neither default-menu
+/// generation nor Actions letter assignment belongs to this path.
+pub fn fixed_menu_items<A: Copy, D>(
+    declaration: &[konoma_host_core::menu::Item<A, D>],
+    enabled: impl Fn(A) -> bool,
+    label: impl Fn(&D, A) -> FixedMenuLabel,
+) -> Vec<konoma_host_core::menu::Item<A, String>> {
+    declaration
+        .iter()
+        .filter(|item| enabled(item.action))
+        .map(|item| {
+            let words = label(&item.label, item.action);
+            konoma_host_core::menu::Item {
+                key: item.key,
+                action: item.action,
+                label: words.declared.or(words.fallback).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
 /// The names of the key contexts that show a plugin's view: the plugin's layer sits on top of the
 /// display type's, and nowhere else.
 pub const VIEW_CONTEXTS: [&str; 5] = ["text", "document", "table", "image", "canvas"];

@@ -40,6 +40,13 @@ fn when(cond: bool) -> Gate {
     }
 }
 
+fn diff_gate(app: &App, op: konoma_plugin::host::project::diff_presentation::DiffUiOp) -> Gate {
+    when(
+        app.diff_presentation_state()
+            .enabled(app.diff_presentation_capabilities(), op),
+    )
+}
+
 /// Whether `a` acts in `ctx` right now.
 pub fn action_enabled(app: &App, ctx: Context, a: Action) -> bool {
     gate(app, ctx, a).is_on()
@@ -69,6 +76,10 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
+        A::PageNext | A::PagePrev if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::PageNext,
+        ),
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
@@ -202,20 +213,34 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- The diff screen ---
+        #[cfg(feature = "git")]
+        A::GitDiffDiscard if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::Discard,
+        ),
         // `n` / `N` step through the change blocks of the file: only while it has some.
         #[cfg(feature = "git")]
-        A::DiffNextChange | A::DiffPrevChange => when(app.diff_has_change_blocks()),
+        A::DiffNextChange | A::DiffPrevChange => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::NextBlock,
+        ),
         #[cfg(feature = "git")]
-        A::CycleDiffView => when(app.diff_view_cycle_hint().is_some()),
+        A::CycleDiffView => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::View,
+        ),
         #[cfg(feature = "git")]
-        A::ToggleFollowDiffScope => when(app.follow_diff_scope_msg().is_some()),
+        A::ToggleFollowDiffScope => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::FollowScope,
+        ),
         A::CycleDiffLayout => {
             if ctx == Context::Diff {
                 // The media diff cycles its own layout; the line diff has none while it is shown
                 // as rendered blocks or as a summary of a binary file.
-                when(
-                    app.media_diff_showing_pictures()
-                        || (!app.diff_footer_is_media_or_summary() && !app.diff_rendered_active()),
+                diff_gate(
+                    app,
+                    konoma_plugin::host::project::diff_presentation::DiffUiOp::Layout,
                 )
             } else {
                 Gate::On

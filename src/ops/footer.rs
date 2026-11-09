@@ -56,6 +56,7 @@ const PAGE_KEYS: &[Action] = &[
     Action::Navigate(Motion::PageDown),
     Action::Navigate(Motion::PageUp),
 ];
+#[cfg(feature = "git")]
 const HSCROLL: &[Action] = &[
     Action::Navigate(Motion::Left),
     Action::Navigate(Motion::Right),
@@ -67,16 +68,11 @@ const HJKL: &[Action] = &[
     Action::Navigate(Motion::Right),
 ];
 const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
-const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
-const NEXT_PREV_CHANGE: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
-const BACK_ESC_PREVIEW: &[Action] = &[Action::PreviewBack, Action::Cancel];
 const CLOSE_INFO: &[Action] = &[Action::InfoClose, Action::Cancel];
 const CLOSE_CELL: &[Action] = &[Action::ToggleTableCell, Action::Cancel];
 const VISUAL_EXIT: &[Action] = &[Action::PreviewExitVisual, Action::Cancel];
 const ALL_FILES: &[Action] = &[Action::ToggleChangedFilter, Action::TreeLeave];
-#[cfg(feature = "git")]
-const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
 #[cfg(feature = "git")]
 const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
 const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
@@ -87,6 +83,9 @@ const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange
 pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
     if app.project_active() && ctx == Context::Canvas {
         return project_plan(app, ctx);
+    }
+    if ctx == Context::Diff {
+        return diff(app);
     }
     let mut v = base_plan(app, ctx);
     // The open plugin's own operations come right after the screen's movement keys, in the
@@ -293,40 +292,67 @@ pub(crate) fn copy_code_token(app: &App, ctx: Context) -> Option<String> {
 }
 
 fn diff(app: &App) -> Vec<Foot> {
-    // The media diff's side-by-side view, and the binary-summary body a non-picture binary kind
-    // shows, use the reduced set: nothing to scroll or lay out as unified/split.
-    let media = app.diff_footer_is_media_or_summary();
-    let rendered = app.diff_rendered_active();
-    let mut v = Vec::new();
-    if !media {
-        v.push(Foot::Group(SCROLL, Msg::Scroll));
-    }
-    v.push(Foot::Group(NEXT_PREV_CHANGE, Msg::HintNextPrevFile));
-    #[cfg(feature = "git")]
-    v.push(Foot::Group(DIFF_CHANGES, Msg::HintChange));
-    if media {
-        v.push(Foot::Op(Action::CycleDiffLayout));
-        v.push(Foot::GroupOp(PAGE_TURN));
-        #[cfg(feature = "git")]
-        v.push(Foot::Op(Action::CycleDiffView));
-    } else {
-        // `h/l` scroll is a no-op in the rendered presentation while lines wrap.
-        if !(rendered && app.cfg.ui.wrap) {
-            v.push(Foot::Group(HSCROLL, Msg::HintHscroll));
-        }
-        v.push(Foot::Op(Action::CycleDiffLayout));
-    }
-    #[cfg(feature = "git")]
-    v.push(Foot::Op(Action::GitDiffDiscard));
-    v.push(Foot::Union(BACK_ESC_PREVIEW, Msg::GitBack));
-    #[cfg(feature = "git")]
-    if !media {
-        v.push(Foot::Op(Action::CycleDiffView));
-    }
-    v.push(Foot::Leader(LeaderId::Options, Msg::HintOptions));
-    v.push(Foot::Op(Action::RequestEdit));
-    v.push(Foot::Op(Action::OpenExternal));
-    v
+    let p = app.diff_presentation();
+    let at = p
+        .footer_tokens()
+        .iter()
+        .position(|token| token.plan_index >= konoma_host_core::preview_plan::PLUGIN_AT)
+        .unwrap_or(p.footer_tokens().len());
+    let mut tokens: Vec<_> = p
+        .footer_tokens()
+        .iter()
+        .map(|token| {
+            Foot::Project(Token {
+                text: token.text.clone(),
+                keys: token.keys.clone(),
+                actions: token
+                    .ops
+                    .iter()
+                    .filter_map(|op| crate::ops::decl::diff_action(*op))
+                    .collect(),
+            })
+        })
+        .collect();
+    let hints = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(Context::Diff));
+    tokens.splice(
+        at..at,
+        hints
+            .into_iter()
+            .map(|hint| Foot::Plugin(hint.members[0].act)),
+    );
+    tokens
+}
+
+pub(crate) fn diff_priority(
+    app: &App,
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> Vec<(Action, Option<Msg>)> {
+    let at = p
+        .action_priority()
+        .iter()
+        .position(|item| item.plan_index >= konoma_host_core::preview_plan::PLUGIN_AT)
+        .unwrap_or(p.action_priority().len());
+    let mut priority: Vec<_> = p
+        .action_priority()
+        .iter()
+        .filter_map(|item| {
+            let action = crate::ops::decl::diff_action(item.op)?;
+            Some((
+                action,
+                item.word
+                    .map(crate::ops::decl::diff_word_msg)
+                    .or_else(|| text(app, Context::Diff, action).label),
+            ))
+        })
+        .collect();
+    let hints = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(Context::Diff));
+    priority.splice(
+        at..at,
+        hints
+            .into_iter()
+            .map(|hint| (Action::Plugin(hint.members[0].act), None)),
+    );
+    priority
 }
 
 #[cfg(feature = "git")]
@@ -428,6 +454,9 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
 /// operation can appear more than once (`J` and `K` are one group); `Leader` and `Dyn` entries
 /// name no single operation and are left out.
 pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
+    if ctx == Context::Diff {
+        return diff_priority(app, &app.diff_presentation());
+    }
     if ctx == Context::Canvas {
         if let Some((presentation, actions)) = app.project_presentation() {
             return presentation

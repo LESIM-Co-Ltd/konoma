@@ -29,6 +29,8 @@ use crate::keymap::{Action, Context, KeyPress, LeaderId};
 use super::{action_enabled, decl, footer, help, keys};
 use crate::plugins::PluginAct;
 use konoma_host_core::menu::{self as menu_core, Skeleton};
+use konoma_plugin::host::acts::{fixed_menu_items, FixedMenuLabel};
+use konoma_plugin::host::project::diff_presentation::{DiffPresentation, DiffUiOp};
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,10 +62,51 @@ pub enum View {
 
 /// The menu `id` of `ctx`, or `None` when `ctx` has no such menu.
 pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
+    if ctx == Context::Diff {
+        return menu_with_diff(app, id, view, &app.diff_presentation());
+    }
     match id {
         LeaderId::Actions => Some(actions_menu(app, ctx)),
         _ => fixed_menu(app, ctx, id, view),
     }
+}
+
+pub(crate) fn menu_with_diff(
+    app: &App,
+    id: LeaderId,
+    view: View,
+    p: &DiffPresentation,
+) -> Option<Menu> {
+    if id == LeaderId::Actions {
+        return Some(Menu {
+            id,
+            title: tr(app.lang, Msg::WkActionsTitle).into(),
+            items: build_actions_in(app, Context::Diff, true, Some(p)),
+        });
+    }
+    fixed_menu_in(app, Context::Diff, id, view, Some(p))
+}
+
+pub(crate) fn diff_options_declaration(
+    app: &App,
+    p: &DiffPresentation,
+) -> Option<Vec<menu_core::Item<DiffUiOp, FixedMenuLabel>>> {
+    let menu = app.keymaps.menu(Context::Diff, LeaderId::Options)?;
+    let priority = footer::diff_priority(app, p);
+    Some(
+        menu.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let label = fixed_label(app, Context::Diff, item.action, item.label, &priority);
+                menu_core::Item {
+                    key: item.key,
+                    action: super::decl::diff_op(item.action).unwrap_or(DiffUiOp::Host(index)),
+                    label,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
@@ -89,6 +132,39 @@ pub fn opens(app: &App, ctx: Context, id: LeaderId) -> bool {
 
 /// A menu kept in the keymap (`y`, `,`, the tree's `Space`).
 fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu> {
+    fixed_menu_in(app, ctx, id, _view, None)
+}
+
+fn fixed_menu_in(
+    app: &App,
+    ctx: Context,
+    id: LeaderId,
+    _view: View,
+    diff: Option<&DiffPresentation>,
+) -> Option<Menu> {
+    if let Some(p) = diff.filter(|_| id == LeaderId::Options) {
+        let declaration = diff_options_declaration(app, p)?;
+        let menu = app.keymaps.menu(ctx, id)?;
+        let items = p
+            .options_menu(&declaration)
+            .into_iter()
+            .filter_map(|item| {
+                Some(MenuItem {
+                    key: item.key,
+                    action: match item.action {
+                        DiffUiOp::Host(index) => menu.items.get(index)?.action,
+                        op => super::decl::diff_action(op)?,
+                    },
+                    label: item.label,
+                })
+            })
+            .collect();
+        return Some(Menu {
+            id,
+            title: tr(app.lang, menu.title).into(),
+            items,
+        });
+    }
     if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
         let (presentation, actions) = app.project_presentation()?;
         let items = presentation
@@ -113,25 +189,28 @@ fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu
         LeaderId::Options => action_enabled(app, ctx, a),
         _ => !matches!(a, Action::CopyCodeBlock) || action_enabled(app, ctx, a),
     };
-    let mut items: Vec<_> = m
+    let priority = diff
+        .map(|p| footer::diff_priority(app, p))
+        .unwrap_or_else(|| footer::priority(app, ctx));
+    let declaration: Vec<_> = m
         .items
         .iter()
-        .filter(|it| gated(it.action))
-        .map(|it| {
-            let label = match it.label {
-                // A user-added entry has no label of its own: name it as the declaration does.
-                Msg::Empty => label_of(app, ctx, it.action, &footer::priority(app, ctx)),
-                m => Some(crate::ui::status::relabel_for_backend(app, m)),
-            };
-            MenuItem {
-                key: it.key,
-                action: it.action,
-                label: label
-                    .map(|l| tr(app.lang, l).to_string())
-                    .unwrap_or_default(),
-            }
+        .map(|item| menu_core::Item {
+            key: item.key,
+            action: item.action,
+            label: item.label,
         })
         .collect();
+    let mut items: Vec<_> = fixed_menu_items(&declaration, gated, |message, action| {
+        fixed_label(app, ctx, action, *message, &priority)
+    })
+    .into_iter()
+    .map(|item| MenuItem {
+        key: item.key,
+        action: item.action,
+        label: item.label,
+    })
+    .collect();
     if id == LeaderId::File {
         let bindings = app.plugin_context_bindings(ctx);
         let declared =
@@ -238,6 +317,32 @@ fn label_of(app: &App, ctx: Context, a: Action, prio: &[(Action, Option<Msg>)]) 
         .or_else(|| special_label(a))
 }
 
+fn fixed_label(
+    app: &App,
+    ctx: Context,
+    action: Action,
+    message: Msg,
+    priority: &[(Action, Option<Msg>)],
+) -> FixedMenuLabel {
+    if message == Msg::Empty {
+        FixedMenuLabel {
+            declared: None,
+            fallback: label_of(app, ctx, action, priority).map(|m| tr(app.lang, m).into()),
+        }
+    } else {
+        FixedMenuLabel {
+            declared: Some(
+                tr(
+                    app.lang,
+                    crate::ui::status::relabel_for_backend(app, message),
+                )
+                .into(),
+            ),
+            fallback: None,
+        }
+    }
+}
+
 /// A letter that says what the operation is, tried before the free letters in order. The table
 /// is shared with the standalone app (`konoma_host_core::keymap::mnemonic_of_name`), keyed by the
 /// operation's config name.
@@ -323,6 +428,18 @@ fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
 /// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that
 /// act now.
 fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
+    if ctx == Context::Diff {
+        return build_actions_in(app, ctx, gated, Some(&app.diff_presentation()));
+    }
+    build_actions_in(app, ctx, gated, None)
+}
+
+fn build_actions_in(
+    app: &App,
+    ctx: Context,
+    gated: bool,
+    diff: Option<&DiffPresentation>,
+) -> Vec<MenuItem> {
     if app.project_active() && ctx == Context::Canvas {
         let Some((presentation, actions)) = app.project_presentation() else {
             return vec![];
@@ -341,9 +458,13 @@ fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
             })
             .collect();
     }
-    let prio = footer::priority(app, ctx);
+    let prio = diff
+        .map(|p| footer::diff_priority(app, p))
+        .unwrap_or_else(|| footer::priority(app, ctx));
     let cands = candidates(app, ctx, &prio);
-    let (own, everywhere) = help::declared_groups(app, ctx);
+    let (own, everywhere) = diff
+        .map(help::diff_declared_groups)
+        .unwrap_or_else(|| help::declared_groups(app, ctx));
     let prio_actions: Vec<Action> = prio.iter().map(|(a, _)| *a).collect();
     menu_core::build_items(
         cands,

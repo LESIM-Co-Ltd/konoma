@@ -8,6 +8,123 @@
 use crate::app::{App, MdFocus};
 use crate::i18n::Msg;
 use crate::keymap::{Action, Context, Motion};
+use konoma_plugin::host::project::diff_presentation::{
+    DiffRepresentation, DiffTextId, DiffUiOp, DiffWord,
+};
+
+pub(crate) fn diff_op(action: Action) -> Option<DiffUiOp> {
+    use Action as A;
+    use DiffUiOp as O;
+    Some(match action {
+        A::Navigate(m) => O::Navigate(m),
+        A::CycleDiffLayout => O::Layout,
+        A::PageNext => O::PageNext,
+        A::PagePrev => O::PagePrev,
+        #[cfg(feature = "git")]
+        A::CycleDiffView => O::View,
+        A::JumpNextChange => O::NextFile,
+        A::JumpPrevChange => O::PrevFile,
+        #[cfg(feature = "git")]
+        A::DiffNextChange => O::NextBlock,
+        #[cfg(feature = "git")]
+        A::DiffPrevChange => O::PrevBlock,
+        #[cfg(feature = "git")]
+        A::ToggleFollowDiffScope => O::FollowScope,
+        A::RequestEdit => O::Edit,
+        A::OpenExternal => O::OpenExternal,
+        A::OpenGitView => O::Project,
+        #[cfg(feature = "git")]
+        A::GitLaunchTool => O::Tool,
+        A::Refresh => O::Refresh,
+        #[cfg(feature = "git")]
+        A::GitDiffDiscard => O::Discard,
+        A::PreviewBack => O::Back,
+        A::Cancel => O::Cancel,
+        A::CyclePathStyle => O::PathStyle,
+        A::TabNew => O::Tab(0),
+        A::TabNewAfter => O::Tab(1),
+        A::TabPrev => O::Tab(2),
+        A::TabNext => O::Tab(3),
+        A::ToggleTabList => O::Tab(4),
+        A::PasteJump => O::Global(0),
+        A::ToggleHelp => O::Global(1),
+        A::Quit => O::Global(2),
+        A::ToggleFollow => O::Follow,
+        _ => return None,
+    })
+}
+
+pub(crate) fn diff_action(op: DiffUiOp) -> Option<Action> {
+    use Action as A;
+    use DiffUiOp as O;
+    Some(match op {
+        O::Navigate(m) => A::Navigate(m),
+        O::Layout => A::CycleDiffLayout,
+        O::PageNext => A::PageNext,
+        O::PagePrev => A::PagePrev,
+        #[cfg(feature = "git")]
+        O::View => A::CycleDiffView,
+        O::NextFile => A::JumpNextChange,
+        O::PrevFile => A::JumpPrevChange,
+        #[cfg(feature = "git")]
+        O::NextBlock => A::DiffNextChange,
+        #[cfg(feature = "git")]
+        O::PrevBlock => A::DiffPrevChange,
+        #[cfg(feature = "git")]
+        O::FollowScope => A::ToggleFollowDiffScope,
+        O::Edit => A::RequestEdit,
+        O::OpenExternal => A::OpenExternal,
+        O::Project => A::OpenGitView,
+        #[cfg(feature = "git")]
+        O::Tool => A::GitLaunchTool,
+        O::Refresh => A::Refresh,
+        #[cfg(feature = "git")]
+        O::Discard => A::GitDiffDiscard,
+        O::Back => A::PreviewBack,
+        O::Cancel => A::Cancel,
+        O::PathStyle => A::CyclePathStyle,
+        O::Tab(0) => A::TabNew,
+        O::Tab(1) => A::TabNewAfter,
+        O::Tab(2) => A::TabPrev,
+        O::Tab(3) => A::TabNext,
+        O::Tab(4) => A::ToggleTabList,
+        O::Global(0) => A::PasteJump,
+        O::Global(1) => A::ToggleHelp,
+        O::Global(2) => A::Quit,
+        O::Follow => A::ToggleFollow,
+        _ => return None,
+    })
+}
+
+pub(crate) fn diff_word_msg(word: DiffWord) -> Msg {
+    match word {
+        DiffWord::Scroll => Msg::Scroll,
+        DiffWord::Files => Msg::HintNextPrevFile,
+        DiffWord::Change => Msg::HintChange,
+        DiffWord::Hscroll => Msg::HintHscroll,
+        DiffWord::Back => Msg::GitBack,
+        DiffWord::Options => Msg::HintOptions,
+        DiffWord::HorizontalEnds => Msg::GitHScrollEnds,
+        DiffWord::BackHelp => Msg::BackToGitView,
+        DiffWord::ToolHelp => Msg::GitExternalTool,
+    }
+}
+
+pub(crate) fn diff_text_msg(id: DiffTextId) -> Msg {
+    use konoma_widgets::media_diff::MediaDiffLayout as L;
+    match id {
+        DiffTextId::MediaLayout(L::Auto) => Msg::MediaLayoutAuto,
+        DiffTextId::MediaLayout(L::Side) => Msg::MediaLayoutSide,
+        DiffTextId::MediaLayout(L::Stack) => Msg::MediaLayoutStack,
+        DiffTextId::MediaLayoutHelp => Msg::MediaLayoutCycleHelp,
+        DiffTextId::Representation(DiffRepresentation::Source) => Msg::DiffViewSource,
+        DiffTextId::Representation(DiffRepresentation::Rendered) => Msg::DiffViewRendered,
+        DiffTextId::Representation(DiffRepresentation::Preview) => Msg::DiffViewPreview,
+        DiffTextId::CyclePair => Msg::DiffViewCycleHelpPair,
+        DiffTextId::CycleAll => Msg::DiffViewCycleHelp,
+        DiffTextId::Files => Msg::HintNextPrevFile,
+    }
+}
 
 /// What an operation is called, before the state is looked at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,22 +516,31 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
             t.label = None;
         }
         A::CycleDiffLayout => {
-            if app.media_diff_showing_pictures() {
-                t.label = Some(app.media_diff_layout_next_msg());
-                t.help = Some(M::MediaLayoutCycleHelp);
-            }
+            apply_diff_text(app, a, &mut t);
         }
         #[cfg(feature = "git")]
         A::CycleDiffView => {
-            t.label = app.diff_view_cycle_hint();
-            t.help = app.diff_view_help_hint();
+            apply_diff_text(app, a, &mut t);
         }
         A::JumpNextChange | A::JumpPrevChange if ctx == Context::Diff => {
-            t.label = Some(M::HintNextPrevFile);
+            apply_diff_text(app, a, &mut t);
         }
         _ => {}
     }
     t
+}
+
+fn apply_diff_text(app: &App, action: Action, text: &mut OpText) {
+    let Some(op) = diff_op(action) else {
+        return;
+    };
+    let (label, help) = app.diff_presentation_state().text(op);
+    if label.is_some() || op == DiffUiOp::View {
+        text.label = label.map(diff_text_msg);
+    }
+    if help.is_some() || op == DiffUiOp::View {
+        text.help = help.map(diff_text_msg);
+    }
 }
 
 /// What `a` is called in a `Space` menu when the footer's short label would not tell it apart

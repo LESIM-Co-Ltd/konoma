@@ -2411,11 +2411,16 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
     )];
     v.push(menu(
         Context::Diff,
-        vec![
-            #[cfg(feature = "git")]
-            item('f', Action::ToggleFollowDiffScope),
-            path(),
-        ],
+        konoma_plugin::host::project::diff_presentation::default_options()
+            .into_iter()
+            .filter_map(|(key, op)| {
+                crate::ops::decl::diff_action(op).map(|action| LeaderItem {
+                    key,
+                    action,
+                    label: leader_label(action),
+                })
+            })
+            .collect(),
     ));
     v
 }
