@@ -16977,7 +16977,7 @@ fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
     let other = dir.join("other.md"); // whatever is actually on screen now
     app.tab.preview_path = Some(other.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -17016,7 +17016,7 @@ fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -17049,7 +17049,7 @@ fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_sou
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Source; // already left Rendered by the time this result lands
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -17212,7 +17212,7 @@ fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
     let path = dir.join("doc.md");
     app.tab.preview_path = Some(path.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 5;
+    *app.md_diff.generation_for_test() = 5;
     app.tab.diff_scroll_pending = Some(path.clone());
 
     let res = MdDiffResult {
@@ -17245,7 +17245,7 @@ fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation
     let other = dir.join("other.md");
     app.tab.preview_path = Some(path.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 5;
+    *app.md_diff.generation_for_test() = 5;
     app.tab.diff_scroll_pending = Some(other.clone());
 
     let res = MdDiffResult {
@@ -17278,7 +17278,7 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A landed `Ready` result under an old generation.
-    app.md_diff_landed = Some((
+    *app.md_diff.landed_for_test() = Some((
         doc.clone(),
         MdDiffKind::Gutter,
         3,
@@ -17290,8 +17290,8 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
             front_matter_only: false,
         },
     ));
-    app.md_diff_gen = 4; // bumped since — the landed tuple above is now stale
-    app.md_diff_pending = None;
+    *app.md_diff.generation_for_test() = 4; // bumped since — the landed tuple above is now stale
+    *app.md_diff.pending_for_test() = None;
 
     // No `md_diff_tx` attached: the re-kick this should trigger runs the synchronous fallback for
     // real (against `doc`, which sits outside a repo — `Gutter` with no baseline lands
@@ -17314,8 +17314,8 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
     let doc = dir.join("doc.md");
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_diff_gen = 5;
-    app.md_diff_landed = Some((
+    *app.md_diff.generation_for_test() = 5;
+    *app.md_diff.landed_for_test() = Some((
         doc.clone(),
         MdDiffKind::Gutter,
         5, // matches the current gen
@@ -17327,7 +17327,7 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
             front_matter_only: false,
         },
     ));
-    app.md_diff_pending = None;
+    *app.md_diff.pending_for_test() = None;
 
     // `doc` sits outside a repo, so a genuinely fresh `Rendered` computation lands `Ready` with an
     // *empty* old side (§5's "no baseline = all added") — never the Gutter-flavored `old_pre` ("old")
@@ -17354,7 +17354,7 @@ fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_di
     let a = dir.join("a.md");
     let b = dir.join("b.md");
     app.tab.preview_path = Some(a);
-    app.md_diff_pending = Some((b, MdDiffKind::Gutter));
+    *app.md_diff.pending_for_test() = Some((b, MdDiffKind::Gutter));
     assert!(
         !app.md_diff_pending_for_current(),
         "別ファイル(b.md)の計算中は a.md 自身の消費を止めてはならない"
@@ -17631,8 +17631,8 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
     let dir = dir.canonicalize().unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let path = dir.join("doc.md");
-    app.md_diff_gen = 9;
-    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    *app.md_diff.generation_for_test() = 9;
+    *app.md_diff.pending_for_test() = Some((path.clone(), crate::app::MdDiffKind::Gutter));
 
     let panic_fallback = crate::app::MdDiffResult {
         gen: 9,
@@ -17642,14 +17642,14 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
     };
     assert!(app.apply_md_diff(panic_fallback), "現世代なので適用される");
     assert!(
-        app.md_diff_pending.is_none(),
+        (*app.md_diff.pending_for_test()).is_none(),
         "パニックのフォールバック結果でも pending が解ける(スピナーが固着せず\
          ガター/Rendered も固まらない)"
     );
 
     // A stale-generation fallback must still be discarded, and must not clear the *current* pending.
-    app.md_diff_gen = 10;
-    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    *app.md_diff.generation_for_test() = 10;
+    *app.md_diff.pending_for_test() = Some((path.clone(), crate::app::MdDiffKind::Gutter));
     let stale_panic_fallback = crate::app::MdDiffResult {
         gen: 9,
         path,
@@ -17661,7 +17661,7 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
         "古い世代のフォールバックは捨てる"
     );
     assert!(
-        app.md_diff_pending.is_some(),
+        (*app.md_diff.pending_for_test()).is_some(),
         "stale では pending を残す(現行計算待ちのまま)"
     );
     std::fs::remove_dir_all(&dir).ok();

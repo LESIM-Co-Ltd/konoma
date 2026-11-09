@@ -37,3 +37,11 @@ pub use detection::{
     affected, detect, detect_directories, watch_targets, MatchedProject, ProjectDeclaration,
     ProjectDeclarationSet, ProjectDetection,
 };
+
+pub mod md_diff;
+#[cfg(test)]
+mod md_diff_tests;
+#[cfg(test)]
+mod media_diff_worker_tests;
+
+pub mod media_diff;

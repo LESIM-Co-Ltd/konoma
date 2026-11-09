@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -1040,295 +1039,16 @@ pub struct StatusResult {
     vcs: crate::vcs::VcsKind,
 }
 
-/// Which of the two Markdown block-diff computations (`docs/STATUS.md` ★未修正 item 4,
-/// `docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3) a [`MdDiffRequest`] is for. Both share the identical
-/// "resolve old/new text, preprocess, `diff_align`" shape (`App::compute_md_diff` is the one
-/// implementation of it) and differ only in *which* text each side reads and what a missing
-/// baseline means — see that fn's own doc comment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MdDiffKind {
-    /// The ordinary decorated preview's change gutter (§3) — old vs the current file.
-    Gutter,
-    /// The diff's `Rendered` presentation (§2) — old vs the current file, both preprocessed.
-    Rendered,
-}
+pub use konoma_plugin::host::project::md_diff::MdDiffResult;
+pub(crate) use konoma_plugin::host::project::md_diff::{
+    DiffBaseline, MdDiffKind, MdDiffOutcome, MdDiffRequest,
+};
 
-/// Which "old version" bytes a block-diff request should read, resolved on the UI thread
-/// (`App::diff_baseline`) from already-in-memory state (a `HashMap` lookup, no disk/subprocess
-/// I/O) so the worker thread never needs `&App` at all — only this plain-data instruction plus the
-/// backend calls it names (`vcs::base_contents`/`vcs::contents_at`, which touch the filesystem/git
-/// object store, never `App`).
-///
-/// Every variant but `Vcs` is only ever constructed on a `git`-feature build (`App::diff_baseline`'s
-/// follow-session branch is itself `#[cfg(feature = "git")]`) — `#[allow(dead_code)]` on a no-`git`
-/// build, not unreachable.
-#[derive(Clone)]
-pub(crate) enum DiffBaseline {
-    /// The backend's committed baseline — git HEAD blob / jj `@-` (`vcs::base_contents`).
-    Vcs,
-    /// A follow-session snapshot already held in memory at follow-start — no I/O needed.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    FollowSnapshot(Vec<u8>),
-    /// A follow-session baseline at the backend's pinned point — the worker fetches it
-    /// (`vcs::contents_at`, a subprocess under jj).
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    FollowHead { sha: String },
-    /// No baseline at all (untracked / no repository / dirty-but-too-large-to-snapshot at
-    /// follow-start).
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    Empty,
-}
-
-/// A Markdown block-diff computation request handed to the worker thread (or run synchronously —
-/// `App::spawn_or_sync_md_diff`). Carries everything `App::compute_md_diff` needs as **plain
-/// data**, resolved on the UI thread ahead of time, so that pure function never touches `App`.
-pub(crate) struct MdDiffRequest {
-    gen: u64,
-    path: PathBuf,
-    root: PathBuf,
-    kind: MdDiffKind,
-    baseline: DiffBaseline,
-    md_frontmatter: bool,
-    md_footnotes: bool,
-    md_inline_html: bool,
-}
-
-/// Outcome of a Markdown block-diff computation (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's
-/// degenerate cases). `Doc`s are never sent across the channel (they borrow from `old_pre`/
-/// `new_pre`, which would make this self-referential) — the UI thread re-parses them from these
-/// owned strings when it actually needs to render (`App::ensure_md_cache`), a cheap `Doc::parse`
-/// (~1.7ms at 20k lines) compared to the I/O + preprocessing + `block_ops` this offloads.
-#[derive(Clone, Debug)]
-pub(crate) enum MdDiffOutcome {
-    Ready {
-        old_pre: String,
-        new_pre: String,
-        ops: Vec<crate::preview::markdown::BlockOp>,
-        /// Whether `ops` marks any change at all — `GutterAlign::is_active`'s own `ops_has_any_change`
-        /// re-derives this from `ops` for production use (so it's dead code outside tests), but
-        /// tests read it directly off a landed outcome without needing an `align` to hand.
-        #[cfg_attr(not(test), allow(dead_code))]
-        any_change: bool,
-        /// The block-diff found no change (`!any_change`) even though the raw file bytes differ —
-        /// the only difference is in front matter, which is stripped before either side ever
-        /// reaches `Doc::parse`. Only meaningful for `MdDiffKind::Rendered` (`App::apply_md_diff`
-        /// flashes `DiffRenderedFrontMatterOnly`); `Gutter` never reads it.
-        front_matter_only: bool,
-    },
-    /// The current file is over the size cap, not valid UTF-8, or unreadable. `Rendered` falls
-    /// back to `Source` with a flash (`App::apply_md_diff`); `Gutter` simply shows no gutter.
-    Unavailable,
-    /// No committed baseline exists at all (untracked file / outside a repo). Only ever returned
-    /// for `MdDiffKind::Gutter` — an ordinary preview then has no gutter, matching the pre-worker
-    /// `GutterAlign::None` contract. `MdDiffKind::Rendered` never returns this: a missing baseline
-    /// there is §5's "旧版が無い…全ブロック Insert", which `App::compute_md_diff` already resolves
-    /// into an ordinary `Ready` (comparing against an empty old side) rather than a separate case.
-    NoBaseline,
-}
-
-/// Result of a Markdown block-diff computed on a separate thread, returned via `App::md_diff_tx`.
-/// Staleness is judged by `gen` exactly like [`StatusResult`]/[`IgnoredResult`].
-pub struct MdDiffResult {
-    gen: u64,
-    path: PathBuf,
-    kind: MdDiffKind,
-    outcome: MdDiffOutcome,
-}
-
-// ---- Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) ------------------
-
-/// Which base a media diff's "old" side was actually compared against — reported alongside the
-/// computed outcome so a caption can name the real baseline even when a follow session degraded to
-/// it (a follow baseline with no usable snapshot for this file falls back to the committed baseline;
-/// see `App::media_diff_baseline`'s own doc comment). Read by `ui/preview.rs::render_gitdiff_media`'s
-/// caption (`App::media_base_msg`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MediaBase {
-    Head,
-    JjParent,
-    FollowStart,
-}
-
-pub(crate) use konoma_host_core::project::MediaDiffKind;
-
-/// One side's fully-decoded picture, still carrying its pixel data — only ever lives inside
-/// [`MediaDiffComputed`] on its way from the worker thread to `App::apply_media_diff`, which moves
-/// the pixels into `md_image_cache` (under a `media_diff_url` key) and keeps only a lightweight
-/// [`MediaDiffPicture`] in `App::media_diff_landed` — the same split `MdImageResult`/`MdImgEntry`
-/// already have for mermaid/math renders.
-#[derive(Debug)]
-pub(crate) struct MediaDiffPictureDecoded {
-    /// This side's **intrinsic** size, in the kind's own natural unit — a raster image's real
-    /// (file-header) pixel dimensions, an SVG's **viewBox** size, or a PDF page's size in **points**.
-    /// **Not** `image.dimensions()`/`frames[0].dimensions()` (the decoded raster's own pixel size),
-    /// which depends on kind-specific rendering choices not comparable across the two sides of one
-    /// diff: a PDF page rasterizes to a fixed longest side regardless of its point size, an SVG
-    /// rasterizes to fit the caller's `raster_px` box regardless of its viewBox, and a GIF's frames
-    /// may be downscaled by the inline decode budget — so two *different* intrinsic sizes can decode
-    /// to *similar or identical* raster dimensions, which would make `preview::media_diff::layout`'s
-    /// shared-scale math compare apples to oranges (a physically smaller PDF page rendered visibly
-    /// *larger* than the original, both having rasterized to the same longest side). `layout`'s own
-    /// fit math must be driven by *this* field — the terminal encoder never re-derives its own fit
-    /// from the decoded raster instead (`App::poll_md_encode` always passes media-diff pictures
-    /// through `Resize::Scale`, never `Fit`, resizing the decoded raster to exactly the cell box
-    /// `layout` already decided).
-    natural_px: (u32, u32),
-    bytes: u64,
-    page_count: Option<u32>,
-    image: image::DynamicImage,
-    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
-    svg: Option<Arc<Vec<u8>>>,
-    /// The file an SVG side was drawn from (the base of its relative references); drawn again
-    /// from the same base. `None` for the kinds that keep no SVG.
-    svg_base: Option<PathBuf>,
-    cache_key: PathBuf,
-}
-
-/// One side's outcome, still carrying pixel data where present (`MediaDiffComputed`'s own per-side
-/// shape). Boxes its `Picture` payload so `MediaDiffComputed::Ready`'s two sides don't double the
-/// cost of `MediaDiffPictureDecoded`'s own size (`clippy::large_enum_variant`) — a plain pointer
-/// indirection, not a behavior change.
-#[derive(Debug)]
-pub(crate) enum MediaDiffSideDecoded {
-    /// The file doesn't exist on this side (new/untracked, or deleted).
-    Absent,
-    /// Bytes were read but could not be decoded as this diff's `kind` (corrupt image, encrypted/
-    /// unparsable PDF, invalid SVG).
-    Failed {
-        reason: String,
-    },
-    /// A PDF page beyond this side's own page count.
-    PageMissing,
-    Picture(Box<MediaDiffPictureDecoded>),
-}
-
-/// The lightweight, stored form of one side's picture — everything a caption/layout needs, with no
-/// pixel data (that already lives in `md_image_cache` under `cache_key`).
-#[derive(Clone, Debug)]
-pub(crate) struct MediaDiffPicture {
-    // Read by `ui/preview.rs::draw_media_caption` (git-gated) for the caption's "WxH", and by
-    // `ui/preview.rs::media_side_natural_px` (git-gated) as `preview::media_diff::layout`'s own
-    // sizing input — dead on `--no-default-features`. See `MediaDiffPictureDecoded::natural_px`'s
-    // own doc comment for why the *intrinsic* size (not the decoded raster's) is what sizing math
-    // must use.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(crate) natural_px: (u32, u32),
-    pub(crate) bytes: u64,
-    pub(crate) page_count: Option<u32>,
-    pub(crate) cache_key: PathBuf,
-}
-
-/// The stored (landed) form of one side's outcome — the `MediaDiffSideDecoded` counterpart with no
-/// pixel data.
-#[derive(Clone, Debug)]
-pub(crate) enum MediaDiffSide {
-    Absent,
-    Failed {
-        // Read by `ui/preview.rs::draw_media_side`'s "cannot display: <reason>" placeholder
-        // (git-gated) — dead on `--no-default-features`.
-        #[cfg_attr(not(feature = "git"), allow(dead_code))]
-        reason: String,
-    },
-    PageMissing,
-    Picture(MediaDiffPicture),
-}
-
-/// The pure computation's raw result (`App::compute_media_diff`) — still carrying pixel data where a
-/// side decoded into a picture. Travels from the worker thread to the run loop inside
-/// [`MediaDiffResult`]; `App::apply_media_diff` turns it into a stored [`MediaDiffOutcome`].
-#[derive(Debug)]
-pub(crate) enum MediaDiffComputed {
-    /// Both sides were resolved against a picture-capable `kind` (their own decode may still have
-    /// individually failed/been absent — see [`MediaDiffSideDecoded`]).
-    Ready {
-        kind: MediaDiffKind,
-        base: MediaBase,
-        same_bytes: bool,
-        old: MediaDiffSideDecoded,
-        new: MediaDiffSideDecoded,
-    },
-    /// Not a picture-capable kind, or a side is over the byte cap: sizes only, no decode.
-    Summary {
-        base: MediaBase,
-        same_bytes: bool,
-        old_len: Option<u64>,
-        new_len: Option<u64>,
-    },
-    /// The worker panicked, or the request could not be resolved at all (`compute_or_fallback`'s
-    /// fallback value).
-    Unavailable,
-}
-
-/// The stored (landed) form of [`MediaDiffComputed`] — the `Ready`/`Summary`/`Unavailable` shapes are
-/// identical, only the per-side payload loses its pixel data (see [`MediaDiffSide`]).
-#[derive(Clone, Debug)]
-pub(crate) enum MediaDiffOutcome {
-    Ready {
-        kind: MediaDiffKind,
-        // Read by `ui/preview.rs::draw_media_caption` (git-gated: the side-by-side view is only
-        // ever drawn there) for the old-side caption's base label — dead on a `--no-default-
-        // features` build, where that whole render path is compiled out.
-        #[cfg_attr(not(feature = "git"), allow(dead_code))]
-        base: MediaBase,
-        same_bytes: bool,
-        old: MediaDiffSide,
-        new: MediaDiffSide,
-    },
-    Summary {
-        // Carried through for symmetry with `Ready` and because a future consumer (or a test) may
-        // want it, but the binary-summary line itself never names a base — only sizes — so nothing
-        // in production reads this field today.
-        #[allow(dead_code)]
-        base: MediaBase,
-        same_bytes: bool,
-        old_len: Option<u64>,
-        new_len: Option<u64>,
-    },
-    Unavailable,
-}
-
-/// A media-diff computation request handed to the worker thread (or run synchronously —
-/// `App::spawn_or_sync_media_diff`). Carries everything `App::compute_media_diff` needs as plain
-/// data, resolved on the UI thread ahead of time (mirrors [`MdDiffRequest`]'s own doc comment on why
-/// `preview_rules`/`preview_commands` ride along here instead of `&Config`: the worker thread has no
-/// access to `App`/`Config` at all).
-pub(crate) struct MediaDiffRequest {
-    gen: u64,
-    path: PathBuf,
-    root: PathBuf,
-    baseline: DiffBaseline,
-    /// 1-based PDF page (ignored for every other kind).
-    page: u32,
-    /// Target pixel box an SVG/PDF side is rasterized to fit (the pane's own image area in px —
-    /// `preview::media_diff::layout`'s output converted to px by the caller). Ignored for a raw
-    /// raster image, whose decode doesn't depend on the display box at all.
-    raster_px: (u32, u32),
-    preview_rules: Vec<crate::config::Rule>,
-    /// Plugins `[plugins.<id>] enabled = false` switches off (they take part in the decision).
-    plugin_disabled: Vec<String>,
-    preview_commands: bool,
-    /// Set by the UI thread when nobody wants this computation any more (the want changed or the
-    /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
-    /// child process for the whole time limit.
-    cancel: Arc<AtomicBool>,
-}
-
-/// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
-/// `gen` exactly like [`MdDiffResult`].
-pub struct MediaDiffResult {
-    gen: u64,
-    path: PathBuf,
-    /// The 1-based PDF page this result answers for (mirrors `MediaDiffRequest::page`).
-    page: u32,
-    /// The raster target this result was decoded at (mirrors `MediaDiffRequest::raster_px`).
-    raster_px: (u32, u32),
-    computed: MediaDiffComputed,
-}
-
-/// `App::media_diff_landed`'s key: `(path, page, raster_px, gen)` it answers for, plus the outcome
-/// itself. A named alias only to keep the field declaration under `clippy::type_complexity`'s
-/// threshold — see `App::media_diff_landed`'s own doc comment for what each element means.
-type MediaDiffLandedKey = (PathBuf, u32, (u32, u32), u64, MediaDiffOutcome);
+pub use konoma_plugin::host::project::media_diff::MediaDiffResult;
+pub(crate) use konoma_plugin::host::project::media_diff::{
+    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffPicture,
+    MediaDiffRequest, MediaDiffSide, MediaDiffSideDecoded,
+};
 
 /// Which long-running filesystem operation a background job is performing.
 /// The variants differ in the completion message and in whether a failing target aborts the
@@ -1860,61 +1580,8 @@ pub struct App {
     /// Sender returning results from the worker computing `statuses`+`branch` in the background.
     /// If not attached (tests), `spawn_or_sync_statuses` falls back to computing synchronously.
     status_tx: Option<std::sync::mpsc::Sender<StatusResult>>,
-    /// `(path, kind)` a Markdown block-diff is being computed for on a separate thread (`docs/
-    /// STATUS.md` ★未修正 item 4). `None` = not computing. Keyed like `git_status_pending` (never
-    /// `None` while in flight, so the `pending == target` comparison can't be satisfied by two
-    /// `None`s).
-    md_diff_pending: Option<(PathBuf, MdDiffKind)>,
-    /// Generation of the block-diff computation. Bumped on every dispatch (`App::kick_md_diff`)
-    /// and by `App::invalidate_md_diff` (called from `App::invalidate_diff_caches`/
-    /// `App::reload_preview`); a result is applied only if it still matches (discards a result
-    /// superseded by a newer file/kind, or by a working-tree change).
-    md_diff_gen: u64,
-    /// Sender returning `MdDiffResult`s from the worker computing block-diffs in the background.
-    /// If not attached (tests), `spawn_or_sync_md_diff` falls back to computing synchronously —
-    /// exactly like `status_tx`/`ignored_tx` — so unit tests that don't drive a run loop still
-    /// observe the result immediately.
-    md_diff_tx: Option<std::sync::mpsc::Sender<MdDiffResult>>,
-    /// The last landed block-diff, tagged with the `(path, kind, gen)` it answers. `App::poll_md_diff`
-    /// reads this instead of recomputing inline; a tuple that doesn't match the currently wanted
-    /// `(path, kind)` **and** the current `md_diff_gen` means "not ready yet for this frame" — the
-    /// caller (`App::ensure_md_cache`) degrades (no gutter / a "computing…" placeholder) rather
-    /// than blocking.
-    md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
-    /// `(path, page, raster_px)` a media diff is being computed for on a separate thread, **for the
-    /// current generation** — cleared by `App::invalidate_media_diff` (a bumped `media_diff_gen` makes
-    /// this identity stale even though the worker thread is still physically running) and by
-    /// `App::apply_media_diff` once that thread's result lands. `App::poll_media_diff` dedupes an
-    /// exact repeat want against this (and against `media_diff_queued`); it deliberately is **not**
-    /// what gates direct-dispatch-vs-coalesce (`media_diff_worker_busy` does that) — different
-    /// questions ("is this want already accounted for" vs. "is a thread occupying the worker slot").
-    media_diff_pending: Option<(PathBuf, u32, (u32, u32))>,
-    /// Whether a media-diff worker thread is currently running, from the moment it's dispatched
-    /// (`App::dispatch_media_diff`) until its result — accepted or stale — lands
-    /// (`App::apply_media_diff`). **Not** cleared by `App::invalidate_media_diff`: the real thread
-    /// doesn't stop just because the baseline it was computing against went stale, so this stays
-    /// `true` until that thread reports back. `App::kick_media_diff` reads this to decide
-    /// direct-dispatch vs. coalesce (`media_diff_queued`) — enforcing "at most one worker in flight at
-    /// a time" even across a burst of invalidations from an AI repeatedly rewriting the same image.
-    media_diff_worker_busy: bool,
-    /// The one request coalesced behind an in-flight worker (`App::kick_media_diff`) — overwritten,
-    /// never accumulated, by every further want that arrives while `media_diff_worker_busy` is still
-    /// `true`, so only the *newest* one is ever dispatched next. `App::apply_media_diff` takes and
-    /// dispatches this the moment the busy worker's result lands, whether or not that result was
-    /// itself stale.
-    media_diff_queued: Option<(PathBuf, u32, (u32, u32))>,
-    /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
-    /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
-    media_diff_gen: u64,
-    /// The cancellation flag of the computation in flight (see `MediaDiffRequest::cancel`).
-    media_diff_cancel: Arc<AtomicBool>,
-    /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
-    /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
-    /// computation).
-    media_diff_tx: Option<std::sync::mpsc::Sender<MediaDiffResult>>,
-    /// The last landed media diff, tagged with the `(path, page, raster_px, gen)` it answers. Mirrors
-    /// `md_diff_landed`'s own doc comment.
-    media_diff_landed: Option<MediaDiffLandedKey>,
+    md_diff: konoma_plugin::host::project::md_diff::MdDiffWorker,
+    media_diff: konoma_plugin::host::project::media_diff::MediaDiffWorker,
     /// `(path, Config::resolve_preview(path))`, memoized for whatever `path` the diff surface is
     /// currently (re)targeted at — `App::diff_target_kind` is the sole reader/writer contract.
     /// `resolve_preview` is real I/O for an extension-less/MIME-sniffed rule (`infer::get_from_path`
@@ -2167,12 +1834,8 @@ struct DiffCache {
     lines: Vec<crate::git::DiffLine>,
 }
 
-/// Per-file cap for a follow baseline snapshot: a dirty file larger than this is not snapshotted
-/// (recorded as `None`), and its follow diff falls back to the full git diff (honest degradation).
-/// Also the size cap `App::compute_md_diff` (`src/app/md_diff.rs`) applies to either side of the
-/// diff's `Rendered` presentation — not itself behind `#[cfg(feature = "git")]` (unlike the
-/// follow-specific constants below it) because that caller compiles on every build.
-const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
+#[cfg(feature = "git")]
+use konoma_plugin::host::project::md_diff::FOLLOW_BASELINE_FILE_CAP;
 /// Total cap across all snapshotted baseline files: once exceeded, remaining dirty files are recorded
 /// as `None` (full-diff fallback) so pressing `F` on a fully-dirty tree never balloons memory.
 #[cfg(feature = "git")]
@@ -2895,17 +2558,8 @@ impl App {
             git_status_pending: None,
             git_status_gen: 0,
             status_tx: None,
-            md_diff_pending: None,
-            md_diff_gen: 0,
-            md_diff_tx: None,
-            md_diff_landed: None,
-            media_diff_pending: None,
-            media_diff_worker_busy: false,
-            media_diff_queued: None,
-            media_diff_gen: 0,
-            media_diff_cancel: Arc::default(),
-            media_diff_tx: None,
-            media_diff_landed: None,
+            md_diff: Default::default(),
+            media_diff: Default::default(),
             diff_target_kind_cache: None,
             git_ignored_for: None,
             git_ignored_pending: None,

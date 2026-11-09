@@ -15,7 +15,7 @@ use crate::view::DocOptions;
 
 /// The notice appended to a Markdown file cut at the display limit (its own paragraph; the host
 /// writes it in this one language whatever the reader's).
-pub const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
+pub use konoma_widgets::text::TRUNCATED_NOTE;
 
 /// The default open state of a `<details>` block from `md_details` and the tag's own `open`
 /// attribute: `"open"`/`"closed"` force it, anything else honors the attribute the way GitHub does.

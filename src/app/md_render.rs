@@ -63,13 +63,7 @@ impl GutterAlign<'_> {
 /// match what was decided, and a change on the file's last line loses the `width - 1` the gutter
 /// needs (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガター 1 セルを後付けすると...wrap して図が
 /// 下線に重なる" class of bug — the same failure mode this closes off a second entry point for).
-pub(super) fn decorated_file_text(content: &crate::preview::text::TextContent) -> String {
-    let mut s = content.lines.join("\n");
-    if content.truncated {
-        s.push_str(TRUNCATED_NOTE);
-    }
-    s
-}
+pub(super) use konoma_plugin::host::project::md_diff::decorated_file_text;
 
 /// The notice appended to a Markdown file cut at the display cap (its own paragraph).
 pub(super) use konoma_plugin::document_render::TRUNCATED_NOTE;

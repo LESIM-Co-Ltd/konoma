@@ -34,7 +34,7 @@ test-hooks = ["konoma-base?/test-hooks"]
 host = ["config", "dep:crossterm"]
 # Project discovery, watching and session ownership (`host::project`), shared by konoma and the
 # standalone app. The owner prepares content with the shared widgets and VCS data types.
-project-host = ["host", "dep:notify", "dep:konoma-base", "widgets", "ratatui", "dep:konoma-vcs-core"]
+project-host = ["host", "dep:notify", "dep:konoma-base", "widgets", "ratatui", "dep:konoma-vcs-core", "dep:konoma-svg", "dep:konoma-media-core", "dep:image"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
 # host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
 # pictures, so it includes `pictures`). Off by
@@ -84,6 +84,7 @@ konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional =
 notify = { workspace = true, optional = true }
 # Shared diff data used by the project owner (`project-host` feature).
 konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0", optional = true }
+konoma-media-core = { path = "../konoma-media-core", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
