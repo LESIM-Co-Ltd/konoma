@@ -818,13 +818,8 @@ fn plugin_section_with_keys(app: &App, ctx: Context) -> Option<(HelpSection, Vec
     Some((sec, covered))
 }
 
-fn remaining_project_open_control(
-    mut control: crate::app::project_screens::ProjectControl,
-    covered: &[KeyPress],
-) -> Option<crate::app::project_screens::ProjectControl> {
-    control.keys.retain(|key| !covered.contains(key));
-    (!control.keys.is_empty()).then_some(control)
-}
+#[cfg(test)]
+use konoma_plugin::host::project::presentation::remaining_project_open_control;
 
 /// Every row of `ctx`'s help (before it is grouped into sections), for tests.
 #[cfg(test)]
@@ -842,161 +837,87 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
     sections_for(app, help_context(app))
 }
 
+fn project_sections(app: &App) -> Vec<HelpSection> {
+    use konoma_plugin::host::project::presentation::ProjectHelpWords;
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    let plugin = actions
+        .first()
+        .and_then(|a| app.plugin_keys.name_of(a.plugin()))
+        .map(|name| name.get(app.plugin_lang()))
+        .unwrap_or_default();
+    let jj = app.project_graph_jj() == Some(true);
+    let words = ProjectHelpWords {
+        plugin,
+        project: tr(app.lang, Msg::ProjectTitle),
+        picker: tr(app.lang, Msg::GraphPickerTitle),
+        graph: tr(
+            app.lang,
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+        ),
+        new_tab: tr(app.lang, Msg::OpenInNewTabHelp),
+        move_list: tr(app.lang, Msg::GitMove),
+        move_commit: tr(app.lang, Msg::GitMoveCommit),
+        ends: tr(app.lang, Msg::TopBottom),
+        apply: tr(app.lang, Msg::FtApply),
+        cancel: tr(app.lang, Msg::FtCancel),
+        filter: tr(app.lang, Msg::GitFilterByName),
+        mark: tr(app.lang, Msg::ProjectMark),
+        search: tr(app.lang, Msg::ListFilterHelp),
+        refresh: tr(app.lang, Msg::Refresh),
+        screens: tr(
+            app.lang,
+            if jj {
+                Msg::JjScreensHelp
+            } else {
+                Msg::GitScreensHelp
+            },
+        ),
+        back_to_changes: tr(app.lang, Msg::BackToChanges),
+        cycle: tr(app.lang, Msg::ProjectCycle),
+        back: tr(app.lang, Msg::ProjectBack),
+        scroll: tr(app.lang, Msg::Scroll),
+        copy: tr(app.lang, Msg::CopyHint),
+        actions: tr(app.lang, Msg::WkActionsTitle),
+    };
+    let screens = app
+        .tab
+        .project_navigation
+        .as_ref()
+        .and_then(|nav| app.project_runtimes.get(&nav.project))
+        .map(|runtime| {
+            runtime
+                .project
+                .declaration
+                .screens
+                .iter()
+                .filter_map(|screen| {
+                    Some((
+                        screen.key?.to_string(),
+                        screen.title.get(app.plugin_lang()).into(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    presentation
+        .help_sections(&words, &screens)
+        .into_iter()
+        .map(|section| HelpSection {
+            title: section.title,
+            rows: section.rows,
+        })
+        .collect()
+}
+
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
-        let (mut sections, covered) = match plugin_section_with_keys(app, ctx) {
-            Some((section, keys)) => (vec![section], keys),
-            None => (vec![], vec![]),
-        };
-        if app.project_picker() {
-            let mut picker = sections.pop().unwrap_or_else(|| HelpSection::new(""));
-            picker.title = tr(app.lang, Msg::GraphPickerTitle).into();
-            for (keys, description) in &mut picker.rows {
-                if description == tr(app.lang, Msg::FtApply) {
-                    *keys = "l/Enter".into();
-                }
-            }
-            picker.rows.splice(
-                0..0,
-                [
-                    ("j/k".into(), tr(app.lang, Msg::GitMove).into()),
-                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
-                ],
-            );
-            picker
-                .rows
-                .push(("h/Esc  ·  q".into(), tr(app.lang, Msg::FtCancel).into()));
-            return vec![picker];
-        }
-        if let Some(jj) = app.project_graph_jj() {
-            let mut graph = sections.pop().unwrap_or_else(|| HelpSection::new(""));
-            graph.title = tr(
-                app.lang,
-                if jj {
-                    Msg::JjGraphLabel
-                } else {
-                    Msg::GitGraphLabel
-                },
-            )
-            .into();
-            graph.rows.splice(
-                0..0,
-                [
-                    ("j/k / ↑/↓".into(), tr(app.lang, Msg::GitMoveCommit).into()),
-                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
-                ],
-            );
-            graph.rows.extend([
-                ("/".into(), tr(app.lang, Msg::ListFilterHelp).into()),
-                ("r".into(), tr(app.lang, Msg::Refresh).into()),
-                (
-                    "Tab / Shift-Tab".into(),
-                    tr(
-                        app.lang,
-                        if jj {
-                            Msg::JjScreensHelp
-                        } else {
-                            Msg::GitScreensHelp
-                        },
-                    )
-                    .into(),
-                ),
-                ("h/q/Esc".into(), tr(app.lang, Msg::BackToChanges).into()),
-            ]);
-            sections.push(graph);
-            for (key, id) in app.keymaps.leader_keys_of(ctx) {
-                if id == LeaderId::Copy {
-                    if let Some(section) =
-                        crate::ui::help::leader_section(app, ctx, id, &help_key(key))
-                    {
-                        sections.push(section);
-                    }
-                }
-            }
-            if let Some(section) =
-                crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
-            {
-                sections.push(section);
-            }
-            return sections;
-        }
-        let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
-        if let Some((keys, _)) = app.project_new_tab_hint() {
-            navigation
-                .rows
-                .push((keys, tr(app.lang, Msg::OpenInNewTabHelp).into()));
-        }
-        if let Some(hints) = app.project_text_help() {
-            navigation.rows.extend(hints);
-        } else {
-            if let Some(control) = app
-                .project_open_control()
-                .and_then(|control| remaining_project_open_control(control, &covered))
-            {
-                navigation
-                    .rows
-                    .push((control.rendered_keys(), control.label));
-            }
-            if !app.project_pushed() {
-                navigation.rows.push((
-                    "Tab / Shift-Tab".into(),
-                    tr(app.lang, Msg::ProjectCycle).into(),
-                ));
-            }
-            navigation
-                .rows
-                .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
-            navigation
-                .rows
-                .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
-        }
-        if app.project_content().is_some_and(|view| {
-            matches!(
-                view.as_ref(),
-                crate::app::project_screens::ProjectContent::List(_)
-            )
-        }) {
-            if app.project_filter_enabled() {
-                navigation
-                    .rows
-                    .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
-            }
-            if app.project_marks_enabled() {
-                navigation
-                    .rows
-                    .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
-            }
-        }
-        if let Some(nav) = app
-            .tab
-            .project_navigation
-            .as_ref()
-            .filter(|_| !app.project_pushed())
-        {
-            if let Some(runtime) = app.project_runtimes.get(&nav.project) {
-                for screen in &runtime.project.declaration.screens {
-                    if let Some(key) = screen.key {
-                        navigation
-                            .rows
-                            .push((key.to_string(), screen.title.get(app.plugin_lang()).into()));
-                    }
-                }
-            }
-        }
-        sections.push(navigation);
-        for (key, id) in app.keymaps.leader_keys_of(ctx) {
-            if id == LeaderId::Copy {
-                if let Some(section) = crate::ui::help::leader_section(app, ctx, id, &help_key(key))
-                {
-                    sections.push(section);
-                }
-            }
-        }
-        if let Some(section) = crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
-        {
-            sections.push(section);
-        }
-        return sections;
+        return project_sections(app);
     }
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());

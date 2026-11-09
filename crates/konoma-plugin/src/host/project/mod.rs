@@ -40,6 +40,8 @@ mod effects_tests;
 #[cfg(test)]
 mod input_tests;
 #[cfg(test)]
+mod presentation_help_tests;
+#[cfg(test)]
 mod presentation_tests;
 
 pub use prompt::{

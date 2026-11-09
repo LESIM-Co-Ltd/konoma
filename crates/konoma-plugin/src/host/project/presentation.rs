@@ -5,6 +5,23 @@ use konoma_host_core::help::{footer_key, help_key};
 use konoma_host_core::keymap::KeyPress;
 
 use crate::host::acts::{self, ActBinding};
+use konoma_host_core::help::CoreSection;
+use konoma_host_core::menu::{self, Item};
+
+#[path = "project_help.rs"]
+mod project_help;
+pub use project_help::{remaining_project_open_control, ProjectHelpWords};
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The current test thread's construction count, independent of other test frames.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn project_presentation_build_count() -> usize {
+    BUILD_COUNT.with(std::cell::Cell::get)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectControlId {
@@ -173,6 +190,12 @@ pub struct ProjectPresentationWords<'a> {
 
 /// One redraw's derived values. No project state or execution policy is owned here.
 pub struct ProjectPresentation {
+    facts: ProjectPresentationFacts,
+    plugin_rows: Vec<(String, String)>,
+    covered: Vec<KeyPress>,
+    copy_menu: Vec<Item<usize, String>>,
+    actions_menu: Vec<Item<usize, String>>,
+    declared_actions_menu: Vec<Item<usize, String>>,
     controls: Vec<ProjectControl>,
     text_controls: Option<Vec<ProjectControl>>,
     text_help: Option<Vec<(String, String)>>,
@@ -187,6 +210,8 @@ impl ProjectPresentation {
         bindings: &[ProjectPresentationBinding],
         words: &ProjectPresentationWords<'_>,
     ) -> Self {
+        #[cfg(any(test, feature = "test-hooks"))]
+        BUILD_COUNT.with(|count| count.set(count.get() + 1));
         use ProjectControlId as Id;
         let text_controls = text_controls(facts, words);
         let text_help = text_controls.as_ref().map(|controls| {
@@ -395,7 +420,57 @@ impl ProjectPresentation {
                 .flat_map(|t| t.ops.iter().copied())
                 .collect();
         }
+        let rows = acts::help_rows(&acts, words.language, enabled);
+        let covered = rows
+            .iter()
+            .flat_map(|(keys, _, _)| keys.iter().copied())
+            .collect();
+        let plugin_rows = rows
+            .into_iter()
+            .map(|(keys, description, _)| {
+                let (columns, zipped) = konoma_host_core::help::zip_columns(&keys, |key| vec![key]);
+                (
+                    project_help::write_columns(&columns, zipped),
+                    description.to_string(),
+                )
+            })
+            .collect();
+        let copy_menu = bindings
+            .iter()
+            .filter_map(|b| {
+                Some(Item {
+                    key: b.binding.copy_key.filter(|_| b.enabled)?,
+                    action: b.binding.act,
+                    label: b.binding.label.get(words.language).to_string(),
+                })
+            })
+            .collect();
+        let priority: Vec<_> = footer_priority
+            .iter()
+            .map(|op| match op {
+                PresentationOp::ProjectAction(index) => *index,
+            })
+            .collect();
+        let build_menu = |gated: bool| {
+            menu::build_items(
+                acts::menu_candidates(&acts),
+                &priority,
+                &[],
+                &[],
+                |_| None,
+                |index| !gated || bindings.iter().any(|b| b.binding.act == index && b.enabled),
+                |index| acts::menu_label(&acts, &index, words.language).map(str::to_string),
+            )
+        };
+        let actions_menu = build_menu(true);
+        let declared_actions_menu = build_menu(false);
         Self {
+            facts: facts.clone(),
+            plugin_rows,
+            covered,
+            copy_menu,
+            actions_menu,
+            declared_actions_menu,
             controls,
             text_controls,
             text_help,
@@ -406,6 +481,24 @@ impl ProjectPresentation {
 
     pub fn controls(&self) -> &[ProjectControl] {
         &self.controls
+    }
+    pub fn copy_menu(&self) -> &[Item<usize, String>] {
+        &self.copy_menu
+    }
+    pub fn copy_action(&self, key: KeyPress) -> Option<usize> {
+        if crate::keys::parse_key(&key.label()).is_ok_and(crate::keys::closes_menu) {
+            return None;
+        }
+        self.copy_menu
+            .iter()
+            .find(|item| item.key == key)
+            .map(|item| item.action)
+    }
+    pub fn actions_menu(&self) -> &[Item<usize, String>] {
+        &self.actions_menu
+    }
+    pub fn declared_actions_menu(&self) -> &[Item<usize, String>] {
+        &self.declared_actions_menu
     }
     pub fn text_controls(&self) -> Option<&[ProjectControl]> {
         self.text_controls.as_deref()

@@ -38,6 +38,7 @@ type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation
 pub(crate) use konoma_plugin::host::project::ProjectDiff;
 pub(crate) use konoma_plugin::host::project::{ProjectContent, ScreenKey};
 
+#[cfg(test)]
 pub(crate) use konoma_plugin::host::project::presentation::ProjectControl;
 #[cfg(test)]
 pub(crate) use konoma_plugin::host::project::presentation::ProjectControlId;
@@ -54,6 +55,61 @@ pub(crate) struct ProjectNavigation {
     origin_kind: Option<PreviewKind>,
     origin_scroll: u16,
     origin_hscroll: u16,
+}
+
+#[cfg(test)]
+mod presentation_frame_tests {
+    use super::*;
+    use konoma_plugin::host::project::presentation::project_presentation_build_count;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn project_presentation_is_built_once_per_frame() {
+        let dir = crate::test_support::unique_tmp("project_presentation_frame");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+        app.tab.project_navigation = Some(ProjectNavigation {
+            state: ProjectScreenState::new(
+                ProjectKey {
+                    plugin: "example".into(),
+                    root: dir.to_path_buf(),
+                    marker: "project".into(),
+                },
+                ScreenKey::new("items", app.tab.id),
+            ),
+            origin_mode: Mode::Tree,
+            origin_path: None,
+            origin_kind: None,
+            origin_scroll: 0,
+            origin_hscroll: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        for help in [false, true] {
+            app.show_help = help;
+            app.pending_leader = None;
+            let before = project_presentation_build_count();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert_eq!(
+                project_presentation_build_count() - before,
+                1,
+                "help={help}"
+            );
+        }
+        app.show_help = false;
+        for leader in [
+            crate::keymap::LeaderId::Copy,
+            crate::keymap::LeaderId::Actions,
+        ] {
+            app.pending_leader = Some(leader);
+            let before = project_presentation_build_count();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert_eq!(project_presentation_build_count() - before, 1, "{leader:?}");
+        }
+    }
 }
 
 impl std::ops::Deref for ProjectNavigation {
@@ -179,11 +235,11 @@ impl App {
         )
     }
 
-    pub(crate) fn project_open_control(&self) -> Option<ProjectControl> {
-        self.project_presentation()?.0.open_control().cloned()
-    }
-
-    fn project_open_facts(&self) -> Option<ProjectOpenFacts> {
+    fn project_open_facts(
+        &self,
+        actions: &[PluginAct],
+        bindings: &[ProjectPresentationBinding],
+    ) -> Option<ProjectOpenFacts> {
         use crate::keymap::{Action, KeyPress, Motion};
         if !self
             .project_content()
@@ -192,12 +248,16 @@ impl App {
             return None;
         }
         let action = self.project_enter_action()?;
-        if !crate::ops::action_enabled(self, Context::Canvas, action) {
-            return None;
-        }
         let Action::Plugin(act) = action else {
             return None;
         };
+        if !actions
+            .iter()
+            .position(|a| *a == act)
+            .is_some_and(|index| bindings[index].enabled)
+        {
+            return None;
+        }
         let label = self
             .plugin_keys
             .declaration(act)?
@@ -393,15 +453,6 @@ impl App {
             .project_navigation
             .as_ref()?
             .row_target(self.project_content()?.as_ref(), index)
-    }
-
-    pub(crate) fn project_new_tab_hint(&self) -> Option<(String, String)> {
-        let entry = self.project_new_tab_control()?;
-        Some((entry.rendered_keys(), entry.label))
-    }
-
-    fn project_new_tab_control(&self) -> Option<ProjectControl> {
-        self.project_presentation()?.0.new_tab_control().cloned()
     }
 
     fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {
@@ -1037,6 +1088,7 @@ impl App {
         if !self.project_active() {
             return None;
         }
+        let (actions, bindings) = self.project_presentation_bindings();
         let motion_keys = |motions: &[Motion]| {
             motions
                 .iter()
@@ -1081,7 +1133,7 @@ impl App {
             picker: self.project_picker(),
             graph_jj: self.project_graph_jj(),
             row_target: self.project_row_target().is_some(),
-            open: self.project_open_facts(),
+            open: self.project_open_facts(&actions, &bindings),
             motions: ProjectMotionKeys {
                 scroll: motion_keys(&[Motion::Down, Motion::Up]),
                 hscroll: motion_keys(&[Motion::Left, Motion::Right]),
@@ -1092,7 +1144,10 @@ impl App {
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
             },
             graph_scroll,
-            copy_keys: if crate::ops::menu::opens(self, Context::Canvas, LeaderId::Copy) {
+            copy_keys: if bindings
+                .iter()
+                .any(|b| b.binding.copy_key.is_some() && b.enabled)
+            {
                 self.keymaps
                     .leader_keys_of(Context::Canvas)
                     .into_iter()
@@ -1104,37 +1159,6 @@ impl App {
             },
             filter_label,
         };
-        let mut actions = Vec::new();
-        let bindings: Vec<_> = self
-            .plugin_context_bindings(Context::Canvas)
-            .into_iter()
-            .enumerate()
-            .map(|(index, b)| {
-                actions.push(b.act);
-                ProjectPresentationBinding {
-                    enabled: crate::ops::action_enabled(
-                        self,
-                        Context::Canvas,
-                        Action::Plugin(b.act),
-                    ),
-                    declared_enter: self
-                        .plugin_keys
-                        .declaration(b.act)
-                        .is_some_and(|a| a.key.as_deref() == Some("Enter")),
-                    binding: konoma_plugin::host::acts::ActBinding {
-                        act: index,
-                        copy_key: b.copy_key,
-                        hint_group: b.hint_group,
-                        key: b.key,
-                        context: b.context,
-                        label: b.label,
-                        help: b.help,
-                        footer: b.footer,
-                        writes: b.writes,
-                    },
-                }
-            })
-            .collect();
         let move_list = konoma_plugin::t!(en: "move", ja: "移動");
         let mark = konoma_plugin::t!(en: "mark", ja: "マーク");
         let back = konoma_plugin::t!(en: "back", ja: "戻る");
@@ -1174,6 +1198,41 @@ impl App {
         ))
     }
 
+    fn project_presentation_bindings(&self) -> (Vec<PluginAct>, Vec<ProjectPresentationBinding>) {
+        let mut actions = Vec::new();
+        let bindings = self
+            .plugin_context_bindings(Context::Canvas)
+            .into_iter()
+            .enumerate()
+            .map(|(index, b)| {
+                actions.push(b.act);
+                ProjectPresentationBinding {
+                    enabled: crate::ops::action_enabled(
+                        self,
+                        Context::Canvas,
+                        crate::keymap::Action::Plugin(b.act),
+                    ),
+                    declared_enter: self
+                        .plugin_keys
+                        .declaration(b.act)
+                        .is_some_and(|a| a.key.as_deref() == Some("Enter")),
+                    binding: konoma_plugin::host::acts::ActBinding {
+                        act: index,
+                        copy_key: b.copy_key,
+                        hint_group: b.hint_group,
+                        key: b.key,
+                        context: b.context,
+                        label: b.label,
+                        help: b.help,
+                        footer: b.footer,
+                        writes: b.writes,
+                    },
+                }
+            })
+            .collect();
+        (actions, bindings)
+    }
+
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_picker(&self) -> bool {
         self.tab
@@ -1205,25 +1264,6 @@ impl App {
                     .map(|runtime| &runtime.project.declaration),
             )
         })
-    }
-
-    pub(crate) fn project_text_hints(&self) -> Option<Vec<(String, String)>> {
-        Some(
-            self.project_text_controls()?
-                .into_iter()
-                .map(|entry| (entry.rendered_keys(), entry.label))
-                .collect(),
-        )
-    }
-
-    fn project_text_controls(&self) -> Option<Vec<ProjectControl>> {
-        Some(self.project_presentation()?.0.text_controls()?.to_vec())
-    }
-
-    pub(crate) fn project_text_help(&self) -> Option<Vec<(String, String)>> {
-        let mut hints = self.project_text_hints()?;
-        hints.extend_from_slice(self.project_presentation()?.0.additional_text_help()?);
-        Some(hints)
     }
 
     pub(crate) fn project_chips(&self) -> Vec<Line<'static>> {

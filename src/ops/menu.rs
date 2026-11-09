@@ -68,12 +68,11 @@ pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
 
 /// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
 pub fn find(app: &App, ctx: Context, id: LeaderId, kp: KeyPress) -> Option<Action> {
-    if app.project_active()
-        && ctx == Context::Canvas
-        && id == LeaderId::Copy
-        && konoma_plugin::keys::parse_key(&kp.label()).is_ok_and(konoma_plugin::keys::closes_menu)
-    {
-        return None;
+    if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
+        let (presentation, actions) = app.project_presentation()?;
+        return presentation
+            .copy_action(kp)
+            .map(|index| Action::Plugin(actions[index]));
     }
     menu(app, ctx, id, View::Open)?
         .items
@@ -91,17 +90,14 @@ pub fn opens(app: &App, ctx: Context, id: LeaderId) -> bool {
 /// A menu kept in the keymap (`y`, `,`, the tree's `Space`).
 fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu> {
     if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
-        let items = app
-            .plugin_context_bindings(ctx)
+        let (presentation, actions) = app.project_presentation()?;
+        let items = presentation
+            .copy_menu()
             .iter()
-            .filter_map(|binding| {
-                let key = binding.copy_key?;
-                let action = Action::Plugin(binding.act);
-                action_enabled(app, ctx, action).then(|| MenuItem {
-                    key,
-                    action,
-                    label: binding.label.get(app.plugin_lang()).to_string(),
-                })
+            .map(|item| MenuItem {
+                key: item.key,
+                action: Action::Plugin(actions[item.action]),
+                label: item.label.clone(),
             })
             .collect();
         return Some(Menu {
@@ -327,6 +323,24 @@ fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
 /// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that
 /// act now.
 fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
+    if app.project_active() && ctx == Context::Canvas {
+        let Some((presentation, actions)) = app.project_presentation() else {
+            return vec![];
+        };
+        let items = if gated {
+            presentation.actions_menu()
+        } else {
+            presentation.declared_actions_menu()
+        };
+        return items
+            .iter()
+            .map(|item| MenuItem {
+                key: item.key,
+                action: Action::Plugin(actions[item.action]),
+                label: item.label.clone(),
+            })
+            .collect();
+    }
     let prio = footer::priority(app, ctx);
     let cands = candidates(app, ctx, &prio);
     let (own, everywhere) = help::declared_groups(app, ctx);
