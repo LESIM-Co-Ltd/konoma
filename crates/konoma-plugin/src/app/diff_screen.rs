@@ -18,6 +18,8 @@ use super::project::{ProjectServiceInfo, ProjectServices};
 use super::{doc_pictures::DocPics, Display};
 use crate::host::project::md_diff::{MdDiffResult, MdDiffWorker};
 use crate::view::DocOptions;
+mod chrome;
+mod media;
 mod rendered;
 use crate::host::project::diff_blocks::{source_diff_blocks, step_change_block, DiffBlockCursor};
 use crate::host::project::diff_files::{changed_path_position, step_changed_path};
@@ -108,6 +110,9 @@ pub struct DiffScreenState {
     services: Arc<dyn ProjectServices>,
     pending: Option<FileDiffReply>,
     keys: CoreKeys,
+    app_keys: super::AppKeys,
+    help: Option<u16>,
+    menu: bool,
     display: Display,
     lang: Lang,
     block: Option<usize>,
@@ -117,6 +122,7 @@ pub struct DiffScreenState {
     pub pending_first_change: Option<PathBuf>,
     markdown: MdDiffWorker,
     markdown_rx: mpsc::Receiver<MdDiffResult>,
+    media: media::Media,
     options: DocOptions,
     notice: Option<String>,
 }
@@ -159,6 +165,9 @@ impl DiffScreenState {
             hscroll: 0,
             split_drawn: false,
             keys: file_diff_keys(scheme_from_str(&config.ui.keys), &config.keys),
+            app_keys: super::AppKeys::for_file_diff(config),
+            help: None,
+            menu: false,
             display: Display::of(config),
             lang: Lang::parse(&config.ui.lang),
             block: None,
@@ -167,6 +176,7 @@ impl DiffScreenState {
             pending_first_change: None,
             markdown,
             markdown_rx,
+            media: media::Media::new(&config.git.media_diff),
             options: DocOptions::from_settings(&crate::config::plugin_settings(
                 &config.plugins,
                 &config.ui.moved(),
@@ -196,12 +206,18 @@ impl DiffScreenState {
     }
 
     pub fn wake_in(&self) -> Option<Duration> {
-        (self.pending.is_some() || self.markdown.pending_for(&self.request.path))
-            .then_some(Duration::from_millis(16))
+        if self.closed {
+            return None;
+        }
+        (self.pending.is_some()
+            || self.markdown.pending_for(&self.request.path)
+            || self.media.pending())
+        .then_some(Duration::from_millis(16))
     }
 
     pub(super) fn set_lang(&mut self, lang: Lang) {
         self.lang = lang;
+        self.app_keys = self.app_keys.clone().with_lang(lang);
     }
 
     /// Drop raw ownership on return; retain the last surface context, as konoma does.
@@ -210,12 +226,15 @@ impl DiffScreenState {
         self.data = None;
         self.pending = None;
         self.markdown.invalidate();
+        self.media.worker.invalidate();
         self.rendered = None;
         self.pending_first_change = None;
     }
 
     fn reload(&mut self) -> Result<(), Failure> {
         self.markdown.invalidate();
+        self.media.worker.invalidate();
+        self.media.page = 1;
         self.rendered = None;
         self.choose_effective();
         self.data = None;
@@ -233,6 +252,35 @@ impl DiffScreenState {
     ) -> Result<(DiffScreenAction, Option<String>), Failure> {
         use konoma_host_core::preview_plan::{fixed_keys, PreviewOp};
         use DiffUiOp as O;
+        if self.menu {
+            self.menu = false;
+            if let Some(item) = self.options_menu().into_iter().find(|i| i.key == key) {
+                return self.execute_op(item.action);
+            }
+            return Ok((DiffScreenAction::Stay, None));
+        }
+        if let Some(top) = self.help.as_mut() {
+            use konoma_host_core::keymap::CoreResolution;
+            match self.keys.help_resolve(key) {
+                CoreResolution::Action(CoreAction::Quit) => {
+                    return Ok((DiffScreenAction::Quit, None))
+                }
+                CoreResolution::Action(CoreAction::ToggleHelp | CoreAction::PreviewBack) => {
+                    self.help = None
+                }
+                CoreResolution::Action(CoreAction::Navigate(Motion::Down)) => {
+                    *top = top.saturating_add(1)
+                }
+                CoreResolution::Action(CoreAction::Navigate(Motion::Up)) => {
+                    *top = top.saturating_sub(1)
+                }
+                CoreResolution::Action(CoreAction::Navigate(Motion::Top)) => *top = 0,
+                CoreResolution::Action(CoreAction::Navigate(Motion::Bottom)) => *top = u16::MAX,
+                _ if key == KeyPress::key(crossterm::event::KeyCode::Esc) => self.help = None,
+                _ => {}
+            }
+            return Ok((DiffScreenAction::Stay, None));
+        }
         let fixed = fixed_keys(CoreContext::Diff)
             .into_iter()
             .find(|b| b.key == key)
@@ -244,11 +292,26 @@ impl DiffScreenState {
         let Some(op) = fixed.or_else(|| O::resolve_file_diff(&self.keys, key)) else {
             return Ok((DiffScreenAction::Stay, None));
         };
+        self.execute_op(op)
+    }
+
+    fn execute_op(&mut self, op: DiffUiOp) -> Result<(DiffScreenAction, Option<String>), Failure> {
+        use DiffUiOp as O;
         let mut notice = None;
         match op {
+            O::Global(1) => self.help = Some(0),
+            O::Options => self.menu = !self.options_menu().is_empty(),
+            O::PathStyle => self.display.path_style = self.display.path_style.next(),
             O::Back | O::Cancel => return Ok((DiffScreenAction::Back, None)),
             O::Global(2) => return Ok((DiffScreenAction::Quit, None)),
             O::Layout => {
+                if self.media_active() {
+                    if self.media_showing_pictures() {
+                        self.media.layout = self.media.layout.next();
+                        notice = Some(self.media_layout_label(self.media.layout).into());
+                    }
+                    return Ok((DiffScreenAction::Stay, notice));
+                }
                 if self.effective != DiffView::Source {
                     return Ok((DiffScreenAction::Stay, None));
                 }
@@ -317,7 +380,24 @@ impl DiffScreenState {
                 }
             }
             O::Refresh => self.reload()?,
+            O::PageNext | O::PagePrev => {
+                self.turn_media_page(if op == O::PageNext { 1 } else { -1 })
+            }
             O::Navigate(m) => {
+                if matches!(m, Motion::PageDown | Motion::PageUp) && self.media_can_page() {
+                    self.turn_media_page(if m == Motion::PageDown { 1 } else { -1 });
+                    return Ok((DiffScreenAction::Stay, None));
+                }
+                if self.media_active()
+                    || (self.effective == DiffView::Rendered
+                        && self.display.wrap
+                        && matches!(
+                            m,
+                            Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd
+                        ))
+                {
+                    return Ok((DiffScreenAction::Stay, None));
+                }
                 let page = self.viewport.max(1);
                 let (v, h) = match m {
                     Motion::Down => (1, 0),
@@ -362,6 +442,9 @@ impl DiffScreenState {
     }
 
     fn blocks(&self) -> crate::host::project::diff_blocks::DiffBlocks {
+        if self.media_active() {
+            return Default::default();
+        }
         if self.effective == DiffView::Rendered {
             return self
                 .rendered
@@ -386,6 +469,10 @@ impl DiffScreenState {
 
     pub(super) fn draw(&mut self, buf: &mut Buffer, area: Rect) {
         self.viewport = Block::bordered().inner(area).height;
+        if self.media_active() {
+            self.draw_media(buf, area);
+            return;
+        }
         if self.effective == DiffView::Rendered {
             self.draw_rendered(buf, area);
             return;
@@ -436,7 +523,7 @@ impl DiffScreenState {
         self.split_drawn = update.diff_split_drawn;
     }
 
-    pub(super) fn presentation(&self) -> DiffPresentation {
+    pub fn presentation(&self) -> DiffPresentation {
         let lookup = CoreLookup {
             keys: &self.keys,
             ctx: CoreContext::Diff,
@@ -451,8 +538,20 @@ impl DiffScreenState {
                     keys: lookup.keys_of(HelpOp::Act(a)),
                     enabled: matches!(
                         op,
-                        DiffUiOp::Navigate(_) | DiffUiOp::Layout | DiffUiOp::Back
-                    ),
+                        DiffUiOp::Navigate(_)
+                            | DiffUiOp::Layout
+                            | DiffUiOp::Back
+                            | DiffUiOp::PageNext
+                            | DiffUiOp::PagePrev
+                            | DiffUiOp::PathStyle
+                    ) && !(self.effective == DiffView::Rendered
+                        && (self.media_active() || self.display.wrap)
+                        && matches!(
+                            op,
+                            DiffUiOp::Navigate(
+                                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd
+                            )
+                        )),
                     label: if op == DiffUiOp::Layout {
                         Some(msg(CoreMsg::FtDiffLayout))
                     } else {
@@ -503,14 +602,28 @@ impl DiffScreenState {
             launch: false,
             layers: vec![],
         });
-        DiffPresentation::build(
-            &DiffPresentationState {
-                surface: if self.effective == DiffView::Rendered {
+        bindings.push(DiffBinding {
+            op: DiffUiOp::Options,
+            keys: vec![],
+            enabled: true,
+            label: None,
+            help: None,
+            launch: false,
+            layers: vec![],
+        });
+        let mut values = DiffPresentationValues {
+            state: DiffPresentationState {
+                surface: if self.media_active() {
+                    DiffSurface::Media
+                } else if self.effective == DiffView::Rendered {
                     DiffSurface::Rendered
                 } else {
                     DiffSurface::Source
                 },
                 wrap: self.display.wrap,
+                media_pictures: self.media_showing_pictures(),
+                can_page: self.media_can_page(),
+                next_media_layout: self.media.layout.next(),
                 next_representation: crate::host::project::diff_keys::next_diff_view(
                     self.effective,
                     &self.representations(),
@@ -522,16 +635,21 @@ impl DiffScreenState {
                 }),
                 representation_count: self.representations().len(),
                 change_blocks: !self.blocks().rows.is_empty(),
+                change_files: self.data.as_ref().is_some_and(|d| !d.paths.is_empty()),
                 ..Default::default()
             },
-            DiffCapabilities {
+            capabilities: DiffCapabilities {
                 view: true,
                 project: false,
                 discard: false,
-                ..Default::default()
+                global: false,
+                tabs: false,
+                follow: false,
+                tool: false,
+                blocks: true,
             },
-            &bindings,
-            &DiffPresentationWords {
+            bindings,
+            words: DiffPresentationWords {
                 view: msg(CoreMsg::PreviewGitDiff),
                 movement: msg(CoreMsg::HelpMove),
                 launch: String::new(),
@@ -547,11 +665,28 @@ impl DiffScreenState {
                     (DiffWord::Hscroll, msg(CoreMsg::HintHscroll)),
                     (DiffWord::Back, msg(CoreMsg::GitBack)),
                     (
+                        DiffWord::BackHelp,
+                        DiffMsg::BackToGitView.tr(self.lang).into(),
+                    ),
+                    (DiffWord::Options, msg(CoreMsg::HintOptions)),
+                    (
                         DiffWord::HorizontalEnds,
                         DiffMsg::GitHScrollEnds.tr(self.lang).into(),
                     ),
                 ],
                 dynamic: vec![
+                    (
+                        DiffTextId::MediaLayout(self.media.layout.next()),
+                        self.media_layout_label(self.media.layout.next()).into(),
+                    ),
+                    (
+                        DiffTextId::MediaLayoutHelp,
+                        self.word(
+                            "cycle layout (auto → side by side → stacked → auto)",
+                            "並べ方を切替（自動→左右→上下→自動）",
+                        )
+                        .into(),
+                    ),
                     (
                         DiffTextId::Representation(DiffRepresentation::Source),
                         self.word("source", "ソース").into(),
@@ -570,7 +705,22 @@ impl DiffScreenState {
                     ),
                 ],
             },
-        )
+        };
+        let options = self.options_declaration().iter().any(|item| {
+            values.state.enabled(values.capabilities, item.action)
+                && values
+                    .bindings
+                    .iter()
+                    .any(|b| b.op == item.action && b.enabled)
+        });
+        if let Some(binding) = values
+            .bindings
+            .iter_mut()
+            .find(|b| b.op == DiffUiOp::Options)
+        {
+            binding.enabled = options;
+        }
+        self.app_keys.diff_presentation(&values)
     }
 
     pub(super) fn draw_header(&self, buf: &mut Buffer, area: Rect) {

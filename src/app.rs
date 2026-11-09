@@ -1047,8 +1047,10 @@ pub(crate) use konoma_plugin::host::project::md_diff::{
 #[cfg(all(test, feature = "git"))]
 pub(crate) use konoma_plugin::host::project::media_diff::MediaDiffPicture;
 pub use konoma_plugin::host::project::media_diff::MediaDiffResult;
+#[cfg(any(test, feature = "git"))]
+pub(crate) use konoma_plugin::host::project::media_diff::MediaDiffSide;
 pub(crate) use konoma_plugin::host::project::media_diff::{
-    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffRequest, MediaDiffSide,
+    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffRequest,
 };
 
 /// Which long-running filesystem operation a background job is performing.

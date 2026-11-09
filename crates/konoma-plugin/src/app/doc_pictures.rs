@@ -161,6 +161,7 @@ pub struct DocPics {
     /// is built again.
     epoch: u64,
     relayout: bool,
+    redraw: bool,
     overlay: OverlayMoved,
     /// Whether the last frame drawn was the document (an animation needs no wake otherwise).
     on_document: bool,
@@ -185,6 +186,44 @@ fn same_resources(a: &Resources, b: &Resources) -> bool {
 }
 
 impl DocPics {
+    pub(crate) fn cell_px(&self) -> (u32, u32) {
+        (self.font.0.into(), self.font.1.into())
+    }
+
+    pub(crate) fn contains_media_key(&self, key: &std::path::Path) -> bool {
+        self.cache.cache.contains_key(key)
+    }
+
+    /// Paint the shared media frame's reservations in one overlay pass, without a document layout.
+    pub(crate) fn draw_media(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        paints: &[(String, PicturePaintRequest)],
+    ) {
+        use konoma_widgets::picture_overlay::OverlaySig;
+        self.on_document = true;
+        self.overlay.begin();
+        self.cache.begin_pass();
+        let mut sig = OverlaySig::new(inner);
+        for (key, r) in paints {
+            sig.add(key, r.target);
+            self.ensure_image(key, *r);
+            if let Some(img) = self.cache.proto(
+                &PathBuf::from(key),
+                r.cols,
+                r.rows,
+                r.row_offset,
+                r.visible_rows,
+            ) {
+                img.render(r.target, buf);
+            }
+        }
+        if !paints.is_empty() {
+            self.overlay.note(sig.finish());
+        }
+        self.overlay.finish();
+    }
     /// Supply the host's supervised child-process drawer for retained media SVGs.
     pub fn with_media_svg(mut self, svg: Arc<dyn SvgDraw + Send + Sync>) -> Self {
         self.media_svg = Some(svg);
@@ -261,6 +300,7 @@ impl DocPics {
             generation: Arc::new(AtomicU64::new(0)),
             epoch: 0,
             relayout: false,
+            redraw: false,
             overlay: OverlayMoved::new(),
             on_document: false,
             resources: Resources::new(),
@@ -323,6 +363,11 @@ impl DocPics {
     /// Whether the page must be laid out again since this was last asked (resets the latch).
     pub fn take_relayout(&mut self) -> bool {
         std::mem::take(&mut self.relayout)
+    }
+
+    /// Pixels changed without changing the document's reserved layout or asking its session again.
+    pub fn take_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.redraw)
     }
 
     /// The most rows a mermaid fence may take for a viewport of `rows` rows (the host's
@@ -487,9 +532,9 @@ impl DocPics {
     /// Apply what the workers finished. A result that changes what the page reserves asks for the
     /// layout again ([`Self::take_relayout`]).
     pub fn poll_at(&mut self, now: std::time::Instant) {
-        let _ = now;
         while let Ok(res) = self.enc_rx.try_recv() {
             self.cache.apply_encode(res);
+            self.redraw = true;
         }
         while let Ok(res) = self.fetch_rx.try_recv() {
             self.dp().apply_fetch(res);
@@ -498,7 +543,7 @@ impl DocPics {
         while let Ok(res) = self.res_rx.try_recv() {
             self.apply_decoded(res);
         }
-        self.cache.advance_gifs_if_due();
+        self.redraw |= self.cache.advance_gifs_at(now);
     }
 
     /// The document is another one now: nothing of the old one stays. The decodes in flight are
@@ -511,6 +556,7 @@ impl DocPics {
 
     fn apply_decoded(&mut self, res: DecodedImage) {
         let applied = self.dp().apply_result(res);
+        self.redraw |= applied.redraw;
         if applied.relayout {
             self.bump();
         }
@@ -584,9 +630,13 @@ impl DocPics {
     /// How long the loop may wait: a short poll while something is out, the next GIF frame while
     /// the document is on screen.
     pub fn wake_in(&self, busy_poll: Duration) -> Option<Duration> {
+        self.wake_in_at(busy_poll, std::time::Instant::now())
+    }
+
+    pub fn wake_in_at(&self, busy_poll: Duration, now: std::time::Instant) -> Option<Duration> {
         let mut wake = self.loading().then_some(busy_poll);
         if self.on_document {
-            if let Some(g) = self.cache.gif_poll_timeout() {
+            if let Some(g) = self.cache.gif_poll_timeout_at(now) {
                 wake = Some(wake.map_or(g, |w| w.min(g)));
             }
         }

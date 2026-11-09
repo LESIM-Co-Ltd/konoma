@@ -288,6 +288,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     Ok(false) => {}
                     Err(error) => {
                         prepared.notice = Some(error.message.get(prepared.lang).into());
+                        if let Some(p) = pictures.as_mut() {
+                            p.doc_pics().prune_media_diff_picture_cache();
+                        }
                         state.diff = None;
                         if state.screen.is_none() {
                             state.screen = state.diff_return.take();
@@ -298,12 +301,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             }
             if let Some(p) = pictures.as_mut() {
                 p.poll();
-                redraw |= p.take_doc_relayout();
-                if state.diff_return.is_none() {
-                    p.doc_pics().prune_media_diff_picture_cache();
-                }
+                redraw |= p.take_doc_relayout() | p.take_doc_redraw();
             }
-            if let Some(diff) = &mut state.diff {
+            if let Some(diff) = state.diff.as_mut().filter(|d| !d.closed) {
                 if let Some(p) = pictures.as_mut() {
                     p.doc_pics().set_path(&diff.request.path);
                 }
@@ -342,21 +342,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         }
                         if state.diff_return.is_some() {
                             let diff = state.diff.as_mut().unwrap();
-                            let tokens: Vec<_> = diff
-                                .presentation()
-                                .footer_tokens()
-                                .iter()
-                                .map(|t| t.text.clone())
-                                .collect();
-                            let footer = if let Some(note) = &prepared.notice {
-                                konoma_widgets::footer_line::flash_spans(note)
-                            } else {
-                                use ratatui::style::Stylize;
-                                vec![ratatui::text::Span::raw(
-                                    konoma_widgets::help_panel::fit_tokens(&tokens, whole.width),
-                                )
-                                .bold()]
-                            };
+                            let footer = diff.footer(prepared.notice.as_deref(), whole.width);
                             let mut borrowed = crate::app::draw::Frame::Diff(diff);
                             crate::app::draw::draw_in(
                                 frame,
@@ -377,6 +363,11 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .as_ref()
                                 .unwrap()
                                 .draw_header(frame.buffer_mut(), whole);
+                            state
+                                .diff
+                                .as_ref()
+                                .unwrap()
+                                .draw_help(frame.buffer_mut(), whole);
                         } else {
                             if let Some(p) = pictures.as_mut() {
                                 p.doc_pics().draw(frame.buffer_mut(), area, None);
@@ -417,25 +408,29 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             }
             let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
             let picture_wake = pictures.as_ref().and_then(Pictures::wake_in);
-            let frame_work_pending = pending
-                || prepared.detection.pending()
-                || diff_wake.is_some()
-                || picture_wake.is_some();
-            let wake_in = if frame_work_pending {
-                Some(Duration::from_millis(16))
-            } else {
-                prepared
-                    .detection
-                    .watching()
-                    .then_some(Duration::from_millis(100))
-            };
+            let owner_wake =
+                (pending || prepared.detection.pending()).then_some(Duration::from_millis(16));
+            let watch_wake = prepared
+                .detection
+                .watching()
+                .then_some(Duration::from_millis(100));
+            let wake_in = [diff_wake, picture_wake, owner_wake, watch_wake]
+                .into_iter()
+                .flatten()
+                .min();
             match events.next(wake_in) {
                 Next::End => break,
                 Next::Event(AppEvent::Key(key)) => {
                     redraw = true;
                     if let Some(key) = key_event(&key) {
+                        let was_diff = state.diff_return.is_some();
                         if state.key(prepared, &info, key) {
                             break;
+                        }
+                        if was_diff && state.diff_return.is_none() {
+                            if let Some(p) = pictures.as_mut() {
+                                p.doc_pics().prune_media_diff_picture_cache();
+                            }
                         }
                     }
                 }
@@ -445,8 +440,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         }
         Ok(())
     })();
-    if let Some(p) = pictures.as_mut() {
-        p.doc_pics().prune_media_diff_picture_cache();
+    if state.diff_return.is_some() {
+        if let Some(p) = pictures.as_mut() {
+            p.doc_pics().prune_media_diff_picture_cache();
+        }
     }
     prepared.runtimes = state.runtimes;
     prepared.diff = state.diff;

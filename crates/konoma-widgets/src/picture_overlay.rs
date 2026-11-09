@@ -96,6 +96,16 @@ pub fn record_inline_paints_for_test<T>(
     (result, paints)
 }
 
+/// Observe a reservation made by a shared frame outside the inline-document adapter.
+pub(crate) fn note_frame_paint(_key: &str, _request: PicturePaintRequest) {
+    #[cfg(any(test, feature = "test-hooks"))]
+    PAINTS.with(|p| {
+        if let Some(paints) = p.borrow_mut().as_mut() {
+            paints.push((_key.to_owned(), _request));
+        }
+    });
+}
+
 /// Paint visible reservations and return their signature, even while their protocols are pending.
 /// The painter prepares images and draws a protocol, returning whether one was available. A
 /// missing zoom protocol causes a normal request here, so both hosts use the same fallback order.

@@ -57,6 +57,28 @@ pub trait ProjectServices: Send + Sync + 'static {
     fn changed_files(&self, info: &ProjectServiceInfo) -> Vec<ChangeEntry>;
     fn base_contents(&self, info: &ProjectServiceInfo, path: &Path) -> Option<Vec<u8>>;
 
+    /// Filename/available-byte classification only; implementations must not perform I/O here.
+    /// Workers may pass bytes for content sniffing. Preview execution is a separate capability.
+    fn diff_target(
+        &self,
+        path: &Path,
+        bytes: Option<&[u8]>,
+    ) -> konoma_host_core::project::DiffTarget {
+        use konoma_host_core::project::{DiffTarget, MediaDiffKind};
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
+            return DiffTarget::Markdown;
+        }
+        match crate::host::project::media_diff::media_format(path, Some(bytes.unwrap_or_default()))
+        {
+            Some(MediaDiffKind::Svg) => DiffTarget::Svg,
+            Some(_) => DiffTarget::Picture,
+            None => DiffTarget::Text,
+        }
+    }
+
     /// Opt in to file-diff execution. Existing project-only services retain their notice;
     /// executors use `FileDiffRequest::spawn`, optionally adding a reply-publication fence.
     fn spawn_file_diff(

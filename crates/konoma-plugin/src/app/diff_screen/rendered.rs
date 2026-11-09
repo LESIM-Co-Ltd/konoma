@@ -2,7 +2,7 @@
 use std::ops::Range;
 
 use super::*;
-use crate::app::document::Laid;
+use crate::app::Laid;
 use crate::document_render::{visible_line_range, PictureSlots, RenderSettings};
 use crate::host::project::diff_blocks::{block_starts, DiffBlocks};
 use crate::host::project::diff_frame::{
@@ -14,7 +14,7 @@ use crate::host::project::md_diff::{
 use crate::host::project::rendered_diff::{
     render_diff_document, with_diff_gutter, RenderedDiffInput,
 };
-use konoma_host_core::project::{diff_representations, round_diff_view, DiffTarget};
+use konoma_host_core::project::{diff_representations, round_diff_view};
 use konoma_widgets::markdown::{DiffMark, ImageSlot, MathSlot, MermaidSlot};
 
 pub(super) struct RenderedCache {
@@ -54,12 +54,7 @@ impl DiffScreenState {
     }
 
     pub(super) fn representations(&self) -> Vec<DiffView> {
-        // The standalone executable has no Preview or media executor yet.
-        let target = if self.request.path.extension().is_some_and(|e| e == "md") {
-            DiffTarget::Markdown
-        } else {
-            DiffTarget::Text
-        };
+        let target = self.services.diff_target(&self.request.path, None);
         let mut reps = diff_representations(target, true, None);
         reps.retain(|v| *v != DiffView::Preview);
         reps
@@ -67,9 +62,10 @@ impl DiffScreenState {
 
     pub(super) fn choose_effective(&mut self) {
         self.effective = round_diff_view(self.choice, &self.representations());
-        self.pending_first_change =
-            (self.effective == DiffView::Rendered).then(|| self.request.path.clone());
+        self.pending_first_change = (self.effective == DiffView::Rendered && !self.media_active())
+            .then(|| self.request.path.clone());
         if self.effective == DiffView::Rendered
+            && !self.media_active()
             && self
                 .markdown
                 .needs(&self.request.path, MdDiffKind::Rendered)
@@ -90,6 +86,7 @@ impl DiffScreenState {
         }
         // Re-entering a previously unavailable result must adopt its effective fallback too.
         if self.effective == DiffView::Rendered
+            && !self.media_active()
             && matches!(
                 self.markdown
                     .landed_for(&self.request.path, MdDiffKind::Rendered),
@@ -152,7 +149,11 @@ impl DiffScreenState {
     pub fn prepare_frame(&mut self, area: Rect, mut pics: Option<&mut DocPics>) -> bool {
         let inner = Block::bordered().inner(area);
         self.viewport = inner.height;
-        let mut changed = self.ensure_rendered(inner, pics.as_deref_mut());
+        let media_changed = self.poll_media(pics.as_deref_mut());
+        if self.media_active() {
+            return self.prepare_media(inner, pics) || media_changed;
+        }
+        let mut changed = self.ensure_rendered(inner, pics.as_deref_mut()) || media_changed;
         let mut landed = false;
         while let Ok(result) = self.markdown_rx.try_recv() {
             landed |= self.adopt_markdown(result);
@@ -331,6 +332,14 @@ impl DiffScreenState {
 
     /// Paint after the shared frame. The ordinary overlay owns clipping and crop.
     pub fn draw_overlay(&self, pics: &mut DocPics, buf: &mut Buffer, area: Rect) {
+        if self.help.is_some() {
+            pics.draw(buf, area, None);
+            return;
+        }
+        if self.media_active() {
+            pics.draw_media(buf, Block::bordered().inner(area), &self.media.paints);
+            return;
+        }
         let doc = self
             .rendered
             .as_ref()

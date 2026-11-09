@@ -272,6 +272,46 @@ pub fn live_cache_keys(outcome: &MediaDiffOutcome) -> HashSet<PathBuf> {
     set
 }
 
+/// Ready sides are independent of the raster target and the current page's pending request.
+pub fn ready_sides(outcome: Option<&MediaDiffOutcome>) -> Option<(&MediaDiffSide, &MediaDiffSide)> {
+    match outcome? {
+        MediaDiffOutcome::Ready { old, new, .. } => Some((old, new)),
+        _ => None,
+    }
+}
+
+pub fn max_page_count(outcome: Option<&MediaDiffOutcome>) -> Option<u32> {
+    let (old, new) = ready_sides(outcome)?;
+    let count = |side: &MediaDiffSide| match side {
+        MediaDiffSide::Picture(p) => p.page_count.unwrap_or(1),
+        _ => 1,
+    };
+    Some(count(old).max(count(new)))
+}
+
+pub fn can_page(outcome: Option<&MediaDiffOutcome>) -> bool {
+    max_page_count(outcome).is_some_and(|n| n > 1)
+}
+
+pub fn showing_pictures(outcome: Option<&MediaDiffOutcome>) -> bool {
+    ready_sides(outcome).is_some_and(|(old, new)| {
+        matches!(old, MediaDiffSide::Picture(_)) || matches!(new, MediaDiffSide::Picture(_))
+    })
+}
+
+/// Turn one shared 1-based page, bounded by the larger side. Recheck on every key.
+pub fn page_turn(outcome: Option<&MediaDiffOutcome>, page: u32, dir: i32) -> u32 {
+    let cur = page.max(1);
+    let Some(max) = max_page_count(outcome).filter(|n| *n > 1) else {
+        return cur;
+    };
+    if dir >= 0 {
+        cur.saturating_add(1).min(max)
+    } else {
+        cur.saturating_sub(1).max(1)
+    }
+}
+
 /// Move decoded pixels into the host's existing picture cache, keeping only drawing metadata.
 /// The host owns request numbering and the trust of any retained SVG.
 pub fn materialize_media_diff(

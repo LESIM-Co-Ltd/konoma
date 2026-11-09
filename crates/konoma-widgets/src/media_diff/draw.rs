@@ -252,18 +252,16 @@ fn draw_media_side(
             if rect.width == 0 || rect.height == 0 {
                 return;
             }
-            painter(
-                key,
-                PicturePaintRequest {
-                    target: rect,
-                    cols: rect.width,
-                    rows: rect.height,
-                    row_offset: 0,
-                    visible_rows: rect.height,
-                    kind: PicturePaintKind::Normal,
-                },
-                buf,
-            );
+            let request = PicturePaintRequest {
+                target: rect,
+                cols: rect.width,
+                rows: rect.height,
+                row_offset: 0,
+                visible_rows: rect.height,
+                kind: PicturePaintKind::Normal,
+            };
+            crate::picture_overlay::note_frame_paint(key, request);
+            painter(key, request, buf);
         }
         MediaSideView::Absent => draw_media_centered(buf, pane.area, absent),
         MediaSideView::Failed { reason } => draw_media_centered(

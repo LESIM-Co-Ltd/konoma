@@ -284,6 +284,8 @@ pub struct SharedGit {
     pub tool: String,
     /// Initial diff layout: "unified" | "split" | "auto".
     pub diff: String,
+    /// Initial media layout, preserved as written and resolved by `MediaDiffLayout::parse`.
+    pub media_diff: String,
     /// Where a new linked worktree is placed, relative to the main worktree.
     pub worktree_dir: String,
 }
@@ -293,6 +295,7 @@ impl Default for SharedGit {
         Self {
             tool: "lazygit".into(),
             diff: "unified".into(),
+            media_diff: "auto".into(),
             worktree_dir: "../".into(),
         }
     }
@@ -542,6 +545,27 @@ mod tests {
         assert_eq!(d.math_color(), DEFAULT_MATH_COLOR);
         assert_eq!(visible_math_color("wihte"), DEFAULT_MATH_COLOR);
         assert_eq!(visible_math_color(" #123456 "), "#123456");
+    }
+
+    #[test]
+    fn media_diff_keeps_raw_strings_and_rejects_non_strings() {
+        assert_eq!(SharedConfig::parse("").unwrap().git.media_diff, "auto");
+        for raw in [
+            "auto",
+            "side",
+            "stack",
+            "split",
+            "horizontal",
+            "side-by-side",
+            "vertical",
+            "stacked",
+            "unified",
+            "typo",
+        ] {
+            let c = SharedConfig::parse(&format!("[git]\nmedia_diff='{raw}'")).unwrap();
+            assert_eq!(c.git.media_diff, raw);
+        }
+        assert!(SharedConfig::parse("[git]\nmedia_diff=17").is_err());
     }
 
     #[test]

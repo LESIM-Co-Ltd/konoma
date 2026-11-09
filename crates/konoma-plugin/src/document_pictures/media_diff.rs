@@ -15,16 +15,25 @@ impl DocPictures<'_> {
             Some(base) => SvgTrust::File(base),
             None => SvgTrust::Embedded,
         };
-        entry.layout_px = Some(p.natural_px);
+        let natural_px = p.natural_px;
+        let key = p.cache_key.clone();
         let request = self.cache.next_request(&p.cache_key);
-        self.apply_result(DecodedImage {
+        let applied = self.apply_result(DecodedImage {
             path: p.cache_key,
             image: Ok(p.image),
             svg: p.svg,
             reraster: false,
             frames: p.frames,
             request,
-        })
+        });
+        // Size the accepted decode before exposing it. Media frames use the outcome's intrinsic
+        // size, just like konoma; document lookups retain it when rebuilding an evicted SVG.
+        if applied.pixels {
+            if let Some(entry) = self.cache.cache.get_mut(&key) {
+                entry.layout_px = Some(natural_px);
+            }
+        }
+        applied
     }
 
     /// Rebuild retained media SVG pixels on a worker through the host's supervised drawer.

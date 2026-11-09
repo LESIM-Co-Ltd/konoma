@@ -6,6 +6,15 @@ use konoma_host_core::help_msg::DiffMsg;
 use konoma_host_core::menu::Item;
 
 impl AppKeys {
+    pub(crate) fn for_file_diff(config: &konoma_host_core::shared::SharedConfig) -> Self {
+        let mut keys = Self::new(&config.keys, &config.ui.keys);
+        keys.keys = crate::host::project::diff_keys::file_diff_keys(
+            scheme_from_str(&config.ui.keys),
+            &config.keys,
+        );
+        keys.with_lang(Lang::parse(&config.ui.lang))
+            .with_wrap(config.ui.wrap)
+    }
     /// Resolve shared keys for one frame of a project diff. Labels, availability and host
     /// capabilities come from the caller; the presentation owns every state-dependent choice.
     pub fn diff_presentation(&self, values: &DiffPresentationValues) -> DiffPresentation {

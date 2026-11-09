@@ -333,35 +333,18 @@ impl App {
         self.media_diff.outcome_for(path)
     }
 
-    /// The current GitDiff target's landed `Ready` sides, if any (ignoring page/raster — see
-    /// `media_landed_outcome_for`'s own doc comment).
-    fn media_diff_ready_sides(&self) -> Option<(&MediaDiffSide, &MediaDiffSide)> {
+    fn active_media_outcome(&self) -> Option<&MediaDiffOutcome> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
         };
-        match self.media_landed_outcome_for(path)? {
-            MediaDiffOutcome::Ready { old, new, .. } => Some((old, new)),
-            _ => None,
-        }
-    }
-
-    /// The larger of the two sides' own PDF page counts (`None` for anything not a landed `Ready`
-    /// PDF pair — a non-PDF picture kind reports `page_count: None` per side, which floors to `1`
-    /// here exactly like a single-page PDF would).
-    fn media_diff_max_page_count(&self) -> Option<u32> {
-        let (old, new) = self.media_diff_ready_sides()?;
-        let pc = |s: &MediaDiffSide| match s {
-            MediaDiffSide::Picture(p) => p.page_count,
-            _ => None,
-        };
-        Some(pc(old).unwrap_or(1).max(pc(new).unwrap_or(1)))
+        self.media_landed_outcome_for(path)
     }
 
     /// Whether the media diff currently on screen has a PDF side with ≥2 pages on either side — gates
     /// the `J`/`K` key and its footer/help hint.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_can_page(&self) -> bool {
-        self.media_diff_max_page_count().is_some_and(|n| n > 1)
+        worker::can_page(self.active_media_outcome())
     }
 
     /// Whether the media diff's side-by-side view isn't just *targeted* (`diff_media_active` — true
@@ -370,13 +353,10 @@ impl App {
     /// `Picture`. Gates the `s` key and its footer/help hint ([[hint-shown-iff-key-acts]]): while the
     /// worker is still computing, or the outcome degraded to the binary summary, or both sides landed
     /// as `Absent`/`Failed`/`PageMissing`, there is no layout for `s` to cycle between.
-    /// `media_diff_can_page` derives its own narrower gate from the same `media_diff_ready_sides` —
+    /// `media_diff_can_page` derives its own narrower gate from the same shared ready sides —
     /// this is that fn's sibling for `s`, which only needs *a* picture, not a multi-page one.
     pub(crate) fn media_diff_showing_pictures(&self) -> bool {
-        self.diff_media_active()
-            && self.media_diff_ready_sides().is_some_and(|(old, new)| {
-                matches!(old, MediaDiffSide::Picture(_)) || matches!(new, MediaDiffSide::Picture(_))
-            })
+        self.diff_media_active() && worker::showing_pictures(self.active_media_outcome())
     }
 
     /// `J`/`K` (and `PageDown`/`PageUp` while the media diff's side-by-side view is active): turn both
@@ -386,19 +366,8 @@ impl App {
     /// count (e.g. `n`/`N` landed on a single-page file in between).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_diff_page_turn(&mut self, dir: i32) {
-        let Some(max_pages) = self.media_diff_max_page_count() else {
-            return;
-        };
-        if max_pages <= 1 {
-            return;
-        }
-        let cur = self.tab.diff_media_page.max(1);
-        let next = if dir >= 0 {
-            (cur + 1).min(max_pages)
-        } else {
-            cur.saturating_sub(1).max(1)
-        };
-        if next != cur {
+        let next = worker::page_turn(self.active_media_outcome(), self.diff_media_page(), dir);
+        if next != self.diff_media_page() {
             self.tab.diff_media_page = next;
         }
     }
@@ -534,6 +503,10 @@ mod tests;
 #[cfg(test)]
 #[path = "media_diff_cache_bridge.rs"]
 mod cache_bridge;
+
+#[cfg(all(test, feature = "git"))]
+#[path = "media_diff_screen_bridge.rs"]
+mod screen_bridge;
 
 #[cfg(all(test, feature = "git"))]
 #[path = "media_diff_draw_tests.rs"]

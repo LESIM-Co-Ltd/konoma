@@ -249,6 +249,10 @@ impl Pictures {
         self.doc.as_mut().is_some_and(DocPics::take_relayout)
     }
 
+    pub(crate) fn take_doc_redraw(&mut self) -> bool {
+        self.doc.as_mut().is_some_and(DocPics::take_redraw)
+    }
+
     /// Draw the pictures of a document over the cells in `inner` (`None`: the frame is not a
     /// document).
     pub fn draw_document(
@@ -424,7 +428,7 @@ impl Pictures {
         if let Some(s) = self.still.as_mut() {
             s.poll_at(now);
         }
-        self.cache.advance_gifs_if_due();
+        self.cache.advance_gifs_at(now);
         if let Some(d) = self.doc.as_mut() {
             d.poll_at(now);
         }
@@ -463,11 +467,11 @@ impl Pictures {
             want(w);
         }
         if self.on_canvas {
-            if let Some(g) = self.cache.gif_poll_timeout() {
+            if let Some(g) = self.cache.gif_poll_timeout_at(now) {
                 want(g);
             }
         }
-        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in(BUSY_POLL)) {
+        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in_at(BUSY_POLL, now)) {
             want(w);
         }
         wake

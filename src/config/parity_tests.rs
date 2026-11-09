@@ -15,6 +15,58 @@ use std::collections::HashMap;
 use std::io::Write as _;
 
 #[test]
+fn shared_config_media_diff_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::shared::SharedConfig;
+    use konoma_widgets::media_diff::MediaDiffLayout;
+    let dir = unique_tmp("shared_media_diff_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for raw in [
+        None,
+        Some("auto"),
+        Some("side"),
+        Some("stack"),
+        Some("split"),
+        Some("horizontal"),
+        Some("side-by-side"),
+        Some("vertical"),
+        Some("stacked"),
+        Some("unified"),
+        Some("sideways"),
+    ] {
+        let text = raw.map_or(String::new(), |s| format!("[git]\nmedia_diff='{s}'\n"));
+        let config: Config = toml::from_str(&text).unwrap();
+        let shared = SharedConfig::parse(&text).unwrap();
+        assert_eq!(
+            shared.git.media_diff,
+            raw.unwrap_or("auto"),
+            "stored as written"
+        );
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+        assert_eq!(
+            MediaDiffLayout::parse(&config.git.media_diff),
+            MediaDiffLayout::parse(&shared.git.media_diff)
+        );
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None);
+        assert_eq!(shared_error, None);
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+    }
+    let text = "[git]\nmedia_diff=17\n";
+    assert!(toml::from_str::<Config>(text).is_err());
+    assert!(SharedConfig::parse(text).is_err());
+    std::fs::write(&path, text).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some());
+    assert_eq!(host_error, shared_error);
+    assert_eq!(shared.git.media_diff, "auto");
+    assert_eq!(config.git.media_diff, shared.git.media_diff);
+}
+
+#[test]
 fn config_project_vcs_precedence_and_legacy_notice() {
     assert_eq!(Config::default().project_vcs(), "auto");
     for (text, expected, renamed) in [

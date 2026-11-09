@@ -1391,7 +1391,11 @@ impl InlineImageCache {
     /// therefore costs only an index bump, never a re-encode. Returns true if any entry advanced
     /// (the caller re-renders). Whether to tick at all (the host's mode) is the caller's call.
     pub fn advance_gifs_if_due(&mut self) -> bool {
-        let now = std::time::Instant::now();
+        self.advance_gifs_at(std::time::Instant::now())
+    }
+
+    /// Advance with the caller's animation clock; production uses `Instant::now`.
+    pub fn advance_gifs_at(&mut self, now: std::time::Instant) -> bool {
         let mut advanced = false;
         for entry in self.cache.values_mut() {
             if entry.frames.len() < 2 {
@@ -1403,7 +1407,7 @@ impl InlineImageCache {
                 continue;
             };
             let delay = entry.frames[entry.idx].1;
-            if now.duration_since(shown_at) < delay {
+            if now.saturating_duration_since(shown_at) < delay {
                 continue;
             }
             entry.idx = (entry.idx + 1) % entry.frames.len();
@@ -1424,6 +1428,10 @@ impl InlineImageCache {
     /// timeout), clamped to 10-100 ms. `None` when nothing animates. Whether to tick at all (the
     /// host's mode) is the caller's call, as for [`Self::advance_gifs_if_due`].
     pub fn gif_poll_timeout(&self) -> Option<std::time::Duration> {
+        self.gif_poll_timeout_at(std::time::Instant::now())
+    }
+
+    pub fn gif_poll_timeout_at(&self, now: std::time::Instant) -> Option<std::time::Duration> {
         use std::time::Duration;
         let mut min: Option<Duration> = None;
         for entry in self.cache.values() {
@@ -1434,7 +1442,7 @@ impl InlineImageCache {
                 None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
                 Some(t) => entry.frames[entry.idx]
                     .1
-                    .checked_sub(t.elapsed())
+                    .checked_sub(now.saturating_duration_since(t))
                     .unwrap_or(Duration::ZERO),
             };
             min = Some(min.map_or(remaining, |m| m.min(remaining)));
