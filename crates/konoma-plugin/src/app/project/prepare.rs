@@ -49,8 +49,37 @@ fn prepare(
     term: TermCaps,
     config: SharedConfig,
     services: Arc<dyn ProjectServices>,
-    mut detection: ProjectDetection,
+    detection: ProjectDetection,
 ) -> Result<PreparedProjects, AppError> {
+    let dir = project_dir(dir)?;
+    let mut registry = register_all(plugins, Vec::new())?;
+    for (id, table) in &config.plugins {
+        if table.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+            registry.set_enabled(id, false);
+        }
+    }
+    prepare_at(Arc::new(registry), dir, term, config, services, detection)
+}
+
+pub(super) fn prepare_registered(
+    registry: Arc<crate::registry::Registry>,
+    dir: &Path,
+    term: TermCaps,
+    config: SharedConfig,
+    services: Arc<dyn ProjectServices>,
+    detection: ProjectDetection,
+) -> Result<PreparedProjects, AppError> {
+    prepare_at(
+        registry,
+        project_dir(dir)?,
+        term,
+        config,
+        services,
+        detection,
+    )
+}
+
+fn project_dir(dir: &Path) -> Result<std::path::PathBuf, AppError> {
     let detection_error = |e: std::io::Error| AppError::ProjectDetection(e.to_string());
     let dir = std::path::absolute(dir).map_err(detection_error)?;
     let metadata = std::fs::metadata(&dir).map_err(|e| {
@@ -65,15 +94,21 @@ fn prepare(
     if !metadata.is_dir() {
         return Err(AppError::NotADirectory(dir));
     }
-    let dir = dir.canonicalize().map_err(detection_error)?;
-    let mut registry = register_all(plugins, Vec::new())?;
-    for (id, table) in &config.plugins {
-        if table.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-            registry.set_enabled(id, false);
-        }
-    }
+    dir.canonicalize().map_err(detection_error)
+}
+
+fn prepare_at(
+    registry: Arc<crate::registry::Registry>,
+    dir: std::path::PathBuf,
+    term: TermCaps,
+    config: SharedConfig,
+    services: Arc<dyn ProjectServices>,
+    mut detection: ProjectDetection,
+) -> Result<PreparedProjects, AppError> {
     detection.ensure(&dir, project_declarations(&registry, |_| true));
-    let watch_failed = detection.wait_for_initial().map_err(detection_error)?;
+    let watch_failed = detection
+        .wait_for_initial()
+        .map_err(|e| AppError::ProjectDetection(e.to_string()))?;
     let projects: Vec<_> = detection
         .projects
         .iter()
@@ -159,7 +194,7 @@ fn prepare(
         _ => None,
     };
     Ok(PreparedProjects {
-        registry: Arc::new(registry),
+        registry,
         open_dir: dir,
         detection,
         watch_failed,
@@ -178,6 +213,9 @@ fn prepare(
         notice: None,
         diff: None,
         diff_return: None,
+        root_switch: None,
+        #[cfg(feature = "test-hooks")]
+        root_switch_fence: None,
     })
 }
 

@@ -18,6 +18,10 @@ use konoma_vcs_core::vcs::{Git, Vcs};
 pub struct VcsServices;
 
 impl ProjectServices for VcsServices {
+    fn root_switch_enabled(&self) -> bool {
+        true
+    }
+
     fn spawn_file_diff(
         self: Arc<Self>,
         request: FileDiffRequest,

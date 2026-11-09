@@ -28,6 +28,8 @@ mod delivery;
 mod input;
 #[path = "presentation.rs"]
 mod presentation;
+#[path = "root_switch.rs"]
+pub(super) mod root_switch;
 use input::key_event;
 
 /// Context supplied without reading the process environment on the UI thread.
@@ -83,9 +85,32 @@ struct ProjectLoopState {
     help: Option<u16>,
     menu: Option<konoma_host_core::keymap::CoreMenu>,
     presentation: Option<presentation::Presentation>,
+    root_switch: Option<root_switch::PendingRootSwitch>,
 }
 
 impl ProjectLoopState {
+    fn new(prepared: &mut PreparedProjects, launch_enabled: bool) -> Self {
+        Self {
+            launch_enabled,
+            launch: super::launch::LaunchState::default(),
+            diff: prepared.diff.take(),
+            diff_return: prepared.diff_return.take(),
+            runtimes: std::mem::take(&mut prepared.runtimes),
+            screen: prepared.screen.take(),
+            dialog: prepared.dialog.take(),
+            replay: ProjectReplayState::default(),
+            pending_acts: VecDeque::new(),
+            viewport: ProjectViewport::default(),
+            keys: CoreKeys::from_keys_config(
+                scheme_from_str(&prepared.config.ui.keys),
+                &prepared.config.keys,
+            ),
+            help: None,
+            menu: None,
+            presentation: None,
+            root_switch: prepared.root_switch.take(),
+        }
+    }
     fn poll_detection(
         &mut self,
         prepared: &mut PreparedProjects,
@@ -227,25 +252,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     cx: &ProjectLoopCx,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
-    let mut state = ProjectLoopState {
-        launch_enabled: cx.launch.is_some(),
-        launch: super::launch::LaunchState::default(),
-        diff: prepared.diff.take(),
-        diff_return: prepared.diff_return.take(),
-        runtimes: std::mem::take(&mut prepared.runtimes),
-        screen: prepared.screen.take(),
-        dialog: prepared.dialog.take(),
-        replay: ProjectReplayState::default(),
-        pending_acts: VecDeque::new(),
-        viewport: ProjectViewport::default(),
-        keys: CoreKeys::from_keys_config(
-            scheme_from_str(&prepared.config.ui.keys),
-            &prepared.config.keys,
-        ),
-        help: None,
-        menu: None,
-        presentation: None,
-    };
+    let mut state = ProjectLoopState::new(prepared, cx.launch.is_some());
     let result = (|| {
         if state.screen.is_none()
             && state.diff_return.is_none()
@@ -265,6 +272,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             prepared.notice = Some(super::watch_warning(prepared.lang).into());
         }
         loop {
+            if state.poll_root_switch(prepared, pictures.as_mut()) {
+                redraw = true;
+            }
             let size = terminal
                 .size()
                 .map_err(|e| AppError::Terminal(e.to_string()))?;
@@ -436,8 +446,11 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             }
             let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
             let picture_wake = pictures.as_ref().and_then(Pictures::wake_in);
-            let owner_wake = (pending || prepared.detection.pending() || state.launch.pending())
-                .then_some(Duration::from_millis(16));
+            let owner_wake = (pending
+                || prepared.detection.pending()
+                || state.launch.pending()
+                || state.root_switch.is_some())
+            .then_some(Duration::from_millis(16));
             let watch_wake = prepared
                 .detection
                 .watching()
@@ -478,5 +491,6 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     prepared.diff_return = state.diff_return;
     prepared.screen = state.screen;
     prepared.dialog = state.dialog;
+    prepared.root_switch = state.root_switch;
     result
 }

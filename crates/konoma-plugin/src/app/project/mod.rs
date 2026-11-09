@@ -50,6 +50,12 @@ pub struct ProjectServiceInfo {
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
 pub trait ProjectServices: Send + Sync + 'static {
+    /// Opt in to preparing and replacing a project root. Notice-only hosts keep their
+    /// existing navigation contract, just as services without a file-diff executor do.
+    fn root_switch_enabled(&self) -> bool {
+        false
+    }
+
     /// Resolve the selected file on a worker. A host can wrap reply publication with a fence.
     fn spawn_launch_target(
         self: Arc<Self>,
@@ -143,6 +149,17 @@ pub struct PreparedProjects {
     /// File diff ownership survives a caller's injected event source ending.
     pub diff: Option<super::diff_screen::DiffScreenState>,
     pub diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
+    root_switch: Option<looping::root_switch::PendingRootSwitch>,
+    #[cfg(feature = "test-hooks")]
+    root_switch_fence: Option<std::sync::mpsc::Sender<()>>,
+}
+
+#[cfg(feature = "test-hooks")]
+impl PreparedProjects {
+    /// Test fence: notification follows candidate publication and subsequent owner replies.
+    pub fn fence_root_switches(&mut self, published: std::sync::mpsc::Sender<()>) {
+        self.root_switch_fence = Some(published);
+    }
 }
 
 /// Prepare and run statically registered projects, refusing input before taking the terminal.

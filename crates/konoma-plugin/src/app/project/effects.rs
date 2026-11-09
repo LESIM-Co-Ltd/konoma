@@ -15,7 +15,12 @@ enum ProjectNavigation {
 }
 
 impl ProjectNavigation {
-    fn dispatch(self, state: &mut ProjectLoopState, prepared: &mut PreparedProjects) {
+    fn dispatch(
+        self,
+        state: &mut ProjectLoopState,
+        prepared: &mut PreparedProjects,
+        info: &ProjectContextInfo<StandaloneSurface>,
+    ) {
         match self {
             Self::OpenDiff { path } => {
                 let Some(info) = state
@@ -43,13 +48,15 @@ impl ProjectNavigation {
                     }
                     Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
                 }
-                return;
             }
             Self::SwitchRoot { root, message } => {
-                let _ = (root, message);
+                if prepared.services.root_switch_enabled() {
+                    state.start_root_switch(prepared, info, root, message);
+                } else {
+                    unsupported(prepared);
+                }
             }
         }
-        unsupported(prepared);
     }
 }
 
@@ -143,8 +150,8 @@ impl ProjectLoopState {
                 }
                 ProjectCommand::Navigation { outcome, .. } => match outcome {
                     Outcome::OpenFile { .. } | Outcome::OpenTab { .. } => unsupported(prepared),
-                    Outcome::OpenDiff { path } => ProjectNavigation::OpenDiff { path }.dispatch(self, prepared),
-                    Outcome::SwitchRoot { root, message } => ProjectNavigation::SwitchRoot { root, message }.dispatch(self, prepared),
+                    Outcome::OpenDiff { path } => ProjectNavigation::OpenDiff { path }.dispatch(self, prepared, info),
+                    Outcome::SwitchRoot { root, message } => ProjectNavigation::SwitchRoot { root, message }.dispatch(self, prepared, info),
                     // The shared effect adapter only emits these four navigation outcomes.
                     _ => unreachable!("shared project navigation command"),
                 },
