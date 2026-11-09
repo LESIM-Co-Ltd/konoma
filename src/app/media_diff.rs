@@ -581,3 +581,7 @@ pub(super) fn is_video_file(path: &Path) -> bool {
 #[cfg(test)]
 #[path = "media_diff_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "git"))]
+#[path = "media_diff_draw_tests.rs"]
+mod draw_tests;

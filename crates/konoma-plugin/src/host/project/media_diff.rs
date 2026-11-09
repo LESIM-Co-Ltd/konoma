@@ -16,6 +16,66 @@ pub type RasterizeSvg = fn(
 pub type MediaDiffWant = (PathBuf, u32, (u32, u32));
 const FORMAT_HEAD: usize = 512;
 
+pub use konoma_widgets::media_diff::{
+    draw_media_diff, media_raster_box, MediaDiffDrawValues, MediaDiffRenderState, MediaDiffWords,
+    MediaSideView,
+};
+
+/// Project an adopted side into drawing metadata. Pixels and cache ownership stay with the host.
+pub fn media_side_view(side: &MediaDiffSide) -> MediaSideView {
+    match side {
+        MediaDiffSide::Picture(p) => MediaSideView::Picture {
+            key: p.cache_key.to_string_lossy().into_owned(),
+            natural_px: p.natural_px,
+            bytes: p.bytes,
+            page_count: p.page_count,
+        },
+        MediaDiffSide::Absent => MediaSideView::Absent,
+        MediaDiffSide::Failed { reason } => MediaSideView::Failed {
+            reason: reason.clone(),
+        },
+        MediaDiffSide::PageMissing => MediaSideView::PageMissing,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MediaDiffStateWords<'a> {
+    pub computing: &'a str,
+    pub no_changes: &'a str,
+    pub summary: super::diff_frame::BinarySummaryWords<'a>,
+}
+
+/// Resolve every display state through one adapter, including terminals without pictures.
+pub fn media_diff_draw_state(
+    outcome: Option<&MediaDiffOutcome>,
+    pictures: bool,
+    words: MediaDiffStateWords<'_>,
+    format_size: impl Fn(u64) -> String,
+) -> MediaDiffRenderState {
+    let Some(outcome) = outcome else {
+        return MediaDiffRenderState::Centered(words.computing.to_string());
+    };
+    if let (
+        true,
+        MediaDiffOutcome::Ready {
+            same_bytes,
+            old,
+            new,
+            ..
+        },
+    ) = (pictures, outcome)
+    {
+        return MediaDiffRenderState::Ready {
+            same_bytes: *same_bytes,
+            old: media_side_view(old),
+            new: media_side_view(new),
+        };
+    }
+    let summary = super::diff_frame::binary_summary_values(outcome)
+        .and_then(|values| super::diff_frame::binary_summary(values, words.summary, format_size));
+    MediaDiffRenderState::Centered(summary.unwrap_or_else(|| words.no_changes.to_string()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaBase {
     Head,

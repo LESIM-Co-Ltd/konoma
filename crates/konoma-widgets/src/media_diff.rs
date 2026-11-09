@@ -1,10 +1,14 @@
-//! Pure geometry and synthetic-key helpers for the image/PDF/SVG "diff" — old and new versions of a
-//! picture shown side by side or stacked (`docs/FEATURE-MEDIA-DIFF.md` §1/§4). No `App`, no I/O: the
-//! actual fetch/decode lives in the worker (`app/media_diff.rs`), which calls into here only for the
-//! layout math and the `media-diff://` cache-key format — the same split `preview::markdown` (pure)
-//! / `app::md_diff` (App-side) already has for the Markdown block-diff.
+//! Value-based drawing, geometry and synthetic keys for image/PDF/SVG before-and-after panes.
+//! No `App`, SDK dependency or I/O: hosts retain decoding, workers, caches and translations.
 //!
 use ratatui::layout::Rect;
+
+mod draw;
+pub use draw::*;
+
+#[cfg(test)]
+#[path = "media_diff_draw_tests.rs"]
+mod draw_tests;
 
 /// Which side of a media diff a rect/key describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

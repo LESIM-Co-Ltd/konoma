@@ -8,8 +8,6 @@
 
 use std::path::Path;
 
-#[cfg(feature = "git")]
-use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
@@ -413,92 +411,66 @@ fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
 /// summary line when there is no picker (images disabled/unsupported terminal).
 #[cfg(feature = "git")]
 fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
-    let pos = app
-        .diff_change_position()
-        .map(|(i, n)| format!(" ({i}/{n})"))
-        .unwrap_or_default();
-    let scope = app
-        .follow_diff_scope_msg()
-        .map(|m| format!(" · {}", tr(app.lang, m)))
-        .unwrap_or_default();
-    let title = app
-        .tab
-        .preview_path
-        .clone()
-        .map(|p| format!(" diff ⟨side by side⟩: {}{pos}{scope} ", app.format_path(&p)))
-        .unwrap_or_else(|| " diff ".to_string());
+    use crate::i18n::Msg;
+    use konoma_plugin::host::project::media_diff as media;
     let inner = Block::bordered().inner(area);
     app.tab.preview_viewport = inner.height;
-    frame.render_widget(Block::bordered().title(title), area);
-
     let Some(PreviewKind::GitDiff(path)) = app.tab.preview_kind.clone() else {
         return;
     };
-
-    match resolve_media_diff_render_state(app, &path, inner) {
-        MediaDiffRenderState::Centered(text) => draw_media_centered(frame, inner, text),
-        MediaDiffRenderState::Ready {
-            page,
-            cell_px,
-            base,
-            same_bytes,
-            old,
-            new,
-        } => {
-            let old_px = media_side_natural_px(&old);
-            let new_px = media_side_natural_px(&new);
-            let geom = crate::preview::media_diff::layout(
-                old_px,
-                new_px,
-                cell_px,
-                inner,
-                app.media_diff_layout(),
-            );
-            draw_media_caption(
-                frame,
-                app,
-                geom.old.caption,
-                &old,
-                MediaCaptionCtx {
-                    is_old: true,
-                    base,
-                    identical: false,
-                    page,
-                },
-            );
-            draw_media_caption(
-                frame,
-                app,
-                geom.new.caption,
-                &new,
-                MediaCaptionCtx {
-                    is_old: false,
-                    base,
-                    identical: same_bytes,
-                    page,
-                },
-            );
-            draw_media_separator(frame, &geom);
-            draw_media_side(frame, app, &geom.old, &old, true);
-            draw_media_side(frame, app, &geom.new, &new, false);
+    let (outcome, cell_px) = resolve_media_diff_render_state(app, &path, inner);
+    let base = match &outcome {
+        Some(crate::app::MediaDiffOutcome::Ready { base, .. }) => *base,
+        _ => crate::app::MediaBase::Head,
+    };
+    let state = media::media_diff_draw_state(
+        outcome.as_ref(),
+        cell_px.is_some(),
+        media::MediaDiffStateWords {
+            computing: tr(app.lang, Msg::DiffComputing),
+            no_changes: tr(app.lang, Msg::GitNoChanges),
+            summary: binary_summary_words(app.lang),
+        },
+        crate::fileops::human_size,
+    );
+    let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+    let values = media::MediaDiffDrawValues {
+        state: &state,
+        title: diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: Some("side by side"),
+        },
+        cell_px: cell_px.unwrap_or((1, 1)),
+        layout: app.media_diff_layout(),
+        page: app.diff_media_page(),
+        old_label: tr(app.lang, App::media_base_msg(base)),
+        new_label: if matches!(state, media::MediaDiffRenderState::Ready { .. }) {
+            tr(app.lang, app.media_new_side_msg())
+        } else {
+            ""
+        },
+        words: media::MediaDiffWords {
+            before: tr(app.lang, Msg::MediaDiffBefore),
+            after: tr(app.lang, Msg::MediaDiffAfter),
+            identical: tr(app.lang, Msg::MediaDiffIdentical),
+            absent_old: tr(app.lang, Msg::MediaDiffAbsentOld),
+            absent_new: tr(app.lang, Msg::MediaDiffAbsentNew),
+            cannot_display: tr(app.lang, Msg::MediaDiffCannotDisplay),
+            page_missing: tr(app.lang, Msg::MediaDiffPageMissing),
+        },
+        format_size: crate::fileops::human_size,
+    };
+    media::draw_media_diff(frame.buffer_mut(), area, values, |key, r, buf| {
+        app.ensure_md_image(key, r.cols, r.rows, r.row_offset, r.visible_rows);
+        if let Some(img) = app.md_image_proto(key, r.cols, r.rows, r.row_offset, r.visible_rows) {
+            img.render(r.target, buf);
+            true
+        } else {
+            false
         }
-    }
-}
-
-/// What `render_gitdiff_media`'s drawing half needs: either a single centered line (no picker, still
-/// computing, "no changes", or a non-picture kind's binary summary), or everything the `Ready` case
-/// needs to lay out and draw both sides.
-#[cfg(feature = "git")]
-enum MediaDiffRenderState {
-    Centered(String),
-    Ready {
-        page: u32,
-        cell_px: (u32, u32),
-        base: crate::app::MediaBase,
-        same_bytes: bool,
-        old: crate::app::MediaDiffSide,
-        new: crate::app::MediaDiffSide,
-    },
+    });
 }
 
 /// `render_gitdiff_media`'s state-resolution half: the picker check, `raster_px` computation, the
@@ -510,18 +482,13 @@ fn resolve_media_diff_render_state(
     app: &mut App,
     path: &Path,
     inner: Rect,
-) -> MediaDiffRenderState {
-    // No picker at all (a terminal with no graphics protocol, or images disabled): the summary line,
-    // computed from the worker exactly like `empty_diff_body_text`'s own binary-summary case (any
-    // raster target works here, since no picture will ever actually be decoded to screen size;
-    // `(64, 64)` is a harmless placeholder).
+) -> (Option<crate::app::MediaDiffOutcome>, Option<(u32, u32)>) {
+    // No picker: retain the same placeholder raster box and skip the stale-picture check.
     let Some(cell_px) = app.picker_cell_px() else {
-        let text = match app.poll_media_diff(path, app.diff_media_page(), (64, 64)) {
-            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-            Some(outcome) => media_summary_line(app.lang, &outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
-        };
-        return MediaDiffRenderState::Centered(text);
+        return (
+            app.poll_media_diff(path, app.diff_media_page(), (64, 64)),
+            None,
+        );
     };
     let raster_px =
         media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
@@ -542,62 +509,13 @@ fn resolve_media_diff_render_state(
         }
     }
 
-    match outcome {
-        None => MediaDiffRenderState::Centered(
-            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-        ),
-        Some(crate::app::MediaDiffOutcome::Unavailable) => {
-            MediaDiffRenderState::Centered(tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string())
-        }
-        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
-            let text = media_summary_line(app.lang, outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
-            MediaDiffRenderState::Centered(text)
-        }
-        Some(crate::app::MediaDiffOutcome::Ready {
-            kind: _,
-            base,
-            same_bytes,
-            old,
-            new,
-        }) => MediaDiffRenderState::Ready {
-            page,
-            cell_px,
-            base,
-            same_bytes,
-            old,
-            new,
-        },
-    }
+    (outcome, Some(cell_px))
 }
 
-/// A single centered line of text, for `render_gitdiff_media`'s non-`Ready` bodies (computing/
-/// summary/unavailable) — mirrors `render_gitdiff_source`'s own empty-diff placement.
-#[cfg(feature = "git")]
-fn draw_media_centered(frame: &mut Frame, inner: Rect, text: String) {
-    if inner.height == 0 {
-        return;
-    }
-    let y = inner.y + inner.height / 2;
-    let rect = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), rect);
-}
-
-/// A pane's own pixel size for `preview::media_diff::layout`'s sizing — `None` for anything but a
-/// landed `Picture` (nothing to size a pane around). Returns `p.natural_px`, the picture's
-/// **intrinsic** size, never the decoded raster's own pixel dimensions — see
-/// `MediaDiffPictureDecoded::natural_px`'s own doc comment for why that distinction matters.
-#[cfg(feature = "git")]
+/// Retain the existing test seam while the SDK owns conversion to intrinsic drawing values.
+#[cfg(all(test, feature = "git"))]
 fn media_side_natural_px(side: &crate::app::MediaDiffSide) -> Option<(u32, u32)> {
-    match side {
-        crate::app::MediaDiffSide::Picture(p) => Some(p.natural_px),
-        _ => None,
-    }
+    konoma_plugin::host::project::media_diff::media_side_view(side).natural_px()
 }
 
 #[cfg(all(test, feature = "git"))]
@@ -627,145 +545,6 @@ mod media_side_natural_px_tests {
             None
         );
         assert_eq!(media_side_natural_px(&MediaDiffSide::PageMissing), None);
-    }
-}
-
-/// The per-side bits `draw_media_caption` needs beyond `(rect, side)` itself — bundled into one
-/// struct rather than four more function parameters (`clippy::too_many_arguments`).
-#[cfg(feature = "git")]
-struct MediaCaptionCtx {
-    is_old: bool,
-    base: crate::app::MediaBase,
-    /// Whether to append "identical content" — only ever `true` on the **new** side (the caller
-    /// never sets it for the old side, `render_gitdiff_media`'s own call sites).
-    identical: bool,
-    page: u32,
-}
-
-/// One side's caption row: "Before/After · base · WxH · size[ · p. N/M][ · identical]" — or, for a
-/// side with no picture, "Before/After · base" alone (the placeholder message itself is drawn
-/// centered in the picture area by `draw_media_side`, not squeezed into this one row). Truncated to
-/// the pane's own width by display width (CJK-safe).
-#[cfg(feature = "git")]
-fn draw_media_caption(
-    frame: &mut Frame,
-    app: &App,
-    rect: Rect,
-    side: &crate::app::MediaDiffSide,
-    ctx: MediaCaptionCtx,
-) {
-    if rect.height == 0 || rect.width == 0 {
-        return;
-    }
-    let lang = app.lang;
-    let mut parts = vec![
-        tr(
-            lang,
-            if ctx.is_old {
-                crate::i18n::Msg::MediaDiffBefore
-            } else {
-                crate::i18n::Msg::MediaDiffAfter
-            },
-        )
-        .to_string(),
-        if ctx.is_old {
-            tr(lang, crate::app::App::media_base_msg(ctx.base)).to_string()
-        } else {
-            tr(lang, app.media_new_side_msg()).to_string()
-        },
-    ];
-    if let crate::app::MediaDiffSide::Picture(p) = side {
-        parts.push(format!("{}×{}", p.natural_px.0, p.natural_px.1));
-        parts.push(crate::fileops::human_size(p.bytes));
-        if let Some(pc) = p.page_count {
-            parts.push(format!("p. {}/{pc}", ctx.page));
-        }
-    }
-    if ctx.identical {
-        parts.push(tr(lang, crate::i18n::Msg::MediaDiffIdentical).to_string());
-    }
-    let text = crate::ui::status::truncate_display(&parts.join(" · "), rect.width as usize);
-    frame.render_widget(Paragraph::new(text).dim(), rect);
-}
-
-/// The 1-cell separator between the two panes — `│` for side-by-side, `─` for stacked.
-#[cfg(feature = "git")]
-fn draw_media_separator(frame: &mut Frame, geom: &crate::preview::media_diff::MediaDiffGeometry) {
-    use crate::preview::media_diff::MediaDiffOrientation;
-    let rect = geom.separator;
-    if rect.width == 0 || rect.height == 0 {
-        return;
-    }
-    let ch = match geom.orientation {
-        MediaDiffOrientation::Side => "│",
-        MediaDiffOrientation::Stack => "─",
-    };
-    let line = ch.repeat(rect.width as usize);
-    for y in rect.y..rect.y + rect.height {
-        let row = Rect {
-            x: rect.x,
-            y,
-            width: rect.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(line.clone()).dim(), row);
-    }
-}
-
-/// One side's picture area: draws the decoded picture (via the Markdown inline-image machinery,
-/// keyed on the landed `media-diff://` cache key) into `pane.image` when there is one, or a centered
-/// placeholder message for `Absent`/`Failed`/`PageMissing` into `pane.area`.
-///
-/// The placeholder is centered in `pane.area` — the whole area below the caption — **not**
-/// `pane.image`: `image` is always zero-sized for these three variants (`layout`'s own contract,
-/// `MediaDiffPane`'s doc comment), and drawing into a zero-sized rect is silently discarded before
-/// ever rendering — an untracked file's old side, a deleted file's new side, and a page beyond one
-/// side's own PDF page count must all still show their placeholder message, not just the caption.
-#[cfg(feature = "git")]
-fn draw_media_side(
-    frame: &mut Frame,
-    app: &mut App,
-    pane: &crate::preview::media_diff::MediaDiffPane,
-    side: &crate::app::MediaDiffSide,
-    is_old: bool,
-) {
-    match side {
-        crate::app::MediaDiffSide::Picture(p) => {
-            let rect = pane.image;
-            if rect.width == 0 || rect.height == 0 {
-                return;
-            }
-            let key = p.cache_key.to_string_lossy().to_string();
-            app.ensure_md_image(&key, rect.width, rect.height, 0, rect.height);
-            if let Some(img) = app.md_image_proto(&key, rect.width, rect.height, 0, rect.height) {
-                img.render(rect, frame.buffer_mut());
-            }
-        }
-        crate::app::MediaDiffSide::Absent => {
-            let msg = if is_old {
-                crate::i18n::Msg::MediaDiffAbsentOld
-            } else {
-                crate::i18n::Msg::MediaDiffAbsentNew
-            };
-            draw_media_centered(frame, pane.area, tr(app.lang, msg).to_string());
-        }
-        crate::app::MediaDiffSide::Failed { reason } => {
-            draw_media_centered(
-                frame,
-                pane.area,
-                format!(
-                    "{}: {reason}",
-                    tr(app.lang, crate::i18n::Msg::MediaDiffCannotDisplay)
-                ),
-            );
-        }
-        crate::app::MediaDiffSide::PageMissing => {
-            draw_media_centered(
-                frame,
-                pane.area,
-                tr(app.lang, crate::i18n::Msg::MediaDiffPageMissing).to_string(),
-            );
-        }
     }
 }
 
@@ -1010,25 +789,20 @@ fn render_gitdiff_source(frame: &mut Frame, app: &mut App, area: Rect) {
     app.diff_split_drawn = update.diff_split_drawn;
 }
 
-/// Round `px` up to the next multiple of `step` (never below `step`) — used to quantize the media-
-/// diff raster target so a one-pixel terminal resize doesn't kick a fresh SVG/PDF raster request
-/// every frame (`docs/FEATURE-MEDIA-DIFF.md` §3's own note on this).
-fn quantize_px(px: u32, step: u32) -> u32 {
-    px.div_ceil(step).max(1) * step
+/// Read picker values on the host; the shared drawing module owns pure raster-box math.
+fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
+    app.picker_cell_px()
+        .map(|cell_px| konoma_widgets::media_diff::media_raster_box(inner, cell_px))
 }
 
-/// The pixel box `render_gitdiff_media` asks the media-diff worker to rasterize an SVG/PDF side
-/// into — the whole diff body's own box (`inner`), not each pane's smaller one: which orientation
-/// (and therefore how big each pane actually is) depends on the sides' own natural size, not known
-/// until *after* they're decoded, so this deliberately over-asks using the full body as an upper
-/// bound (`layout`'s "never enlarge, only shrink to fit" contract means over-asking costs a slightly
-/// bigger raster, never a wrong-looking one). `None` when there is no picker at all
-/// (`App::picker_cell_px`) — degrades to the binary summary line before this is ever called.
-fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
-    let (cw, ch) = app.picker_cell_px()?;
-    let w = quantize_px((inner.width as u32).max(1) * cw.max(1), 64);
-    let h = quantize_px((inner.height as u32).max(1) * ch.max(1), 64);
-    Some((w, h))
+fn binary_summary_words(lang: crate::i18n::Lang) -> diff_frame::BinarySummaryWords<'static> {
+    use crate::i18n::Msg;
+    diff_frame::BinarySummaryWords {
+        binary_file: tr(lang, Msg::MediaDiffBinaryFile),
+        none: tr(lang, Msg::MediaDiffNone),
+        same_size_different_content: tr(lang, Msg::MediaDiffSameSizeDifferentContent),
+        byte_unit: tr(lang, Msg::MediaDiffByteUnit),
+    }
 }
 
 /// The binary-summary-line text for a landed media-diff outcome — `None` when the outcome doesn't
@@ -1039,16 +813,10 @@ pub(crate) fn media_summary_line(
     lang: crate::i18n::Lang,
     outcome: &crate::app::MediaDiffOutcome,
 ) -> Option<String> {
-    use crate::i18n::Msg;
     let values = diff_frame::binary_summary_values(outcome)?;
     diff_frame::binary_summary(
         values,
-        diff_frame::BinarySummaryWords {
-            binary_file: tr(lang, Msg::MediaDiffBinaryFile),
-            none: tr(lang, Msg::MediaDiffNone),
-            same_size_different_content: tr(lang, Msg::MediaDiffSameSizeDifferentContent),
-            byte_unit: tr(lang, Msg::MediaDiffByteUnit),
-        },
+        binary_summary_words(lang),
         crate::fileops::human_size,
     )
 }
