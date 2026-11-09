@@ -25241,6 +25241,99 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
     );
 }
 
+#[test]
+fn diff_target_classification_covers_every_reachable_kind_sample() {
+    use konoma_host_core::project::DiffTarget;
+
+    // The five samples from the media-active equivalence test, plus every other classification
+    // branch. Extensions decide picture formats without reading files or starting a worker.
+    let dir = unique_tmp("konoma_diff_target_classification");
+    std::fs::create_dir_all(&dir).unwrap();
+    let command = |render_as: Option<&str>| PreviewKind::Command {
+        path: dir.join("command"),
+        template: String::new(),
+        render_as: render_as.map(str::to_string),
+        detached: false,
+    };
+    let samples = [
+        (
+            "markdown",
+            PreviewKind::markdown(dir.join("doc.md")),
+            DiffTarget::Markdown,
+        ),
+        (
+            "image",
+            PreviewKind::image(dir.join("pic.png")),
+            DiffTarget::Picture,
+        ),
+        (
+            "svg",
+            PreviewKind::svg(dir.join("pic.svg")),
+            DiffTarget::Svg,
+        ),
+        (
+            "deleted extensionless (ex-image)",
+            PreviewKind::CanNotPreview { ext: String::new() },
+            DiffTarget::Other,
+        ),
+        (
+            "deleted code",
+            PreviewKind::plugin("code", dir.join("a.rs")),
+            DiffTarget::Text,
+        ),
+        (
+            "plain text",
+            PreviewKind::Text(dir.join("plain.txt")),
+            DiffTarget::Text,
+        ),
+        (
+            "mermaid",
+            PreviewKind::mermaid(dir.join("diagram.mmd")),
+            DiffTarget::Text,
+        ),
+        (
+            "pdf",
+            PreviewKind::plugin("pdf", dir.join("doc.pdf")),
+            DiffTarget::Picture,
+        ),
+        (
+            "non-picture plugin",
+            PreviewKind::plugin("csv", dir.join("data.csv")),
+            DiffTarget::Other,
+        ),
+        (
+            "picture plugin with non-picture format",
+            PreviewKind::image(dir.join("unknown")),
+            DiffTarget::Other,
+        ),
+        (
+            "picture format from another image plugin",
+            PreviewKind::image(dir.join("doc.svg")),
+            DiffTarget::Svg,
+        ),
+        ("default command", command(None), DiffTarget::Text),
+        ("text command", command(Some("text")), DiffTarget::Text),
+        ("image command", command(Some("image")), DiffTarget::Other),
+        (
+            "git diff",
+            PreviewKind::GitDiff(dir.join("doc.md")),
+            DiffTarget::Other,
+        ),
+        (
+            "mermaid fence",
+            PreviewKind::MermaidFence(0),
+            DiffTarget::Other,
+        ),
+    ];
+    for (label, kind, expected) in samples {
+        assert_eq!(
+            diff_view::classify_diff_target(&kind),
+            expected,
+            "{label}: {kind:?}"
+        );
+    }
+}
+
 /// The table highlight is a binary search of `search_matches`: it relies on the matches being in
 /// reading order. Compare it with a brute-force check of every cell, for a CSV with ragged,
 /// repeated and CJK cells, searching text that matches many of them.

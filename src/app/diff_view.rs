@@ -10,6 +10,29 @@
 //! machine* around all three presentations, not the rendering of any one of them.
 
 use super::*;
+use konoma_host_core::project::{self, DiffTarget, LandedMedia};
+
+/// Reduce the host's preview kinds to the shared diff decision's inputs. Keep every kind named
+/// so a new preview kind has to say what its diff offers.
+pub(super) fn classify_diff_target(kind: &PreviewKind) -> DiffTarget {
+    match kind {
+        k if k.is_markdown() => DiffTarget::Markdown,
+        PreviewKind::Text(_) => DiffTarget::Text,
+        k if k.is_file_text() || k.is_mermaid_file() => DiffTarget::Text,
+        PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image") => {
+            DiffTarget::Text
+        }
+        k @ PreviewKind::Plugin { .. } => match super::media_diff::classify_kind(k) {
+            Some(MediaDiffKind::Image | MediaDiffKind::Pdf) => DiffTarget::Picture,
+            Some(MediaDiffKind::Svg) => DiffTarget::Svg,
+            None => DiffTarget::Other,
+        },
+        PreviewKind::Command { .. }
+        | PreviewKind::GitDiff(_)
+        | PreviewKind::MermaidFence(_)
+        | PreviewKind::CanNotPreview { .. } => DiffTarget::Other,
+    }
+}
 
 impl App {
     /// Test-only view of the current diff presentation — `Source`/`Rendered`/`Preview`
@@ -144,105 +167,35 @@ impl App {
         }
     }
 
-    /// The ordered list of presentations `path`'s diff can actually show: `[Source, Rendered,
-    /// Preview]` for Markdown, `[Source, Preview]` for a windowed-capable text kind (code, plain
-    /// text, `.mmd`, a text-mode delegated command), `[Rendered, Preview]` for Image/GIF/PDF (no text
-    /// `Source` to speak of — `Rendered` **is** the side-by-side view there, `App::diff_media_
-    /// active`), `[Source, Rendered, Preview]` for SVG (it is both a picture and real text), and
-    /// `[Source]` for anything else (video/archive/table/unsupported/an image-mode delegated command
-    /// — the binary-summary-line-only case, `App::diff_binary_summary_eligible`).
-    ///
-    /// A **deleted** file (`!path.exists()`) never has `Preview` — pruned unconditionally at the end.
-    /// Its kind is still judged by `resolve_preview` first (a glob rule matches by filename alone, so
-    /// Markdown/Code/Mermaid/SVG/PDF classify correctly even when deleted); only when that comes back
-    /// `CanNotPreview` (the remaining rules are MIME-based and need bytes to sniff) does this defer to
-    /// the media-diff worker's own byte-sniffed classification (`App::media_landed_outcome_for`),
-    /// which resolves in the same order: `Ready` names a real kind, `Summary`/`Unavailable` means
-    /// "not a picture" (`[Source]`), and `None` (not landed yet) treats a missing path as `[Rendered]`
-    /// with the computing body in the meantime.
+    /// Classify the host's preview and, only for a deleted `Other` target, consult the media
+    /// worker. The ordered presentations are decided by the shared project rules.
     pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
-        use DiffView::{Preview, Rendered, Source};
-        let resolved = self.diff_target_kind(path);
-        let mut reps = match resolved {
-            ref k if k.is_markdown() => vec![Source, Rendered, Preview],
-            PreviewKind::Text(_) => vec![Source, Preview],
-            ref k if k.is_file_text() || k.is_mermaid_file() => vec![Source, Preview],
-            PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
-                vec![Source, Preview]
-            }
-            // A plugin that shows pictures, by the format of the file (not by the plugin's id).
-            ref k @ PreviewKind::Plugin { .. }
-                if matches!(
-                    super::media_diff::classify_kind(k),
-                    Some(MediaDiffKind::Image | MediaDiffKind::Pdf)
-                ) =>
-            {
-                vec![Rendered, Preview]
-            }
-            ref k @ PreviewKind::Plugin { .. }
-                if super::media_diff::classify_kind(k) == Some(MediaDiffKind::Svg) =>
-            {
-                vec![Source, Rendered, Preview]
-            }
-            // Everything else (named one by one, so a new kind has to say what its diff offers):
-            // a plugin that is not a picture, an image-mode command, the host's own modes and an
-            // unsupported file. A **deleted** one is judged by the media-diff worker.
-            PreviewKind::Plugin { .. }
-            | PreviewKind::Command { .. }
-            | PreviewKind::GitDiff(_)
-            | PreviewKind::MermaidFence(_)
-            | PreviewKind::CanNotPreview { .. }
-                if !path.exists() =>
-            {
-                match self.media_landed_outcome_for(path) {
-                    Some(MediaDiffOutcome::Ready {
+        let target = classify_diff_target(&self.diff_target_kind(path));
+        let exists = path.exists();
+        let landed = if target == DiffTarget::Other && !exists {
+            self.media_landed_outcome_for(path)
+                .map(|outcome| match outcome {
+                    MediaDiffOutcome::Ready {
                         kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
                         ..
-                    }) => vec![Rendered],
-                    Some(MediaDiffOutcome::Ready {
+                    } => LandedMedia::Picture,
+                    MediaDiffOutcome::Ready {
                         kind: MediaDiffKind::Svg,
                         ..
-                    }) => vec![Source, Rendered],
-                    Some(MediaDiffOutcome::Summary { .. })
-                    | Some(MediaDiffOutcome::Unavailable) => {
-                        vec![Source]
+                    } => LandedMedia::Svg,
+                    MediaDiffOutcome::Summary { .. } | MediaDiffOutcome::Unavailable => {
+                        LandedMedia::NotPicture
                     }
-                    None => vec![Rendered], // not landed yet — the "computing" body either way.
-                }
-            }
-            PreviewKind::Plugin { .. }
-            | PreviewKind::Command { .. }
-            | PreviewKind::GitDiff(_)
-            | PreviewKind::MermaidFence(_)
-            | PreviewKind::CanNotPreview { .. } => vec![Source],
+                })
+        } else {
+            None
         };
-        if !path.exists() {
-            reps.retain(|v| *v != Preview);
-        }
-        reps
+        project::diff_representations(target, exists, landed)
     }
 
-    /// `view` rounded to what `path` can actually show (`diff_representations`): the requested
-    /// presentation is used as-is if it's in the list; otherwise `Rendered`/`Source` substitute for
-    /// each other (whichever of the pair *is* in the list); failing that (a `Preview` request with
-    /// no substitute, or a substitute that also isn't in the list), the list's own first entry is
-    /// used.
+    /// Round `view` to the presentations for `path` using the shared project rules.
     pub(super) fn round_diff_view(&self, view: DiffView, path: &Path) -> DiffView {
-        let reps = self.diff_representations(path);
-        if reps.contains(&view) {
-            return view;
-        }
-        let substitute = match view {
-            DiffView::Rendered => Some(DiffView::Source),
-            DiffView::Source => Some(DiffView::Rendered),
-            DiffView::Preview => None,
-        };
-        if let Some(sub) = substitute {
-            if reps.contains(&sub) {
-                return sub;
-            }
-        }
-        reps.first().copied().unwrap_or(DiffView::Source)
+        project::round_diff_view(view, &self.diff_representations(path))
     }
 
     /// `R` in `Surface::PreviewGitDiff`: cycles through `diff_representations(path)` in list order

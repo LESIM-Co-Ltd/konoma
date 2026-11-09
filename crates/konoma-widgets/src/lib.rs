@@ -19,6 +19,7 @@ pub mod kitty;
 pub mod layout;
 pub mod loading;
 pub mod markdown;
+pub mod media_diff;
 pub mod overlay;
 pub mod scroll;
 pub mod table;

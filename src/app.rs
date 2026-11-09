@@ -1149,15 +1149,7 @@ pub(crate) enum MediaBase {
     FollowStart,
 }
 
-/// The three picture-capable kinds a media diff can pair up side by side — everything else
-/// (video/archive/table/unsupported) degrades to
-/// [`MediaDiffOutcome::Summary`]/[`MediaDiffComputed::Summary`] instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MediaDiffKind {
-    Image,
-    Svg,
-    Pdf,
-}
+pub(crate) use konoma_host_core::project::MediaDiffKind;
 
 /// One side's fully-decoded picture, still carrying its pixel data — only ever lives inside
 /// [`MediaDiffComputed`] on its way from the worker thread to `App::apply_media_diff`, which moves
@@ -2365,39 +2357,7 @@ struct DecoratedMarkdown {
     diff_marks: Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>,
 }
 
-/// Which of the full-screen diff's three presentations a Markdown/text diff is currently shown in
-/// (`docs/FEATURE-MD-RENDERED-DIFF.md` §1/§4). Lives on [`PerTab`] (`diff_view`) rather than `App`
-/// for the ordinary per-tab reason — a second tab reviewing a different diff must not be dragged
-/// along by the first's `R` presses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiffView {
-    /// The classic unified/split diff (`ui/preview.rs::render_gitdiff`'s pre-existing body) —
-    /// `Surface::PreviewGitDiff`.
-    Source,
-    /// Both versions' changed blocks, decorated, old (red/dim) then new (amber) —
-    /// `Surface::PreviewGitDiff` still, drawn through the same `App::ensure_md_cache` +
-    /// `ui/preview.rs::render_decorated` path an ordinary preview uses
-    /// (`App::ensure_md_cache`'s own `DecoratedSource::Diff` branch) and its thin
-    /// `render_diff_rendered` wrapper. Markdown only — see `App::diff_representation_count`.
-    Rendered,
-    /// The file's own ordinary preview (ordinary `Surface::PreviewText`/ `PreviewImage`), with a
-    /// change gutter on the current content. Leaves `Surface::PreviewGitDiff` entirely — see
-    /// `PerTab::preview_from_diff`.
-    Preview,
-}
-
-impl DiffView {
-    /// `[ui] diff_view`, resolved permissively: an unrecognized value falls back to `Rendered` (the
-    /// config default), the same "typo can't silently change behavior in a surprising direction"
-    /// contract every other mode string in `config/mod.rs` already has.
-    fn parse(s: &str) -> Self {
-        match s.trim() {
-            "source" => Self::Source,
-            "preview" => Self::Preview,
-            _ => Self::Rendered,
-        }
-    }
-}
+pub(crate) use konoma_host_core::project::DiffView;
 
 /// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load
 /// is one clone and adding a per-tab field touches one place (see docs/REFACTOR-2026-07.md).

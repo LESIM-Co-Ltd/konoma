@@ -5,6 +5,10 @@
 
 use crate::shared::{SharedConfig, SharedTheme};
 
+#[cfg(test)]
+#[path = "project_tests.rs"]
+mod decision_tests;
+
 /// Minimum inner width for side-by-side under Auto (below this, vertical). A guideline so
 /// two-column code is not cramped.
 pub const DIFF_AUTO_MIN_WIDTH: u16 = 90;
@@ -55,6 +59,120 @@ impl DiffLayout {
             DiffLayout::Auto => DiffLayout::Unified,
         }
     }
+}
+
+/// Which of the full-screen diff's three presentations is shown. The host keeps this per tab
+/// so cycling a second tab's presentation does not change the first tab's choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffView {
+    /// The classic unified/split source diff.
+    Source,
+    /// Changed Markdown blocks, decorated, or pictures paired side by side.
+    Rendered,
+    /// The file's ordinary preview, with a change gutter on the current content.
+    Preview,
+}
+
+impl DiffView {
+    /// `[ui] diff_view`, resolved permissively: an unrecognized value falls back to `Rendered`
+    /// (the config default), so a typo cannot silently change behavior in a surprising direction.
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "source" => Self::Source,
+            "preview" => Self::Preview,
+            _ => Self::Rendered,
+        }
+    }
+}
+
+/// The three picture-capable kinds a media diff can pair up side by side. Everything else
+/// (video/archive/table/unsupported) degrades to a summary instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaDiffKind {
+    Image,
+    Svg,
+    Pdf,
+}
+
+/// The host's resolved preview kind, reduced to what its full-screen diff can offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffTarget {
+    Markdown,
+    Text,
+    Picture,
+    Svg,
+    Other,
+}
+
+/// The media worker's classification of a deleted file, once its result has landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LandedMedia {
+    /// A decoded raster image or PDF.
+    Picture,
+    Svg,
+    /// A summary or an unavailable result.
+    NotPicture,
+}
+
+/// The ordered list of presentations a diff can actually show: `[Source, Rendered, Preview]`
+/// for Markdown, `[Source, Preview]` for a windowed-capable text kind (code, plain text, `.mmd`,
+/// a text-mode delegated command), `[Rendered, Preview]` for Image/GIF/PDF (no text `Source` to
+/// speak of: `Rendered` is the side-by-side view), `[Source, Rendered, Preview]` for SVG (both a
+/// picture and real text), and `[Source]` for anything else (video/archive/table/unsupported/an
+/// image-mode delegated command: the binary-summary-line-only case).
+///
+/// A deleted file never has `Preview`, pruned unconditionally at the end. Its kind is still
+/// judged by the host's preview resolver first (a glob rule matches by filename alone, so
+/// Markdown/Code/Mermaid/SVG/PDF classify correctly even when deleted). Only an `Other` target
+/// defers to the media worker's byte-sniffed classification: a landed picture names a real kind,
+/// a summary/unavailable result means "not a picture" (`[Source]`), and `None` (not landed yet)
+/// treats a missing path as `[Rendered]` with the computing body in the meantime. A landed
+/// result is ignored for an existing file and for any target other than `Other`.
+pub fn diff_representations(
+    target: DiffTarget,
+    exists: bool,
+    landed: Option<LandedMedia>,
+) -> Vec<DiffView> {
+    use DiffView::{Preview, Rendered, Source};
+    let mut reps = match target {
+        DiffTarget::Markdown => vec![Source, Rendered, Preview],
+        DiffTarget::Text => vec![Source, Preview],
+        DiffTarget::Picture => vec![Rendered, Preview],
+        DiffTarget::Svg => vec![Source, Rendered, Preview],
+        DiffTarget::Other if !exists => match landed {
+            Some(LandedMedia::Picture) => vec![Rendered],
+            Some(LandedMedia::Svg) => vec![Source, Rendered],
+            Some(LandedMedia::NotPicture) => vec![Source],
+            None => vec![Rendered],
+        },
+        DiffTarget::Other => vec![Source],
+    };
+    if !exists {
+        reps.retain(|v| *v != Preview);
+    }
+    reps
+}
+
+/// `view` rounded to what the diff can actually show (`diff_representations`): the requested
+/// presentation is used as-is if it is in the list; otherwise `Rendered`/`Source` substitute for
+/// each other (whichever of the pair is in the list). Failing that (a `Preview` request with no
+/// substitute, or a substitute that also is not in the list), the list's own first entry is used.
+/// An empty list falls back to `Source`.
+pub fn round_diff_view(view: DiffView, reps: &[DiffView]) -> DiffView {
+    if reps.contains(&view) {
+        return view;
+    }
+    let substitute = match view {
+        DiffView::Rendered => Some(DiffView::Source),
+        DiffView::Source => Some(DiffView::Rendered),
+        DiffView::Preview => None,
+    };
+    if let Some(sub) = substitute {
+        if reps.contains(&sub) {
+            return sub;
+        }
+    }
+    reps.first().copied().unwrap_or(DiffView::Source)
 }
 
 /// The default external git tool (`[git] tool`).
