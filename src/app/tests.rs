@@ -5,6 +5,101 @@ use crate::config::Config;
 use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git};
 use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 
+#[cfg(feature = "git")]
+#[test]
+fn git_watch_cache_tracks_roots_and_tabs_without_tick_discovery() {
+    if !crate::vcs::Git::git_binary_available() {
+        eprintln!("skipping: git unavailable");
+        return;
+    }
+    let first = unique_tmp("git_watch_cache_first");
+    let second = unique_tmp("git_watch_cache_second");
+    let plain = unique_tmp("git_watch_cache_plain");
+    for dir in [&first, &second] {
+        init_git_repo(dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+    }
+    std::fs::create_dir_all(&plain).unwrap();
+    let fresh = |app: &App| {
+        let root = app.tab.root.canonicalize().unwrap();
+        crate::vcs::watch_dir(&app.tab.root).filter(|p| !p.starts_with(&root))
+    };
+    let (mut app, calls) = crate::vcs::count_watch_dir_calls(|| {
+        App::new(first.to_path_buf(), Config::default()).unwrap()
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        for _ in 0..20 {
+            app.git_dir_watch();
+        }
+        app.rebuild_tree().unwrap();
+    });
+    assert_eq!(
+        calls, 0,
+        "ticks and same-root rebuilds do not rediscover the watch"
+    );
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(first.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_some());
+    let first_watch = app.git_dir_watch();
+    app.tab_new().unwrap();
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(second.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let second_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.tab_goto(0);
+        assert_eq!(app.git_dir_watch(), first_watch);
+        app.tab_goto(1);
+        assert_eq!(app.git_dir_watch(), second_watch);
+    });
+    assert_eq!(calls, 0, "each tab keeps its own watch value");
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(plain.to_path_buf()));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_none());
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn jj_watch_cache_updates_when_the_chosen_backend_changes() {
+    if !crate::vcs::Git::git_binary_available() || !crate::vcs::jj::available() {
+        eprintln!("skipping: git and jj required");
+        return;
+    }
+    let dir = unique_tmp("jj_watch_backend_change");
+    init_git_repo(&dir);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["git", "init", "--colocate", "."]
+    ));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Auto));
+    let mut app = App::new(dir.join("src"), Config::default()).unwrap();
+    let git_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.apply_statuses(StatusResult {
+            gen: app.git_status_gen,
+            statuses: Default::default(),
+            branch: None,
+            worktree_origin: None,
+            vcs: crate::vcs::VcsKind::Jj,
+            workdir: Some(dir.to_path_buf()),
+        });
+    });
+    assert_eq!(calls, 1);
+    assert_ne!(app.git_dir_watch(), git_watch);
+    assert_eq!(
+        app.git_dir_watch(),
+        crate::vcs::Vcs::watch_dir(&crate::vcs::Jj, &dir)
+    );
+    crate::vcs::set_preference_for_test(None);
+}
+
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
     match &it.kind {
@@ -23950,7 +24045,7 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
 }
 
 /// The read-only gate in `dispatch_action` only protects a write if it is reached through an
-/// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::git::` write call
+/// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::vcs::Git::` write call
 /// lives, `src/app/git_view.rs`) would bypass the gate entirely, no matter what
 /// the key declaration says. This scans the actual source of `git_view.rs` at compile time
 /// (`include_str!`) and confirms every one of the write API's call sites is still exactly the one
@@ -23958,6 +24053,13 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
 ///
 /// A second source scan in `ops::write_guard_tests` covers other production source files and
 /// checks the guard at each execution boundary.
+///
+/// What this catches: a write call added, or moved, to somewhere else in this file, outside
+/// `run_git_op` — the concrete way today's single gate could stop covering a write that already
+/// exists. What this does **not** catch: a brand new write-shaped `Action` that calls a brand new
+/// `crate::vcs::Git::` function correctly routed *through* `run_git_op`, but never added to
+/// the write declarations in the first place — see `guard_write_declarations_are_pinned...` below for
+/// that (still incomplete) half of the picture.
 #[cfg(feature = "git")]
 #[test]
 fn git_write_api_calls_stay_confined_to_run_git_op() {
@@ -23980,16 +24082,16 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
 
     // Exactly what `run_git_op`'s match calls today (mirrors `GitOpKind`, `src/app.rs`).
     let write_calls = [
-        "crate::git::stage(",
-        "crate::git::unstage(",
-        "crate::git::stage_all(",
-        "crate::git::unstage_all(",
-        "crate::git::discard(",
-        "crate::git::commit(",
-        "crate::git::checkout(",
-        "crate::git::create_branch(",
-        "crate::git::delete_branch(",
-        "crate::git::worktree_add(",
+        "crate::vcs::Git::stage(",
+        "crate::vcs::Git::unstage(",
+        "crate::vcs::Git::stage_all(",
+        "crate::vcs::Git::unstage_all(",
+        "crate::vcs::Git::discard(",
+        "crate::vcs::Git::commit(",
+        "crate::vcs::Git::checkout(",
+        "crate::vcs::Git::create_branch(",
+        "crate::vcs::Git::delete_branch(",
+        "crate::vcs::Git::worktree_add(",
     ];
     for needle in write_calls {
         let total = src.matches(needle).count();

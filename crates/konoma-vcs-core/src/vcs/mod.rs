@@ -6,14 +6,34 @@
 //! answers questions and returns the shared types (`FileStatus`, `DiffLine`, `GraphRow`, …), and the
 //! `ui` layer stays unaware of which one answered.
 //!
-//! Today there is exactly one backend, and `backend_for` always returns it. It exists as a seam so
-//! the jj (Jujutsu) backend can be added without a second copy of the views; see
-//! `docs/FEATURE-JJ-SUPPORT.md`.
+//! `backend_for` selects Git or Jj without changing the host's views.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::git::{BranchInfo, ChangeEntry, CommitInfo, CommitMeta, DiffLine, FileStatus, GraphRow};
+
+mod git_screen;
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static WATCH_DIR_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static POINT_READ_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn count_point_read_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = POINT_READ_CALLS.with(|c| c.get());
+    let result = f();
+    (result, POINT_READ_CALLS.with(|c| c.get()) - before)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn count_watch_dir_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = WATCH_DIR_CALLS.with(|c| c.get());
+    let result = f();
+    (result, WATCH_DIR_CALLS.with(|c| c.get()) - before)
+}
 
 #[cfg(feature = "git")]
 pub mod jj;
@@ -78,6 +98,16 @@ pub trait Vcs: Send + Sync {
     /// (`src/app/md_render.rs`) to run their own comparison (a block-level Markdown diff) against
     /// the current content instead of git's/jj's line-level one.
     fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>>;
+
+    /// An immutable revision identifying the current state (git HEAD; jj's last snapshot of `@`).
+    /// Follow separately captures dirty working files, so recording a point never writes.
+    fn current_point(&self, root: &Path) -> Option<String>;
+
+    /// Bytes at a previously recorded point, independent of later commits or working-copy edits.
+    fn contents_at(&self, root: &Path, point: &str, file: &Path) -> Option<Vec<u8>>;
+
+    /// Public repository metadata directory to watch when it lies outside the host's root watch.
+    fn watch_dir(&self, root: &Path) -> Option<PathBuf>;
 
     /// The changed files, one entry per file, sorted by path — what the changed-file list and the
     /// jumps between changes walk.
@@ -146,6 +176,40 @@ impl Vcs for Git {
         crate::git::base_contents(root, file)
     }
 
+    fn current_point(&self, root: &Path) -> Option<String> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
+        #[cfg(feature = "git")]
+        {
+            crate::git::head_commit_id(root)
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = root;
+            None
+        }
+    }
+
+    fn contents_at(&self, root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
+        #[cfg(feature = "git")]
+        {
+            crate::git::blob_at(root, point, file)
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = (root, point, file);
+            None
+        }
+    }
+
+    fn watch_dir(&self, root: &Path) -> Option<PathBuf> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        WATCH_DIR_CALLS.with(|c| c.set(c.get() + 1));
+        crate::git::git_dir(root)
+    }
+
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
         crate::git::changed_files(root)
     }
@@ -183,7 +247,7 @@ impl Vcs for Git {
     }
 }
 
-/// Which backend the user asked for, from `[external] vcs`.
+/// Which backend the user asked for, from `[project] vcs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preference {
     /// **git wherever git can answer; jj only where it cannot.** A repository with a `.git` keeps
@@ -216,7 +280,7 @@ impl Preference {
 /// UI thread does.
 static PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-/// Applies `[external] vcs`.
+/// Applies `[project] vcs`.
 pub fn set_preference(p: Preference) {
     let v = match p {
         Preference::Auto => 0,
@@ -226,9 +290,9 @@ pub fn set_preference(p: Preference) {
     PREFERENCE.store(v, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(all(any(test, feature = "test-hooks"), feature = "git"))]
+#[cfg(feature = "git")]
 thread_local! {
-    /// Test-only override of the preference above.
+    /// Worker-local or test-local override of the preference above.
     ///
     /// The real one has to be process-wide, but that makes it unusable *from* a test: every other
     /// test's `App::new` writes it too, so a test that pinned `jj` would have it overwritten
@@ -236,9 +300,8 @@ thread_local! {
     /// the global from a test is the same hazard pointed the other way, since the pinned value
     /// then leaks into whatever else is running.
     ///
-    /// Thread-local for the same reason as `git`'s own test overrides, and sufficient for the same
-    /// reason: the only code that reads this from another thread is the background status scan,
-    /// which no test attaches.
+    /// `WorkerConfig` copies this selection to status/ignored/diff workers, including workers
+    /// attached by tests, without changing another caller's process-wide preference.
     static PREFERENCE_OVERRIDE: std::cell::Cell<Option<Preference>> =
         const { std::cell::Cell::new(None) };
 }
@@ -252,7 +315,7 @@ pub fn set_preference_for_test(p: Option<Preference>) {
 
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn preference() -> Preference {
-    #[cfg(all(any(test, feature = "test-hooks"), feature = "git"))]
+    #[cfg(feature = "git")]
     if let Some(p) = PREFERENCE_OVERRIDE.with(|c| c.get()) {
         return p;
     }
@@ -260,6 +323,36 @@ fn preference() -> Preference {
         1 => Preference::Git,
         2 => Preference::Jj,
         _ => Preference::Auto,
+    }
+}
+
+/// Carry the caller's backend selection into a new worker thread. In particular, a disabled Git
+/// backend must stay disabled in a colocated workspace, where `auto` then selects Jj.
+#[derive(Clone, Copy)]
+pub struct WorkerConfig {
+    #[cfg(feature = "git")]
+    preference: Preference,
+    #[cfg(feature = "git")]
+    git_enabled: bool,
+}
+
+impl WorkerConfig {
+    pub fn capture() -> Self {
+        Self {
+            #[cfg(feature = "git")]
+            preference: preference(),
+            #[cfg(feature = "git")]
+            git_enabled: crate::git::external_git_enabled(),
+        }
+    }
+
+    /// Install only on a newly spawned worker; it owns these settings for its entire lifetime.
+    pub fn install(self) {
+        #[cfg(feature = "git")]
+        {
+            PREFERENCE_OVERRIDE.with(|c| c.set(Some(self.preference)));
+            crate::git::set_external_git_enabled(self.git_enabled);
+        }
     }
 }
 
@@ -310,6 +403,24 @@ impl Vcs for Jj {
 
     fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>> {
         jj::base_contents(root, file)
+    }
+
+    fn current_point(&self, root: &Path) -> Option<String> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
+        jj::current_point(root)
+    }
+
+    fn contents_at(&self, root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        POINT_READ_CALLS.with(|c| c.set(c.get() + 1));
+        jj::contents_at(root, point, file)
+    }
+
+    fn watch_dir(&self, root: &Path) -> Option<PathBuf> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        WATCH_DIR_CALLS.with(|c| c.set(c.get() + 1));
+        jj::watch_dir(root)
     }
 
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
@@ -407,6 +518,24 @@ pub fn backend_for(root: &Path) -> &'static dyn Vcs {
 // Callers ask these, never a backend directly: the dispatch stays in one place, and a call site
 // reads the same as it did when there was only git.
 
+/// Pure line comparison shared by all backends; no repository access.
+pub use crate::git::diff_contents;
+
+/// See [`Vcs::current_point`].
+pub fn current_point(root: &Path) -> Option<String> {
+    backend_for(root).current_point(root)
+}
+
+/// See [`Vcs::contents_at`].
+pub fn contents_at(root: &Path, point: &str, file: &Path) -> Option<Vec<u8>> {
+    backend_for(root).contents_at(root, point, file)
+}
+
+/// See [`Vcs::watch_dir`].
+pub fn watch_dir(root: &Path) -> Option<PathBuf> {
+    backend_for(root).watch_dir(root)
+}
+
 /// See [`Vcs::workdir`].
 pub fn workdir(root: &Path) -> Option<PathBuf> {
     backend_for(root).workdir(root)
@@ -495,6 +624,100 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn vcs_git_point_and_contents_are_pinned() {
+        if !Git::git_binary_available() {
+            eprintln!("skipping: no working git binary");
+            return;
+        }
+        let dir = konoma_test_support::unique_tmp("vcs_git_point");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let repo = git2::Repository::init(&root).unwrap();
+        let file = root.join("a.txt");
+        let names = ["a.txt", "a [literal].txt", "資料 一覧.txt"];
+        let commit = |contents: &[u8]| {
+            for name in names {
+                std::fs::write(root.join(name), contents).unwrap();
+            }
+            let mut index = repo.index().unwrap();
+            for name in names {
+                index.add_path(Path::new(name)).unwrap();
+            }
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig =
+                git2::Signature::new("fixture", "fixture@example.invalid", &git2::Time::new(0, 0))
+                    .unwrap();
+            let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+            repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "fixture",
+                &tree,
+                &parent.iter().collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        assert!(Git.current_point(&root).is_none());
+        let first = commit(b"before\n");
+        let point = Git.current_point(&root).unwrap();
+        assert_eq!(point, first.to_string());
+        commit(b"after\n");
+        assert_ne!(Git.current_point(&root).unwrap(), point);
+        for name in names {
+            assert_eq!(
+                Git.contents_at(&root, &point, &root.join(name)).unwrap(),
+                b"before\n",
+                "{name}"
+            );
+        }
+        assert!(Git
+            .contents_at(&root, &point, &root.join("new.txt"))
+            .is_none());
+        assert!(Git.contents_at(&root, "invalid", &file).is_none());
+        assert_eq!(Git.watch_dir(&root), Some(root.join(".git")));
+    }
+
+    #[cfg(not(feature = "git"))]
+    #[test]
+    fn vcs_point_capability_without_git_answers_empty() {
+        let dir = konoma_test_support::unique_tmp("vcs_point_disabled");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(Git.current_point(&dir).is_none());
+        assert!(Git.contents_at(&dir, "point", &dir.join("a.txt")).is_none());
+        assert!(current_point(&dir).is_none());
+        assert!(contents_at(&dir, "point", &dir.join("a.txt")).is_none());
+        assert!(watch_dir(&dir).is_none());
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn vcs_worker_keeps_colocated_selection_with_git_disabled() {
+        let dir = detect_with_colocated_dir();
+        for (pref, expected) in [
+            (Preference::Auto, VcsKind::Jj),
+            (Preference::Git, VcsKind::Git),
+            (Preference::Jj, VcsKind::Jj),
+        ] {
+            set_preference_for_test(Some(pref));
+            Git::set_external_git_enabled(false);
+            let config = WorkerConfig::capture();
+            let root = dir.to_path_buf();
+            let actual = std::thread::spawn(move || {
+                config.install();
+                let kind = detect_with(preference(), &root, true);
+                (kind, Git.workdir(&root))
+            })
+            .join()
+            .unwrap();
+            assert_eq!(actual, (expected, None), "{pref:?}");
+        }
+        Git::set_external_git_enabled(true);
+        set_preference_for_test(None);
+    }
 
     /// The seam must not change what a caller sees: going through the backend has to agree with the
     /// free functions it delegates to, for a real repository and for a plain directory alike.

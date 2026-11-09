@@ -363,7 +363,7 @@ impl App {
             // New-vs-existing is probed here, on the UI thread, and the answer is handed to the
             // worker: it's a cheap libgit2 ref lookup (not a process), and it belongs with the rest
             // of the dispatch-time decisions.
-            let create_new = crate::git::branch_tip(&self.tab.root, bname).is_none();
+            let create_new = crate::vcs::ref_tip(&self.tab.root, bname).is_none();
             // Runs in the background (design principle #4): `worktree add` writes out a whole new
             // checkout. Landing in the new worktree happens in `apply_git_op`.
             if !self.start_git_op(crate::app::GitOpJob {

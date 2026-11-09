@@ -225,18 +225,22 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
         for name in names {
-            let call = format!("git::{name}(");
-            if text.contains(&call) {
-                git_calls += text.matches(&call).count();
-                assert_eq!(
-                    path,
-                    src.join("app/git_view.rs"),
-                    "{call} bypasses the guarded executor"
-                );
-                assert_eq!(
-                    text.matches(&call).count(),
-                    method(&text, "run_git_op").matches(&call).count()
-                );
+            // Cover both the old API and the temporary capability boundary so moving a
+            // write behind Vcs cannot make the execution-guard scan stop seeing it.
+            for prefix in ["git::", "vcs::Git::"] {
+                let call = format!("{prefix}{name}(");
+                if text.contains(&call) {
+                    git_calls += text.matches(&call).count();
+                    assert_eq!(
+                        path,
+                        src.join("app/git_view.rs"),
+                        "{call} bypasses the guarded executor"
+                    );
+                    assert_eq!(
+                        text.matches(&call).count(),
+                        method(&text, "run_git_op").matches(&call).count()
+                    );
+                }
             }
         }
         if text.contains("vcs::jj::snapshot(") {

@@ -11,31 +11,14 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
+use super::vcs_color;
+
 /// How the hub names the system answering it. git calls its pointer a branch and marks it with a
 /// glyph; jj's label already opens with `@`, so it needs no marker of its own.
 use crate::app::list_filter::ListId;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::ui::icons;
-
-/// Convert the core's small color vocabulary at the host's drawing boundary.
-pub(crate) fn vcs_color(color: konoma_vcs_core::style::VcsColor) -> ratatui::style::Color {
-    use konoma_vcs_core::style::VcsColor;
-    use ratatui::style::Color;
-    match color {
-        VcsColor::Reset => Color::Reset,
-        VcsColor::Red => Color::Red,
-        VcsColor::Green => Color::Green,
-        VcsColor::Yellow => Color::Yellow,
-        VcsColor::Blue => Color::Blue,
-        VcsColor::Magenta => Color::Magenta,
-        VcsColor::Cyan => Color::Cyan,
-        VcsColor::White => Color::White,
-        VcsColor::LightRed => Color::LightRed,
-        VcsColor::LightGreen => Color::LightGreen,
-        VcsColor::LightYellow => Color::LightYellow,
-    }
-}
 
 fn graph_style(style: konoma_vcs_core::style::GraphStyle) -> Style {
     use konoma_vcs_core::style::GraphStyle;

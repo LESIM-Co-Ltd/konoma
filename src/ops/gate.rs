@@ -318,7 +318,7 @@ fn gate_open_git_view(app: &App) -> Gate {
         return Gate::Off(Some(Msg::ExternalGitDisabled));
     }
     #[cfg(feature = "git")]
-    if backend_is_git && !crate::git::git_binary_available() {
+    if backend_is_git && !crate::vcs::Git::git_binary_available() {
         return Gate::Off(Some(Msg::GitNotInstalled));
     }
     // Until the first scan lands the cache says nothing; the handler then decides.

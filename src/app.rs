@@ -49,6 +49,10 @@ mod diff_view;
 mod embed_plugin;
 mod file_actions;
 mod follow;
+#[cfg(feature = "git")]
+mod follow_worker;
+#[cfg(feature = "git")]
+pub use follow_worker::FollowResult;
 mod git_view;
 pub(crate) mod list_filter;
 mod markdown_plugin;
@@ -1096,7 +1100,7 @@ pub(crate) enum MdDiffKind {
 /// Which "old version" bytes a block-diff request should read, resolved on the UI thread
 /// (`App::diff_baseline`) from already-in-memory state (a `HashMap` lookup, no disk/subprocess
 /// I/O) so the worker thread never needs `&App` at all — only this plain-data instruction plus the
-/// backend calls it names (`vcs::base_contents`/`git::blob_at`, which touch the filesystem/git
+/// backend calls it names (`vcs::base_contents`/`vcs::contents_at`, which touch the filesystem/git
 /// object store, never `App`).
 ///
 /// Every variant but `Vcs` is only ever constructed on a `git`-feature build (`App::diff_baseline`'s
@@ -1109,8 +1113,8 @@ pub(crate) enum DiffBaseline {
     /// A follow-session snapshot already held in memory at follow-start — no I/O needed.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     FollowSnapshot(Vec<u8>),
-    /// A follow-session baseline that is the pinned HEAD blob — the worker fetches it
-    /// (`git::blob_at`, a subprocess under jj).
+    /// A follow-session baseline at the backend's pinned point — the worker fetches it
+    /// (`vcs::contents_at`, a subprocess under jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     FollowHead { sha: String },
     /// No baseline at all (untracked / no repository / dirty-but-too-large-to-snapshot at
@@ -1561,6 +1565,8 @@ pub struct App {
     /// under `diff_follow_scope`. See `docs/FEATURE-FOLLOW-BASELINE-2026-07.md`.
     #[cfg(feature = "git")]
     follow_baseline: Option<FollowBaseline>,
+    #[cfg(feature = "git")]
+    follow_worker: follow_worker::State,
     /// The tab root that was active when `follow_session`/`follow_baseline` were (re)captured. Follow
     /// mode is a global (not per-tab) mode, but its session and baseline describe one specific repo —
     /// tab switching, `l`/`h` navigation, worktree switching (`o`→`w`→`Enter`), paste-jump, and bookmark
@@ -2224,10 +2230,17 @@ const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
 #[cfg(feature = "git")]
 const FOLLOW_BASELINE_TOTAL_CAP: usize = 64 * 1024 * 1024;
 
+#[derive(Clone)]
+struct VcsWatchCache {
+    root: PathBuf,
+    kind: crate::vcs::VcsKind,
+    directory: Option<PathBuf>,
+}
+
 /// The follow-start snapshot. `dirty` holds the content of files that were already modified/untracked
 /// at follow-start (keyed by canonicalized path): `Some(bytes)` = snapshotted, `None` = skipped for
 /// size (falls back to full diff). Files NOT in `dirty` were clean at follow-start, so their baseline
-/// is the blob at `head`.
+/// is the content at `head` (an opaque backend point, not necessarily a Git SHA).
 #[cfg(feature = "git")]
 struct FollowBaseline {
     dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>>,
@@ -2459,6 +2472,8 @@ pub(crate) struct PerTab {
     project_enter_pending: bool,
     project_effects: Vec<project_screens::ProjectEffect>,
     project_pending_acts: std::collections::VecDeque<project_screens::ProjectInvocation>,
+    /// Extra repository watch, resolved once for this root/backend and carried across tab switches.
+    vcs_watch: Option<VcsWatchCache>,
     /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
     pub(crate) open_dir: PathBuf,
     /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
@@ -2684,6 +2699,7 @@ impl Default for PerTab {
             // root/open_dir has no meaningful default — App::new overrides both right after
             // `PerTab::default()`, and `rebuild_tree` fills `entries`.
             root: PathBuf::new(),
+            vcs_watch: None,
             open_dir: PathBuf::new(),
             projects: crate::plugins::projects::ProjectDetection::default(),
             project_navigation: None,
@@ -2852,6 +2868,8 @@ impl App {
             follow_diff_full: false,
             #[cfg(feature = "git")]
             follow_baseline: None,
+            #[cfg(feature = "git")]
+            follow_worker: follow_worker::State::default(),
             follow_root: None,
             md_view_rows: 0,
             preview_win: None,
@@ -3007,8 +3025,8 @@ impl App {
         // git (rebuild_tree). It's thread-local, so it doesn't race with other tests (see git.rs's
         // EXTERNAL_GIT_ENABLED).
         #[cfg(feature = "git")]
-        crate::git::set_external_git_enabled(app.cfg.external.git);
-        crate::vcs::set_preference(crate::vcs::Preference::parse(&app.cfg.external.vcs));
+        crate::vcs::Git::set_external_git_enabled(app.cfg.external.git);
+        crate::vcs::set_preference(crate::vcs::Preference::parse(app.cfg.project_vcs()));
         app.rebuild_tree()?;
         // Register the current state as the first tab.
         app.tabs.push(app.snapshot_tab());
@@ -3194,6 +3212,15 @@ impl App {
     /// A naive implementation for M0. Support for large directories will later be replaced with lazy loading.
     pub fn rebuild_tree(&mut self) -> Result<()> {
         self.ensure_project_detection();
+        if self
+            .tab
+            .vcs_watch
+            .as_ref()
+            .is_none_or(|c| c.root != self.tab.root)
+        {
+            self.git_vcs = crate::vcs::detect(&self.tab.root);
+            self.refresh_vcs_watch(self.git_vcs);
+        }
         let mut out = Vec::new();
         // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
         let expanded_dirs: std::collections::HashSet<PathBuf> = self
@@ -3882,6 +3909,8 @@ impl App {
         self.project_dialog = None;
         self.tab.project_enter_pending = false;
         self.tab.project_pending_acts.clear();
+        #[cfg(feature = "git")]
+        self.follow_worker.cancel();
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
@@ -3979,6 +4008,9 @@ impl App {
     ) -> Vec<crate::git::DiffLine> {
         #[cfg(feature = "git")]
         if follow && !self.follow_diff_full {
+            if self.jj_follow_workers() {
+                return self.follow_worker.lines(path).unwrap_or_default();
+            }
             if let Some(lines) = self.follow_baseline_diff(path) {
                 return lines;
             }
@@ -4583,32 +4615,46 @@ impl App {
         p.parent().map(|d| d.to_path_buf())
     }
 
-    /// The git directory to watch **non-recursively** when it is not already covered by the
-    /// recursive root watch. Without this, an external git op that touches only the git directory
-    /// (a commit of already-staged files, an external checkout) fires no event under root, so the
-    /// cached `git status` / branch would linger stale — the per-workdir status cache no longer
-    /// re-verifies on `h`/`l`. Two cases land here:
-    /// - **root is a subdirectory of the repo**: the parent `.git` sits above `root`, outside the
-    ///   recursive watch.
-    /// - **root is a linked worktree** (`git worktree add`): that worktree's own `HEAD`/`index` live
-    ///   under `<main-repo>/.git/worktrees/<name>/`, not under the worktree's own checkout at all —
-    ///   so *no* event ever reaches the recursive root watch, no matter how deep the tree goes.
-    ///   ([`crate::git::git_dir`] returns this location; [`crate::git::workdir`] would instead
-    ///   return the worktree's own root, which is exactly what makes this case easy to miss.)
-    ///
-    /// `HEAD`/`index` are direct children of the git directory, so a non-recursive watch catches
-    /// the signals that change status/branch. Returns None when the git directory is already under
-    /// `root` (nothing extra to watch) or outside any repo. konoma's own reads are lock-free
-    /// (`--no-optional-locks`), so this does not create a self-feedback loop.
+    /// Cached extra VCS watch outside the recursive root watch. Git watches its HEAD/index
+    /// directory; jj watches operation heads (see `vcs::jj::watch_dir`). The extra watch is
+    /// non-recursive because these signals are direct children of the selected directory.
+    /// Root/backend checkpoints resolve and canonicalize it once, including the decision that
+    /// no extra watch is needed. Loop ticks only read this tab's cached value, with no discovery.
     pub fn git_dir_watch(&self) -> Option<PathBuf> {
-        let gd = crate::git::git_dir(&self.tab.root)?;
+        self.tab
+            .vcs_watch
+            .as_ref()
+            .and_then(|c| c.directory.clone())
+    }
+
+    /// Root navigation and a landed backend change are the only watch-resolution checkpoints.
+    fn refresh_vcs_watch(&mut self, kind: crate::vcs::VcsKind) {
+        if self
+            .tab
+            .vcs_watch
+            .as_ref()
+            .is_some_and(|c| c.root == self.tab.root && c.kind == kind)
+        {
+            return;
+        }
+        let backend: &dyn crate::vcs::Vcs = match kind {
+            crate::vcs::VcsKind::Git => &crate::vcs::Git,
+            #[cfg(feature = "git")]
+            crate::vcs::VcsKind::Jj => &crate::vcs::Jj,
+        };
+        let directory = backend.watch_dir(&self.tab.root);
         let root = self
             .tab
             .root
             .canonicalize()
             .unwrap_or_else(|_| self.tab.root.clone());
         // Watch it only when it is NOT already covered by the recursive root watch.
-        (!gd.starts_with(&root)).then_some(gd)
+        let directory = directory.filter(|dir| !dir.starts_with(&root));
+        self.tab.vcs_watch = Some(VcsWatchCache {
+            root: self.tab.root.clone(),
+            kind,
+            directory,
+        });
     }
 
     /// Whether in windowed (large file) mode. Used for the render and scroll branching.

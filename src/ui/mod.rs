@@ -26,6 +26,25 @@ use ratatui::Frame;
 
 use crate::app::{App, Mode, StatusbarLayout};
 
+/// Convert the core's small color vocabulary at the host's drawing boundary.
+pub(crate) fn vcs_color(color: konoma_vcs_core::style::VcsColor) -> ratatui::style::Color {
+    use konoma_vcs_core::style::VcsColor;
+    use ratatui::style::Color;
+    match color {
+        VcsColor::Reset => Color::Reset,
+        VcsColor::Red => Color::Red,
+        VcsColor::Green => Color::Green,
+        VcsColor::Yellow => Color::Yellow,
+        VcsColor::Blue => Color::Blue,
+        VcsColor::Magenta => Color::Magenta,
+        VcsColor::Cyan => Color::Cyan,
+        VcsColor::White => Color::White,
+        VcsColor::LightRed => Color::LightRed,
+        VcsColor::LightGreen => Color::LightGreen,
+        VcsColor::LightYellow => Color::LightYellow,
+    }
+}
+
 /// Space for a notice in a full-width status row, shared by startup and rendering.
 pub(crate) fn notice_footer_width(app: &App, columns: usize) -> usize {
     if StatusbarLayout::parse(&app.cfg.ui.statusbar) == StatusbarLayout::Split {
