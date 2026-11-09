@@ -13,6 +13,10 @@ mod graph;
 mod graph_cleanup_tests;
 mod log;
 mod paths;
+#[cfg(feature = "app")]
+pub mod standalone;
+#[cfg(all(test, feature = "app"))]
+mod standalone_tests;
 mod worktrees;
 
 pub struct Git;

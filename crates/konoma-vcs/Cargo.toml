@@ -15,6 +15,7 @@ konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
 [features]
 default = ["git"]
 git = ["konoma-vcs-core/git"]
+app = ["konoma-plugin/app"]
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }

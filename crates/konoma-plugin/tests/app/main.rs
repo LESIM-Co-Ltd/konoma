@@ -9,6 +9,7 @@ mod open;
 mod options;
 mod pictures;
 mod plugin;
+mod project;
 mod reopen;
 mod still;
 mod table;

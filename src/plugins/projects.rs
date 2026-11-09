@@ -9,8 +9,10 @@ mod vcs_detection_tests;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(test)]
+use konoma_plugin::host::project::ProjectDeclaration;
+use konoma_plugin::host::project::ProjectDeclarationSet;
 pub(crate) use konoma_plugin::host::project::{MatchedProject, ProjectDetection};
-use konoma_plugin::host::project::{ProjectDeclaration, ProjectDeclarationSet};
 use konoma_plugin::Plugin;
 
 /// Start discovery for `root` unless it already runs for it. The declarations are built only when
@@ -37,22 +39,9 @@ fn static_declarations(
     registry: &konoma_plugin::registry::Registry,
     external: &[Arc<dyn Plugin>],
 ) -> ProjectDeclarationSet {
-    registry
-        .ids()
-        .into_iter()
-        .filter(|id| {
-            registry.is_enabled(id)
-                && registry
-                    .plugin(id)
-                    .is_some_and(|plugin| external.iter().all(|p| !Arc::ptr_eq(p, &plugin)))
-        })
-        .filter_map(|id| {
-            Some(ProjectDeclaration {
-                plugin: id.into(),
-                project: registry.manifest(id)?.project.clone()?,
-            })
-        })
-        .collect()
+    konoma_plugin::host::project::detection::project_declarations(registry, |plugin| {
+        external.iter().all(|p| !Arc::ptr_eq(p, plugin))
+    })
 }
 
 #[cfg(test)]

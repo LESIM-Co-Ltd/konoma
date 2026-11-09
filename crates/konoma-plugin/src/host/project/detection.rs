@@ -52,6 +52,25 @@ pub struct ProjectDeclaration {
 /// host rather than run as a child process) is the host's decision.
 pub type ProjectDeclarationSet = Vec<ProjectDeclaration>;
 
+/// Project declarations of enabled registrations in registry order. The host decides which
+/// instances are static; the SDK does not know about its process-plugin catalogue.
+pub fn project_declarations(
+    registry: &crate::registry::Registry,
+    include: impl Fn(&Arc<dyn crate::Plugin>) -> bool,
+) -> ProjectDeclarationSet {
+    registry
+        .ids()
+        .into_iter()
+        .filter(|id| registry.is_enabled(id) && registry.plugin(id).is_some_and(|p| include(&p)))
+        .filter_map(|id| {
+            Some(ProjectDeclaration {
+                plugin: id.into(),
+                project: registry.manifest(id)?.project.clone()?,
+            })
+        })
+        .collect()
+}
+
 type WatchKey = (String, PathBuf, String);
 struct SessionWatches {
     paths: Mutex<std::collections::BTreeMap<WatchKey, Vec<PathBuf>>>,
@@ -196,10 +215,21 @@ pub fn watch_targets(root: &Path, projects: &[MatchedProject]) -> BTreeSet<(Path
 struct Slot {
     value: Mutex<Option<Update>>,
     ready: Condvar,
+    published: AtomicBool,
     #[cfg(any(test, feature = "test-hooks"))]
     injected: AtomicBool,
     #[cfg(test)]
     checkpoints: Mutex<Option<fence_tests::WorkerCheckpoints>>,
+    #[cfg(all(test, feature = "app"))]
+    startup_failure: Option<StartupFailure>,
+}
+
+#[cfg(all(test, feature = "app"))]
+#[derive(Clone, Copy)]
+pub(crate) enum StartupFailure {
+    Panic,
+    Exit,
+    WatcherCreation,
 }
 
 struct Update {
@@ -216,9 +246,22 @@ impl Slot {
                 current.projects = previous.projects.take();
             }
         }
+        self.published.store(true, Ordering::Release);
         drop(slot);
         self.ready.notify_all();
         drop(previous);
+    }
+}
+
+/// The handle keeps the slot alive even after its thread exits. Publish explicitly rather than
+/// relying on channel disconnection; a panic after a consumed answer must also wake the host.
+struct PublishOnExit<'a>(&'a Slot);
+
+impl Drop for PublishOnExit<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() || !self.0.published.load(Ordering::Acquire) {
+            self.0.publish(None, true);
+        }
     }
 }
 
@@ -286,7 +329,12 @@ impl ProjectWatcher {
     fn new(
         events: EventSender,
         #[cfg(any(test, feature = "test-hooks"))] native: bool,
+        #[cfg(all(test, feature = "app"))] fail_creation: bool,
     ) -> notify::Result<Self> {
+        #[cfg(all(test, feature = "app"))]
+        if fail_creation {
+            return Err(notify::Error::generic("injected watcher creation failure"));
+        }
         #[cfg(any(test, feature = "test-hooks"))]
         if !native {
             return Ok(Self::Injected);
@@ -332,7 +380,13 @@ pub fn assert_native_watch_delivery(directory: &Path) {
         overflow: Arc::new(AtomicBool::new(false)),
         failed: Arc::new(AtomicBool::new(false)),
     };
-    let mut watcher = ProjectWatcher::new(events, true).expect("native watcher setup");
+    let mut watcher = ProjectWatcher::new(
+        events,
+        true,
+        #[cfg(all(test, feature = "app"))]
+        false,
+    )
+    .expect("native watcher setup");
     watcher
         .watch(directory, RecursiveMode::NonRecursive)
         .expect("native watch registration");
@@ -369,6 +423,15 @@ fn run(
     channel: (mpsc::Receiver<WatchMessage>, Arc<SessionWatches>),
     #[cfg(any(test, feature = "test-hooks"))] native: bool,
 ) {
+    let _publication = PublishOnExit(&slot);
+    #[cfg(all(test, feature = "app"))]
+    let startup_failure = slot.startup_failure;
+    #[cfg(all(test, feature = "app"))]
+    match startup_failure {
+        Some(StartupFailure::Panic) => panic!("injected discovery worker panic before publication"),
+        Some(StartupFailure::Exit) => return,
+        _ => {}
+    }
     let (rx, watches) = channel;
     let overflow = events.overflow.clone();
     let watch_failed = events.failed.clone();
@@ -376,6 +439,8 @@ fn run(
         events,
         #[cfg(any(test, feature = "test-hooks"))]
         native,
+        #[cfg(all(test, feature = "app"))]
+        matches!(startup_failure, Some(StartupFailure::WatcherCreation)),
     ) {
         Ok(watcher) => watcher,
         Err(_) => {
@@ -532,9 +597,19 @@ pub struct ProjectDetection {
     // watch natively, so `ensure` ignores the injection when `is_app_main()`.
     #[cfg(any(test, feature = "test-hooks"))]
     native_watch: bool,
+    #[cfg(all(test, feature = "app"))]
+    startup_failure: Option<StartupFailure>,
 }
 
 impl ProjectDetection {
+    #[cfg(all(test, feature = "app"))]
+    pub(crate) fn with_startup_failure(failure: StartupFailure) -> Self {
+        Self {
+            startup_failure: Some(failure),
+            ..Self::default()
+        }
+    }
+
     /// Whether detection already runs (or ran) for `root`. A host asks this before it builds the
     /// declarations, so an unchanged root costs it nothing.
     pub fn is_for(&self, root: &Path) -> bool {
@@ -558,7 +633,11 @@ impl ProjectDetection {
             self.ready = true;
             return;
         }
-        let slot = Arc::new(Slot::default());
+        let slot = Arc::new(Slot {
+            #[cfg(all(test, feature = "app"))]
+            startup_failure: self.startup_failure.take(),
+            ..Default::default()
+        });
         let cancelled = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(1);
         let events = EventSender {
@@ -607,16 +686,50 @@ impl ProjectDetection {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()?;
+        Some(self.apply_answer(answer))
+    }
+
+    fn apply_answer(&mut self, answer: Update) -> bool {
         if let Some(projects) = answer.projects {
             self.projects = projects;
         }
         self.ready = true;
-        Some(answer.failed)
+        answer.failed
     }
 
     /// Whether a worker runs that has not answered yet.
     pub fn pending(&self) -> bool {
         self.worker.is_some() && !self.ready
+    }
+
+    /// Preparation only: wait for the first scan before taking the terminal. `Ok(true)` keeps
+    /// the detected projects with a watch warning, like the host's nonblocking `poll`; `Err`
+    /// means there is no scan answer. UI loops must use `poll` instead.
+    #[cfg(feature = "app")]
+    pub(crate) fn wait_for_initial(&mut self) -> io::Result<bool> {
+        let Some(worker) = self.worker.as_ref() else {
+            return Ok(false);
+        };
+        let mut guard = worker.slot.value.lock().unwrap_or_else(|e| e.into_inner());
+        if self.pending() {
+            guard = worker
+                .slot
+                .ready
+                .wait_while(guard, |value| value.is_none())
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        let answer = guard.take();
+        drop(guard);
+        let Some(answer) = answer else {
+            return Ok(false);
+        };
+        let scanned = answer.projects.is_some();
+        let failed = self.apply_answer(answer);
+        if scanned {
+            Ok(failed)
+        } else {
+            Err(io::Error::other("project detection worker failed"))
+        }
     }
 
     /// Replace the watch paths one project's session reported, and wake the worker to watch them.

@@ -5,6 +5,44 @@ use super::tests::declaration;
 use super::*;
 use konoma_test_support::unique_tmp;
 
+#[cfg(feature = "app")]
+#[test]
+fn project_initial_wait_reports_worker_panic_or_exit_before_publication() {
+    let dir = unique_tmp("project_worker_exit_before_publication");
+    std::fs::create_dir_all(&dir).unwrap();
+    for failure in [StartupFailure::Panic, StartupFailure::Exit] {
+        let mut detection = ProjectDetection {
+            startup_failure: Some(failure),
+            ..Default::default()
+        };
+        detection.ensure(
+            &dir,
+            vec![declaration("fixture", ".marker", MarkerKind::Any)],
+        );
+        let slot = detection.worker.as_ref().unwrap().slot.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let waiter = std::thread::spawn(move || {
+            let answer = detection.wait_for_initial();
+            tx.send((answer, detection.pending(), detection.projects))
+                .unwrap();
+        });
+        let answer = rx.recv_timeout(Duration::from_secs(30));
+        if answer.is_err() {
+            // Wake and join even with the publication guard removed by a mutation.
+            slot.publish(None, true);
+        }
+        waiter.join().unwrap();
+        let (answer, pending, projects) =
+            answer.expect("initial wait must finish after worker exit");
+        assert!(
+            answer.is_err(),
+            "a worker without a scan answer must report failure"
+        );
+        assert!(!pending);
+        assert!(projects.is_empty());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WorkerCheckpoint {
     AfterFence,

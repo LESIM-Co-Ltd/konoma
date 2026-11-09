@@ -8,8 +8,9 @@
 //! cursor, the sheets as pages, the full-cell popup) and [`View::Image`](crate::View) (a still
 //! picture decoded off the loop and drawn through the `Pictures`, with zoom and pan; with no
 //! `Pictures` the line that names the terminal) and [`View::Document`](crate::View) (Markdown, laid
-//! out by the shared `document_render` and drawn in a bordered frame; every picture of it is shown
-//! as text). Any other view says it cannot be shown yet.
+//! out by the shared `document_render` and drawn in a bordered frame; with [`DocPics`] its pictures
+//! are reserved and drawn, without it they use the text fallback). Any other view says it cannot
+//! be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
@@ -24,6 +25,7 @@ mod edit_line;
 mod launch;
 mod looping;
 mod pictures;
+pub mod project;
 mod space;
 mod still;
 mod term;
@@ -137,6 +139,16 @@ impl fmt::Debug for ReopenSource {
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
 #[derive(Debug)]
 pub enum AppError {
+    /// The directory does not exist.
+    NoDirectory(PathBuf),
+    /// The project argument is not a directory.
+    NotADirectory(PathBuf),
+    /// No enabled project plugin takes this directory or its ancestors.
+    NoProject(PathBuf),
+    /// The directory could not be read or project discovery failed.
+    ProjectDetection(String),
+    /// The backend is unavailable or the project owner could not open it.
+    ProjectOpen(String),
     /// The file does not exist.
     NoFile(PathBuf),
     /// The path is not a file (a directory, say).
@@ -156,16 +168,21 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// The exit code of the program: 2 when the file argument is refused (it does not exist, is
-    /// not a file, cannot be read, or no plugin takes it: the same as the refusal of an unknown
-    /// option), 1 when the run fails (a plugin, the open, the terminal).
+    /// The exit code of the program: 2 when the file/directory argument is refused or no plugin
+    /// takes it (the same as an unknown option), 1 when preparation or the run fails (discovery,
+    /// backend availability, a plugin, the open, the terminal).
     pub fn exit_code(&self) -> u8 {
         match self {
             AppError::NoFile(_)
+            | AppError::NoDirectory(_)
+            | AppError::NotADirectory(_)
+            | AppError::NoProject(_)
             | AppError::NotAFile(_)
             | AppError::Unreadable(..)
             | AppError::NotHandled { .. } => 2,
             AppError::Plugin(_)
+            | AppError::ProjectDetection(_)
+            | AppError::ProjectOpen(_)
             | AppError::Open(_)
             | AppError::NoTerminal
             | AppError::Terminal(_) => 1,
@@ -181,6 +198,19 @@ fn clean(s: &str) -> String {
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AppError::NoDirectory(p) => {
+                write!(f, "{}: no such directory", clean(&p.to_string_lossy()))
+            }
+            AppError::NotADirectory(p) => {
+                write!(f, "{}: not a directory", clean(&p.to_string_lossy()))
+            }
+            AppError::NoProject(p) => write!(
+                f,
+                "{}: this program does not show a project here",
+                clean(&p.to_string_lossy())
+            ),
+            AppError::ProjectDetection(s) => write!(f, "cannot detect the project: {}", clean(s)),
+            AppError::ProjectOpen(s) => write!(f, "cannot open the project: {}", clean(s)),
             AppError::NoFile(p) => write!(f, "{}: no such file", clean(&p.to_string_lossy())),
             AppError::NotAFile(p) => write!(f, "{}: not a file", clean(&p.to_string_lossy())),
             AppError::Unreadable(p, e) => {
