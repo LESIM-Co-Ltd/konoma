@@ -1984,6 +1984,7 @@ dependencies = [
  "konoma-test-support",
  "konoma-widgets",
  "libc",
+ "notify",
  "ratatui",
  "ratatui-image",
  "rmp-serde",

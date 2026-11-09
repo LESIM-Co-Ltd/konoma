@@ -15,4 +15,6 @@
 pub mod acts;
 pub mod bind;
 pub mod launch;
+#[cfg(feature = "project-host")]
+pub mod project;
 pub mod typing;

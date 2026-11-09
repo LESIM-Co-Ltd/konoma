@@ -4,9 +4,11 @@ use super::App;
 
 impl App {
     pub(super) fn ensure_project_detection(&mut self) {
-        self.tab
-            .projects
-            .ensure(&self.tab.root, &self.cfg.plugin_disabled());
+        crate::plugins::projects::ensure(
+            &mut self.tab.projects,
+            &self.tab.root,
+            &self.cfg.plugin_disabled(),
+        );
     }
 
     pub(crate) fn poll_projects(&mut self) -> bool {
