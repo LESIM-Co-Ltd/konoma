@@ -9,6 +9,33 @@ fn cells(sim: &Sim) -> Value {
     let rect = ratatui::layout::Rect::new(0, 0, 54, 14);
     let buffer = sim.term.backend().buffer();
     assert_eq!(buffer.area, rect);
+    let mut normalized = buffer.clone();
+    if sim.app.project_active() {
+        // FEATURE-PLUGIN-ARCHITECTURE.md §7-5:967: "root の画面の `q` は終了、重ねた画面の `q` は戻る。"
+        // The shared reference projects the root exit capability, as the presentation bridge does.
+        // Both explicit footer rows retain their text, styles and blank remainder checks.
+        use ratatui::{
+            buffer::Buffer,
+            layout::Rect,
+            style::{Modifier, Style},
+        };
+        let row = |text| {
+            let mut row = Buffer::empty(Rect::new(0, 0, 54, 1));
+            row.set_string(0, 0, text, Style::default().add_modifier(Modifier::DIM));
+            row
+        };
+        let host = row("Tab/Shift-Tab:screens  j/k:move  /:filter  q:back …");
+        let standalone = row("Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit …");
+        for x in 0..54 {
+            assert_eq!(
+                &buffer[(x, 13)],
+                &host[(x, 0)],
+                "explicit host project footer cell {x}"
+            );
+            normalized[(x, 13)] = standalone[(x, 0)].clone();
+        }
+    }
+    let buffer = &normalized;
     let mut runs: Vec<Value> = Vec::new();
     let mut count = 0;
     let mut nonempty = 0;

@@ -620,7 +620,11 @@ fn e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key() {
         }
         if screen == "changes" {
             // The existing shared controls and write order stay in place.
-            assert!(tokens[0].starts_with("Tab/Shift-Tab:screens  j/k:move"));
+            assert_eq!(
+                &tokens[..2],
+                ["Tab/Shift-Tab:screens", "j/k:move"],
+                "one token per shared control"
+            );
             let writes: Vec<_> = tokens
                 .iter()
                 .filter(|t| {
@@ -682,7 +686,16 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
                 open_label.get(lang),
                 tr(new.app.lang, Msg::WkActionsTitle).trim()
             );
-            assert_eq!(crate::ui::status::hint_tokens(&new.app)[0], expected);
+            let expected: Vec<_> = expected.split("  ").collect();
+            assert_eq!(
+                crate::ui::status::hint_tokens(&new.app)
+                    .iter()
+                    .take(expected.len())
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                expected,
+                "shared controls retain their text and order as individual tokens"
+            );
             let rows: Vec<_> = crate::ops::help::sections(&new.app)
                 .into_iter()
                 .flat_map(|s| s.rows)
@@ -725,7 +738,10 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
             tr(new.app.lang, Msg::HintHelp),
             tr(new.app.lang, Msg::CopyHint)
         );
-        assert_eq!(crate::ui::status::hint_tokens(&new.app), [expected]);
+        assert_eq!(
+            crate::ui::status::hint_tokens(&new.app),
+            expected.split("  ").collect::<Vec<_>>()
+        );
     }
 }
 

@@ -109,8 +109,8 @@ fn build(
     )
 }
 
-// Literal rows were recorded from the host before extraction (status's dim footer, including
-// the blank remainder). The expected buffer never calls the presentation or its fitting adapter.
+// Literal rows assert the host's dim footer, including the blank remainder. The expected
+// buffer never calls the presentation or its fitting adapter.
 #[track_caller]
 fn cells(presentation: &ProjectPresentation, width: u16, reference: &str) {
     let tokens: Vec<_> = presentation
@@ -150,6 +150,43 @@ fn cells(presentation: &ProjectPresentation, width: u16, reference: &str) {
     assert_eq!(compared, usize::from(width) * 2);
     if !reference.is_empty() {
         assert!(actual.content.iter().any(|c| c.symbol() != " "));
+    }
+}
+
+#[test]
+fn vcs_shared_footer_controls_fit_individually_at_48_and_90_columns() {
+    use crate::project::{ProjectDecl, ProjectScreen};
+    let declaration = ProjectDecl::new()
+        .version_control()
+        .screen(ProjectScreen::new("changes", "Changes").row_kind("file"));
+    let screen = &declaration.screens[0];
+    for ja in [false, true] {
+        let facts = ProjectPresentationFacts {
+            content: Some(ProjectPresentationContent::List),
+            filter: screen.filter,
+            marks: screen.marks,
+            open: Some(open(if ja { "差分" } else { "diff" })),
+            row_target: true,
+            ..Default::default()
+        };
+        let p = build(&facts, &group_bindings(false, false, false), ja, true);
+        let tokens: Vec<_> = p.footer_tokens().iter().map(|t| t.text.clone()).collect();
+        let first = p.controls()[0].render();
+        for width in [90, 48] {
+            let fitted = konoma_widgets::help_panel::fit_tokens(&tokens, width);
+            assert!(
+                !fitted.is_empty(),
+                "narrow VCS footer must keep its first control at {width} columns"
+            );
+            assert!(
+                fitted.starts_with(&first),
+                "first VCS control at {width}: {fitted}"
+            );
+            assert!(
+                fitted.ends_with(" …"),
+                "remaining VCS controls at {width}: {fitted}"
+            );
+        }
     }
 }
 
@@ -197,16 +234,40 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
             cells(&p, 160, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input …");
             cells(&p, 240, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input  C-F6:retry-confirmed  C-F2:row-prompt  C-F3:conditional  C-F4:conditional-input …");
         }
-        cells(&p, 28, "");
-        cells(&p, 80, "");
-        assert_eq!(p.footer_tokens()[0].ops, [PresentationOp::ProjectAction(6)]);
+        cells(
+            &p,
+            28,
+            if ja {
+                "Tab/Shift-Tab:画面 …"
+            } else {
+                "Tab/Shift-Tab:screens …"
+            },
+        );
+        cells(
+            &p,
+            80,
+            if ja {
+                "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ …"
+            } else {
+                "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help …"
+            },
+        );
+        let open = p
+            .footer_tokens()
+            .iter()
+            .find(|token| token.keys.contains(&KeyPress::key(KeyCode::Enter)))
+            .unwrap();
+        assert_eq!(open.ops, [PresentationOp::ProjectAction(6)]);
         assert_eq!(
-            p.footer_tokens()[0]
-                .keys
+            open.keys
                 .iter()
                 .filter(|k| k.code == KeyCode::Enter)
                 .count(),
             1
+        );
+        assert_eq!(
+            p.footer_priority(),
+            &[6, 0, 1, 2, 3, 4, 5, 7].map(PresentationOp::ProjectAction)
         );
     }
     let p = build(
@@ -333,16 +394,16 @@ fn project_footer_uses_resolved_keys_and_enabled_members() {
             p.additional_text_help().unwrap(),
             [(if less { "d" } else { "Ctrl-d" }.into(), "half page".into())]
         );
-        for (keys, expected) in [
-            (vec![KeyPress::ch('S')], "j/k:scroll  h/l:hscroll  S:unified/split/auto  g/G:ends  Tab/Shift-Tab:Cycle project screens  q/Esc:Pop this screen or return to the previous view  ?:help"),
-            (vec![], "j/k:scroll  h/l:hscroll  g/G:ends  Tab/Shift-Tab:Cycle project screens  q/Esc:Pop this screen or return to the previous view  ?:help"),
+        for (keys, expected, narrow) in [
+            (vec![KeyPress::ch('S')], "j/k:scroll  h/l:hscroll  S:unified/split/auto  g/G:ends  Tab/Shift-Tab:Cycle project screens  q/Esc:Pop this screen or return to the previous view  ?:help", "j/k:scroll  h/l:hscroll  S:unified/split/auto  g/G:ends …"),
+            (vec![], "j/k:scroll  h/l:hscroll  g/G:ends  Tab/Shift-Tab:Cycle project screens  q/Esc:Pop this screen or return to the previous view  ?:help", "j/k:scroll  h/l:hscroll  g/G:ends  Tab/Shift-Tab:Cycle project screens …"),
         ] {
             let mut diff = facts.clone();
             diff.content = Some(ProjectPresentationContent::Diff);
             diff.motions.scroll[0] = KeyPress::ch('j');
             diff.motions.diff_layout = keys;
             cells(&build(&diff, &[], false, true), 160, expected);
-            cells(&build(&diff, &[], false, true), 80, "");
+            cells(&build(&diff, &[], false, true), 80, narrow);
         }
     }
 }

@@ -657,8 +657,10 @@ fn prompts_run_after_answers_while_guarded_acts_and_unwired_keys_stay_inert() {
         let header = "                                    Project   path:rel";
         let footer = if mode == 2 {
             "this plugin is set to read-only ([plugins.<id>] read_only = true)"
+        } else if matches!(mode, 1 | 3) {
+            "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter …"
         } else {
-            ""
+            "j/k:scroll  h/l:hscroll  g/G:ends …"
         };
         for (y, text) in [(0, header), (13, footer)] {
             for (x, symbol) in text
@@ -679,9 +681,9 @@ fn prompts_run_after_answers_while_guarded_acts_and_unwired_keys_stay_inert() {
                 assert_eq!(cell.bg, if chip { Color::Cyan } else { Color::Reset });
                 assert_eq!(
                     cell.modifier,
-                    if chip || y == 13 && !footer.is_empty() {
+                    if chip || y == 13 && mode == 2 {
                         Modifier::BOLD
-                    } else if y == 0 && x >= 44 {
+                    } else if y == 0 && x >= 44 || y == 13 && x < footer.chars().count() {
                         Modifier::DIM
                     } else {
                         Modifier::empty()

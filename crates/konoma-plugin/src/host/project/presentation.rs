@@ -378,7 +378,6 @@ impl ProjectPresentation {
                     },
                 );
             }
-            let shared = entries.len();
             for hint in hints {
                 let keys = hint.keys(enabled);
                 if keys.is_empty() {
@@ -396,22 +395,13 @@ impl ProjectPresentation {
                     },
                 );
             }
-            let mut entries = entries.into_iter();
-            let mut controls = dynamic(String::new());
-            for entry in entries.by_ref().take(shared) {
-                if !controls.text.is_empty() {
-                    controls.text.push_str("  ");
-                }
-                controls.text.push_str(&entry.control.render());
-                controls.keys.extend(entry.control.keys);
-                controls.ops.extend(entry.ops);
-            }
-            std::iter::once(controls)
-                .chain(entries.map(|entry| PresentationToken {
+            entries
+                .into_iter()
+                .map(|entry| PresentationToken {
                     text: entry.control.render(),
                     keys: entry.control.keys,
                     ops: entry.ops,
-                }))
+                })
                 .collect()
         };
         if !facts.picker && facts.graph_jj.is_none() {

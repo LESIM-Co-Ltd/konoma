@@ -72,6 +72,15 @@ fn unsupported(prepared: &mut PreparedProjects) {
     );
 }
 
+fn write_clipboard(prepared: &PreparedProjects, text: &str) -> Result<(), String> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(sink) = &prepared.test_clipboard {
+        return sink.write(text);
+    }
+    let _ = prepared;
+    konoma_host_core::clipboard::set_text(text).map_err(|error| error.to_string())
+}
+
 impl ProjectLoopState {
     pub(super) fn apply(
         &mut self,
@@ -136,11 +145,20 @@ impl ProjectLoopState {
         for command in update.commands {
             match command {
                 ProjectCommand::EnsureView => self.ensure(info),
-                ProjectCommand::LayoutChanged(layout) => prepared.settings.diff_layout = layout,
+                ProjectCommand::LayoutChanged(layout) => {
+                    use konoma_host_core::{help_msg::CoreMsg, project::DiffLayout};
+                    prepared.settings.diff_layout = layout;
+                    let label = match layout {
+                        DiffLayout::Unified => CoreMsg::DiffUnified,
+                        DiffLayout::Split => CoreMsg::DiffSideBySide,
+                        DiffLayout::Auto => CoreMsg::DiffAuto,
+                    };
+                    prepared.notice = Some(label.tr(prepared.keys.lang()).into());
+                }
                 ProjectCommand::Dispatch(id) => self.dispatch_act(prepared, info, id),
                 ProjectCommand::Label(label) => prepared.notice = Some(label),
                 ProjectCommand::Flash(message) => prepared.notice = Some(message.get(prepared.lang).into()),
-                ProjectCommand::Copy(text) => prepared.notice = Some(match konoma_host_core::clipboard::set_text(&text) {
+                ProjectCommand::Copy(text) => prepared.notice = Some(match write_clipboard(prepared, &text) {
                     Ok(()) => konoma_host_core::copy::copied_preview_notice(prepared.keys.lang(), &text),
                     Err(error) => konoma_host_core::copy::copy_failed_notice(prepared.keys.lang(), &error),
                 }),

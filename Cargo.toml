@@ -266,7 +266,7 @@ libc.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
-konoma-vcs = { path = "crates/konoma-vcs", default-features = false }
+konoma-vcs = { path = "crates/konoma-vcs", default-features = false, features = ["app"] }
 # The emoji shortcode tests read the lookup table the renderer uses (konoma-widgets owns the dependency).
 emojis.workspace = true
 # Test-only: builds a password-protected container in the Office tests (`e2e_tests`).

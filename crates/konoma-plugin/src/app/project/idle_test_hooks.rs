@@ -3,6 +3,178 @@ use crate::app::{AppError, EventSource, Next, Pictures};
 use ratatui::{backend::Backend, buffer::Buffer, Terminal};
 
 use super::{run_project_with, PreparedProjects, ProjectLoopCx};
+use crate::host::project::{
+    ProjectContent, ProjectDialog, ProjectPrompt, ProjectScreenState, PromptInvocation,
+};
+use crate::project::ProjectRow;
+use std::sync::{Arc, Mutex};
+
+/// Owned, read-only facts at a fence. No host surface or action types cross this seam.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectStateSnapshot {
+    pub backend: Option<String>,
+    pub stack: Vec<String>,
+    pub stack_selection: Vec<Option<String>>,
+    pub selected: Option<ProjectRow>,
+    pub cursor: usize,
+    pub scroll: u16,
+    pub hscroll: u16,
+    pub query: String,
+    pub query_cursor: usize,
+    pub filtering: bool,
+    pub marked: Vec<ProjectRow>,
+    pub rows: Vec<(ProjectRow, bool)>,
+    pub visible: Vec<ProjectRow>,
+    pub prompt: Option<ProjectPromptSnapshot>,
+    pub menu: Option<String>,
+    pub notice: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectPromptSnapshot {
+    pub action: String,
+    pub stage: usize,
+    pub buffer: String,
+    pub cursor: usize,
+    pub selected: usize,
+    pub prompts: Vec<String>,
+}
+
+/// Read the same model from either host, without changing selection or normalizing identities.
+pub fn observe_project_state_for_test<I: PromptInvocation>(
+    nav: Option<&ProjectScreenState<I>>,
+    content: Option<&ProjectContent>,
+    dialog: Option<&ProjectDialog<I>>,
+    menu: Option<&str>,
+    notice: Option<String>,
+) -> ProjectStateSnapshot {
+    let mut state = ProjectStateSnapshot {
+        menu: menu.map(str::to_owned),
+        notice,
+        ..Default::default()
+    };
+    if let Some(nav) = nav {
+        state.backend = Some(nav.project.plugin.clone());
+        state.stack = nav.stack.iter().map(|f| f.key.screen.clone()).collect();
+        state.stack_selection = nav.stack.iter().map(|f| f.key.selection.clone()).collect();
+        let context = nav.act_context(content);
+        state.selected = context.selected;
+        state.marked = context.marked;
+        if let Some(frame) = nav.frame() {
+            state.cursor = frame.cursor;
+            state.scroll = frame.scroll;
+            state.hscroll = frame.hscroll;
+            state.query = frame.query.clone();
+            // Project filters currently append/pop characters; their insertion point is the end.
+            // Both hosts derive this from the query; the cursor is not observed independently.
+            state.query_cursor = frame.query.chars().count();
+            state.filtering = frame.filtering;
+        }
+    }
+    if let Some(ProjectContent::List(list)) = content {
+        state.rows = list
+            .rows
+            .iter()
+            .map(|r| (ProjectRow::from(r), r.selectable))
+            .collect();
+        state.visible = list
+            .visible_rows(&state.query)
+            .iter()
+            .map(|i| ProjectRow::from(&list.rows[*i]))
+            .collect();
+    }
+    state.prompt = dialog.map(|dialog| match dialog {
+        ProjectDialog::Projects { projects, selected } => ProjectPromptSnapshot {
+            action: "projects".into(),
+            stage: 0,
+            buffer: String::new(),
+            cursor: 0,
+            selected: *selected,
+            prompts: projects
+                .iter()
+                .map(|p| format!("{}:{}", p.plugin, p.root.display()))
+                .collect(),
+        },
+        ProjectDialog::Act {
+            invocation,
+            prompts,
+            stage,
+            buffer,
+            cursor,
+            selected,
+        } => ProjectPromptSnapshot {
+            action: invocation.prompt_invocation().action.action.clone(),
+            stage: *stage,
+            buffer: buffer.clone(),
+            cursor: *cursor,
+            selected: *selected,
+            prompts: prompts
+                .iter()
+                .map(|p| match p {
+                    ProjectPrompt::Confirmation(p) => format!("{p:?}"),
+                    ProjectPrompt::Text(p) => format!("{p:?}"),
+                    ProjectPrompt::Choice(p) => format!("{p:?}"),
+                })
+                .collect(),
+        },
+    });
+    state
+}
+
+#[derive(Default)]
+struct ClipboardState {
+    fail: bool,
+    writes: Vec<String>,
+}
+
+/// A sink and failure switch owned by exactly one PreparedProjects, safe beside parallel tests.
+#[derive(Clone, Default)]
+pub struct TestProjectClipboard(Arc<Mutex<ClipboardState>>);
+impl TestProjectClipboard {
+    pub fn fail(&self, fail: bool) {
+        self.0.lock().unwrap().fail = fail;
+    }
+    pub fn writes(&self) -> Vec<String> {
+        self.0.lock().unwrap().writes.clone()
+    }
+    pub(super) fn write(&self, text: &str) -> Result<(), String> {
+        let mut sink = self.0.lock().unwrap();
+        if sink.fail {
+            return Err("test clipboard failure".into());
+        }
+        sink.writes.push(text.into());
+        Ok(())
+    }
+}
+impl PreparedProjects {
+    pub fn clipboard_for_test(&mut self) -> TestProjectClipboard {
+        self.test_clipboard
+            .get_or_insert_with(Default::default)
+            .clone()
+    }
+}
+
+/// U8a's uninterrupted driver with additional read-only state; its original observer is unchanged.
+pub fn run_project_fenced_state_for_test<B: Backend>(
+    terminal: &mut Terminal<B>,
+    prepared: &mut PreparedProjects,
+    cx: &ProjectLoopCx,
+    pictures: Option<Pictures>,
+    mut observe: impl FnMut(ProjectIdleSnapshot, Buffer, ProjectStateSnapshot) -> Next,
+) -> Result<(), AppError> {
+    let slot = Arc::new(Mutex::new(None));
+    prepared.test_observed = Some(slot.clone());
+    let result = run_project_fenced_for_test(terminal, prepared, cx, pictures, |idle, frame| {
+        let state = slot
+            .lock()
+            .unwrap()
+            .take()
+            .expect("state published at the idle fence");
+        observe(idle, frame, state)
+    });
+    prepared.test_observed = None;
+    result
+}
 
 /// Each bit describes work owed by the current standalone surface, not worker lifetime.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -12,7 +12,7 @@ mod graph;
 #[path = "vcs_worktrees.rs"]
 mod worktrees;
 
-fn commit(root: &std::path::Path, i: usize) {
+pub(super) fn commit(root: &std::path::Path, i: usize) {
     let repo = git2::Repository::open(root).unwrap();
     let sig = git2::Signature::new(
         "作者 Author",
@@ -39,7 +39,7 @@ fn commit(root: &std::path::Path, i: usize) {
     .unwrap();
 }
 
-fn repo(count: usize) -> TmpDir {
+pub(super) fn repo(count: usize) -> TmpDir {
     let dir = crate::test_support::unique_tmp("vcs_log_parity");
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -98,7 +98,7 @@ fn same(old: &mut Sim, new: &mut Sim, width: u16, height: u16) {
     );
 }
 
-fn detail_repo() -> TmpDir {
+pub(super) fn detail_repo() -> TmpDir {
     let dir = repo(1);
     for (path, text) in [
         ("main.rs", "let value = 123;"),
@@ -368,20 +368,7 @@ fn e2e_vcs_copy_clipboard_failure_matches_old_hub_without_writing() {
 #[test]
 fn e2e_vcs_copy_empty_subject_is_written_on_log_and_detail() {
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
-    let dir = repo(1);
-    let repository = git2::Repository::open(&dir).unwrap();
-    let parent = repository.head().unwrap().peel_to_commit().unwrap();
-    let signature = parent.author();
-    repository
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "",
-            &parent.tree().unwrap(),
-            &[&parent],
-        )
-        .unwrap();
+    let dir = empty_subject_repo();
     let (mut old, mut new) = pair(&dir, "git", "en", "right", 100, 12);
     for detail in [false, true] {
         if detail {
@@ -403,6 +390,48 @@ fn e2e_vcs_copy_empty_subject_is_written_on_log_and_detail() {
     }
 }
 
+pub(super) fn empty_subject_repo() -> TmpDir {
+    let dir = repo(1);
+    empty_subject_commit(&dir);
+    dir
+}
+
+pub(super) fn empty_subject_commit(dir: &std::path::Path) {
+    let repository = git2::Repository::open(dir).unwrap();
+    let parent = repository.head().unwrap().peel_to_commit().unwrap();
+    let signature = parent.author();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "",
+            &parent.tree().unwrap(),
+            &[&parent],
+        )
+        .unwrap();
+}
+
+pub(super) fn remove_head_object(dir: &std::path::Path) {
+    let id = git2::Repository::open(dir)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    remove_commit_object(dir, &id);
+}
+
+pub(super) fn remove_commit_object(dir: &std::path::Path, id: &str) {
+    let gitdir = if dir.join(".git").exists() {
+        dir.join(".git")
+    } else {
+        dir.join(".jj/repo/store/git")
+    };
+    std::fs::remove_file(gitdir.join("objects").join(&id[..2]).join(&id[2..])).unwrap();
+}
+
 #[test]
 fn e2e_vcs_copy_detail_uses_the_metadata_it_shows_and_log_missing_commit_flashes() {
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
@@ -414,14 +443,7 @@ fn e2e_vcs_copy_detail_uses_the_metadata_it_shows_and_log_missing_commit_flashes
             new.enter();
             drain(&mut new);
         }
-        let id = git2::Repository::open(&dir)
-            .unwrap()
-            .head()
-            .unwrap()
-            .target()
-            .unwrap()
-            .to_string();
-        std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
+        remove_head_object(&dir);
         clear_test_clipboard();
         old.key('y');
         old.key('m');
@@ -1003,7 +1025,7 @@ fn e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st() {
     same(&mut old, &mut new, 100, 8);
 }
 
-fn jj(root: &std::path::Path, args: &[&str]) {
+pub(super) fn jj(root: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("jj")
         .current_dir(root)
         .env("HOME", root)
@@ -1042,34 +1064,39 @@ impl Drop for Preference {
     }
 }
 
+pub(super) fn jj_repo(colocated: bool) -> TmpDir {
+    let dir = if colocated {
+        repo(5)
+    } else {
+        let dir = crate::test_support::unique_tmp("vcs_log_jj");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.into_canonical().unwrap()
+    };
+    jj(
+        &dir,
+        &[
+            "git",
+            "init",
+            if colocated {
+                "--colocate"
+            } else {
+                "--no-colocate"
+            },
+            ".",
+        ],
+    );
+    jj(&dir, &["describe", "-m", "jj 専用 Summary"]);
+    jj(&dir, &["new", "-m", "次の日本語 Summary"]);
+    dir
+}
+
 #[test]
 fn e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend() {
     if !crate::vcs::jj::available() {
         return;
     }
     for colocated in [false, true] {
-        let dir = if colocated {
-            repo(5)
-        } else {
-            let dir = crate::test_support::unique_tmp("vcs_log_jj");
-            std::fs::create_dir_all(&dir).unwrap();
-            dir.into_canonical().unwrap()
-        };
-        jj(
-            &dir,
-            &[
-                "git",
-                "init",
-                if colocated {
-                    "--colocate"
-                } else {
-                    "--no-colocate"
-                },
-                ".",
-            ],
-        );
-        jj(&dir, &["describe", "-m", "jj 専用 Summary"]);
-        jj(&dir, &["new", "-m", "次の日本語 Summary"]);
+        let dir = jj_repo(colocated);
         let commits = konoma_vcs_core::vcs::jj::log(&dir, 200);
         assert!(commits.iter().any(|c| c.summary == "jj 専用 Summary"));
         assert!(commits

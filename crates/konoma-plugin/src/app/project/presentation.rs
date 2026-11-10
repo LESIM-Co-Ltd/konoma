@@ -185,7 +185,20 @@ impl ProjectLoopState {
             ends: msg(CoreMsg::HintEnds),
             diff_layout: msg(CoreMsg::FtDiffLayout),
             cycle: t("Cycle project screens", "プロジェクトの画面を切り替える"),
-            pop: back,
+            // Host rule: src/app/project_screens.rs supplies Msg::ProjectBack unconditionally.
+            // §7-5:967 says "root の画面の `q` は終了、重ねた画面の `q` は戻る。"
+            // It does not specify a VCS-only wording rule. U8b fix-2 item 3 requires retaining
+            // this compatibility restriction when unconditional wording breaks the existing
+            // project_open_aliases_and_root_pushed_wording_match_actions expectation.
+            // Non-VCS pushed screens therefore retain "back" / "戻る", unlike the host below.
+            pop: if declaration.version_control && facts.pushed {
+                t(
+                    "Pop this screen or return to the previous view",
+                    "画面を一つ戻るか元の表示に戻る",
+                )
+            } else {
+                back
+            },
             apply: t("apply", "適用"),
             cancel: t("cancel", "取消"),
             nav: t("nav", "移動"),

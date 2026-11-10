@@ -11,9 +11,9 @@
         "                                        ",
         "                                        ",
         "                                        ",
-        "                                        "
+        "Tab/Shift-Tab:screens  j/k:move …       "
       ],
-      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[186,["Reset","Reset",0]],[33,["Reset","Reset",2]],[7,["Reset","Reset",0]]]
     },
     {
       "rows": [
@@ -63,9 +63,9 @@
         "                                        ",
         "                                        ",
         "                                        ",
-        "                                        "
+        "Tab/Shift-Tab:screens  j/k:move …       "
       ],
-      "styles": [[14,["Reset","Reset",0]],[9,["Black","Cyan",1]],[1,["Reset","Reset",0]],[6,["White","Blue",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+      "styles": [[14,["Reset","Reset",0]],[9,["Black","Cyan",1]],[1,["Reset","Reset",0]],[6,["White","Blue",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[186,["Reset","Reset",0]],[33,["Reset","Reset",2]],[7,["Reset","Reset",0]]]
     },
     {
       "rows": [
@@ -76,9 +76,9 @@
         "                                        ",
         "                                        ",
         "                                        ",
-        "                                        "
+        "Tab/Shift-Tab:screens  j/k:move …       "
       ],
-      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[186,["Reset","Reset",0]],[33,["Reset","Reset",2]],[7,["Reset","Reset",0]]]
     }
   ]
 }

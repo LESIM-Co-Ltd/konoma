@@ -144,7 +144,7 @@ fn e2e_vcs_changes_linked_worktree_external_index_event_refreshes_the_session() 
     assert!(new.app.is_git_diff_preview());
 }
 
-fn git_repo(name: &str, changed: bool) -> crate::test_support::TmpDir {
+pub(super) fn git_repo(name: &str, changed: bool) -> crate::test_support::TmpDir {
     use crate::test_support::{init_git_repo, run_git};
     let dir = sandbox(name);
     init_git_repo(&dir);

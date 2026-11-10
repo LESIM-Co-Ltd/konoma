@@ -21,6 +21,28 @@ impl FrameFence {
 }
 
 impl ProjectLoopState {
+    pub(super) fn publish_state_for_test(
+        &self,
+        prepared: &PreparedProjects,
+        info: &ProjectContextInfo<StandaloneSurface>,
+    ) {
+        if let Some(slot) = &prepared.test_observed {
+            let content = self.content(info);
+            let menu = self.menu.map(|m| match m {
+                konoma_host_core::keymap::CoreMenu::Copy => "copy",
+                konoma_host_core::keymap::CoreMenu::Actions => "actions",
+                _ => "other",
+            });
+            *slot.lock().unwrap() = Some(super::super::observe_project_state_for_test(
+                self.screen.as_ref(),
+                content.as_deref(),
+                self.dialog.as_ref(),
+                menu,
+                prepared.notice.clone(),
+            ));
+        }
+    }
+
     pub(super) fn idle_snapshot(
         &self,
         prepared: &PreparedProjects,

@@ -11,7 +11,9 @@ mod representation_test_hooks;
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use idle_test_hooks::{
-    read_snapshot_for_test, run_project_fenced_for_test, ProjectIdleSnapshot,
+    observe_project_state_for_test, read_snapshot_for_test, run_project_fenced_for_test,
+    run_project_fenced_state_for_test, ProjectIdleSnapshot, ProjectPromptSnapshot,
+    ProjectStateSnapshot, TestProjectClipboard,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -142,6 +144,10 @@ pub trait ProjectServices: Send + Sync + 'static {
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
 /// Preparation does not take the terminal or start the input loop.
 pub struct PreparedProjects {
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_observed: Option<Arc<std::sync::Mutex<Option<ProjectStateSnapshot>>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_clipboard: Option<TestProjectClipboard>,
     file_preview: Option<preview::FilePreviewState>,
     preview_open: Option<preview::PendingPreview>,
     #[cfg(test)]

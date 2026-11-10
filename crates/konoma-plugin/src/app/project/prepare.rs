@@ -214,6 +214,10 @@ fn prepare_at(
         _ => None,
     };
     Ok(PreparedProjects {
+        #[cfg(any(test, feature = "test-hooks"))]
+        test_observed: None,
+        #[cfg(any(test, feature = "test-hooks"))]
+        test_clipboard: None,
         file_preview: None,
         preview_open: None,
         #[cfg(test)]

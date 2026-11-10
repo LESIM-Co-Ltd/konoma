@@ -648,6 +648,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     redraw = true;
                     continue;
                 }
+                state.publish_state_for_test(prepared, &info);
                 Some(events.project_idle(snapshot, crate::app::draw::test_frame()))
             } else {
                 None
