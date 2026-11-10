@@ -1572,9 +1572,12 @@ fn media_load_is_async_then_applied() {
     assert!(!app.is_image_preview(), "まだ読み込めていない");
 
     // Wait for the other thread's result and apply it → the image is in place and loading clears.
-    let result = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("worker should return");
+    let result = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(10),
+        "SVG initial media load",
+    );
     assert!(app.apply_media(result), "結果を反映");
     assert!(!app.is_media_loading());
     assert!(app.is_image_preview(), "SVG ラスタが image_src に載る");
@@ -1697,9 +1700,12 @@ fn pdf_next_page_renders_off_thread() {
 
     // Load page 1 and apply it.
     app.start_media_load(&kind, &p);
-    let r1 = rx
-        .recv_timeout(std::time::Duration::from_secs(15))
-        .expect("page1 worker should return");
+    let r1 = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(15),
+        "PDF page 1",
+    );
     assert!(app.apply_media(r1));
     assert!(app.is_image_preview(), "page1 が image_src に載る");
 
@@ -1707,9 +1713,12 @@ fn pdf_next_page_renders_off_thread() {
     app.next_page();
     assert_eq!(app.tab.page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
-    let r2 = rx
-        .recv_timeout(std::time::Duration::from_secs(15))
-        .expect("page2 worker should return");
+    let r2 = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(15),
+        "PDF page 2",
+    );
     assert!(app.apply_media(r2));
     assert!(app.is_image_preview(), "page2 が image_src に載る");
 }
@@ -7934,18 +7943,14 @@ fn full_slot_widths(app: &App, key: &PathBuf) -> std::collections::BTreeSet<u16>
 /// and this waits however long a loaded machine needs, so a slow test run can never be mistaken for
 /// "the renderer stopped asking" (which is the very property these tests assert).
 fn apply_one_encode(app: &mut App, rx: &std::sync::mpsc::Receiver<MdEncodeResult>) -> bool {
-    let wait = if app.md_encode_in_flight() {
-        std::time::Duration::from_secs(10)
-    } else {
-        std::time::Duration::from_millis(50)
-    };
-    match rx.recv_timeout(wait) {
-        Ok(res) => {
-            app.apply_md_encode(res);
-            true
-        }
-        Err(_) => false,
+    if !app.md_encode_in_flight() {
+        return false;
     }
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("inline encode convergence: the outstanding encode must answer");
+    app.apply_md_encode(res);
+    true
 }
 
 /// The same picture at two cell sizes **one column apart** is still two pictures. Nothing about the

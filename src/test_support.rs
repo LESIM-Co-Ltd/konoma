@@ -6,6 +6,29 @@
 //! `main.rs` (as `watch_test_unique_tmp`), and `e2e_tests.rs` (inlined into `sandbox()`).
 
 use std::cell::{Cell, RefCell};
+
+/// A media job's final answer, applying any layout announcements that precede it.
+#[track_caller]
+pub(crate) fn recv_media_final(
+    app: &mut crate::app::App,
+    rx: &std::sync::mpsc::Receiver<crate::app::MediaResult>,
+    timeout: std::time::Duration,
+    step: &str,
+) -> crate::app::MediaResult {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| panic!("{step}: media job did not finish"));
+        let result = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|e| panic!("{step}: media worker did not answer: {e:?}"));
+        if !result.is_layout_only() {
+            return result;
+        }
+        app.apply_media(result);
+    }
+}
 pub(crate) mod command {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),

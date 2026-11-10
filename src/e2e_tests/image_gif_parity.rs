@@ -641,11 +641,6 @@ fn host_turn_shot(root: &std::path::Path, plugin: TurnPlugin) -> Shot {
 fn host_turn_sim(root: &std::path::Path, plugin: TurnPlugin) -> Sim {
     let (file, first_fails, before, then) =
         (plugin.file, plugin.first_fails, plugin.before, plugin.then);
-    let end_on = plugin.end_on;
-    // The page the host stands on (of two, or of one without pages): a page key starts a job only
-    // when it turns the page.
-    let pages: usize = if plugin.paged { 2 } else { 1 };
-    let mut at: usize = if first_fails { 0 } else { 1.min(pages - 1) };
     let _media = super::plugin_act_parity::MediaPluginGuard::set(Arc::new(plugin));
     let mut cfg = cfg_en();
     cfg.ui.wrap = TURN_WRAP.with(|w| w.get());
@@ -656,27 +651,7 @@ fn host_turn_sim(root: &std::path::Path, plugin: TurnPlugin) -> Sim {
     s.app.attach_image_backend(Picker::halfblocks(), req_tx);
     s.select(file);
     s.enter();
-    if first_fails {
-        // The failure of the very first page may be handed over on the spot (no message left in
-        // the channel to wait for), so `drain_media` cannot be used. The state says whether
-        // anything is still to come: the preview's job has not landed while it is loading
-        // (a layout sent ahead keeps the mark). Wait for messages only while that holds.
-        let rx = s.media_rx.take().expect("with_media");
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while s.app.is_media_loading() {
-            let left = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .expect("the first page's failure lands within 20 s");
-            let res = rx
-                .recv_timeout(left)
-                .expect("the first page's failure lands within 20 s");
-            s.app.apply_media(res);
-        }
-        s.media_rx = Some(rx);
-        s.draw();
-    } else {
-        s.drain_media();
-    }
+    super::image_parity::await_media(&mut s, file, "<open>");
     let settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
         // The key/result has drawn already; only completed resizes require another draw.
         while let Ok(req) = req_rx.try_recv() {
@@ -693,27 +668,12 @@ fn host_turn_sim(root: &std::path::Path, plugin: TurnPlugin) -> Sim {
             super::image_parity::shot(&s.term).rows.join("\n")
         );
         s.press(KeyCode::Char('J'), KeyModifiers::NONE);
-        s.drain_media();
+        super::image_parity::await_media(&mut s, file, "J");
         settle(&mut s, &mut req_rx);
     }
     for (code, mods) in presses(then) {
-        // Scrolling a failed page starts no job: there is nothing to wait for.
         s.press(code, mods);
-        let turned = match code {
-            KeyCode::Char('J') if at + 1 < pages => {
-                at += 1;
-                true
-            }
-            KeyCode::Char('K') if at > 0 => {
-                at -= 1;
-                true
-            }
-            _ => false,
-        };
-        if end_on.is_some() || turned {
-            // A page turn starts one.
-            s.drain_media();
-        }
+        super::image_parity::await_media(&mut s, file, &format!("{code:?} {mods:?}"));
         settle(&mut s, &mut req_rx);
     }
     s

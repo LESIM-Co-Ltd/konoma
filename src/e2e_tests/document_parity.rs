@@ -797,12 +797,64 @@ fn cells_of(buf: &Buffer) -> Cells {
     );
     let mut cells = Vec::new();
     for y in t + 1..b {
+        let mut kitty_end = 0;
         for x in 1..buf.area.width - 1 {
+            if x < kitty_end {
+                // Kitty painted these cells with the row carried by its leading cell. Ratatui
+                // skips them; TestBackend retains whatever text/background preceded the image.
+                cells.push(("kitty-covered".into(), RColor::Reset, RColor::Reset));
+                continue;
+            }
             let c = &buf[(x, y as u16)];
-            cells.push((kitty_normalized(c.symbol()), c.fg, c.bg));
+            let n = c.symbol().chars().filter(|c| *c == '\u{10eeee}').count();
+            if n > 0 {
+                kitty_end = x.saturating_add(n as u16);
+                cells.push((kitty_normalized(c.symbol()), c.fg, c.bg));
+            } else {
+                cells.push((c.symbol().to_string(), c.fg, c.bg));
+            }
         }
     }
     Cells { rows, cells }
+}
+
+#[test]
+fn kitty_cells_compare_the_painted_row_and_keep_checks_outside_it() {
+    let mut before = Buffer::empty(ratatui::layout::Rect::new(0, 0, 8, 4));
+    before[(0, 0)].set_symbol("┌");
+    before[(0, 3)].set_symbol("└");
+    before[(1, 1)].set_symbol(&"\u{10eeee}".repeat(4));
+    let mut after = before.clone();
+    for x in 2..5 {
+        after[(x, 1)].set_bg(RColor::Rgb(43, 48, 59));
+    }
+    assert!(
+        cells_of(&before) == cells_of(&after),
+        "the skipped cells may retain old backgrounds"
+    );
+    after[(1, 1)].set_bg(RColor::Blue);
+    assert!(
+        cells_of(&before) != cells_of(&after),
+        "the first placeholder cell's background still differs"
+    );
+    after[(1, 1)].set_bg(RColor::Reset);
+    after[(1, 1)].set_fg(RColor::Red);
+    assert!(
+        cells_of(&before) != cells_of(&after),
+        "the first placeholder cell's foreground still differs"
+    );
+    after[(1, 1)].set_fg(RColor::Reset);
+    after[(6, 1)].set_bg(RColor::Blue);
+    assert!(
+        cells_of(&before) != cells_of(&after),
+        "backgrounds outside the image still differ"
+    );
+    after[(6, 1)].set_bg(RColor::Reset);
+    after[(1, 1)].set_symbol(&"\u{10eeee}".repeat(3));
+    assert!(
+        cells_of(&before) != cells_of(&after),
+        "a different image width still differs"
+    );
 }
 
 /// The host showing `file`, with its picture workers pumped by hand: the screen before any result
@@ -876,31 +928,7 @@ fn host_pictures_on(
     if let Some(g) = fetch_gate {
         g.open();
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        s.draw();
-        let mut any = false;
-        while let Ok(r) = s.md_img_rx.as_ref().expect("media").try_recv() {
-            s.app.apply_md_image(r);
-            any = true;
-        }
-        while let Ok(r) = s.md_remote_rx.as_ref().expect("media").try_recv() {
-            s.app.apply_remote_fetch(r);
-            any = true;
-        }
-        while let Ok(r) = s.md_enc_rx.as_ref().expect("media").try_recv() {
-            s.app.apply_md_encode(r);
-            any = true;
-        }
-        if any {
-            continue;
-        }
-        if !(s.app.md_images_loading() || s.app.md_encode_in_flight()) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "{file}: the host never settled");
-        std::thread::yield_now();
-    }
+    s.settle_inline_images(&format!("document parity: {file}"), Duration::from_secs(30));
     s.draw();
     (before, cells_of(s.term.backend().buffer()))
 }

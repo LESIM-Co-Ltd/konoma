@@ -286,6 +286,7 @@ impl Sim {
     /// came back) is stale by design and is skipped, exactly as the run loop ignores it.
     #[track_caller]
     fn drain_md_images(&mut self) {
+        self.await_media("inline decode: open the document before awaiting its picture");
         let rx = self
             .md_img_rx
             .as_ref()
@@ -307,6 +308,7 @@ impl Sim {
     /// `rx.md_enc.try_recv()` step), then redraw. Results for a dropped entry are skipped.
     #[track_caller]
     fn drain_md_encodes(&mut self) {
+        self.await_media("inline encode: finish the document's media work");
         let rx = self
             .md_enc_rx
             .as_ref()
@@ -324,34 +326,119 @@ impl Sim {
         self.draw();
     }
 
-    /// Non-blocking sibling of `drain_md_encodes`: apply **one** encode result if the worker has
-    /// produced one within a short grace period, redraw, and say whether anything was applied.
-    /// `false` therefore means "the pipeline has gone quiet" — the renderer asked for nothing more.
+    /// Apply one owed encode and redraw. Return false only when no request is outstanding.
     /// This is what lets a test assert **convergence** (no key pressed, so the only thing that can
     /// keep the loop alive is the renderer re-requesting an encode it should already have).
     #[track_caller]
     fn drain_md_encode_if_any(&mut self) -> bool {
+        self.await_media("inline encode convergence: finish the document's media work");
+        if !self.app.md_encode_in_flight() {
+            return false;
+        }
         let rx = self
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        // Quiescence is read off the App, not off the clock: while a request is in flight the
-        // worker owes a result and this waits however long a loaded test runner needs, and only
-        // when nothing is in flight does a miss actually mean "the renderer has stopped asking".
-        // A pure timeout here was flaky under `cargo test`'s full parallel load — it reported
-        // convergence while an encode was still on its way, and the *next* assertion (the placement
-        // that never got its picture) is what failed.
-        let wait = if self.app.md_encode_in_flight() {
-            DRAIN_WAIT
-        } else {
-            std::time::Duration::from_millis(50)
-        };
-        let Ok(res) = rx.recv_timeout(wait) else {
-            return false;
-        };
+        let res = rx
+            .recv_timeout(DRAIN_WAIT)
+            .expect("inline encode convergence: the outstanding encode must answer");
         self.app.apply_md_encode(res);
         self.draw();
         true
+    }
+
+    /// Order document readiness before any placement check or inline decode/encode wait.
+    #[track_caller]
+    fn await_media(&mut self, step: &str) {
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
+        while self.app.is_media_loading() {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: media work did not finish"));
+            let res = self
+                .media_rx
+                .as_ref()
+                .expect("with_media")
+                .recv_timeout(left)
+                .unwrap_or_else(|e| panic!("{step}: media worker did not answer: {e:?}"));
+            self.app.apply_media(res);
+            self.draw();
+        }
+    }
+
+    /// An intentionally cancelled job still owes its final answer even when loading is clear.
+    #[track_caller]
+    fn await_media_generation(
+        &mut self,
+        generation: u64,
+        step: &str,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: cancelled media job did not finish"));
+            let res = self
+                .media_rx
+                .as_ref()
+                .expect("with_async_plugins")
+                .recv_timeout(left)
+                .unwrap_or_else(|e| panic!("{step}: cancelled media job did not answer: {e:?}"));
+            let done = res.generation_for_test() == generation && !res.is_layout_only();
+            let applied = self.app.apply_media(res);
+            self.draw();
+            if done {
+                return applied;
+            }
+        }
+    }
+
+    /// Settle the document and all inline picture channels, including jobs started by a draw.
+    #[track_caller]
+    fn settle_inline_images(&mut self, step: &str, timeout: std::time::Duration) {
+        self.await_media(step);
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            self.draw();
+            if !self.app.md_pixels_pending() {
+                return;
+            }
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: inline pictures did not finish"));
+            if self.app.remote_images_pending_for_test() {
+                let res = self
+                    .md_remote_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: remote image worker did not answer: {e:?}")
+                    });
+                self.app.apply_remote_fetch(res);
+            } else if self.app.md_encode_in_flight() {
+                let res = self
+                    .md_enc_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: inline encode worker did not answer: {e:?}")
+                    });
+                self.app.apply_md_encode(res);
+            } else {
+                let res = self
+                    .md_img_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: inline decode worker did not answer: {e:?}")
+                    });
+                self.app.apply_md_image(res);
+            }
+        }
     }
 
     /// Wait for the next full-screen media-load result (SVG/GIF/PDF/video/standalone-mermaid/
@@ -372,12 +459,14 @@ impl Sim {
             }
         }
         self.draw();
+        self.await_media("media load: finish jobs started by the answer or its draw");
     }
 
     /// Wait for the next remote (http/https) Markdown image fetch's completion and apply it (the
     /// run loop's `rx.md_remote.try_recv()` step), then redraw.
     #[track_caller]
     fn drain_remote(&mut self) {
+        self.await_media("remote image: open the document before awaiting its download");
         let rx = self
             .md_remote_rx
             .as_ref()
@@ -13742,8 +13831,8 @@ fn drawn_rgb_fgs(term: &Terminal<TestBackend>) -> Vec<(u8, u8, u8)> {
 }
 
 /// A **local** inline Markdown image, decoded and encoded through the real background threads.
-/// The placement (cols/rows) is available immediately after `enter()` (it's sized straight off the
-/// file's on-disk dimensions, synchronously — no worker needed for that part), but the raster only
+/// Once the document's media answer has landed, the placement (cols/rows) is sized straight off
+/// the file's on-disk dimensions, synchronously — no image worker needed for that part. The raster only
 /// exists once `ensure_md_image`'s real decode thread reports back through `md_img_rx`, and a
 /// drawable protocol only exists once the real `md_encode_worker` thread reports back through
 /// `md_enc_rx`. Confirms both by reading real pixel colors off the drawn buffer, not just "a
@@ -13771,6 +13860,7 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("inline local image: open d.md before checking placements");
     let placements = s.app.md_images();
     assert_eq!(
         placements.len(),
@@ -14054,6 +14144,7 @@ fn e2e_ui_rewritten_offscreen_inline_image_still_relays_out() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("offscreen image: open d.md before checking placements");
     let (_, cols0, rows0) = only_placement(&s.app);
     assert_eq!(
         s.app.md_image_cache_len(),
@@ -14615,6 +14706,7 @@ fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter(); // both fences kick off a real decode thread (Loading — no image placement yet)
+    s.await_media("mermaid focus: open d.md before checking pending fences");
     assert!(
         s.app.md_images().is_empty(),
         "デコード前はまだ画像プレースメント無し"
@@ -14720,6 +14812,7 @@ fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
     s.enter();
     // While loading: no placement yet, and the literal LaTeX is not shown as plain text (it's on
     // its own reserved "loading" row, not inline with "before"/"after").
+    s.await_media("math placement: open d.md before checking the decode placeholder");
     assert!(s.app.md_images().is_empty());
     s.dont_see("E=mc^2");
     s.see("loading");
@@ -14832,6 +14925,7 @@ fn e2e_ui_mermaid_and_math_render_failure_degrades_safely_to_raw_source() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("failed inline renders: open d.md before checking placeholders");
     s.see("loading"); // both start out as loading placeholders
 
     // Both async renders finish (with failures). Each `drain_md_images` also redraws, which is
@@ -14884,6 +14978,7 @@ fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("inline GIF: open d.md before checking placements");
     let placements = s.app.md_images();
     assert_eq!(placements.len(), 1);
     let (url, cols, rows) = (
@@ -15000,6 +15095,7 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("remote image failure: open d.md before checking its placeholder");
     s.see("loading");
     assert!(s.app.md_images().is_empty());
 
@@ -15255,6 +15351,7 @@ fn e2e_ui_math_render_requests_are_bounded_not_all_at_once() {
     s.select("d.md");
     s.enter(); // the very first ensure_md_cache pass — exactly where an unbounded implementation
                // calls std::thread::spawn 80 times in a row before this line returns
+    s.await_media("math render cap: open d.md before counting started renders");
     let inserted = s.app.md_image_cache_len();
     assert!(
         inserted < 80,
@@ -16286,6 +16383,7 @@ fn e2e_ui_a_pane_with_no_room_for_a_column_draws_no_inline_image() {
     let mut s = Sim::with_config_sized(&root, Config::default(), 2, 12).with_media_kitty();
     s.select("d.md");
     s.enter();
+    s.await_media("narrow pane: open d.md before checking its image reservation");
     // Vacuity guard: the renderer really did reserve a rectangle for this image, so "nothing was
     // drawn" is the clamp's doing and not simply "there was no image".
     let placements = s.app.md_images();
@@ -16788,17 +16886,11 @@ fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
     // enter_preview` only clears it on a *different* file — same path here, so it may not have,
     // making a *fresh* `a=T` unreliable to wait for: if nothing was evicted, no new encode is ever
     // requested and `drain_md_encodes`'s blocking wait would time out on a false alarm). Drain
-    // **non-blockingly** for a few frames either way, then assert what actually matters: both
+    // until every outstanding encode has answered, then assert what actually matters: both
     // sides' cache entries are present again and a protocol renders for each — proving the stale-
     // cache-key re-kick works when eviction *does* happen, without assuming it always does here.
-    for _ in 0..10 {
-        if let Some(rx) = s.md_enc_rx.as_ref() {
-            if let Ok(res) = rx.try_recv() {
-                s.app.apply_md_encode(res);
-            }
-        }
-        s.draw();
-    }
+    s.await_media("media diff round trip: apply the preview's answer before checking the diff");
+    settle_md_encodes(&mut s, 16);
     let outcome = s
         .app
         .poll_media_diff(&png, s.app.diff_media_page(), (800, 600))
@@ -19311,7 +19403,7 @@ fn e2e_sheet_worker_result_lands_in_the_table() {
 
 #[test]
 fn e2e_sheet_a_late_workbook_result_is_not_adopted_by_another_preview() {
-    // Open a workbook, leave before the worker answers, open a CSV: the (still current-generation)
+    // Open a workbook, retain its answer without applying it, then open a CSV: the old
     // workbook result must not turn the CSV preview into a sheet.
     let Some((dir, root)) = sheet_sandbox("sheet_late", "xlsx") else {
         return;
@@ -19320,18 +19412,19 @@ fn e2e_sheet_a_late_workbook_result_is_not_adopted_by_another_preview() {
     let mut s = Sim::with_config(&root, cfg_en()).with_media();
     s.select("book.xlsx");
     s.enter();
+    let res = crate::test_support::recv_media_final(
+        &mut s.app,
+        s.media_rx.as_ref().unwrap(),
+        std::time::Duration::from_secs(5),
+        "late workbook: retain its final answer before opening CSV",
+    );
     s.key('q');
     s.select("t.csv");
     s.enter();
+    s.await_media("late workbook: finish opening CSV before applying the old answer");
     s.see("row-one");
-    // The workbook result arrives now (a newer preview has superseded it, so it may be dropped by
+    // Apply the retained workbook result now (a newer preview has superseded it, so it may be dropped by
     // generation — and if it is not, the kind check must still refuse it).
-    let res = s
-        .media_rx
-        .as_ref()
-        .unwrap()
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("media loader が結果を返す");
     s.app.apply_media(res);
     s.draw();
     s.see("row-one");
@@ -20376,12 +20469,12 @@ fn three_sheet_book(path: &std::path::Path, tag: &str) {
 #[track_caller]
 fn drain_all_media(s: &mut Sim, n: usize) {
     for _ in 0..n {
-        let res = s
-            .media_rx
-            .as_ref()
-            .expect("with_media() を呼んでいない")
-            .recv_timeout(DRAIN_WAIT)
-            .expect("media loader が結果を返す");
+        let res = crate::test_support::recv_media_final(
+            &mut s.app,
+            s.media_rx.as_ref().expect("with_media"),
+            DRAIN_WAIT,
+            "drain all media: one final answer per dispatched job",
+        );
         s.app.apply_media(res);
     }
     s.draw();
@@ -20672,7 +20765,8 @@ fn drain_media_until_current(s: &mut Sim) -> usize {
             .recv_timeout(DRAIN_WAIT)
             .expect("workbook worker が結果を返す");
         arrived += 1;
-        if s.app.apply_media(res) {
+        let final_answer = !res.is_layout_only();
+        if s.app.apply_media(res) && final_answer && !s.app.is_media_loading() {
             s.draw();
             return arrived;
         }
@@ -20765,20 +20859,24 @@ fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
     s.enter();
     s.drain_media();
     s.key('J');
+    let cancelled = s.app.media_generation_for_test();
     s.key('J'); // waits behind the first
     assert_eq!(s.app.workbook_loads_started(), 2);
     s.esc();
     s.select("z.txt");
     s.enter();
     // Both answers are stale; the waiting request must not start a third load.
-    let rx = s.media_rx.as_ref().unwrap();
-    let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
-    assert!(!s.app.apply_media(first));
+    assert!(!s.await_media_generation(
+        cancelled,
+        "leave workbook: the running sheet's stale answer",
+        std::time::Duration::from_secs(10),
+    ));
     assert_eq!(
         s.app.workbook_loads_started(),
         2,
         "the request made under a generation that is gone is not started"
     );
+    s.await_media("leave workbook: finish opening z.txt");
     s.draw();
     s.see("plain");
     assert!(s.app.loaded_sheet_count().is_none());

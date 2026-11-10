@@ -2728,6 +2728,7 @@ fn e2e_canvas_esc_with_a_job_out_leaves_and_the_file_opened_again_runs() {
         o.sh.hold_views.store(true, Ordering::SeqCst);
         assert!(o.s.app.canvas_redraw_if_due(at + AFTER));
         assert!(o.s.app.plugin_session_is_out_for_test());
+        let cancelled = o.s.app.media_generation_for_test();
         o.s.esc();
         assert!(
             !o.s.app.is_canvas_preview(),
@@ -2750,15 +2751,7 @@ fn e2e_canvas_esc_with_a_job_out_leaves_and_the_file_opened_again_runs() {
                 o.sh.latch.open();
             }
         }
-        settle(&mut o.s);
-        // The stale answer, if it is still on its way, lands without harm.
-        for _ in 0..3 {
-            if let Some(rx) = o.s.media_rx.as_ref() {
-                if let Ok(r) = rx.recv_timeout(Duration::from_millis(100)) {
-                    o.s.app.apply_media(r);
-                }
-            }
-        }
+        o.s.await_media_generation(cancelled, "canvas Esc: cancelled redraw answer", DRAIN_WAIT);
         settle(&mut o.s);
         assert!(
             !o.s.app.is_media_loading(),
@@ -2793,18 +2786,17 @@ fn e2e_canvas_esc_during_the_first_open_then_open_again() {
     s.select("a.typ");
     s.enter();
     assert!(s.app.plugin_session_is_out_for_test());
+    let cancelled = s.app.media_generation_for_test();
     s.esc();
     s.enter();
     sh.hold_opens.store(false, Ordering::SeqCst);
     sh.open_gate.open();
-    for _ in 0..8 {
-        if let Some(rx) = s.media_rx.as_ref() {
-            if let Ok(r) = rx.recv_timeout(Duration::from_millis(300)) {
-                s.app.apply_media(r);
-                s.draw();
-            }
-        }
-    }
+    s.await_media_generation(
+        cancelled,
+        "canvas reopen: cancelled first open answer",
+        DRAIN_WAIT,
+    );
+    settle(&mut s);
     assert!(!s.app.is_media_loading());
     assert!(!s.app.plugin_session_is_out_for_test());
     assert!(s.app.is_canvas_preview());
