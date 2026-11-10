@@ -22,6 +22,11 @@ mod worktrees;
 pub struct Git;
 pub struct Jj;
 
+/// The project plugins of the `konoma-vcs` program, in registration order.
+pub fn program() -> Vec<Box<dyn Plugin>> {
+    vec![Box::new(Git), Box::new(Jj)]
+}
+
 macro_rules! plugin {
     ($plugin:ident, $id:literal, $marker:literal, $kind:expr, $name:literal) => {
         impl Plugin for $plugin {

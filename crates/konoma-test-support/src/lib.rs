@@ -437,7 +437,21 @@ pub fn run_program_without_terminal(
     args: &[&std::ffi::OsStr],
     home: &std::path::Path,
 ) -> std::process::Output {
-    std::process::Command::new(exe)
+    run_program_without_terminal_with_cwd(exe, args, home, None)
+}
+
+/// Like [`run_program_without_terminal`], with an optional child working directory.
+pub fn run_program_without_terminal_with_cwd(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::process::Output {
+    let mut command = std::process::Command::new(exe);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command
         .args(args)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))

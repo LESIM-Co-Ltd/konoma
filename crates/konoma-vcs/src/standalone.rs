@@ -17,6 +17,15 @@ use konoma_vcs_core::vcs::{Git, Vcs};
 /// preview plugin is installed here. Raw retrieval is synchronous and must run on a worker.
 pub struct VcsServices;
 
+/// Run the project program with the standard file plugins available as Preview destinations.
+pub fn main() -> std::process::ExitCode {
+    konoma_plugin::proc::cli_main_projects(
+        crate::program(),
+        konoma_file_plugins::plugins(),
+        Arc::new(VcsServices),
+    )
+}
+
 impl ProjectServices for VcsServices {
     fn root_switch_enabled(&self) -> bool {
         true
