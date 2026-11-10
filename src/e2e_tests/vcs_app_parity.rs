@@ -2,15 +2,15 @@
 use super::project_frames::compare_frames;
 use super::vcs_changes::{drain, git_repo};
 use super::vcs_log::{
-    commit, detail_repo, empty_subject_commit, empty_subject_repo, jj_repo, remove_commit_object,
-    remove_head_object, repo,
+    commit, detail_repo, empty_subject_commit, empty_subject_repo, jj, jj_repo,
+    remove_commit_object, remove_head_object, repo,
 };
 use super::*;
 use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
 use konoma_host_core::shared::SharedConfig;
 use konoma_plugin::app::project::{
-    observe_project_state_for_test, prepare_projects, read_snapshot_for_test,
-    run_project_fenced_state_for_test, ProjectLoopCx, ProjectStateSnapshot,
+    observe_project_state_for_test, prepare_projects, probe_graph_plugin_for_test,
+    read_snapshot_for_test, run_project_fenced_state_for_test, ProjectLoopCx, ProjectStateSnapshot,
 };
 use konoma_plugin::app::{key_from_crossterm, AppEvent, Next};
 use konoma_plugin::host::project::ProjectContent;
@@ -210,6 +210,8 @@ fn frames(
     state: &ProjectStateSnapshot,
     lang: &str,
     fixture: &serde_json::Value,
+    graph_fixture: &serde_json::Value,
+    help_open: bool,
 ) {
     assert_eq!(host.area, app.area);
     let normal_root = state.stack.len() == 1
@@ -217,7 +219,49 @@ fn frames(
         && state.menu.is_none()
         && state.prompt.is_none()
         && state.notice.is_none();
+    let normal_root = normal_root && !help_open;
     let mut expected = host.clone();
+    if help_open && state.stack.len() == 1 {
+        // §4-1:220 and §7-5:967 apply to the root return key's help row as well as its footer.
+        // Check each description's complete cells before substituting only this documented row.
+        let screen = state.stack.last().unwrap();
+        let row = &graph_fixture["root_help"][lang][screen];
+        if let Some(keys) = row["key"].as_str() {
+            let panel_width = konoma_widgets::help_panel::PANEL_WIDTH
+                .min(host.area.width.saturating_sub(2))
+                .max(20);
+            let panel_x = (host.area.width.saturating_sub(panel_width)) / 2;
+            let key_x = panel_x + 3;
+            let desc_x = panel_x + 19;
+            let width = panel_width - 20;
+            let ys: Vec<_> = (0..host.area.height)
+                .filter(|y| {
+                    keys.chars()
+                        .enumerate()
+                        .all(|(i, c)| host[(key_x + i as u16, *y)].symbol() == c.to_string())
+                })
+                .collect();
+            assert_eq!(ys.len(), 1, "exactly one explicit root return help row");
+            let y = ys[0];
+            for (side, frame) in [("host", host), ("app", app)] {
+                let mut wanted = Buffer::empty(Rect::new(0, 0, width, 1));
+                Paragraph::new(
+                    Line::raw(row[side].as_str().unwrap())
+                        .style(Style::new().add_modifier(Modifier::DIM)),
+                )
+                .render(wanted.area, &mut wanted);
+                let mut actual = wanted.clone();
+                for x in 0..width {
+                    actual[(x, 0)] = frame[(desc_x + x, y)].clone();
+                }
+                compare_frames(&wanted, &actual)
+                    .unwrap_or_else(|e| panic!("explicit {side} root help {screen}: {e}"));
+            }
+            for x in 0..width {
+                expected[(desc_x + x, y)] = app[(desc_x + x, y)].clone();
+            }
+        }
+    }
     if normal_root {
         // FEATURE-PLUGIN-ARCHITECTURE.md §4-1:220: "ツリー・タブ・ブックマーク・フォローは無い。`q` で終了。"
         // §10-3:1266: "`Ctrl-t`（新しいタブ）" is absent; §7-5:967:
@@ -229,12 +273,56 @@ fn frames(
         } else {
             screen
         };
-        let kind = if state.selected.is_none() {
+        let kind = if screen == "graph" {
+            format!(
+                "{}graph_{}",
+                if state.backend.as_deref() == Some("jj") {
+                    "jj_"
+                } else {
+                    ""
+                },
+                state
+                    .selected
+                    .as_ref()
+                    .map_or("empty", |row| row.kind.as_str())
+            )
+        } else if screen == "branches" && state.backend.as_deref() == Some("jj") {
+            "jj_branches".into()
+        } else if state.selected.is_none() {
             format!("empty_{screen}")
         } else {
             screen.into()
         };
         let y = host.area.bottom() - 1;
+        let mut graph_chrome = fixture.clone();
+        if let Some(row) = graph_fixture[lang][&kind].as_object() {
+            for (side, tokens) in row {
+                graph_chrome[lang][&kind][side][host.area.width.to_string()] =
+                    serde_json::Value::String(konoma_widgets::help_panel::fit_tokens(
+                        &tokens
+                            .as_str()
+                            .unwrap()
+                            .split("  ")
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>(),
+                        host.area.width,
+                    ));
+            }
+        }
+        let fixture = &graph_chrome;
+        if fixture[lang][&kind]["host"][host.area.width.to_string()].is_null() {
+            let plain = |frame: &Buffer| -> String {
+                (0..frame.area.width)
+                    .map(|x| frame[(x, y)].symbol())
+                    .collect()
+            };
+            panic!(
+                "missing explicit footer {lang}/{kind}/{}\nhost: {:?}\napp: {:?}",
+                host.area.width,
+                plain(host),
+                plain(app)
+            );
+        }
         for (side, frame) in [("host", host), ("app", app)] {
             compare_frames(
                 &expected_footer(fixture, lang, &kind, side, host.area.width),
@@ -249,6 +337,14 @@ fn frames(
     compare_frames(&expected, app).unwrap_or_else(|e| panic!("whole frame: {e}"));
 }
 
+fn compare_states(host: &ProjectStateSnapshot, app: &ProjectStateSnapshot) -> Result<(), String> {
+    if host == app {
+        Ok(())
+    } else {
+        Err(format!("host: {host:?}\napp: {app:?}"))
+    }
+}
+
 fn run(
     root: &Path,
     id: &str,
@@ -257,7 +353,31 @@ fn run(
     failure: bool,
     mut check: impl FnMut(usize, &ProjectStateSnapshot, &Sim, &[String]),
 ) {
-    let cfg: Config = toml::from_str(text).unwrap();
+    let mut cfg: Config = toml::from_str(text).unwrap();
+    let plugin = || -> Arc<dyn Plugin> {
+        match id {
+            "git" => Arc::new(konoma_vcs::Git),
+            "jj" => Arc::new(konoma_vcs::Jj),
+            _ => unreachable!(),
+        }
+    };
+    let (host_plugin, host_graph) = probe_graph_plugin_for_test(plugin());
+    static PROBE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let marker = crate::plugins::test_plugins::register(
+        &format!(
+            "vcs_app_probe_{}",
+            PROBE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
+        host_plugin,
+    );
+    let previous = cfg
+        .plugins
+        .keys()
+        .find(|key| key.starts_with("+test:"))
+        .unwrap()
+        .clone();
+    let settings = cfg.plugins.remove(&previous).unwrap();
+    cfg.plugins.insert(marker, settings);
     let lang = cfg.ui.lang.clone();
     let mut host = Sim::with_config_sized(root, cfg, 90, 14);
     host.app.tab.projects.wait_for_result();
@@ -267,6 +387,11 @@ fn run(
     assert!(host.app.project_active(), "host must open the real project");
     let mut plugins: Vec<Arc<dyn Plugin>> =
         konoma_vcs::program().into_iter().map(Arc::from).collect();
+    let (app_plugin, app_graph) = probe_graph_plugin_for_test(plugin());
+    *plugins
+        .iter_mut()
+        .find(|plugin| plugin.manifest().id == id)
+        .unwrap() = app_plugin;
     plugins.extend(konoma_file_plugins::plugins());
     let mut app = prepare_projects(
         plugins,
@@ -299,6 +424,7 @@ fn run(
     let backend = Arc::new(Mutex::new(TestBackend::new(90, 14)));
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
+    let graph_fixture = read_snapshot_for_test("vcs_app_graph");
     let mut host_writes = Vec::new();
     let count = steps.len();
     let mut steps = steps.into_iter();
@@ -307,68 +433,77 @@ fn run(
         home: std::env::var_os("HOME").map(Into::into),
         launch: None,
     };
-    run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, None, |idle, frame, state| {
-        assert!(idle.is_idle());
-        let host_frame = host.project_frame();
-        assert_eq!(
-            host_state(&host),
-            state,
-            "step {step}: screen/identity/filter/cursor/marks/prompt/menu/notice"
-        );
-        assert_eq!(
-            host_writes,
-            clipboard.writes(),
-            "step {step}: every clipboard write"
-        );
-        if let Some(row) = &state.selected {
-            assert!(
-                state
-                    .rows
-                    .iter()
-                    .any(|(r, selectable)| r == row && *selectable),
-                "a non-selectable row was selected"
+    run_project_fenced_state_for_test(
+        &mut terminal,
+        &mut app,
+        &cx,
+        None,
+        |idle, frame, mut state| {
+            assert!(idle.is_idle());
+            let host_frame = host.project_frame();
+            let mut host_snapshot = host_state(&host);
+            let picker_cursor = |snapshot: &ProjectStateSnapshot| {
+                (snapshot.stack.last().map(String::as_str) == Some("graph_picker"))
+                    .then_some(snapshot.cursor)
+            };
+            host_snapshot.graph = host_graph.snapshot(picker_cursor(&host_snapshot));
+            state.graph = app_graph.snapshot(picker_cursor(&state));
+            compare_states(&host_snapshot, &state).unwrap_or_else(|e| panic!("step {step}: screen/identity/filter/cursor/marks/prompt/menu/notice/graph: {e}"));
+            assert_eq!(
+                host_writes,
+                clipboard.writes(),
+                "step {step}: every clipboard write"
             );
-        }
-        frames(&host_frame, &frame, &state, &lang, &fixture);
-        check(step, &state, &host, &host_writes);
-        let Some(next) = steps.next() else {
-            return Next::End;
-        };
-        step += 1;
-        let next = match next {
-            Step::BeforeKey(before, key) => {
-                before(root);
-                Step::Key(key)
+            if let Some(row) = &state.selected {
+                assert!(
+                    state
+                        .rows
+                        .iter()
+                        .any(|(r, selectable)| r == row && *selectable),
+                    "a non-selectable row was selected"
+                );
             }
-            other => other,
-        };
-        let event = match next {
-            Step::Resize(width, height) => {
-                host.resize(width, height);
-                backend.lock().unwrap().resize(width, height);
-                AppEvent::Resize
-            }
-            Step::Key(key) => {
-                clear_test_clipboard();
-                let mut press = || {
-                    host.press(key.code, key.modifiers);
-                    drain(&mut host);
-                };
-                if failure {
-                    App::with_clipboard_failure_for_test(press);
-                } else {
-                    press();
+            frames(&host_frame, &frame, &state, &lang, &fixture, &graph_fixture, host.app.show_help);
+            check(step, &state, &host, &host_writes);
+            let Some(next) = steps.next() else {
+                return Next::End;
+            };
+            step += 1;
+            let next = match next {
+                Step::BeforeKey(before, key) => {
+                    before(root);
+                    Step::Key(key)
                 }
-                if let Some(text) = get_test_clipboard() {
-                    host_writes.push(text);
+                other => other,
+            };
+            let event = match next {
+                Step::Resize(width, height) => {
+                    host.resize(width, height);
+                    backend.lock().unwrap().resize(width, height);
+                    AppEvent::Resize
                 }
-                clear_test_clipboard();
-                AppEvent::Key(key_from_crossterm(&key).unwrap())
-            }
-            Step::BeforeKey(..) => unreachable!(),
-        };
-        Next::Event(event)
-    })
+                Step::Key(key) => {
+                    clear_test_clipboard();
+                    let mut press = || {
+                        host.press(key.code, key.modifiers);
+                        drain(&mut host);
+                    };
+                    if failure {
+                        App::with_clipboard_failure_for_test(press);
+                    } else {
+                        press();
+                    }
+                    if let Some(text) = get_test_clipboard() {
+                        host_writes.push(text);
+                    }
+                    clear_test_clipboard();
+                    AppEvent::Key(key_from_crossterm(&key).unwrap())
+                }
+                Step::BeforeKey(..) => unreachable!(),
+            };
+            Next::Event(event)
+        },
+    )
     .unwrap();
     assert_eq!(step, count, "every input must reach its fence");
     TALLY.with(|t| {
@@ -975,4 +1110,368 @@ fn jj_cases(scenario: &str) -> Vec<(std::path::PathBuf, &'static str)> {
     let colocated_jj = at_home(jj_repo(true));
     eprintln!("RUN: {scenario}: jj-only, colocated Git, colocated jj");
     vec![(jj, "jj"), (git, "git"), (colocated_jj, "jj")]
+}
+
+#[test]
+fn graph_base_visible_order_picker_and_cells_match_host() {
+    if isolated("graph_base_visible_order_picker_and_cells_match_host") {
+        return;
+    }
+    let root = at_home(super::vcs_log::graph_picker_fixture());
+    let branch_tips: std::collections::HashMap<_, _> =
+        konoma_vcs_core::git::branches_by_recency(&root)
+            .into_iter()
+            .map(|(name, _, _)| {
+                let tip = konoma_vcs_core::git::branch_tip(&root, &name).unwrap();
+                (name, tip)
+            })
+            .collect();
+    for lang in ["en", "ja"] {
+        for align in ["right", "inline"] {
+            let text = config(
+                "git",
+                lang,
+                "vim",
+                "relative",
+                align,
+                "[keys.text]\nD='navigate:down'\n",
+            );
+            let mut steps = vec![
+                key(KeyCode::Tab),
+                key(KeyCode::Tab),
+                ch('D'),
+                ch('j'),
+                ch('k'),
+            ];
+            steps.extend([
+                ch('/'),
+                ch('日'),
+                ch('本'),
+                key(KeyCode::Enter),
+                key(KeyCode::Esc),
+            ]);
+            steps.extend([
+                Step::Resize(48, 8),
+                ch('G'),
+                ch('g'),
+                Step::Resize(180, 18),
+                ch('s'),
+                ch('j'),
+                ch('s'),
+                ch('r'),
+                ch('y'),
+                ch('h'),
+                key(KeyCode::Enter),
+                ch('y'),
+                ch('m'),
+                ch('q'),
+                ch('x'),
+                ch('x'),
+                ch('b'),
+                ch('/'),
+                ch('b'),
+                ch('x'),
+                ch('a'),
+                ch('c'),
+                ch('j'),
+                ch('x'),
+                ch('J'),
+                ch('K'),
+                ch('J'),
+                key(KeyCode::Enter),
+                ch('b'),
+                ch('a'),
+                ch('q'),
+                ch('b'),
+                ch('J'),
+                key(KeyCode::Esc),
+                ch('b'),
+                ch('?'),
+                ch('q'),
+                ch('q'),
+            ]);
+            let mut applied = None;
+            let mut cancelled = None;
+            let mut retained_order = None;
+            let mut head_selection = None;
+            run(&root, "git", &text, steps, false, |step, state, _, _| {
+                if state.stack.last().map(String::as_str) == Some("graph_picker") {
+                    assert!(!state.filtering, "the picker has no filter");
+                    assert!(state.query.is_empty());
+                    let graph = state.graph.as_ref().expect("observe the real graph state");
+                    assert_eq!(graph.order.len(), 4);
+                    assert_eq!(graph.picker_cursor, Some(state.cursor));
+                }
+                assert!(
+                    state
+                        .rows
+                        .iter()
+                        .all(|(row, selectable)| row.kind != "connector" || !selectable),
+                    "connector rows must never be selectable"
+                );
+                if step == 2 {
+                    assert!(state.rows.iter().any(|(row, _)| row.kind == "connector"));
+                    let mut different = state.clone();
+                    different
+                        .graph
+                        .as_mut()
+                        .unwrap()
+                        .visible
+                        .push("__comparison_probe__".into());
+                    assert!(
+                        compare_states(state, &different).is_err(),
+                        "the state comparison must include the graph visible set"
+                    );
+                    assert_eq!(state.graph.as_ref().unwrap().visible.len(), 4);
+                }
+                if step == 29 {
+                    head_selection = Some(state.graph.as_ref().unwrap().tentative.clone());
+                }
+                if step == 30 {
+                    assert_eq!(
+                        Some(state.graph.as_ref().unwrap().tentative.clone()),
+                        head_selection,
+                        "HEAD is always visible"
+                    );
+                }
+                if step == 20 {
+                    applied = state.selected.clone();
+                }
+                if step == 24 {
+                    assert_eq!(
+                        state.selected, applied,
+                        "detail returns to its graph cursor"
+                    );
+                }
+                if step == 38 {
+                    let graph = state.graph.as_ref().unwrap();
+                    cancelled = Some(graph.visible.clone());
+                    let first = graph
+                        .order
+                        .iter()
+                        .find(|name| graph.visible.contains(name))
+                        .unwrap();
+                    assert_eq!(
+                        graph.label.as_ref(),
+                        Some(first),
+                        "reorder derives the base from the new order"
+                    );
+                    assert_eq!(
+                        graph.base.as_ref(),
+                        branch_tips.get(first),
+                        "reorder updates the base commit"
+                    );
+                }
+                if step == 41 || step == 42 {
+                    assert_eq!(
+                        state.graph.as_ref().unwrap().visible,
+                        cancelled.clone().unwrap(),
+                        "cancel discards the tentative selection"
+                    );
+                }
+                if step == 43 {
+                    retained_order = Some(state.graph.as_ref().unwrap().order.clone());
+                }
+                if step == 45 {
+                    assert_eq!(
+                        Some(state.graph.as_ref().unwrap().order.clone()),
+                        retained_order,
+                        "cancel retains the reordered priority"
+                    );
+                    assert_eq!(
+                        state.graph.as_ref().unwrap().tentative,
+                        cancelled.clone().unwrap(),
+                        "reopening discards cancelled tentative selection"
+                    );
+                }
+            });
+        }
+    }
+    for lang in ["en", "ja"] {
+        for (cap, priority) in [(1, false), (0, true)] {
+            let extra = format!("[keys.text]\nD='navigate:down'\n[plugins.git]\ngraph_max_branches={cap}\ngraph_base_branches={}\n", if priority { "['missing-branch','priority-branch-with-a-long-name']" } else { "[]" });
+            let text = config("git", lang, "vim", "relative", "right", &extra);
+            run(
+                &root,
+                "git",
+                &text,
+                vec![
+                    key(KeyCode::Tab),
+                    key(KeyCode::Tab),
+                    ch('r'),
+                    ch('b'),
+                    ch('q'),
+                ],
+                false,
+                |step, state, _, _| {
+                    if step == 2 || step == 3 {
+                        let graph = state.graph.as_ref().unwrap();
+                        assert_eq!(
+                            graph.visible.len(),
+                            if cap == 0 { 4 } else { cap },
+                            "graph branch cap"
+                        );
+                        if priority {
+                            assert_eq!(
+                                graph.order.first().map(String::as_str),
+                                Some("priority-branch-with-a-long-name")
+                            );
+                            assert_eq!(
+                                graph.label.as_deref(),
+                                Some("priority-branch-with-a-long-name")
+                            );
+                            assert_eq!(
+                                graph.base.as_ref(),
+                                branch_tips.get("priority-branch-with-a-long-name")
+                            );
+                        }
+                    }
+                },
+            );
+        }
+    }
+    let big = at_home(repo(401));
+    let text = config(
+        "git",
+        "en",
+        "vim",
+        "relative",
+        "right",
+        "[keys.text]\nD='navigate:down'\n",
+    );
+    run(
+        &big,
+        "git",
+        &text,
+        vec![key(KeyCode::Tab), key(KeyCode::Tab), ch('G'), ch('g')],
+        false,
+        |_, state, _, _| {
+            if state.stack.last().map(String::as_str) == Some("graph") {
+                assert_eq!(
+                    state
+                        .rows
+                        .iter()
+                        .filter(|(row, _)| row.kind == "commit")
+                        .count(),
+                    400,
+                    "graph commit row cap"
+                );
+            }
+        },
+    );
+    report_cases();
+}
+
+#[test]
+fn jj_graph_and_bookmarks_offer_only_real_actions() {
+    if !crate::vcs::jj::available() {
+        eprintln!(
+            "NOT RUN: graph/bookmarks: jj unavailable; 8 sessions (jj-only and colocated Git/jj, en/ja) not run; 0 sessions run"
+        );
+    }
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    if isolated("jj_graph_and_bookmarks_offer_only_real_actions") {
+        return;
+    }
+    let root = at_home(super::vcs_log::graph_jj_fixture());
+    jj(&root, &["bookmark", "create", "-r", "@-", "prior"]);
+    for (case, (root, id)) in std::iter::once((root, "jj"))
+        .chain(jj_cases("graph/bookmarks"))
+        .enumerate()
+    {
+        if id == "jj" {
+            super::vcs_changes::add_jj_bookmarks(&root);
+        }
+        for lang in ["en", "ja"] {
+            let text = config(
+                id,
+                lang,
+                "vim",
+                "relative",
+                "right",
+                "[keys.text]\nD='navigate:down'\n",
+            );
+            let mut steps = vec![
+                key(KeyCode::Tab),
+                key(KeyCode::Tab),
+                Step::Resize(180, 18),
+                ch('a'),
+                ch('a'),
+                ch('s'),
+                ch('x'),
+                ch('?'),
+                ch('q'),
+                ch('b'),
+                ch('/'),
+                ch('q'),
+                key(KeyCode::Tab),
+                ch('j'),
+                ch('g'),
+                ch('y'),
+                ch('n'),
+                key(KeyCode::Enter),
+                ch('c'),
+                ch('d'),
+                ch('?'),
+                ch('q'),
+            ];
+            if id == "git" {
+                steps.truncate(12);
+            }
+            let mut range = None;
+            run(
+                &root,
+                id,
+                &text,
+                steps,
+                false,
+                |step, state, host, writes| {
+                    if id == "jj" && state.stack.last().map(String::as_str) == Some("graph") {
+                        assert!(
+                            state.graph.as_ref().unwrap().base.is_none(),
+                            "jj has no graph base"
+                        );
+                        if step == 3 {
+                            range = Some(state.rows.clone());
+                        }
+                        if step == 4 {
+                            assert!(state.graph.as_ref().unwrap().all);
+                            assert!(state.notice.is_some(), "all/range has a flash");
+                            if case == 0 {
+                                assert!(
+                                    state.rows.len() > range.as_ref().unwrap().len(),
+                                    "all expands the default jj range"
+                                );
+                            }
+                        }
+                        if step == 5 {
+                            assert_eq!(Some(state.rows.clone()), range);
+                        }
+                    }
+                    if id == "jj" && step == 17 && !state.rows.is_empty() {
+                        assert_eq!(writes.last(), state.selected.as_ref().map(|row| &row.value));
+                    }
+                    if id == "jj" {
+                        assert!(state.prompt.is_none(), "jj offers no write prompts");
+                        let hints =
+                            crate::ops::footer::tokens(&host.app, crate::keymap::Context::Canvas);
+                        let forbidden: &[&str] = match state.stack.last().map(String::as_str) {
+                            Some("graph") => &["s", "x"],
+                            Some("branches") => &["c", "d", "Enter", "↵"],
+                            _ => &[],
+                        };
+                        assert!(
+                            !hints.iter().any(|hint| hint.split_once(':').is_some_and(
+                                |(keys, _)| keys.split('/').any(|key| forbidden.contains(&key))
+                            )),
+                            "jj has no base/write hints: {hints:?}"
+                        );
+                    }
+                },
+            );
+        }
+    }
+    report_cases();
 }

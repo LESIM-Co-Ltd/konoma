@@ -77,6 +77,24 @@ pub(super) struct Graph {
 }
 
 impl Graph {
+    fn observe_for_test(&self) {
+        #[cfg(feature = "app")]
+        konoma_plugin::project_graph_probe!({
+            let mut visible: Vec<_> = self.visible.iter().cloned().collect();
+            visible.sort();
+            let mut tentative: Vec<_> = self.tentative.iter().cloned().collect();
+            tentative.sort();
+            konoma_plugin::app::project::ProjectGraphSnapshot {
+                base: self.base.clone(),
+                label: self.label.clone(),
+                visible,
+                order: self.order.clone(),
+                tentative,
+                all: self.all,
+                picker_cursor: None,
+            }
+        });
+    }
     pub(super) fn act(
         &mut self,
         action: &str,
@@ -208,6 +226,7 @@ impl Graph {
         Outcome::Redraw
     }
     pub(super) fn picker_view(&self, root: &Path, icons: bool, lang: &str) -> View {
+        self.observe_for_test();
         let head = git::branches_by_recency(root)
             .into_iter()
             .find(|(_, head, _)| *head)
@@ -426,6 +445,7 @@ impl Graph {
                 })
                 .collect()
         };
+        self.observe_for_test();
         View::List(ListView {
             rows,
             title: Some(Line::raw(title)),

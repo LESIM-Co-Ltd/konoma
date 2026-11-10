@@ -12,6 +12,13 @@ mod graph;
 #[path = "vcs_worktrees.rs"]
 mod worktrees;
 
+pub(super) fn graph_picker_fixture() -> TmpDir {
+    graph::picker_fixture()
+}
+pub(super) fn graph_jj_fixture() -> TmpDir {
+    graph::jj_graph_fixture()
+}
+
 pub(super) fn commit(root: &std::path::Path, i: usize) {
     let repo = git2::Repository::open(root).unwrap();
     let sig = git2::Signature::new(

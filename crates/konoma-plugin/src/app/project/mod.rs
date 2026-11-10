@@ -1,7 +1,30 @@
 //! Project preparation, terminal entry and the act, prompt and navigation loop.
 
 #[cfg(any(test, feature = "test-hooks"))]
+mod graph_test_hooks;
+#[cfg(any(test, feature = "test-hooks"))]
 mod idle_test_hooks;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use graph_test_hooks::{
+    probe_graph_plugin_for_test, record_graph_for_test, ProjectGraphProbe, ProjectGraphSnapshot,
+};
+
+// The dependency selects the expansion: a normal build never evaluates or types the payload.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! project_graph_probe {
+    ($snapshot:expr) => {
+        $crate::app::project::record_graph_for_test($snapshot)
+    };
+}
+#[cfg(not(any(test, feature = "test-hooks")))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! project_graph_probe {
+    ($snapshot:expr) => {};
+}
 mod launch;
 mod looping;
 mod prepare;

@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn fixture() -> TmpDir {
+pub(super) fn fixture() -> TmpDir {
     let dir = repo(1);
     let repository = git2::Repository::open(&dir).unwrap();
     let base = repository.head().unwrap().peel_to_commit().unwrap();
@@ -41,7 +41,7 @@ fn fixture() -> TmpDir {
     dir
 }
 
-fn picker_fixture() -> TmpDir {
+pub(super) fn picker_fixture() -> TmpDir {
     let dir = fixture();
     let repository = git2::Repository::open(&dir).unwrap();
     let head = repository.head().unwrap().peel_to_commit().unwrap();
@@ -66,7 +66,7 @@ fn picker_fixture() -> TmpDir {
     dir
 }
 
-fn graph_pair(
+pub(super) fn graph_pair(
     root: &std::path::Path,
     lang: &str,
     align: &str,
@@ -824,26 +824,7 @@ fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
     if !crate::vcs::jj::available() {
         return;
     }
-    let dir = crate::test_support::unique_tmp("vcs_graph_jj");
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = dir.into_canonical().unwrap();
-    jj(&dir, &["git", "init", "--no-colocate", "."]);
-    // A local remote pins trunk so the default revset is narrower than all().
-    let remote = crate::test_support::unique_tmp("vcs_graph_jj_remote");
-    git2::Repository::init_bare(&remote).unwrap();
-    jj(
-        &dir,
-        &["git", "remote", "add", "origin", remote.to_str().unwrap()],
-    );
-    for message in ["c1", "c2", "Trunk 日本語"] {
-        jj(&dir, &["commit", "-m", message]);
-    }
-    jj(&dir, &["bookmark", "create", "-r", "@-", "main"]);
-    jj(
-        &dir,
-        &["git", "push", "--remote", "origin", "--bookmark", "main"],
-    );
-    jj(&dir, &["describe", "-m", "Next 日本語"]);
+    let dir = jj_graph_fixture();
     let _preference = Preference::pin("jj");
     for lang in ["en", "ja"] {
         let cfg = plugin_config("jj", "vcs_graph_jj", lang);
@@ -894,6 +875,30 @@ fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
             assert_eq!(rows(&new), before);
         }
     }
+}
+
+pub(super) fn jj_graph_fixture() -> TmpDir {
+    let dir = crate::test_support::unique_tmp("vcs_graph_jj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.into_canonical().unwrap();
+    jj(&dir, &["git", "init", "--no-colocate", "."]);
+    // A local remote pins trunk so the default revset is narrower than all().
+    let remote = crate::test_support::unique_tmp("vcs_graph_jj_remote");
+    git2::Repository::init_bare(&remote).unwrap();
+    jj(
+        &dir,
+        &["git", "remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    for message in ["c1", "c2", "Trunk 日本語"] {
+        jj(&dir, &["commit", "-m", message]);
+    }
+    jj(&dir, &["bookmark", "create", "-r", "@-", "main"]);
+    jj(
+        &dir,
+        &["git", "push", "--remote", "origin", "--bookmark", "main"],
+    );
+    jj(&dir, &["describe", "-m", "Next 日本語"]);
+    dir
 }
 
 fn graph_left_returns(root: &std::path::Path, id: &str) {
@@ -955,6 +960,13 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
         );
     }
     // Whitespace, comments, strings and local variable names do not delimit a function.
+    assert!(
+        jj_test_is_guarded(
+            include_str!("vcs_app_parity.rs"),
+            "jj_graph_and_bookmarks_offer_only_real_actions"
+        ),
+        "the standalone graph/bookmarks test must skip when jj is absent"
+    );
     assert!(jj_test_is_guarded("fn example ( ) { let unrelated = \"let dir { }\"; /* { */ if ! crate :: vcs :: jj :: available ( ) { return ; } jj (root); }", "example"));
     assert!(!jj_test_is_guarded(
         "fn example() { jj(root); if !crate::vcs::jj::available() { return; } }",
@@ -962,6 +974,14 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
     ));
     assert!(!jj_test_is_guarded(
         "fn example() { if crate::vcs::jj::available() { return; } jj(root); }",
+        "example"
+    ));
+    assert!(jj_test_is_guarded(
+        "fn example() { if !crate::vcs::jj::available() { return; } jj_graph_fixture(); }",
+        "example"
+    ));
+    assert!(!jj_test_is_guarded(
+        "fn example() { jj_graph_fixture(); if !crate::vcs::jj::available() { return; } }",
         "example"
     ));
 }
@@ -1051,7 +1071,13 @@ fn jj_test_is_guarded(source: &str, name: &str) -> bool {
     let body = &tokens[open + 1..end];
     let guard = rust_tokens("if !crate::vcs::jj::available() { return; }");
     let guarded = body.windows(guard.len()).position(|t| t == guard);
-    let setup = body.windows(2).position(|t| t == ["jj", "("]);
+    // Shared repository recipes also use jj; require the guard before entering one.
+    let setup = body.windows(2).position(|t| {
+        matches!(
+            t[0].as_str(),
+            "jj" | "jj_graph_fixture" | "graph_jj_fixture"
+        ) && t[1] == "("
+    });
     matches!((guarded, setup), (Some(guard), Some(setup)) if guard < setup)
 }
 

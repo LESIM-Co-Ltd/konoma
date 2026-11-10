@@ -4,7 +4,7 @@ use super::*;
 use crate::app::project_screens::ProjectContent;
 use crate::test_support::{run_git, TmpDir};
 
-fn fixture(name: &str) -> TmpDir {
+pub(super) fn fixture(name: &str) -> TmpDir {
     let dir = git_repo(name, false);
     run_git(&dir, &["branch", "-m", "main"]);
     run_git(&dir, &["branch", "alpha"]);
@@ -12,7 +12,7 @@ fn fixture(name: &str) -> TmpDir {
     dir
 }
 
-fn open(root: &std::path::Path, lang: &str, width: u16) -> (Sim, Sim) {
+pub(super) fn open(root: &std::path::Path, lang: &str, width: u16) -> (Sim, Sim) {
     let (mut old, mut new) = pair(root, "git", "vcs_branch_parity", lang, width, 20);
     old.key('b');
     new.key('b');
@@ -594,12 +594,7 @@ fn e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints() {
         &dir,
         &["describe", "-m", "seed"]
     ));
-    for name in ["alpha", "日本語"] {
-        assert!(crate::test_support::run_jj(
-            &dir,
-            &["bookmark", "create", name]
-        ));
-    }
+    add_jj_bookmarks(&dir);
     for lang in ["en", "ja"] {
         let (mut old, mut new) = pair(&dir, "jj", "vcs_bookmark_parity", lang, 160, 20);
         old.key('b');
@@ -662,5 +657,14 @@ fn e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints() {
             };
             assert_eq!(old_screen, expected);
         }
+    }
+}
+
+pub(super) fn add_jj_bookmarks(dir: &std::path::Path) {
+    for name in ["alpha", "日本語"] {
+        assert!(crate::test_support::run_jj(
+            dir,
+            &["bookmark", "create", name]
+        ));
     }
 }

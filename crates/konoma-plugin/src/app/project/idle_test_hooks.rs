@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    pub graph: Option<super::ProjectGraphSnapshot>,
     pub backend: Option<String>,
     pub stack: Vec<String>,
     pub stack_selection: Vec<Option<String>>,

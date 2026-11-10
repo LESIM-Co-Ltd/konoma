@@ -11,6 +11,10 @@ mod writes;
 #[path = "vcs_branches.rs"]
 mod branches;
 
+pub(super) fn add_jj_bookmarks(dir: &std::path::Path) {
+    branches::add_jj_bookmarks(dir);
+}
+
 pub(super) fn drain(sim: &mut Sim) {
     for _ in 0..32 {
         sim.app.poll_projects();
