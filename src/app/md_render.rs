@@ -16,6 +16,7 @@ mod rendered_diff_fallback_tests;
 #[path = "rendered_diff_screen_bridge.rs"]
 mod rendered_diff_screen_bridge;
 use crate::preview::image::ImageFailureMessage;
+use konoma_plugin::host::project::preview_gutter::FilePreviewGutter;
 use konoma_plugin::host::project::rendered_diff::{render_diff_document, RenderedDiffInput};
 
 /// Which document(s) `App::build_decorated` renders from — the seam that lets the diff's
@@ -56,7 +57,7 @@ impl GutterAlign<'_> {
     fn is_active(&self) -> bool {
         match self {
             GutterAlign::None => false,
-            GutterAlign::File { ops } => crate::preview::markdown::ops_has_any_change(ops),
+            GutterAlign::File { ops } => FilePreviewGutter::new(ops).has_changes(),
             GutterAlign::Diff(input) => input.has_changes(),
         }
     }
@@ -339,7 +340,7 @@ impl App {
             MdCacheSource::File => {
                 let pgm = match &align {
                     GutterAlign::File { ops } => {
-                        crate::preview::markdown::preview_marks(ops, &decorated.extras.block_rows)
+                        FilePreviewGutter::new(ops).project(&decorated.extras.block_rows)
                     }
                     // `GutterAlign::None`: no baseline to compare (gutter off / non-Markdown / no
                     // committed version) — matches `preview_diff_marks`'s old "no baseline = no
@@ -390,12 +391,13 @@ impl App {
                 }
                 _ => GutterAlign::None,
             },
-            DecoratedSource::File => match outcome {
-                Some(MdDiffOutcome::Ready { ops, .. }) => GutterAlign::File { ops: ops.clone() },
-                // `Unavailable`/`NoBaseline`/not-ready-yet: no baseline to compare — matches the
-                // pre-worker "an untracked file simply has no gutter" contract.
-                _ => GutterAlign::None,
-            },
+            DecoratedSource::File => {
+                FilePreviewGutter::from_outcome(outcome).map_or(GutterAlign::None, |input| {
+                    GutterAlign::File {
+                        ops: input.ops().to_vec(),
+                    }
+                })
+            }
         }
     }
 

@@ -26,6 +26,8 @@ mod edit_line;
 mod launch;
 mod looping;
 mod pictures;
+#[cfg(test)]
+mod preview_gutter_tests;
 pub mod project;
 mod space;
 mod still;
@@ -45,6 +47,8 @@ pub use acts::AppActs;
 pub use display::Display;
 pub use doc_pictures::{DocEnv, DocPics, DocPictureFocus};
 pub use document::Laid;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use document::{draw_preview_document_for_test, draw_preview_lines_for_test};
 pub use edit_line::edit_line;
 pub use launch::{HandOff, LaunchCx, LaunchFacts};
 pub use looping::{

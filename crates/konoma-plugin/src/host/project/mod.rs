@@ -93,6 +93,7 @@ pub mod md_diff;
 mod md_diff_tests;
 #[cfg(test)]
 mod media_diff_worker_tests;
+pub mod preview_gutter;
 pub mod rendered_diff;
 
 pub mod media_diff;

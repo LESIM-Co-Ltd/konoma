@@ -34,6 +34,29 @@ pub struct TextFrame {
     pub border: Option<TextBorder>,
 }
 
+impl TextFrame {
+    pub(in crate::app) fn draw(&self, buf: &mut ratatui::buffer::Buffer, body: Rect) {
+        let mut para = Paragraph::new(self.lines.clone());
+        if let Some(b) = &self.border {
+            let mut block = Block::bordered().title(super::document::path_title(&b.name));
+            if let Some(e) = b.extent {
+                block = block.title(konoma_widgets::scroll::scroll_title(
+                    e,
+                    super::document::scroll_words(b.lang),
+                ));
+            }
+            para = para.block(block);
+        }
+        if self.wrap {
+            para = para.wrap(ratatui::widgets::Wrap { trim: false });
+        }
+        para.scroll((self.vscroll, self.hscroll)).render(body, buf);
+        if let Some(e) = self.border.as_ref().and_then(|b| b.extent) {
+            konoma_widgets::scroll::render_scrollbar(buf, body, e);
+        }
+    }
+}
+
 /// What the frame of a text carries.
 pub struct TextBorder {
     /// The path as the host titles it (or the file name).
@@ -304,28 +327,7 @@ pub(super) fn draw_in(
             let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();
             Paragraph::new(text).render(body, f.buffer_mut());
         }
-        Frame::Text(t) => {
-            let text: Vec<RLine> = t.lines.clone();
-            let mut para = Paragraph::new(text);
-            if let Some(b) = &t.border {
-                let mut block = Block::bordered().title(super::document::path_title(&b.name));
-                if let Some(e) = b.extent {
-                    block = block.title(konoma_widgets::scroll::scroll_title(
-                        e,
-                        super::document::scroll_words(b.lang),
-                    ));
-                }
-                para = para.block(block);
-            }
-            if t.wrap {
-                para = para.wrap(ratatui::widgets::Wrap { trim: false });
-            }
-            para.scroll((t.vscroll, t.hscroll))
-                .render(body, f.buffer_mut());
-            if let Some(e) = t.border.as_ref().and_then(|b| b.extent) {
-                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, e);
-            }
-        }
+        Frame::Text(t) => t.draw(f.buffer_mut(), body),
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
         Frame::Document(d) => d.draw(f.buffer_mut(), body),
         Frame::Image(i) => Block::bordered()

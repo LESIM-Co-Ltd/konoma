@@ -21323,6 +21323,8 @@ mod image_parity;
 mod launch_parity;
 mod options_parity;
 mod plugin_act_parity;
+#[cfg(feature = "git")]
+mod preview_gutter_parity;
 mod preview_plan_parity;
 mod project_host;
 #[cfg(feature = "git")]

@@ -3436,6 +3436,7 @@ fn text_frame(
     } else {
         lines
     };
+    let lines = super::document::lay_out_lines(lines, st.scroll, None);
     let max_cols = lines
         .iter()
         .map(|l| {
