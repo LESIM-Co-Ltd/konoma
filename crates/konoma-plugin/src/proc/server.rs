@@ -24,6 +24,10 @@ use super::wire::{
 use crate::session::{ActCx, Cancel, OpenCx, ViewCx};
 use crate::{t, Failure, Plugin, Session};
 
+#[cfg(test)]
+#[path = "../../tests/proc_process/dispatch.rs"]
+mod cli_tests;
+
 /// Knobs of [`serve_io`]; the defaults are what [`serve`] uses.
 #[derive(Clone, Debug)]
 pub struct ServeOptions {
@@ -729,16 +733,89 @@ pub fn cli_main_many(plugins: Vec<Box<dyn Plugin>>) -> ExitCode {
     cli_main_bundled(plugins, Vec::new())
 }
 
+/// The project-program entry. Without a directory, open cwd; `--plugin <id>` also narrows
+/// discovery to that project plugin. File previews are available to the app registry only:
+/// protocol modes never list, serve or print their manifests.
+#[cfg(feature = "app")]
+pub fn cli_main_projects(
+    projects: Vec<Box<dyn Plugin>>,
+    previews: Vec<Arc<dyn Plugin>>,
+    services: Arc<dyn crate::app::project::ProjectServices>,
+) -> ExitCode {
+    project_dispatch(
+        projects,
+        std::env::args_os().skip(1).collect(),
+        |projects, dir| {
+            app_exit(crate::app::project::run_projects_with_previews(
+                projects.into_iter().map(Arc::from).collect(),
+                previews,
+                dir,
+                services,
+            ))
+        },
+    )
+}
+
+#[cfg(feature = "app")]
+fn project_dispatch(
+    projects: Vec<Box<dyn Plugin>>,
+    args: Vec<std::ffi::OsString>,
+    open: impl FnOnce(Vec<Box<dyn Plugin>>, &std::path::Path) -> ExitCode,
+) -> ExitCode {
+    cli_dispatch(projects, args, true, |mut projects, chosen, args| {
+        if args.len() > 1 || args.iter().any(|a| a.as_encoded_bytes().starts_with(b"-")) {
+            eprintln!("konoma plugin: give one directory to open\n\n{HELP}");
+            return ExitCode::from(2);
+        }
+        if let Some(id) = chosen {
+            projects.retain(|p| p.manifest().id == id);
+            if projects.is_empty() {
+                eprintln!("konoma plugin: this program has no plugin of that id");
+                return ExitCode::from(2);
+            }
+        }
+        // `.` resolves cwd in the existing preparation path, including its error mapping.
+        let dir = args
+            .first()
+            .map(std::path::Path::new)
+            .unwrap_or(std::path::Path::new("."));
+        open(projects, dir)
+    })
+}
+
+#[cfg(feature = "app")]
+fn app_exit(result: Result<(), crate::app::AppError>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("konoma plugin: {e}");
+            ExitCode::from(e.exit_code())
+        }
+    }
+}
+
 /// [`cli_main_many`] for a program that also carries `bundled` plugins. They are destinations
 /// only: the standalone app looks them up for a reopened content type and an embedded kind, and
 /// `--serve`, `--manifest`, `--version` and the choice of the plugin for a file never see them.
-pub fn cli_main_bundled(
+pub fn cli_main_bundled(plugins: Vec<Box<dyn Plugin>>, bundled: Vec<Box<dyn Plugin>>) -> ExitCode {
+    cli_dispatch(
+        plugins,
+        std::env::args_os().skip(1).collect(),
+        false,
+        |plugins, _, args| open_as_app(plugins, bundled, args),
+    )
+}
+
+/// The protocol modes are identical for file and project programs. Only the positional branch
+/// knows which app is being opened; in particular, destinations never enter this plugin list.
+fn cli_dispatch(
     mut plugins: Vec<Box<dyn Plugin>>,
-    bundled: Vec<Box<dyn Plugin>>,
+    mut args: Vec<std::ffi::OsString>,
+    open_without_arguments: bool,
+    open: impl FnOnce(Vec<Box<dyn Plugin>>, Option<String>, &[std::ffi::OsString]) -> ExitCode,
 ) -> ExitCode {
     use std::os::unix::ffi::OsStrExt;
     // The arguments of a program are bytes, not text: `args()` would panic on one that is not UTF-8.
-    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let chosen = match take_plugin_option(&mut args) {
         Ok(c) => c,
         Err(e) => {
@@ -825,11 +902,12 @@ pub fn cli_main_bundled(
             )
         }
         Some(b"--help" | b"-h") => print_out(HELP),
-        Some(other) if !other.starts_with(b"-") => open_as_app(plugins, bundled, &args),
+        Some(other) if !other.starts_with(b"-") => open(plugins, chosen, &args),
         Some(_) => {
             eprintln!("konoma plugin: unknown option {:?}\n\n{HELP}", args[0]);
             ExitCode::from(2)
         }
+        None if open_without_arguments => open(plugins, chosen, &args),
         None => {
             eprint!("{HELP}");
             ExitCode::from(2)
@@ -852,13 +930,11 @@ fn open_as_app(
     let arcs = |list: Vec<Box<dyn Plugin>>| -> Vec<std::sync::Arc<dyn Plugin>> {
         list.into_iter().map(std::sync::Arc::from).collect()
     };
-    match crate::app::run_bundled(arcs(plugins), arcs(bundled), std::path::Path::new(&args[0])) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("konoma plugin: {e}");
-            ExitCode::from(e.exit_code())
-        }
-    }
+    app_exit(crate::app::run_bundled(
+        arcs(plugins),
+        arcs(bundled),
+        std::path::Path::new(&args[0]),
+    ))
 }
 
 #[cfg(not(feature = "app"))]

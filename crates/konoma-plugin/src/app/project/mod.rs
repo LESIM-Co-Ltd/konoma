@@ -168,6 +168,15 @@ pub fn run_projects(
     dir: &Path,
     services: Arc<dyn ProjectServices>,
 ) -> Result<(), super::AppError> {
+    run_projects_with_previews(plugins, Vec::new(), dir, services)
+}
+
+pub(crate) fn run_projects_with_previews(
+    plugins: Vec<Arc<dyn crate::Plugin>>,
+    previews: Vec<Arc<dyn crate::Plugin>>,
+    dir: &Path,
+    services: Arc<dyn ProjectServices>,
+) -> Result<(), super::AppError> {
     use super::{term, AppError, PrepareFailure};
     use std::io::IsTerminal;
 
@@ -175,8 +184,9 @@ pub fn run_projects(
         &std::env::var("COLORTERM").unwrap_or_default(),
         &std::env::var("TERM").unwrap_or_default(),
     );
-    let mut prepared = match prepare_projects(
+    let mut prepared = match prepare::prepare_projects_with_previews(
         plugins,
+        previews,
         dir,
         TermCaps::new().colors(colors),
         SharedConfig::load_default(),

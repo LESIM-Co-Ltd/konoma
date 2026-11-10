@@ -24,12 +24,103 @@ use crate::child::CHILD_ENV;
 pub fn all() -> Vec<(&'static str, fn())> {
     let mut all = base();
     all.extend(multi_and_app());
+    #[cfg(feature = "app")]
+    all.push((
+        "project_cli_dispatches_only_project_ids",
+        project_cli_dispatches_only_project_ids,
+    ));
     all
+}
+
+#[cfg(feature = "app")]
+fn project_cli_dispatches_only_project_ids() {
+    let dir = unique_tmp("kpp_project_cli");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.marker"), "").unwrap();
+    let command = || {
+        let mut c = child_command();
+        c.env(CHILD_ENV, "projects")
+            .env("HOME", dir.as_path())
+            .env("XDG_CONFIG_HOME", dir.as_path())
+            .current_dir(dir.as_path())
+            .stdin(Stdio::null());
+        c
+    };
+    let out = command().arg("--version").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.stdout, b"git 1.0.0\njj 1.0.0\n");
+    for mode in ["--serve", "--manifest"] {
+        let out = command().arg(mode).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "one plugin is required for {mode}"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "several manifests must not be printed as one"
+        );
+    }
+    for id in ["proc-second", "unknown"] {
+        for mode in ["--serve", "--manifest", "--version", "."] {
+            let out = command().args(["--plugin", id, mode]).output().unwrap();
+            assert_eq!(out.status.code(), Some(2), "{id} {mode}");
+            assert!(out.stdout.is_empty());
+        }
+    }
+    for id in ["git", "jj"] {
+        let out = command()
+            .args(["--manifest", "--plugin", id])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        let manifest = manifest_from_json(&String::from_utf8(out.stdout).unwrap()).unwrap();
+        assert_eq!(manifest.id, id);
+        let out = command()
+            .args(["--plugin", id, "--version"])
+            .output()
+            .unwrap();
+        assert_eq!(out.stdout, format!("{id} 1.0.0\n").as_bytes());
+    }
+    // No directory argument means cwd, and the selected id also narrows discovery/open.
+    let out = command().args(["--plugin", "jj"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr_of(&out));
+    assert!(stderr_of(&out).contains("must be a terminal"));
+    assert!(dir.join("jj.opened").exists());
+    assert!(
+        !dir.join("git.opened").exists(),
+        "--plugin must narrow project candidates"
+    );
+    for args in [
+        vec![".", "extra"],
+        vec![".", "--unknown"],
+        vec!["--unknown"],
+        vec!["--plugin"],
+        vec!["--plugin", "jj", "--plugin", "git"],
+    ] {
+        let out = command().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr_of(&out));
+    }
+    // Use the real transport, with an unrelated first argument and the host's trailing --serve.
+    let (plugin, pids) = plugin_in(
+        limits(),
+        dir.as_path(),
+        &["ignored", "--plugin", "jj"],
+        "projects",
+    );
+    assert_eq!(plugin.manifest().id, "jj");
+    let pid = the_pid(&pids);
+    plugin.stop();
+    gone(pid);
 }
 
 /// The tests of a program that carries several plugins and of a file given to a program.
 fn multi_and_app() -> Vec<(&'static str, fn())> {
     vec![
+        (
+            "file_export_without_arguments_is_still_usage_error",
+            file_export_without_arguments_is_still_usage_error,
+        ),
         (
             "several_plugins_need_the_plugin_option_to_print_a_manifest",
             multi_manifest,
@@ -56,6 +147,25 @@ fn multi_and_app() -> Vec<(&'static str, fn())> {
             multi_file_routing,
         ),
     ]
+}
+
+fn file_export_without_arguments_is_still_usage_error() {
+    let dir = unique_tmp("kpp_file_cli_empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = child_command()
+        .env("HOME", dir.as_path())
+        .env("XDG_CONFIG_HOME", dir.as_path())
+        .current_dir(dir.as_path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr_of(&out).contains("USAGE:"),
+        "an empty file export must print usage: {}",
+        stderr_of(&out)
+    );
+    assert!(out.stdout.is_empty());
 }
 
 fn base() -> Vec<(&'static str, fn())> {

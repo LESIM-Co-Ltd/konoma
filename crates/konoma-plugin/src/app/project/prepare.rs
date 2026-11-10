@@ -27,9 +27,21 @@ pub fn prepare_projects(
     loaded: (SharedConfig, Option<String>),
     services: Arc<dyn ProjectServices>,
 ) -> Result<PreparedProjects, PrepareFailure> {
+    prepare_projects_with_previews(plugins, Vec::new(), dir, term, loaded, services)
+}
+
+pub(super) fn prepare_projects_with_previews(
+    plugins: Vec<Arc<dyn Plugin>>,
+    previews: Vec<Arc<dyn Plugin>>,
+    dir: &Path,
+    term: TermCaps,
+    loaded: (SharedConfig, Option<String>),
+    services: Arc<dyn ProjectServices>,
+) -> Result<PreparedProjects, PrepareFailure> {
     let (config, load_error) = loaded;
+    // File previews take part in normal file resolution, unlike stage 3 bundled destinations.
     prepare(
-        plugins,
+        plugins.into_iter().chain(previews).collect(),
         dir,
         term,
         config,
