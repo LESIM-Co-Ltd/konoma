@@ -1,11 +1,18 @@
 //! Project preparation, terminal entry and the act, prompt and navigation loop.
 
+#[cfg(any(test, feature = "test-hooks"))]
+mod idle_test_hooks;
 mod launch;
 mod looping;
 mod prepare;
 pub(in crate::app) mod preview;
 #[cfg(any(test, feature = "test-hooks"))]
 mod representation_test_hooks;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use idle_test_hooks::{
+    read_snapshot_for_test, run_project_fenced_for_test, ProjectIdleSnapshot,
+};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use representation_test_hooks::drive_diff_representation_for_test;

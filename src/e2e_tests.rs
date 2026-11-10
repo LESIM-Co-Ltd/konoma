@@ -21426,6 +21426,7 @@ mod preview_failure_choice;
 #[cfg(feature = "git")]
 mod preview_gutter_parity;
 mod preview_plan_parity;
+mod project_frames;
 mod project_host;
 #[cfg(feature = "git")]
 mod project_launch_bridge;

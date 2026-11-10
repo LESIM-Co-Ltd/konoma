@@ -643,6 +643,33 @@ impl DocPics {
                 .any(|e| e.rebuilding || (e.decoded.is_none() && !e.failed && !e.evicted))
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settle_for_test(&mut self) {
+        while self.loading() {
+            if !self.remote_inflight.is_empty() {
+                let result = self
+                    .fetch_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("project idle fence: document picture fetch");
+                self.dp().apply_fetch(result);
+                self.bump();
+            } else if self.cache.encodes_in_flight() {
+                let result = self
+                    .enc_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("project idle fence: document picture encode");
+                self.cache.apply_encode(result);
+                self.redraw = true;
+            } else {
+                let result = self
+                    .res_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("project idle fence: document picture decode");
+                self.apply_decoded(result);
+            }
+        }
+    }
+
     /// How long the loop may wait: a short poll while something is out, the next GIF frame while
     /// the document is on screen.
     pub fn wake_in(&self, busy_poll: Duration) -> Option<Duration> {

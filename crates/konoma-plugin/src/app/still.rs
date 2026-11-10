@@ -522,6 +522,51 @@ impl Still {
         (loading || self.viewer.kitty_build_pending() || resizing).then_some(BUSY_POLL)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settled_for_test(&self) -> bool {
+        self.busy_wake().is_none() && !self.sharp_inflight
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_resizes_for_test(&mut self) -> (Sender<()>, Receiver<()>) {
+        let (mut resize, go) = ResizeChannel::spawn_held();
+        let (waiting, waits) = channel();
+        resize.notify_waits_for_test(waiting);
+        self.resize = resize;
+        (go, waits)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settle_for_test(&mut self) {
+        while self.loading() {
+            let done = self
+                .done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture decode");
+            self.done_tx.send(done).expect("still decode receiver");
+            self.poll_at(Instant::now());
+        }
+        while self.sharp_inflight {
+            let done = self
+                .sharp_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture sharp decode");
+            self.sharp_tx.send(done).expect("sharp receiver");
+            self.poll_at(Instant::now());
+        }
+        while self.viewer.kitty_build_pending() {
+            let result = self
+                .kitty_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture kitty encode");
+            self.viewer.apply_kitty(result);
+        }
+        while !self.resize_failed && self.viewer.resize_pending() {
+            self.resize.wait_for_publication_for_test();
+            self.poll_at(Instant::now());
+        }
+    }
+
     /// Draw into `inner` (the inside of the frame's border): the spinner while it loads, the
     /// reason when it failed, else the picture; when nothing could be drawn the failure line.
     pub fn draw(&mut self, buf: &mut Buffer, inner: Rect, lang: Lang) {

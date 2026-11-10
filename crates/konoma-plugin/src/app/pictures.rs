@@ -163,6 +163,48 @@ pub struct Pictures {
 }
 
 impl Pictures {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settled_for_test(&self) -> bool {
+        self.job.is_none()
+            && self.again_at.is_none()
+            && !self.cache.encodes_in_flight()
+            && self.still.as_ref().is_none_or(Still::settled_for_test)
+            && self.doc.as_ref().is_none_or(|d| !d.loading())
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settle_for_test(&mut self) {
+        while self.job.is_some() || self.again_at.is_some() {
+            // A deferred decode is owed work; animation deadlines do not fence publication.
+            if self.job.is_none() && self.again_at.take().is_some() {
+                if let Some((cols, rows, images)) = self.latest.clone() {
+                    self.start_for(cols, rows, &images, true);
+                }
+            }
+            if self.job.is_none() {
+                break;
+            }
+            let done = self
+                .done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture decode");
+            self.done_tx.send(done).expect("picture receiver");
+            self.poll();
+        }
+        while self.cache.encodes_in_flight() {
+            let result = self
+                .enc_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture encode");
+            self.cache.apply_encode(result);
+        }
+        if let Some(still) = self.still.as_mut() {
+            still.settle_for_test();
+        }
+        if let Some(doc) = self.doc.as_mut() {
+            doc.settle_for_test();
+        }
+    }
     /// The pictures for `plugin_id` showing `path`, drawn through `picker`. Starts the encode
     /// worker; the SVGs are drawn in this process at `raster_px` (`ui.svg_max_px`) and the
     /// kitty deletes go to standard output.
@@ -348,6 +390,14 @@ impl Pictures {
             .as_mut()
             .expect("submitted image")
             .wait_decode_for_test();
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_still_resizes_for_test(&mut self) -> (Sender<()>, Receiver<()>) {
+        self.still
+            .as_mut()
+            .expect("submitted still picture")
+            .hold_resizes_for_test()
     }
 
     /// The centre of the visible window of the still picture.

@@ -1,0 +1,84 @@
+{
+  "rect": [0, 0, 40, 8],
+  "keys": ["Enter", "R", "R", "q"],
+  "frames": [
+    {
+      "rows": [
+        "                      Project   path:rel",
+        " Changes                                ",
+        "file.txt after                          ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        "
+      ],
+      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+    },
+    {
+      "rows": [
+        "                   GIT   DIFF   path:rel",
+        "┌ diff: repo/file.txt (1/1) ──── [All] ┐",
+        "│▌   1      before                     █",
+        "│▌        1 watch                      █",
+        "│                                      █",
+        "│                                      █",
+        "└──────────────────────────────────────┘",
+        "diff                                    "
+      ],
+      "styles": [[18,["Reset","Reset",0]],[5,["Black","Yellow",1]],[1,["Reset","Reset",0]],[6,["White","Blue",1]],[10,["Reset","Reset",2]],[41,["Reset","Reset",0]],[1,["Rgb(199, 84, 80)","Rgb(58, 24, 26)",0]],[10,["DarkGray","Rgb(58, 24, 26)",0]],[6,["Rgb(171, 178, 191)","Rgb(58, 24, 26)",0]],[23,["Reset","Reset",0]],[1,["Rgb(87, 171, 90)","Rgb(20, 48, 28)",0]],[10,["DarkGray","Rgb(20, 48, 28)",0]],[5,["Rgb(171, 178, 191)","Rgb(20, 48, 28)",0]],[143,["Reset","Reset",0]],[4,["Reset","Reset",1]],[36,["Reset","Reset",0]]]
+    },
+    {
+      "rows": [
+        "┌ repo/file.txt ──────────────── [All] ┐",
+        "│▌watch                                █",
+        "│                                      █",
+        "│                                      █",
+        "│                                      █",
+        "│                                      █",
+        "└──────────────────────────────────────┘",
+        "j/k:scroll  q:quit  ?:help  g/G:ends …  "
+      ],
+      "styles": [[41,["Reset","Reset",0]],[1,["Rgb(216, 166, 74)","Rgb(55, 60, 74)",0]],[1,["Reset","Rgb(55, 60, 74)",64]],[4,["Reset","Rgb(55, 60, 74)",0]],[233,["Reset","Reset",0]],[38,["Reset","Reset",2]],[2,["Reset","Reset",0]]]
+    },
+    {
+      "rows": [
+        "                   GIT   DIFF   path:rel",
+        "┌ diff: repo/file.txt (1/1) ──── [All] ┐",
+        "│▌   1      before                     █",
+        "│▌        1 watch                      █",
+        "│                                      █",
+        "│                                      █",
+        "└──────────────────────────────────────┘",
+        "j/k:scroll  C-n/C-p:next/prev file …    "
+      ],
+      "styles": [[18,["Reset","Reset",0]],[5,["Black","Yellow",1]],[1,["Reset","Reset",0]],[6,["White","Blue",1]],[10,["Reset","Reset",2]],[41,["Reset","Reset",0]],[1,["Rgb(199, 84, 80)","Rgb(58, 24, 26)",0]],[10,["DarkGray","Rgb(58, 24, 26)",0]],[6,["Rgb(171, 178, 191)","Rgb(58, 24, 26)",0]],[23,["Reset","Reset",0]],[1,["Rgb(87, 171, 90)","Rgb(20, 48, 28)",0]],[10,["DarkGray","Rgb(20, 48, 28)",0]],[5,["Rgb(171, 178, 191)","Rgb(20, 48, 28)",0]],[143,["Reset","Reset",0]],[36,["Reset","Reset",1]],[4,["Reset","Reset",0]]]
+    },
+    {
+      "rows": [
+        "               Project   DIFF   path:rel",
+        " Changes                                ",
+        "file.txt watch                          ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        "
+      ],
+      "styles": [[14,["Reset","Reset",0]],[9,["Black","Cyan",1]],[1,["Reset","Reset",0]],[6,["White","Blue",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+    },
+    {
+      "rows": [
+        "                      Project   path:rel",
+        " Changes                                ",
+        "file.txt watch                          ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        ",
+        "                                        "
+      ],
+      "styles": [[21,["Reset","Reset",0]],[9,["Black","Cyan",1]],[10,["Reset","Reset",2]],[9,["Reset","Reset",65]],[31,["Reset","Reset",0]],[14,["Reset","Reset",64]],[226,["Reset","Reset",0]]]
+    }
+  ]
+}

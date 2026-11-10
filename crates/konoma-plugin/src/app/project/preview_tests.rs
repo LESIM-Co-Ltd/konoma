@@ -12,6 +12,9 @@ use ratatui::{backend::TestBackend, buffer::Buffer};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
+#[path = "idle_resize_tests.rs"]
+mod idle_resize_tests;
+
 struct Project;
 impl Plugin for Project {
     fn manifest(&self) -> Manifest {

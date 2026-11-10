@@ -13,6 +13,20 @@ struct PreparedProjectRoot {
     state: ProjectLoopState,
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+impl PendingRootSwitch {
+    pub(super) fn fence_for_test(&mut self) {
+        let result = self
+            .reply
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("project idle fence: root switch publication");
+        let (tx, rx) = mpsc::channel();
+        tx.send(result)
+            .unwrap_or_else(|_| panic!("root switch receiver"));
+        self.reply = rx;
+    }
+}
+
 impl ProjectLoopState {
     pub(super) fn start_root_switch(
         &mut self,

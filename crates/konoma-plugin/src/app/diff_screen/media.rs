@@ -37,6 +37,20 @@ impl Media {
 }
 
 impl DiffScreenState {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settle_media_for_test(&mut self, mut pictures: Option<&mut DocPics>) {
+        while self.media.pending() {
+            self.poll_media(pictures.as_deref_mut());
+            if self.media.worker.busy() {
+                let result = self
+                    .media
+                    .rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("project idle fence: shown target media");
+                self.adopt_media(result, &mut pictures);
+            }
+        }
+    }
     /// Supply an attached worker and receiver, including a host's publication fence.
     pub fn with_media_worker(
         mut self,

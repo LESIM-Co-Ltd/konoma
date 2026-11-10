@@ -345,10 +345,7 @@ fn raw_key(name: &str) -> Key {
 }
 
 fn reference() -> serde_json::Value {
-    serde_json::from_str(include_str!(
-        "../../../../../snapshots/diff_source_screen.json"
-    ))
-    .unwrap()
+    konoma_plugin::app::project::read_snapshot_for_test("diff_source_screen")
 }
 
 fn assert_cells(terminal: &Terminal<TestBackend>, expected: &serde_json::Value) {

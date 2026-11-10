@@ -104,6 +104,10 @@ pub(in crate::app) struct PreviewGutter {
     options: Option<crate::view::DocOptions>,
     pub(in crate::app) yield_on_timeout: bool,
     pub(in crate::app) owner_wake: Option<Duration>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) idle: Option<super::ProjectIdleSnapshot>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) detection: Option<crate::host::project::ProjectDetection>,
 }
 
 impl PreviewGutter {
@@ -131,6 +135,10 @@ impl PreviewGutter {
             options: None,
             yield_on_timeout: false,
             owner_wake: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            idle: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            detection: None,
         }
     }
 
@@ -143,6 +151,27 @@ impl PreviewGutter {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settle_for_test(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(raw) = self.raw.take() {
+            let reply = raw
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: Preview raw document");
+            self.lines =
+                Some(reply.map_or_else(|_| HashMap::new(), |d| line_gutter_marks(&d.lines)));
+            changed = true;
+        }
+        while self.markdown.pending_for(&self.path) {
+            let reply = self
+                .markdown_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: Preview Markdown document");
+            changed |= self.adopt(reply);
+        }
+        changed
     }
 
     fn adopt(&mut self, result: MdDiffResult) -> bool {
@@ -290,8 +319,18 @@ pub(super) struct PendingPreview {
 
 impl PendingPreview {
     #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn fence_for_test(&mut self) {
+        let opened = self.wait_for_test();
+        let (tx, rx) = mpsc::channel();
+        tx.send(opened)
+            .expect("project idle fence: Preview publication");
+        self.reply = rx;
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(super) fn wait_for_test(&self) -> Result<Opened, AppError> {
-        self.reply.recv_timeout(Duration::from_secs(10)).unwrap()
+        self.reply
+            .recv_timeout(Duration::from_secs(30))
+            .expect("project idle fence: Preview open publication")
     }
     pub(super) fn matches(&self, diff: &DiffScreenReturn) -> bool {
         self.source.path == diff.path && diff.choice == konoma_host_core::project::DiffView::Preview

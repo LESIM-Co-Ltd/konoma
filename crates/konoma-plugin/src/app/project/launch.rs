@@ -71,6 +71,24 @@ impl Default for LaunchState {
 }
 
 impl LaunchState {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn fence_for_test(&mut self) {
+        if let Some(PendingLaunch::File(_, reply)) = self.queue.front_mut() {
+            let target = reply
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("project idle fence: launch target publication");
+            let (tx, rx) = mpsc::channel();
+            tx.send(target).expect("launch target receiver");
+            *reply = rx;
+        }
+        if self.launching > 0 {
+            let result = self
+                .rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("project idle fence: launch reply publication");
+            self.tx.send(result).expect("launch receiver");
+        }
+    }
     pub(super) fn file(
         &mut self,
         prepared: &PreparedProjects,

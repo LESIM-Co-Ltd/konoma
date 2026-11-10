@@ -24,6 +24,9 @@ use super::PreparedProjects;
 mod chrome;
 #[path = "effects.rs"]
 mod delivery;
+#[cfg(any(test, feature = "test-hooks"))]
+#[path = "idle.rs"]
+mod idle;
 #[path = "input.rs"]
 mod input;
 #[path = "presentation.rs"]
@@ -261,6 +264,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
     let mut state = ProjectLoopState::new(prepared, cx.launch.is_some());
+    #[cfg(any(test, feature = "test-hooks"))]
+    let mut fence = idle::FrameFence::default();
     let result = (|| {
         if state.screen.is_none()
             && state.diff_return.is_none()
@@ -300,6 +305,33 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 host.resize(context, previous, info.viewport)
             });
             redraw |= state.poll_detection(prepared, &info);
+            #[cfg(any(test, feature = "test-hooks"))]
+            if events.project_fenced() && state.file_preview.is_some() {
+                // A Preview yields to its owner without tearing down its file runner.
+                if state
+                    .runtimes
+                    .values()
+                    .any(|r| r.busy || r.pending.is_some())
+                {
+                    state.wait_owners_for_test();
+                    let retained: Vec<_> = state.runtimes.keys().cloned().collect();
+                    let update = state.with_host(&info, |host, context| {
+                        host.poll(
+                            std::slice::from_mut(context),
+                            std::slice::from_ref(&info),
+                            &retained,
+                        )
+                    });
+                    if state.apply(prepared, &info, update) {
+                        break;
+                    }
+                    continue;
+                }
+                prepared.detection.fence_watch_for_test();
+                if !prepared.detection.watch_settled_for_test() {
+                    continue;
+                }
+            }
             // A resumed Preview owns this navigation until it leaves. A late raw reply
             // cannot discard its source diff or take its project return owner away.
             if let Some(diff) = state.diff.as_mut().filter(|_| state.file_preview.is_none()) {
@@ -366,7 +398,16 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 }
                 redraw = true;
             }
+            #[cfg(any(test, feature = "test-hooks"))]
+            let preview_snapshot = events
+                .project_fenced()
+                .then(|| state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence));
             if let Some(preview) = &mut state.file_preview {
+                #[cfg(any(test, feature = "test-hooks"))]
+                if events.project_fenced() {
+                    preview.gutter.detection = Some(prepared.detection.clone());
+                    preview.gutter.idle = preview_snapshot;
+                }
                 preview.gutter.owner_wake = (state
                     .runtimes
                     .values()
@@ -383,6 +424,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     pictures.as_mut(),
                     Some(&mut preview.gutter),
                 )?;
+                #[cfg(any(test, feature = "test-hooks"))]
+                if let Some(snapshot) = &preview.gutter.idle {
+                    fence.adopt(snapshot);
+                }
                 match exit {
                     crate::app::looping::FileLoopExit::ReturnToSource => {
                         state.file_preview = None;
@@ -485,6 +530,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 }
             }
             state.ensure(&info);
+            #[cfg(any(test, feature = "test-hooks"))]
+            if events.project_fenced() && redraw {
+                fence.changed();
+            }
             if redraw {
                 terminal
                     .draw(|frame| {
@@ -531,7 +580,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             state.presentation = state.presentation(prepared, &info);
                             state.draw_chrome(prepared, frame.buffer_mut(), whole);
                         }
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "test-hooks"))]
                         crate::app::draw::record_test_frame(frame.buffer_mut());
                     })
                     .map_err(|e| AppError::Terminal(e.to_string()))?;
@@ -546,6 +595,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     p.flush_deletes();
                 }
                 redraw = false;
+                #[cfg(any(test, feature = "test-hooks"))]
+                if events.project_fenced() {
+                    fence.drawn();
+                }
             }
             let pending = state
                 .runtimes
@@ -586,7 +639,24 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             .into_iter()
             .flatten()
             .min();
-            match events.next(wake_in) {
+            #[cfg(any(test, feature = "test-hooks"))]
+            let fenced = if events.project_fenced() {
+                prepared.detection.fence_watch_for_test();
+                let snapshot = state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence);
+                if !snapshot.is_idle() {
+                    state.wait_idle_for_test(prepared, &snapshot, pictures.as_mut());
+                    redraw = true;
+                    continue;
+                }
+                Some(events.project_idle(snapshot, crate::app::draw::test_frame()))
+            } else {
+                None
+            };
+            #[cfg(any(test, feature = "test-hooks"))]
+            let next = fenced.unwrap_or_else(|| events.next(wake_in));
+            #[cfg(not(any(test, feature = "test-hooks")))]
+            let next = events.next(wake_in);
+            match next {
                 Next::End => break,
                 Next::Event(AppEvent::Key(key)) => {
                     redraw = true;

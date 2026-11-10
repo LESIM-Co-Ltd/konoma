@@ -872,4 +872,30 @@ impl ProjectDetection {
             "project worker did not answer"
         );
     }
+
+    /// Fence queued watch/path messages, without waiting for the resident watcher to exit.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn fence_watch_for_test(&self) {
+        if let Some(worker) = &self.worker {
+            let (tx, rx) = mpsc::sync_channel(1);
+            if worker.watches.wake.send(WatchMessage::Settled(tx)).is_ok() {
+                match rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(e) => panic!("project idle fence: watch publication: {e}"),
+                }
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn watch_settled_for_test(&self) -> bool {
+        self.worker.as_ref().is_none_or(|w| {
+            w.slot
+                .value
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+                && !w.watches.dirty.load(Ordering::Acquire)
+        })
+    }
 }

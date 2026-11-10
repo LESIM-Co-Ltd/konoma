@@ -27,7 +27,7 @@ widgets = ["dep:konoma-widgets"]
 pictures = ["ratatui", "widgets", "dep:konoma-base", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image", "dep:ureq"]
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
 # while this crate's own tests build). Enabled by this crate's and the host's dev-dependencies.
-test-hooks = ["konoma-base?/test-hooks"]
+test-hooks = ["konoma-base?/test-hooks", "konoma-widgets?/test-hooks"]
 # What a host decides about a plugin's declared actions and the typing it takes for a canvas
 # (`host`): the one rule konoma and the standalone app share. Needs the shared key type
 # (`config`) and the terminal's key event (crossterm).

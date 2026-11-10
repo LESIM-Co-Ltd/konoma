@@ -1512,6 +1512,20 @@ pub enum Next {
 pub trait EventSource {
     /// The next event; `wait` is how long to wait for it (`None` = as long as it takes).
     fn next(&mut self, wait: Option<Duration>) -> Next;
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_fenced(&self) -> bool {
+        false
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_idle(
+        &mut self,
+        _: super::project::ProjectIdleSnapshot,
+        _: ratatui::buffer::Buffer,
+    ) -> Next {
+        unreachable!("only a fenced project source observes idle frames")
+    }
 }
 
 impl<I: Iterator<Item = AppEvent>> EventSource for I {
@@ -1863,6 +1877,15 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
     }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     loop {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(preview) = preview.as_deref_mut() {
+                *need_view |= preview.settle_for_test();
+            }
+            if let Some(pictures) = pictures.as_deref_mut() {
+                pictures.settle_for_test();
+            }
+        }
         if preview.as_deref_mut().is_some_and(|p| p.poll()) {
             *need_view = true;
         }
@@ -2398,6 +2421,12 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 .unwrap_or_else(|| hint_spans(footer)),
             (None, None) => hint_spans(footer),
         };
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(snapshot) = preview.as_deref_mut().and_then(|p| p.idle.as_mut()) {
+                snapshot.state_generation += 1;
+            }
+        }
         draw_frame(
             terminal,
             frame,
@@ -2437,7 +2466,34 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
         };
         // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
         *need_view = true;
-        match events.next(wait) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        let fenced = if events.project_fenced() {
+            let preview = preview.as_deref_mut().expect("project Preview fence");
+            if let Some(detection) = &preview.detection {
+                detection.fence_watch_for_test();
+                if !detection.watch_settled_for_test() {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+            }
+            let mut snapshot = preview.idle.clone().expect("project owner snapshot");
+            snapshot.preview = preview.wake_in().is_none();
+            snapshot.pictures = pictures.as_deref().is_none_or(Pictures::settled_for_test);
+            if !snapshot.preview || !snapshot.pictures {
+                *need_view = false;
+                continue;
+            }
+            snapshot.drawn_generation = snapshot.state_generation;
+            preview.idle = Some(snapshot.clone());
+            Some(events.project_idle(snapshot, draw::test_frame()))
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-hooks"))]
+        let next = fenced.unwrap_or_else(|| events.next(wait));
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        let next = events.next(wait);
+        match next {
             Next::End => return Ok(FileLoopExit::End),
             Next::Timeout => {
                 *need_view = view_first;
