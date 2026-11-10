@@ -214,6 +214,10 @@ fn prepare_at(
         _ => None,
     };
     Ok(PreparedProjects {
+        file_preview: None,
+        preview_open: None,
+        #[cfg(test)]
+        preview_open_fence: None,
         file_previews: None,
         registry,
         open_dir: dir,

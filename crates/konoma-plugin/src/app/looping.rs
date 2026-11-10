@@ -2967,6 +2967,8 @@ fn draw_frame<B: Backend>(
                         h.title.clone(),
                     );
                 }
+                #[cfg(test)]
+                draw::record_test_frame(f.buffer_mut());
             })
             .map_err(|e| terr(&e))?;
         let moved = pictures.as_deref_mut().is_some_and(Pictures::take_moved);

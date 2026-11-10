@@ -87,13 +87,13 @@ pub enum DiffScreenAction {
     Tool,
 }
 
-/// Reserved navigation boundary. Preview is not an executable capability yet.
+/// Navigation requested by a diff representation; execution belongs to its caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffScreenCommand {
     OpenPreview { path: PathBuf },
 }
 
-/// Context an eventual Preview executor must retain when returning to the file diff.
+/// Diff context retained by the Preview executor, separate from file page, caret and pose.
 #[derive(Clone, Debug)]
 pub struct DiffScreenReturn {
     pub path: PathBuf,
@@ -105,6 +105,7 @@ pub struct DiffScreenReturn {
 }
 
 pub struct DiffScreenState {
+    command: Option<DiffScreenCommand>,
     file_previews: Option<crate::host::file_preview::FilePreviewSource>,
     preview_reply: Option<mpsc::Receiver<(crate::host::file_preview::ResolvedFilePreview, bool)>>,
     resolved_preview: Option<(crate::host::file_preview::ResolvedFilePreview, bool)>,
@@ -205,6 +206,7 @@ impl DiffScreenState {
         let pending = services.clone().spawn_file_diff(request.clone())?;
         let read_context = request.info.backend.diff_read_context();
         let mut state = Self {
+            command: None,
             file_previews: source,
             preview_reply: None,
             resolved_preview: None,
@@ -293,6 +295,7 @@ impl DiffScreenState {
 
     /// Drop raw ownership on return; retain the last surface context, as konoma does.
     pub(super) fn close(&mut self) {
+        self.command = None;
         self.closed = true;
         self.data = None;
         self.pending = None;
@@ -363,7 +366,14 @@ impl DiffScreenState {
                 PreviewOp::Cancel => Some(O::Cancel),
                 _ => None,
             });
-        let Some(op) = fixed.or_else(|| O::resolve_file_diff(&self.keys, key)) else {
+        let representation = (self.file_previews.is_some()
+            && self.keys.host_op(CoreContext::Diff, key)
+                == Some(konoma_host_core::keymap::HostOp::CycleRepresentation))
+        .then_some(O::View);
+        let Some(op) = fixed
+            .or(representation)
+            .or_else(|| O::resolve_file_diff(&self.keys, key))
+        else {
             return Ok((DiffScreenAction::Stay, None));
         };
         self.execute_op(op)
@@ -410,8 +420,10 @@ impl DiffScreenState {
                     &self.representations(),
                 ) {
                     self.choice = next;
-                    self.scroll = 0;
-                    self.block = None;
+                    if next != DiffView::Preview {
+                        self.scroll = 0;
+                        self.block = None;
+                    }
                     self.choose_effective();
                 }
             }
@@ -515,6 +527,18 @@ impl DiffScreenState {
             ja
         } else {
             en
+        }
+    }
+
+    pub(in crate::app) fn take_command(&mut self) -> Option<DiffScreenCommand> {
+        self.command.take()
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn settle_preview_for_test(&mut self) {
+        if let Some(rx) = self.preview_reply.take() {
+            self.resolved_preview = Some(rx.recv_timeout(Duration::from_secs(10)).unwrap());
+            self.choose_effective();
         }
     }
 

@@ -3,6 +3,7 @@
 mod launch;
 mod looping;
 mod prepare;
+mod preview;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -129,6 +130,10 @@ pub trait ProjectServices: Send + Sync + 'static {
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
 /// Preparation does not take the terminal or start the input loop.
 pub struct PreparedProjects {
+    file_preview: Option<preview::FilePreviewState>,
+    preview_open: Option<preview::PendingPreview>,
+    #[cfg(test)]
+    preview_open_fence: Option<std::sync::mpsc::Sender<()>>,
     pub(in crate::app) file_previews: Option<crate::host::file_preview::FilePreviewSource>,
     pub registry: Arc<Registry>,
     pub open_dir: PathBuf,

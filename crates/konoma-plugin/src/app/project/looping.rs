@@ -32,6 +32,10 @@ mod presentation;
 pub(super) mod root_switch;
 use input::key_event;
 
+#[cfg(test)]
+#[path = "preview_tests.rs"]
+mod preview_tests;
+
 /// Context supplied without reading the process environment on the UI thread.
 #[derive(Default)]
 pub struct ProjectLoopCx {
@@ -71,6 +75,8 @@ impl ProjectActionInvocation for StandaloneInvocation {
 type Runtime = ProjectRuntime<ProjectEffect<StandaloneSurface>, StandaloneInvocation>;
 
 struct ProjectLoopState {
+    file_preview: Option<super::preview::FilePreviewState>,
+    preview_open: Option<super::preview::PendingPreview>,
     launch_enabled: bool,
     launch: super::launch::LaunchState,
     diff: Option<crate::app::diff_screen::DiffScreenState>,
@@ -91,6 +97,8 @@ struct ProjectLoopState {
 impl ProjectLoopState {
     fn new(prepared: &mut PreparedProjects, launch_enabled: bool) -> Self {
         Self {
+            file_preview: prepared.file_preview.take(),
+            preview_open: prepared.preview_open.take(),
             launch_enabled,
             launch: super::launch::LaunchState::default(),
             diff: prepared.diff.take(),
@@ -292,7 +300,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 host.resize(context, previous, info.viewport)
             });
             redraw |= state.poll_detection(prepared, &info);
-            if let Some(diff) = &mut state.diff {
+            // A resumed Preview owns this navigation until it leaves. A late raw reply
+            // cannot discard its source diff or take its project return owner away.
+            if let Some(diff) = state.diff.as_mut().filter(|_| state.file_preview.is_none()) {
                 match diff.poll() {
                     Ok(true) => {
                         if state.diff_return.is_none() {
@@ -312,6 +322,71 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         }
                         redraw = true;
                     }
+                }
+            }
+            if state.preview_open.as_ref().is_some_and(|pending| {
+                state
+                    .diff
+                    .as_ref()
+                    .is_none_or(|diff| diff.closed || !pending.matches(&diff.return_info()))
+            }) {
+                state.preview_open = None;
+            }
+            if state.diff_return.is_some()
+                && state.preview_open.is_none()
+                && state.file_preview.is_none()
+            {
+                if let Some(diff) = state.diff.as_mut() {
+                    if let Some(crate::app::diff_screen::DiffScreenCommand::OpenPreview { path }) =
+                        diff.take_command()
+                    {
+                        let source = diff.return_info();
+                        debug_assert_eq!(source.path, path);
+                        state.preview_open =
+                            super::preview::PendingPreview::start(prepared, source);
+                    }
+                }
+            }
+            if let Some(result) = state.preview_open.as_ref().and_then(|p| p.poll()) {
+                let pending = state.preview_open.take().unwrap();
+                match result {
+                    Ok(opened) => {
+                        crate::app::edit_line::clear();
+                        if let Some(p) = pictures.as_mut() {
+                            p.begin_file(&opened.plugin_id, &opened.path);
+                        }
+                        state.file_preview = Some(pending.finish(opened, prepared, cx));
+                    }
+                    Err(error) => prepared.notice = Some(error.to_string()),
+                }
+                redraw = true;
+            }
+            if let Some(preview) = &mut state.file_preview {
+                let context = preview.context(prepared, cx);
+                let exit = crate::app::looping::run_file_with(
+                    terminal,
+                    &mut *preview.opened.session,
+                    events,
+                    &context,
+                    &mut preview.runner,
+                    pictures.as_mut(),
+                )?;
+                match exit {
+                    crate::app::looping::FileLoopExit::Back => {
+                        debug_assert_eq!(
+                            preview.source.path,
+                            state.diff.as_ref().unwrap().request.path
+                        );
+                        state.file_preview = None;
+                        state.diff = None;
+                        state.screen = state.diff_return.take();
+                        if let Some(p) = pictures.as_mut() {
+                            p.doc_pics().prune_media_diff_picture_cache();
+                        }
+                        redraw = true;
+                    }
+                    crate::app::looping::FileLoopExit::Quit
+                    | crate::app::looping::FileLoopExit::End => break,
                 }
             }
             if let Some(p) = pictures.as_mut() {
@@ -408,12 +483,15 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .draw_help(frame.buffer_mut(), whole);
                         } else {
                             if let Some(p) = pictures.as_mut() {
+                                p.draw(frame.buffer_mut(), area, false);
                                 p.doc_pics().draw(frame.buffer_mut(), area, None);
                             }
                             state.draw(prepared, &info, frame.buffer_mut(), area);
                             state.presentation = state.presentation(prepared, &info);
                             state.draw_chrome(prepared, frame.buffer_mut(), whole);
                         }
+                        #[cfg(test)]
+                        crate::app::draw::record_test_frame(frame.buffer_mut());
                     })
                     .map_err(|e| AppError::Terminal(e.to_string()))?;
                 if let Some(p) = pictures.as_mut() {
@@ -449,6 +527,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             let owner_wake = (pending
                 || prepared.detection.pending()
                 || state.launch.pending()
+                || state.preview_open.is_some()
                 || state.root_switch.is_some())
             .then_some(Duration::from_millis(16));
             let watch_wake = prepared
@@ -469,6 +548,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             break;
                         }
                         if was_diff && state.diff_return.is_none() {
+                            state.preview_open = None;
                             if let Some(p) = pictures.as_mut() {
                                 p.doc_pics().prune_media_diff_picture_cache();
                             }
@@ -487,6 +567,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         }
     }
     prepared.runtimes = state.runtimes;
+    prepared.file_preview = state.file_preview;
+    prepared.preview_open = state.preview_open;
     prepared.diff = state.diff;
     prepared.diff_return = state.diff_return;
     prepared.screen = state.screen;

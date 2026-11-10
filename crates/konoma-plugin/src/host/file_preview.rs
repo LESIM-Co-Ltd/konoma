@@ -53,6 +53,10 @@ pub struct FilePreviewSource {
 }
 
 impl FilePreviewSource {
+    #[cfg(feature = "app")]
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.registry.clone()
+    }
     pub fn new(registry: Arc<Registry>, rules: Vec<Rule>, commands: bool) -> Self {
         Self {
             registry,

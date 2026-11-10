@@ -61,6 +61,19 @@ impl DiffScreenState {
     fn media_outcome(&self) -> Option<&MediaDiffOutcome> {
         self.media.worker.outcome_for(&self.request.path)
     }
+    pub(super) fn landed_media(&self) -> Option<konoma_host_core::project::LandedMedia> {
+        use konoma_host_core::project::LandedMedia;
+        self.media_outcome().map(|outcome| match outcome {
+            MediaDiffOutcome::Ready {
+                kind: MediaDiffKind::Svg,
+                ..
+            } => LandedMedia::Svg,
+            MediaDiffOutcome::Ready { .. } => LandedMedia::Picture,
+            MediaDiffOutcome::Summary { .. } | MediaDiffOutcome::Unavailable => {
+                LandedMedia::NotPicture
+            }
+        })
+    }
     pub(super) fn media_can_page(&self) -> bool {
         self.media_active() && shared::can_page(self.media_outcome())
     }

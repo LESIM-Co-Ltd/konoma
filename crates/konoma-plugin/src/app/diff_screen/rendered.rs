@@ -38,7 +38,7 @@ impl RenderedCache {
 }
 
 impl DiffScreenState {
-    /// Attach classification without enabling Preview execution (the file runner is separate).
+    /// Attach file resolution. The project caller executes the resulting Preview command.
     pub fn with_file_previews(
         mut self,
         source: crate::host::file_preview::FilePreviewSource,
@@ -103,13 +103,24 @@ impl DiffScreenState {
             .resolved_preview
             .as_ref()
             .is_none_or(|(_, exists)| *exists);
-        let mut reps = diff_representations(target, exists, None);
-        reps.retain(|v| *v != DiffView::Preview);
+        let mut reps = diff_representations(target, exists, self.landed_media());
+        if self.file_previews.is_none() {
+            reps.retain(|v| *v != DiffView::Preview);
+        }
         reps
     }
 
     pub(super) fn choose_effective(&mut self) {
-        self.effective = round_diff_view(self.choice, &self.representations());
+        let effective = round_diff_view(self.choice, &self.representations());
+        if effective == DiffView::Preview {
+            self.command = Some(super::DiffScreenCommand::OpenPreview {
+                path: self.request.path.clone(),
+            });
+            // Keep the executable diff visible until the worker has opened the file.
+            return;
+        }
+        self.command = None;
+        self.effective = effective;
         self.pending_first_change = (self.effective == DiffView::Rendered && !self.media_active())
             .then(|| self.request.path.clone());
         if self.effective == DiffView::Rendered

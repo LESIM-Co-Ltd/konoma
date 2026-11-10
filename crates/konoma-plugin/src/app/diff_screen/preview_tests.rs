@@ -112,3 +112,79 @@ fn project_preview_worker_keeps_the_plan_and_uses_baseline_facts() {
         vec![DiffView::Source, DiffView::Rendered]
     );
 }
+
+#[test]
+fn preview_representations_and_representation_bindings_require_the_executor() {
+    struct TextServices;
+    impl ProjectServices for TextServices {
+        fn inspect(
+            &self,
+            _: &MatchedProject,
+            _: &ProjectSettings,
+        ) -> Result<ProjectServiceInfo, Failure> {
+            unreachable!()
+        }
+        fn file_diff(&self, _: &ProjectServiceInfo, _: &Path) -> Vec<DiffLine> {
+            unreachable!()
+        }
+        fn changed_files(&self, _: &ProjectServiceInfo) -> Vec<ChangeEntry> {
+            unreachable!()
+        }
+        fn base_contents(&self, _: &ProjectServiceInfo, _: &Path) -> Option<Vec<u8>> {
+            unreachable!()
+        }
+        fn spawn_file_diff(
+            self: Arc<Self>,
+            request: FileDiffRequest,
+        ) -> Result<FileDiffReply, Failure> {
+            Arc::new(Services(std::thread::current().id())).spawn_file_diff(request)
+        }
+    }
+    let dir = konoma_test_support::unique_tmp("preview_executor_representations");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("file.txt");
+    std::fs::write(&path, "plain text\n").unwrap();
+    let config =
+        SharedConfig::parse("[ui]\ndiff_view='source'\n[keys.diff]\nx='cycle_representation'\n")
+            .unwrap();
+    let mut state = DiffScreenState::open(
+        FileDiffRequest {
+            root: dir.to_path_buf(),
+            path,
+            info: ProjectServiceInfo {
+                workdir: dir.to_path_buf(),
+                backend: ProjectBackend::Git,
+            },
+        },
+        Arc::new(TextServices),
+        &config,
+        DiffLayout::Unified,
+        None,
+    )
+    .unwrap();
+    for key in ['R', 'x'] {
+        assert_eq!(state.representations(), vec![DiffView::Source]);
+        state.handle_key(KeyPress::ch(key)).unwrap();
+        assert!(state.take_command().is_none());
+        assert_eq!(state.choice, DiffView::Source);
+    }
+    state = state.with_file_previews(FilePreviewSource::new(
+        Arc::new(Registry::new()),
+        Vec::new(),
+        false,
+    ));
+    state.settle_preview_for_test();
+    assert_eq!(
+        state.representations(),
+        vec![DiffView::Source, DiffView::Preview]
+    );
+    for key in ['R', 'x'] {
+        state.handle_key(KeyPress::ch(key)).unwrap();
+        assert_eq!(
+            state.take_command(),
+            Some(DiffScreenCommand::OpenPreview {
+                path: state.request.path.clone()
+            })
+        );
+    }
+}

@@ -240,6 +240,12 @@ impl Still {
         self.resize_failed = false;
     }
 
+    pub(super) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
+        self.forget();
+        self.plugin_id = plugin_id.into();
+        self.path = path.into();
+    }
+
     fn cancel_job(&mut self) {
         if let Some(c) = self.cancel.take() {
             c.store(true, Ordering::Relaxed);

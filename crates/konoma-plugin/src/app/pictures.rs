@@ -273,6 +273,16 @@ impl Pictures {
         self
     }
 
+    /// A fresh project Preview resets its file pose while retaining the pictures owner.
+    pub(in crate::app) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
+        self.plugin_id = plugin_id.into();
+        self.path = path.into();
+        if let Some(still) = &mut self.still {
+            still.begin_file(plugin_id, path);
+        }
+        self.doc_pics().set_path(path);
+    }
+
     /// The session returned `canvas`: decode what it places that the app does not hold yet.
     pub fn submit(&mut self, canvas: &CanvasView) {
         self.latest = Some((canvas.cols, canvas.rows, canvas.images.clone()));
